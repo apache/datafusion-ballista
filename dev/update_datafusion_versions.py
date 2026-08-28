@@ -133,6 +133,14 @@ def main():
     update_docs("README.md", new_version)
     update_pyproject_toml(os.path.join(repo_root, "python", "pyproject.toml"), new_version)
 
+    print(
+        '\nNext steps:\n'
+        '  1. Run `cargo update` (or `cargo build`) so Cargo.lock resolves the new '
+        'datafusion crates.\n'
+        '  2. Run `dev/update_datafusion_proto.py` to re-sync the vendored '
+        'DataFusion proto files, then commit the result.'
+    )
+
 
 if __name__ == "__main__":
     main()

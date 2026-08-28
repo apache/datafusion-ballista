@@ -19,7 +19,7 @@
 name = "ballista-scheduler"
 description = "Ballista Distributed Compute - Scheduler"
 license = "Apache-2.0"
-version = "53.0.0"
+version = "54.0.0"
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 readme = "README.md"
@@ -41,7 +41,7 @@ disable-stage-plan-cache = []
 graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
-rest-api = []
+rest-api = ["dep:ballista-api-types", "dep:ballista-history", "dep:serde_json"]
 spark-compat = ["ballista-core/spark-compat"]
 substrait = ["dep:datafusion-substrait"]
 
@@ -49,13 +49,15 @@ substrait = ["dep:datafusion-substrait"]
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = "0.8.9"
-tower-http = { version = "0.7", features = ["cors"] }
-ballista-core = { path = "../core", version = "53.0.0" }
+ballista-api-types = { workspace = true, optional = true }
+ballista-core = { path = "../core", version = "54.0.0" }
+ballista-history = { path = "../history", version = "54.0.0", optional = true }
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-substrait = { workspace = true, optional = true }
+ferroid = { version = "2.0", features = ["alloc", "std", "snowflake", "atomic", "base32", "async-tokio"] }
 futures = { workspace = true }
 graphviz-rust = { version = "0.9", optional = true }
 http = "1.4"
@@ -70,13 +72,16 @@ prost = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true, features = ["router"] }
 tonic-prost = { workspace = true, optional = true }
+tower-http = { version = "0.7", features = ["cors"] }
 tracing = { workspace = true, optional = true }
 tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
+url-escape = { workspace = true }
 uuid = { workspace = true }
 
 [[test]]
@@ -86,6 +91,8 @@ path = "tests/tpch_plan_stability/main.rs"
 [dev-dependencies]
 regex = "1"
 rstest = { workspace = true }
+serde_json = "1"
+tempfile = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true, optional = true }

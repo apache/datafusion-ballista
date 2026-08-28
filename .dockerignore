@@ -13,7 +13,9 @@ CHANGELOG.md
 !target/release/ballista-executor
 !target/release/ballista-cli
 !target/release/tpch
+!target/release/h2o
 !target/release-nonlto/ballista-scheduler
 !target/release-nonlto/ballista-executor
 !target/release-nonlto/ballista-cli
 !target/release-nonlto/tpch
+!target/release-nonlto/h2o

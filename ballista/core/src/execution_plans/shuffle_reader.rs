@@ -18,11 +18,16 @@
 use crate::client::BallistaClient;
 use crate::client_pool::BallistaClientPool;
 use crate::error::BallistaError;
+use crate::execution_plans::range_filter::WidenedBound;
+use crate::execution_plans::range_shuffle::{
+    SORT_OPTIONS_METADATA, byte_ranges_for, count_record_batches, is_ipc_file,
+    open_ipc_file, schema_message, select_record_batches,
+};
 use crate::execution_plans::sort_shuffle::{
     get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
 };
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
-use crate::serde::scheduler::{PartitionLocation, PartitionStats};
+use crate::serde::scheduler::{PartitionLocation, PartitionStats, ShuffleFileKind};
 use crate::utils::GrpcClientConfig;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
@@ -30,11 +35,13 @@ use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::stats::Precision;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::coalesce::{LimitedBatchCoalescer, PushBatchStatus};
 use datafusion::physical_plan::metrics::{
-    BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet,
+    self, BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -323,6 +330,14 @@ impl ExecutionPlan for ShuffleReaderExec {
         vec![]
     }
 
+    /// Owns no expressions — it replays batches written by an upstream stage.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -398,11 +413,14 @@ impl ExecutionPlan for ShuffleReaderExec {
                 "ShuffleReader work dir should have been set by executor".to_owned(),
             ))?;
 
+        let read_metrics = ShuffleReadMetrics::new(partition, &self.metrics);
+
         let response_receiver = send_fetch_partitions(
             work_dir,
             partition_locations,
             config,
             self.client_pool.clone(),
+            read_metrics,
         );
 
         let input_stream = Box::pin(RecordBatchStreamAdapter::new(
@@ -548,17 +566,31 @@ pub fn stats_for_partitions(
     }
 }
 
-struct LocalShuffleStream {
-    reader: StreamReader<BufReader<File>>,
+/// Streams batches off a node-local shuffle file.
+///
+/// Generic over the decoder because the two shuffle formats need different
+/// ones — `StreamReader` for the IPC stream the passthrough shuffle writes,
+/// `FileReader` for the IPC file the range shuffle writes — and they share no
+/// arrow trait beyond `Iterator`. The schema is captured at construction
+/// rather than delegated for the same reason.
+pub(crate) struct LocalShuffleStream<R> {
+    reader: R,
+    schema: SchemaRef,
 }
 
-impl LocalShuffleStream {
-    pub fn new(reader: StreamReader<BufReader<File>>) -> Self {
-        LocalShuffleStream { reader }
+impl<R> LocalShuffleStream<R>
+where
+    R: Iterator<Item = std::result::Result<RecordBatch, ArrowError>>,
+{
+    pub(crate) fn new(reader: R, schema: SchemaRef) -> Self {
+        LocalShuffleStream { reader, schema }
     }
 }
 
-impl Stream for LocalShuffleStream {
+impl<R> Stream for LocalShuffleStream<R>
+where
+    R: Iterator<Item = std::result::Result<RecordBatch, ArrowError>> + Unpin,
+{
     type Item = Result<RecordBatch>;
 
     fn poll_next(
@@ -572,9 +604,12 @@ impl Stream for LocalShuffleStream {
     }
 }
 
-impl RecordBatchStream for LocalShuffleStream {
+impl<R> RecordBatchStream for LocalShuffleStream<R>
+where
+    R: Iterator<Item = std::result::Result<RecordBatch, ArrowError>> + Unpin,
+{
     fn schema(&self) -> SchemaRef {
-        self.reader.schema()
+        self.schema.clone()
     }
 }
 
@@ -603,7 +638,7 @@ impl AbortableReceiverStream {
 }
 
 impl Stream for AbortableReceiverStream {
-    type Item = result::Result<SendableRecordBatchStream, ArrowError>;
+    type Item = result::Result<SendableRecordBatchStream, DataFusionError>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -611,7 +646,7 @@ impl Stream for AbortableReceiverStream {
     ) -> std::task::Poll<Option<Self::Item>> {
         self.inner
             .poll_next_unpin(cx)
-            .map_err(|e| ArrowError::ExternalError(Box::new(e)))
+            .map_err(BallistaError::into_datafusion)
     }
 }
 
@@ -689,7 +724,7 @@ impl RecordBatchStream for GovernedStream {
 /// Local partitions are read directly from local Arrow IPC files,
 /// while remote partitions are fetched using the Arrow Flight client.
 /// If `force_remote_read` is true, all partitions are treated as remote.
-fn local_remote_read_split(
+pub(crate) fn local_remote_read_split(
     work_dir: &str,
     partition_locations: Vec<PartitionLocation>,
     force_remote_read: bool,
@@ -703,11 +738,65 @@ fn local_remote_read_split(
     }
 }
 
+/// Fetch-side metrics for `ShuffleReaderExec`, recorded per output partition.
+///
+/// NOTE: the reader's `BaselineMetrics::elapsed_compute` measures poll time of
+/// the consuming stream, which overlaps with background fetching. `fetch_time`
+/// here is *additive* wall-time spent inside the fetch tasks — do not sum the
+/// two. `decoded_bytes` is the in-memory Arrow footprint of fetched batches,
+/// not compressed wire bytes. `fetch_time` and `permit_wait_time` are each
+/// summed across every concurrent remote fetch task, so their totals can
+/// exceed the operator's wall-clock elapsed time — read them as aggregate
+/// cost, not wall-clock.
+#[derive(Debug, Clone)]
+struct ShuffleReadMetrics {
+    /// Wall-time fetching remote partitions (Arrow-Flight fetch + buffering).
+    fetch_time: metrics::Time,
+    /// Wall-time opening node-local shuffle files.
+    local_read_time: metrics::Time,
+    /// Wall-time blocked acquiring the reduce-side in-flight governor permits
+    /// (request + per-address + byte semaphores, #1951).
+    permit_wait_time: metrics::Time,
+    /// Decoded (in-memory Arrow) bytes of fetched remote partitions.
+    decoded_bytes: metrics::Count,
+    /// Number of remote fetch attempts issued, including retries.
+    fetch_requests: metrics::Count,
+    /// Extra fetch attempts taken by the reduce-side retry loop.
+    fetch_retries: metrics::Count,
+    /// Partitions served from node-local shuffle files.
+    local_partitions: metrics::Count,
+    /// Partitions fetched from a remote executor.
+    remote_partitions: metrics::Count,
+}
+
+impl ShuffleReadMetrics {
+    fn new(partition: usize, metrics: &ExecutionPlanMetricsSet) -> Self {
+        Self {
+            fetch_time: MetricBuilder::new(metrics).subset_time("fetch_time", partition),
+            local_read_time: MetricBuilder::new(metrics)
+                .subset_time("local_read_time", partition),
+            permit_wait_time: MetricBuilder::new(metrics)
+                .subset_time("permit_wait_time", partition),
+            decoded_bytes: MetricBuilder::new(metrics)
+                .counter("decoded_bytes", partition),
+            fetch_requests: MetricBuilder::new(metrics)
+                .counter("fetch_requests", partition),
+            fetch_retries: MetricBuilder::new(metrics)
+                .counter("fetch_retries", partition),
+            local_partitions: MetricBuilder::new(metrics)
+                .counter("local_partitions", partition),
+            remote_partitions: MetricBuilder::new(metrics)
+                .counter("remote_partitions", partition),
+        }
+    }
+}
+
 fn send_fetch_partitions(
     work_dir: &str,
     partition_locations: Vec<PartitionLocation>,
     config: &SessionConfig,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
+    read_metrics: ShuffleReadMetrics,
 ) -> AbortableReceiverStream {
     let ballista_config = config.ballista_config();
     let max_reqs = config.ballista_shuffle_reader_maximum_concurrent_requests();
@@ -715,7 +804,6 @@ fn send_fetch_partitions(
     let max_blocks_per_addr =
         ballista_config.shuffle_reader_max_blocks_in_flight_per_address();
     let default_block_size = ballista_config.shuffle_reader_default_block_size_bytes();
-    let sort_shuffle_enabled = config.ballista_sort_shuffle_enabled();
 
     let (response_sender, response_receiver) = mpsc::channel(max_reqs.max(1));
 
@@ -747,13 +835,20 @@ fn send_fetch_partitions(
         remote_locations.len()
     );
 
+    read_metrics.local_partitions.add(local_locations.len());
+    read_metrics.remote_partitions.add(remote_locations.len());
+
     // keep local shuffle files reading in serial order for memory control.
     let response_sender_c = response_sender.clone();
     let work_dir = work_dir.to_string();
+    let local_read_time = read_metrics.local_read_time.clone();
     spawned_tasks.push(SpawnedTask::spawn_blocking({
         move || {
             for p in local_locations {
-                let r = fetch_partition_local(&work_dir, &p, sort_shuffle_enabled);
+                let r = {
+                    let _timer = local_read_time.timer();
+                    fetch_partition_local(&work_dir, &p)
+                };
                 if let Err(e) = response_sender_c.blocking_send(r) {
                     error!("Fail to send response event to the channel due to {e}");
                 }
@@ -784,41 +879,55 @@ fn send_fetch_partitions(
         let customize_endpoint = customize_endpoint.clone();
         let client_grpc_config = client_grpc_config.clone();
         let client_pool = client_pool.clone();
+        let read_metrics = read_metrics.clone();
 
         spawned_tasks.push(SpawnedTask::spawn(async move {
             let addr = p.executor_meta.id.clone();
             let size = block_size(&p, default_block_size);
 
-            // Acquire the cheap count/address gates first, then the byte budget
-            // last, so a fetch does not hold scarce byte permits while blocked
-            // on a per-address slot. All acquires are on Arc<Semaphore>s that
-            // are never closed, so `unwrap()` cannot panic.
-            let req_permit = req_sem.acquire_owned().await.unwrap();
-            let addr_sem = {
-                let mut map = addr_sems.lock().unwrap();
-                map.entry(addr.clone())
-                    .or_insert_with(|| {
-                        Arc::new(Semaphore::new(max_blocks_per_addr.max(1)))
-                    })
-                    .clone()
+            // Time spent blocked acquiring the three governor permits (#1951).
+            let (req_permit, addr_permit, byte_permit) = {
+                let _permit_timer = read_metrics.permit_wait_time.timer();
+                let req_permit = req_sem.acquire_owned().await.unwrap();
+                let addr_sem = {
+                    let mut map = addr_sems.lock().unwrap();
+                    map.entry(addr.clone())
+                        .or_insert_with(|| {
+                            Arc::new(Semaphore::new(max_blocks_per_addr.max(1)))
+                        })
+                        .clone()
+                };
+                let addr_permit = addr_sem.acquire_owned().await.unwrap();
+                let byte_permit = byte_sem
+                    .acquire_many_owned(byte_permits_for(size, max_bytes))
+                    .await
+                    .unwrap();
+                (req_permit, addr_permit, byte_permit)
             };
-            let addr_permit = addr_sem.acquire_owned().await.unwrap();
-            let byte_permit = byte_sem
-                .acquire_many_owned(byte_permits_for(size, max_bytes))
-                .await
-                .unwrap();
 
-            let r = with_retry(outer_retries, io_wait, is_retriable_fetch_error, || {
-                fetch_partition_buffered(
-                    &p,
-                    client_grpc_config.clone(),
-                    prefer_flight,
-                    customize_endpoint.clone(),
-                    client_pool.clone(),
-                )
-            })
-            .await
+            let mut attempts = 0usize;
+            // Cloned (rather than used by reference) to avoid a partial move of
+            // `read_metrics`, which is still needed below for
+            // `fetch_requests`/`fetch_retries`.
+            let decoded_bytes = read_metrics.decoded_bytes.clone();
+            let r = {
+                let _fetch_timer = read_metrics.fetch_time.timer();
+                with_retry(outer_retries, io_wait, is_retriable_fetch_error, || {
+                    attempts += 1;
+                    fetch_partition_buffered(
+                        &p,
+                        client_grpc_config.clone(),
+                        prefer_flight,
+                        customize_endpoint.clone(),
+                        client_pool.clone(),
+                    )
+                })
+                .await
+            }
             .map(|(schema, batches)| {
+                let bytes: usize =
+                    batches.iter().map(|b| b.get_array_memory_size()).sum();
+                decoded_bytes.add(bytes);
                 Box::pin(GovernedStream::new(
                     buffered_stream(schema, batches),
                     byte_permit,
@@ -826,6 +935,10 @@ fn send_fetch_partitions(
                     addr_permit,
                 )) as SendableRecordBatchStream
             });
+            // Total wire attempts (initial + retries), recorded only after
+            // `with_retry` has finished retrying.
+            read_metrics.fetch_requests.add(attempts);
+            read_metrics.fetch_retries.add(attempts.saturating_sub(1));
 
             if let Err(e) = response_sender.send(r).await {
                 error!("Fail to send response event to the channel due to {e}");
@@ -956,7 +1069,7 @@ async fn new_ballista_client(
     .await
 }
 
-async fn fetch_partition_remote(
+pub(crate) async fn fetch_partition_remote(
     location: &PartitionLocation,
     config: Arc<GrpcClientConfig>,
     prefer_flight: bool,
@@ -966,7 +1079,7 @@ async fn fetch_partition_remote(
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
     let file_id = location.file_id;
-    let is_sort_shuffle = location.is_sort_shuffle;
+    let layout = location.layout();
     let host = metadata.host.as_str();
     let port = metadata.port;
 
@@ -985,13 +1098,7 @@ async fn fetch_partition_remote(
             })?;
 
         let result = pooled
-            .fetch_partition(
-                &metadata.id,
-                partition_id,
-                file_id,
-                is_sort_shuffle,
-                prefer_flight,
-            )
+            .fetch_partition(&metadata.id, partition_id, file_id, layout, prefer_flight)
             .await;
         if result.is_err() {
             pooled.discard();
@@ -1016,21 +1123,151 @@ async fn fetch_partition_remote(
                 })?;
 
         ballista_client
-            .fetch_partition(
-                &metadata.id,
-                partition_id,
-                file_id,
-                is_sort_shuffle,
-                prefer_flight,
-            )
+            .fetch_partition(&metadata.id, partition_id, file_id, layout, prefer_flight)
             .await
     }
 }
 
-fn fetch_partition_local(
+/// Fetch a remote range shuffle source down to the bytes `[lo, hi)` covers.
+///
+/// Two round trips: the index, then the ranges it points at. The searching
+/// happens here rather than on the executor, so the executor stays a byte
+/// server and the same two steps work against object storage.
+///
+/// Falls back to fetching the whole partition when the source has no index to
+/// search — the answer is the same, only the volume differs.
+pub(crate) async fn fetch_range_remote(
+    location: &PartitionLocation,
+    bound: WidenedBound,
+    schema: SchemaRef,
+    config: Arc<GrpcClientConfig>,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    client_pool: Option<Arc<dyn BallistaClientPool>>,
+) -> result::Result<SendableRecordBatchStream, BallistaError> {
+    let metadata = &location.executor_meta;
+    let partition_id = &location.partition_id;
+
+    if let Some(pool) = client_pool {
+        let mut pooled = pool
+            .acquire(
+                metadata.host.as_str(),
+                metadata.port,
+                &config,
+                customize_endpoint,
+            )
+            .await
+            .map_err(|error| as_fetch_failed(metadata, partition_id, error))?;
+        let result = fetch_ranges_with(&mut pooled, location, bound, schema).await;
+        if result.is_err() {
+            pooled.discard();
+        }
+        result
+    } else {
+        let mut client = new_ballista_client(
+            metadata.host.as_str(),
+            metadata.port,
+            &config,
+            customize_endpoint,
+        )
+        .await
+        .map_err(|error| as_fetch_failed(metadata, partition_id, error))?;
+        fetch_ranges_with(&mut client, location, bound, schema).await
+    }
+}
+
+/// The two-step fetch itself, over an already-connected client.
+async fn fetch_ranges_with(
+    client: &mut BallistaClient,
+    location: &PartitionLocation,
+    bound: WidenedBound,
+    schema: SchemaRef,
+) -> result::Result<SendableRecordBatchStream, BallistaError> {
+    let metadata = &location.executor_meta;
+    let partition_id = &location.partition_id;
+    let (lo, hi) = bound;
+
+    let mut index_stream = client
+        .fetch_byte_ranges(
+            &metadata.id,
+            partition_id,
+            location.file_id,
+            location.layout(),
+            ShuffleFileKind::Index,
+            vec![],
+            None,
+        )
+        .await?;
+    let index = crate::utils::collect_stream(&mut index_stream).await?;
+    let [index] = index.as_slice() else {
+        return Err(BallistaError::General(format!(
+            "range shuffle index for {partition_id:?} came back as {} batches",
+            index.len()
+        )));
+    };
+
+    let descending = index
+        .schema()
+        .metadata()
+        .get(SORT_OPTIONS_METADATA)
+        .and_then(|options| options.split(',').next())
+        .is_some_and(|options| options.starts_with("desc"));
+
+    let selected =
+        match select_record_batches(index, lo.as_ref(), hi.as_ref(), descending)? {
+            Some(selected) => selected,
+            // The index declined to narrow, so take everything it lists.
+            None => (0..count_record_batches(index)?).collect(),
+        };
+
+    let Some(ranges) = byte_ranges_for(index, &selected)? else {
+        // Nothing in this file falls inside the range.
+        return Ok(Box::pin(RecordBatchStreamAdapter::new(
+            index.schema(),
+            futures::stream::empty(),
+        )));
+    };
+
+    debug!(
+        "range shuffle fetching {} ranges of {:?} from {}",
+        ranges.len(),
+        partition_id,
+        metadata.id,
+    );
+
+    client
+        .fetch_byte_ranges(
+            &metadata.id,
+            partition_id,
+            location.file_id,
+            location.layout(),
+            ShuffleFileKind::Data,
+            ranges,
+            Some(schema_message(schema.as_ref())?),
+        )
+        .await
+}
+
+/// Report a transport failure as a fetch failure, which is what lets the
+/// scheduler retry the task rather than fail the query.
+fn as_fetch_failed(
+    metadata: &crate::serde::scheduler::ExecutorMetadata,
+    partition_id: &crate::serde::scheduler::PartitionId,
+    error: BallistaError,
+) -> BallistaError {
+    match error {
+        BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
+            metadata.id.clone(),
+            partition_id.stage_id,
+            partition_id.partition_id,
+            msg,
+        ),
+        other => other,
+    }
+}
+
+pub(crate) fn fetch_partition_local(
     work_dir: &str,
     location: &PartitionLocation,
-    sort_shuffle_enabled: bool,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let path = &location.path(work_dir)?;
     let metadata = &location.executor_meta;
@@ -1041,10 +1278,10 @@ fn fetch_partition_local(
     //       replace this check with open, and check for error
     //
     // Check if this is a sort-based shuffle output (has index file)
-    if sort_shuffle_enabled && is_sort_shuffle_output(data_path) {
-        // note: in some cases sort shuffle is not going to be used
-        //       even its enabled. thus we need to check if there is
-        //       sort shuffle file index
+    if is_sort_shuffle_output(data_path) {
+        // A stage's on-disk layout is authoritative: sort-shuffle outputs have a
+        // companion index file. Standard single-partition outputs do not, so a
+        // missing index means this is a plain Arrow IPC file.
         debug!(
             "Reading sort-based shuffle for partition {} from {:?}",
             partition_id.partition_id, data_path
@@ -1064,8 +1301,26 @@ fn fetch_partition_local(
             )
         });
     }
+    if is_ipc_file(data_path) {
+        // Range shuffle output. The two IPC framings are not
+        // interchangeable — a stream decoder rejects a file's leading magic —
+        // so the format is read off the file itself rather than carried on
+        // `PartitionLocation`, keeping it out of the wire protocol.
+        debug!("fetch local range shuffle file: {data_path:?}");
+        let reader = open_ipc_file(data_path).map_err(|e| {
+            BallistaError::FetchFailed(
+                metadata.id.clone(),
+                partition_id.stage_id,
+                partition_id.partition_id,
+                e.to_string(),
+            )
+        })?;
+        let schema = reader.schema();
+        return Ok(Box::pin(LocalShuffleStream::new(reader, schema)));
+    }
+
     debug!("fetch local partition file: {data_path:?} ");
-    // Standard hash-based shuffle - read the file directly
+    // Standard single-file shuffle output - read the file directly
     let reader = fetch_partition_local_inner(path).map_err(|e| {
         // return BallistaError::FetchFailed may let scheduler retry this task.
         BallistaError::FetchFailed(
@@ -1075,7 +1330,8 @@ fn fetch_partition_local(
             e.to_string(),
         )
     })?;
-    Ok(Box::pin(LocalShuffleStream::new(reader)))
+    let schema = reader.schema();
+    Ok(Box::pin(LocalShuffleStream::new(reader, schema)))
 }
 
 fn fetch_partition_local_inner(
@@ -1208,8 +1464,9 @@ mod tests {
     use datafusion::common::DataFusionError;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
-    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_plan::StatisticsArgs;
     use datafusion::physical_plan::common;
+    use datafusion::physical_plan::statistics::StatisticsContext;
     use datafusion::prelude::SessionContext;
     use tempfile::{TempDir, tempdir};
 
@@ -1243,8 +1500,7 @@ mod tests {
                         host: "executor_1".to_string(),
                         port: 7070,
                         grpc_port: 8080,
-                        specification: ExecutorSpecification::default()
-                            .with_task_slots(1),
+                        specification: ExecutorSpecification::default().with_vcores(1),
                         os_info: ExecutorOperatingSystemSpecification::default(),
                     },
                     partition_stats: PartitionStats {
@@ -1362,7 +1618,7 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    specification: ExecutorSpecification::default().with_vcores(1),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: PartitionStats {
@@ -1382,7 +1638,8 @@ mod tests {
             Partitioning::UnknownPartitioning(4),
         )?;
 
-        let stats = shuffle_reader_exec.partition_statistics(None)?;
+        let stats = StatisticsContext::new()
+            .compute(&shuffle_reader_exec, &StatisticsArgs::new())?;
         assert_eq!(8, *stats.num_rows.get_value().unwrap());
         assert_eq!(80, *stats.total_byte_size.get_value().unwrap());
 
@@ -1413,7 +1670,7 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    specification: ExecutorSpecification::default().with_vcores(1),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: PartitionStats {
@@ -1433,7 +1690,10 @@ mod tests {
             Partitioning::UnknownPartitioning(4),
         )?;
 
-        let stats = shuffle_reader_exec.partition_statistics(Some(3))?;
+        let stats = StatisticsContext::new().compute(
+            &shuffle_reader_exec,
+            &StatisticsArgs::new().with_partition(Some(3)),
+        )?;
         assert_eq!(2, *stats.num_rows.get_value().unwrap());
         assert_eq!(20, *stats.total_byte_size.get_value().unwrap());
 
@@ -1465,7 +1725,7 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    specification: ExecutorSpecification::default().with_vcores(1),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: PartitionStats {
@@ -1485,7 +1745,10 @@ mod tests {
             Partitioning::UnknownPartitioning(4),
         )?;
 
-        let stats = shuffle_reader_exec.partition_statistics(Some(4));
+        let stats = StatisticsContext::new().compute(
+            &shuffle_reader_exec,
+            &StatisticsArgs::new().with_partition(Some(4)),
+        );
         assert!(stats.is_err());
 
         Ok(())
@@ -1517,7 +1780,7 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_task_slots(1),
+                    specification: ExecutorSpecification::default().with_vcores(1),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: Default::default(),
@@ -1540,12 +1803,105 @@ mod tests {
 
         assert!(batches.is_err());
 
-        // BallistaError::FetchFailed -> ArrowError::ExternalError -> ballistaError::FetchFailed
+        // BallistaError::FetchFailed -> DataFusionError::External -> BallistaError::FetchFailed
         let ballista_error = batches.unwrap_err();
         assert!(matches!(
             ballista_error,
             BallistaError::FetchFailed(_, _, _, _)
         ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_partitions_error_path_records_metrics() -> Result<()> {
+        // A single remote partition location pointing at a host with no Flight
+        // server listening, so every wire attempt fails with a
+        // `GrpcConnectionError` (remapped to `FetchFailed` by
+        // `fetch_partition_remote`), which `is_retriable_fetch_error` treats
+        // as retriable. Unlike `test_fetch_partitions_error_mapping` (which
+        // fans out 4 upstream locations into 4 concurrent remote tasks), this
+        // test uses exactly one location so there is a single fetch task and
+        // the attempt/retry counters are deterministic: with several
+        // concurrent tasks racing to error out first, the stream can return
+        // as soon as the fastest task fails, aborting the others mid-retry
+        // and making their counters nondeterministic.
+        let retries: usize = 2;
+        let config = SessionConfig::new_with_ballista()
+            .set_usize(crate::config::BALLISTA_CLIENT_IO_RETRIES_TIMES, retries)
+            .set_usize(crate::config::BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS, 0);
+
+        let session_ctx = SessionContext::new_with_config(config);
+        let task_ctx = session_ctx.task_ctx();
+
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
+        ]);
+
+        let job_id = "test_job_metrics";
+        let input_stage_id = 2;
+        let partition = PartitionLocation {
+            map_partition_id: 0,
+            partition_id: PartitionId {
+                job_id: job_id.into(),
+                stage_id: input_stage_id,
+                partition_id: 0,
+            },
+            executor_meta: ExecutorMetadata {
+                id: "executor_1".to_string(),
+                host: "executor_1".to_string(),
+                port: 7070,
+                grpc_port: 8080,
+                specification: ExecutorSpecification::default().with_vcores(1),
+                os_info: ExecutorOperatingSystemSpecification::default(),
+            },
+            partition_stats: Default::default(),
+            file_id: None,
+            is_sort_shuffle: false,
+        };
+        let work_dir = TempDir::new().unwrap();
+        let work_dir = work_dir.path().to_str().unwrap().to_owned();
+
+        let shuffle_reader_exec = ShuffleReaderExec::try_new(
+            input_stage_id,
+            vec![vec![partition]],
+            Arc::new(schema),
+            Partitioning::UnknownPartitioning(1),
+        )?
+        .with_work_dir(work_dir);
+
+        let mut stream = shuffle_reader_exec.execute(0, task_ctx)?;
+        let batches = utils::collect_stream(&mut stream).await;
+        assert!(batches.is_err());
+        let ballista_error = batches.unwrap_err();
+        assert!(matches!(
+            ballista_error,
+            BallistaError::FetchFailed(_, _, _, _)
+        ));
+
+        // The injected error is retriable (see `is_retriable_fetch_error`), so
+        // `with_retry` runs the initial attempt plus `retries` retries before
+        // giving up: total wire attempts = 1 + retries.
+        let expected_attempts = retries + 1;
+        let expected_retries = retries;
+
+        let metrics = shuffle_reader_exec
+            .metrics()
+            .expect("ShuffleReaderExec should report metrics");
+        let count = |name: &str| metrics.sum_by_name(name).map(|v| v.as_usize());
+
+        assert_eq!(count("fetch_requests"), Some(expected_attempts));
+        assert_eq!(count("fetch_retries"), Some(expected_retries));
+        assert!(
+            metrics.sum_by_name("fetch_time").is_some(),
+            "fetch_time metric should be registered"
+        );
+        assert!(
+            metrics.sum_by_name("permit_wait_time").is_some(),
+            "permit_wait_time metric should be registered"
+        );
 
         Ok(())
     }
@@ -1570,7 +1926,6 @@ mod tests {
             1,
             create_test_data_plan().unwrap(),
             work_dir.path().to_str().unwrap().to_owned(),
-            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 1)),
         )
         .unwrap();
 
@@ -1589,15 +1944,18 @@ mod tests {
         // from to input partitions test the first one with two batches
         let file_path = Path::new(path.value(0));
         let reader = fetch_partition_local_inner(file_path).unwrap();
+        let schema = reader.schema();
 
         let mut stream: Pin<Box<dyn RecordBatchStream + Send>> =
-            async { Box::pin(LocalShuffleStream::new(reader)) }.await;
+            async { Box::pin(LocalShuffleStream::new(reader, schema)) }.await;
 
         let result = utils::collect_stream(&mut stream)
             .await
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
             .unwrap();
 
+        // With single-partition (None) output, executing input partition 0
+        // writes just that partition's 2 batches to a single output file.
         assert_eq!(result.len(), 2);
         for b in result {
             assert_eq!(b, create_test_batch())
@@ -1675,11 +2033,13 @@ mod tests {
         let config = SessionConfig::new_with_ballista()
             .with_ballista_shuffle_reader_maximum_concurrent_requests(max_request_num);
 
+        let metrics_set = ExecutionPlanMetricsSet::new();
         let response_receiver = send_fetch_partitions(
             &work_dir.to_string_lossy(),
             partition_locations,
             &config,
             None,
+            ShuffleReadMetrics::new(0, &metrics_set),
         );
 
         let stream = RecordBatchStreamAdapter::new(
@@ -1689,6 +2049,90 @@ mod tests {
 
         let result = common::collect(Box::pin(stream)).await.unwrap();
         assert_eq!(partition_num, result.len());
+    }
+
+    #[tokio::test]
+    async fn send_fetch_partitions_records_local_metrics() {
+        let schema = get_test_partition_schema();
+        let data_array = Int32Array::from(vec![1]);
+        let batch =
+            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
+                .unwrap();
+        let tmp_dir = tempdir().unwrap();
+        let work_dir = tmp_dir.path();
+        let partition_num = 3usize;
+        for p in 0..partition_num {
+            let file_path =
+                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
+            std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+            let file = File::create(&file_path).unwrap();
+            let mut writer = StreamWriter::try_new(file, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        let partition_locations = get_test_partition_locations(partition_num, None);
+        let config = SessionConfig::new_with_ballista();
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let read_metrics = ShuffleReadMetrics::new(0, &metrics_set);
+
+        let response_receiver = send_fetch_partitions(
+            &work_dir.to_string_lossy(),
+            partition_locations,
+            &config,
+            None,
+            read_metrics,
+        );
+        let stream = RecordBatchStreamAdapter::new(
+            Arc::new(schema),
+            response_receiver.try_flatten(),
+        );
+        let result = common::collect(Box::pin(stream)).await.unwrap();
+        assert_eq!(partition_num, result.len());
+
+        let metrics = metrics_set.clone_inner();
+        let count =
+            |name: &str| metrics.sum_by_name(name).map(|v| v.as_usize()).unwrap_or(0);
+        assert_eq!(count("local_partitions"), partition_num);
+        assert_eq!(count("remote_partitions"), 0);
+        assert!(
+            metrics.sum_by_name("local_read_time").is_some(),
+            "local_read_time metric should be registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_fetch_partitions_counts_remote_split() {
+        let tmp_dir = tempdir().unwrap();
+        let work_dir = tmp_dir.path();
+        // No files on disk => all partitions are treated as remote.
+        let partition_locations = get_test_partition_locations(2, None);
+        let config = SessionConfig::new_with_ballista();
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let read_metrics = ShuffleReadMetrics::new(0, &metrics_set);
+
+        // Drop the receiver without polling; the split counts are recorded
+        // synchronously inside send_fetch_partitions.
+        let _rx = send_fetch_partitions(
+            &work_dir.to_string_lossy(),
+            partition_locations,
+            &config,
+            None,
+            read_metrics,
+        );
+
+        let metrics = metrics_set.clone_inner();
+        assert_eq!(
+            metrics
+                .sum_by_name("remote_partitions")
+                .map(|v| v.as_usize()),
+            Some(2)
+        );
+        assert_eq!(
+            metrics
+                .sum_by_name("local_partitions")
+                .map(|v| v.as_usize()),
+            Some(0)
+        );
     }
 
     fn get_test_partition_locations(
@@ -1708,7 +2152,7 @@ mod tests {
                     host: "localhost".to_string(),
                     port: 50051,
                     grpc_port: 50052,
-                    specification: ExecutorSpecification::default().with_task_slots(12),
+                    specification: ExecutorSpecification::default().with_vcores(12),
                     os_info: ExecutorOperatingSystemSpecification::default(),
                 },
                 partition_stats: Default::default(),
@@ -1960,7 +2404,9 @@ mod tests {
         assert_eq!(reader.properties().partitioning.partition_count(), 1);
         assert_eq!(reader.partition[0].len(), 3);
 
-        let stats = reader.partition_statistics(Some(0)).unwrap();
+        let stats = StatisticsContext::new()
+            .compute(&reader, &StatisticsArgs::new().with_partition(Some(0)))
+            .unwrap();
         assert_eq!(stats.num_rows.get_value().copied(), Some(300));
         assert_eq!(stats.total_byte_size.get_value().copied(), Some(3072));
     }
@@ -1969,10 +2415,17 @@ mod tests {
     fn broadcast_reader_rejects_out_of_range_partition_index() {
         let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int32, false)]));
         let reader = ShuffleReaderExec::try_new_broadcast(7, vec![], schema, 3).unwrap();
-        let err = reader.partition_statistics(Some(1)).unwrap_err();
+        let err = StatisticsContext::new()
+            .compute(&reader, &StatisticsArgs::new().with_partition(Some(1)))
+            .unwrap_err();
         let msg = err.to_string();
+        // DataFusion bounds-checks the partition index inside
+        // `StatisticsContext::compute` before dispatching to the operator, so
+        // this is upstream's assertion rather than the broadcast guard in
+        // `partition_statistics`. Pin the index so the test still fails if the
+        // out-of-range request stops being rejected.
         assert!(
-            msg.contains("invalid partition index 1"),
+            msg.contains("Invalid partition index: 1"),
             "unexpected error message: {msg}"
         );
     }
@@ -2056,11 +2509,13 @@ mod tests {
         )?;
 
         // partition[0] = upstream [0,1,2] -> 10+20+30 = 60 bytes, 1+2+3 = 6 rows
-        let stats0 = exec.partition_statistics(Some(0))?;
+        let stats0 = StatisticsContext::new()
+            .compute(&exec, &StatisticsArgs::new().with_partition(Some(0)))?;
         assert_eq!(60, *stats0.total_byte_size.get_value().unwrap());
         assert_eq!(6, *stats0.num_rows.get_value().unwrap());
         // partition[1] = upstream [3,4] -> 40+50 = 90 bytes, 4+5 = 9 rows
-        let stats1 = exec.partition_statistics(Some(1))?;
+        let stats1 = StatisticsContext::new()
+            .compute(&exec, &StatisticsArgs::new().with_partition(Some(1)))?;
         assert_eq!(90, *stats1.total_byte_size.get_value().unwrap());
         assert_eq!(9, *stats1.num_rows.get_value().unwrap());
         Ok(())

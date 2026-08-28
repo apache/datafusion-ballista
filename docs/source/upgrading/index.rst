@@ -21,4 +21,5 @@ Upgrade Guides
 .. toctree::
    :maxdepth: 1
 
+   Ballista 55.0.0 <55.0.0>
    Ballista 54.0.0 <54.0.0>

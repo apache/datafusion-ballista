@@ -16,10 +16,12 @@
 // under the License.
 
 use crate::config::{
-    BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
+    BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES,
+    BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
     BALLISTA_CLIENT_USE_TLS, BALLISTA_COALESCE_ENABLED,
     BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, BALLISTA_COALESCE_SMALL_PARTITION_FACTOR,
-    BALLISTA_COALESCE_TARGET_PARTITION_BYTES, BALLISTA_JOB_NAME,
+    BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
+    BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
     BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
     BallistaConfig,
@@ -192,6 +194,27 @@ pub trait SessionConfigExt {
     fn with_ballista_broadcast_join_threshold_bytes(self, threshold_bytes: usize)
     -> Self;
 
+    /// retrieves the row-count threshold below which a hash join's smaller side
+    /// is promoted to `CollectLeft` and lowered via the broadcast pattern, used
+    /// as a fallback when byte-size statistics are unavailable. `0` disables
+    /// promotion via the row-count path.
+    fn ballista_broadcast_join_threshold_rows(&self) -> usize;
+
+    /// Sets the row-count threshold below which a hash join's smaller side is
+    /// promoted to `CollectLeft` and lowered via the broadcast pattern, used as
+    /// a fallback when byte-size statistics are unavailable. Setting `0`
+    /// disables promotion via the row-count path.
+    fn with_ballista_broadcast_join_threshold_rows(self, threshold_rows: usize) -> Self;
+
+    /// Returns the maximum per-partition hash-join build-side bytes before
+    /// falling back to SortMergeJoin under AQE. `0` disables the check.
+    fn ballista_hash_join_max_build_partition_bytes(&self) -> usize;
+
+    /// Sets the maximum per-partition hash-join build-side bytes before falling
+    /// back to SortMergeJoin under AQE. Setting `0` disables the check, which
+    /// leaves AQE on a hash join whatever the build size.
+    fn with_ballista_hash_join_max_build_partition_bytes(self, max_bytes: usize) -> Self;
+
     /// retrieves grpc client max message size
     fn ballista_grpc_client_max_message_size(&self) -> usize;
 
@@ -222,6 +245,9 @@ pub trait SessionConfigExt {
     /// Is adaptive query planner enabled
     fn ballista_adaptive_query_planner_enabled(&self) -> bool;
 
+    /// Enables or disables adaptive query planning (enabled by default).
+    fn with_ballista_adaptive_query_planner(self, enabled: bool) -> Self;
+
     /// Is exchange reuse enabled in the distributed planner
     fn ballista_reuse_exchange_enabled(&self) -> bool;
 
@@ -247,9 +273,6 @@ pub trait SessionConfigExt {
 
     /// Get whether to use TLS for executor connections
     fn ballista_use_tls(&self) -> bool;
-
-    /// Is short shuffle used
-    fn ballista_sort_shuffle_enabled(&self) -> bool;
 
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
     fn ballista_coalesce_enabled(&self) -> bool;
@@ -303,6 +326,7 @@ impl SessionStateExt for SessionState {
             .with_cache_factory(Some(Arc::new(BallistaCacheFactory::new())))
             .with_runtime_env(Arc::new(runtime_env))
             .with_query_planner(Arc::new(planner))
+            .with_optimizer_rules(crate::optimizer::ballista_default_optimizer_rules())
             .with_scalar_functions(ballista_scalar_functions())
             .with_aggregate_functions(ballista_aggregate_functions())
             .with_window_functions(ballista_window_functions())
@@ -322,8 +346,12 @@ impl SessionStateExt for SessionState {
 
         let ballista_config = session_config.ballista_config();
 
+        let optimizer_rules =
+            crate::optimizer::with_ballista_optimizer_rules(self.optimizers());
+
         let builder = SessionStateBuilder::new_from_existing(self)
             .with_config(session_config)
+            .with_optimizer_rules(optimizer_rules)
             .with_cache_factory(Some(Arc::new(BallistaCacheFactory::new())));
 
         let builder = match planner_override {
@@ -487,6 +515,42 @@ impl SessionConfigExt for SessionConfig {
         }
     }
 
+    fn ballista_broadcast_join_threshold_rows(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.broadcast_join_threshold_rows())
+            .unwrap_or_else(|| BallistaConfig::default().broadcast_join_threshold_rows())
+    }
+
+    fn with_ballista_broadcast_join_threshold_rows(self, threshold_rows: usize) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, threshold_rows)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, threshold_rows)
+        }
+    }
+
+    fn ballista_hash_join_max_build_partition_bytes(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.hash_join_max_build_partition_bytes())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().hash_join_max_build_partition_bytes()
+            })
+    }
+
+    fn with_ballista_hash_join_max_build_partition_bytes(self, max_bytes: usize) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, max_bytes)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, max_bytes)
+        }
+    }
+
     fn ballista_shuffle_reader_maximum_concurrent_requests(&self) -> usize {
         self.options()
             .extensions
@@ -495,14 +559,6 @@ impl SessionConfigExt for SessionConfig {
             .unwrap_or_else(|| {
                 BallistaConfig::default().shuffle_reader_maximum_concurrent_requests()
             })
-    }
-
-    fn ballista_sort_shuffle_enabled(&self) -> bool {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.shuffle_sort_based_enabled())
-            .unwrap_or_else(|| BallistaConfig::default().shuffle_sort_based_enabled())
     }
 
     fn with_ballista_shuffle_reader_maximum_concurrent_requests(
@@ -558,6 +614,15 @@ impl SessionConfigExt for SessionConfig {
         } else {
             self.with_option_extension(BallistaConfig::default())
                 .set_bool(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, prefer_flight)
+        }
+    }
+
+    fn with_ballista_adaptive_query_planner(self, enabled: bool) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, enabled)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, enabled)
         }
     }
 
@@ -756,6 +821,7 @@ impl SessionConfigHelperExt for SessionConfig {
     }
 
     fn ballista_restricted_configuration(self) -> Self {
+        let ballista_defaults = BallistaConfig::default();
         self
             // round robbin repartition does not work well with ballista.
             // this setting it will also be enforced by the scheduler
@@ -780,13 +846,17 @@ impl SessionConfigHelperExt for SessionConfig {
             //
             // A build side smaller than these thresholds is collected into a
             // CollectLeft (broadcast) hash join rather than being repartitioned.
+            // The values mirror Ballista's own broadcast thresholds so a single
+            // set of `ballista.optimizer.broadcast_join_threshold_*` defaults
+            // drives both DataFusion's built-in JoinSelection (static planner)
+            // and Ballista's AQE join selection.
             .set_u64(
                 "datafusion.optimizer.hash_join_single_partition_threshold",
-                10 * 1024 * 1024,
+                ballista_defaults.broadcast_join_threshold_bytes() as u64,
             )
             .set_u64(
                 "datafusion.optimizer.hash_join_single_partition_threshold_rows",
-                1_000_000,
+                ballista_defaults.broadcast_join_threshold_rows() as u64,
             )
             //
             // DataFusion's hash join has no spill support, so each parallel
@@ -1068,7 +1138,7 @@ mod test {
     #[test]
     fn should_preserve_user_overrides_on_upgrade() {
         // Ballista defaults these to prefer_hash_join=false and the threshold to
-        // 10 MB. The overrides below differ from those defaults so the assertions
+        // 128 MB. The overrides below differ from those defaults so the assertions
         // prove the user's values survived `upgrade_for_ballista`.
         let mut config = SessionConfig::new_with_ballista();
         config
@@ -1107,7 +1177,7 @@ mod test {
                 .options()
                 .optimizer
                 .hash_join_single_partition_threshold,
-            10 * 1024 * 1024
+            128 * 1024 * 1024
         );
         assert_eq!(
             config

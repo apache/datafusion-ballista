@@ -24,6 +24,7 @@ use ballista_core::serde::protobuf::{
     ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, PartitionLocation,
     SuccessfulJob, execute_query_result, job_status,
 };
+use ballista_core::serde::scheduler::ShuffleLayout;
 use ballista_core::utils::{GrpcClientConfig, create_grpc_client_connection};
 use ballista_examples::test_util;
 use datafusion::arrow::array::RecordBatch;
@@ -433,7 +434,11 @@ impl SubstraitSchedulerClient {
                 &metadata.id,
                 &partition_id.into(),
                 location.file_id,
-                location.is_sort_shuffle,
+                if location.is_sort_shuffle {
+                    ShuffleLayout::Sort
+                } else {
+                    ShuffleLayout::Passthrough
+                },
                 flight_transport,
             )
             .await
@@ -578,13 +583,13 @@ pub async fn setup_standalone(session_state: Option<&SessionState>) -> Result<St
         }
     };
 
-    let concurrent_tasks = config.ballista_standalone_parallelism();
+    let vcores = config.ballista_standalone_parallelism();
 
     match session_state {
         None => {
             ballista_executor::new_standalone_executor(
                 scheduler,
-                concurrent_tasks,
+                vcores,
                 BallistaCodec::default(),
             )
             .await
@@ -593,7 +598,7 @@ pub async fn setup_standalone(session_state: Option<&SessionState>) -> Result<St
         Some(session_state) => {
             ballista_executor::new_standalone_executor_from_state(
                 scheduler,
-                concurrent_tasks,
+                vcores,
                 session_state,
             )
             .await

@@ -26,9 +26,10 @@ use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use datafusion::arrow::array::StringBuilder;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result, internal_err};
 use datafusion::execution::context::TaskContext;
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -115,6 +116,14 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
         vec![&self.query_exec]
     }
 
+    /// Owns no expressions — the plan it explains lives on the child.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         mut children: Vec<Arc<dyn ExecutionPlan>>,
@@ -196,7 +205,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
     }
 }
 
-async fn fetch_job_metrics(
+pub(crate) async fn fetch_job_metrics(
     scheduler_url: &str,
     job_id: &JobId,
     session_config: datafusion::prelude::SessionConfig,
@@ -240,13 +249,15 @@ async fn fetch_job_metrics(
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
 }
 
-fn format_metrics_as_record_batch(
+/// Render the per-stage executed plan carried in `job_metrics` as a single
+/// string. When `with_metrics` is true, each operator line is suffixed with its
+/// aggregated `metrics=[...]`; when false, only the operator description is
+/// shown.
+pub(crate) fn format_job_plan(
     job_metrics: &GetJobMetricsResult,
-    _job_id: &JobId,
-    schema: SchemaRef,
-    _verbose: bool,
-) -> Result<RecordBatch> {
-    let plan = job_metrics
+    with_metrics: bool,
+) -> Result<String> {
+    job_metrics
         .stages
         .iter()
         .map(|stage| {
@@ -257,28 +268,41 @@ fn format_metrics_as_record_batch(
             ));
 
             for operator in &stage.operators {
-                let metrics_set: datafusion::physical_plan::metrics::MetricsSet =
-                    protobuf::OperatorMetricsSet {
-                        metrics: operator.metrics.clone(),
-                    }
-                    .try_into()
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-                let metrics = metrics_set
-                    .aggregate_by_name()
-                    .sorted_for_display()
-                    .timestamps_removed()
-                    .to_string();
                 let indent = "  ".repeat(operator.depth as usize);
-                stage_plan.push(format!(
-                    "{indent}{}, metrics=[{metrics}]",
-                    operator.operator_desc
-                ));
+                if with_metrics {
+                    let metrics_set: datafusion::physical_plan::metrics::MetricsSet =
+                        protobuf::OperatorMetricsSet {
+                            metrics: operator.metrics.clone(),
+                        }
+                        .try_into()
+                        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                    let metrics = metrics_set
+                        .aggregate_by_name()
+                        .sorted_for_display()
+                        .timestamps_removed()
+                        .to_string();
+                    stage_plan.push(format!(
+                        "{indent}{}, metrics=[{metrics}]",
+                        operator.operator_desc
+                    ));
+                } else {
+                    stage_plan.push(format!("{indent}{}", operator.operator_desc));
+                }
             }
 
             Ok(stage_plan.join("\n"))
         })
-        .collect::<Result<Vec<_>>>()?
-        .join("\n\n");
+        .collect::<Result<Vec<_>>>()
+        .map(|stages| stages.join("\n\n"))
+}
+
+fn format_metrics_as_record_batch(
+    job_metrics: &GetJobMetricsResult,
+    _job_id: &JobId,
+    schema: SchemaRef,
+    _verbose: bool,
+) -> Result<RecordBatch> {
+    let plan = format_job_plan(job_metrics, true)?;
 
     let mut type_builder = StringBuilder::with_capacity(1, "Plan with Metrics".len());
     let mut plan_builder = StringBuilder::with_capacity(1, plan.len());
@@ -298,7 +322,7 @@ fn format_metrics_as_record_batch(
 
 #[cfg(test)]
 mod tests {
-    use super::format_metrics_as_record_batch;
+    use super::{format_job_plan, format_metrics_as_record_batch};
     use datafusion::arrow::array::StringArray;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
@@ -307,6 +331,61 @@ mod tests {
         GetJobMetricsResult, JobStageMetrics, OperatorMetric, OperatorWithMetrics,
         operator_metric,
     };
+
+    #[test]
+    fn test_format_job_plan_without_metrics() {
+        let response = GetJobMetricsResult {
+            stages: vec![
+                JobStageMetrics {
+                    stage_id: 0,
+                    partitions: 1,
+                    operators: vec![OperatorWithMetrics {
+                        depth: 0,
+                        operator_type: "ProjectionExec".to_string(),
+                        operator_desc: "ProjectionExec: expr=[a]".to_string(),
+                        metrics: vec![
+                            OperatorMetric {
+                                metric: Some(operator_metric::Metric::OutputRows(4)),
+                                partition: None,
+                            },
+                            OperatorMetric {
+                                metric: Some(operator_metric::Metric::ElapseTime(
+                                    15_000_000,
+                                )),
+                                partition: None,
+                            },
+                        ],
+                    }],
+                },
+                JobStageMetrics {
+                    stage_id: 1,
+                    partitions: 2,
+                    operators: vec![OperatorWithMetrics {
+                        depth: 0,
+                        operator_type: "FilterExec".to_string(),
+                        operator_desc: "FilterExec: a@0 > 1".to_string(),
+                        metrics: vec![OperatorMetric {
+                            metric: Some(operator_metric::Metric::OutputRows(2)),
+                            partition: None,
+                        }],
+                    }],
+                },
+            ],
+        };
+
+        let plan = format_job_plan(&response, false).unwrap();
+
+        let expected = [
+            "=========SuccessfulStage[stage_id=0, partitions=1]=========",
+            "ProjectionExec: expr=[a]",
+            "",
+            "=========SuccessfulStage[stage_id=1, partitions=2]=========",
+            "FilterExec: a@0 > 1",
+        ]
+        .join("\n");
+        assert_eq!(plan, expected);
+        assert!(!plan.contains("metrics=["));
+    }
 
     #[test]
     fn test_format_metrics_as_record_batch() {
@@ -326,11 +405,13 @@ mod tests {
                         metrics: vec![
                             OperatorMetric {
                                 metric: Some(operator_metric::Metric::OutputRows(4)),
+                                partition: None,
                             },
                             OperatorMetric {
                                 metric: Some(operator_metric::Metric::ElapseTime(
                                     15_000_000,
                                 )),
+                                partition: None,
                             },
                         ],
                     }],
@@ -344,6 +425,7 @@ mod tests {
                         operator_desc: "FilterExec: a@0 > 1".to_string(),
                         metrics: vec![OperatorMetric {
                             metric: Some(operator_metric::Metric::OutputRows(2)),
+                            partition: None,
                         }],
                     }],
                 },

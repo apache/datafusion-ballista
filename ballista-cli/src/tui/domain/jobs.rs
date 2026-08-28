@@ -21,33 +21,38 @@ use ratatui::widgets::{ScrollbarState, TableState};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-#[derive(Deserialize, Clone, Debug)]
-pub struct Job {
-    pub job_id: String,
-    pub job_name: String,
-    pub status: String,     // Running, Completed, Failed, Canceled
-    pub job_status: String, // human-readable status/failure detail, e.g. "Failed: <reason>"
-    pub start_time: i64,
-    pub end_time: i64,
-    pub num_stages: usize,
-    pub completed_stages: usize,
-    pub percent_complete: u8,
+// Shared with the scheduler that serves it, so a field change there is a
+// compile error here rather than a runtime deserialization failure (#2257).
+pub use ballista_api_types::dto::JobResponse as Job;
+
+/// Status predicates over the shared [`Job`] type. An extension trait because
+/// `Job` is defined in `ballista-api-types`, which is deliberately free of any
+/// TUI concerns.
+pub trait JobStatusExt {
+    /// Job is accepted but not yet scheduled.
+    fn is_queued(&self) -> bool;
+    /// Job is currently executing.
+    fn is_running(&self) -> bool;
+    /// Job finished successfully.
+    fn is_completed(&self) -> bool;
+    /// Job terminated with an error.
+    fn is_failed(&self) -> bool;
 }
 
-impl Job {
-    pub fn is_queued(&self) -> bool {
+impl JobStatusExt for Job {
+    fn is_queued(&self) -> bool {
         self.status == "Queued"
     }
 
-    pub fn is_running(&self) -> bool {
+    fn is_running(&self) -> bool {
         self.status == "Running"
     }
 
-    pub fn is_completed(&self) -> bool {
+    fn is_completed(&self) -> bool {
         self.status == "Completed"
     }
 
-    pub fn is_failed(&self) -> bool {
+    fn is_failed(&self) -> bool {
         self.status == "Failed"
     }
 }
@@ -117,9 +122,14 @@ impl JobsData {
                 }
             }),
             SortColumn::StagesCompleted => jobs.sort_by(|a, b| {
-                let a_stages = a.completed_stages / a.num_stages;
-                let b_stages = b.completed_stages / b.num_stages;
-                let cmp = a_stages.cmp(&b_stages);
+                let stage_completion = |job: &Job| {
+                    if job.num_stages == 0 {
+                        0.0
+                    } else {
+                        job.completed_stages as f64 / job.num_stages as f64
+                    }
+                };
+                let cmp = stage_completion(a).total_cmp(&stage_completion(b));
                 if self.sort_order == crate::tui::domain::SortOrder::Descending {
                     cmp.reverse()
                 } else {
@@ -449,8 +459,8 @@ mod tests {
         id: &str,
         name: &str,
         status: &str,
-        start_time: i64,
-        end_time: i64,
+        start_time: u64,
+        end_time: u64,
         num_stages: usize,
         completed_stages: usize,
         percent_complete: u8,
@@ -465,6 +475,9 @@ mod tests {
             num_stages,
             completed_stages,
             percent_complete,
+            logical_plan: None,
+            physical_plan: None,
+            stage_plan: None,
         }
     }
 
@@ -586,6 +599,36 @@ mod tests {
         assert_eq!(refs[0].status, "Running");
         assert_eq!(refs[1].status, "Failed");
         assert_eq!(refs[2].status, "Completed");
+    }
+
+    #[test]
+    fn sort_by_stages_completed_uses_completion_ratio() {
+        let jobs = vec![
+            make_job("quarter", "A", "Running", 1, 2, 4, 1, 0),
+            make_job("three_quarters", "B", "Running", 2, 3, 4, 3, 0),
+            make_job("half", "C", "Running", 3, 4, 4, 2, 0),
+        ];
+        let data =
+            make_jobs_data(jobs, SortColumn::StagesCompleted, SortOrder::Ascending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].job_id, "quarter");
+        assert_eq!(refs[1].job_id, "half");
+        assert_eq!(refs[2].job_id, "three_quarters");
+    }
+
+    #[test]
+    fn sort_by_stages_completed_handles_zero_stages() {
+        let jobs = vec![
+            make_job("zero", "A", "Running", 1, 2, 0, 0, 0),
+            make_job("half", "B", "Running", 2, 3, 2, 1, 0),
+        ];
+        let data =
+            make_jobs_data(jobs, SortColumn::StagesCompleted, SortOrder::Ascending);
+        let mut refs: Vec<&Job> = data.jobs.iter().collect();
+        data.sort_jobs(&mut refs);
+        assert_eq!(refs[0].job_id, "zero");
+        assert_eq!(refs[1].job_id, "half");
     }
 
     #[test]
@@ -713,6 +756,9 @@ mod tests {
             num_stages: 1,
             completed_stages: 0,
             percent_complete: 0,
+            logical_plan: None,
+            physical_plan: None,
+            stage_plan: None,
         };
         assert_eq!(job.status, "Failed");
         assert_eq!(job.job_status, "Failed: division by zero");

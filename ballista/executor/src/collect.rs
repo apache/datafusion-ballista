@@ -23,11 +23,13 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use datafusion::arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics,
+    SendableRecordBatchStream, Statistics, StatisticsArgs, statistics::ChildStats,
 };
 use datafusion::{error::Result, physical_plan::RecordBatchStream};
 use futures::Stream;
@@ -91,6 +93,14 @@ impl ExecutionPlan for CollectExec {
         vec![&self.plan]
     }
 
+    /// Owns no expressions — it only merges its input's partitions.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         _children: Vec<Arc<dyn ExecutionPlan>>,
@@ -121,8 +131,16 @@ impl ExecutionPlan for CollectExec {
         }))
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.plan.partition_statistics(partition)
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        _args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        Ok(Arc::clone(&input_stats[0]))
+    }
+
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        vec![ChildStats::At(partition)]
     }
 }
 

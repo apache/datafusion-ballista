@@ -88,7 +88,7 @@ fn build_stage_row(i: usize, stage: &JobStageResponse, app: &App) -> Row<'static
         app.theme.row_odd
     };
 
-    let status_style = match stage.status.as_str() {
+    let status_style = match stage.stage_status.as_str() {
         "Running" => app.theme.status_running,
         "Queued" => app.theme.status_queued,
         "Successful" | "Completed" => app.theme.status_completed,
@@ -124,9 +124,9 @@ fn build_stage_row(i: usize, stage: &JobStageResponse, app: &App) -> Row<'static
     );
 
     Row::new(vec![
-        Cell::from(Text::from(stage.id.clone()).right_aligned()),
+        Cell::from(Text::from(stage.stage_id.clone()).right_aligned()),
         Cell::from(
-            Text::from(stage.status.clone())
+            Text::from(stage.stage_status.clone())
                 .style(status_style)
                 .centered(),
         ),

@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 #[cfg(not(target_arch = "wasm32"))]
@@ -213,6 +212,6 @@ impl HttpClient {
     }
 
     fn url_encode(&self, job_id: &str) -> String {
-        percent_encode(job_id.as_bytes(), NON_ALPHANUMERIC).to_string()
+        url_escape::encode_path(job_id).to_string()
     }
 }

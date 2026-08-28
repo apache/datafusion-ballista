@@ -17,7 +17,12 @@
 
 //! Implementation of the Apache Arrow Flight protocol that wraps an executor.
 
+use ballista_core::JobId;
 use ballista_core::execution_plans::create_shuffle_path;
+use ballista_core::execution_plans::range_shuffle::{
+    index_path as range_index_path, is_ipc_file, open_ipc_file,
+};
+use ballista_core::serde::scheduler::{ByteRange, ShuffleFileKind, ShuffleLayout};
 use datafusion::arrow::ipc::reader::StreamReader;
 use std::convert::TryFrom;
 use std::fs::File;
@@ -43,7 +48,7 @@ use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::{error::ArrowError, record_batch::RecordBatch};
 use futures::{Stream, StreamExt, TryStreamExt};
 use log::{debug, info};
-use std::io::{BufReader, Read, Seek};
+use std::io::BufReader;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::error::SendError;
 use tokio::{sync::mpsc::Sender, task};
@@ -100,20 +105,30 @@ impl FlightService for BallistaFlightService {
                 stage_id,
                 partition_id,
                 file_id,
-                is_sort_shuffle,
+                layout,
+                file_kind,
+                byte_ranges,
                 ..
             } => {
-                let path = create_shuffle_path(
+                if !byte_ranges.is_empty() {
+                    // Byte ranges come back as bytes, which `do_get` cannot
+                    // express — it returns decoded FlightData. Serving them
+                    // here would mean decoding on the executor, which is the
+                    // work a ranged read exists to avoid.
+                    return Err(Status::invalid_argument(
+                        "byte ranges are served by the IO_BLOCK_TRANSPORT action, \
+                         not do_get",
+                    ));
+                }
+                let path = resolve_fetch_path(
                     &self.work_dir,
                     job_id,
                     *stage_id,
                     *partition_id,
                     *file_id,
-                    *is_sort_shuffle,
-                )
-                .map_err(|e| {
-                    Status::internal(format!("I/O error, can't create shuffle path: {e}"))
-                })?;
+                    *layout,
+                    *file_kind,
+                )?;
                 debug!("FetchPartition reading partition {partition_id} from {path:?}");
 
                 // Check if this is a sort-based shuffle output
@@ -143,29 +158,47 @@ impl FlightService for BallistaFlightService {
                     ));
                 }
 
-                // Standard hash-based shuffle - read the entire file
-                let file = File::open(&path)
-                    .map_err(|e| {
-                        BallistaError::General(format!(
-                            "Failed to open partition file at {path:?}: {e:?}"
-                        ))
-                    })
-                    .map_err(|e| from_ballista_err(&e))?;
-                let file = BufReader::new(file);
-                // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
-                let reader = unsafe {
-                    StreamReader::try_new(file, None)
-                        .map_err(|e| from_arrow_err(&e))?
-                        .with_skip_validation(cfg!(feature = "arrow-ipc-optimizations"))
-                };
-
                 let (tx, rx) = channel(2);
-                let schema = reader.schema();
-                task::spawn_blocking(move || {
-                    if let Err(e) = read_partition(reader, tx) {
-                        log::warn!("error streaming shuffle partition: {e}");
-                    }
-                });
+                // Range shuffle writes the IPC file format, whose leading
+                // magic an IPC stream decoder rejects. The file says which it
+                // is, so neither the wire protocol nor the caller has to.
+                let schema = if is_ipc_file(&path) {
+                    debug!("Detected range shuffle format for {path:?}");
+                    let reader =
+                        open_ipc_file(&path).map_err(|e| from_ballista_err(&e))?;
+                    let schema = reader.schema();
+                    task::spawn_blocking(move || {
+                        if let Err(e) = read_partition(reader, tx) {
+                            log::warn!("error streaming range shuffle partition: {e}");
+                        }
+                    });
+                    schema
+                } else {
+                    // Standard single-file shuffle output - read the entire file
+                    let file = File::open(&path)
+                        .map_err(|e| {
+                            BallistaError::General(format!(
+                                "Failed to open partition file at {path:?}: {e:?}"
+                            ))
+                        })
+                        .map_err(|e| from_ballista_err(&e))?;
+                    let file = BufReader::new(file);
+                    // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
+                    let reader = unsafe {
+                        StreamReader::try_new(file, None)
+                            .map_err(|e| from_arrow_err(&e))?
+                            .with_skip_validation(cfg!(
+                                feature = "arrow-ipc-optimizations"
+                            ))
+                    };
+                    let schema = reader.schema();
+                    task::spawn_blocking(move || {
+                        if let Err(e) = read_partition(reader, tx) {
+                            log::warn!("error streaming shuffle partition: {e}");
+                        }
+                    });
+                    schema
+                };
 
                 let write_options: IpcWriteOptions = IpcWriteOptions::default()
                     .try_with_compression(Some(CompressionType::LZ4_FRAME))
@@ -264,33 +297,38 @@ impl FlightService for BallistaFlightService {
                         stage_id,
                         partition_id,
                         file_id,
-                        is_sort_shuffle,
+                        layout,
+                        file_kind,
+                        byte_ranges,
                         ..
                     } => {
-                        let path = create_shuffle_path(
+                        let path = resolve_fetch_path(
                             &self.work_dir,
                             job_id,
                             *stage_id,
                             *partition_id,
                             *file_id,
-                            *is_sort_shuffle,
-                        )
-                        .map_err(|e| {
-                            Status::internal(format!(
-                                "I/O error, can't create shuffle path: {e}"
-                            ))
-                        })?;
+                            *layout,
+                            *file_kind,
+                        )?;
 
                         debug!("FetchPartition reading {path:?}");
 
-                        let stream = if is_sort_shuffle_output(&path) {
-                            // Sort-shuffle: stream the leading schema-header
-                            // bytes followed by the requested partition's
-                            // byte range. The receiver (BlockDataStream) walks
-                            // the resulting concatenated IPC streams.
+                        let stream = if !byte_ranges.is_empty() {
+                            // The caller has read an index and knows which
+                            // bytes it wants. Hand them over and resolve
+                            // nothing — the same request an object store
+                            // serves with a Range header.
+                            stream_byte_ranges(&path, byte_ranges).await?
+                        } else if is_sort_shuffle_output(&path) {
+                            // Sort-shuffle asked for a partition and no ranges,
+                            // so the executor resolves it through the index
+                            // beside the data: one round trip, as ever. When
+                            // that read moves to the caller this arm goes with
+                            // it.
                             stream_sort_shuffle_block(&path, *partition_id).await?
                         } else {
-                            // Hash-shuffle: file contains exactly one partition.
+                            // One partition per file, so the file is the answer.
                             stream_whole_file(&path).await?
                         };
 
@@ -332,6 +370,110 @@ impl FlightService for BallistaFlightService {
     ) -> Result<Response<PollInfo>, Status> {
         Err(Status::unimplemented("poll_flight_info"))
     }
+}
+
+/// Resolve a fetch request's identifiers to the file it names.
+///
+/// The index's name follows from the layout, which is why the wire does not
+/// spell it: a sort-shuffle output's index is its offset table, a passthrough
+/// output's is the range shuffle's value index. A layout with no index beside
+/// it is a request for something that does not exist, and says so.
+fn resolve_fetch_path(
+    work_dir: &str,
+    job_id: &JobId,
+    stage_id: usize,
+    partition_id: usize,
+    file_id: Option<u64>,
+    layout: ShuffleLayout,
+    file_kind: ShuffleFileKind,
+) -> Result<std::path::PathBuf, Status> {
+    let data = create_shuffle_path(
+        work_dir,
+        job_id,
+        stage_id,
+        partition_id,
+        file_id,
+        matches!(layout, ShuffleLayout::Sort),
+    )
+    .map_err(|e| {
+        Status::internal(format!("I/O error, can't create shuffle path: {e}"))
+    })?;
+
+    Ok(match file_kind {
+        ShuffleFileKind::Data => data,
+        ShuffleFileKind::Index => match layout {
+            ShuffleLayout::Sort => get_index_path(data.as_path()),
+            ShuffleLayout::Passthrough => range_index_path(data.as_path()),
+        },
+    })
+}
+
+/// Stream the requested byte ranges of `path`, concatenated in request order.
+///
+/// The serving side resolves nothing here: a consumer that has read an index
+/// knows which bytes it wants, and this hands them over. Ranges are clamped to
+/// the file so a stale index cannot walk off the end.
+///
+/// Chunked at [`BLOCK_BUFFER_CAPACITY`] like a whole-file read, for two
+/// reasons: a range can be far larger than a gRPC message may be, and buffering
+/// it whole would hold a consumer's entire share of a partition in the serving
+/// executor's memory.
+async fn stream_byte_ranges(
+    path: &std::path::Path,
+    ranges: &[ByteRange],
+) -> Result<<BallistaFlightService as FlightService>::DoActionStream, Status> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let len = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| Status::internal(format!("Failed to stat {path:?}: {e}")))?
+        .len();
+
+    for range in ranges {
+        if range.offset >= len {
+            return Err(Status::out_of_range(format!(
+                "range at {} is past the end of {path:?} ({len} bytes)",
+                range.offset
+            )));
+        }
+    }
+
+    debug!(
+        "serving {} byte ranges ({} bytes) from {path:?}",
+        ranges.len(),
+        ranges
+            .iter()
+            .map(|r| r.length.min(len - r.offset))
+            .sum::<u64>(),
+    );
+
+    let path = path.to_owned();
+    let ranges: Vec<ByteRange> = ranges.to_vec();
+    let stream = futures::stream::iter(ranges)
+        .then(move |range| {
+            let path = path.clone();
+            async move {
+                let mut file = tokio::fs::File::open(&path).await.map_err(|e| {
+                    Status::internal(format!("Failed to open {path:?}: {e}"))
+                })?;
+                file.seek(std::io::SeekFrom::Start(range.offset))
+                    .await
+                    .map_err(|e| Status::internal(format!("seek {path:?}: {e}")))?;
+                let take = range.length.min(len - range.offset);
+                // Both levels carry `Status` so the flatten has one error type.
+                Ok::<_, Status>(
+                    ReaderStream::with_capacity(file.take(take), BLOCK_BUFFER_CAPACITY)
+                        .map(|chunk| {
+                            chunk
+                                .map(|bytes| arrow_flight::Result { body: bytes })
+                                .map_err(|e| Status::internal(format!("I/O error: {e}")))
+                        }),
+                )
+            }
+        })
+        .try_flatten();
+
+    Ok(Box::pin(stream))
 }
 
 async fn stream_whole_file(
@@ -404,12 +546,17 @@ async fn stream_sort_shuffle_block(
     })))
 }
 
-fn read_partition<T>(
-    reader: StreamReader<std::io::BufReader<T>>,
+/// Pump every batch a shuffle-file decoder yields into `tx`.
+///
+/// Generic over the decoder: the two shuffle formats need different ones
+/// (`StreamReader` for IPC stream, `FileReader` for IPC file) and share no
+/// arrow trait past `Iterator`.
+fn read_partition<R>(
+    reader: R,
     tx: Sender<Result<RecordBatch, FlightError>>,
 ) -> Result<(), FlightError>
 where
-    T: Read + Seek,
+    R: Iterator<Item = Result<RecordBatch, ArrowError>>,
 {
     if tx.is_closed() {
         return Err(FlightError::Tonic(Box::new(Status::internal(

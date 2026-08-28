@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::tui::app::App;
-use crate::tui::domain::jobs::stages::StageTaskResponse;
+use crate::tui::domain::jobs::stages::{StageTaskResponse, StageTaskStatus};
 use crate::tui::ui::components::clear_area::clear_area;
 use crate::tui::ui::vertical_scrollbar;
 use ratatui::Frame;
@@ -77,7 +77,7 @@ pub(crate) fn render_stage_tasks_popup(f: &mut Frame, app: &App) {
         Block::default()
             .title(format!(
                 " Tasks for stage '{}' of job '{}' ",
-                stage.id, &popup.job_id
+                stage.stage_id, popup.job_id
             ))
             .borders(Borders::ALL)
             .border_style(app.theme.popup_border_alt)
@@ -101,24 +101,22 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
         app.theme.row_odd
     };
 
-    let status_style = match task.status.as_str() {
-        "Running" => app.theme.status_running,
-        "Queued" => app.theme.status_queued,
-        "Successful" | "Completed" => app.theme.status_completed,
-        "Failed" => app.theme.status_failed,
-        _ => app.theme.status_unknown,
+    let status_text = match &task.status {
+        StageTaskStatus::Running => Text::from("Running").style(app.theme.status_running),
+        StageTaskStatus::Successful => {
+            Text::from("Successful").style(app.theme.status_completed)
+        }
+        StageTaskStatus::Failed { reason, error } => {
+            Text::from(format!("{reason}: {error}")).style(app.theme.status_failed)
+        }
     };
 
     Row::new(vec![
         Cell::from(Text::from(task.id.to_string()).right_aligned()),
-        Cell::from(
-            Text::from(task.status.clone())
-                .style(status_style)
-                .centered(),
-        ),
+        Cell::from(status_text.centered()),
         Cell::from(Text::from(app.format_count(task.input_rows)).right_aligned()),
         Cell::from(Text::from(app.format_count(task.output_rows)).right_aligned()),
-        Cell::from(Text::from(task.partition_id.to_string()).right_aligned()),
+        Cell::from(Text::from(format_partitions(&task.partition_id)).right_aligned()),
         Cell::from(Text::from(format_datetime(task.scheduled_time, app)).centered()),
         Cell::from(
             Text::from(
@@ -150,4 +148,14 @@ fn build_stage_task_row(i: usize, task: &StageTaskResponse, app: &App) -> Row<'s
 
 fn format_datetime(dt: u64, app: &App) -> String {
     app.format_datetime(dt.try_into().unwrap_or(0))
+}
+
+/// Render the global partitions a task owns. Single-partition tasks show just
+/// the id; multi-partition tasks show the whole list.
+fn format_partitions(partitions: &[u32]) -> String {
+    partitions
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }

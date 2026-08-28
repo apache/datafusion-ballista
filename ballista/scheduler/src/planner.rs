@@ -27,31 +27,35 @@ use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleConfig;
 use ballista_core::{
     execution_plans::{
-        ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
-        UnresolvedShuffleExec,
+        RangeShuffleReaderExec, ShuffleReaderExec, ShuffleWriterExec,
+        SortShuffleWriterExec, UnresolvedShuffleExec,
     },
     serde::scheduler::PartitionLocation,
 };
 use datafusion::arrow::datatypes::DataType;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
+use datafusion::physical_optimizer::ensure_requirements::EnsureRequirements;
+use datafusion::physical_plan::StatisticsArgs;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::joins::{
-    HashJoinExec, HashJoinExecBuilder, PartitionMode, SortMergeJoinExec,
-};
+use datafusion::physical_plan::empty::EmptyExec;
+use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::statistics::StatisticsContext;
+use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
-    ExecutionPlan, Partitioning, with_new_children_if_necessary,
+    ChildrenPropertiesMode, ExecutionPlan, Partitioning, ReplaceChildrenOptions,
+    replace_children_if_necessary,
 };
 use log::debug;
 
 use crate::physical_optimizer::join_selection::{
     collect_left_broadcast_safe, should_swap_join_order,
 };
+use crate::state::task_builder::restrict_plan_to_partitions;
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<dyn ShuffleWriter>>);
 
@@ -79,8 +83,9 @@ pub trait DistributedPlanner {
 pub struct DefaultDistributedPlanner {
     /// Counter for generating unique stage IDs.
     next_stage_id: usize,
-    /// Optimizer rule for enforcing sort requirements after stage splitting.
-    optimizer_enforce_sorting: EnforceSorting,
+    /// Optimizer rule for re-enforcing distribution and sort requirements after
+    /// stage splitting.
+    optimizer_ensure_requirements: EnsureRequirements,
 }
 
 impl DefaultDistributedPlanner {
@@ -90,8 +95,8 @@ impl DefaultDistributedPlanner {
             next_stage_id: 0,
             // when plan is broken into stages some sorting information may get lost in the process
             // thus stage re-optimisation is needed to adjust sort information
-            optimizer_enforce_sorting:
-                datafusion::physical_optimizer::enforce_sorting::EnforceSorting::default(),
+            optimizer_ensure_requirements:
+                datafusion::physical_optimizer::ensure_requirements::EnsureRequirements::default(),
         }
     }
 }
@@ -182,8 +187,10 @@ impl DefaultDistributedPlanner {
             )?;
             stages.append(&mut probe_stages);
 
-            let new_join =
-                execution_plan.with_new_children(vec![broadcast_left, probe])?;
+            let new_join = execution_plan.replace_children(
+                vec![broadcast_left, probe],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?;
             return Ok((new_join, stages));
         }
 
@@ -196,9 +203,48 @@ impl DefaultDistributedPlanner {
             stages.append(&mut child_stages);
         }
 
+        // UnionExec: a branch that cannot be restricted away needs its own
+        // stage. Per-task restriction gives each branch of a union the
+        // partitions that task owns and an empty slice to the rest, relying on
+        // an unowned branch becoming 0-partition so `UnionExec`'s index
+        // arithmetic routes past it.
+        //
+        // That fails when the branch's partition count does not come from
+        // restrictable leaves — a `CoalescePartitionsExec` or non-preserving
+        // `SortExec` reports one partition whatever its leaves do, and a
+        // broadcast `ShuffleReaderExec` is deliberately never pruned. The
+        // branch keeps reporting a partition and keeps producing all of its
+        // data, so every task runs every branch: results come back inflated by
+        // the branch count, or a task executes a branch whose scan was emptied
+        // (#2184).
+        //
+        // Cutting a boundary beneath such a branch turns it into a
+        // `ShuffleReaderExec`, which restricts to nothing cleanly, and leaves
+        // the collapse in its own stage where it sees its whole input.
+        if execution_plan.is::<UnionExec>() {
+            for child in &mut children {
+                if can_stay_inline(child) {
+                    continue;
+                }
+                let writer = create_shuffle_writer_with_config(
+                    job_id,
+                    self.next_stage_id(),
+                    child.clone(),
+                    None,
+                    config,
+                )?;
+                *child = create_unresolved_shuffle(writer.as_ref());
+                stages.push(writer);
+            }
+            return Ok((
+                replace_children_if_necessary(execution_plan, children)?,
+                stages,
+            ));
+        }
+
         if let Some(_coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = children[0].clone();
-            let input = self.optimizer_enforce_sorting.optimize(input, config)?;
+            let input = self.optimizer_ensure_requirements.optimize(input, config)?;
             let shuffle_writer = create_shuffle_writer_with_config(
                 job_id,
                 self.next_stage_id(),
@@ -210,7 +256,7 @@ impl DefaultDistributedPlanner {
 
             stages.push(shuffle_writer);
             Ok((
-                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
+                replace_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
                 stages,
             ))
         } else if let Some(_sort_preserving_merge) =
@@ -226,14 +272,15 @@ impl DefaultDistributedPlanner {
             let unresolved_shuffle = create_unresolved_shuffle(shuffle_writer.as_ref());
             stages.push(shuffle_writer);
             Ok((
-                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
+                replace_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
                 stages,
             ))
         } else if let Some(repart) = execution_plan.downcast_ref::<RepartitionExec>() {
             match repart.properties().output_partitioning() {
                 Partitioning::Hash(_, _) => {
                     let input = children[0].clone();
-                    let input = self.optimizer_enforce_sorting.optimize(input, config)?;
+                    let input =
+                        self.optimizer_ensure_requirements.optimize(input, config)?;
 
                     let shuffle_writer = create_shuffle_writer_with_config(
                         job_id,
@@ -255,7 +302,7 @@ impl DefaultDistributedPlanner {
             }
         } else {
             Ok((
-                with_new_children_if_necessary(execution_plan, children)?,
+                replace_children_if_necessary(execution_plan, children)?,
                 stages,
             ))
         }
@@ -267,37 +314,130 @@ impl DefaultDistributedPlanner {
         self.next_stage_id
     }
 
-    /// If `plan` is a `HashJoinExec(Partitioned)` whose smaller side fits
-    /// under the broadcast threshold, returns a rewritten
-    /// `HashJoinExec(CollectLeft)` (with a swap if the small side was on
-    /// the right) wrapped so the build subtree is a single-partition input.
+    /// Returns `Some(true/false)` when statistics can determine whether an
+    /// input fits Ballista's broadcast byte limit, or `None` when its size is
+    /// unknown. Falls back to a conservative row-width estimate when possible.
+    fn broadcast_size_under_threshold(
+        plan: &dyn ExecutionPlan,
+        threshold: usize,
+    ) -> Option<bool> {
+        let Ok(stats) = StatisticsContext::new().compute(plan, &StatisticsArgs::new())
+        else {
+            debug!(
+                "broadcast check: statistics computation returned error for {}",
+                plan.name()
+            );
+            return None;
+        };
+        debug!(
+            "broadcast check: {} total_byte_size={:?} num_rows={:?} threshold={}",
+            plan.name(),
+            stats.total_byte_size,
+            stats.num_rows,
+            threshold,
+        );
+        if let Some(bytes) = stats.total_byte_size.get_value()
+            && *bytes != 0
+        {
+            Some(*bytes < threshold)
+        } else if let Some(rows) = stats.num_rows.get_value()
+            && *rows != 0
+        {
+            let schema = plan.schema();
+            let bytes_per_row: usize = schema
+                .fields()
+                .iter()
+                .map(|f| match f.data_type() {
+                    DataType::Boolean => 1,
+                    DataType::Int8 | DataType::UInt8 => 1,
+                    DataType::Int16 | DataType::UInt16 => 2,
+                    DataType::Int32 | DataType::UInt32 | DataType::Float32 => 4,
+                    DataType::Int64 | DataType::UInt64 | DataType::Float64 => 8,
+                    DataType::Date32 => 4,
+                    DataType::Date64 => 8,
+                    DataType::Decimal128(_, _) => 16,
+                    DataType::Decimal256(_, _) => 32,
+                    _ => 32, // conservative estimate for variable-length types
+                })
+                .sum();
+            let estimated_bytes = *rows * bytes_per_row.max(8);
+            debug!(
+                "broadcast check: estimated {estimated_bytes} bytes ({rows} rows * {bytes_per_row} bytes/row from {} columns)",
+                schema.fields().len(),
+            );
+            Some(estimated_bytes < threshold)
+        } else {
+            None
+        }
+    }
+
+    /// Lowers a null-aware anti join to the only shape supported correctly by
+    /// DataFusion's in-process hash join: collect the build side and coalesce
+    /// the probe side so one task owns all shared null/visited state.
+    fn lower_null_aware_join(
+        hash_join: &HashJoinExec,
+        threshold_bytes: usize,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Unknown size is allowed because file scans commonly lose exact byte
+        // statistics before this point. Known oversized inputs and an explicit
+        // threshold of zero fail clearly instead of running an unsafe plan.
+        if threshold_bytes == 0
+            || matches!(
+                Self::broadcast_size_under_threshold(
+                    &**hash_join.left(),
+                    threshold_bytes
+                ),
+                Some(false)
+            )
+        {
+            return Err(BallistaError::General(format!(
+                "Null-aware anti join requires single-task execution, but its build side does not fit ballista.optimizer.broadcast_join_threshold_bytes ({threshold_bytes} bytes)"
+            )));
+        }
+
+        // Always keep an explicit coalesce. Some scans report one output
+        // partition during planning but expand to multiple partitions when the
+        // distributed stage is built.
+        let right: Arc<dyn ExecutionPlan> = if hash_join
+            .right()
+            .downcast_ref::<CoalescePartitionsExec>()
+            .is_some()
+        {
+            hash_join.right().clone()
+        } else {
+            Arc::new(CoalescePartitionsExec::new(hash_join.right().clone()))
+        };
+
+        hash_join
+            .builder()
+            .with_partition_mode(PartitionMode::CollectLeft)
+            .with_new_children(vec![hash_join.left().clone(), right])?
+            .build_exec()
+            .map_err(Into::into)
+    }
+
+    /// Reconciles a join's partition mode with the Ballista broadcast
+    /// threshold (`ballista.optimizer.broadcast_join_threshold_bytes`).
+    ///
+    /// - A `HashJoinExec(Partitioned)` whose smaller side fits under the
+    ///   threshold is rewritten as a `HashJoinExec(CollectLeft)` (with a swap
+    ///   if the small side was on the right) wrapped so the build subtree is a
+    ///   single-partition input.
+    /// - A `HashJoinExec(CollectLeft)` that DataFusion's `JoinSelection` chose
+    ///   using its own session threshold is demoted back to `Partitioned` when
+    ///   its join type is not broadcast-safe, or when the build side is not
+    ///   under the Ballista threshold (including a threshold of `0`, which
+    ///   disables broadcast joins). This makes the Ballista key authoritative
+    ///   even when it is overridden at runtime below the DataFusion session
+    ///   value. Null-aware anti joins are instead lowered to a single-task
+    ///   `CollectLeft` join unless the build side is known to exceed the
+    ///   Ballista threshold.
+    ///
     /// Otherwise returns the input unchanged.
     fn maybe_promote_to_broadcast(
         plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // DataFusion's own `JoinSelection` may have already stamped
-        // `CollectLeft` on this join (it does so for any build side under
-        // `datafusion.optimizer.hash_join_single_partition_threshold`, without
-        // restricting by join type). A `CollectLeft` join replicates the build
-        // side to every probe task, which is only correct for probe-driven join
-        // types. If the join type is not broadcast-safe, demote it back to a
-        // partitioned (shuffle) join. This is a correctness guard, so it runs
-        // regardless of the Ballista broadcast threshold below. A
-        // `SortMergeJoinExec` falls through to the SMJ-broadcast path below.
-        if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>()
-            && *hash_join.partition_mode() == PartitionMode::CollectLeft
-        {
-            if collect_left_broadcast_safe(*hash_join.join_type()) {
-                return Ok(plan);
-            }
-            debug!(
-                "broadcast check: demoting DataFusion-promoted CollectLeft join with unsafe join_type={:?} to Partitioned",
-                hash_join.join_type(),
-            );
-            return Self::demote_collect_left_to_partitioned(hash_join, config);
-        }
-
         let threshold_bytes = config
             .extensions
             .get::<BallistaConfig>()
@@ -305,35 +445,75 @@ impl DefaultDistributedPlanner {
             .unwrap_or_else(|| {
                 BallistaConfig::default().broadcast_join_threshold_bytes()
             });
+
+        // DataFusion's own `JoinSelection` may have already stamped
+        // `CollectLeft` on this join (it does so for any build side under
+        // `datafusion.optimizer.hash_join_single_partition_threshold`, without
+        // restricting by join type). A `CollectLeft` join replicates the build
+        // side to every probe task.
+        if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>()
+            && *hash_join.partition_mode() == PartitionMode::CollectLeft
+        {
+            // A null-aware anti join cannot run once per probe partition:
+            // DataFusion's visited/null state is shared only within one process.
+            // Collect the build side and coalesce the probe side so the join has
+            // exactly one task. Reject a build side known to exceed the normal
+            // broadcast threshold; an unsupported-plan error is safer than a
+            // wrong answer.
+            if hash_join.null_aware {
+                return Self::lower_null_aware_join(hash_join, threshold_bytes);
+            }
+            // Broadcasting is only correct for probe-driven join types. If the
+            // join type is not broadcast-safe, demote it back to a partitioned
+            // (shuffle) join. Correctness guard, independent of the threshold.
+            if !collect_left_broadcast_safe(*hash_join.join_type()) {
+                debug!(
+                    "broadcast check: demoting DataFusion-promoted CollectLeft join with unsafe join_type={:?} to Partitioned",
+                    hash_join.join_type(),
+                );
+                return Self::demote_collect_left_to_partitioned(hash_join, config);
+            }
+            // Safe join type: honor the Ballista broadcast threshold. DataFusion
+            // decided `CollectLeft` using its own session threshold, which can
+            // exceed a user's runtime `broadcast_join_threshold_bytes` override.
+            // If broadcasts are disabled (0) or the build (left) side is not
+            // under the Ballista threshold, demote so the Ballista key is
+            // authoritative in the static planner path too.
+            if threshold_bytes == 0
+                || !Self::broadcast_size_under_threshold(
+                    &**hash_join.left(),
+                    threshold_bytes,
+                )
+                .unwrap_or(false)
+            {
+                debug!(
+                    "broadcast check: demoting CollectLeft join to Partitioned; build side not under Ballista threshold={threshold_bytes} (or broadcasts disabled)",
+                );
+                return Self::demote_collect_left_to_partitioned(hash_join, config);
+            }
+            return Ok(plan);
+        }
+
+        // An already-partitioned null-aware join is not changed by the copied
+        // DataFusion optimizer rule. Lower it here, where Ballista can also
+        // enforce single-task distributed execution.
+        if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>()
+            && *hash_join.partition_mode() == PartitionMode::Partitioned
+            && hash_join.null_aware
+        {
+            return Self::lower_null_aware_join(hash_join, threshold_bytes);
+        }
+
         if threshold_bytes == 0 {
             debug!("broadcast check: threshold is 0, broadcast disabled");
             return Ok(plan);
         }
 
-        // The candidate is a `HashJoinExec(Partitioned)`: either the plan itself,
-        // or a `SortMergeJoinExec` converted to one when SMJ broadcast is enabled.
-        // `converted` owns the converted join so `hash_join` can borrow from it,
-        // and the original `plan` is returned unchanged when no promotion happens.
-        let smj_broadcast_enabled = config
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.broadcast_sort_merge_join_enabled())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().broadcast_sort_merge_join_enabled()
-            });
-        let converted: Option<Arc<HashJoinExec>> =
-            match plan.downcast_ref::<SortMergeJoinExec>() {
-                Some(smj) if smj_broadcast_enabled => {
-                    Some(convert_sort_merge_to_hash_join(smj)?)
-                }
-                _ => None,
-            };
-        let hash_join: &HashJoinExec =
-            match (plan.downcast_ref::<HashJoinExec>(), &converted) {
-                (Some(hj), _) => hj,
-                (None, Some(hj)) => hj.as_ref(),
-                (None, None) => return Ok(plan),
-            };
+        // The candidate must already be a `HashJoinExec(Partitioned)`. A
+        // `SortMergeJoinExec` is never a broadcast candidate.
+        let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() else {
+            return Ok(plan);
+        };
         debug!(
             "broadcast check: evaluating HashJoinExec mode={:?} join_type={:?} threshold={threshold_bytes}",
             hash_join.partition_mode(),
@@ -342,63 +522,13 @@ impl DefaultDistributedPlanner {
         if *hash_join.partition_mode() != PartitionMode::Partitioned {
             return Ok(plan);
         }
-        if hash_join.null_aware {
-            return Ok(plan);
-        }
-
         let left = hash_join.left();
         let right = hash_join.right();
 
-        fn under(plan: &dyn ExecutionPlan, threshold: usize) -> bool {
-            let Ok(stats) = plan.partition_statistics(None) else {
-                debug!(
-                    "broadcast check: partition_statistics returned error for {}",
-                    plan.name()
-                );
-                return false;
-            };
-            debug!(
-                "broadcast check: {} total_byte_size={:?} num_rows={:?} threshold={}",
-                plan.name(),
-                stats.total_byte_size,
-                stats.num_rows,
-                threshold,
-            );
-            if let Some(bytes) = stats.total_byte_size.get_value() {
-                *bytes != 0 && *bytes < threshold
-            } else if let Some(rows) = stats.num_rows.get_value() {
-                let schema = plan.schema();
-                let bytes_per_row: usize = schema
-                    .fields()
-                    .iter()
-                    .map(|f| {
-                        match f.data_type() {
-                            DataType::Boolean => 1,
-                            DataType::Int8 | DataType::UInt8 => 1,
-                            DataType::Int16 | DataType::UInt16 => 2,
-                            DataType::Int32 | DataType::UInt32 | DataType::Float32 => 4,
-                            DataType::Int64 | DataType::UInt64 | DataType::Float64 => 8,
-                            DataType::Date32 => 4,
-                            DataType::Date64 => 8,
-                            DataType::Decimal128(_, _) => 16,
-                            DataType::Decimal256(_, _) => 32,
-                            _ => 32, // conservative estimate for variable-length types
-                        }
-                    })
-                    .sum();
-                let estimated_bytes = *rows * bytes_per_row.max(8);
-                debug!(
-                    "broadcast check: estimated {estimated_bytes} bytes ({rows} rows * {bytes_per_row} bytes/row from {} columns)",
-                    schema.fields().len(),
-                );
-                estimated_bytes != 0 && estimated_bytes < threshold
-            } else {
-                false
-            }
-        }
-
-        let left_under = under(&**left, threshold_bytes);
-        let right_under = under(&**right, threshold_bytes);
+        let left_under = Self::broadcast_size_under_threshold(&**left, threshold_bytes)
+            .unwrap_or(false);
+        let right_under = Self::broadcast_size_under_threshold(&**right, threshold_bytes)
+            .unwrap_or(false);
         if !left_under && !right_under {
             debug!("broadcast check: neither side under threshold, skipping promotion");
             return Ok(plan);
@@ -480,13 +610,13 @@ impl DefaultDistributedPlanner {
         };
         let new_right = promoted_join.right().clone();
         let rebuilt_join =
-            with_new_children_if_necessary(join_node, vec![new_left, new_right])?;
+            replace_children_if_necessary(join_node, vec![new_left, new_right])?;
 
         // Re-wrap in the projection if `swap_inputs` added one. The recursive
         // lowering descends into the projection and broadcasts the build side of
         // the inner `HashJoinExec(CollectLeft)`.
         match projection {
-            Some(proj) => Ok(with_new_children_if_necessary(proj, vec![rebuilt_join])?),
+            Some(proj) => Ok(replace_children_if_necessary(proj, vec![rebuilt_join])?),
             None => Ok(rebuilt_join),
         }
     }
@@ -522,31 +652,50 @@ impl DefaultDistributedPlanner {
     }
 }
 
-/// Strips a top-level `SortExec`, returning its input. A `SortMergeJoinExec`
-/// requires sorted inputs, but the broadcast `CollectLeft` hash join converted
-/// from it does not, so the sort is dropped during conversion.
-fn strip_sort(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-    if let Some(sort) = plan.downcast_ref::<SortExec>() {
-        sort.input().clone()
-    } else {
-        plan
+/// Whether a union branch can be left in the union's own stage.
+///
+/// A branch already sitting behind a stage boundary needs nothing more, and
+/// neither does one that per-task restriction can reduce to zero partitions —
+/// that is the property the union's index arithmetic relies on. The second
+/// question is put to the real rewriter rather than to a list of operators, so
+/// it stays correct as the rewriter's handling of collapses, broadcast readers
+/// and leaf types evolves.
+fn can_stay_inline(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    if plan.is::<UnresolvedShuffleExec>() {
+        return true;
     }
+    !holds_a_broadcast(plan) && restricts_to_nothing(plan)
 }
 
-/// Converts a `SortMergeJoinExec` into an equivalent `HashJoinExec(Partitioned)`,
-/// dropping the now-redundant input sorts. The result is then evaluated by the
-/// normal hash-join broadcast path, which promotes it to `CollectLeft` when a
-/// side fits under the threshold.
-fn convert_sort_merge_to_hash_join(smj: &SortMergeJoinExec) -> Result<Arc<HashJoinExec>> {
-    let left = strip_sort(smj.left().clone());
-    let right = strip_sort(smj.right().clone());
-    let hash_join =
-        HashJoinExecBuilder::new(left, right, smj.on().to_vec(), smj.join_type())
-            .with_filter(smj.filter().clone())
-            .with_partition_mode(PartitionMode::Partitioned)
-            .with_null_equality(smj.null_equality)
-            .build()?;
-    Ok(Arc::new(hash_join))
+/// Whether per-task restriction can reduce `plan` to zero partitions. An empty
+/// slice means "this task polls nothing here", so a branch that still reports a
+/// partition afterwards is one that cannot be restricted away.
+fn restricts_to_nothing(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    restrict_plan_to_partitions(plan.clone(), &[])
+        .is_ok_and(|p| p.properties().output_partitioning().partition_count() == 0)
+}
+
+/// Whether `plan` contains a broadcast input or a `CollectLeft` join.
+///
+/// Asking the rewriter alone is not enough here. A `CollectLeft` join's build
+/// and probe sides can still be swapped after stage planning — `JoinSelection`
+/// runs on the resolved stage plan (see `ExecutionStage`) — and the two orders
+/// restrict differently: the build side is read in full (it must see its whole
+/// input), while a broadcast input is never pruned at all. So a branch that
+/// looks restrictable now can stop being restrictable by the time the task is
+/// built, which is exactly the case that left TPC-DS q5's catalog branch
+/// running in every task.
+///
+/// Treat any such branch as needing its own stage. The cost is one extra
+/// stage; the alternative is a silently inflated result.
+fn holds_a_broadcast(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    let here = plan
+        .downcast_ref::<UnresolvedShuffleExec>()
+        .is_some_and(|u| u.broadcast)
+        || plan
+            .downcast_ref::<HashJoinExec>()
+            .is_some_and(|j| *j.partition_mode() == PartitionMode::CollectLeft);
+    here || plan.children().iter().any(|c| holds_a_broadcast(c))
 }
 
 fn create_unresolved_shuffle(
@@ -638,12 +787,17 @@ pub fn remove_unresolved_shuffles(
             )?);
         }
     }
-    Ok(with_new_children_if_necessary(stage, new_children)?)
+    Ok(replace_children_if_necessary(stage, new_children)?)
 }
 
 /// Rollback the ShuffleReaderExec to UnresolvedShuffleExec.
 /// Used when the input stages are finished but some partitions are missing due to executor lost.
 /// The entire stage need to be rolled back and rescheduled.
+///
+/// `RangeShuffleReaderExec` rolls back to a plain `UnresolvedShuffleExec` — its
+/// range-ness is a derived property of the child's declared ordering at plan
+/// time, not intrinsic reader metadata. Re-planning walks the adapter, which
+/// re-detects the ordering and plants a fresh `RangeShuffleReaderExec`.
 pub fn rollback_resolved_shuffles(
     stage: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -665,11 +819,59 @@ pub fn rollback_resolved_shuffles(
                 ))
             };
             new_children.push(unresolved);
+        } else if let Some(range_reader) = child.downcast_ref::<RangeShuffleReaderExec>()
+        {
+            let unresolved = Arc::new(UnresolvedShuffleExec::new(
+                range_reader.stage_id,
+                range_reader.schema(),
+                range_reader.properties().partitioning.clone(),
+            ));
+            new_children.push(unresolved);
         } else {
             new_children.push(rollback_resolved_shuffles(child.clone())?);
         }
     }
-    Ok(with_new_children_if_necessary(stage, new_children)?)
+    Ok(replace_children_if_necessary(stage, new_children)?)
+}
+
+/// Rewrites every multi-partition [`EmptyExec`] into a round-robin [`RepartitionExec`]
+/// over a single-partition [`EmptyExec`], which is an equivalent plan whose partition
+/// count survives serialization.
+///
+/// `datafusion-proto` encodes an `EmptyExec` as its schema alone, so a multi-partition
+/// `EmptyExec` decodes on the executor with a single partition
+/// (<https://github.com/apache/datafusion/issues/23642>). A stage is sized from the
+/// scheduler-side partition count, so every task above partition 0 would then fail with
+/// `EmptyExec invalid partition N (expected less than 1)`. A `RepartitionExec` carries
+/// its partitioning on the wire, so the count arrives intact.
+///
+/// This runs at the point the stage plan is built for the wire, after all physical
+/// optimizer rules, so no later rule can collapse the rewrite.
+///
+/// Retained even though upstream #23642 preserves the partition count on the wire:
+/// the round-robin re-wrap is a defensive belt-and-suspenders that also normalises
+/// legacy plans decoded from persisted job state, so keep it until we have a
+/// migration story for those.
+fn make_empty_exec_serde_safe(
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    Ok(plan
+        .transform_up(|node| {
+            let Some(empty) = node.downcast_ref::<EmptyExec>() else {
+                return Ok(Transformed::no(node));
+            };
+            let partition_count =
+                empty.properties().output_partitioning().partition_count();
+            if partition_count <= 1 {
+                return Ok(Transformed::no(node));
+            }
+            let single: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(empty.schema()));
+            Ok(Transformed::yes(Arc::new(RepartitionExec::try_new(
+                single,
+                Partitioning::RoundRobinBatch(partition_count),
+            )?)))
+        })?
+        .data)
 }
 
 pub(crate) fn create_shuffle_writer_with_config(
@@ -679,51 +881,56 @@ pub(crate) fn create_shuffle_writer_with_config(
     partitioning: Option<Partitioning>,
     config: &ConfigOptions,
 ) -> Result<Arc<dyn ShuffleWriter>> {
-    // Check if sort-based shuffle is enabled
+    let plan = make_empty_exec_serde_safe(plan)?;
+
+    // Sort-based shuffle is the only shuffle writer for hash-repartition
+    // stages. Its tuning values still come from the session config.
     let ballista_config = config
         .extensions
         .get::<BallistaConfig>()
         .cloned()
         .unwrap_or_default();
 
-    if ballista_config.shuffle_sort_based_enabled() {
-        // Sort shuffle requires hash partitioning
-        if let Some(Partitioning::Hash(exprs, partition_count)) = partitioning {
+    // Sort shuffle requires hash partitioning.
+    match partitioning {
+        Some(Partitioning::Hash(exprs, partition_count)) => {
             let sort_config = SortShuffleConfig::new(
                 true,
-                datafusion::arrow::ipc::CompressionType::LZ4_FRAME,
                 ballista_config.shuffle_sort_based_batch_size(),
             )
             .with_memory_limit_per_task_bytes(
                 ballista_config.shuffle_sort_based_memory_limit_per_task_bytes(),
             );
 
-            return Ok(Arc::new(SortShuffleWriterExec::try_new(
+            Ok(Arc::new(SortShuffleWriterExec::try_new(
                 job_id.to_owned(),
                 stage_id,
                 plan,
                 "".to_owned(),
                 Partitioning::Hash(exprs, partition_count),
                 sort_config,
-            )?));
+            )?))
         }
+        // Stages that don't repartition write their input partitioning
+        // through: one file per output partition.
+        None => Ok(Arc::new(ShuffleWriterExec::try_new(
+            job_id.to_owned(),
+            stage_id,
+            plan,
+            "".to_owned(),
+        )?)),
+        Some(other) => Err(BallistaError::General(format!(
+            "unsupported shuffle output partitioning: {other}"
+        ))),
     }
-
-    // Fall back to standard shuffle writer
-    Ok(Arc::new(ShuffleWriterExec::try_new(
-        job_id.to_owned(),
-        stage_id,
-        plan,
-        "".to_owned(),
-        partitioning,
-    )?))
 }
 
 #[cfg(test)]
 mod test {
-    use crate::assert_plan;
+    use super::{can_stay_inline, holds_a_broadcast};
     use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
-    use crate::test_utils::datafusion_test_context;
+    use crate::test_utils::{datafusion_test_context, scan_with_file_groups};
+    use ballista_core::assert_plan;
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
@@ -732,6 +939,7 @@ mod test {
     use datafusion::execution::TaskContext;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
+    use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 
     use datafusion::physical_plan::filter::FilterExec;
 
@@ -747,6 +955,98 @@ mod test {
     use datafusion_proto::protobuf::PhysicalPlanNode;
     use std::sync::Arc;
     use uuid::Uuid;
+
+    #[test]
+    fn multi_partition_empty_exec_is_rewritten_for_the_wire() {
+        use super::make_empty_exec_serde_safe;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(schema).with_partitions(4));
+
+        let rewritten = make_empty_exec_serde_safe(plan).unwrap();
+
+        assert_plan!(rewritten.as_ref(), @r"
+        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+          EmptyExec
+        ");
+    }
+
+    #[test]
+    fn single_partition_empty_exec_is_left_alone() {
+        use super::make_empty_exec_serde_safe;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
+
+        let rewritten = make_empty_exec_serde_safe(plan).unwrap();
+
+        assert_plan!(rewritten.as_ref(), @"EmptyExec");
+    }
+
+    /// A plain scan branch restricts away cleanly, so it can stay inline in
+    /// the union's stage and needs no extra shuffle.
+    #[test]
+    fn plain_union_branch_stays_inline() {
+        assert!(can_stay_inline(&scan_with_file_groups(4)));
+    }
+
+    /// A branch already sitting behind a stage boundary needs nothing more.
+    #[test]
+    fn branch_behind_a_stage_boundary_stays_inline() {
+        let schema = scan_with_file_groups(1).schema();
+        let reader: Arc<dyn ExecutionPlan> = Arc::new(UnresolvedShuffleExec::new(
+            1,
+            schema,
+            Partitioning::UnknownPartitioning(4),
+        ));
+        assert!(can_stay_inline(&reader));
+    }
+
+    /// A branch that collapses internally reports one partition whatever its
+    /// leaves do, so restriction cannot empty it and it needs its own stage.
+    #[test]
+    fn collapsing_union_branch_needs_its_own_stage() {
+        let branch: Arc<dyn ExecutionPlan> =
+            Arc::new(CoalescePartitionsExec::new(scan_with_file_groups(4)));
+        assert_eq!(
+            branch.properties().output_partitioning().partition_count(),
+            1
+        );
+        assert!(
+            !can_stay_inline(&branch),
+            "a collapsing branch cannot be restricted away"
+        );
+    }
+
+    /// The broadcast guard looks through the whole branch, not just its root:
+    /// a `CollectLeft` join's sides can be swapped after stage planning, and
+    /// the two orders restrict differently, so any branch holding one is
+    /// treated as needing its own stage.
+    #[test]
+    fn broadcast_is_detected_anywhere_in_a_branch() {
+        let plain = scan_with_file_groups(4);
+        assert!(
+            !holds_a_broadcast(&plain),
+            "a plain scan holds no broadcast"
+        );
+
+        let broadcast: Arc<dyn ExecutionPlan> =
+            Arc::new(UnresolvedShuffleExec::new_broadcast(1, plain.schema(), 4));
+        assert!(holds_a_broadcast(&broadcast));
+
+        // Buried a level down, which is where it actually shows up.
+        let buried: Arc<dyn ExecutionPlan> =
+            Arc::new(CoalescePartitionsExec::new(broadcast));
+        assert!(
+            holds_a_broadcast(&buried),
+            "the guard must search the branch, not just its root"
+        );
+    }
 
     macro_rules! downcast_exec {
         ($exec: expr, $ty: ty) => {
@@ -796,13 +1096,13 @@ mod test {
           AggregateExec: mode=Partial, gby=[l_returnflag@1 as l_returnflag], aggr=[sum(lineitem.l_extendedprice * Int64(1))]
             DataSourceExec: file_groups={2 groups: [[ballista/scheduler/testdata/lineitem/partition0.tbl], [ballista/scheduler/testdata/lineitem/partition1.tbl]]}, projection=[l_extendedprice, l_returnflag], file_type=csv, has_header=false
 
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: Hash([l_returnflag@0], 2)
           SortExec: expr=[l_returnflag@0 ASC NULLS LAST], preserve_partitioning=[true]
             ProjectionExec: expr=[l_returnflag@0 as l_returnflag, sum(lineitem.l_extendedprice * Int64(1))@1 as sum_disc_price]
               AggregateExec: mode=FinalPartitioned, gby=[l_returnflag@0 as l_returnflag], aggr=[sum(lineitem.l_extendedprice * Int64(1))]
                 UnresolvedShuffleExec: stage=1, partitioning: Hash([l_returnflag@0], 2)
 
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: UnknownPartitioning(1)
           SortPreservingMergeExec: [l_returnflag@0 ASC NULLS LAST]
             UnresolvedShuffleExec: stage=2, partitioning: Hash([l_returnflag@0], 2)
         */
@@ -816,10 +1116,10 @@ mod test {
 
         // verify stage 1
         let stage1 = stages[1].children()[0].clone();
-        let sort = downcast_exec!(stage1, SortExec);
-        let projection = sort.children()[0].clone();
-        let projection = downcast_exec!(projection, ProjectionExec);
-        let final_hash = projection.children()[0].clone();
+        let projection = downcast_exec!(stage1, ProjectionExec);
+        let sort = projection.children()[0].clone();
+        let sort = downcast_exec!(sort, SortExec);
+        let final_hash = sort.children()[0].clone();
         let final_hash = downcast_exec!(final_hash, AggregateExec);
         assert!(*final_hash.mode() == AggregateMode::FinalPartitioned);
         let unresolved_shuffle = final_hash.children()[0].clone();
@@ -921,13 +1221,13 @@ order by
               UnresolvedShuffleExec: stage=1, partitioning: Hash([l_orderkey@0], 2)
               UnresolvedShuffleExec: stage=2, partitioning: Hash([o_orderkey@0], 2)
 
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: Hash([l_shipmode@0], 2)
           SortExec: expr=[l_shipmode@0 ASC NULLS LAST], preserve_partitioning=[true]
             ProjectionExec: expr=[l_shipmode@0 as l_shipmode, sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@1 as high_line_count, sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@2 as low_line_count]
             AggregateExec: mode=FinalPartitioned, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
               UnresolvedShuffleExec: stage=3, partitioning: Hash([l_shipmode@0], 2)
 
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: UnknownPartitioning(1)
           SortPreservingMergeExec: [l_shipmode@0 ASC NULLS LAST]
             UnresolvedShuffleExec: stage=4, partitioning: Hash([l_shipmode@0], 2)
         */
@@ -1029,11 +1329,144 @@ order by
         Ok(())
     }
 
+    #[test]
+    fn null_aware_collect_left_join_coalesces_probe_to_one_partition() {
+        use datafusion::{
+            arrow::datatypes::{DataType, Field, Schema},
+            common::{
+                ColumnStatistics, JoinType, NullEquality, Statistics, stats::Precision,
+            },
+            physical_plan::{
+                Partitioning, coalesce_partitions::CoalescePartitionsExec,
+                joins::PartitionMode, repartition::RepartitionExec,
+                test::exec::StatisticsExec,
+            },
+        };
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, true)]));
+        let stats = Statistics {
+            num_rows: Precision::Exact(20),
+            total_byte_size: Precision::Exact(80),
+            column_statistics: vec![ColumnStatistics::new_unknown()],
+        };
+        let left = Arc::new(StatisticsExec::new(stats.clone(), schema.as_ref().clone()))
+            as Arc<dyn ExecutionPlan>;
+        let right = Arc::new(
+            RepartitionExec::try_new(
+                Arc::new(StatisticsExec::new(stats, schema.as_ref().clone())),
+                Partitioning::RoundRobinBatch(4),
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let plan = Arc::new(
+            HashJoinExec::try_new(
+                left,
+                right,
+                vec![(
+                    Arc::new(Column::new("key", 0)) as _,
+                    Arc::new(Column::new("key", 0)) as _,
+                )],
+                None,
+                &JoinType::LeftAnti,
+                None,
+                PartitionMode::CollectLeft,
+                NullEquality::NullEqualsNothing,
+                true,
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let planned = DefaultDistributedPlanner::maybe_promote_to_broadcast(
+            plan,
+            &datafusion::config::ConfigOptions::new(),
+        )
+        .unwrap();
+        let hash_join = planned
+            .downcast_ref::<HashJoinExec>()
+            .expect("null-aware join should remain a HashJoinExec");
+
+        assert_eq!(*hash_join.join_type(), JoinType::LeftAnti);
+        assert_eq!(*hash_join.partition_mode(), PartitionMode::CollectLeft);
+        assert!(hash_join.null_aware);
+        assert!(
+            hash_join
+                .right()
+                .downcast_ref::<CoalescePartitionsExec>()
+                .is_some(),
+            "probe side must be coalesced so the join runs in one task"
+        );
+        assert_eq!(
+            hash_join
+                .right()
+                .properties()
+                .output_partitioning()
+                .partition_count(),
+            1
+        );
+    }
+
+    #[test]
+    fn null_aware_join_rejects_known_oversized_build_side() {
+        use datafusion::{
+            arrow::datatypes::{DataType, Field, Schema},
+            common::{
+                ColumnStatistics, JoinType, NullEquality, Statistics, stats::Precision,
+            },
+            physical_plan::{joins::PartitionMode, test::exec::StatisticsExec},
+        };
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, true)]));
+        // Over `broadcast_join_threshold_bytes`, whose default is 128 MB.
+        let left = Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Exact(67_108_864),
+                total_byte_size: Precision::Exact(256 * 1024 * 1024),
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            schema.as_ref().clone(),
+        )) as Arc<dyn ExecutionPlan>;
+        let right = Arc::new(StatisticsExec::new(
+            Statistics::new_unknown(&schema),
+            schema.as_ref().clone(),
+        )) as Arc<dyn ExecutionPlan>;
+        let plan = Arc::new(
+            HashJoinExec::try_new(
+                left,
+                right,
+                vec![(
+                    Arc::new(Column::new("key", 0)) as _,
+                    Arc::new(Column::new("key", 0)) as _,
+                )],
+                None,
+                &JoinType::LeftAnti,
+                None,
+                PartitionMode::CollectLeft,
+                NullEquality::NullEqualsNothing,
+                true,
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+
+        let error = DefaultDistributedPlanner::maybe_promote_to_broadcast(
+            plan,
+            &datafusion::config::ConfigOptions::new(),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "build side does not fit ballista.optimizer.broadcast_join_threshold_bytes"
+            ),
+            "{error}"
+        );
+    }
+
     #[tokio::test]
     async fn distributed_broadcast_join_plan() -> Result<(), BallistaError> {
         use datafusion::physical_plan::joins::PartitionMode;
 
-        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true, false)?;
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1077,47 +1510,12 @@ order by
     }
 
     #[tokio::test]
-    async fn distributed_broadcast_sort_merge_join_plan() -> Result<(), BallistaError> {
-        // prefer_hash_join=false -> DataFusion plans a SortMergeJoinExec.
-        // broadcast_sort_merge_join_enabled=true -> the small build side is
-        // converted to a broadcast CollectLeft hash join: the SortMergeJoinExec
-        // and its input SortExecs are gone, and the build input is an
-        // UnresolvedShuffleExec with broadcast=true.
-        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false, true)?;
-
-        let df = ctx
-            .sql("select count(*) from big join small on big.k = small.k")
-            .await?;
-
-        let plan = df.into_optimized_plan()?;
-        let plan = ctx.state().create_physical_plan(&plan).await?;
-
-        let mut planner = DefaultDistributedPlanner::new();
-        let job_uuid = Uuid::new_v4();
-        let stages =
-            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
-
-        // Stage 1 holds the join: a broadcast CollectLeft hash join, no
-        // SortMergeJoinExec and no SortExec.
-        assert_plan!(stages[1].as_ref(), @"
-        ShuffleWriterExec: partitioning: None
-          AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-            ProjectionExec: expr=[]
-              ProjectionExec: expr=[k@1 as k, k@0 as k]
-                HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(k@0, k@0)]
-                  UnresolvedShuffleExec: stage=1, broadcast=true, upstream_partitions: 1
-                  DataSourceExec: partitions=1, partition_sizes=[1]
-        ");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn distributed_sort_merge_join_unchanged_when_flag_disabled()
-    -> Result<(), BallistaError> {
-        // SMJ planned (prefer_hash_join=false), flag OFF -> no conversion: the
-        // join stays a SortMergeJoinExec over sorted inputs.
-        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false, false)?;
+    async fn distributed_sort_merge_join_is_never_broadcast() -> Result<(), BallistaError>
+    {
+        // SMJ planned (prefer_hash_join=false). A SortMergeJoinExec is never a
+        // broadcast candidate, so it stays a SortMergeJoinExec over sorted
+        // inputs even though the small side is well under the threshold.
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1133,48 +1531,15 @@ order by
         // Stage 0 holds the join, still a SortMergeJoinExec over sorted inputs
         // (no HashJoinExec, no broadcast UnresolvedShuffleExec).
         assert_plan!(stages[0].as_ref(), @r"
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: RoundRobinBatch(2)
           AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-            ProjectionExec: expr=[]
-              SortMergeJoinExec: join_type=Inner, on=[(k@0, k@0)]
-                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
-                  DataSourceExec: partitions=1, partition_sizes=[1]
-                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
-                  DataSourceExec: partitions=1, partition_sizes=[1]
-        ");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn distributed_sort_merge_join_unchanged_when_sides_too_large()
-    -> Result<(), BallistaError> {
-        // Flag ON but threshold tiny (1 byte) -> neither side qualifies, so the
-        // join stays a SortMergeJoinExec over sorted inputs.
-        let (ctx, options) = make_broadcast_test_ctx(1, 1, false, true)?;
-
-        let df = ctx
-            .sql("select count(*) from big join small on big.k = small.k")
-            .await?;
-        let plan = df.into_optimized_plan()?;
-        let plan = ctx.state().create_physical_plan(&plan).await?;
-
-        let mut planner = DefaultDistributedPlanner::new();
-        let job_uuid = Uuid::new_v4();
-        let stages =
-            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
-
-        // Stage 0 holds the join, still a SortMergeJoinExec over sorted inputs
-        // (no HashJoinExec, no broadcast UnresolvedShuffleExec).
-        assert_plan!(stages[0].as_ref(), @r"
-        ShuffleWriterExec: partitioning: None
-          AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
-            ProjectionExec: expr=[]
-              SortMergeJoinExec: join_type=Inner, on=[(k@0, k@0)]
-                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
-                  DataSourceExec: partitions=1, partition_sizes=[1]
-                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
-                  DataSourceExec: partitions=1, partition_sizes=[1]
+            RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
+              ProjectionExec: expr=[]
+                SortMergeJoinExec: join_type=Inner, on=[(k@0, k@0)]
+                  SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
+                    DataSourceExec: partitions=1, partition_sizes=[1]
+                  SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
+                    DataSourceExec: partitions=1, partition_sizes=[1]
         ");
 
         Ok(())
@@ -1185,7 +1550,7 @@ order by
     -> Result<(), BallistaError> {
         use datafusion::physical_plan::joins::PartitionMode;
 
-        let (ctx, options) = make_broadcast_test_ctx(0, 1, true, false)?;
+        let (ctx, options) = make_broadcast_test_ctx(0, 1, true)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1246,8 +1611,7 @@ order by
         ];
 
         for sql in sqls {
-            let (ctx, options) =
-                make_broadcast_test_ctx(10 * 1024 * 1024, 1, true, false)?;
+            let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
             let plan = ctx.sql(sql).await?.into_optimized_plan()?;
             let plan = ctx.state().create_physical_plan(&plan).await?;
 
@@ -1320,8 +1684,9 @@ order by
         )
         .map_err(|e| BallistaError::General(e.to_string()))?;
 
-        // Match the PR's production session config: DF and Ballista thresholds
-        // both at 10 MB so DF's `JoinSelection` can promote on its own.
+        // Pin the DF and Ballista thresholds at 10 MB each, so DF's
+        // `JoinSelection` can promote on its own and the case under test does
+        // not move when the shipped defaults change.
         let session_config = SessionConfig::new()
             .with_target_partitions(2)
             .set_bool("datafusion.optimizer.prefer_hash_join", true)
@@ -1370,6 +1735,109 @@ order by
         Ok(())
     }
 
+    // Plans `big join small` with DataFusion's own hash-join threshold high
+    // enough for its `JoinSelection` to promote to `CollectLeft`, and the
+    // Ballista broadcast threshold set to `ballista_threshold_bytes`. Returns
+    // the partition modes of every `HashJoinExec` across the resulting stages.
+    async fn collect_left_modes_for_ballista_threshold(
+        ballista_threshold_bytes: usize,
+    ) -> Result<Vec<datafusion::physical_plan::joins::PartitionMode>, BallistaError> {
+        use ballista_core::extension::SessionConfigExt;
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::prelude::SessionConfig;
+
+        let big_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("v", DataType::Int32, false),
+        ]));
+        let small_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("w", DataType::Int32, false),
+        ]));
+        let big_batch = RecordBatch::try_new(
+            big_schema,
+            vec![
+                Arc::new(Int32Array::from((0..10_000).collect::<Vec<_>>())),
+                Arc::new(Int32Array::from((0..10_000).collect::<Vec<_>>())),
+            ],
+        )
+        .map_err(|e| BallistaError::General(e.to_string()))?;
+        let small_batch = RecordBatch::try_new(
+            small_schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(Int32Array::from(vec![10, 20])),
+            ],
+        )
+        .map_err(|e| BallistaError::General(e.to_string()))?;
+
+        // DF threshold high so DataFusion's JoinSelection promotes to
+        // CollectLeft on its own; the Ballista threshold is what we vary.
+        let session_config = SessionConfig::new()
+            .with_target_partitions(2)
+            .set_bool("datafusion.optimizer.prefer_hash_join", true)
+            .set_usize(
+                "datafusion.optimizer.hash_join_single_partition_threshold",
+                10 * 1024 * 1024,
+            )
+            .with_ballista_broadcast_join_threshold_bytes(ballista_threshold_bytes);
+        let ctx = datafusion::prelude::SessionContext::new_with_config(session_config);
+        ctx.register_batch("big", big_batch)?;
+        ctx.register_batch("small", small_batch)?;
+        let options = ctx.state().config().options().clone();
+
+        let plan = ctx
+            .sql("select * from big join small on big.k = small.k")
+            .await?
+            .into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let job_uuid = Uuid::new_v4();
+        let stages =
+            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+
+        let mut modes = vec![];
+        for stage in &stages {
+            let mut walker: Vec<Arc<dyn ExecutionPlan>> =
+                vec![stage.clone() as Arc<dyn ExecutionPlan>];
+            while let Some(node) = walker.pop() {
+                if let Some(hj) = node.downcast_ref::<HashJoinExec>() {
+                    modes.push(*hj.partition_mode());
+                }
+                walker.extend(node.children().iter().map(|c| (*c).clone()));
+            }
+        }
+        Ok(modes)
+    }
+
+    // DataFusion's `JoinSelection` promotes a small build side to `CollectLeft`
+    // using its own session threshold. When the Ballista broadcast threshold is
+    // lowered below that build size at runtime, the distributed planner must
+    // demote the `CollectLeft` join back to `Partitioned` so the Ballista key is
+    // authoritative; a high Ballista threshold leaves the broadcast in place.
+    #[tokio::test]
+    async fn df_collect_left_demoted_when_over_ballista_threshold()
+    -> Result<(), BallistaError> {
+        use datafusion::physical_plan::joins::PartitionMode;
+
+        let kept = collect_left_modes_for_ballista_threshold(10 * 1024 * 1024).await?;
+        assert!(
+            kept.contains(&PartitionMode::CollectLeft),
+            "a high Ballista threshold must keep the DataFusion-promoted CollectLeft join, got {kept:?}"
+        );
+
+        let demoted = collect_left_modes_for_ballista_threshold(8).await?;
+        assert!(
+            !demoted.contains(&PartitionMode::CollectLeft),
+            "a Ballista threshold below the build side must demote the CollectLeft join to Partitioned, got {demoted:?}"
+        );
+
+        Ok(())
+    }
+
     // A LEFT join with the small side on the left builds (broadcasts) the left
     // side and emits a null-padded row for every unmatched left row; each probe
     // task would emit those independently. The guard must keep it repartitioned
@@ -1379,7 +1847,7 @@ order by
     {
         use datafusion::physical_plan::joins::PartitionMode;
 
-        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true, false)?;
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
 
         let df = ctx
             .sql("select * from small left join big on small.k = big.k")
@@ -1424,7 +1892,7 @@ order by
     {
         use datafusion::physical_plan::joins::PartitionMode;
 
-        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false, false)?;
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1468,8 +1936,7 @@ order by
         // broadcast build stage has 3 input partitions and writes 3 shuffle
         // files. The broadcast UnresolvedShuffleExec must report
         // upstream_partition_count = 3.
-        let (ctx, options) =
-            make_broadcast_test_ctx(10 * 1024 * 1024 * 1024, 3, true, false)?;
+        let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024 * 1024, 3, true)?;
 
         let df = ctx
             .sql("select count(*) from big join small on big.k = small.k")
@@ -1534,7 +2001,7 @@ order by
                 host: "localhost".to_string(),
                 port: 50050,
                 grpc_port: 50051,
-                specification: ExecutorSpecification::default().with_task_slots(1),
+                specification: ExecutorSpecification::default().with_vcores(1),
                 os_info: ExecutorOperatingSystemSpecification::default(),
             },
             partition_stats: PartitionStats::new(Some(10), None, Some(1)),
@@ -1599,6 +2066,51 @@ order by
         Ok(())
     }
 
+    /// `RangeShuffleReaderExec` rolls back to a plain `UnresolvedShuffleExec`
+    /// (info-losing on the range-ness). Re-planning walks the adapter, which
+    /// re-detects the child's ordering and plants a fresh range reader.
+    #[tokio::test]
+    async fn rollback_resolved_shuffles_reduces_range_reader_to_plain_unresolved()
+    -> Result<(), BallistaError> {
+        use ballista_core::execution_plans::RangeShuffleReaderExec;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let sort_expr = PhysicalSortExpr::new_default(Arc::new(Column::new("v", 0)));
+        let merge_ordering = LexOrdering::new(vec![sort_expr]).unwrap();
+        let reader = Arc::new(
+            RangeShuffleReaderExec::try_new(
+                7,
+                vec![vec![]; 4],
+                schema.clone(),
+                merge_ordering,
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let parent: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec::new(
+                reader,
+            ),
+        );
+
+        let rolled_back = crate::planner::rollback_resolved_shuffles(parent)?;
+        let child = rolled_back.children()[0].clone();
+        let unresolved = child
+            .downcast_ref::<UnresolvedShuffleExec>()
+            .expect("expected rolled-back UnresolvedShuffleExec");
+        // The range-ness is derived at plan time; the rolled-back node carries
+        // no ordering, no broadcast, no coalesce.
+        assert!(!unresolved.broadcast);
+        assert!(unresolved.coalesce.is_none());
+        assert_eq!(unresolved.stage_id, 7);
+        assert_eq!(unresolved.output_partition_count, 4);
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn distributed_window_plan() -> Result<(), BallistaError> {
         let ctx = datafusion_test_context("testdata").await?;
@@ -1641,7 +2153,7 @@ order by
               DataSourceExec: file_groups={2 groups: [[ballista/scheduler/testdata/lineitem/partition0.tbl], [ballista/scheduler/testdata/lineitem/partition1.tbl]]}, projection=[l_shipdate, l_shipmode], file_type=csv, has_header=false
 
             Stage 1:
-            ShuffleWriterExec: partitioning: None
+            ShuffleWriterExec: partitioning: Hash([l_shipmode@0], 2)
               SortExec: expr=[l_shipdate@1 ASC NULLS LAST, rk@2 ASC NULLS LAST], preserve_partitioning=[true]
                 ProjectionExec: expr=[l_shipmode@1 as l_shipmode, l_shipdate@0 as l_shipdate, rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as rk]
                 FilterExec: rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 <= 100
@@ -1650,7 +2162,7 @@ order by
                       UnresolvedShuffleExec: stage=1, partitioning: Hash([l_shipmode@1], 2)
 
             Stage 2:
-            ShuffleWriterExec: partitioning: None
+            ShuffleWriterExec: partitioning: UnknownPartitioning(1)
               SortPreservingMergeExec: [l_shipdate@1 ASC NULLS LAST, rk@2 ASC NULLS LAST]
                 UnresolvedShuffleExec: stage=2, partitioning: Hash([l_shipmode@0], 2)
 
@@ -1673,9 +2185,9 @@ order by
         assert_eq!(Some(&Column::new("l_shipmode", 1)), partition_col);
 
         // stage1
-        let sort = downcast_exec!(stages[1].children()[0], SortExec);
-        let projection = downcast_exec!(sort.children()[0], ProjectionExec);
-        let filter = downcast_exec!(projection.children()[0], FilterExec);
+        let projection = downcast_exec!(stages[1].children()[0], ProjectionExec);
+        let sort = downcast_exec!(projection.children()[0], SortExec);
+        let filter = downcast_exec!(sort.children()[0], FilterExec);
         let window = downcast_exec!(filter.children()[0], BoundedWindowAggExec);
         let partition_by = window.partition_keys();
         let partition_by = match partition_by[..] {
@@ -1762,7 +2274,6 @@ order by
         threshold_bytes: usize,
         small_partitions: usize,
         prefer_hash_join: bool,
-        smj_broadcast_enabled: bool,
     ) -> Result<
         (
             datafusion::prelude::SessionContext,
@@ -1815,11 +2326,7 @@ order by
                 "datafusion.optimizer.hash_join_single_partition_threshold",
                 0,
             )
-            .set_bool("datafusion.optimizer.prefer_hash_join", prefer_hash_join)
-            .set_bool(
-                "ballista.optimizer.broadcast_sort_merge_join_enabled",
-                smj_broadcast_enabled,
-            );
+            .set_bool("datafusion.optimizer.prefer_hash_join", prefer_hash_join);
         let ctx = datafusion::prelude::SessionContext::new_with_config(session_config);
         ctx.register_batch("big", big_batch)?;
 

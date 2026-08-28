@@ -32,6 +32,18 @@ You can find a curated
 [good-first-issue](https://github.com/apache/datafusion-ballista/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 list to help you get started.
 
+## Claiming an issue
+
+If you want to work on an issue, comment `take` on it and the
+[`take` workflow](.github/workflows/take.yml) will assign it to you. Comment
+`untake` to unassign yourself again if you no longer plan to work on it. The
+comment has to be exactly `take` or `untake` with nothing else in it.
+
+Assigning an issue to yourself is not required to open a PR, but it lets others
+know that the issue is being worked on. If an issue is already assigned and has
+seen no activity for a while, feel free to ask on the issue whether it is still
+being worked on before picking it up.
+
 # Developer's Guide
 
 This section describes how you can get started with Ballista development.
@@ -64,6 +76,22 @@ Formatting instructions:
 or run them all at once:
 
 - [dev/rust_lint.sh](dev/rust_lint.sh)
+
+### Configuration Documentation
+
+The configuration tables in
+[docs/source/user-guide/configs.md](docs/source/user-guide/configs.md) are
+generated from the `CONFIG_ENTRIES` registry in `ballista/core/src/config.rs`.
+After adding or changing a configuration key, regenerate them with:
+
+```bash
+./dev/update_config_docs.sh
+```
+
+and commit the result. Every registered key must be covered by one of the
+generated regions in that page, so a new key whose prefix matches none of them
+will fail the check until it is given a home. CI enforces this with
+[ci/scripts/rust_config_docs_check.sh](ci/scripts/rust_config_docs_check.sh).
 
 ### Python Environment
 

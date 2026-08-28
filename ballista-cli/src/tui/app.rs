@@ -18,6 +18,7 @@
 #[cfg(not(feature = "web"))]
 use crate::tui::TuiError;
 use crate::tui::TuiResult;
+use crate::tui::domain::jobs::JobStatusExt;
 use crate::tui::event::Event;
 #[cfg(feature = "web")]
 use crate::tui::event::web::Sender;
@@ -57,7 +58,7 @@ use crate::tui::ui::{
     load_metrics_data, load_stage_plan,
 };
 
-const INVALID_DATE: &str = "Invalid date";
+pub(crate) const INVALID_DATE: &str = "Invalid date";
 
 #[derive(Debug, PartialEq)]
 enum Views {
@@ -477,7 +478,7 @@ impl App {
                 if self.is_jobs_view() {
                     self.sort_jobs_by(JobsSortColumn::StagesCompleted);
                 } else if self.is_executors_view() {
-                    self.sort_executors_by(ExecutorsSortColumn::TaskSlots);
+                    self.sort_executors_by(ExecutorsSortColumn::Vcores);
                 }
             }
             KeyCode::Char('5') => {
@@ -1209,7 +1210,7 @@ impl App {
                 if self.is_jobs_view() {
                     self.sort_jobs_by(JobsSortColumn::StagesCompleted);
                 } else if self.is_executors_view() {
-                    self.sort_executors_by(ExecutorsSortColumn::TaskSlots);
+                    self.sort_executors_by(ExecutorsSortColumn::Vcores);
                 }
                 None
             }
@@ -1335,6 +1336,9 @@ mod tests {
             num_stages: 1,
             completed_stages: 0,
             percent_complete: 0,
+            logical_plan: None,
+            physical_plan: None,
+            stage_plan: None,
         }
     }
 
@@ -1614,7 +1618,7 @@ mod tests {
             port: 8080,
             id: id.to_string(),
             last_seen: None,
-            specification: Specification { task_slots: 4 },
+            specification: Specification { vcores: 4 },
             metrics: vec![],
             os_info: OsInfo {
                 kernel_ver: "5.15".to_string(),

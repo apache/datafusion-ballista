@@ -19,18 +19,43 @@ use ballista_core::execution_plans::{
     CoalescePlan, stats_for_partition, stats_for_partitions,
 };
 use ballista_core::serde::scheduler::PartitionLocation;
+use datafusion::common::ScalarValue;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::Statistics;
 use datafusion::{
+    common::tree_node::TreeNodeRecursion,
     error::{DataFusionError, Result},
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
-        Partitioning, PlanProperties,
+        Partitioning, PlanProperties, apply_expression_roots,
     },
 };
 use log::trace;
 use parking_lot::Mutex;
 use std::ops::Deref;
 use std::sync::{Arc, atomic::AtomicI64};
+
+/// Range-partition boundaries recovered from an
+/// `UnorderedRangeRepartitionExec` / `OrderedRangeRepartitionExec` upstream
+/// of this exchange. Written after the range-repartition-producing stage
+/// completes and its runtime-stats sketches are merged; read at
+/// task-specialization time to build per-downstream-partition range filters
+/// (see `PerPartitionFilterExec`).
+///
+/// `cuts` are `K - 1` monotone boundaries expressed in the value space
+/// of `routing_expr`; downstream partition `k` owns `[cuts[k-1], cuts[k])`
+/// with virtual `-∞`/`+∞` sentinels on the ends (matching the range
+/// repartition's write-side convention). `routing_expr` is the same
+/// expression the range repartition routes on so the filter is symmetric
+/// with the writer's placement decision.
+#[derive(Clone, Debug)]
+pub struct RangeRepartitionRouting {
+    pub cuts: Vec<ScalarValue>,
+    /// Which end of the order holds the NULL run, carried with the cuts so
+    /// the file router and the read-side filter cannot disagree about it.
+    pub nulls_first: bool,
+    pub routing_expr: Arc<dyn PhysicalExpr>,
+}
 
 /// Execution plan representing an exchange/shuffle boundary used by the
 /// scheduler during adaptive query execution (AQE).
@@ -74,6 +99,15 @@ pub struct ExchangeExec {
     /// transform-rebuilt parent chains. Same pattern as `shuffle_partitions`.
     coalesce: Arc<Mutex<Option<Arc<CoalescePlan>>>>,
 
+    /// Range-partition boundaries recovered at runtime from an upstream
+    /// range-repartition op (URRE or ORRE). Stored when
+    /// the range-repartition-producing stage completes and its per-sub-part
+    /// quantile sketches have been merged. Read at task-specialization time
+    /// to build `PerPartitionFilterExec` predicates for downstream stage `N+1`.
+    ///
+    /// `None` on any exchange that isn't downstream of a range repartition
+    range_repartition_routing: Arc<Mutex<Option<RangeRepartitionRouting>>>,
+
     /// this disables stage from running even it would be suitable to run.
     ///
     /// the main reason for this property this is to allow rules to override
@@ -103,6 +137,7 @@ impl ExchangeExec {
             Arc::new(AtomicI64::new(-1)),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
             false,
             false,
         )
@@ -120,6 +155,7 @@ impl ExchangeExec {
             Arc::new(AtomicI64::new(-1)),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
             true,
             false,
         )
@@ -133,6 +169,7 @@ impl ExchangeExec {
             self.stage_id.clone(),
             self.shuffle_partitions.clone(),
             self.coalesce.clone(),
+            self.range_repartition_routing.clone(),
             true,
             self.inactive_stage,
         )
@@ -149,6 +186,7 @@ impl ExchangeExec {
         stage_id: Arc<AtomicI64>,
         stage_partitions: Arc<Mutex<Option<Vec<Vec<PartitionLocation>>>>>,
         coalesce: Arc<Mutex<Option<Arc<CoalescePlan>>>>,
+        range_repartition_routing: Arc<Mutex<Option<RangeRepartitionRouting>>>,
         broadcast: bool,
         inactive_stage: bool,
     ) -> Self {
@@ -157,7 +195,13 @@ impl ExchangeExec {
             (None, false) => input.output_partitioning().clone(),
             (_, true) => Partitioning::UnknownPartitioning(1),
         };
-        let eq_properties = input.properties().eq_properties.clone();
+        // An exchange redistributes rows, so a constant that only holds within
+        // each input partition does not hold afterwards. Keeping it lets
+        // `EnforceSorting` drop sort keys that are no longer constant — a
+        // `UNION ALL` branch projecting a literal, reshuffled by hash on that
+        // same column. `RepartitionExec` clears them for the same reason.
+        let mut eq_properties = input.properties().eq_properties.clone();
+        eq_properties.clear_per_partition_constants();
         let properties = Arc::new(PlanProperties::new(
             eq_properties,
             plan_partitioning,
@@ -173,6 +217,7 @@ impl ExchangeExec {
             shuffle_partitions: stage_partitions,
             partitioning,
             coalesce,
+            range_repartition_routing,
             inactive_stage,
             broadcast,
         }
@@ -257,6 +302,24 @@ impl ExchangeExec {
     pub fn coalesce(&self) -> Option<Arc<CoalescePlan>> {
         self.coalesce.lock().clone()
     }
+
+    /// Publishes range-repartition-recovered range boundaries on this
+    /// exchange. Called from
+    /// `AdaptiveExecutionGraph::maybe_range_repartition_overlap_remap` once
+    /// the upstream range-repartition stage completes and its per-sub-part
+    /// quantile sketches have been merged into `K - 1` monotone cuts.
+    /// Idempotent overwrite matches the `set_coalesce` pattern.
+    pub fn resolve_range_repartition_routing(&self, routing: RangeRepartitionRouting) {
+        self.range_repartition_routing.lock().replace(routing);
+    }
+
+    /// Returns the range-repartition routing info if
+    /// `resolve_range_repartition_routing` has fired. Consumers use
+    /// `Some(_)` as the signal that this exchange is downstream of a range
+    /// repartition and its tasks need per-partition range filters.
+    pub fn range_repartition_routing(&self) -> Option<RangeRepartitionRouting> {
+        self.range_repartition_routing.lock().clone()
+    }
 }
 
 impl DisplayAs for ExchangeExec {
@@ -287,6 +350,9 @@ impl DisplayAs for ExchangeExec {
                         cp.groups.len(),
                         cp.upstream_partition_count,
                     )?;
+                }
+                if let Some(r) = self.range_repartition_routing.lock().as_ref() {
+                    write!(f, ", range_repartition_cuts={}", r.cuts.len())?;
                 }
                 if self.broadcast {
                     write!(f, ", broadcast=true",)?
@@ -333,6 +399,23 @@ impl ExecutionPlan for ExchangeExec {
         vec![&self.input]
     }
 
+    /// The shuffle partitioning this exchange lowers into is evaluated by the
+    /// writer it becomes; the expressions are owned here and reachable nowhere
+    /// else in the tree, so report them like `RepartitionExec` does.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        match &self.partitioning {
+            Some(Partitioning::Hash(exprs, _)) => apply_expression_roots(exprs, f),
+            Some(Partitioning::Range(range)) => apply_expression_roots(
+                range.ordering().iter().map(|sort_expr| &sort_expr.expr),
+                f,
+            ),
+            _ => Ok(TreeNodeRecursion::Continue),
+        }
+    }
+
     fn maintains_input_order(&self) -> Vec<bool> {
         match self.partitioning {
             Some(_) => vec![false; self.children().len()],
@@ -354,6 +437,7 @@ impl ExecutionPlan for ExchangeExec {
                 // doesn't lose the rule's decision.
                 self.shuffle_partitions.clone(),
                 self.coalesce.clone(),
+                self.range_repartition_routing.clone(),
                 self.broadcast,
                 self.inactive_stage,
             );
@@ -419,5 +503,111 @@ impl ExecutionPlan for ExchangeExec {
             }
             None => Ok(Arc::new(Statistics::new_unknown(&schema))),
         }
+    }
+}
+
+#[cfg(test)]
+mod range_repartition_routing_tests {
+    //! `RangeRepartitionRouting` parking on `ExchangeExec`. The AQE hook
+    //! writes here at range-repartition-stage completion; task
+    //! specialization reads it back at
+    //! `BallistaAdapter::transform_children` time to wrap the
+    //! ShuffleReader in a `PerPartitionFilterExec`. Neither side is
+    //! exercised end-to-end without the URRE-inserting rule (a follow-up
+    //! PR), so tests here cover the slot itself: roundtrip through
+    //! `resolve_range_repartition_routing` → `range_repartition_routing()`,
+    //! and preservation across `with_new_children`.
+    use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::physical_plan::expressions::col;
+    use datafusion::physical_plan::{
+        ChildrenPropertiesMode, ExecutionPlan, Partitioning, ReplaceChildrenOptions,
+    };
+
+    /// Cuts as `Float64` scalars, which is what merging produces.
+    fn cuts_f64<const N: usize>(values: [f64; N]) -> Vec<ScalarValue> {
+        values
+            .into_iter()
+            .map(|v| ScalarValue::Float64(Some(v)))
+            .collect()
+    }
+
+    fn v_source() -> Arc<dyn ExecutionPlan> {
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let memory =
+            Arc::new(MemorySourceConfig::try_new(&[vec![]], schema, None).unwrap());
+        Arc::new(DataSourceExec::new(memory))
+    }
+
+    fn v_routing_expr() -> Arc<dyn PhysicalExpr> {
+        let schema = v_source().schema();
+        col("v", schema.as_ref()).unwrap()
+    }
+
+    fn sample_routing() -> RangeRepartitionRouting {
+        RangeRepartitionRouting {
+            cuts: cuts_f64([10.0, 20.0, 30.0]),
+            nulls_first: true,
+            routing_expr: v_routing_expr(),
+        }
+    }
+
+    #[test]
+    fn range_repartition_routing_unresolved_returns_none() {
+        let exchange = ExchangeExec::new(v_source(), None, 42);
+        assert!(exchange.range_repartition_routing().is_none());
+    }
+
+    #[test]
+    fn resolve_range_repartition_routing_roundtrips() {
+        let exchange = ExchangeExec::new(v_source(), None, 42);
+        exchange.resolve_range_repartition_routing(sample_routing());
+        let recovered = exchange
+            .range_repartition_routing()
+            .expect("routing must be Some after resolve");
+        assert_eq!(recovered.cuts, cuts_f64([10.0, 20.0, 30.0]));
+    }
+
+    #[test]
+    fn resolve_range_repartition_routing_overwrites_prior_value() {
+        // Idempotent-overwrite semantics match `set_coalesce`.
+        let exchange = ExchangeExec::new(v_source(), None, 42);
+        exchange.resolve_range_repartition_routing(sample_routing());
+        exchange.resolve_range_repartition_routing(RangeRepartitionRouting {
+            cuts: cuts_f64([100.0]),
+            nulls_first: true,
+            routing_expr: v_routing_expr(),
+        });
+        let recovered = exchange.range_repartition_routing().unwrap();
+        assert_eq!(recovered.cuts, cuts_f64([100.0]), "second resolve wins");
+    }
+
+    /// `with_new_children` must carry the routing slot through: transform
+    /// passes that rebuild the parent chain would otherwise silently drop
+    /// range boundaries the scheduler already parked here.
+    #[test]
+    fn with_new_children_preserves_range_repartition_routing() {
+        let partitioning = Some(Partitioning::UnknownPartitioning(4));
+        let exchange = Arc::new(ExchangeExec::new(v_source(), partitioning, 42));
+        exchange.resolve_range_repartition_routing(sample_routing());
+
+        // Rebuild with a fresh (equivalent-schema) child.
+        let rebuilt = exchange
+            .clone()
+            .replace_children(
+                vec![v_source()],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .unwrap();
+        let rebuilt_exchange = rebuilt
+            .downcast_ref::<ExchangeExec>()
+            .expect("with_new_children must return an ExchangeExec");
+        let recovered = rebuilt_exchange
+            .range_repartition_routing()
+            .expect("routing must survive with_new_children");
+        assert_eq!(recovered.cuts, cuts_f64([10.0, 20.0, 30.0]));
     }
 }

@@ -37,14 +37,13 @@ mod sort_shuffle_tests {
         BALLISTA_SHUFFLE_READER_MAX_BLOCKS_PER_ADDRESS,
         BALLISTA_SHUFFLE_READER_MAX_BYTES_IN_FLIGHT,
         BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
-        BALLISTA_SHUFFLE_SORT_BASED_ENABLED,
     };
+    use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::Result;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
     use rstest::rstest;
-    use std::collections::HashSet;
 
     /// Read mode for shuffle data
     #[derive(Debug, Clone, Copy)]
@@ -69,7 +68,6 @@ mod sort_shuffle_tests {
         aqe_enabled: bool,
     ) -> SessionContext {
         let mut config = SessionConfig::new_with_ballista()
-            .set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true")
             .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, aqe_enabled);
 
         // Configure read mode
@@ -103,24 +101,12 @@ mod sort_shuffle_tests {
     /// complete and return correct results.
     async fn create_tiny_budget_remote_context() -> SessionContext {
         let config = SessionConfig::new_with_ballista()
-            .set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true")
             .set_str(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, "true")
             .set_str(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, "true")
             .set_str(BALLISTA_SHUFFLE_READER_MAX_BYTES_IN_FLIGHT, "65536")
             .set_str(BALLISTA_SHUFFLE_READER_MAX_BLOCKS_PER_ADDRESS, "2")
             .set_str(BALLISTA_CLIENT_INITIAL_CONNECTION_WINDOW_SIZE, "8388608")
             .set_str(BALLISTA_CLIENT_INITIAL_STREAM_WINDOW_SIZE, "8388608");
-        let state = SessionStateBuilder::new()
-            .with_config(config)
-            .with_default_features()
-            .build();
-        SessionContext::standalone_with_state(state).await.unwrap()
-    }
-
-    /// Creates a standalone session context with hash-based shuffle.
-    async fn create_hash_shuffle_context() -> SessionContext {
-        let config = SessionConfig::new_with_ballista()
-            .set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "false");
         let state = SessionStateBuilder::new()
             .with_config(config)
             .with_default_features()
@@ -152,21 +138,6 @@ mod sort_shuffle_tests {
                 .lines()
                 .collect::<Vec<&str>>()
         );
-    }
-
-    /// Extracts values from a result set, ignoring order.
-    fn extract_values_unordered(
-        results: &[datafusion::arrow::record_batch::RecordBatch],
-    ) -> HashSet<String> {
-        pretty_format_batches(results)
-            .unwrap()
-            .to_string()
-            .trim()
-            .lines()
-            .skip(3) // Skip header lines
-            .filter(|line| !line.starts_with('+'))
-            .map(|s| s.to_string())
-            .collect()
     }
 
     // ==================== Basic Aggregation Tests ====================
@@ -228,6 +199,94 @@ mod sort_shuffle_tests {
         assert!(!results.is_empty());
         let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
         assert!(total_rows > 0);
+        Ok(())
+    }
+
+    /// Shuffles a variable-width column. Every other query here groups on a
+    /// fixed-width primitive, so no offsets buffer otherwise crosses a shuffle.
+    /// Offset buffers are part of what the skipped validation covers.
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_block_io(ReadMode::RemoteBlockIo)]
+    #[tokio::test]
+    async fn test_sort_shuffle_group_by_binary_column(
+        #[case] read_mode: ReadMode,
+    ) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
+        register_test_data(&ctx).await;
+
+        let df = ctx
+            .sql(
+                "SELECT date_string_col, COUNT(*) as cnt
+                 FROM test
+                 GROUP BY date_string_col
+                 ORDER BY date_string_col",
+            )
+            .await?;
+        let results = df.collect().await?;
+
+        // `date_string_col` is `Binary` (no UTF8 annotation in the fixture), so
+        // it renders as hex: these are "01/01/09" .. "04/01/09".
+        let expected = vec![
+            "+------------------+-----+",
+            "| date_string_col  | cnt |",
+            "+------------------+-----+",
+            "| 30312f30312f3039 | 2   |",
+            "| 30322f30312f3039 | 2   |",
+            "| 30332f30312f3039 | 2   |",
+            "| 30342f30312f3039 | 2   |",
+            "+------------------+-----+",
+        ];
+        assert_result_eq(expected, &results);
+        Ok(())
+    }
+
+    /// Shuffles view-typed keys. Validating those bounds-checks each view's
+    /// buffer index and offset, a separate path from walking offsets. Keys of
+    /// 12 bytes or fewer live inside the view; longer ones reference a data
+    /// buffer, so one of each is grouped on. No fixture column is a view type,
+    /// hence `arrow_cast`.
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_block_io(ReadMode::RemoteBlockIo)]
+    #[tokio::test]
+    async fn test_sort_shuffle_group_by_view_columns(
+        #[case] read_mode: ReadMode,
+    ) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
+        register_test_data(&ctx).await;
+
+        let df = ctx
+            .sql(
+                "SELECT arrow_cast(CAST(date_string_col AS VARCHAR), 'Utf8View') AS inline_key,
+                        arrow_cast(
+                            CAST(date_string_col AS VARCHAR) || ' well past the inline limit',
+                            'Utf8View'
+                        ) AS spilled_key,
+                        COUNT(*) as cnt
+                 FROM test
+                 GROUP BY inline_key, spilled_key
+                 ORDER BY inline_key",
+            )
+            .await?;
+        let results = df.collect().await?;
+        let schema = results[0].schema();
+        assert_eq!(schema.field(0).data_type(), &DataType::Utf8View);
+        assert_eq!(schema.field(1).data_type(), &DataType::Utf8View);
+
+        let expected = vec![
+            "+------------+-------------------------------------+-----+",
+            "| inline_key | spilled_key                         | cnt |",
+            "+------------+-------------------------------------+-----+",
+            "| 01/01/09   | 01/01/09 well past the inline limit | 2   |",
+            "| 02/01/09   | 02/01/09 well past the inline limit | 2   |",
+            "| 03/01/09   | 03/01/09 well past the inline limit | 2   |",
+            "| 04/01/09   | 04/01/09 well past the inline limit | 2   |",
+            "+------------+-------------------------------------+-----+",
+        ];
+        assert_result_eq(expected, &results);
         Ok(())
     }
 
@@ -324,62 +383,6 @@ mod sort_shuffle_tests {
             "+--------------+--------------+",
         ];
         assert_result_eq(expected, &results);
-        Ok(())
-    }
-
-    // ==================== Comparison with Hash Shuffle ====================
-
-    #[tokio::test]
-    async fn test_sort_vs_hash_shuffle_group_by() -> Result<()> {
-        // Test with sort shuffle (local read is sufficient for comparison)
-        let sort_ctx = create_sort_shuffle_context(ReadMode::Local).await;
-        register_test_data(&sort_ctx).await;
-        let sort_results = sort_ctx
-            .sql("SELECT bool_col, SUM(id) as total FROM test GROUP BY bool_col")
-            .await?
-            .collect()
-            .await?;
-
-        // Test with hash shuffle
-        let hash_ctx = create_hash_shuffle_context().await;
-        register_test_data(&hash_ctx).await;
-        let hash_results = hash_ctx
-            .sql("SELECT bool_col, SUM(id) as total FROM test GROUP BY bool_col")
-            .await?
-            .collect()
-            .await?;
-
-        // Results should be equivalent (order may differ)
-        let sort_values = extract_values_unordered(&sort_results);
-        let hash_values = extract_values_unordered(&hash_results);
-        assert_eq!(sort_values, hash_values);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_sort_vs_hash_shuffle_distinct() -> Result<()> {
-        // Test with sort shuffle (local read is sufficient for comparison)
-        let sort_ctx = create_sort_shuffle_context(ReadMode::Local).await;
-        register_test_data(&sort_ctx).await;
-        let sort_results = sort_ctx
-            .sql("SELECT DISTINCT bool_col FROM test")
-            .await?
-            .collect()
-            .await?;
-
-        // Test with hash shuffle
-        let hash_ctx = create_hash_shuffle_context().await;
-        register_test_data(&hash_ctx).await;
-        let hash_results = hash_ctx
-            .sql("SELECT DISTINCT bool_col FROM test")
-            .await?
-            .collect()
-            .await?;
-
-        // Results should be equivalent
-        let sort_values = extract_values_unordered(&sort_results);
-        let hash_values = extract_values_unordered(&hash_results);
-        assert_eq!(sort_values, hash_values);
         Ok(())
     }
 
