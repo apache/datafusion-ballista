@@ -1260,6 +1260,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tower",
  "tower-http 0.7.0",
  "tracing",
  "tracing-appender",
