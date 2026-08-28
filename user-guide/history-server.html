@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Ballista Scheduler &#8212; Apache DataFusion Ballista  documentation</title>
+    <title>History Server &#8212; Apache DataFusion Ballista  documentation</title>
   
   
   
@@ -42,12 +42,12 @@
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/scheduler';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/history-server';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="History Server" href="history-server.html" />
-    <link rel="prev" title="Deploying Ballista with Kubernetes" href="deployment/kubernetes.html" />
+    <link rel="next" title="Python Client" href="python/index.html" />
+    <link rel="prev" title="Ballista Scheduler" href="scheduler.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -241,8 +241,8 @@
 <li class="toctree-l2"><a class="reference internal" href="deployment/kubernetes.html">Kubernetes</a></li>
 </ul>
 </details></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Scheduler</a></li>
-<li class="toctree-l1"><a class="reference internal" href="history-server.html">History Server</a></li>
+<li class="toctree-l1"><a class="reference internal" href="scheduler.html">Scheduler</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">History Server</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Clients</span></p>
 <ul class="nav bd-sidenav">
@@ -357,7 +357,7 @@
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Ballista Scheduler</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">History Server</span></li>
   </ul>
 </nav>
 </div>
@@ -392,138 +392,137 @@
   specific language governing permissions and limitations
   under the License.
 -->
-<section id="ballista-scheduler">
-<h1>Ballista Scheduler<a class="headerlink" href="#ballista-scheduler" title="Link to this heading">#</a></h1>
-<section id="fetching-query-results">
-<h2>Fetching Query Results<a class="headerlink" href="#fetching-query-results" title="Link to this heading">#</a></h2>
-<p>By default a client fetches the result partitions of a query directly from the executors that
-produced them, over Arrow Flight. This keeps the scheduler out of the data path, but it requires
-every client to have network access to every executor — which is not the case in isolated
-environments where only the scheduler is reachable.</p>
-<p>For those deployments the scheduler can advertise a different address for clients to fetch results
-from, and can optionally host an Arrow Flight proxy itself.</p>
-<blockquote>
-<div><p>Note: this is plain Arrow Flight, used to move result partitions. It is not Flight SQL, which was
-removed in Ballista 46.0.0 — the proxy only serves Ballista’s <code class="docutils literal notranslate"><span class="pre">FetchPartition</span></code> action, so generic
-Flight SQL or JDBC clients cannot use this endpoint.</p>
-</div></blockquote>
-<p>Two independent options control this:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Option</p></th>
-<th class="head"><p>Description</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--enable-embedded-flight-proxy</span></code></p></td>
-<td><p>Runs an Arrow Flight proxy inside the scheduler process, on the scheduler’s own host and port. The proxy forwards each fetch to the executor that owns the partition.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code></p></td>
-<td><p>The <code class="docutils literal notranslate"><span class="pre">HOST:PORT</span></code> address clients are told to fetch results from, instead of the executors. Use it to point clients at a load balancer or a standalone proxy.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>The first controls whether a proxy <em>runs</em>; the second controls what clients are <em>told</em>. Setting
-both is a supported combination: the embedded proxy runs, and clients are pointed at the advertised
-address, which is how you put a load balancer in front of one or more schedulers.</p>
-<p>To let clients fetch results through the scheduler itself:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ballista-scheduler<span class="w"> </span>--enable-embedded-flight-proxy
+<section id="history-server">
+<h1>History Server<a class="headerlink" href="#history-server" title="Link to this heading">#</a></h1>
+<p>The scheduler forgets a job shortly after it finishes. Completed jobs are cleaned
+up after <code class="docutils literal notranslate"><span class="pre">finished_job_state_clean_up_interval_seconds</span></code>, and everything is gone
+when the scheduler restarts, so by the time you want to look at a slow query it
+is usually too late.</p>
+<p>The history server is Ballista’s equivalent of the Spark History Server. When
+event logging is enabled the scheduler writes a durable record of each job as it
+runs, and the history server replays those records and serves the same <code class="docutils literal notranslate"><span class="pre">/api/*</span></code>
+responses the live scheduler does. The existing TUI can point at it and browse
+completed jobs with no scheduler running at all.</p>
+<section id="enabling-event-logging">
+<h2>Enabling event logging<a class="headerlink" href="#enabling-event-logging" title="Link to this heading">#</a></h2>
+<p>Event logging is off by default. Start the scheduler with a directory to write
+to:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>ballista-scheduler<span class="w"> </span>--event-log-dir<span class="w"> </span>/var/lib/ballista/history
 </pre></div>
 </div>
-<p>To point clients at a load balancer that fronts the schedulers:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ballista-scheduler<span class="w"> </span>--enable-embedded-flight-proxy<span class="w"> </span><span class="se">\</span>
-<span class="w">                   </span>--advertise-flight-endpoint<span class="w"> </span>ballista-flight.example.com:50050
-</pre></div>
-</div>
-<p>Both options are disabled by default, and the embedded proxy should be enabled deliberately: it
-puts result traffic on the scheduler’s process and thread pool, competing with query planning and
-task scheduling. Under load this is a known source of scheduler congestion, so prefer a separate
-proxy — advertised with <code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code> — for clusters where result volume is
-significant.</p>
-<blockquote>
-<div><p><code class="docutils literal notranslate"><span class="pre">--advertise-flight-sql-endpoint</span></code> is accepted as a deprecated alias of
-<code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code>. Passing either flag with no value used to start the embedded proxy;
-that is deprecated too and logs a warning — use <code class="docutils literal notranslate"><span class="pre">--enable-embedded-flight-proxy</span></code> instead.</p>
-</div></blockquote>
+<p>The scheduler writes one file per job, <code class="docutils literal notranslate"><span class="pre">&lt;job_id&gt;.eventlog</span></code>, in
+<a class="reference external" href="https://jsonlines.org/">JSON Lines</a> format. Files are appended as the job runs
+and closed when it reaches a terminal state.</p>
+<p>Writes happen on a background task, so the scheduler’s event loop never waits on
+disk. If the queue backs up, progress records are dropped rather than allowed to
+stall scheduling. The terminal record is the exception: it waits for queue
+capacity, because a job missing it is invisible to the history server.</p>
 </section>
-<section id="rest-api">
-<h2>REST API<a class="headerlink" href="#rest-api" title="Link to this heading">#</a></h2>
-<p>The scheduler also provides a REST API that allows jobs to be monitored.</p>
-<blockquote>
-<div><p>This is optional scheduler feature which should be enabled with the <code class="docutils literal notranslate"><span class="pre">rest-api</span></code> feature.</p>
-</div></blockquote>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>API</p></th>
-<th class="head"><p>Method</p></th>
-<th class="head"><p>Description</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>/api/jobs</p></td>
-<td><p>GET</p></td>
-<td><p>Get a list of jobs that have been submitted to the cluster.</p></td>
-</tr>
-<tr class="row-odd"><td><p>/api/job/{job_id}</p></td>
-<td><p>GET</p></td>
-<td><p>Get a summary of a submitted job.</p></td>
-</tr>
-<tr class="row-even"><td><p>/api/job/{job_id}/dot</p></td>
-<td><p>GET</p></td>
-<td><p>Produce a query plan in DOT (graphviz) format.</p></td>
-</tr>
-<tr class="row-odd"><td><p>/api/job/{job_id}/dot_svg</p></td>
-<td><p>GET</p></td>
-<td><p>Produce a query plan in SVG format. (<code class="docutils literal notranslate"><span class="pre">graphviz-support</span></code> required)</p></td>
-</tr>
-<tr class="row-even"><td><p>/api/job/{job_id}</p></td>
-<td><p>PATCH</p></td>
-<td><p>Cancel a currently running job</p></td>
-</tr>
-<tr class="row-odd"><td><p>/api/job/{job_id}/config</p></td>
-<td><p>GET</p></td>
-<td><p>Get session configuration for a job.</p></td>
-</tr>
-<tr class="row-even"><td><p>/api/job/{job_id}/stage/{stage_id}/dot</p></td>
-<td><p>GET</p></td>
-<td><p>Produces stage plan in DOT (graphviz) format</p></td>
-</tr>
-<tr class="row-odd"><td><p>/api/metrics</p></td>
-<td><p>GET</p></td>
-<td><p>Return current scheduler metric set</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="web-tui-configuration">
-<h2>Web TUI Configuration<a class="headerlink" href="#web-tui-configuration" title="Link to this heading">#</a></h2>
-<p>When the Scheduler is built with the <code class="docutils literal notranslate"><span class="pre">rest-api</span></code> feature, several command-line options control its integration with the Web TUI:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Option</p></th>
-<th class="head"><p>Description</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--web-tui-route</span></code></p></td>
-<td><p>HTTP path that redirects to the hosted Web TUI. The default route is <code class="docutils literal notranslate"><span class="pre">/</span></code>.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--cors-allowed-origins</span></code></p></td>
-<td><p>Comma-separated list of allowed CORS origins. By default, <code class="docutils literal notranslate"><span class="pre">http://localhost:8080</span></code> and <code class="docutils literal notranslate"><span class="pre">https://nightlies.apache.org</span></code> are allowed.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--cors-allowed-methods</span></code></p></td>
-<td><p>Comma-separated list of allowed CORS methods. By default, <code class="docutils literal notranslate"><span class="pre">GET</span></code>, <code class="docutils literal notranslate"><span class="pre">PATCH</span></code>, and <code class="docutils literal notranslate"><span class="pre">OPTIONS</span></code> are allowed.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>For example, to expose the Web TUI redirect at <code class="docutils literal notranslate"><span class="pre">http://localhost:50050/tui</span></code>:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ballista-scheduler<span class="w"> </span>--web-tui-route<span class="w"> </span>/tui
+<section id="running-the-history-server">
+<h2>Running the history server<a class="headerlink" href="#running-the-history-server" title="Link to this heading">#</a></h2>
+<p>Point it at the same directory:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>ballista-history-server<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--event-log-dir<span class="w"> </span>/var/lib/ballista/history<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--bind-host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--bind-port<span class="w"> </span><span class="m">50060</span>
 </pre></div>
 </div>
-<p>The CORS options can be customized when hosting the Web TUI from another origin.</p>
+<p>It indexes every completed log in the directory and serves them over the same
+paths as the live scheduler:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Endpoint</p></th>
+<th class="head"><p>Serves</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/jobs</span></code></p></td>
+<td><p>every completed job, newest first</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/job/{job_id}</span></code></p></td>
+<td><p>one job’s summary and plans</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/job/{job_id}/stages</span></code></p></td>
+<td><p>per-stage and per-task detail</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/job/{job_id}/config</span></code></p></td>
+<td><p>the session config the job ran with</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/job/{job_id}/dot</span></code></p></td>
+<td><p>the stage DAG in DOT format</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Because the TUI talks to that same API, you can browse history with:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">BALLISTA__SCHEDULER__URL</span><span class="o">=</span>http://localhost:50060<span class="w"> </span>ballista-cli<span class="w"> </span>--tui
+</pre></div>
+</div>
+<p>The TUI reads its URL from configuration rather than from the <code class="docutils literal notranslate"><span class="pre">--host</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--port</span></code> flags, which set the gRPC scheduler address used for running queries.
+Pointing the TUI somewhere else means setting <code class="docutils literal notranslate"><span class="pre">BALLISTA__SCHEDULER__URL</span></code>, or
+<code class="docutils literal notranslate"><span class="pre">scheduler.url</span></code> in the TUI’s config file. Passing <code class="docutils literal notranslate"><span class="pre">--port</span> <span class="pre">50060</span></code> alone leaves
+the TUI on its default of <code class="docutils literal notranslate"><span class="pre">http://localhost:50050</span></code>, where it either finds your
+live scheduler or reports that the scheduler is down.</p>
+</section>
+<section id="picking-up-new-jobs">
+<h2>Picking up new jobs<a class="headerlink" href="#picking-up-new-jobs" title="Link to this heading">#</a></h2>
+<p>The scheduler keeps writing to the directory while the history server is up, so
+the directory is rescanned every <code class="docutils literal notranslate"><span class="pre">--update-interval-seconds</span></code> (10 by default) and
+jobs that finished since the last pass are added to the list. This works whether
+the scheduler writing the logs is the same process, a different one, or several
+at once, and it does not matter whether the history server or the scheduler
+started first — an event-log directory that does not exist yet is simply empty
+until it appears.</p>
+<p>A rescan only opens logs whose size or modification time has changed, so the
+cost of a pass over a directory that has not changed is one <code class="docutils literal notranslate"><span class="pre">stat</span></code> per file.
+Lowering the interval makes new jobs show up sooner at the cost of more of those
+passes; <code class="docutils literal notranslate"><span class="pre">--update-interval-seconds</span> <span class="pre">0</span></code> turns rescanning off entirely and pins the
+list to what was there at startup.</p>
+<p>Logs that have been deleted are dropped from the list on the next pass, so
+pruning the directory does not leave behind entries that fail when opened.</p>
+<p>Only each job’s summary is held in memory, which is what <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/jobs</span></code> is
+built from. Everything else is read back out of the job’s log when you ask for
+it. A job with many tasks stores megabytes of plan and per-task detail, and
+keeping all of that resident for every job in the directory would put the
+server’s memory use at the mercy of how long you retain logs.</p>
+</section>
+<section id="what-is-recorded">
+<h2>What is recorded<a class="headerlink" href="#what-is-recorded" title="Link to this heading">#</a></h2>
+<p>Each log holds an ordered timeline: the job’s submission, each stage starting
+and ending, and each task finishing with its row counts and compute time. The
+final record carries the finished API responses themselves.</p>
+<p>That last point is what makes replayed output trustworthy. The history server
+does not rebuild a response from stored state; it re-serves the exact response
+the scheduler built while the job was alive. There is no second implementation
+that could drift from the live one.</p>
+<p>Only the final record is served today. The per-task timeline is recorded so a
+future UI can show a job progressing rather than only its end state.</p>
+</section>
+<section id="operational-notes">
+<h2>Operational notes<a class="headerlink" href="#operational-notes" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Disk is not reclaimed automatically.</strong> Logs accumulate until you remove
+them. Size them against your job volume and prune with whatever you already
+use for log rotation.</p></li>
+<li><p><strong>A corrupt log is skipped, not fatal.</strong> If the scheduler dies mid-write the
+affected file simply has no terminal record, so the history server ignores it
+and still serves every other job. Damage confined to a job’s stored responses
+is only found when that job is opened, and shows up as a failed request for
+that one job.</p></li>
+<li><p><strong>Deleting a log takes up to one rescan to show.</strong> Until the next pass the
+job is still listed, and opening it fails.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/jobs</span></code> returns every job in one response.</strong> There is no paging
+yet, so a directory holding a very large number of jobs produces a large
+response. Prune accordingly until paging exists.
+(<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2270">#2270</a>)</p></li>
+<li><p><strong>Plans are rendered once, when the job ends.</strong> The <code class="docutils literal notranslate"><span class="pre">?plan_format=</span></code> query
+parameter therefore has no effect against a history server; it returns the
+format captured at write time.</p></li>
+<li><p><strong>The history server has no cluster behind it.</strong> <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/executors</span></code> returns
+an empty list and <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/state</span></code> returns a static payload, so that TUI
+screens expecting them still load.</p></li>
+</ul>
 </section>
 </section>
 
@@ -538,20 +537,20 @@ that is deprecated too and logs a warning — use <code class="docutils literal 
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="deployment/kubernetes.html"
+       href="scheduler.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Deploying Ballista with Kubernetes</p>
+        <p class="prev-next-title">Ballista Scheduler</p>
       </div>
     </a>
     <a class="right-next"
-       href="history-server.html"
+       href="python/index.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">History Server</p>
+        <p class="prev-next-title">Python Client</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -574,9 +573,11 @@ that is deprecated too and logs a warning — use <code class="docutils literal 
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fetching-query-results">Fetching Query Results</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rest-api">REST API</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#web-tui-configuration">Web TUI Configuration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#enabling-event-logging">Enabling event logging</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-history-server">Running the history server</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#picking-up-new-jobs">Picking up new jobs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-recorded">What is recorded</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#operational-notes">Operational notes</a></li>
 </ul>
   </nav></div>
 
@@ -584,7 +585,7 @@ that is deprecated too and logs a warning — use <code class="docutils literal 
 
   
   <div class="tocsection editthispage">
-    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/user-guide/scheduler.md">
+    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/user-guide/history-server.md">
       <i class="fa-solid fa-pencil"></i>
       
       
@@ -599,7 +600,7 @@ that is deprecated too and logs a warning — use <code class="docutils literal 
   <div class="sidebar-secondary-item">
 
   <div class="tocsection sourcelink">
-    <a href="../_sources/user-guide/scheduler.md.txt">
+    <a href="../_sources/user-guide/history-server.md.txt">
       <i class="fa-solid fa-file-lines"></i> Show Source
     </a>
   </div>
