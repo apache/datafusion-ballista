@@ -59,8 +59,8 @@ ballista-history-server \
   --bind-port 50060
 ```
 
-It scans the directory at startup and indexes every completed log it finds, then
-serves them over the same paths as the live scheduler:
+It indexes every completed log in the directory and serves them over the same
+paths as the live scheduler:
 
 | Endpoint                       | Serves                              |
 | ------------------------------ | ----------------------------------- |
@@ -83,8 +83,24 @@ Pointing the TUI somewhere else means setting `BALLISTA__SCHEDULER__URL`, or
 the TUI on its default of `http://localhost:50050`, where it either finds your
 live scheduler or reports that the scheduler is down.
 
-The directory is scanned once at startup, so restart the history server to pick
-up jobs that finished since it launched.
+## Picking up new jobs
+
+The scheduler keeps writing to the directory while the history server is up, so
+the directory is rescanned every `--update-interval-seconds` (10 by default) and
+jobs that finished since the last pass are added to the list. This works whether
+the scheduler writing the logs is the same process, a different one, or several
+at once, and it does not matter whether the history server or the scheduler
+started first — an event-log directory that does not exist yet is simply empty
+until it appears.
+
+A rescan only opens logs whose size or modification time has changed, so the
+cost of a pass over a directory that has not changed is one `stat` per file.
+Lowering the interval makes new jobs show up sooner at the cost of more of those
+passes; `--update-interval-seconds 0` turns rescanning off entirely and pins the
+list to what was there at startup.
+
+Logs that have been deleted are dropped from the list on the next pass, so
+pruning the directory does not leave behind entries that fail when opened.
 
 Only each job's summary is held in memory, which is what `GET /api/jobs` is
 built from. Everything else is read back out of the job's log when you ask for
@@ -116,8 +132,8 @@ future UI can show a job progressing rather than only its end state.
   and still serves every other job. Damage confined to a job's stored responses
   is only found when that job is opened, and shows up as a failed request for
   that one job.
-- **Do not delete a log out from under a running server.** The job stays in the
-  list until the next restart, and opening it fails.
+- **Deleting a log takes up to one rescan to show.** Until the next pass the
+  job is still listed, and opening it fails.
 - **`GET /api/jobs` returns every job in one response.** There is no paging
   yet, so a directory holding a very large number of jobs produces a large
   response. Prune accordingly until paging exists.

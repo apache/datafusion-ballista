@@ -20,12 +20,13 @@
 //! so the existing TUI can connect to it unchanged.
 
 use ballista_core::error::{BallistaError, Result};
-use ballista_scheduler::history::{HistoryStore, history_router};
+use ballista_scheduler::history::{HistoryStore, history_router, spawn_refresh_task};
 use clap::Parser;
 use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, clap::Parser)]
@@ -44,6 +45,10 @@ struct Args {
     /// Port to bind the HTTP server to.
     #[arg(long, default_value_t = 50060)]
     bind_port: u16,
+    /// How often to rescan the event-log directory for jobs that finished
+    /// since the last pass, in seconds. Set to 0 to scan only at startup.
+    #[arg(long, default_value_t = 10)]
+    update_interval_seconds: u64,
 }
 
 fn main() -> Result<()> {
@@ -77,6 +82,19 @@ fn main() -> Result<()> {
 }
 
 async fn serve(args: Args, store: Arc<HistoryStore>) -> Result<()> {
+    // Schedulers keep writing to this directory while the history server is
+    // up, so without a rescan the list is frozen at whatever had finished when
+    // the process started.
+    if args.update_interval_seconds > 0 {
+        let interval = Duration::from_secs(args.update_interval_seconds);
+        tracing::info!("Rescanning the event-log directory every {interval:?}");
+        spawn_refresh_task(Arc::clone(&store), interval);
+    } else {
+        tracing::info!(
+            "Rescanning is disabled; only jobs indexed at startup will be served"
+        );
+    }
+
     let app = history_router(store);
 
     let addr: SocketAddr = format!("{}:{}", args.bind_host, args.bind_port)
