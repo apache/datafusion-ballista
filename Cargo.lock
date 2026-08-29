@@ -1215,6 +1215,7 @@ version = "54.0.0"
 dependencies = [
  "ballista-api-types",
  "log",
+ "object_store",
  "serde",
  "serde_json",
  "tempfile",

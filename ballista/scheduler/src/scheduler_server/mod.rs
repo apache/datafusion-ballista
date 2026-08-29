@@ -161,10 +161,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         ));
         #[cfg(feature = "rest-api")]
         let event_log = config.event_log_dir.as_ref().map(|dir| {
-            ballista_history::writer::EventLogWriter::new(
-                std::path::PathBuf::from(dir),
-                config.event_loop_buffer_size as usize,
-            )
+            let buffer = config.event_loop_buffer_size as usize;
+            match &config.event_log_store {
+                Some(store) => {
+                    ballista_history::writer::EventLogWriter::with_object_store(
+                        store.clone(),
+                        object_store::path::Path::from(dir.as_str()),
+                        buffer,
+                    )
+                }
+                None => ballista_history::writer::EventLogWriter::new(
+                    std::path::PathBuf::from(dir),
+                    buffer,
+                ),
+            }
         });
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
@@ -215,10 +225,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         ));
         #[cfg(feature = "rest-api")]
         let event_log = config.event_log_dir.as_ref().map(|dir| {
-            ballista_history::writer::EventLogWriter::new(
-                std::path::PathBuf::from(dir),
-                config.event_loop_buffer_size as usize,
-            )
+            let buffer = config.event_loop_buffer_size as usize;
+            match &config.event_log_store {
+                Some(store) => {
+                    ballista_history::writer::EventLogWriter::with_object_store(
+                        store.clone(),
+                        object_store::path::Path::from(dir.as_str()),
+                        buffer,
+                    )
+                }
+                None => ballista_history::writer::EventLogWriter::new(
+                    std::path::PathBuf::from(dir),
+                    buffer,
+                ),
+            }
         });
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),

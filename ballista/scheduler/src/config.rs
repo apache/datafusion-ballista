@@ -33,6 +33,7 @@ use ballista_core::{ConfigProducer, JobId, config::TaskSchedulingPolicy};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use log::{info, warn};
+use object_store::ObjectStore;
 use std::fmt::Display;
 use std::sync::Arc;
 
@@ -408,6 +409,11 @@ pub struct SchedulerConfig {
     pub cors_allowed_methods: String,
     /// Directory to write per-job event logs to. `None` disables event logging.
     pub event_log_dir: Option<String>,
+    /// Object store to persist per-job event logs to. When `None` (the
+    /// default), [`Self::event_log_dir`] is written to the local filesystem;
+    /// when set, `event_log_dir` is used as the key prefix within this store.
+    /// `event_log_dir` must still be set for event logging to be enabled.
+    pub event_log_store: Option<Arc<dyn ObjectStore>>,
     #[cfg(feature = "rest-api")]
     /// The HTTP path that will redirect to the WebTUI app at `https://nightlies.apache.org`
     pub web_tui_route: String,
@@ -459,6 +465,7 @@ impl Default for SchedulerConfig {
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: String::default(),
             event_log_dir: None,
+            event_log_store: None,
             #[cfg(feature = "rest-api")]
             web_tui_route: String::from("/"),
             on_work_available: None,
@@ -687,6 +694,17 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the object store to persist per-job event logs to. With a store set,
+    /// [`Self::with_event_log_dir`] supplies the key prefix within it instead of
+    /// a local filesystem path.
+    pub fn with_event_log_store(
+        mut self,
+        event_log_store: Option<Arc<dyn ObjectStore>>,
+    ) -> Self {
+        self.event_log_store = event_log_store;
+        self
+    }
+
     /// Sets whether TLS should be used when connecting to executors (for flight proxy).
     pub fn with_use_tls(mut self, use_tls: bool) -> Self {
         self.use_tls = use_tls;
@@ -833,6 +851,7 @@ impl TryFrom<Config> for SchedulerConfig {
             #[cfg(feature = "rest-api")]
             cors_allowed_methods: opt.cors_allowed_methods,
             event_log_dir: opt.event_log_dir,
+            event_log_store: None,
             #[cfg(feature = "rest-api")]
             web_tui_route: opt.web_tui_route,
             on_work_available: None,

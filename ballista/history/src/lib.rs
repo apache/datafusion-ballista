@@ -46,12 +46,21 @@
 //!
 //! # Durability
 //!
-//! [`writer::EventLogWriter`] does all file I/O on a background task, so the
-//! scheduler's event loop never waits on a disk write. Timeline events are
-//! dropped rather than allowed to block if the queue backs up, on the grounds
-//! that losing a progress record is better than stalling scheduling. The
-//! terminal `JobEnd` is the exception: it waits for queue capacity, because a
-//! job missing its `JobEnd` is invisible to the history server.
+//! [`writer::EventLogWriter`] does all persistence on a background task, so the
+//! scheduler's event loop never waits on I/O. Timeline events are dropped rather
+//! than allowed to block if the queue backs up, on the grounds that losing a
+//! progress record is better than stalling scheduling. The terminal `JobEnd` is
+//! the exception: it waits for queue capacity, because a job missing its
+//! `JobEnd` is invisible to the history server.
+//!
+//! Persistence goes through the `object_store` abstraction. The default backend
+//! is a local filesystem store rooted at the configured directory; a caller can
+//! supply any other store via [`writer::EventLogWriter::with_object_store`] (the
+//! scheduler exposes this as `SchedulerConfig::with_event_log_store`). Because
+//! an object store has no append, each running job's log is accumulated in
+//! memory and the whole `<job_id>.eventlog` object is written on
+//! [`writer::EventLogWriter::flush_job`] and on the terminal
+//! [`writer::EventLogWriter::finish_job`].
 
 pub mod event;
 pub mod reader;

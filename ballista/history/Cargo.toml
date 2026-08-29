@@ -29,9 +29,10 @@ rust-version = { workspace = true }
 [dependencies]
 ballista-api-types = { workspace = true }
 log = { workspace = true }
+object_store = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
