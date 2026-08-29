@@ -1104,9 +1104,12 @@ mod test {
             .with_ballista_shuffle_reader_remote_prefer_flight(true)
             .with_ballista_use_tls(true)
             .with_ballista_coalesce_enabled(true)
+            .with_ballista_adaptive_query_planner(false)
             .with_ballista_coalesce_small_partition_factor(1.5)
             .with_ballista_coalesce_merged_partition_factor(2.5);
 
+        assert!(plain.ballista_shuffle_reader_force_remote_read());
+        assert!(!plain.ballista_adaptive_query_planner_enabled());
         assert!(plain.ballista_shuffle_reader_force_remote_read());
         assert!(plain.ballista_shuffle_reader_remote_prefer_flight());
         assert!(plain.ballista_use_tls());
