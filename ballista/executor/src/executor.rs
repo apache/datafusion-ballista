@@ -282,6 +282,7 @@ impl Executor {
         stage_id: usize,
         task_id: usize,
     ) -> Result<bool, BallistaError> {
+        // Keep the handle registered until execute_query_stage finishes cleanup.
         if let Some(handle) = self.abort_handles.get(&TaskKey {
             job_id,
             stage_id,
@@ -516,6 +517,7 @@ mod test {
                 .await
                 .expect("cancelling task")
         );
+        assert_eq!(executor.active_task_count(), 1);
 
         // Wait for our task to complete
         let result = tokio::time::timeout(Duration::from_secs(5), receiver).await;
