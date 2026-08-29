@@ -889,15 +889,15 @@ impl datafusion::config::ExtensionOptions for BallistaConfig {
     }
 
     fn entries(&self) -> Vec<datafusion::config::ConfigEntry> {
+        // Emit only keys the user explicitly set; absent keys produce value: None.
+        // The receiving side (scheduler/executor) skips None entries and applies
+        // its own current defaults, so a client built against an older release
+        // cannot silently override newer scheduler defaults with stale values.
         Self::valid_entries()
             .iter()
             .map(|(key, value)| datafusion::config::ConfigEntry {
                 key: key.clone(),
-                value: self
-                    .settings
-                    .get(key)
-                    .cloned()
-                    .or(value.default_value.clone()),
+                value: self.settings.get(key).cloned(),
                 description: &value.description,
             })
             .collect()
@@ -1055,5 +1055,41 @@ mod tests {
             .get(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
             .expect("entry is registered");
         assert_eq!(batch_size.doc_default(), Some("8192"));
+    }
+
+    // A default BallistaConfig must not emit any key with a concrete value.
+    // Stale client defaults must not override the scheduler's current defaults.
+    #[test]
+    fn default_ballista_config_emits_no_values_over_wire() {
+        let config = BallistaConfig::default();
+        let entries = datafusion::config::ExtensionOptions::entries(&config);
+        for entry in &entries {
+            assert!(
+                entry.value.is_none(),
+                "BallistaConfig::default() should not emit a value for `{}` \
+                 (got {:?}); only explicitly-set keys should be sent to the scheduler",
+                entry.key,
+                entry.value,
+            );
+        }
+    }
+
+    // An explicitly configured key must still be forwarded to the scheduler.
+    #[test]
+    fn explicitly_set_key_is_present_in_entries() {
+        use datafusion::config::ExtensionOptions;
+        let mut config = BallistaConfig::default();
+        config.set("planner.adaptive.enabled", "false").unwrap();
+
+        let entries = datafusion::config::ExtensionOptions::entries(&config);
+        let adaptive = entries
+            .iter()
+            .find(|e| e.key == BALLISTA_ADAPTIVE_PLANNER_ENABLED)
+            .expect("adaptive planner key must be present after explicit set");
+        assert_eq!(
+            adaptive.value.as_deref(),
+            Some("false"),
+            "explicitly-set value must be forwarded to the scheduler"
+        );
     }
 }
