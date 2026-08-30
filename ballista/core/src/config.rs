@@ -809,7 +809,7 @@ impl BallistaConfig {
     }
 
     /// Deprecated alias for [`Self::use_tls`].
-    #[deprecated(note = "renamed to `use_tls`")]
+    #[deprecated(since = "55.0.0", note = "renamed to `use_tls`")]
     pub fn client_use_tls(&self) -> bool {
         self.use_tls()
     }
