@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 
 /// Summary of one job, served by `GET /api/jobs` and `GET /api/job/{job_id}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct JobResponse {
     /// A `String` rather than `ballista_core::JobId` so this crate stays a
     /// serde-only leaf. `JobId` is `#[serde(transparent)]` over `String`, so
@@ -57,6 +58,7 @@ pub struct JobResponse {
 
 /// Terminal or in-flight state of a single task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum TaskStatus {
     /// Task is currently executing.
     Running,
@@ -73,6 +75,7 @@ pub enum TaskStatus {
 
 /// Per-task detail within a stage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct TaskSummary {
     /// task id
     pub id: usize,
@@ -103,6 +106,7 @@ pub struct TaskSummary {
 
 /// Five-number summary over a stage's tasks, used to spot skew.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct Percentiles {
     /// Smallest observed value.
     pub min: u64,
@@ -118,6 +122,7 @@ pub struct Percentiles {
 
 /// Summary of one query stage, served by `GET /api/job/{job_id}/stages`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct QueryStageSummary {
     /// Stage id, as a string.
     pub stage_id: String,
@@ -146,6 +151,7 @@ pub struct QueryStageSummary {
 
 /// Response body for `GET /api/job/{job_id}/stages`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct QueryStagesResponse {
     /// One summary per stage, in stage order.
     pub stages: Vec<QueryStageSummary>,
@@ -155,6 +161,7 @@ pub struct QueryStagesResponse {
 /// parameter, and part of the REST contract, so it lives alongside the
 /// response types rather than with the HTTP handlers.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PlanFormat {
     /// `?plan_format=default` => plain indent, no metrics
@@ -172,3 +179,20 @@ pub enum PlanFormat {
 /// A `BTreeMap` so key order is deterministic: the same job must serialize
 /// identically whether it is served live or replayed from a stored log.
 pub type JobConfig = BTreeMap<String, String>;
+
+#[cfg(all(test, feature = "utoipa"))]
+mod tests {
+    use super::*;
+    use utoipa::ToSchema;
+
+    #[test]
+    fn test_dto_schemas() {
+        assert_eq!(JobResponse::name(), "JobResponse");
+        assert_eq!(TaskStatus::name(), "TaskStatus");
+        assert_eq!(TaskSummary::name(), "TaskSummary");
+        assert_eq!(Percentiles::name(), "Percentiles");
+        assert_eq!(QueryStageSummary::name(), "QueryStageSummary");
+        assert_eq!(QueryStagesResponse::name(), "QueryStagesResponse");
+        assert_eq!(PlanFormat::name(), "PlanFormat");
+    }
+}
