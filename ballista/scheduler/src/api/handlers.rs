@@ -21,7 +21,7 @@ use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
 };
-use ballista_api_types::dto::{JobResponse, PlanFormat};
+use ballista_api_types::dto::{JobResponse, PlanFormat, QueryStagesResponse};
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{ExecutorMetric, executor_metric::Metric};
@@ -42,40 +42,62 @@ use http::{HeaderMap, StatusCode, header::CONTENT_TYPE};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, serde::Serialize)]
-struct SchedulerStateResponse {
-    started: u128,
-    version: &'static str,
-    datafusion_version: &'static str,
-    substrait_support: bool,
-    keda_support: bool,
-    prometheus_support: bool,
-    graphviz_support: bool,
-    spark_support: bool,
-    scheduling_policy: String,
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct SchedulerStateResponse {
+    pub started: u128,
+    pub version: &'static str,
+    pub datafusion_version: &'static str,
+    pub substrait_support: bool,
+    pub keda_support: bool,
+    pub prometheus_support: bool,
+    pub graphviz_support: bool,
+    pub spark_support: bool,
+    pub scheduling_policy: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    advertise_flight_endpoint: Option<String>,
-    enable_embedded_flight_proxy: bool,
+    pub advertise_flight_endpoint: Option<String>,
+    pub enable_embedded_flight_proxy: bool,
 }
 
-#[derive(Debug, serde::Serialize)]
-struct SchedulerVersionResponse {
-    version: &'static str,
-    datafusion_version: &'static str,
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct SchedulerVersionResponse {
+    pub version: &'static str,
+    pub datafusion_version: &'static str,
 }
 
-#[derive(Debug, serde::Serialize)]
+/// Specification of an executor, indicating its runtime-assigned vcore count.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[schema(as = ExecutorSpecification)]
+pub struct ExecutorSpecificationSchema {
+    /// Virtual cores assigned to this executor at runtime
+    pub vcores: u32,
+}
+
+/// Operating system level specification of an executor.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[schema(as = ExecutorOperatingSystemSpecification)]
+pub struct ExecutorOperatingSystemSpecificationSchema {
+    /// System name
+    pub system_name: String,
+    /// Kernel version
+    pub kernel_ver: String,
+    /// OS version
+    pub os_ver: String,
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ExecutorResponse {
     pub id: String,
     pub host: String,
     pub port: u16,
     pub last_seen: Option<u128>,
+    #[schema(value_type = ExecutorSpecificationSchema)]
     pub specification: ExecutorSpecification,
     pub metrics: Vec<ExecutorMetricResponse>,
+    #[schema(value_type = ExecutorOperatingSystemSpecificationSchema)]
     pub os_info: ExecutorOperatingSystemSpecification,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 #[allow(clippy::enum_variant_names)]
 pub enum ExecutorMetricResponse {
@@ -102,14 +124,15 @@ impl ExecutorMetricResponse {
     }
 }
 
-#[derive(Debug, serde::Serialize)]
-struct CancelJobResponse {
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct CancelJobResponse {
     pub cancelled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, Default)]
+#[derive(Debug, serde::Deserialize, Default, utoipa::IntoParams, utoipa::ToSchema)]
+#[into_params(parameter_in = Query)]
 pub struct JobQueryParams {
     /// Controls plan format
     pub plan_format: Option<PlanFormat>,
@@ -167,6 +190,14 @@ pub async fn get_webtui<
     Ok(Redirect::to(&target))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/state",
+    tag = "state",
+    responses(
+        (status = 200, description = "Scheduler state and feature configuration", body = SchedulerStateResponse)
+    )
+)]
 pub async fn get_scheduler_state<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -196,6 +227,14 @@ pub async fn get_scheduler_state<
     Json(response)
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/version",
+    tag = "version",
+    responses(
+        (status = 200, description = "Scheduler and DataFusion version information", body = SchedulerVersionResponse)
+    )
+)]
 pub async fn get_scheduler_version() -> impl IntoResponse {
     let response = SchedulerVersionResponse {
         version: BALLISTA_VERSION,
@@ -204,6 +243,14 @@ pub async fn get_scheduler_version() -> impl IntoResponse {
     Json(response)
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/executors",
+    tag = "executors",
+    responses(
+        (status = 200, description = "List of registered executors", body = Vec<ExecutorResponse>)
+    )
+)]
 pub async fn get_executors<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -234,6 +281,18 @@ pub async fn get_executors<
     Json(executors)
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/executor/{executor_id}",
+    tag = "executors",
+    params(
+        ("executor_id" = String, Path, description = "Unique executor identifier")
+    ),
+    responses(
+        (status = 200, description = "Executor details", body = ExecutorResponse),
+        (status = 404, description = "Executor not found", body = SchedulerErrorResponse)
+    )
+)]
 pub async fn get_executor_info<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -267,6 +326,15 @@ pub async fn get_executor_info<
         .ok_or(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/jobs",
+    tag = "jobs",
+    responses(
+        (status = 200, description = "List of all jobs", body = Vec<JobResponse>),
+        (status = 500, description = "Internal server error", body = SchedulerErrorResponse)
+    )
+)]
 pub async fn get_jobs<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -288,6 +356,20 @@ pub async fn get_jobs<
     Ok(Json(jobs))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/job/{job_id}",
+    tag = "jobs",
+    params(
+        ("job_id" = String, Path, description = "Unique job identifier"),
+        JobQueryParams
+    ),
+    responses(
+        (status = 200, description = "Job details", body = JobResponse),
+        (status = 404, description = "Job not found", body = SchedulerErrorResponse),
+        (status = 500, description = "Internal server error", body = SchedulerErrorResponse)
+    )
+)]
 pub async fn get_job<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -313,6 +395,20 @@ pub async fn get_job<
     )))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/job/{job_id}",
+    tag = "jobs",
+    params(
+        ("job_id" = String, Path, description = "Unique job identifier")
+    ),
+    responses(
+        (status = 200, description = "Job cancellation accepted", body = CancelJobResponse),
+        (status = 404, description = "Job not found", body = SchedulerErrorResponse),
+        (status = 409, description = "Job is in terminal state", body = CancelJobResponse),
+        (status = 500, description = "Internal server error", body = SchedulerErrorResponse)
+    )
+)]
 pub async fn cancel_job<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -380,6 +476,20 @@ pub async fn cancel_job<
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/job/{job_id}/stages",
+    tag = "jobs",
+    params(
+        ("job_id" = String, Path, description = "Unique job identifier"),
+        JobQueryParams
+    ),
+    responses(
+        (status = 200, description = "Query stages summary", body = QueryStagesResponse),
+        (status = 404, description = "Job not found", body = SchedulerErrorResponse),
+        (status = 500, description = "Internal server error", body = SchedulerErrorResponse)
+    )
+)]
 pub async fn get_query_stages<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -411,6 +521,19 @@ pub async fn get_query_stages<
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/job/{job_id}/dot",
+    tag = "graphs",
+    params(
+        ("job_id" = String, Path, description = "Unique job identifier")
+    ),
+    responses(
+        (status = 200, description = "Job execution graph in Graphviz DOT format", content_type = "text/plain", body = String),
+        (status = 404, description = "Job not found", body = SchedulerErrorResponse),
+        (status = 500, description = "Internal server error", body = SchedulerErrorResponse)
+    )
+)]
 pub async fn get_job_dot_graph<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -438,6 +561,20 @@ pub async fn get_job_dot_graph<
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/job/{job_id}/stage/{stage_id}/dot",
+    tag = "graphs",
+    params(
+        ("job_id" = String, Path, description = "Unique job identifier"),
+        ("stage_id" = usize, Path, description = "Stage identifier")
+    ),
+    responses(
+        (status = 200, description = "Query stage graph in Graphviz DOT format", content_type = "text/plain", body = String),
+        (status = 404, description = "Job or stage not found", body = SchedulerErrorResponse),
+        (status = 500, description = "Internal server error", body = SchedulerErrorResponse)
+    )
+)]
 pub async fn get_query_stage_dot_graph<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -459,6 +596,20 @@ pub async fn get_query_stage_dot_graph<
     }
 }
 #[cfg(feature = "graphviz-support")]
+#[utoipa::path(
+    get,
+    path = "/api/job/{job_id}/dot_svg",
+    tag = "graphs",
+    params(
+        ("job_id" = String, Path, description = "Unique job identifier")
+    ),
+    responses(
+        (status = 200, description = "Job execution graph rendered as SVG", content_type = "image/svg+xml", body = String),
+        (status = 400, description = "DOT parsing or graphviz execution error", body = SchedulerErrorResponse),
+        (status = 404, description = "Job not found", body = SchedulerErrorResponse),
+        (status = 500, description = "Internal server error", body = SchedulerErrorResponse)
+    )
+)]
 pub async fn get_job_svg_graph<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -492,6 +643,16 @@ pub async fn get_job_svg_graph<
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/metrics",
+    tag = "metrics",
+    responses(
+        (status = 200, description = "Prometheus text metrics", content_type = "text/plain; version=0.0.4; charset=utf-8", body = String),
+        (status = 204, description = "No metrics collected"),
+        (status = 500, description = "Internal server error")
+    )
+)]
 pub async fn get_scheduler_metrics<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
@@ -514,6 +675,18 @@ pub async fn get_scheduler_metrics<
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/job/{job_id}/config",
+    tag = "jobs",
+    params(
+        ("job_id" = String, Path, description = "Unique job identifier")
+    ),
+    responses(
+        (status = 200, description = "Job session configuration properties", body = std::collections::BTreeMap<String, String>),
+        (status = 404, description = "Job not found", body = SchedulerErrorResponse)
+    )
+)]
 pub async fn get_job_config<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,

@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::api::handlers;
+use crate::api::{handlers, openapi};
 use crate::config::SchedulerConfig;
 use crate::scheduler_server::SchedulerServer;
 use axum::{Router, routing::get};
@@ -31,6 +31,7 @@ pub fn get_routes<
 
     let router = Router::new()
         .route(&web_tui_route, get(handlers::get_webtui))
+        .route("/api/openapi.json", get(openapi::get_openapi_spec))
         .route("/api/state", get(handlers::get_scheduler_state::<T, U>))
         .route("/api/version", get(handlers::get_scheduler_version))
         .route("/api/executors", get(handlers::get_executors::<T, U>))
