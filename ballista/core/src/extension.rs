@@ -399,6 +399,12 @@ macro_rules! ballista_set_scalar {
 /// present. The `SessionConfig` setter (and any value conversion) is derived
 /// from `$ty` via [ballista_set_scalar].
 ///
+/// Generated trait method name is derived from `$config_method`,
+/// this couples `BallistaConfig`'s public getter names to `SessionConfigExt`'s
+/// public method names: the two can no longer be renamed independently, since
+/// renaming a `BallistaConfig` getter also renames the `SessionConfigExt`
+/// method(s) generated for it here.
+///
 /// Write `<config_method> as <setter_name>` when the setter doesn't follow
 /// the `with_ballista_<config_method>` convention.
 macro_rules! ballista_config_option {
@@ -1092,7 +1098,7 @@ mod test {
 
     #[test]
     fn should_round_trip_all_macro_generated_options() {
-        let plain = SessionConfig::new_with_ballista()
+        let config = SessionConfig::new_with_ballista()
             .with_ballista_standalone_parallelism(123)
             .with_ballista_grpc_client_max_message_size(456)
             .with_ballista_broadcast_join_threshold_bytes(789)
@@ -1108,24 +1114,45 @@ mod test {
             .with_ballista_coalesce_small_partition_factor(1.5)
             .with_ballista_coalesce_merged_partition_factor(2.5);
 
-        assert!(plain.ballista_shuffle_reader_force_remote_read());
-        assert!(!plain.ballista_adaptive_query_planner_enabled());
-        assert!(plain.ballista_shuffle_reader_force_remote_read());
-        assert!(plain.ballista_shuffle_reader_remote_prefer_flight());
-        assert!(plain.ballista_use_tls());
-        assert!(plain.ballista_coalesce_enabled());
-        assert_eq!(plain.ballista_standalone_parallelism(), 123);
-        assert_eq!(plain.ballista_grpc_client_max_message_size(), 456);
-        assert_eq!(plain.ballista_broadcast_join_threshold_bytes(), 789);
-        assert_eq!(plain.ballista_broadcast_join_threshold_rows(), 42);
-        assert_eq!(plain.ballista_hash_join_max_build_partition_bytes(), 999);
-        assert_eq!(plain.ballista_coalesce_target_partition_bytes(), 2048);
-        assert_eq!(plain.ballista_coalesce_small_partition_factor(), 1.5);
-        assert_eq!(plain.ballista_coalesce_merged_partition_factor(), 2.5);
+        assert!(!config.ballista_adaptive_query_planner_enabled());
+        assert!(config.ballista_shuffle_reader_force_remote_read());
+        assert!(config.ballista_shuffle_reader_remote_prefer_flight());
+        assert!(config.ballista_use_tls());
+        assert!(config.ballista_coalesce_enabled());
+        assert_eq!(config.ballista_standalone_parallelism(), 123);
+        assert_eq!(config.ballista_grpc_client_max_message_size(), 456);
+        assert_eq!(config.ballista_broadcast_join_threshold_bytes(), 789);
+        assert_eq!(config.ballista_broadcast_join_threshold_rows(), 42);
+        assert_eq!(config.ballista_hash_join_max_build_partition_bytes(), 999);
+        assert_eq!(config.ballista_coalesce_target_partition_bytes(), 2048);
+        assert_eq!(config.ballista_coalesce_small_partition_factor(), 1.5);
+        assert_eq!(config.ballista_coalesce_merged_partition_factor(), 2.5);
         assert_eq!(
-            plain.ballista_shuffle_reader_maximum_concurrent_requests(),
+            config.ballista_shuffle_reader_maximum_concurrent_requests(),
             7
         );
+    }
+
+    #[test]
+    fn should_round_trip_macro_generated_options_insert_ballista_config() {
+        let config = SessionConfig::new().with_ballista_standalone_parallelism(123);
+        assert_eq!(config.ballista_standalone_parallelism(), 123);
+
+        let config = SessionConfig::new().with_ballista_grpc_client_max_message_size(456);
+        assert_eq!(config.ballista_grpc_client_max_message_size(), 456);
+
+        let config =
+            SessionConfig::new().with_ballista_broadcast_join_threshold_bytes(789);
+        assert_eq!(config.ballista_broadcast_join_threshold_bytes(), 789);
+
+        let config = SessionConfig::new().with_ballista_use_tls(true);
+        assert!(config.ballista_use_tls());
+
+        let config = SessionConfig::new().with_ballista_use_tls(false);
+        assert!(!config.ballista_use_tls());
+
+        let config = SessionConfig::new().with_ballista_coalesce_enabled(true);
+        assert!(config.ballista_coalesce_enabled());
     }
 
     #[test]

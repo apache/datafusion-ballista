@@ -586,7 +586,7 @@ impl BallistaConfig {
     }
 
     /// Deprecated alias for [`Self::standalone_parallelism`].
-    #[deprecated(note = "renamed to `standalone_parallelism`")]
+    #[deprecated(since = "55.0.0", note = "renamed to `standalone_parallelism`")]
     pub fn default_standalone_parallelism(&self) -> usize {
         self.standalone_parallelism()
     }
