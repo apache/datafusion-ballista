@@ -59,6 +59,7 @@ itertools = "0.15"
 mimalloc = { version = "0.1" }
 object_store = "0.13.2"
 ordered-float = "5"
+pastey = "0.2.3"
 prost = "0.14"
 prost-types = "0.14"
 rstest = { version = "0.26" }
