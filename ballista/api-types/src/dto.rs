@@ -183,7 +183,26 @@ pub type JobConfig = BTreeMap<String, String>;
 #[cfg(all(test, feature = "utoipa"))]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use utoipa::ToSchema;
+
+    fn get_schema_property_names<T: ToSchema>() -> BTreeSet<String> {
+        let schema_ref = T::schema();
+        match schema_ref {
+            utoipa::openapi::RefOr::T(utoipa::openapi::Schema::Object(obj)) => {
+                obj.properties.keys().cloned().collect()
+            }
+            _ => panic!("Expected Object schema"),
+        }
+    }
+
+    fn get_json_property_names<T: Serialize>(value: &T) -> BTreeSet<String> {
+        let json = serde_json::to_value(value).expect("serialize to value");
+        match json {
+            serde_json::Value::Object(map) => map.keys().cloned().collect(),
+            _ => panic!("Expected JSON Object"),
+        }
+    }
 
     #[test]
     fn test_dto_schemas() {
@@ -194,5 +213,41 @@ mod tests {
         assert_eq!(QueryStageSummary::name(), "QueryStageSummary");
         assert_eq!(QueryStagesResponse::name(), "QueryStagesResponse");
         assert_eq!(PlanFormat::name(), "PlanFormat");
+
+        let task_summary = TaskSummary {
+            id: 1,
+            status: TaskStatus::Running,
+            partition_id: vec![0],
+            scheduled_time: 100,
+            launch_time: 100,
+            start_exec_time: 100,
+            end_exec_time: 200,
+            exec_duration: 100,
+            finish_time: 200,
+            input_rows: 10,
+            output_rows: 10,
+        };
+        assert_eq!(
+            get_schema_property_names::<TaskSummary>(),
+            get_json_property_names(&task_summary)
+        );
+
+        let percentiles = Percentiles {
+            min: 1,
+            p25: 2,
+            median: 3,
+            p75: 4,
+            max: 5,
+        };
+        assert_eq!(
+            get_schema_property_names::<Percentiles>(),
+            get_json_property_names(&percentiles)
+        );
+
+        let query_stages = QueryStagesResponse { stages: vec![] };
+        assert_eq!(
+            get_schema_property_names::<QueryStagesResponse>(),
+            get_json_property_names(&query_stages)
+        );
     }
 }

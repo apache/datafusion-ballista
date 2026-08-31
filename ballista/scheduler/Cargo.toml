@@ -48,6 +48,7 @@ keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
 rest-api = [
     "ballista-api-types?/utoipa",
+    "ballista-core/utoipa",
     "dep:ballista-api-types",
     "dep:ballista-history",
     "dep:serde_json",

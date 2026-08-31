@@ -42,6 +42,7 @@ docsrs = []
 # Used for testing ONLY: causes all values to hash to the same value (test for collisions)
 force_hash_collisions = ["datafusion/force_hash_collisions"]
 spark-compat = ["dep:datafusion-spark"]
+utoipa = ["dep:utoipa"]
 
 [dependencies]
 arrow-flight = { workspace = true }
@@ -70,6 +71,7 @@ tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 url = { workspace = true }
+utoipa = { workspace = true, optional = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

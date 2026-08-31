@@ -81,6 +81,7 @@ log = { version = "0.4" }
 parking_lot = { version = "0.12" }
 rand = { version = "0.10" }
 serde = { version = "1.0" }
+serde_json = { version = "1.0" }
 tempfile = { version = "3.27" }
 tokio = { version = "1" }
 tokio-stream = { version = "0.1" }
