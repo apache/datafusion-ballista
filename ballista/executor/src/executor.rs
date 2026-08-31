@@ -260,6 +260,7 @@ impl Executor {
             }
         };
 
+        // cancel_task only signals the abort; this task owns removal after unwinding.
         self.abort_handles.remove(&key);
         self.wake_tasks_drained();
 
@@ -282,7 +283,7 @@ impl Executor {
         stage_id: usize,
         task_id: usize,
     ) -> Result<bool, BallistaError> {
-        // Keep the handle registered until execute_query_stage finishes cleanup.
+        // execute_query_stage removes the handle after the aborted task unwinds.
         if let Some(handle) = self.abort_handles.get(&TaskKey {
             job_id,
             stage_id,
