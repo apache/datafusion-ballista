@@ -64,36 +64,14 @@ pub struct SchedulerVersionResponse {
     pub datafusion_version: &'static str,
 }
 
-/// Specification of an executor, indicating its runtime-assigned vcore count.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
-#[schema(as = ExecutorSpecification)]
-pub struct ExecutorSpecificationSchema {
-    /// Virtual cores assigned to this executor at runtime
-    pub vcores: u32,
-}
-
-/// Operating system level specification of an executor.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
-#[schema(as = ExecutorOperatingSystemSpecification)]
-pub struct ExecutorOperatingSystemSpecificationSchema {
-    /// System name
-    pub system_name: String,
-    /// Kernel version
-    pub kernel_ver: String,
-    /// OS version
-    pub os_ver: String,
-}
-
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ExecutorResponse {
     pub id: String,
     pub host: String,
     pub port: u16,
     pub last_seen: Option<u128>,
-    #[schema(value_type = ExecutorSpecificationSchema)]
     pub specification: ExecutorSpecification,
     pub metrics: Vec<ExecutorMetricResponse>,
-    #[schema(value_type = ExecutorOperatingSystemSpecificationSchema)]
     pub os_info: ExecutorOperatingSystemSpecification,
 }
 
