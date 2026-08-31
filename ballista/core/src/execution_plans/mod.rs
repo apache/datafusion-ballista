@@ -29,6 +29,7 @@ pub mod plan_algebra;
 mod prefix_merge;
 mod range_filter;
 mod range_repartition_common;
+pub mod range_shuffle;
 mod range_shuffle_reader;
 mod runtime_stats;
 mod shuffle_reader;
@@ -52,6 +53,7 @@ pub use per_partition_filter::{PerPartitionFilterExec, range_partition_predicate
 pub use plan_algebra::{preserves_distribution, preserves_partitioning};
 pub use prefix_merge::{FinalizedPartitionState, PrefixMergeExec, ScalarOp, WindowApply};
 pub use range_filter::{InputOrder, RangeBound, RangeFilterExec, WidenedBound};
+pub use range_shuffle::RangeShuffleWriterExec;
 pub use range_shuffle_reader::RangeShuffleReaderExec;
 pub use runtime_stats::{
     MergedRuntimeStats, RuntimeStatsExec, TaskRuntimeStats,

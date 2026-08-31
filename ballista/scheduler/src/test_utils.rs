@@ -602,76 +602,6 @@ impl SchedulerTest {
             .await
     }
 
-    /// Waits for job completion with a timeout in milliseconds.
-    pub async fn await_completion_timeout(
-        &self,
-        job_id: &JobId,
-        timeout_ms: u64,
-    ) -> Result<JobStatus> {
-        let mut time = 0;
-        let final_status: Result<JobStatus> = loop {
-            let status = self
-                .scheduler
-                .state
-                .task_manager
-                .get_job_status(job_id)
-                .await?;
-
-            if let Some(JobStatus {
-                status: Some(inner),
-                ..
-            }) = status.as_ref()
-            {
-                match inner {
-                    Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap());
-                    }
-                    _ => {
-                        if time >= timeout_ms {
-                            break Ok(status.unwrap());
-                        } else {
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            time += 100;
-        };
-
-        final_status
-    }
-
-    /// Waits for job completion indefinitely.
-    pub async fn await_completion(&self, job_id: &JobId) -> Result<JobStatus> {
-        let final_status: Result<JobStatus> = loop {
-            let status = self
-                .scheduler
-                .state
-                .task_manager
-                .get_job_status(job_id)
-                .await?;
-
-            if let Some(JobStatus {
-                status: Some(inner),
-                ..
-            }) = status.as_ref()
-            {
-                match inner {
-                    Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap());
-                    }
-                    _ => continue,
-                }
-            }
-
-            tokio::time::sleep(Duration::from_millis(100)).await
-        };
-
-        final_status
-    }
-
     /// Returns job status and job_id
     pub async fn run(
         &mut self,
@@ -720,16 +650,11 @@ impl SchedulerTest {
                 .await?;
 
             if let Some(JobStatus {
-                status: Some(inner),
+                status: Some(Status::Failed(_) | Status::Successful(_)),
                 ..
             }) = status.as_ref()
             {
-                match inner {
-                    Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap());
-                    }
-                    _ => continue,
-                }
+                break Ok(status.unwrap());
             }
 
             tokio::time::sleep(Duration::from_millis(100)).await

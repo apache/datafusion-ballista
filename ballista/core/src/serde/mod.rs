@@ -59,9 +59,9 @@ use crate::execution_plans::{
     BufferExec, BufferMode, ChaosExec, CoalescePlan, FinalizedPartitionState, InputOrder,
     OrderedRangeRepartitionExec, PartitionGroup, PartitionedBoundedWindowAggExec,
     PerPartitionFilterExec, PrefixMergeExec, RangeFilterExec, RangeShuffleReaderExec,
-    RuntimeStatsExec, ScalarOp, ShuffleReaderExec, ShuffleWriterExec,
-    SortShuffleWriterExec, UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
-    WindowApply,
+    RangeShuffleWriterExec, RuntimeStatsExec, ScalarOp, ShuffleReaderExec,
+    ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
+    UnresolvedShuffleExec, WindowApply,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -554,6 +554,24 @@ fn decode_scalar_op(op: protobuf::ScalarOpNode) -> ScalarOp {
     }
 }
 
+/// Decode a `ScalarValue` carried on a Ballista physical plan node.
+fn scalar_from_proto(
+    proto: &datafusion_proto_common::ScalarValue,
+) -> Result<datafusion::scalar::ScalarValue, DataFusionError> {
+    datafusion::scalar::ScalarValue::try_from(proto).map_err(|e| {
+        DataFusionError::Internal(format!("failed to decode ScalarValue: {e:?}"))
+    })
+}
+
+/// Encode a `ScalarValue` for a Ballista physical plan node.
+fn scalar_to_proto(
+    value: &datafusion::scalar::ScalarValue,
+) -> Result<datafusion_proto_common::ScalarValue, DataFusionError> {
+    datafusion_proto_common::ScalarValue::try_from(value).map_err(|e| {
+        DataFusionError::Internal(format!("failed to encode ScalarValue: {e:?}"))
+    })
+}
+
 impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
     fn try_decode(
         &self,
@@ -597,6 +615,16 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // this is intentional but hacky - the executor will fill this in
+                )?))
+            }
+            PhysicalPlanType::RangeShuffleWriter(range_shuffle_writer) => {
+                let input = inputs[0].clone();
+
+                Ok(Arc::new(RangeShuffleWriterExec::try_new(
+                    range_shuffle_writer.job_id.clone().into(),
+                    range_shuffle_writer.stage_id as usize,
+                    input,
+                    "".to_string(), // the executor fills the work dir in
                 )?))
             }
             PhysicalPlanType::SortShuffleWriter(sort_shuffle_writer) => {
@@ -735,10 +763,29 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     partition_location,
                     schema,
                     merge_ordering,
-                )?;
-                Ok(Arc::new(
-                    reader.with_fetch_limit(range_reader.fetch.map(|f| f as usize)),
-                ))
+                )?
+                .with_fetch_limit(range_reader.fetch.map(|f| f as usize));
+
+                // Empty means the scheduler had no cuts to give, which is a
+                // reader that reads its sources whole — not a reader whose
+                // every partition covers nothing.
+                let reader = if range_reader.bounds.is_empty() {
+                    reader
+                } else {
+                    let bounds = range_reader
+                        .bounds
+                        .iter()
+                        .map(|bound| {
+                            let lo =
+                                bound.lo.as_ref().map(scalar_from_proto).transpose()?;
+                            let hi =
+                                bound.hi.as_ref().map(scalar_from_proto).transpose()?;
+                            Ok::<_, DataFusionError>((lo, hi))
+                        })
+                        .collect::<Result<Vec<_>, DataFusionError>>()?;
+                    reader.with_bounds(bounds)?
+                };
+                Ok(Arc::new(reader))
             }
             PhysicalPlanType::UnresolvedShuffle(unresolved_shuffle) => {
                 let schema: SchemaRef =
@@ -942,31 +989,24 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         })
                     }
                 });
-                let sv_from_proto = |p: &datafusion_proto_common::ScalarValue| {
-                    datafusion::scalar::ScalarValue::try_from(p).map_err(|e| {
-                        DataFusionError::Internal(format!(
-                            "RangeFilterExec: failed to decode ScalarValue: {e:?}"
-                        ))
-                    })
-                };
                 let halo_lo_proto = node.halo_lo.as_ref().ok_or_else(|| {
                     DataFusionError::Internal(
                         "RangeFilterExecNode missing halo_lo".into(),
                     )
                 })?;
-                let halo_lo = sv_from_proto(halo_lo_proto)?;
+                let halo_lo = scalar_from_proto(halo_lo_proto)?;
                 let halo_hi_proto = node.halo_hi.as_ref().ok_or_else(|| {
                     DataFusionError::Internal(
                         "RangeFilterExecNode missing halo_hi".into(),
                     )
                 })?;
-                let halo_hi = sv_from_proto(halo_hi_proto)?;
+                let halo_hi = scalar_from_proto(halo_hi_proto)?;
                 let raw_bounds = node
                     .raw_bounds
                     .iter()
                     .map(|b| {
-                        let lo = b.lo.as_ref().map(sv_from_proto).transpose()?;
-                        let hi = b.hi.as_ref().map(sv_from_proto).transpose()?;
+                        let lo = b.lo.as_ref().map(scalar_from_proto).transpose()?;
+                        let hi = b.hi.as_ref().map(scalar_from_proto).transpose()?;
                         Ok::<_, DataFusionError>((lo, hi))
                     })
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
@@ -1030,6 +1070,24 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode shuffle writer execution plan: {e:?}"
+                ))
+            })?;
+
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<RangeShuffleWriterExec>() {
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::RangeShuffleWriter(
+                    protobuf::RangeShuffleWriterExecNode {
+                        job_id: exec.job_id().to_string(),
+                        stage_id: exec.stage_id() as u32,
+                        input: None,
+                    },
+                )),
+            };
+
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode range shuffle writer execution plan: {e:?}"
                 ))
             })?;
 
@@ -1154,6 +1212,16 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         schema: Some(exec.schema().as_ref().try_into()?),
                         merge_ordering,
                         fetch: exec.fetch().map(|f| f as u64),
+                        bounds: exec
+                            .bounds()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|(lo, hi)| {
+                                let lo = lo.as_ref().map(scalar_to_proto).transpose()?;
+                                let hi = hi.as_ref().map(scalar_to_proto).transpose()?;
+                                Ok::<_, DataFusionError>(protobuf::RangeBound { lo, hi })
+                            })
+                            .collect::<Result<Vec<_>, DataFusionError>>()?,
                     },
                 )),
             };
@@ -1343,20 +1411,13 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     exec.filter_expr(),
                     self.default_codec.as_ref(),
                 )?;
-            let encode_sv = |sv: &datafusion::scalar::ScalarValue| {
-                datafusion_proto_common::ScalarValue::try_from(sv).map_err(|e| {
-                    DataFusionError::Internal(format!(
-                        "failed to encode RangeFilterExec ScalarValue: {e:?}"
-                    ))
-                })
-            };
-            let halo_lo = encode_sv(exec.halo_lo())?;
-            let halo_hi = encode_sv(exec.halo_hi())?;
+            let halo_lo = scalar_to_proto(exec.halo_lo())?;
+            let halo_hi = scalar_to_proto(exec.halo_hi())?;
             let raw_bounds_proto = raw_bounds
                 .iter()
                 .map(|(lo, hi)| {
-                    let lo = lo.as_ref().map(&encode_sv).transpose()?;
-                    let hi = hi.as_ref().map(&encode_sv).transpose()?;
+                    let lo = lo.as_ref().map(&scalar_to_proto).transpose()?;
+                    let hi = hi.as_ref().map(&scalar_to_proto).transpose()?;
                     Ok::<_, DataFusionError>(protobuf::RangeBound { lo, hi })
                 })
                 .collect::<Result<Vec<_>, DataFusionError>>()?;

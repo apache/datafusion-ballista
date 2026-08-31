@@ -35,8 +35,8 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 
 use crate::execution_plans::{
-    BufferExec, PrefixMergeExec, RangeFilterExec, RuntimeStatsExec, ShuffleWriterExec,
-    SortShuffleWriterExec,
+    BufferExec, PrefixMergeExec, RangeFilterExec, RangeShuffleWriterExec,
+    RuntimeStatsExec, ShuffleWriterExec, SortShuffleWriterExec,
 };
 
 /// Whitelisted ops preserve the routing key's row set, values, and
@@ -52,6 +52,7 @@ pub fn preserves_distribution(plan: &dyn ExecutionPlan) -> bool {
             .is_some_and(|sort| sort.preserve_partitioning())
         // Stage-boundary writers: batches to disk unchanged.
         || plan.downcast_ref::<ShuffleWriterExec>().is_some()
+        || plan.downcast_ref::<RangeShuffleWriterExec>().is_some()
         || plan.downcast_ref::<SortShuffleWriterExec>().is_some()
         // Pure row-annotation: one input row → one output row with an
         // added column (window fn result); values, partitioning, count preserved.

@@ -43,7 +43,9 @@ impl TryInto<protobuf::Action> for Action {
                 file_id,
                 host,
                 port,
-                is_sort_shuffle,
+                layout,
+                file_kind,
+                byte_ranges,
             } => Ok(protobuf::Action {
                 action_type: Some(ActionType::FetchPartition(protobuf::FetchPartition {
                     job_id: job_id.into(),
@@ -52,7 +54,15 @@ impl TryInto<protobuf::Action> for Action {
                     host,
                     port: port as u32,
                     file_id,
-                    is_sort_shuffle,
+                    layout: protobuf::ShuffleLayout::from(layout) as i32,
+                    file_kind: protobuf::ShuffleFileKind::from(file_kind) as i32,
+                    byte_ranges: byte_ranges
+                        .into_iter()
+                        .map(|range| protobuf::ByteRange {
+                            offset: range.offset,
+                            length: range.length,
+                        })
+                        .collect(),
                 })),
                 settings: vec![],
             }),
