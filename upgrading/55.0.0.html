@@ -584,6 +584,28 @@ struct.</p>
 </pre></div>
 </div>
 </section>
+<section id="sessionconfigext-and-ballistaconfig-changes">
+<h4>SessionConfigExt and BallistaConfig Changes<a class="headerlink" href="#sessionconfigext-and-ballistaconfig-changes" title="Link to this heading">#</a></h4>
+<p>Methods</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">SessionConfigExt</span><span class="p">::</span><span class="n">ballista_coalesce_target_partition_bytes</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">u64</span><span class="p">;</span>
+<span class="n">SessionConfigExt</span><span class="p">::</span><span class="n">with_ballista_coalesce_target_partition_bytes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">bytes</span><span class="p">:</span><span class="w"> </span><span class="kt">u64</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Self</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>Changed expected type from <code class="docutils literal notranslate"><span class="pre">u64</span></code> to <code class="docutils literal notranslate"><span class="pre">usize</span></code></p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">SessionConfigExt</span><span class="p">::</span><span class="n">ballista_coalesce_target_partition_bytes</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">usize</span><span class="p">;</span>
+<span class="n">SessionConfigExt</span><span class="p">::</span><span class="n">with_ballista_coalesce_target_partition_bytes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">bytes</span><span class="p">:</span><span class="w"> </span><span class="kt">usize</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Self</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>the change is to align method parameter and return type to actual config value.</p>
+<p>Also,</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">BallistaConfig</span><span class="p">::</span><span class="n">coalesce_target_partition_bytes</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">u64</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>has return type changed from <code class="docutils literal notranslate"><span class="pre">u64</span></code> to <code class="docutils literal notranslate"><span class="pre">usize</span></code></p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">BallistaConfig</span><span class="p">::</span><span class="n">coalesce_target_partition_bytes</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">usize</span><span class="p">;</span>
+</pre></div>
+</div>
+</section>
 </section>
 </section>
 </section>
@@ -646,6 +668,7 @@ struct.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-fetch-addresses-byte-ranges-not-just-partitions">Shuffle fetch addresses byte ranges, not just partitions</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-executor-as-task-status-signature-reshaped"><code class="docutils literal notranslate"><span class="pre">ballista_executor::as_task_status</span></code> signature reshaped</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sessionconfigext-and-ballistaconfig-changes">SessionConfigExt and BallistaConfig Changes</a></li>
 </ul>
 </li>
 </ul>
