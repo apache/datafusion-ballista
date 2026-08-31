@@ -248,6 +248,9 @@ pub trait SessionConfigExt {
     /// Enables or disables adaptive query planning (enabled by default).
     fn with_ballista_adaptive_query_planner(self, enabled: bool) -> Self;
 
+    /// Is exchange reuse enabled in the distributed planner
+    fn ballista_reuse_exchange_enabled(&self) -> bool;
+
     /// Set user defined metadata keys in Ballista gRPC requests
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self;
 
@@ -629,6 +632,14 @@ impl SessionConfigExt for SessionConfig {
             .get::<BallistaConfig>()
             .map(|c| c.adaptive_query_planner_enabled())
             .unwrap_or_else(|| BallistaConfig::default().adaptive_query_planner_enabled())
+    }
+
+    fn ballista_reuse_exchange_enabled(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.reuse_exchange_enabled())
+            .unwrap_or_else(|| BallistaConfig::default().reuse_exchange_enabled())
     }
 
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self {

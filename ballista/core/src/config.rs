@@ -84,6 +84,10 @@ pub const BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS: &str =
     "ballista.client.io_retry_wait_time_ms";
 /// Enables adaptive query planning
 pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
+/// Configuration key for enabling reuse of structurally-identical shuffle
+/// exchanges in the distributed planner (Spark `ReuseExchange` analog).
+pub const BALLISTA_REUSE_EXCHANGE_ENABLED: &str =
+    "ballista.optimizer.reuse_exchange_enabled";
 /// Configuration key for sort shuffle target batch size in rows.
 pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
@@ -249,6 +253,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Enables Adaptive Query Planning: joins and partition counts are \
                          chosen from measured runtime statistics instead of planning-time \
                          estimates. Set to false to use the static distributed planner.".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
+        ConfigEntry::new(BALLISTA_REUSE_EXCHANGE_ENABLED.to_string(),
+                         "Reuse structurally-identical shuffle exchanges across the stage DAG so a repeated subplan is materialized once (Spark ReuseExchange analog)".to_string(),
                          DataType::Boolean,
                          Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
@@ -667,6 +675,11 @@ impl BallistaConfig {
         self.get_bool_setting(BALLISTA_ADAPTIVE_PLANNER_ENABLED)
     }
 
+    /// Returns whether exchange reuse is enabled in the distributed planner.
+    pub fn reuse_exchange_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_REUSE_EXCHANGE_ENABLED)
+    }
+
     /// Returns the target batch size for sort-based shuffle.
     pub fn shuffle_sort_based_batch_size(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
@@ -1055,5 +1068,10 @@ mod tests {
             .get(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
             .expect("entry is registered");
         assert_eq!(batch_size.doc_default(), Some("8192"));
+    }
+
+    #[test]
+    fn reuse_exchange_enabled_defaults_true() {
+        assert!(BallistaConfig::default().reuse_exchange_enabled());
     }
 }
