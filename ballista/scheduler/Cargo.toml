@@ -66,7 +66,6 @@ ferroid = { version = "2.0", features = ["alloc", "std", "snowflake", "atomic", 
 futures = { workspace = true }
 graphviz-rust = { version = "0.9", optional = true }
 http = "1.4"
-insta = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true }
@@ -94,6 +93,7 @@ name = "tpch_plan_stability"
 path = "tests/tpch_plan_stability/main.rs"
 
 [dev-dependencies]
+insta = { workspace = true }
 regex = "1"
 rstest = { workspace = true }
 serde_json = "1"

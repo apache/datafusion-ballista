@@ -1130,7 +1130,6 @@ dependencies = [
  "futures",
  "itertools 0.15.0",
  "log",
- "md-5 0.11.0",
  "object_store",
  "parking_lot",
  "pastey",
