@@ -1028,6 +1028,7 @@ dependencies = [
 name = "ballista-api-types"
 version = "54.0.0"
 dependencies = [
+ "ballista-api-types",
  "serde",
  "serde_json",
  "utoipa",

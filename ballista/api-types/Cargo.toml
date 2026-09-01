@@ -35,4 +35,5 @@ serde = { workspace = true, features = ["derive"] }
 utoipa = { workspace = true, optional = true }
 
 [dev-dependencies]
+ballista-api-types = { path = ".", features = ["utoipa"] }
 serde_json = { workspace = true }
