@@ -86,11 +86,6 @@ def crate_source_dirs():
         if pkg["name"] in _ALL_CRATES:
             # manifest_path points at the crate's Cargo.toml; protos sit alongside it.
             dirs[pkg["name"]] = (Path(pkg["manifest_path"]).parent, pkg["version"])
-    # At least one crate per FILES entry must be present.
-    required = {"datafusion-proto-common"}
-    missing = required - dirs.keys()
-    if missing:
-        sys.exit(f"could not resolve crate(s) from cargo metadata: {sorted(missing)}")
     return dirs
 
 
