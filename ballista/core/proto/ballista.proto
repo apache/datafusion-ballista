@@ -350,6 +350,10 @@ message ShuffleReaderExecNode {
   uint32 upstream_partition_count = 6;
   // Optional coalesce metadata. Absent means "no coalesce" (legacy one-to-one read behavior).
   optional CoalescePlan coalesce = 7;
+  // Index of each local output partition in the unsliced stage, parallel to
+  // `partition`. Absent on a reader that was never sliced; decodes to the
+  // identity mapping.
+  repeated uint32 output_partition_indices = 8;
 }
 
 message ShuffleReaderPartition {

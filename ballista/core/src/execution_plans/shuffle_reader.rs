@@ -49,11 +49,9 @@ use datafusion::physical_plan::{
     PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
 use datafusion::prelude::SessionConfig;
+use futures::stream::{BoxStream, select};
 use futures::{Stream, StreamExt, TryStreamExt, ready};
-use itertools::Itertools;
 use log::{debug, error, trace};
-use rand::prelude::SliceRandom;
-use rand::rng;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs::File;
@@ -64,7 +62,7 @@ use std::pin::Pin;
 use std::result;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -125,6 +123,10 @@ pub struct ShuffleReaderExec {
     /// is responsible for pre-concatenating the M-shape upstream
     /// `Vec<Vec<PartitionLocation>>` into K-shape before invoking `try_new_coalesced`.
     pub coalesce: Option<CoalescePlan>,
+    /// Index of each local output partition in the unsliced stage, parallel to
+    /// `partition`. Restriction re-indexes `partition` from zero, so this is all
+    /// that tells peers apart. Picks which producer `execute` fetches first.
+    pub output_partition_indices: Vec<usize>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
@@ -142,6 +144,7 @@ impl ShuffleReaderExec {
         partitioning: Partitioning,
     ) -> Result<Self> {
         let upstream_partition_count = partition.len();
+        let output_partition_indices = (0..partition.len()).collect();
         let properties = Arc::new(PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
             partitioning,
@@ -155,6 +158,7 @@ impl ShuffleReaderExec {
             broadcast: false,
             upstream_partition_count,
             coalesce: None,
+            output_partition_indices,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -185,6 +189,7 @@ impl ShuffleReaderExec {
             broadcast: true,
             upstream_partition_count,
             coalesce: None,
+            output_partition_indices: vec![0],
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -223,6 +228,7 @@ impl ShuffleReaderExec {
             "partitioning.partition_count() must equal coalesce.groups.len() (= K)",
         );
         let upstream_partition_count = coalesce.upstream_partition_count as usize;
+        let output_partition_indices = (0..partition.len()).collect();
         let properties = Arc::new(PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
             partitioning,
@@ -236,6 +242,7 @@ impl ShuffleReaderExec {
             broadcast: false,
             upstream_partition_count,
             coalesce: Some(coalesce),
+            output_partition_indices,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -252,6 +259,7 @@ impl ShuffleReaderExec {
             broadcast: self.broadcast,
             upstream_partition_count: self.upstream_partition_count,
             coalesce: self.coalesce.clone(),
+            output_partition_indices: self.output_partition_indices.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: Some(work_dir),
@@ -267,11 +275,33 @@ impl ShuffleReaderExec {
             broadcast: self.broadcast,
             upstream_partition_count: self.upstream_partition_count,
             coalesce: self.coalesce.clone(),
+            output_partition_indices: self.output_partition_indices.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: self.work_dir.clone(),
             client_pool: Some(client_pool),
         }
+    }
+
+    /// Stamps each local output partition with its global index. `indices` must
+    /// be parallel to `partition`.
+    pub fn with_output_partition_indices(mut self, indices: Vec<usize>) -> Self {
+        debug_assert_eq!(
+            indices.len(),
+            self.partition.len(),
+            "output_partition_indices must be parallel to partition",
+        );
+        self.output_partition_indices = indices;
+        self
+    }
+
+    /// Producer-ring offset for a local output partition: its stamped global
+    /// index, falling back to the local one if the stamp is somehow short.
+    fn rotation_for(&self, partition: usize) -> u64 {
+        self.output_partition_indices
+            .get(partition)
+            .copied()
+            .unwrap_or(partition) as u64
     }
 }
 
@@ -350,6 +380,7 @@ impl ExecutionPlan for ShuffleReaderExec {
                 broadcast: self.broadcast,
                 upstream_partition_count: self.upstream_partition_count,
                 coalesce: self.coalesce.clone(),
+                output_partition_indices: self.output_partition_indices.clone(),
                 metrics: ExecutionPlanMetricsSet::new(),
                 properties: self.properties.clone(),
                 work_dir: self.work_dir.clone(),
@@ -389,22 +420,9 @@ impl ExecutionPlan for ShuffleReaderExec {
             config.ballista_shuffle_reader_maximum_concurrent_requests(),
             config.ballista_grpc_client_max_message_size()
         );
-        let mut partition_locations = HashMap::new();
-        for p in &self.partition[partition] {
-            partition_locations
-                .entry(p.executor_meta.id.clone())
-                .or_insert_with(Vec::new)
-                .push(p.clone());
-        }
-        // Sort partitions for evenly send fetching partition requests to avoid hot executors within one task
-        let mut partition_locations: Vec<PartitionLocation> = partition_locations
-            .into_values()
-            .flat_map(|ps| ps.into_iter().enumerate())
-            .sorted_by(|(p1_idx, _), (p2_idx, _)| Ord::cmp(p1_idx, p2_idx))
-            .map(|(_, p)| p)
-            .collect();
-        // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
-        partition_locations.shuffle(&mut rng());
+        let locations = &self.partition[partition];
+        let partition_locations =
+            interleave_by_executor(locations, self.rotation_for(partition));
 
         let work_dir = self
             .work_dir
@@ -613,23 +631,31 @@ where
     }
 }
 
-/// Adapter for a tokio ReceiverStream that implements the SendableRecordBatchStream interface
+/// One fetched partition, or the failure to fetch it.
+type FetchResult = result::Result<SendableRecordBatchStream, BallistaError>;
+
+/// Adapter for the local and remote fetch lanes that implements the
+/// SendableRecordBatchStream interface.
 struct AbortableReceiverStream {
-    inner: ReceiverStream<result::Result<SendableRecordBatchStream, BallistaError>>,
+    inner: BoxStream<'static, FetchResult>,
 
     #[allow(dead_code)]
     drop_helper: Vec<SpawnedTask<()>>,
 }
 
 impl AbortableReceiverStream {
-    /// Construct a new SendableRecordBatchReceiverStream which will send batches of the specified schema from inner
+    /// Merges the two fetch lanes. `select` alternates, so locals arrive
+    /// interleaved with remotes rather than serialized behind them.
     pub fn create(
-        rx: tokio::sync::mpsc::Receiver<
-            result::Result<SendableRecordBatchStream, BallistaError>,
-        >,
+        local_rx: mpsc::Receiver<FetchResult>,
+        remote_rx: mpsc::Receiver<FetchResult>,
         spawned_tasks: Vec<SpawnedTask<()>>,
     ) -> AbortableReceiverStream {
-        let inner = ReceiverStream::new(rx);
+        let inner = select(
+            ReceiverStream::new(local_rx),
+            ReceiverStream::new(remote_rx),
+        )
+        .boxed();
         Self {
             inner,
             drop_helper: spawned_tasks,
@@ -720,6 +746,44 @@ impl RecordBatchStream for GovernedStream {
     }
 }
 
+/// Orders a task's fetch list round-robin across the executors that produced its
+/// blocks, starting at the one `rotation` selects. The round-robin spreads one
+/// task's in-flight window over many producers; the rotation keeps peers from
+/// agreeing on which producer that is.
+fn interleave_by_executor(
+    locations: &[PartitionLocation],
+    rotation: u64,
+) -> Vec<PartitionLocation> {
+    if locations.is_empty() {
+        return Vec::new();
+    }
+
+    let mut by_executor: HashMap<&str, Vec<&PartitionLocation>> = HashMap::new();
+    for location in locations {
+        by_executor
+            .entry(location.executor_meta.id.as_str())
+            .or_default()
+            .push(location);
+    }
+    // Peers build their lists independently, so the rotation only staggers them
+    // if every peer sees the same producer order.
+    let mut groups: Vec<_> = by_executor.into_iter().collect();
+    groups.sort_unstable_by_key(|(id, _)| *id);
+    let start = (rotation % groups.len() as u64) as usize;
+    groups.rotate_left(start);
+
+    let mut ordered = Vec::with_capacity(locations.len());
+    for round in 0.. {
+        // Drop exhausted producers so a skewed one's tail drains alone.
+        groups.retain(|(_, blocks)| blocks.len() > round);
+        if groups.is_empty() {
+            break;
+        }
+        ordered.extend(groups.iter().map(|(_, blocks)| blocks[round].clone()));
+    }
+    ordered
+}
+
 /// Splits the provided partition locations into local and remote partitions.
 /// Local partitions are read directly from local Arrow IPC files,
 /// while remote partitions are fetched using the Arrow Flight client.
@@ -805,7 +869,12 @@ fn send_fetch_partitions(
         ballista_config.shuffle_reader_max_blocks_in_flight_per_address();
     let default_block_size = ballista_config.shuffle_reader_default_block_size_bytes();
 
-    let (response_sender, response_receiver) = mpsc::channel(max_reqs.max(1));
+    // Separate lanes so the two producers' backpressure never couples. A queued
+    // local pins an open fd and a 256 KB BufReader, hence depth 1. Remotes
+    // mirror `req_sem`, so a full lane means every permit is already held and
+    // blocking on `send` costs no prefetch.
+    let (local_sender, local_receiver) = mpsc::channel(1);
+    let (remote_sender, remote_receiver) = mpsc::channel(max_reqs.max(1));
 
     // Reduce-side in-flight governor. Each remote fetch acquires:
     //   * `byte_sem`  — min(block_size, max_bytes) permits (in-flight-bytes budget)
@@ -839,7 +908,6 @@ fn send_fetch_partitions(
     read_metrics.remote_partitions.add(remote_locations.len());
 
     // keep local shuffle files reading in serial order for memory control.
-    let response_sender_c = response_sender.clone();
     let work_dir = work_dir.to_string();
     let local_read_time = read_metrics.local_read_time.clone();
     spawned_tasks.push(SpawnedTask::spawn_blocking({
@@ -849,8 +917,9 @@ fn send_fetch_partitions(
                     let _timer = local_read_time.timer();
                     fetch_partition_local(&work_dir, &p)
                 };
-                if let Err(e) = response_sender_c.blocking_send(r) {
+                if let Err(e) = local_sender.blocking_send(r) {
                     error!("Fail to send response event to the channel due to {e}");
+                    break;
                 }
             }
         }
@@ -871,82 +940,110 @@ fn send_fetch_partitions(
         Arc::new(c)
     };
 
-    for p in remote_locations.into_iter() {
-        let byte_sem = byte_sem.clone();
-        let req_sem = req_sem.clone();
-        let addr_sems = addr_sems.clone();
-        let response_sender = response_sender.clone();
-        let customize_endpoint = customize_endpoint.clone();
-        let client_grpc_config = client_grpc_config.clone();
-        let client_pool = client_pool.clone();
-        let read_metrics = read_metrics.clone();
+    // One driver rather than a task per block: `buffer_unordered` initiates in
+    // list order, so `interleave_by_executor`'s ordering reaches the wire rather
+    // than depending on how tokio schedules M spawns. Completion stays
+    // unordered, and the governor still binds because `GovernedStream` holds its
+    // permits until the body is drained.
+    //
+    // These are futures, not tasks: one thread polls all of them. Only the
+    // request issue belongs here; `fetch_partition_buffered` spawns the decode.
+    // Every block becomes eligible now. Timing from here instead of from the
+    // buffer constructing its future keeps a queued block's wait whole.
+    let queued_at = Instant::now();
+    spawned_tasks.push(SpawnedTask::spawn(async move {
+        let mut fetches = futures::stream::iter(remote_locations)
+            .map(|p| {
+                let byte_sem = byte_sem.clone();
+                let req_sem = req_sem.clone();
+                let addr_sems = addr_sems.clone();
+                let customize_endpoint = customize_endpoint.clone();
+                let client_grpc_config = client_grpc_config.clone();
+                let client_pool = client_pool.clone();
+                let read_metrics = read_metrics.clone();
 
-        spawned_tasks.push(SpawnedTask::spawn(async move {
-            let addr = p.executor_meta.id.clone();
-            let size = block_size(&p, default_block_size);
+                async move {
+                    let size = block_size(&p, default_block_size);
 
-            // Time spent blocked acquiring the three governor permits (#1951).
-            let (req_permit, addr_permit, byte_permit) = {
-                let _permit_timer = read_metrics.permit_wait_time.timer();
-                let req_permit = req_sem.acquire_owned().await.unwrap();
-                let addr_sem = {
-                    let mut map = addr_sems.lock().unwrap();
-                    map.entry(addr.clone())
-                        .or_insert_with(|| {
-                            Arc::new(Semaphore::new(max_blocks_per_addr.max(1)))
-                        })
-                        .clone()
-                };
-                let addr_permit = addr_sem.acquire_owned().await.unwrap();
-                let byte_permit = byte_sem
-                    .acquire_many_owned(byte_permits_for(size, max_bytes))
-                    .await
-                    .unwrap();
-                (req_permit, addr_permit, byte_permit)
-            };
+                    // Time spent blocked acquiring the three governor permits (#1951).
+                    let (req_permit, addr_permit, byte_permit) = {
+                        let _permit_timer =
+                            read_metrics.permit_wait_time.timer_with(queued_at);
+                        let req_permit = req_sem.acquire_owned().await.unwrap();
+                        let addr_sem = {
+                            let addr = p.executor_meta.id.as_str();
+                            let mut map = addr_sems.lock().unwrap();
+                            // Borrowed lookup first: N executors against M >> N
+                            // blocks, so every block but the first per executor
+                            // takes this arm and allocates nothing.
+                            match map.get(addr) {
+                                Some(sem) => sem.clone(),
+                                None => map
+                                    .entry(addr.to_string())
+                                    .or_insert_with(|| {
+                                        Arc::new(Semaphore::new(
+                                            max_blocks_per_addr.max(1),
+                                        ))
+                                    })
+                                    .clone(),
+                            }
+                        };
+                        let addr_permit = addr_sem.acquire_owned().await.unwrap();
+                        let byte_permit = byte_sem
+                            .acquire_many_owned(byte_permits_for(size, max_bytes))
+                            .await
+                            .unwrap();
+                        (req_permit, addr_permit, byte_permit)
+                    };
 
-            let mut attempts = 0usize;
-            // Cloned (rather than used by reference) to avoid a partial move of
-            // `read_metrics`, which is still needed below for
-            // `fetch_requests`/`fetch_retries`.
-            let decoded_bytes = read_metrics.decoded_bytes.clone();
-            let r = {
-                let _fetch_timer = read_metrics.fetch_time.timer();
-                with_retry(outer_retries, io_wait, is_retriable_fetch_error, || {
-                    attempts += 1;
-                    fetch_partition_buffered(
-                        &p,
-                        client_grpc_config.clone(),
-                        prefer_flight,
-                        customize_endpoint.clone(),
-                        client_pool.clone(),
-                    )
-                })
-                .await
-            }
-            .map(|(schema, batches)| {
-                let bytes: usize =
-                    batches.iter().map(|b| b.get_array_memory_size()).sum();
-                decoded_bytes.add(bytes);
-                Box::pin(GovernedStream::new(
-                    buffered_stream(schema, batches),
-                    byte_permit,
-                    req_permit,
-                    addr_permit,
-                )) as SendableRecordBatchStream
-            });
-            // Total wire attempts (initial + retries), recorded only after
-            // `with_retry` has finished retrying.
-            read_metrics.fetch_requests.add(attempts);
-            read_metrics.fetch_retries.add(attempts.saturating_sub(1));
+                    let mut attempts = 0usize;
+                    let r = {
+                        let _fetch_timer = read_metrics.fetch_time.timer();
+                        with_retry(
+                            outer_retries,
+                            io_wait,
+                            is_retriable_fetch_error,
+                            || {
+                                attempts += 1;
+                                fetch_partition_buffered(
+                                    &p,
+                                    client_grpc_config.clone(),
+                                    prefer_flight,
+                                    customize_endpoint.clone(),
+                                    client_pool.clone(),
+                                )
+                            },
+                        )
+                        .await
+                    }
+                    .map(|(schema, batches, bytes)| {
+                        read_metrics.decoded_bytes.add(bytes);
+                        Box::pin(GovernedStream::new(
+                            buffered_stream(schema, batches),
+                            byte_permit,
+                            req_permit,
+                            addr_permit,
+                        )) as SendableRecordBatchStream
+                    });
+                    // Total wire attempts (initial + retries), recorded only after
+                    // `with_retry` has finished retrying.
+                    read_metrics.fetch_requests.add(attempts);
+                    read_metrics.fetch_retries.add(attempts.saturating_sub(1));
 
-            if let Err(e) = response_sender.send(r).await {
+                    r
+                }
+            })
+            .buffer_unordered(max_reqs.max(1));
+
+        while let Some(r) = fetches.next().await {
+            if let Err(e) = remote_sender.send(r).await {
                 error!("Fail to send response event to the channel due to {e}");
+                break;
             }
-        }));
-    }
+        }
+    }));
 
-    AbortableReceiverStream::create(response_receiver, spawned_tasks)
+    AbortableReceiverStream::create(local_receiver, remote_receiver, spawned_tasks)
 }
 
 /// Retry an idempotent async operation up to `retries` times after the initial
@@ -1010,7 +1107,7 @@ async fn fetch_partition_buffered(
     prefer_flight: bool,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
-) -> result::Result<(SchemaRef, Vec<RecordBatch>), BallistaError> {
+) -> result::Result<(SchemaRef, Vec<RecordBatch>, usize), BallistaError> {
     let stream = fetch_partition_remote(
         location,
         config,
@@ -1022,15 +1119,43 @@ async fn fetch_partition_buffered(
     let schema = stream.schema();
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
-    let batches = stream.try_collect::<Vec<_>>().await.map_err(|e| {
+    let fetch_failed = |e: String| {
         BallistaError::FetchFailed(
             metadata.id.clone(),
             partition_id.stage_id,
             partition_id.partition_id,
-            e.to_string(),
+            e,
         )
-    })?;
-    Ok((schema, batches))
+    };
+
+    // The request above is issued in the caller's task, so fetch order still
+    // reaches the wire in list order; only the decode moves off it.
+    let (batches, decoded_bytes) =
+        collect_off_task(stream).await.map_err(fetch_failed)?;
+
+    Ok((schema, batches, decoded_bytes))
+}
+
+/// Drains `stream` to completion on a task of its own, returning its batches and
+/// their in-memory footprint.
+///
+/// Draining is IPC decode and decompression: CPU, which holds whichever thread
+/// polls it. The caller drives every concurrent block from one task, so draining
+/// inline would serialize them onto a single worker. Sizing the batches walks
+/// every array, so it rides along here rather than back on the caller.
+/// `SpawnedTask` aborts on drop, so a caller that goes away takes the drain.
+async fn collect_off_task(
+    stream: SendableRecordBatchStream,
+) -> result::Result<(Vec<RecordBatch>, usize), String> {
+    SpawnedTask::spawn(async move {
+        let batches = stream.try_collect::<Vec<_>>().await?;
+        let bytes = batches.iter().map(|b| b.get_array_memory_size()).sum();
+        Ok::<_, DataFusionError>((batches, bytes))
+    })
+    .join()
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 /// Build an in-memory `SendableRecordBatchStream` from already-buffered batches.
@@ -1075,7 +1200,7 @@ pub(crate) async fn fetch_partition_remote(
     prefer_flight: bool,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
-) -> result::Result<SendableRecordBatchStream, BallistaError> {
+) -> FetchResult {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
     let file_id = location.file_id;
@@ -1143,7 +1268,7 @@ pub(crate) async fn fetch_range_remote(
     config: Arc<GrpcClientConfig>,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
-) -> result::Result<SendableRecordBatchStream, BallistaError> {
+) -> FetchResult {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
 
@@ -1181,7 +1306,7 @@ async fn fetch_ranges_with(
     location: &PartitionLocation,
     bound: WidenedBound,
     schema: SchemaRef,
-) -> result::Result<SendableRecordBatchStream, BallistaError> {
+) -> FetchResult {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
     let (lo, hi) = bound;
@@ -1268,7 +1393,7 @@ fn as_fetch_failed(
 pub(crate) fn fetch_partition_local(
     work_dir: &str,
     location: &PartitionLocation,
-) -> result::Result<SendableRecordBatchStream, BallistaError> {
+) -> FetchResult {
     let path = &location.path(work_dir)?;
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
@@ -1468,6 +1593,8 @@ mod tests {
     use datafusion::physical_plan::common;
     use datafusion::physical_plan::statistics::StatisticsContext;
     use datafusion::prelude::SessionContext;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use std::time::Instant;
     use tempfile::{TempDir, tempdir};
 
     /// Build an M-shape upstream `Vec<Vec<PartitionLocation>>` with per-partition
@@ -2007,27 +2134,9 @@ mod tests {
     }
 
     async fn test_send_fetch_partitions(max_request_num: usize, partition_num: usize) {
-        let schema = get_test_partition_schema();
-        let data_array = Int32Array::from(vec![1]);
-        let batch =
-            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
-                .unwrap();
         let tmp_dir = tempdir().unwrap();
         let work_dir = tmp_dir.path();
-
-        for p in 0..partition_num {
-            // job name and stage id are hard-codded
-            let file_path =
-                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
-            // this unwrap should not be problem as
-            // this function never return root dir
-            std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
-            let file: File = File::create(&file_path).unwrap();
-
-            let mut writer = StreamWriter::try_new(file, &schema).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
-        }
+        let schema = write_local_shuffle_files(work_dir, partition_num);
 
         let partition_locations = get_test_partition_locations(partition_num, None);
         let config = SessionConfig::new_with_ballista()
@@ -2053,23 +2162,10 @@ mod tests {
 
     #[tokio::test]
     async fn send_fetch_partitions_records_local_metrics() {
-        let schema = get_test_partition_schema();
-        let data_array = Int32Array::from(vec![1]);
-        let batch =
-            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
-                .unwrap();
         let tmp_dir = tempdir().unwrap();
         let work_dir = tmp_dir.path();
         let partition_num = 3usize;
-        for p in 0..partition_num {
-            let file_path =
-                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
-            std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
-            let file = File::create(&file_path).unwrap();
-            let mut writer = StreamWriter::try_new(file, &schema).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
-        }
+        let schema = write_local_shuffle_files(work_dir, partition_num);
         let partition_locations = get_test_partition_locations(partition_num, None);
         let config = SessionConfig::new_with_ballista();
         let metrics_set = ExecutionPlanMetricsSet::new();
@@ -2097,6 +2193,61 @@ mod tests {
         assert!(
             metrics.sum_by_name("local_read_time").is_some(),
             "local_read_time metric should be registered"
+        );
+    }
+
+    /// Shuffle files the reader is still holding open.
+    #[cfg(target_os = "linux")]
+    fn open_shuffle_fds(work_dir: &std::path::Path) -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .into_iter()
+            .flatten()
+            .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
+            .filter(|target| target.starts_with(work_dir))
+            .count()
+    }
+
+    /// The local reader must not run ahead of the consumer. Each queued result
+    /// holds an open fd, so a depth-1 lane leaves two at most: queued, and in hand.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn local_reads_do_not_run_ahead_of_the_consumer() {
+        let tmp_dir = tempdir().unwrap();
+        let work_dir = tmp_dir.path();
+        let partition_num = 8usize;
+        write_local_shuffle_files(work_dir, partition_num);
+
+        // A shared lane this deep is what let the reader run ahead.
+        let config = SessionConfig::new_with_ballista()
+            .with_ballista_shuffle_reader_maximum_concurrent_requests(partition_num);
+        let metrics_set = ExecutionPlanMetricsSet::new();
+
+        // Never polled: the reader gets no backpressure relief from the consumer.
+        let _receiver = send_fetch_partitions(
+            &work_dir.to_string_lossy(),
+            get_test_partition_locations(partition_num, None),
+            &config,
+            None,
+            ShuffleReadMetrics::new(0, &metrics_set),
+        );
+
+        // Wait for the reader to start, so a task that has not run yet cannot
+        // pass by having done nothing.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while open_shuffle_fds(work_dir) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("local reader never opened a file");
+
+        // Room to run further ahead, if it is going to.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let open = open_shuffle_fds(work_dir);
+        assert!(
+            open <= 2,
+            "local reader ran {open} files ahead of an undrained consumer"
         );
     }
 
@@ -2133,6 +2284,151 @@ mod tests {
                 .map(|v| v.as_usize()),
             Some(0)
         );
+    }
+
+    /// A pool that records the order fetches reach the wire, then fails each one
+    /// so nothing but the order is under test.
+    #[derive(Debug, Default)]
+    struct RecordingClientPool {
+        hosts: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl BallistaClientPool for RecordingClientPool {
+        async fn acquire(
+            &self,
+            host: &str,
+            _port: u16,
+            _config: &GrpcClientConfig,
+            _customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+        ) -> result::Result<crate::client_pool::PooledClient, BallistaError> {
+            self.hosts.lock().unwrap().push(host.to_string());
+            // Deliberately not a retriable variant: a retry would record the
+            // same host twice and the order would stop meaning anything.
+            Err(BallistaError::General("recording pool".to_string()))
+        }
+
+        async fn evict_idle(&self) {}
+    }
+
+    /// A stream whose drain holds its thread, the way IPC decode does, until
+    /// `needed` drains run at once. Drains sharing a thread never get there, so
+    /// the wait is deadline-bounded and fails rather than hangs.
+    fn drain_probe(
+        live: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        needed: usize,
+    ) -> SendableRecordBatchStream {
+        let schema: SchemaRef = Arc::new(get_test_partition_schema());
+        let batch = RecordBatch::new_empty(schema.clone());
+        Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            futures::stream::once(async move {
+                peak.fetch_max(live.fetch_add(1, SeqCst) + 1, SeqCst);
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while peak.load(SeqCst) < needed && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                live.fetch_sub(1, SeqCst);
+                Ok(batch)
+            }),
+        ))
+    }
+
+    /// Decode must not run on the task driving the fetches: one task polls every
+    /// concurrent block, so an inline drain would serialize them onto one worker.
+    /// These probes only finish if each drain got a thread of its own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn decode_does_not_run_on_the_callers_task() {
+        let needed = 4usize;
+        let live = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        // One task driving all of them, exactly as `send_fetch_partitions` does.
+        SpawnedTask::spawn({
+            let (live, peak) = (live.clone(), peak.clone());
+            async move {
+                futures::stream::iter(0..needed)
+                    .map(|_| {
+                        collect_off_task(drain_probe(live.clone(), peak.clone(), needed))
+                    })
+                    .buffer_unordered(needed)
+                    .try_collect::<Vec<_>>()
+                    .await
+            }
+        })
+        .join()
+        .await
+        .unwrap()
+        .expect("a drain failed");
+
+        assert_eq!(
+            peak.load(SeqCst),
+            needed,
+            "drains never overlapped, so they are sharing the caller's thread"
+        );
+    }
+
+    /// `interleave_by_executor` only buys anything if its ordering survives to
+    /// the wire. Run on both sides of the governor: a window wide enough to admit
+    /// every block at once, and one narrow enough to be the gate itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn remote_fetches_reach_the_wire_in_list_order() {
+        let tmp_dir = tempdir().unwrap();
+        let work_dir = tmp_dir.path();
+        // Nothing on disk, so every location is remote. Hosts are out of sorted
+        // order: what is asserted is list order, not one the path could recover.
+        let locations: Vec<_> = [5usize, 2, 9, 0, 7, 3, 8, 1]
+            .into_iter()
+            .map(|i| loc(&format!("e{i}"), i))
+            .collect();
+        let expected = executors_of(&locations);
+
+        for max_reqs in [locations.len(), 2] {
+            let pool = Arc::new(RecordingClientPool::default());
+            let hosts = pool.hosts.clone();
+            let metrics_set = ExecutionPlanMetricsSet::new();
+
+            let mut rx = send_fetch_partitions(
+                &work_dir.to_string_lossy(),
+                locations.clone(),
+                &SessionConfig::new_with_ballista()
+                    .with_ballista_shuffle_reader_maximum_concurrent_requests(max_reqs),
+                Some(pool),
+                ShuffleReadMetrics::new(0, &metrics_set),
+            );
+
+            // Drain, or a lane narrower than the fetch list stops admitting
+            // partway and the tail never reaches the pool.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while rx.next().await.is_some() {}
+            })
+            .await
+            .unwrap_or_else(|_| panic!("max_reqs={max_reqs}: fetches never finished"));
+
+            assert_eq!(*hosts.lock().unwrap(), expected, "max_reqs={max_reqs}");
+        }
+    }
+
+    /// Writes `n` single-row local shuffle files under `work_dir`, returning
+    /// the schema they share.
+    fn write_local_shuffle_files(work_dir: &std::path::Path, n: usize) -> Schema {
+        let schema = get_test_partition_schema();
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+        for p in 0..n {
+            let path =
+                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut writer =
+                StreamWriter::try_new(File::create(&path).unwrap(), &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        schema
     }
 
     fn get_test_partition_locations(
@@ -2519,6 +2815,144 @@ mod tests {
         assert_eq!(90, *stats1.total_byte_size.get_value().unwrap());
         assert_eq!(9, *stats1.num_rows.get_value().unwrap());
         Ok(())
+    }
+
+    fn loc(executor: &str, partition_id: usize) -> PartitionLocation {
+        PartitionLocation {
+            map_partition_id: 0,
+            partition_id: PartitionId {
+                job_id: "job".into(),
+                stage_id: 1,
+                partition_id,
+            },
+            executor_meta: ExecutorMetadata {
+                id: executor.to_string(),
+                host: executor.to_string(),
+                port: 7070,
+                grpc_port: 8080,
+                specification: ExecutorSpecification::default().with_vcores(1),
+                os_info: ExecutorOperatingSystemSpecification::default(),
+            },
+            partition_stats: PartitionStats::default(),
+            file_id: None,
+            is_sort_shuffle: false,
+        }
+    }
+
+    fn executors_of(locations: &[PartitionLocation]) -> Vec<String> {
+        locations
+            .iter()
+            .map(|l| l.executor_meta.id.clone())
+            .collect()
+    }
+
+    /// Each round touches every producer once, so the in-flight window spans all.
+    #[test]
+    fn interleave_visits_every_executor_once_per_round() {
+        let locations: Vec<_> = (0..4)
+            .flat_map(|block| ["a", "b", "c"].map(move |e| loc(e, block)))
+            .collect();
+
+        let order = executors_of(&interleave_by_executor(&locations, 0));
+
+        assert_eq!(order.len(), 12);
+        for round in order.chunks(3) {
+            let mut seen = round.to_vec();
+            seen.sort();
+            assert_eq!(seen, ["a", "b", "c"], "round repeats a producer: {round:?}");
+        }
+    }
+
+    /// Exact round-robin: no two of N consecutive peers open on the same
+    /// producer.
+    #[test]
+    fn stamped_peers_round_robin_across_producers() {
+        let producers = ["a", "b", "c"];
+        let locations: Vec<_> = producers.iter().map(|e| loc(e, 0)).collect();
+
+        let first_fetch: Vec<String> = (0..7)
+            .map(|output_partition_index| {
+                executors_of(&interleave_by_executor(&locations, output_partition_index))
+                    [0]
+                .clone()
+            })
+            .collect();
+
+        assert_eq!(first_fetch, ["a", "b", "c", "a", "b", "c", "a"]);
+    }
+
+    /// Guards the `% groups.len()` divisor: a partition with no upstream blocks.
+    #[test]
+    fn interleave_handles_no_locations() {
+        assert!(interleave_by_executor(&[], 3).is_empty());
+    }
+
+    /// The rotation must come from the stamp, not the local index.
+    #[test]
+    fn rotation_comes_from_the_stamp_not_the_local_index() {
+        let exec = ShuffleReaderExec::try_new(
+            1,
+            vec![vec![], vec![]],
+            Arc::new(get_test_partition_schema()),
+            Partitioning::UnknownPartitioning(2),
+        )
+        .unwrap();
+
+        assert_eq!((exec.rotation_for(0), exec.rotation_for(1)), (0, 1));
+
+        let stamped = exec.with_output_partition_indices(vec![11, 4]);
+        assert_eq!((stamped.rotation_for(0), stamped.rotation_for(1)), (11, 4));
+        // Out of range falls back to the local index rather than panicking.
+        assert_eq!(stamped.rotation_for(7), 7);
+    }
+
+    /// Reordering must not drop, duplicate, or invent a block.
+    #[test]
+    fn interleave_preserves_the_fetch_set() {
+        let locations: Vec<_> = (0..7)
+            .flat_map(|block| ["a", "b"].map(move |e| loc(e, block)))
+            .collect();
+
+        let mut before: Vec<_> = locations
+            .iter()
+            .map(|l| (l.executor_meta.id.clone(), l.partition_id.partition_id))
+            .collect();
+        let mut after: Vec<_> = interleave_by_executor(&locations, 0)
+            .iter()
+            .map(|l| (l.executor_meta.id.clone(), l.partition_id.partition_id))
+            .collect();
+        before.sort();
+        after.sort();
+
+        assert_eq!(before, after);
+    }
+
+    /// Peer lists are built independently, so the producer order must not depend
+    /// on the order a task's locations arrived in.
+    #[test]
+    fn producer_order_is_independent_of_input_order() {
+        let forward: Vec<_> = (0..2)
+            .flat_map(|block| ["a", "b", "c"].map(move |e| loc(e, block)))
+            .collect();
+        let mut reversed = forward.clone();
+        reversed.reverse();
+
+        assert_eq!(
+            executors_of(&interleave_by_executor(&forward, 1)),
+            executors_of(&interleave_by_executor(&reversed, 1)),
+        );
+    }
+
+    /// A skewed producer keeps its turn every round, then drains alone.
+    #[test]
+    fn interleave_drains_a_skewed_producer_last() {
+        let mut locations = vec![loc("small", 0)];
+        locations.extend((0..4).map(|block| loc("big", block)));
+
+        let order = executors_of(&interleave_by_executor(&locations, 0));
+
+        assert_eq!(order.iter().filter(|e| *e == "big").count(), 4);
+        assert_eq!(order[2..], ["big", "big", "big"]);
     }
 }
 

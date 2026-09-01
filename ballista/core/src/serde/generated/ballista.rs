@@ -446,6 +446,11 @@ pub struct ShuffleReaderExecNode {
     /// Optional coalesce metadata. Absent means "no coalesce" (legacy one-to-one read behavior).
     #[prost(message, optional, tag = "7")]
     pub coalesce: ::core::option::Option<CoalescePlan>,
+    /// Index of each local output partition in the unsliced stage, parallel to
+    /// `partition`. Absent on a reader that was never sliced; decodes to the
+    /// identity mapping.
+    #[prost(uint32, repeated, tag = "8")]
+    pub output_partition_indices: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderPartition {

@@ -694,6 +694,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 )?;
                 let partitioning = partitioning
                     .ok_or_else(|| proto_error("missing required partitioning field"))?;
+                let output_partition_indices: Vec<usize> = shuffle_reader
+                    .output_partition_indices
+                    .iter()
+                    .map(|&i| i as usize)
+                    .collect();
                 let exec = if let Some(c) = shuffle_reader.coalesce.as_ref() {
                     ShuffleReaderExec::try_new_coalesced(
                         stage_id,
@@ -722,6 +727,24 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         schema,
                         partitioning,
                     )?
+                };
+                let exec = match output_partition_indices.len() {
+                    // Encoded before this field existed. The constructor's
+                    // identity mapping is right for a reader never sliced.
+                    0 if !exec.partition.is_empty() => exec,
+                    n if n == exec.partition.len() => {
+                        exec.with_output_partition_indices(output_partition_indices)
+                    }
+                    // Never version skew: both fields ship in one message from
+                    // one encoder. Identity here would look fine and silently
+                    // point every peer at the same producer.
+                    n => {
+                        return Err(proto_error(format!(
+                            "ShuffleReaderExec: output_partition_indices has {n} \
+                             entries, expected {} to be parallel to partition",
+                            exec.partition.len()
+                        )));
+                    }
                 };
                 Ok(Arc::new(exec))
             }
@@ -1171,6 +1194,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         broadcast: exec.broadcast,
                         upstream_partition_count: exec.upstream_partition_count as u32,
                         coalesce: exec.coalesce.as_ref().map(|c| c.into()),
+                        output_partition_indices: exec
+                            .output_partition_indices
+                            .iter()
+                            .map(|&i| i as u32)
+                            .collect(),
                     },
                 )),
             };
@@ -1682,6 +1710,103 @@ mod test {
             decoded_exec.coalesce.is_none(),
             "absent coalesce field must decode to None (codec inertness)"
         );
+    }
+
+    /// The smallest reader whose stamp has something to be parallel to.
+    fn two_partition_reader() -> ShuffleReaderExec {
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 2);
+        ShuffleReaderExec::try_new(1, vec![vec![], vec![]], schema, partitioning).unwrap()
+    }
+
+    /// Encodes `exec` and decodes it back, letting `tamper` rewrite the node on
+    /// the wire first. That is the only way to produce the bytes a current
+    /// encoder never would, which is what the back-compat paths exist for.
+    fn stamp_roundtrip(
+        exec: ShuffleReaderExec,
+        tamper: impl FnOnce(&mut protobuf::ShuffleReaderExecNode),
+    ) -> datafusion::error::Result<ShuffleReaderExec> {
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(Arc::new(exec), &mut buf, &DefaultPhysicalProtoConverter {})
+            .unwrap();
+
+        let mut node =
+            protobuf::BallistaPhysicalPlanNode::decode(buf.as_slice()).unwrap();
+        let Some(PhysicalPlanType::ShuffleReader(reader)) =
+            node.physical_plan_type.as_mut()
+        else {
+            panic!("expected a ShuffleReader node");
+        };
+        tamper(reader);
+        let mut buf: Vec<u8> = vec![];
+        node.encode(&mut buf).unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        codec
+            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
+            .map(|plan| {
+                plan.downcast_ref::<ShuffleReaderExec>()
+                    .expect("Expected ShuffleReaderExec")
+                    .clone()
+            })
+    }
+
+    #[tokio::test]
+    async fn test_shuffle_reader_exec_output_partition_indices_roundtrip() {
+        let stamped = two_partition_reader().with_output_partition_indices(vec![11, 4]);
+
+        let decoded = stamp_roundtrip(stamped, |_| {}).unwrap();
+
+        assert_eq!(decoded.output_partition_indices, vec![11, 4]);
+    }
+
+    /// A plan encoded before this field existed carries no stamp, and must decode
+    /// back to the identity mapping.
+    #[tokio::test]
+    async fn test_shuffle_reader_exec_absent_output_partition_indices_decode_to_identity()
+    {
+        let reader = two_partition_reader();
+        assert_eq!(reader.output_partition_indices, vec![0, 1]);
+
+        let decoded =
+            stamp_roundtrip(reader, |node| node.output_partition_indices.clear())
+                .unwrap();
+
+        assert_eq!(decoded.output_partition_indices, vec![0, 1]);
+    }
+
+    /// A stamp that is not parallel to `partition` is a bug, never version skew.
+    /// Decoding it back to the identity would look fine and silently point every
+    /// peer at one producer.
+    #[tokio::test]
+    async fn test_shuffle_reader_exec_mismatched_output_partition_indices_are_rejected() {
+        let err = stamp_roundtrip(two_partition_reader(), |node| {
+            node.output_partition_indices = vec![0]
+        })
+        .expect_err("a stamp that is not parallel to partition must not decode");
+
+        assert!(
+            err.to_string().contains("output_partition_indices"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Broadcast is the one path where the stamp is not the identity and decode
+    /// runs a different constructor, so the wire has to carry it there too.
+    #[tokio::test]
+    async fn test_broadcast_shuffle_reader_exec_output_partition_index_roundtrip() {
+        let reader =
+            ShuffleReaderExec::try_new_broadcast(7, Vec::new(), create_test_schema(), 4)
+                .unwrap()
+                .with_output_partition_indices(vec![5]);
+
+        let decoded = stamp_roundtrip(reader, |_| {}).unwrap();
+
+        assert!(decoded.broadcast);
+        assert_eq!(decoded.output_partition_indices, vec![5]);
     }
 
     #[tokio::test]

@@ -79,8 +79,9 @@ fn restrict(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     // Leaves: apply the algebraic partition-projection when we're not
     // under a collapse. Under collapse, leaves keep their full upstream —
-    // the generic recursion below leaves them unchanged.
-    if !under_collect
+    // the generic recursion below leaves them unchanged. A broadcast reader is
+    // the exception; see `is_broadcast_reader`.
+    if (!under_collect || is_broadcast_reader(&plan))
         && let Some(rewritten) = select_output_partitions(&plan, partitions)?
     {
         return Ok(rewritten);
@@ -212,6 +213,14 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
         .collect()
 }
 
+/// A broadcast reader is the build side of a `CollectLeft` join, so it always
+/// lands under the gate that stops leaf restriction. It is safe to route past:
+/// stamping changes fetch order, never which rows are read.
+fn is_broadcast_reader(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    plan.downcast_ref::<ShuffleReaderExec>()
+        .is_some_and(|reader| reader.broadcast)
+}
+
 /// Restrict a plan node to a subset of its output partitions, re-indexed
 /// so position `i` of the result corresponds to input `indices[i]`.
 ///
@@ -248,23 +257,28 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
 ///
 /// This helper is scope-agnostic. The `under_collect` decision (whether
 /// a leaf below a `CoalescePartitionsExec` / `SortPreservingMergeExec` /
-/// join build side must read its full upstream) lives in the walker —
-/// the walker simply doesn't call this function under collapse.
+/// join build side must read its full upstream) lives in the walker, which
+/// under collapse calls this only for a broadcast reader.
 fn select_output_partitions(
     plan: &Arc<dyn ExecutionPlan>,
     indices: &[usize],
 ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
     // ShuffleReaderExec: cross-stage inputs.
     if let Some(reader) = plan.downcast_ref::<ShuffleReaderExec>() {
-        // Broadcast readers serve everything from partition[0] for every
-        // consumer — slicing would drop the payload. Leave intact.
         if reader.broadcast {
-            return Ok(Some(plan.clone()));
+            // Never sliced, since every consumer is served from `partition[0]`,
+            // but still stamped, or the whole stage fetches from one producer.
+            let index = indices.first().copied().unwrap_or(0);
+            return Ok(Some(Arc::new(
+                reader.clone().with_output_partition_indices(vec![index]),
+            )));
         }
-        let kept: Vec<Vec<_>> = indices
+        // Carry each global index alongside the slice it selects: `kept` is
+        // re-indexed from zero, which would leave every peer looking identical.
+        let (output_partition_indices, kept): (Vec<usize>, Vec<Vec<_>>) = indices
             .iter()
-            .filter_map(|&p| reader.partition.get(p).cloned())
-            .collect();
+            .filter_map(|&p| reader.partition.get(p).cloned().map(|locs| (p, locs)))
+            .unzip();
         let partitioning = match reader.properties().output_partitioning() {
             Partitioning::Hash(exprs, _) => Partitioning::Hash(exprs.clone(), kept.len()),
             Partitioning::RoundRobinBatch(_) => Partitioning::RoundRobinBatch(kept.len()),
@@ -295,7 +309,9 @@ fn select_output_partitions(
         ) else {
             return Ok(None);
         };
-        return Ok(Some(Arc::new(restricted)));
+        return Ok(Some(Arc::new(
+            restricted.with_output_partition_indices(output_partition_indices),
+        )));
     }
 
     // RangeShuffleReaderExec: cross-stage inputs, ordering-preserving. Same
@@ -435,17 +451,23 @@ mod tests {
         }
     }
 
+    /// A `ShuffleReaderExec` over `n` single-location partitions.
+    fn shuffle_reader(n: usize) -> Arc<dyn ExecutionPlan> {
+        let partitions = (0..n).map(|i| vec![create_partition(i)]).collect();
+        Arc::new(
+            ShuffleReaderExec::try_new(
+                1,
+                partitions,
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                Partitioning::UnknownPartitioning(n),
+            )
+            .unwrap(),
+        )
+    }
+
     #[test]
     fn keeps_only_the_wanted_partition() {
-        let partitions = (0..4).map(|i| vec![create_partition(i)]).collect();
-        let reader = ShuffleReaderExec::try_new(
-            1,
-            partitions,
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            Partitioning::UnknownPartitioning(4),
-        )
-        .unwrap();
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(reader);
+        let plan = shuffle_reader(4);
         let pruned = restrict_plan_to_partitions(plan, &[1]).unwrap();
         let r = pruned
             .downcast_ref::<ShuffleReaderExec>()
@@ -459,15 +481,7 @@ mod tests {
 
     #[test]
     fn keeps_multiple_wanted_partitions_in_request_order() {
-        let partitions = (0..4).map(|i| vec![create_partition(i)]).collect();
-        let reader = ShuffleReaderExec::try_new(
-            1,
-            partitions,
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            Partitioning::UnknownPartitioning(4),
-        )
-        .unwrap();
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(reader);
+        let plan = shuffle_reader(4);
         let pruned = restrict_plan_to_partitions(plan, &[0, 3]).unwrap();
         let r = pruned
             .downcast_ref::<ShuffleReaderExec>()
@@ -475,6 +489,70 @@ mod tests {
         assert_eq!(r.partition.len(), 2);
         assert_eq!(r.partition[0][0].partition_id.partition_id, 0);
         assert_eq!(r.partition[1][0].partition_id.partition_id, 3);
+    }
+
+    /// The kept slice is re-indexed from zero, so the global indices have to be
+    /// stamped alongside it.
+    #[test]
+    fn restriction_stamps_the_global_output_partition_indices() {
+        let plan = shuffle_reader(4);
+        let pruned = restrict_plan_to_partitions(plan, &[3, 1]).unwrap();
+        let r = pruned
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("expected a ShuffleReaderExec");
+
+        assert_eq!(r.output_partition_indices, vec![3, 1]);
+    }
+
+    /// A dropped out-of-range index must drop from the stamp too, or the two
+    /// stop being parallel.
+    #[test]
+    fn stamp_stays_parallel_when_an_index_is_out_of_range() {
+        let plan = shuffle_reader(2);
+        let pruned = restrict_plan_to_partitions(plan, &[1, 9]).unwrap();
+        let r = pruned
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("expected a ShuffleReaderExec");
+
+        assert_eq!(r.partition.len(), 1);
+        assert_eq!(r.output_partition_indices, vec![1]);
+    }
+
+    /// A broadcast reader sits under `under_collect`, where leaf restriction is
+    /// skipped, and must still come back stamped.
+    #[test]
+    fn broadcast_reader_under_a_collected_join_is_still_stamped() {
+        use datafusion::physical_plan::joins::CrossJoinExec;
+
+        let reader: Arc<dyn ExecutionPlan> = Arc::new(
+            ShuffleReaderExec::try_new_broadcast(
+                1,
+                (0..4).map(create_partition).collect(),
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                4,
+            )
+            .unwrap(),
+        );
+        let join: Arc<dyn ExecutionPlan> =
+            Arc::new(CrossJoinExec::new(reader, scan_with_file_groups(4)));
+
+        assert!(
+            matches!(
+                join.input_distribution_requirements().child_distribution(0),
+                Some(Distribution::SinglePartition)
+            ),
+            "the collected side must declare SinglePartition"
+        );
+
+        let restricted = restrict_plan_to_partitions(join, &[2]).unwrap();
+        let build = restricted.children()[0]
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("expected the build side to still be a ShuffleReaderExec");
+
+        assert!(build.broadcast);
+        assert_eq!(build.partition.len(), 1);
+        assert_eq!(build.partition[0].len(), 4);
+        assert_eq!(build.output_partition_indices, vec![2]);
     }
 
     #[test]
@@ -542,15 +620,7 @@ mod tests {
 
     #[test]
     fn restricting_to_every_partition_is_a_no_op() {
-        let partitions = (0..3).map(|i| vec![create_partition(i)]).collect();
-        let reader = ShuffleReaderExec::try_new(
-            1,
-            partitions,
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            Partitioning::UnknownPartitioning(3),
-        )
-        .unwrap();
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(reader);
+        let plan = shuffle_reader(3);
         let pruned = restrict_plan_to_partitions(plan, &[0, 1, 2]).unwrap();
         let r = pruned
             .downcast_ref::<ShuffleReaderExec>()
