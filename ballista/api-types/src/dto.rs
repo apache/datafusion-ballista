@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 
 /// Summary of one job, served by `GET /api/jobs` and `GET /api/job/{job_id}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct JobResponse {
     /// A `String` rather than `ballista_core::JobId` so this crate stays a
     /// serde-only leaf. `JobId` is `#[serde(transparent)]` over `String`, so
@@ -57,6 +58,7 @@ pub struct JobResponse {
 
 /// Terminal or in-flight state of a single task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum TaskStatus {
     /// Task is currently executing.
     Running,
@@ -73,6 +75,7 @@ pub enum TaskStatus {
 
 /// Per-task detail within a stage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct TaskSummary {
     /// task id
     pub id: usize,
@@ -103,6 +106,7 @@ pub struct TaskSummary {
 
 /// Five-number summary over a stage's tasks, used to spot skew.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct Percentiles {
     /// Smallest observed value.
     pub min: u64,
@@ -118,6 +122,7 @@ pub struct Percentiles {
 
 /// Summary of one query stage, served by `GET /api/job/{job_id}/stages`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct QueryStageSummary {
     /// Stage id, as a string.
     pub stage_id: String,
@@ -146,6 +151,7 @@ pub struct QueryStageSummary {
 
 /// Response body for `GET /api/job/{job_id}/stages`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct QueryStagesResponse {
     /// One summary per stage, in stage order.
     pub stages: Vec<QueryStageSummary>,
@@ -155,6 +161,7 @@ pub struct QueryStagesResponse {
 /// parameter, and part of the REST contract, so it lives alongside the
 /// response types rather than with the HTTP handlers.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PlanFormat {
     /// `?plan_format=default` => plain indent, no metrics
@@ -172,3 +179,75 @@ pub enum PlanFormat {
 /// A `BTreeMap` so key order is deterministic: the same job must serialize
 /// identically whether it is served live or replayed from a stored log.
 pub type JobConfig = BTreeMap<String, String>;
+
+#[cfg(all(test, feature = "utoipa"))]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use utoipa::ToSchema;
+
+    fn get_schema_property_names<T: ToSchema>() -> BTreeSet<String> {
+        let schema_ref = T::schema();
+        match schema_ref {
+            utoipa::openapi::RefOr::T(utoipa::openapi::Schema::Object(obj)) => {
+                obj.properties.keys().cloned().collect()
+            }
+            _ => panic!("Expected Object schema"),
+        }
+    }
+
+    fn get_json_property_names<T: Serialize>(value: &T) -> BTreeSet<String> {
+        let json = serde_json::to_value(value).expect("serialize to value");
+        match json {
+            serde_json::Value::Object(map) => map.keys().cloned().collect(),
+            _ => panic!("Expected JSON Object"),
+        }
+    }
+
+    #[test]
+    fn test_dto_schemas() {
+        assert_eq!(JobResponse::name(), "JobResponse");
+        assert_eq!(TaskStatus::name(), "TaskStatus");
+        assert_eq!(TaskSummary::name(), "TaskSummary");
+        assert_eq!(Percentiles::name(), "Percentiles");
+        assert_eq!(QueryStageSummary::name(), "QueryStageSummary");
+        assert_eq!(QueryStagesResponse::name(), "QueryStagesResponse");
+        assert_eq!(PlanFormat::name(), "PlanFormat");
+
+        let task_summary = TaskSummary {
+            id: 1,
+            status: TaskStatus::Running,
+            partition_id: vec![0],
+            scheduled_time: 100,
+            launch_time: 100,
+            start_exec_time: 100,
+            end_exec_time: 200,
+            exec_duration: 100,
+            finish_time: 200,
+            input_rows: 10,
+            output_rows: 10,
+        };
+        assert_eq!(
+            get_schema_property_names::<TaskSummary>(),
+            get_json_property_names(&task_summary)
+        );
+
+        let percentiles = Percentiles {
+            min: 1,
+            p25: 2,
+            median: 3,
+            p75: 4,
+            max: 5,
+        };
+        assert_eq!(
+            get_schema_property_names::<Percentiles>(),
+            get_json_property_names(&percentiles)
+        );
+
+        let query_stages = QueryStagesResponse { stages: vec![] };
+        assert_eq!(
+            get_schema_property_names::<QueryStagesResponse>(),
+            get_json_property_names(&query_stages)
+        );
+    }
+}

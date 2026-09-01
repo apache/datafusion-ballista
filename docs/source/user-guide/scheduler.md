@@ -75,6 +75,7 @@ The scheduler also provides a REST API that allows jobs to be monitored.
 
 | API                                    | Method | Description                                                       |
 | -------------------------------------- | ------ | ----------------------------------------------------------------- |
+| /api/openapi.json                      | GET    | Return OpenAPI v3 specification document for the REST API.        |
 | /api/jobs                              | GET    | Get a list of jobs that have been submitted to the cluster.       |
 | /api/job/{job_id}                      | GET    | Get a summary of a submitted job.                                 |
 | /api/job/{job_id}/dot                  | GET    | Produce a query plan in DOT (graphviz) format.                    |

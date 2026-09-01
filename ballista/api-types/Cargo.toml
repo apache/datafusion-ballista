@@ -26,5 +26,14 @@ authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 edition = { workspace = true }
 rust-version = { workspace = true }
 
+[features]
+default = []
+utoipa = ["dep:utoipa"]
+
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
+utoipa = { workspace = true, optional = true }
+
+[dev-dependencies]
+ballista-api-types = { path = ".", features = ["utoipa"] }
+serde_json = { workspace = true }

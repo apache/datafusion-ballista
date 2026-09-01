@@ -46,7 +46,14 @@ disable-stage-plan-cache = []
 graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
-rest-api = ["dep:ballista-api-types", "dep:ballista-history", "dep:serde_json"]
+rest-api = [
+    "ballista-api-types?/utoipa",
+    "ballista-core/utoipa",
+    "dep:ballista-api-types",
+    "dep:ballista-history",
+    "dep:serde_json",
+    "dep:utoipa",
+]
 spark-compat = ["ballista-core/spark-compat"]
 substrait = ["dep:datafusion-substrait"]
 
@@ -87,6 +94,7 @@ tracing = { workspace = true, optional = true }
 tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 url-escape = { workspace = true }
+utoipa = { workspace = true, optional = true }
 uuid = { workspace = true }
 
 [[test]]

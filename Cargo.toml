@@ -81,11 +81,13 @@ log = { version = "0.4" }
 parking_lot = { version = "0.12" }
 rand = { version = "0.10" }
 serde = { version = "1.0" }
+serde_json = { version = "1.0" }
 tempfile = { version = "3.27" }
 tokio = { version = "1" }
 tokio-stream = { version = "0.1" }
 url = { version = "2.5" }
 url-escape = { version = "0.1.2" }
+utoipa = { version = "5.5", default-features = false, features = ["macros"] }
 uuid = { version = "1.23", features = ["v4", "v7"] }
 
 # cargo build --profile release-lto
