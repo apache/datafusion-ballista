@@ -16,8 +16,13 @@
 // under the License.
 
 //! Async, buffered event-log writer. Each job's events append to
-//! `<log_dir>/<job_id>.eventlog` as JSONL. Appends are non-blocking; a background
-//! task performs the file I/O so the scheduler hot path never waits on disk.
+//! `<log_dir>/<job_id>.eventlog.running` as JSONL while the job runs. Appends
+//! are non-blocking; a background task performs the file I/O so the scheduler
+//! hot path never waits on disk. When the job reaches a terminal state,
+//! [`EventLogWriter::finish_job`] flushes, closes, and renames the file to
+//! `<log_dir>/<job_id>.eventlog` — so the `.running` suffix alone marks a job
+//! as still running (or abandoned by a crashed scheduler), without reading
+//! the file.
 
 use crate::event::HistoryEvent;
 use std::collections::HashMap;
@@ -167,12 +172,34 @@ async fn run(log_dir: PathBuf, mut rx: mpsc::Receiver<WriterMsg>) {
             WriterMsg::Finish { job_id, done } => {
                 if let Some(mut file) = handles.remove(&job_id) {
                     let _ = file.flush().await;
-                    // Dropping `file` here closes the fd.
+                    // Must close before renaming: required on Windows, and
+                    // makes the close-before-rename ordering explicit here on
+                    // every platform.
+                    drop(file);
+                    let from = running_path(&log_dir, &job_id);
+                    let to = final_path(&log_dir, &job_id);
+                    if let Err(e) = tokio::fs::rename(&from, &to).await {
+                        log::warn!(
+                            "event-log writer: failed to rename {} to {}: {e}",
+                            from.display(),
+                            to.display()
+                        );
+                    }
                 }
                 let _ = done.send(());
             }
         }
     }
+}
+
+/// Where `job_id`'s log lives while the job is still running.
+fn running_path(log_dir: &Path, job_id: &str) -> PathBuf {
+    log_dir.join(format!("{job_id}.eventlog.running"))
+}
+
+/// Where `job_id`'s log lives once it has reached a terminal state.
+fn final_path(log_dir: &Path, job_id: &str) -> PathBuf {
+    log_dir.join(format!("{job_id}.eventlog"))
 }
 
 async fn open_for<'a>(
@@ -181,7 +208,7 @@ async fn open_for<'a>(
     job_id: &str,
 ) -> Option<&'a mut tokio::fs::File> {
     if !handles.contains_key(job_id) {
-        let path = log_dir.join(format!("{job_id}.eventlog"));
+        let path = running_path(log_dir, job_id);
         match tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -261,7 +288,9 @@ mod tests {
         writer.append_final("job-1", job_end).await;
         writer.finish_job("job-1").await;
 
+        assert!(!dir.path().join("job-1.eventlog.running").exists());
         let path = dir.path().join("job-1.eventlog");
+        assert!(path.exists());
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
         let lines: Vec<&str> = contents.lines().collect();
         assert!(
@@ -299,11 +328,23 @@ mod tests {
         );
         writer.flush_job("job-1").await;
 
-        let path = dir.path().join("job-1.eventlog");
+        // Not finished yet, so still under the `.running` name.
+        let path = dir.path().join("job-1.eventlog.running");
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
         let lines: Vec<&str> = contents.lines().collect();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"ev\":\"JobStart\""));
         assert!(lines[1].contains("\"ev\":\"StageStart\""));
+    }
+
+    #[tokio::test]
+    async fn finish_job_is_a_noop_for_a_job_with_no_open_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = EventLogWriter::new(dir.path().to_path_buf(), 16);
+
+        writer.finish_job("never-appended").await;
+
+        assert!(!dir.path().join("never-appended.eventlog.running").exists());
+        assert!(!dir.path().join("never-appended.eventlog").exists());
     }
 }

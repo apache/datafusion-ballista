@@ -383,6 +383,7 @@ mod tests {
             job_end_event(&graph, JobEndStatus::Succeeded, 1, 20),
         );
         writer.flush_job(&job_id).await;
+        writer.finish_job(&job_id).await;
 
         let path = dir.path().join(format!("{job_id}.eventlog"));
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
@@ -425,6 +426,7 @@ mod tests {
         let writer = EventLogWriter::new(dir.path().to_path_buf(), 16);
         writer.append(&job_id, event);
         writer.flush_job(&job_id).await;
+        writer.finish_job(&job_id).await;
 
         let store = HistoryStore::load(dir.path()).unwrap();
         let replayed = store.read_job(&job_id).expect("job should be replayed");
