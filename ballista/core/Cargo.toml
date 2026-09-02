@@ -55,7 +55,6 @@ datafusion-proto = { workspace = true }
 datafusion-proto-common = { workspace = true }
 datafusion-spark = { workspace = true, optional = true, features = ["datafusion"] }
 futures = { workspace = true }
-itertools = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true, features = ["aws", "http"], optional = true }
 parking_lot = { workspace = true }
