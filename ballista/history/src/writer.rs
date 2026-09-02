@@ -23,6 +23,12 @@
 //! `<log_dir>/<job_id>.eventlog` — so the `.running` suffix alone marks a job
 //! as still running (or abandoned by a crashed scheduler), without reading
 //! the file.
+//!
+//! Once a job has been finalized, a late event for it (e.g. a straggler
+//! terminal task status arriving after the job was cancelled or failed) is
+//! dropped rather than reopening the log: recreating an orphan `.running` file
+//! that nothing would ever rename would make that job read as crashed. See
+//! `open_for`.
 
 use crate::event::HistoryEvent;
 use std::collections::HashMap;
@@ -208,6 +214,27 @@ async fn open_for<'a>(
     job_id: &str,
 ) -> Option<&'a mut tokio::fs::File> {
     if !handles.contains_key(job_id) {
+        // The job's log has already been finalized and renamed. A late event
+        // (a straggler terminal task status arriving after JobCancel or
+        // JobRunningFailed) must not recreate an orphan `.running` file that
+        // nothing will ever rename — that filename is the "still running /
+        // crashed" signal a directory scan relies on. `unwrap_or(false)` lets a
+        // transient stat error fall through to the normal open path rather than
+        // silently dropping a real event.
+        //
+        // A job that finished without a `JobEnd` and without an open handle
+        // leaves no `.eventlog`, so a straggler for it is not covered here; that
+        // job could not be recorded in the first place and the history server
+        // skips it either way.
+        if tokio::fs::try_exists(final_path(log_dir, job_id))
+            .await
+            .unwrap_or(false)
+        {
+            log::debug!(
+                "event-log writer: dropping late event for {job_id}; its log is already finalized"
+            );
+            return None;
+        }
         let path = running_path(log_dir, job_id);
         match tokio::fs::OpenOptions::new()
             .create(true)
@@ -231,10 +258,38 @@ async fn open_for<'a>(
 mod tests {
     use super::*;
     use crate::event::{
-        HistoryEvent, JobEnd, JobEndStatus, JobIndex, JobStart, StageStart,
+        HistoryEvent, JobEnd, JobEndStatus, JobIndex, JobStart, StageStart, TaskEnd,
+        TaskEndMetrics,
     };
+    use ballista_api_types::dto::TaskStatus;
     use serde_json::value::RawValue;
     use std::collections::BTreeMap;
+
+    /// A minimal succeeded `JobEnd` for `job_id`; the payloads are placeholders,
+    /// only the record's presence and the file lifecycle matter to these tests.
+    fn succeeded_job_end(job_id: &str) -> HistoryEvent {
+        HistoryEvent::JobEnd(Box::new(JobEnd {
+            status: JobEndStatus::Succeeded,
+            queued_at: 1,
+            started_at: 2,
+            completed_at: 20,
+            index: JobIndex {
+                job_id: job_id.into(),
+                job_name: "q1".into(),
+                status: "Completed".into(),
+                job_status: "COMPLETED".into(),
+                start_time: 10,
+                end_time: 20,
+                num_stages: 1,
+                completed_stages: 1,
+                percent_complete: 100,
+            },
+            job: RawValue::from_string(format!(r#"{{"job_id":"{job_id}"}}"#)).unwrap(),
+            stages: RawValue::from_string(r#"{"stages":[]}"#.to_string()).unwrap(),
+            config: BTreeMap::new(),
+            dot: "digraph {}".into(),
+        }))
+    }
 
     #[tokio::test]
     async fn terminal_job_end_is_not_dropped_on_a_saturated_channel() {
@@ -346,5 +401,64 @@ mod tests {
 
         assert!(!dir.path().join("never-appended.eventlog.running").exists());
         assert!(!dir.path().join("never-appended.eventlog").exists());
+    }
+
+    #[tokio::test]
+    async fn late_event_after_finish_does_not_recreate_the_running_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = EventLogWriter::new(dir.path().to_path_buf(), 16);
+
+        writer.append(
+            "job-1",
+            HistoryEvent::JobStart(JobStart {
+                job_id: "job-1".into(),
+                job_name: "q1".into(),
+                queued_at: 1,
+                submitted_at: 2,
+                logical_plan: None,
+                physical_plan: None,
+            }),
+        );
+        writer
+            .append_final("job-1", succeeded_job_end("job-1"))
+            .await;
+        writer.finish_job("job-1").await;
+
+        let running = dir.path().join("job-1.eventlog.running");
+        let final_path = dir.path().join("job-1.eventlog");
+        assert!(!running.exists());
+        assert!(final_path.exists());
+        let finalized = tokio::fs::read_to_string(&final_path).await.unwrap();
+
+        // A straggler terminal task status for the same job, arriving after the
+        // log was finalized (e.g. a task completing just after JobCancel).
+        writer.append(
+            "job-1",
+            HistoryEvent::TaskEnd(TaskEnd {
+                stage_id: 1,
+                task_id: 7,
+                executor_id: "exec-1".into(),
+                status: TaskStatus::Successful,
+                launch_time: 1,
+                start_exec_time: 2,
+                end_exec_time: 3,
+                metrics: TaskEndMetrics {
+                    input_rows: 0,
+                    output_rows: 0,
+                    elapsed_compute_nanos: 0,
+                },
+            }),
+        );
+        writer.flush_job("job-1").await;
+
+        assert!(
+            !running.exists(),
+            "a late event must not recreate the .running log for a finalized job"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&final_path).await.unwrap(),
+            finalized,
+            "the finalized .eventlog must be left untouched"
+        );
     }
 }
