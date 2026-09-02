@@ -27,6 +27,13 @@ authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 edition = { workspace = true }
 rust-version = { workspace = true }
 
+[package.metadata.cargo-machete]
+ignored = [
+    # not imported directly; pulls in arrow's `ipc_compression` feature so the arrow
+    # crates used through datafusion can compress shuffle IPC data
+    "arrow",
+]
+
 [[bin]]
 name = "ballista-executor"
 path = "src/bin/main.rs"
@@ -38,7 +45,6 @@ build-binary = [
     "clap",
     "tracing-subscriber",
     "tracing-appender",
-    "tracing",
     "ballista-core/build-binary",
     "mimalloc",
     "dep:axum",
@@ -70,7 +76,6 @@ tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { version = "0.7", features = ["io-util"] }
 tonic = { workspace = true }
-tracing = { workspace = true, optional = true }
 tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 uuid = { workspace = true }

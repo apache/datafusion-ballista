@@ -27,6 +27,14 @@ authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 edition = { workspace = true }
 rust-version = { workspace = true }
 
+[package.metadata.cargo-machete]
+ignored = [
+    # used via the `ballista_core::assert_plan!` macro, which expands to `insta::assert_snapshot!`
+    "insta",
+    # used by the `keda-scaler` gRPC code generated into OUT_DIR by build.rs
+    "tonic-prost",
+]
+
 [[bin]]
 name = "ballista-scheduler"
 path = "src/bin/main.rs"
@@ -66,7 +74,6 @@ ferroid = { version = "2.0", features = ["alloc", "std", "snowflake", "atomic", 
 futures = { workspace = true }
 graphviz-rust = { version = "0.9", optional = true }
 http = "1.4"
-insta = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true }
@@ -74,7 +81,6 @@ once_cell = { version = "1.21.4", optional = true }
 parking_lot = { workspace = true }
 prometheus = { version = "0.14", features = ["process"], optional = true }
 prost = { workspace = true }
-prost-types = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { version = "1", optional = true }
@@ -94,6 +100,7 @@ name = "tpch_plan_stability"
 path = "tests/tpch_plan_stability/main.rs"
 
 [dev-dependencies]
+insta = { workspace = true }
 regex = "1"
 rstest = { workspace = true }
 serde_json = "1"

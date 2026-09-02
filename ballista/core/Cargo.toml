@@ -36,7 +36,7 @@ rustc-args = ["--cfg", "docsrs"]
 
 [features]
 arrow-ipc-optimizations = []
-build-binary = ["aws-config", "aws-credential-types", "clap", "object_store"]
+build-binary = ["clap", "object_store"]
 default = ["arrow-ipc-optimizations"]
 docsrs = []
 # Used for testing ONLY: causes all values to hash to the same value (test for collisions)
@@ -46,8 +46,6 @@ spark-compat = ["dep:datafusion-spark"]
 [dependencies]
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
-aws-config = { version = "1.8.18", optional = true }
-aws-credential-types = { version = "1.2.0", optional = true }
 chrono = { version = "0.4", default-features = false }
 clap = { workspace = true, optional = true }
 datafusion = { workspace = true }
@@ -57,12 +55,10 @@ datafusion-spark = { workspace = true, optional = true, features = ["datafusion"
 futures = { workspace = true }
 itertools = "0.15"
 log = { workspace = true }
-md-5 = { version = "^0.11.0" }
 object_store = { workspace = true, features = ["aws", "http"], optional = true }
 parking_lot = { workspace = true }
 pastey = { workspace = true }
 prost = { workspace = true }
-prost-types = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
