@@ -26,7 +26,7 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
 
 | Engine   | Version                                                                                                                                                                   |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ballista | [`696ca29b`](https://github.com/apache/datafusion-ballista/commit/696ca29b3c1fe3013238822b7f5d8cdb918fdaa3) (`main`, 2026-07-23), Cargo pkg `54.0.0`, DataFusion `54.1.0` |
+| Ballista | [`67b3a19b`](https://github.com/apache/datafusion-ballista/commit/67b3a19bb442db879c7056722d14696cc33341b9) (`main`, 2026-09-03), Cargo pkg `54.0.0`, DataFusion `55.0.0` |
 | Spark    | 3.4 (vanilla, no acceleration plugin)                                                                                                                                     |
 
 ## Environment
@@ -40,11 +40,11 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
   shuffle work-dir (see [Executor storage](#executor-storage)).
 - **Executor pod (Spark):** x86_64, 8 vCPU, 64 GiB + 10 GiB overhead, plus a
   dedicated `gp3` PVC via `spark-local-dir-1`.
-- **Client pod (Ballista):** the Python benchmark runner submits SQL to
-  Ballista via `BallistaSessionContext` and collects results locally.
-  Requires 64 GiB memory limit to complete the full 22-query suite —
-  smaller limits (16 GiB) OOM the client partway through, even though the
-  executor cluster is healthy.
+- **Client pod (Ballista):** the `tpch` Rust benchmark runner from
+  [`benchmarks/`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks)
+  in this repo (`cargo run --release --bin tpch -- benchmark ballista ...`),
+  which submits SQL through a Ballista `SessionContext` and collects
+  results locally.
 - **Data:** TPC-H SF1000 Parquet on S3 (`us-west-2`), ZSTD compression,
   ~512 MiB row groups, one directory per table.
 
@@ -131,46 +131,35 @@ The SQLBench-H phrasing of the 22 TPC-H queries from
 ## Results
 
 **Times in seconds; lower is better.** Ballista: single iteration. Spark:
-mean of 3 iterations (cold iteration dropped by the harness). `FAIL` = query
-did not complete on this Ballista configuration.
+mean of 3 iterations (cold iteration dropped by the harness).
 
-|                              Query | Ballista (s) | Spark 3.4 (s) |
-| ---------------------------------: | -----------: | ------------: |
-|                                  1 |        21.71 |         67.58 |
-|                                  2 |        26.73 |         29.80 |
-|                                  3 |        34.77 |         25.13 |
-|                                  4 |        20.73 |         21.19 |
-|                                  5 |        42.26 |         54.12 |
-|                                  6 |        13.78 |          1.23 |
-|                                  7 |        47.17 |         19.57 |
-|                                  8 |        45.74 |         48.60 |
-|                                  9 |        67.27 |         69.38 |
-|                                 10 |        52.99 |         35.92 |
-|                                 11 |     **FAIL** |         30.88 |
-|                                 12 |        25.97 |         10.78 |
-|                                 13 |        15.30 |         20.45 |
-|                                 14 |        21.13 |          7.00 |
-|                                 15 |        27.30 |         23.75 |
-|                                 16 |        17.38 |         23.41 |
-|                                 17 |        47.29 |         82.30 |
-|                                 18 |        78.32 |        129.40 |
-|                                 19 |        18.71 |         11.26 |
-|                                 20 |        97.13 |         19.22 |
-|                                 21 |     **FAIL** |        101.53 |
-|                                 22 |     **FAIL** |         12.71 |
-| **Total (comparable subset, 19Q)** |   **721.68** |    **700.09** |
+|             Query | Ballista (s) | Spark 3.4 (s) |
+| ----------------: | -----------: | ------------: |
+|                 1 |        17.56 |         67.58 |
+|                 2 |        27.13 |         29.80 |
+|                 3 |        33.03 |         25.13 |
+|                 4 |        18.34 |         21.19 |
+|                 5 |        60.51 |         54.12 |
+|                 6 |        14.25 |          1.23 |
+|                 7 |        49.28 |         19.57 |
+|                 8 |        96.02 |         48.60 |
+|                 9 |       107.89 |         69.38 |
+|                10 |        55.78 |         35.92 |
+|                11 |        13.46 |         30.88 |
+|                12 |        16.49 |         10.78 |
+|                13 |        14.58 |         20.45 |
+|                14 |        17.99 |          7.00 |
+|                15 |        18.46 |         23.75 |
+|                16 |        14.29 |         23.41 |
+|                17 |        35.20 |         82.30 |
+|                18 |        53.64 |        129.40 |
+|                19 |        18.87 |         11.26 |
+|                20 |        29.29 |         19.22 |
+|                21 |        95.63 |        101.53 |
+|                22 |         9.37 |         12.71 |
+|         **Total** |   **817.07** |    **845.21** |
 
-The total row sums Q1–Q10, Q12–Q20 — the queries that completed on both
-engines. Q11, Q21, Q22 currently fail on Ballista with an `OutOfRange`
-error (`decoded message length too large`); their physical plans encode
-above the client's default 16 MiB gRPC ceiling. Bumping the ceiling to
-128 MiB via `ballista.client.grpc_max_message_size` on the client side is
-still under investigation — the scheduler and executor sides accept the
-raised limit (see [Ballista configuration](#ballista-configuration)) but
-the client-submission channel is separate and continues to enforce 16 MiB
-in the current release.
-
-Row counts agree across engines for every query Ballista returned.
+Row counts agree across engines for every query.
 
 ## Reproducing
 
@@ -193,13 +182,14 @@ ballista-executor \
 `/data` should be a dedicated volume (e.g. a `gp3` PVC) sized for the
 suite's shuffle output — see [Executor storage](#executor-storage).
 
-Run all 22 queries:
+Run all 22 queries with the `tpch` Rust runner from
+[`benchmarks/`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks):
 
 ```sh
-tpch benchmark ballista \
+cargo run --release --bin tpch -- benchmark ballista \
   --host <scheduler> --port 50050 \
   --path s3://<bucket>/tpch/sf1000 --format parquet \
-  --partitions 256 --iterations 2 \
+  --partitions 256 --iterations 1 \
   -c ballista.planner.adaptive.enabled=true \
   -c datafusion.execution.collect_statistics=true \
   -c ballista.shuffle.sort_based.memory_limit_per_task_bytes=0
