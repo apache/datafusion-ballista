@@ -112,7 +112,9 @@ result arrives as Arrow the whole way from the executors — no row-by-row
 conversion.
 
 A runnable version of this, including cluster setup, is in
-[`examples/python/adbc_flight_sql.py`][example].
+[`examples/python/adbc_flight_sql.py`][example]. For something larger,
+[`benchmarks/tpch_adbc.py`][tpch] runs all 22 TPC-H queries over the same
+path.
 
 ### Introspection
 
@@ -217,18 +219,19 @@ These are known gaps, tracked in [#2298]:
   `DoPutPreparedStatementQuery` parameter binding is not, so
   `cur.execute(sql, parameters=...)` will fail.
 - **No write path.** `INSERT`, `UPDATE`, `DELETE`, and `COPY` are rejected with
-  a clear error rather than silently executing on the scheduler. `CREATE TABLE
-  AS SELECT` is rejected for the same reason — it would run its query on the
-  scheduler instead of the cluster. Other DDL, including `CREATE EXTERNAL
-  TABLE` and `CREATE VIEW`, is supported.
+  a clear error rather than silently executing on the scheduler. So is
+  `CREATE TABLE AS SELECT`, which would otherwise run its query on the
+  scheduler rather than the cluster. Other DDL is supported, including
+  `CREATE EXTERNAL TABLE` and `CREATE VIEW`.
 - **No transactions or savepoints.**
 - **No Substrait.** `CommandStatementSubstraitPlan` is not implemented, even
   when the scheduler's `substrait` feature is enabled.
 - **Primary/foreign key metadata is not implemented**, so tools that browse
   relationships will show none.
 
-[Arrow Flight SQL]: https://arrow.apache.org/docs/format/FlightSql.html
-[ADBC]: https://arrow.apache.org/adbc/
-[Arrow Flight SQL JDBC driver]: https://central.sonatype.com/artifact/org.apache.arrow/flight-sql-jdbc-driver
+[arrow flight sql]: https://arrow.apache.org/docs/format/FlightSql.html
+[adbc]: https://arrow.apache.org/adbc/
+[arrow flight sql jdbc driver]: https://central.sonatype.com/artifact/org.apache.arrow/flight-sql-jdbc-driver
 [#2298]: https://github.com/apache/datafusion-ballista/issues/2298
 [example]: https://github.com/apache/datafusion-ballista/blob/main/examples/python/adbc_flight_sql.py
+[tpch]: https://github.com/apache/datafusion-ballista/blob/main/benchmarks/tpch_adbc.py

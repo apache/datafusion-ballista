@@ -65,5 +65,5 @@ the executor address carried in a partition-fetch ticket, so a client that
 forges a ticket can make the scheduler dial an arbitrary host. Treat the port as
 trusted-network-only until both are addressed.
 
-[Arrow Flight SQL]: https://arrow.apache.org/docs/format/FlightSql.html
-[Flight SQL user guide]: https://datafusion.apache.org/ballista/user-guide/flightsql.html
+[arrow flight sql]: https://arrow.apache.org/docs/format/FlightSql.html
+[flight sql user guide]: https://datafusion.apache.org/ballista/user-guide/flightsql.html
