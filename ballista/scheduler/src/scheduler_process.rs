@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::api::SchedulerErrorResponse;
-use crate::flight_proxy_service::BallistaFlightProxyService;
+use ballista_core::flight_proxy_service::BallistaFlightProxyService;
 
 #[cfg(feature = "rest-api")]
 use crate::api::get_routes;
@@ -85,12 +85,31 @@ pub async fn create_scheduler<
     Ok(scheduler_server)
 }
 
-/// Exposes scheduler grpc service
+/// Exposes scheduler grpc service on `address`.
 pub async fn start_grpc_service<
     T: 'static + AsLogicalPlan,
     U: 'static + AsExecutionPlan,
 >(
     address: SocketAddr,
+    scheduler: SchedulerServer<T, U>,
+) -> ballista_core::error::Result<()> {
+    let listener = tokio::net::TcpListener::bind(&address)
+        .await
+        .map_err(BallistaError::from)?;
+
+    start_grpc_service_with_listener(listener, scheduler).await
+}
+
+/// Exposes scheduler grpc service on an already-bound listener.
+///
+/// Use this when the caller needs the bound address before the service starts,
+/// such as binding port 0 in tests, or when the listener comes from a socket
+/// activation mechanism.
+pub async fn start_grpc_service_with_listener<
+    T: 'static + AsLogicalPlan,
+    U: 'static + AsExecutionPlan,
+>(
+    listener: tokio::net::TcpListener,
     scheduler: SchedulerServer<T, U>,
 ) -> ballista_core::error::Result<()> {
     let config = scheduler.state.config.clone();
@@ -101,34 +120,75 @@ pub async fn start_grpc_service<
     let mut tonic_builder = RoutesBuilder::default();
     tonic_builder.add_service(scheduler_grpc_server);
 
-    match &config.advertise_flight_sql_endpoint {
-        Some(proxy) if proxy.is_empty() => {
-            info!("Adding embedded flight proxy service on scheduler");
-            // Wrap the endpoint override function in BallistaConfigGrpcEndpoint
-            let customize_endpoint = config
-                .override_create_grpc_client_endpoint
-                .clone()
-                .map(|f| Arc::new(BallistaConfigGrpcEndpoint::new(f)));
+    // Wrap the endpoint override function in BallistaConfigGrpcEndpoint
+    let customize_endpoint = config
+        .override_create_grpc_client_endpoint
+        .clone()
+        .map(|f| Arc::new(BallistaConfigGrpcEndpoint::new(f)));
 
-            let flight_proxy = FlightServiceServer::new(BallistaFlightProxyService::new(
-                config.grpc_server_max_encoding_message_size as usize,
-                config.grpc_server_max_decoding_message_size as usize,
-                config.use_tls,
-                customize_endpoint,
-            ))
-            .max_decoding_message_size(
-                config.grpc_server_max_decoding_message_size as usize,
-            )
-            .max_encoding_message_size(
-                config.grpc_server_max_encoding_message_size as usize,
+    let flight_proxy = BallistaFlightProxyService::new(
+        config.grpc_server_max_encoding_message_size as usize,
+        config.grpc_server_max_decoding_message_size as usize,
+        config.use_tls,
+        customize_endpoint,
+    );
+
+    let scheduler = Arc::new(scheduler);
+
+    // The Flight SQL frontend and the standalone proxy both serve
+    // `arrow.flight.protocol.FlightService`, so at most one can be mounted.
+    // The frontend subsumes the proxy: its `do_get_fallback` forwards Ballista's
+    // own partition-fetch tickets, so Ballista clients are unaffected.
+    #[cfg(feature = "flight-sql")]
+    let flight_sql_enabled = config.flight_sql;
+    #[cfg(not(feature = "flight-sql"))]
+    let flight_sql_enabled = false;
+
+    #[cfg(feature = "flight-sql")]
+    if flight_sql_enabled {
+        let flight_sql = ballista_flight_sql::BallistaFlightSqlService::new(
+            scheduler.clone(),
+            flight_proxy.clone(),
+        );
+
+        if flight_sql.allows_anonymous() {
+            log::warn!(
+                "Arrow Flight SQL is enabled with no authenticator: any client that can \
+                 reach the scheduler port can run queries, and unauthenticated clients \
+                 share a single session. Supply an authenticator or restrict network \
+                 access before using this outside a trusted network."
             );
-            tonic_builder.add_service(flight_proxy);
         }
-        _ => {}
+
+        info!("Adding Arrow Flight SQL service on scheduler");
+        tonic_builder.add_service(
+            FlightServiceServer::new(flight_sql)
+                .max_decoding_message_size(
+                    config.grpc_server_max_decoding_message_size as usize,
+                )
+                .max_encoding_message_size(
+                    config.grpc_server_max_encoding_message_size as usize,
+                ),
+        );
+    }
+
+    if !flight_sql_enabled
+        && matches!(&config.advertise_flight_sql_endpoint, Some(proxy) if proxy.is_empty())
+    {
+        info!("Adding embedded flight proxy service on scheduler");
+        tonic_builder.add_service(
+            FlightServiceServer::new(flight_proxy)
+                .max_decoding_message_size(
+                    config.grpc_server_max_decoding_message_size as usize,
+                )
+                .max_encoding_message_size(
+                    config.grpc_server_max_encoding_message_size as usize,
+                ),
+        );
     }
 
     #[cfg(feature = "keda-scaler")]
-    tonic_builder.add_service(ExternalScalerServer::new(scheduler.clone()));
+    tonic_builder.add_service(ExternalScalerServer::new(scheduler.as_ref().clone()));
 
     let tonic = tonic_builder.routes().into_axum_router();
 
@@ -136,7 +196,6 @@ pub async fn start_grpc_service<
     let tonic =
         tonic.fallback(|| async { SchedulerErrorResponse::new(StatusCode::NOT_FOUND) });
 
-    let scheduler = Arc::new(scheduler);
     let health = health_routes(scheduler.clone());
 
     #[cfg(feature = "rest-api")]
@@ -161,10 +220,6 @@ pub async fn start_grpc_service<
         ))
         .merge(health)
         .into_make_service_with_connect_info::<SocketAddr>();
-
-    let listener = tokio::net::TcpListener::bind(&address)
-        .await
-        .map_err(BallistaError::from)?;
 
     axum::serve(listener, final_route)
         .await

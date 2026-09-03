@@ -1210,6 +1210,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ballista-flight-sql"
+version = "54.0.0"
+dependencies = [
+ "arrow",
+ "arrow-flight",
+ "async-trait",
+ "ballista-core",
+ "dashmap",
+ "datafusion",
+ "futures",
+ "log",
+ "prost",
+ "tokio",
+ "tonic",
+ "uuid",
+]
+
+[[package]]
 name = "ballista-history"
 version = "54.0.0"
 dependencies = [
@@ -1230,6 +1248,8 @@ dependencies = [
  "axum",
  "ballista-api-types",
  "ballista-core",
+ "ballista-executor",
+ "ballista-flight-sql",
  "ballista-history",
  "clap 4.6.4",
  "dashmap",

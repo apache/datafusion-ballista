@@ -45,6 +45,7 @@ Table of content
    Python <user-guide/python/index>
    Rust <user-guide/rust>
    SQL CLI <user-guide/cli>
+   Arrow Flight SQL <user-guide/flightsql>
 
 .. toctree::
    :maxdepth: 1

@@ -260,6 +260,14 @@ pub struct Config {
         help = "Number of attempts before stage is considered failed."
     )]
     pub stage_max_failures: usize,
+    #[cfg(feature = "flight-sql")]
+    /// Serve Arrow Flight SQL on the scheduler's gRPC port.
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Serve Arrow Flight SQL on the scheduler port, so JDBC/ODBC/ADBC clients can run SQL against the cluster. Note that this performs no authentication unless an authenticator is supplied programmatically."
+    )]
+    pub flight_sql: bool,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     #[arg(
@@ -366,6 +374,12 @@ pub struct SchedulerConfig {
     pub task_max_failures: usize,
     /// Number of failures attempts before stage is considered failed
     pub stage_max_failures: usize,
+    /// Whether to serve Arrow Flight SQL on the scheduler's gRPC port.
+    ///
+    /// The frontend subsumes the plain Flight result proxy when enabled, so
+    /// Ballista's own clients keep working on the same port.
+    #[cfg(feature = "flight-sql")]
+    pub flight_sql: bool,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     pub disable_rest_api: bool,
@@ -420,6 +434,8 @@ impl Default for SchedulerConfig {
             min_ready_executors: 1,
             task_max_failures: 4,
             stage_max_failures: 4,
+            #[cfg(feature = "flight-sql")]
+            flight_sql: false,
             #[cfg(feature = "rest-api")]
             disable_rest_api: false,
             #[cfg(feature = "rest-api")]
@@ -730,6 +746,8 @@ impl TryFrom<Config> for SchedulerConfig {
             min_ready_executors: opt.min_ready_executors,
             task_max_failures: opt.task_max_failures,
             stage_max_failures: opt.stage_max_failures,
+            #[cfg(feature = "flight-sql")]
+            flight_sql: opt.flight_sql,
             #[cfg(feature = "rest-api")]
             disable_rest_api: opt.disable_rest_api,
             #[cfg(feature = "rest-api")]

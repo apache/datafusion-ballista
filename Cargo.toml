@@ -23,6 +23,7 @@ members = [
     "ballista/client",
     "ballista/core",
     "ballista/executor",
+    "ballista/flight-sql",
     "ballista/history",
     "ballista/scheduler",
     "benchmarks",

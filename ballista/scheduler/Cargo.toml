@@ -38,6 +38,10 @@ default = ["build-binary", "rest-api"]
 # job info can cache stage plans, in some cases where
 # task plans can be re-computed, cache behavior may need to be disabled.
 disable-stage-plan-cache = []
+# Arrow Flight SQL frontend, so generic SQL clients (JDBC/ODBC, BI tools,
+# Python ADBC) can run queries. Off by default; enable at runtime with
+# `--flight-sql`.
+flight-sql = ["dep:ballista-flight-sql"]
 graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
@@ -51,6 +55,7 @@ async-trait = { workspace = true }
 axum = "0.8.9"
 ballista-api-types = { path = "../api-types", version = "54.0.0", optional = true }
 ballista-core = { path = "../core", version = "54.0.0" }
+ballista-flight-sql = { path = "../flight-sql", version = "54.0.0", optional = true }
 ballista-history = { path = "../history", version = "54.0.0", optional = true }
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
@@ -89,6 +94,7 @@ name = "tpch_plan_stability"
 path = "tests/tpch_plan_stability/main.rs"
 
 [dev-dependencies]
+ballista-executor = { path = "../executor", version = "54.0.0", default-features = false }
 datafusion-functions-aggregate-common = { workspace = true }
 regex = "1"
 rstest = { workspace = true }
