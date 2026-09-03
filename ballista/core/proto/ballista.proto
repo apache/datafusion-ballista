@@ -59,6 +59,8 @@ message BallistaPhysicalPlanNode {
     PartitionedBoundedWindowAggExecNode partitioned_bounded_window_agg = 11;
     RangeShuffleReaderExecNode range_shuffle_reader = 12;
     RangeFilterExecNode range_filter = 13;
+    PrefixMergeExecNode prefix_merge = 14;
+    RangeShuffleWriterExecNode range_shuffle_writer = 15;
   }
 }
 
@@ -92,11 +94,46 @@ message RuntimeStatsExecNode {
   repeated datafusion.PhysicalSortExprNode order_by = 1;
 }
 
-// Serialized T-Digest as a fixed-layout `Vec<ScalarValue>` per
-// `TDigest::to_scalar_state()`: max_size, sum, count, max, min,
-// centroid_means..., centroid_weights....
-message QuantileSketchState {
-  repeated datafusion_common.ScalarValue state = 1;
+// A `SortKeySketch` is a wrapper around a KLL, that also includes NULL counts
+//
+// `levels` is an Arrow IPC stream for now. Binary blob encoding was considered
+// so that encoding tricks could be used like delta+varint. These showed a 4x
+// improvement for u64, but only 25% on f64 due to mantissas being effectively
+// random. Ultimately it was decided that a more complex encoder is not worth
+// the added complexity in this PR. We can revisit the decision in the future.
+message SortKeySketchState {
+  // KLL's nominal top-level compactor capacity
+  uint32 k = 1;
+  // Rows whose key was NULL. Not in `levels`, and not recoverable from it.
+  uint64 null_count = 2;
+  // The exact minimum and maximum over every value observed, one element per
+  // ORDER BY expression. Tracked outside the compactor stack so no coin flip
+  // can move them, which is what keeps `quantile(0.0)` and `quantile(1.0)`
+  // exact. Empty when no value was observed.
+  repeated datafusion_common.ScalarValue key_min = 3;
+  repeated datafusion_common.ScalarValue key_max = 4;
+  // The compactor stack: one row per level in level order, single column
+  // `levels: List<Struct<...>>` holding that level's retained keys ascending,
+  // one struct field per ORDER BY expression. An item's weight is
+  // `2^level`, so the row index carries the weight and the total count is
+  // the weighted sum — neither ships.
+  //
+  // Levels are sorted before serialization, so a decoder takes ascending
+  // order as given rather than being told per level.
+  //
+  // A three-level stack over an `Int64` key decodes to one batch of one
+  // column, where the row index is the level:
+  //
+  //   levels: List<item: Struct<expr_0: Int64>>
+  //
+  //   +-------------------------------------------+
+  //   | levels                                    |
+  //   +-------------------------------------------+
+  //   | [{expr_0: 4}, {expr_0: 17}, {expr_0: 23}] |  level 0, weight 1
+  //   | [{expr_0: 9}, {expr_0: 31}]               |  level 1, weight 2
+  //   | [{expr_0: 12}]                            |  level 2, weight 4
+  //   +-------------------------------------------+
+  bytes levels = 5;
 }
 
 // Flow-control operator with an operator-mode enum. The child plan is
@@ -145,10 +182,30 @@ message PerPartitionFilterExecNode {
 // The child plan is plumbed by the framework as `inputs[0]` during decode.
 // Serialization requires bounds to be resolved.
 message RangeFilterExecNode {
-  datafusion.PhysicalExprNode routing_expr = 1;
+  datafusion.PhysicalExprNode filter_expr = 1;
   datafusion_common.ScalarValue halo_lo = 2;
   datafusion_common.ScalarValue halo_hi = 3;
   repeated RangeBound raw_bounds = 4;
+  // What the operator that produced the cuts says about the rows arriving.
+  // Unset claims nothing, which a nullable `filter_expr` has no answer for:
+  // a NULL has a side in the order, not a position among the values.
+  //
+  // `ordered` is also required of the input, so nothing planted between can
+  // reorder the rows the placement was stated against. `unordered_nulls_first`
+  // states the side without demanding an order, which is what leaves an
+  // unordered range-repartition upstream legal.
+  oneof input_order {
+    bool unordered_nulls_first = 5;
+    SortOptions ordered = 6;
+  }
+}
+
+// An arrow `SortOptions`, which has no proto of its own in the DataFusion
+// descriptors — `PhysicalSortExprNode` carries the pair inline beside an
+// expression this message's users already have.
+message SortOptions {
+  bool descending = 1;
+  bool nulls_first = 2;
 }
 
 // Half-open `[lo, hi)` cut range for one input partition. Either side may be
@@ -156,6 +213,72 @@ message RangeFilterExecNode {
 message RangeBound {
   datafusion_common.ScalarValue lo = 1;
   datafusion_common.ScalarValue hi = 2;
+}
+
+// Applies scheduler-computed prefix state to a window-aggregate column, so
+// each range-disjoint task's local running aggregate becomes a global one.
+message PrefixMergeExecNode {
+  // One entry per output column needing correction. Empty makes the operator
+  // a passthrough.
+  repeated WindowApplyNode applies = 1;
+  // Resolved prefix state, one entry per input partition, `[k]` summarising
+  // every partition before `k`. Encoding refuses while unresolved — an
+  // over-the-wire plan always ships with state bound, since an executor has
+  // no way to obtain it.
+  repeated FinalizedPartitionStateNode per_partition_state = 2;
+}
+
+// How to correct one window-function output column.
+message WindowApplyNode {
+  oneof apply {
+    ScalarWindowApplyNode scalar = 1;
+    AggregateWindowApplyNode aggregate = 2;
+  }
+}
+
+// Fast path: combine each row's value with a per-partition scalar.
+message ScalarWindowApplyNode {
+  ScalarOpNode op = 1;
+  // One scalar per input partition.
+  repeated datafusion_common.ScalarValue offset = 2;
+  uint32 output_column = 3;
+}
+
+// How a scalar offset combines with a row's existing value.
+enum ScalarOpNode {
+  SCALAR_OP_NODE_ADD = 0;
+  SCALAR_OP_NODE_MIN = 1;
+  SCALAR_OP_NODE_MAX = 2;
+  // Ignores the row's value entirely.
+  SCALAR_OP_NODE_OVERWRITE = 3;
+}
+
+// Fallback path: seed a fresh accumulator from the prefix state and replay
+// each row through it. Needed where a row's output is not itself a valid
+// partial state — AVG, and sketch-backed aggregates like approx_distinct.
+message AggregateWindowApplyNode {
+  // Resolved from the executor's function registry on decode.
+  string udf_name = 1;
+  repeated datafusion.PhysicalExprNode args = 2;
+  uint32 output_column = 3;
+  // Position in the upstream window operator's `window_expr()` list, which
+  // is what indexes into each FinalizedPartitionStateNode.
+  uint32 window_expr_index = 4;
+}
+
+// Prefix state for one input partition: one slot per window expression.
+message FinalizedPartitionStateNode {
+  repeated AggregateStateSlotNode slots = 1;
+}
+
+message AggregateStateSlotNode {
+  // Unset when that window expression published no state — a non-aggregate
+  // window function. Distinct from a present-but-empty state.
+  AggregateStateNode state = 1;
+}
+
+message AggregateStateNode {
+  repeated datafusion_common.ScalarValue values = 1;
 }
 
 // Wrapper for `BoundedWindowAggExec` that overrides
@@ -198,6 +321,15 @@ message SortShuffleWriterExecNode {
   optional uint64 memory_limit_per_task_bytes = 9;
 }
 
+// Passthrough shuffle writer that emits the seekable Arrow IPC file format.
+// Carries no output partitioning: like `ShuffleWriterExecNode`'s passthrough
+// case it writes its input's partitioning through, one file per partition.
+message RangeShuffleWriterExecNode {
+  string job_id = 1;
+  uint32 stage_id = 2;
+  datafusion.PhysicalPlanNode input = 3;
+}
+
 message UnresolvedShuffleExecNode {
   uint32 stage_id = 1;
   datafusion_common.Schema schema = 2;
@@ -235,6 +367,13 @@ message RangeShuffleReaderExecNode {
   // Sort key the reader's k-way merge preserves. Advertised on the reader's
   // `PlanProperties.eq_properties` for downstream consumers.
   repeated datafusion.PhysicalSortExprNode merge_ordering = 4;
+  // Row limit pushed down by a consuming merge. Absent means read everything.
+  optional uint64 fetch = 5;
+  // Half-open value range each output partition covers, halo already applied.
+  // One per output partition, or empty when the scheduler had no cuts. Lets
+  // the reader skip the parts of an indexed source that cannot hold a row the
+  // partition wants; the consuming RangeFilterExec still does the exact trim.
+  repeated RangeBound bounds = 6;
 }
 
 // CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
@@ -383,6 +522,32 @@ message ExecutePartition {
   datafusion.PhysicalHashRepartition output_partitioning = 6;
 }
 
+// How a shuffle writer laid its output out on disk. Selects the path shape,
+// and with it how a client parses the index beside the data. It says nothing
+// about the framing of the bytes inside the data file.
+enum ShuffleLayout {
+  // {stage_id}/{partition_id}/data-{file_id}.arrow — one file per output
+  // partition, written by the passthrough and range writers.
+  SHUFFLE_LAYOUT_PASSTHROUGH = 0;
+  // {stage_id}/{file_id}/data.arrow — one file per task holding every
+  // partition, written by the sort-based writer.
+  SHUFFLE_LAYOUT_SORT = 1;
+}
+
+// Which of the files making up a shuffle output is being asked for. Which
+// index sits beside the data, and how to read it, follows from the layout, so
+// it is not spelled out here.
+enum ShuffleFileKind {
+  SHUFFLE_FILE_KIND_DATA = 0;
+  SHUFFLE_FILE_KIND_INDEX = 1;
+}
+
+// A half-open byte range of a file: `[offset, offset + length)`.
+message ByteRange {
+  uint64 offset = 1;
+  uint64 length = 2;
+}
+
 message FetchPartition {
   string job_id = 1;
   uint32 stage_id = 2;
@@ -390,11 +555,32 @@ message FetchPartition {
   string host = 5;
   uint32 port = 6;
   optional uint64 file_id = 7;
-  bool is_sort_shuffle = 8;
-  
+  // How the producing writer laid its output out, which is what turns the
+  // identifiers above into a path.
+  ShuffleLayout layout = 9;
+  // Which file beside that partition to serve.
+  ShuffleFileKind file_kind = 10;
+  // Ranges to return, concatenated in request order, as absolute offsets into
+  // the file.
+  //
+  // Empty asks for whatever the identifiers above address. Under the sort
+  // layout that is the named partition's slice, which the executor resolves
+  // through its own index — one round trip, as it has always been. Under the
+  // passthrough layout it is the whole file.
+  //
+  // With ranges given the executor serves bytes and nothing else: no index
+  // read, no comparison, no notion of what a range means. That is what a
+  // consumer needs against object storage, where there is no executor to ask,
+  // and it is why the range shuffle's index carries byte offsets at all.
+  repeated ByteRange byte_ranges = 11;
+
   // reserved after removing deprecated `path`.
   reserved 4;
   reserved "path";
+  // reserved after `is_sort_shuffle` became `layout`: the bool selected a path
+  // shape, which reads as data-vs-index once a file_kind exists beside it.
+  reserved 8;
+  reserved "is_sort_shuffle";
 }
 
 message PartitionLocation {
@@ -656,6 +842,42 @@ message SuccessfulTask {
   // executed `RuntimeStatsExec`; the scheduler groups by `order_by` tag
   // to combine reports across tasks/executors.
   repeated RuntimeStatsReport runtime_stats = 3;
+  // Finalized window-aggregate state captured during this task, one entry
+  // per (output partition, window expression, PARTITION BY group) that
+  // closed. Empty unless the plan contains an ever-expanding-frame window
+  // (`UNBOUNDED PRECEDING`), which is the only shape DataFusion will
+  // publish accumulator state for. The scheduler prefix-merges these across
+  // tasks and bakes the result into a downstream `PrefixMergeExec`.
+  //
+  // TODO: watch the size of this. Task completion is a hot, frequent
+  // message, and sketch-backed aggregates make the payload unbounded in a
+  // way row counts and quantile sketches are not — an HLL or KLL state is
+  // kilobytes per window expression per partition, and a task covering a
+  // wide partition slice carries one of each. If it stops being small,
+  // write the state as a sidecar next to the shuffle files instead, the way
+  // sort-shuffle already writes `<data>.arrow.index` beside its data
+  // (`sort_shuffle::get_index_path`), and send only a reference here. That
+  // keeps the completion message fixed-size regardless of aggregate.
+  repeated WindowStateReport window_state = 4;
+}
+
+// One finalized window-aggregate state from a task's
+// `BoundedWindowAggExec`.
+message WindowStateReport {
+  // The stage's *global* output partition this state belongs to.
+  uint32 global_partition_id = 1;
+  // Position in the window operator's `window_expr()` list. Indexes window
+  // expressions, not partitions.
+  uint32 window_expr_index = 2;
+  // The PARTITION BY tuple that closed. Empty for a window with no
+  // PARTITION BY, which is the only shape the prefix rewrite plants today.
+  repeated datafusion_common.ScalarValue partition_key = 3;
+  // `Accumulator::state` for the closed group: one element for SUM / COUNT /
+  // MIN / MAX, two for AVG's (sum, count), one opaque Binary for
+  // sketch-backed aggregates like approx_distinct. Carried as ScalarValue
+  // rather than a numeric field so non-decomposable aggregates work
+  // unchanged.
+  repeated datafusion_common.ScalarValue state = 4;
 }
 
 // One report per `RuntimeStatsExec` in the executed plan.
@@ -670,18 +892,32 @@ message RuntimeStatsReport {
   // partition, post-repartition gets one per output sub-partition. The
   // scheduler groups by `order_by` tag and aggregates.
   repeated RuntimeStatsPartitionEntry partitions = 2;
+  // Every partition's observations folded into one sketch, merged on the
+  // executor before the report is sent. Absent in row-count-only mode,
+  // and when no partition observed a value.
+  optional SortKeySketchState sketch = 3;
 }
 
 // One partition's observations from a `RuntimeStatsExec`.
 message RuntimeStatsPartitionEntry {
   uint32 partition_id = 1;
   uint64 row_count = 2;
-  // Present when the `RuntimeStatsExec` was in sketch mode AND this
-  // partition observed at least one non-null routing value.
-  optional QuantileSketchState sketch = 3;
-  // TODO: `optional MinMaxState min_max` — for a lighter post-repartition
-  // mode where the bin-packer just needs (min, max, count) per
-  // sub-partition and a full T-Digest is overkill.
+  reserved 3; // was TDigest
+  reserved "sketch";
+  // This partition's exact key range, one element per ORDER BY expression.
+  // `cut_partitions` routes a whole shuffle file into every downstream
+  // partition whose range overlaps `[key_min, key_max]`, so these are the
+  // only per-partition facts a router needs — never the distribution, which
+  // is why the sketch beside them is merged rather than repeated here.
+  //
+  // Both empty when this partition observed no value, which `null_count`
+  // then distinguishes: some NULLs means a file of NULLs with no value range
+  // to overlap, none means the partition saw nothing at all.
+  repeated datafusion_common.ScalarValue key_min = 4;
+  repeated datafusion_common.ScalarValue key_max = 5;
+  // Rows in this partition whose key was NULL. Folds to the report-level
+  // `SortKeySketchState.null_count`.
+  uint64 null_count = 6;
 }
 
 message ExecutionError {

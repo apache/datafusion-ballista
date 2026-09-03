@@ -54,7 +54,8 @@ struct SchedulerStateResponse {
     spark_support: bool,
     scheduling_policy: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    advertise_flight_sql_endpoint: Option<String>,
+    advertise_flight_endpoint: Option<String>,
+    enable_embedded_flight_proxy: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -182,11 +183,15 @@ pub async fn get_scheduler_state<
         graphviz_support: cfg!(feature = "graphviz-support"),
         spark_support: cfg!(feature = "spark-compat"),
         scheduling_policy: data_server.state.config.scheduling_policy.to_string(),
-        advertise_flight_sql_endpoint: data_server
+        advertise_flight_endpoint: data_server
             .state
             .config
-            .advertise_flight_sql_endpoint
+            .advertise_flight_endpoint
             .clone(),
+        enable_embedded_flight_proxy: data_server
+            .state
+            .config
+            .enable_embedded_flight_proxy,
     };
     Json(response)
 }

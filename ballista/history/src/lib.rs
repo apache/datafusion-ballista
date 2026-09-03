@@ -20,9 +20,13 @@
 //! Durable event logs for completed Ballista jobs.
 //!
 //! The scheduler appends one JSONL record per event to
-//! `<event_log_dir>/<job_id>.eventlog` while a job runs. The history server
-//! reads those files back and serves the same `/api/*` responses the live
-//! scheduler does, long after the scheduler has forgotten the job.
+//! `<event_log_dir>/<job_id>.eventlog.running` while a job runs, then renames
+//! the file to `<event_log_dir>/<job_id>.eventlog` once the job reaches a
+//! terminal state. The history server only ever looks at `.eventlog` files,
+//! so the `.running` suffix alone marks a job as not yet ready to read,
+//! without opening it. The history server reads finished files back and
+//! serves the same `/api/*` responses the live scheduler does, long after the
+//! scheduler has forgotten the job.
 //!
 //! # Write once, replay verbatim
 //!
@@ -52,6 +56,12 @@
 //! that losing a progress record is better than stalling scheduling. The
 //! terminal `JobEnd` is the exception: it waits for queue capacity, because a
 //! job missing its `JobEnd` is invisible to the history server.
+//!
+//! Completion is signaled twice, deliberately redundantly: by the file's
+//! name (`.eventlog` vs `.eventlog.running`), which a directory scan can act
+//! on without opening the file, and by the `JobEnd` record's presence in the
+//! content, which guards against a file that was renamed but is otherwise
+//! corrupt.
 
 pub mod event;
 pub mod reader;

@@ -39,7 +39,9 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::flight_proxy_service::BallistaFlightProxyService;
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::protobuf::{ExecutorMetadata, PartitionId, PartitionLocation};
-use ballista_core::serde::scheduler::Action as BallistaAction;
+use ballista_core::serde::scheduler::{
+    Action as BallistaAction, ShuffleFileKind, ShuffleLayout,
+};
 use ballista_flight_sql::backend::{QueryBackend, QueryResult};
 use ballista_flight_sql::{
     AnonymousAuthenticator, Authenticator, BallistaFlightSqlService, Identity,
@@ -561,7 +563,9 @@ async fn ballista_client_tickets_are_recognised_by_the_fallback() {
         host: "127.0.0.1".to_string(),
         port: 1,
         file_id: None,
-        is_sort_shuffle: false,
+        layout: ShuffleLayout::Passthrough,
+        file_kind: ShuffleFileKind::Data,
+        byte_ranges: vec![],
     };
     let encoded: ballista_core::serde::protobuf::Action = action.try_into().unwrap();
     let err = expect_err(

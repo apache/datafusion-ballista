@@ -325,7 +325,7 @@ mod tests {
         assert!(json.contains("\"job_id\":\"job_id\""));
         // The job's top-level physical plan, embedded via `build_job_response`.
         assert!(
-            json.contains("DataSourceExec: (Memory)"),
+            json.contains("\"physical_plan\":\"HashJoinExec"),
             "expected job physical plan in JobEnd event, got: {json}"
         );
         // The per-stage summaries, embedded via `build_query_stages_response`.
@@ -356,8 +356,7 @@ mod tests {
         assert!(json.contains("\"submitted_at\":10"));
         // `job_start_event` renders the graph's pre-staging physical plan
         // (`graph.physical_plan()`), unlike `job_end_event`'s embedded job
-        // DTO which shows the plan reconstructed from stages -- assert on the
-        // join at its root rather than the leaf scan string.
+        // DTO which shows the plan reconstructed from stages.
         assert!(
             json.contains("HashJoinExec"),
             "expected job physical plan in JobStart event, got: {json}"
@@ -384,6 +383,7 @@ mod tests {
             job_end_event(&graph, JobEndStatus::Succeeded, 1, 20),
         );
         writer.flush_job(&job_id).await;
+        writer.finish_job(&job_id).await;
 
         let path = dir.path().join(format!("{job_id}.eventlog"));
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
@@ -392,6 +392,53 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"ev\":\"JobStart\""));
         assert!(lines[1].contains("\"ev\":\"JobEnd\""));
-        assert!(lines[1].contains("DataSourceExec: (Memory)"));
+        assert!(lines[1].contains("\"physical_plan\":\"HashJoinExec"));
+    }
+
+    /// End-to-end parity, and the reason the whole design stores built
+    /// responses rather than re-deriving them: replaying a real event log
+    /// through `EventLogWriter` and `HistoryStore::load` must yield exactly the
+    /// JSON the live scheduler would have served for the same graph.
+    ///
+    /// This lives here rather than under `tests/` because `dto_build`,
+    /// `job_end_event` and `execution_graph_dot::tests::test_graph` are all
+    /// crate-internal, and an integration test only sees the public API.
+    #[tokio::test]
+    async fn history_store_serves_byte_identical_json_to_live_scheduler() {
+        use crate::history::HistoryStore;
+
+        let graph = test_graph().await.unwrap();
+        let graph: ExecutionGraphBox = Box::new(graph);
+        let job_id = graph.job_id().to_string();
+
+        // `completed_at` is the snapshot instant for both sides, so the
+        // comparison does not race the wall clock.
+        const COMPLETED_AT: u64 = 2;
+        let live_job = graph_to_job_response(&graph, PlanFormat::Default);
+        let live_stages =
+            graph_to_query_stages(&graph, PlanFormat::Default, COMPLETED_AT as u128);
+
+        // Emit the same JobEnd the scheduler writes on completion, through the
+        // real async writer, then load it back through the history server's own
+        // HistoryStore: the full write -> read -> serve path.
+        let event = job_end_event(&graph, JobEndStatus::Succeeded, 1, COMPLETED_AT);
+        let dir = tempfile::tempdir().unwrap();
+        let writer = EventLogWriter::new(dir.path().to_path_buf(), 16);
+        writer.append(&job_id, event);
+        writer.flush_job(&job_id).await;
+        writer.finish_job(&job_id).await;
+
+        let store = HistoryStore::load(dir.path()).unwrap();
+        let replayed = store.read_job(&job_id).expect("job should be replayed");
+
+        assert_eq!(
+            replayed.job.get(),
+            serde_json::to_string(&live_job).unwrap(),
+            "the history server must serve the live scheduler's exact bytes"
+        );
+        assert_eq!(
+            replayed.stages.get(),
+            serde_json::to_string(&live_stages).unwrap(),
+        );
     }
 }

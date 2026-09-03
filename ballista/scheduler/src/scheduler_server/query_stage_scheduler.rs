@@ -191,7 +191,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 // `finish_job` runs even when no `JobEnd` could be built, so a
                 // job that cannot be recorded still releases its file handle;
                 // such a log has no `JobEnd` line and the history server skips
-                // it rather than serving a half-written job.
+                // it rather than serving a half-written job. `finish_job` also
+                // renames the file from `.eventlog.running` to `.eventlog`, so
+                // a job whose `finish_job` never runs (the scheduler process is
+                // killed first) leaves a `.running`-suffixed file behind
+                // permanently — nothing else will ever rename it.
                 QueryStageSchedulerEvent::JobFinished {
                     job_id,
                     queued_at,
@@ -797,7 +801,10 @@ mod tests {
             .session_manager
             .create_or_update_session(
                 "session",
-                &SessionConfig::new_with_ballista().with_target_partitions(2),
+                &SessionConfig::new_with_ballista()
+                    .with_target_partitions(2)
+                    // Asserts the static planner's stage/partition layout.
+                    .with_ballista_adaptive_query_planner(false),
             )
             .await?;
         let job_id = scheduler.submit_job("", ctx, &test_plan(2), None).await?;
@@ -867,6 +874,7 @@ mod tests {
                         })
                         .collect(),
                     runtime_stats: vec![],
+                    window_state: vec![],
                 })),
             })
             .collect();

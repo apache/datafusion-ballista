@@ -16,10 +16,11 @@
 // under the License.
 
 use crate::config::{
-    BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS,
-    BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, BALLISTA_CLIENT_USE_TLS,
-    BALLISTA_COALESCE_ENABLED, BALLISTA_COALESCE_MERGED_PARTITION_FACTOR,
-    BALLISTA_COALESCE_SMALL_PARTITION_FACTOR, BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
+    BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES,
+    BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
+    BALLISTA_CLIENT_USE_TLS, BALLISTA_COALESCE_ENABLED,
+    BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, BALLISTA_COALESCE_SMALL_PARTITION_FACTOR,
+    BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
     BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
     BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
@@ -244,6 +245,9 @@ pub trait SessionConfigExt {
     /// Is adaptive query planner enabled
     fn ballista_adaptive_query_planner_enabled(&self) -> bool;
 
+    /// Enables or disables adaptive query planning (enabled by default).
+    fn with_ballista_adaptive_query_planner(self, enabled: bool) -> Self;
+
     /// Set user defined metadata keys in Ballista gRPC requests
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self;
 
@@ -273,9 +277,9 @@ pub trait SessionConfigExt {
     fn with_ballista_coalesce_enabled(self, enabled: bool) -> Self;
 
     /// Returns the target post-coalesce partition byte size in bytes.
-    fn ballista_coalesce_target_partition_bytes(&self) -> u64;
+    fn ballista_coalesce_target_partition_bytes(&self) -> usize;
     /// Sets the target post-coalesce partition byte size in bytes.
-    fn with_ballista_coalesce_target_partition_bytes(self, bytes: u64) -> Self;
+    fn with_ballista_coalesce_target_partition_bytes(self, bytes: usize) -> Self;
 
     /// Returns the small-partition merge factor (Spark legacy).
     fn ballista_coalesce_small_partition_factor(&self) -> f64;
@@ -369,6 +373,86 @@ impl SessionStateExt for SessionState {
     }
 }
 
+/// Calls the `SessionConfig` setter matching `$ty`, converting `$val` first
+/// when the type needs it (only `f64` does, via `set_str`/`to_string()`,
+/// since `SessionConfig` has no `set_f64`).
+macro_rules! ballista_set_scalar {
+    (bool, $self:expr, $const:expr, $val:expr) => {
+        $self.set_bool($const, $val)
+    };
+    (usize, $self:expr, $const:expr, $val:expr) => {
+        $self.set_usize($const, $val)
+    };
+    (u64, $self:expr, $const:expr, $val:expr) => {
+        $self.set_u64($const, $val)
+    };
+    (f64, $self:expr, $const:expr, $val:expr) => {
+        $self.set_str($const, &$val.to_string())
+    };
+}
+
+/// Generates a `SessionConfigExt` getter/setter pair backed by a [BallistaConfig]
+/// value. The getter is named `ballista_<config_method>` and falls back to
+/// `BallistaConfig::default()` when the extension is unset; the setter is
+/// named `with_ballista_<config_method>`, takes a single `value: $ty`
+/// argument, and initializes the extension first if it's not already
+/// present. The `SessionConfig` setter (and any value conversion) is derived
+/// from `$ty` via [ballista_set_scalar].
+///
+/// Generated trait method name is derived from `$config_method`,
+/// this couples `BallistaConfig`'s public getter names to `SessionConfigExt`'s
+/// public method names: the two can no longer be renamed independently, since
+/// renaming a `BallistaConfig` getter also renames the `SessionConfigExt`
+/// method(s) generated for it here.
+///
+/// Write `<config_method> as <setter_name>` when the setter doesn't follow
+/// the `with_ballista_<config_method>` convention.
+macro_rules! ballista_config_option {
+    ($ty:ident, $config_method:ident as $setter:ident, $const:expr) => {
+        pastey::paste! {
+            fn [<ballista_ $config_method>](&self) -> $ty {
+                self.options()
+                    .extensions
+                    .get::<BallistaConfig>()
+                    .map(|c| c.$config_method())
+                    .unwrap_or_else(|| BallistaConfig::default().$config_method())
+            }
+
+            fn $setter(self, value: $ty) -> Self {
+                if self.options().extensions.get::<BallistaConfig>().is_some() {
+                    ballista_set_scalar!($ty, self, $const, value)
+                } else {
+                    ballista_set_scalar!(
+                        $ty, self.with_option_extension(BallistaConfig::default()), $const, value
+                    )
+                }
+            }
+        }
+    };
+
+    ($ty:ident, $config_method:ident, $const:expr) => {
+        pastey::paste! {
+            fn [<ballista_ $config_method>](&self) -> $ty {
+                self.options()
+                    .extensions
+                    .get::<BallistaConfig>()
+                    .map(|c| c.$config_method())
+                    .unwrap_or_else(|| BallistaConfig::default().$config_method())
+            }
+
+            fn [<with_ballista_ $config_method>](self, value: $ty) -> Self {
+                if self.options().extensions.get::<BallistaConfig>().is_some() {
+                    ballista_set_scalar!($ty, self, $const, value)
+                } else {
+                    ballista_set_scalar!(
+                        $ty, self.with_option_extension(BallistaConfig::default()), $const, value
+                    )
+                }
+            }
+        }
+    };
+}
+
 impl SessionConfigExt for SessionConfig {
     fn new_with_ballista() -> SessionConfig {
         SessionConfig::new()
@@ -404,6 +488,16 @@ impl SessionConfigExt for SessionConfig {
             .cloned()
             .unwrap_or_else(BallistaConfig::default)
     }
+
+    fn with_ballista_job_name(self, job_name: &str) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_str(BALLISTA_JOB_NAME, job_name)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_str(BALLISTA_JOB_NAME, job_name)
+        }
+    }
+
     fn with_ballista_logical_extension_codec(
         self,
         codec: Arc<dyn LogicalExtensionCodec>,
@@ -445,179 +539,6 @@ impl SessionConfigExt for SessionConfig {
             .map(|c| c.planner())
     }
 
-    fn ballista_standalone_parallelism(&self) -> usize {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.default_standalone_parallelism())
-            .unwrap_or_else(|| BallistaConfig::default().default_standalone_parallelism())
-    }
-
-    fn ballista_grpc_client_max_message_size(&self) -> usize {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.grpc_client_max_message_size())
-            .unwrap_or_else(|| BallistaConfig::default().grpc_client_max_message_size())
-    }
-
-    fn with_ballista_job_name(self, job_name: &str) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_str(BALLISTA_JOB_NAME, job_name)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_str(BALLISTA_JOB_NAME, job_name)
-        }
-    }
-
-    fn with_ballista_grpc_client_max_message_size(self, max_size: usize) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_usize(BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, max_size)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_usize(BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, max_size)
-        }
-    }
-
-    fn with_ballista_standalone_parallelism(self, parallelism: usize) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
-        }
-    }
-
-    fn ballista_broadcast_join_threshold_bytes(&self) -> usize {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.broadcast_join_threshold_bytes())
-            .unwrap_or_else(|| BallistaConfig::default().broadcast_join_threshold_bytes())
-    }
-
-    fn with_ballista_broadcast_join_threshold_bytes(
-        self,
-        threshold_bytes: usize,
-    ) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, threshold_bytes)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, threshold_bytes)
-        }
-    }
-
-    fn ballista_broadcast_join_threshold_rows(&self) -> usize {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.broadcast_join_threshold_rows())
-            .unwrap_or_else(|| BallistaConfig::default().broadcast_join_threshold_rows())
-    }
-
-    fn with_ballista_broadcast_join_threshold_rows(self, threshold_rows: usize) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, threshold_rows)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_usize(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, threshold_rows)
-        }
-    }
-
-    fn ballista_hash_join_max_build_partition_bytes(&self) -> usize {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.hash_join_max_build_partition_bytes())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().hash_join_max_build_partition_bytes()
-            })
-    }
-
-    fn with_ballista_hash_join_max_build_partition_bytes(self, max_bytes: usize) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_usize(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, max_bytes)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_usize(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, max_bytes)
-        }
-    }
-
-    fn ballista_shuffle_reader_maximum_concurrent_requests(&self) -> usize {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.shuffle_reader_maximum_concurrent_requests())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().shuffle_reader_maximum_concurrent_requests()
-            })
-    }
-
-    fn with_ballista_shuffle_reader_maximum_concurrent_requests(
-        self,
-        max_requests: usize,
-    ) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_usize(BALLISTA_SHUFFLE_READER_MAX_REQUESTS, max_requests)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_usize(BALLISTA_SHUFFLE_READER_MAX_REQUESTS, max_requests)
-        }
-    }
-
-    fn ballista_shuffle_reader_force_remote_read(&self) -> bool {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.shuffle_reader_force_remote_read())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().shuffle_reader_force_remote_read()
-            })
-    }
-
-    fn with_ballista_shuffle_reader_force_remote_read(
-        self,
-        force_remote_read: bool,
-    ) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_bool(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, force_remote_read)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_bool(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, force_remote_read)
-        }
-    }
-
-    fn ballista_shuffle_reader_remote_prefer_flight(&self) -> bool {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.shuffle_reader_remote_prefer_flight())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().shuffle_reader_remote_prefer_flight()
-            })
-    }
-
-    fn with_ballista_shuffle_reader_remote_prefer_flight(
-        self,
-        prefer_flight: bool,
-    ) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_bool(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, prefer_flight)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_bool(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, prefer_flight)
-        }
-    }
-
-    fn ballista_adaptive_query_planner_enabled(&self) -> bool {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.adaptive_query_planner_enabled())
-            .unwrap_or_else(|| BallistaConfig::default().adaptive_query_planner_enabled())
-    }
-
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self {
         let extension = BallistaGrpcMetadataInterceptor::new(metadata);
         self.with_extension(Arc::new(extension))
@@ -646,101 +567,81 @@ impl SessionConfigExt for SessionConfig {
         self.get_extension::<BallistaConfigGrpcEndpoint>()
     }
 
-    fn with_ballista_use_tls(self, use_tls: bool) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_bool(BALLISTA_CLIENT_USE_TLS, use_tls)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_bool(BALLISTA_CLIENT_USE_TLS, use_tls)
-        }
-    }
+    ballista_config_option!(
+        usize,
+        standalone_parallelism,
+        BALLISTA_STANDALONE_PARALLELISM
+    );
 
-    fn ballista_use_tls(&self) -> bool {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.client_use_tls())
-            .unwrap_or_else(|| BallistaConfig::default().client_use_tls())
-    }
+    ballista_config_option!(
+        usize,
+        grpc_client_max_message_size,
+        BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE
+    );
 
-    fn ballista_coalesce_enabled(&self) -> bool {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.coalesce_enabled())
-            .unwrap_or_else(|| BallistaConfig::default().coalesce_enabled())
-    }
+    ballista_config_option!(
+        usize,
+        broadcast_join_threshold_bytes,
+        BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES
+    );
 
-    fn with_ballista_coalesce_enabled(self, enabled: bool) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_bool(BALLISTA_COALESCE_ENABLED, enabled)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_bool(BALLISTA_COALESCE_ENABLED, enabled)
-        }
-    }
+    ballista_config_option!(
+        usize,
+        broadcast_join_threshold_rows,
+        BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS
+    );
 
-    fn ballista_coalesce_target_partition_bytes(&self) -> u64 {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.coalesce_target_partition_bytes())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().coalesce_target_partition_bytes()
-            })
-    }
+    ballista_config_option!(
+        usize,
+        hash_join_max_build_partition_bytes,
+        BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES
+    );
 
-    fn with_ballista_coalesce_target_partition_bytes(self, bytes: u64) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_usize(BALLISTA_COALESCE_TARGET_PARTITION_BYTES, bytes as usize)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_usize(BALLISTA_COALESCE_TARGET_PARTITION_BYTES, bytes as usize)
-        }
-    }
+    ballista_config_option!(
+        usize,
+        shuffle_reader_maximum_concurrent_requests,
+        BALLISTA_SHUFFLE_READER_MAX_REQUESTS
+    );
 
-    fn ballista_coalesce_small_partition_factor(&self) -> f64 {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.coalesce_small_partition_factor())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().coalesce_small_partition_factor()
-            })
-    }
+    ballista_config_option!(
+        bool,
+        shuffle_reader_force_remote_read,
+        BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ
+    );
 
-    // f64 setter — uses set_str because SessionConfig has no set_f64 in this
-    // workspace; the stored string is round-tripped via f64::to_string() /
-    // f64::from_str(), mirroring the `with_ballista_job_name` set_str pattern.
-    fn with_ballista_coalesce_small_partition_factor(self, factor: f64) -> Self {
-        let s = factor.to_string();
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_str(BALLISTA_COALESCE_SMALL_PARTITION_FACTOR, &s)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_str(BALLISTA_COALESCE_SMALL_PARTITION_FACTOR, &s)
-        }
-    }
+    ballista_config_option!(
+        bool,
+        shuffle_reader_remote_prefer_flight,
+        BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT
+    );
 
-    fn ballista_coalesce_merged_partition_factor(&self) -> f64 {
-        self.options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|c| c.coalesce_merged_partition_factor())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().coalesce_merged_partition_factor()
-            })
-    }
+    ballista_config_option!(
+        bool,
+        adaptive_query_planner_enabled as with_ballista_adaptive_query_planner,
+        BALLISTA_ADAPTIVE_PLANNER_ENABLED
+    );
 
-    fn with_ballista_coalesce_merged_partition_factor(self, factor: f64) -> Self {
-        let s = factor.to_string();
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_str(BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, &s)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_str(BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, &s)
-        }
-    }
+    ballista_config_option!(bool, use_tls, BALLISTA_CLIENT_USE_TLS);
+
+    ballista_config_option!(bool, coalesce_enabled, BALLISTA_COALESCE_ENABLED);
+
+    ballista_config_option!(
+        usize,
+        coalesce_target_partition_bytes,
+        BALLISTA_COALESCE_TARGET_PARTITION_BYTES
+    );
+
+    ballista_config_option!(
+        f64,
+        coalesce_small_partition_factor,
+        BALLISTA_COALESCE_SMALL_PARTITION_FACTOR
+    );
+
+    ballista_config_option!(
+        f64,
+        coalesce_merged_partition_factor,
+        BALLISTA_COALESCE_MERGED_PARTITION_FACTOR
+    );
 }
 
 impl SessionConfigHelperExt for SessionConfig {
@@ -1114,7 +1015,7 @@ mod test {
     #[test]
     fn should_preserve_user_overrides_on_upgrade() {
         // Ballista defaults these to prefer_hash_join=false and the threshold to
-        // 10 MB. The overrides below differ from those defaults so the assertions
+        // 128 MB. The overrides below differ from those defaults so the assertions
         // prove the user's values survived `upgrade_for_ballista`.
         let mut config = SessionConfig::new_with_ballista();
         config
@@ -1153,7 +1054,7 @@ mod test {
                 .options()
                 .optimizer
                 .hash_join_single_partition_threshold,
-            10 * 1024 * 1024
+            128 * 1024 * 1024
         );
         assert_eq!(
             config
@@ -1193,6 +1094,65 @@ mod test {
                 .iter()
                 .any(|p| p.key == "datafusion.catalog.information_schema")
         )
+    }
+
+    #[test]
+    fn should_round_trip_all_macro_generated_options() {
+        let config = SessionConfig::new_with_ballista()
+            .with_ballista_standalone_parallelism(123)
+            .with_ballista_grpc_client_max_message_size(456)
+            .with_ballista_broadcast_join_threshold_bytes(789)
+            .with_ballista_broadcast_join_threshold_rows(42)
+            .with_ballista_hash_join_max_build_partition_bytes(999)
+            .with_ballista_shuffle_reader_maximum_concurrent_requests(7)
+            .with_ballista_coalesce_target_partition_bytes(2048)
+            .with_ballista_shuffle_reader_force_remote_read(true)
+            .with_ballista_shuffle_reader_remote_prefer_flight(true)
+            .with_ballista_use_tls(true)
+            .with_ballista_coalesce_enabled(true)
+            .with_ballista_adaptive_query_planner(false)
+            .with_ballista_coalesce_small_partition_factor(1.5)
+            .with_ballista_coalesce_merged_partition_factor(2.5);
+
+        assert!(!config.ballista_adaptive_query_planner_enabled());
+        assert!(config.ballista_shuffle_reader_force_remote_read());
+        assert!(config.ballista_shuffle_reader_remote_prefer_flight());
+        assert!(config.ballista_use_tls());
+        assert!(config.ballista_coalesce_enabled());
+        assert_eq!(config.ballista_standalone_parallelism(), 123);
+        assert_eq!(config.ballista_grpc_client_max_message_size(), 456);
+        assert_eq!(config.ballista_broadcast_join_threshold_bytes(), 789);
+        assert_eq!(config.ballista_broadcast_join_threshold_rows(), 42);
+        assert_eq!(config.ballista_hash_join_max_build_partition_bytes(), 999);
+        assert_eq!(config.ballista_coalesce_target_partition_bytes(), 2048);
+        assert_eq!(config.ballista_coalesce_small_partition_factor(), 1.5);
+        assert_eq!(config.ballista_coalesce_merged_partition_factor(), 2.5);
+        assert_eq!(
+            config.ballista_shuffle_reader_maximum_concurrent_requests(),
+            7
+        );
+    }
+
+    #[test]
+    fn should_round_trip_macro_generated_options_insert_ballista_config() {
+        let config = SessionConfig::new().with_ballista_standalone_parallelism(123);
+        assert_eq!(config.ballista_standalone_parallelism(), 123);
+
+        let config = SessionConfig::new().with_ballista_grpc_client_max_message_size(456);
+        assert_eq!(config.ballista_grpc_client_max_message_size(), 456);
+
+        let config =
+            SessionConfig::new().with_ballista_broadcast_join_threshold_bytes(789);
+        assert_eq!(config.ballista_broadcast_join_threshold_bytes(), 789);
+
+        let config = SessionConfig::new().with_ballista_use_tls(true);
+        assert!(config.ballista_use_tls());
+
+        let config = SessionConfig::new().with_ballista_use_tls(false);
+        assert!(!config.ballista_use_tls());
+
+        let config = SessionConfig::new().with_ballista_coalesce_enabled(true);
+        assert!(config.ballista_coalesce_enabled());
     }
 
     #[test]

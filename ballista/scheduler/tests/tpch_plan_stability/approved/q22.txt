@@ -23,13 +23,13 @@ SortShuffleWriterExec: partitioning=Hash([cntrycode@0], 16)
               UnresolvedShuffleExec: stage=2, partitioning: Hash([o_custkey@0], 16)
 
 === Stage 4 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: Hash([cntrycode@0], 16)
   ProjectionExec: expr=[cntrycode@0 as cntrycode, count(Int64(1))@1 as numcust, sum(custsale.c_acctbal)@2 as totacctbal]
     SortExec: expr=[cntrycode@0 ASC NULLS LAST], preserve_partitioning=[true]
       AggregateExec: mode=FinalPartitioned, gby=[cntrycode@0 as cntrycode], aggr=[count(Int64(1)), sum(custsale.c_acctbal)]
         UnresolvedShuffleExec: stage=3, partitioning: Hash([cntrycode@0], 16)
 
 === Stage 5 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: UnknownPartitioning(1)
   SortPreservingMergeExec: [cntrycode@0 ASC NULLS LAST]
     UnresolvedShuffleExec: stage=4, partitioning: Hash([cntrycode@0], 16)

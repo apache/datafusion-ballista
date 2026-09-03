@@ -41,9 +41,11 @@ use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
-use datafusion::arrow::array::{Array, Float64Array, RecordBatch, UInt32Array};
+use datafusion::arrow::array::{RecordBatch, UInt32Array};
+use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::compute::take_arrays;
-use datafusion::common::{Result, internal_datafusion_err};
+use datafusion::arrow::row::{RowConverter, SortField};
+use datafusion::common::{Result, ScalarValue, internal_datafusion_err};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use futures::FutureExt;
@@ -54,59 +56,57 @@ use crate::execution_plans::RuntimeStatsExec;
 use crate::execution_plans::plan_algebra::preserves_distribution;
 
 /// Walk `child`'s subtree for a [`RuntimeStatsExec`] that sketches on our
-/// routing expression, snapshot its merged T-Digest, and compute `K - 1`
-/// quantile cuts. Any failure to find a matching sketch returns an empty
-/// `Vec` — the caller's `split_batch_by_range(&[])` produces a single
-/// bucket and every row lands in output partition 0. Never crashes.
+/// routing expression, snapshot its merged sketch, and compute `K - 1`
+/// quantile cuts. No sketch to read returns an empty `Vec` — the caller's
+/// `split_batch_by_range(&[])` produces a single bucket and every row lands
+/// in output partition 0.
+///
+/// Errors only when a sketch was found and contradicted itself, which the
+/// single-bucket fallback would turn into a silently one-partition query.
 pub(super) fn discover_cuts(
     child: &Arc<dyn ExecutionPlan>,
     routing_expr: &dyn PhysicalExpr,
     output_partitions: usize,
-) -> Vec<f64> {
+) -> Result<Vec<ScalarValue>> {
     let Some(stats) = find_runtime_stats(child, routing_expr) else {
         warn!(
             "range-repartition: no matching RuntimeStatsExec found in child subtree — \
              single-bucket fallback"
         );
-        return Vec::new();
+        return Ok(Vec::new());
     };
     // Walker returned Some → stats.order_by()'s first entry matches our
     // routing expression → RuntimeStatsExec's construction contract
     // guarantees sketch is present. Belt-and-braces arms in case that
     // invariant ever drifts, plus mutex-poisoning is theoretically possible.
-    let sketch = match stats.merged_quantile_sketch() {
+    let sketch = match stats.merged_sort_key_sketch() {
         Ok(Some(sketch)) => sketch,
         Ok(None) => {
             warn!(
                 "range-repartition: matching RuntimeStatsExec has no sketch \
                  (RuntimeStatsExec contract broken?) — single-bucket fallback"
             );
-            return Vec::new();
+            return Ok(Vec::new());
         }
         Err(e) => {
             warn!(
                 "range-repartition: sketch snapshot failed ({e}) — single-bucket fallback"
             );
-            return Vec::new();
+            return Ok(Vec::new());
         }
     };
-    // `count()` is the sum of centroid weights — total observed row count
-    // that fed the digest. Zero means no samples arrived before the
-    // snapshot; degenerate cuts would follow.
-    if sketch.count() == 0.0 {
+    // Zero means no samples arrived before the snapshot; degenerate cuts would follow.
+    if sketch.count() == 0 {
         warn!(
             "range-repartition: matching sketch has no samples yet — single-bucket fallback"
         );
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    // K-1 cuts at 1/K, 2/K, ..., (K-1)/K. `estimate_quantile` is monotone by
-    // construction, so cuts are non-decreasing (ties possible on hot-value
-    // distributions — `split_batch_by_range` handles those correctly, it
-    // just skews the resulting distribution).
-    let k = output_partitions as f64;
-    (1..output_partitions)
-        .map(|i| sketch.estimate_quantile(i as f64 / k))
-        .collect()
+    // `cuts` sizes by the whole population, keeps every boundary a real value
+    // so no consumer compares against a NULL, and puts the NULL run wholly in
+    // the partition at the end `nulls_first` names — which is where
+    // `split_batch_by_range` sends it and where `RangeFilterExec` looks for it.
+    sketch.cuts(output_partitions)
 }
 
 /// Walks `plan`'s subtree through single-child chains only, returning the
@@ -152,22 +152,14 @@ pub(super) fn find_runtime_stats<'a>(
     find_runtime_stats(only_child, routing_expr)
 }
 
-/// Split `batch` into `K = boundaries.len() + 1` sub-batches under the
-/// half-open convention: partition `p` receives rows where
-/// `boundaries[p-1] <= key < boundaries[p]` (open at `-∞` on partition 0
-/// and at `+∞` on partition K-1). Output vector is always length K; empty
-/// buckets produce empty `RecordBatch`es rather than being omitted, so
-/// callers can index by partition id.
-///
-/// NULL routing keys land in partition 0 today; a follow-up will honor
-/// `sort_options.nulls_first`/`nulls_last` to match SQL semantics.
-///
-/// Boundaries are pre-extracted `f64`s; widening to other routing key
-/// types generalizes this function and the discovery path together.
+/// Split `batch` along boundaries under the half-open convention. Empty buckets produce empty
+/// `RecordBatch`es rather than being omitted, so callers can index by partition id.
+/// Boundaries must be in `options` order, which is what [`discover_cuts`] produces.
 pub(super) fn split_batch_by_range(
     batch: &RecordBatch,
     routing_expr: &Arc<dyn PhysicalExpr>,
-    boundaries: &[f64],
+    boundaries: &[ScalarValue],
+    options: SortOptions,
 ) -> Result<Vec<RecordBatch>> {
     let output_partitions = boundaries.len() + 1;
     let schema = batch.schema();
@@ -176,40 +168,48 @@ pub(super) fn split_batch_by_range(
             .map(|_| RecordBatch::new_empty(schema.clone()))
             .collect());
     }
-    let evaluated = routing_expr.evaluate(batch)?;
-    let array = evaluated.into_array(batch.num_rows())?;
-    let keys = array
-        .as_any()
-        .downcast_ref::<Float64Array>()
-        .ok_or_else(|| {
-            internal_datafusion_err!(
-                "range-repartition: routing expr produced {:?}, expected Float64",
-                array.data_type()
-            )
-        })?;
+    let [first_boundary, ..] = boundaries else {
+        return Ok(vec![batch.clone()]);
+    };
+    let keys = routing_expr.evaluate(batch)?;
+    let keys = keys.into_array(batch.num_rows())?;
 
-    // TODO: vectorized arrow computation
+    let converter = RowConverter::new(vec![SortField::new_with_options(
+        keys.data_type().clone(),
+        options,
+    )])
+    .map_err(|e| {
+        internal_datafusion_err!(
+            "range-repartition: {:?} has no row encoding: {e}",
+            keys.data_type()
+        )
+    })?;
+    let boundaries = converter.convert_columns(&[ScalarValue::iter_to_array(
+        boundaries.iter().cloned(),
+    )
+    .map_err(|e| {
+        internal_datafusion_err!(
+            "range-repartition: boundaries starting {first_boundary:?} do not form \
+             one array: {e}"
+        )
+    })?])?;
+    let boundaries: Vec<_> = boundaries.iter().collect();
+    let keys = converter.convert_columns(&[keys])?;
+
     let mut buckets: Vec<Vec<u32>> = (0..output_partitions).map(|_| Vec::new()).collect();
-    for row in 0..batch.num_rows() {
-        let target = if keys.is_null(row) {
-            0
-        } else {
-            // partition_point returns the count of elements matching the
-            // predicate — here `<= key` — which is the target partition
-            // index under the half-open convention.
-            boundaries.partition_point(|&cut| cut <= keys.value(row))
-        };
-        buckets[target].push(row as u32);
+    for (row_idx, key) in keys.iter().enumerate() {
+        let bucket_idx = boundaries.partition_point(|boundary| *boundary <= key);
+        buckets[bucket_idx].push(row_idx as u32);
     }
 
     let mut result = Vec::with_capacity(output_partitions);
-    for indices in buckets {
-        if indices.is_empty() {
+    for row_idxs in buckets {
+        if row_idxs.is_empty() {
             result.push(RecordBatch::new_empty(schema.clone()));
         } else {
-            let idx_array = UInt32Array::from(indices);
-            let taken = take_arrays(batch.columns(), &idx_array, None)?;
-            result.push(RecordBatch::try_new(schema.clone(), taken)?);
+            let row_idxs = UInt32Array::from(row_idxs);
+            let bucketed = take_arrays(batch.columns(), &row_idxs, None)?;
+            result.push(RecordBatch::try_new(schema.clone(), bucketed)?);
         }
     }
     Ok(result)
@@ -417,6 +417,21 @@ mod tests {
     use datafusion::physical_expr::expressions::col;
     use std::sync::Arc;
 
+    /// Boundaries as `Float64` scalars, which is what discovery produces.
+    fn cuts<const N: usize>(values: [f64; N]) -> Vec<ScalarValue> {
+        values
+            .into_iter()
+            .map(|v| ScalarValue::Float64(Some(v)))
+            .collect()
+    }
+
+    fn asc(nulls_first: bool) -> SortOptions {
+        SortOptions {
+            descending: false,
+            nulls_first,
+        }
+    }
+
     fn f64_col(schema: &Schema, name: &str) -> Arc<dyn PhysicalExpr> {
         col(name, schema).unwrap()
     }
@@ -456,7 +471,9 @@ mod tests {
             vec![0, 1, 2, 3, 4, 5, 6],
         );
         let routing = f64_col(&schema, "v2");
-        let splits = split_batch_by_range(&batch, &routing, &[0.0, 10.0]).unwrap();
+        let splits =
+            split_batch_by_range(&batch, &routing, &cuts([0.0, 10.0]), asc(true))
+                .unwrap();
         assert_eq!(splits.len(), 3, "K = boundaries.len() + 1");
         let total: usize = splits.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total, batch.num_rows(), "no row lost or duplicated");
@@ -472,14 +489,16 @@ mod tests {
             vec![0, 1, 2, 3],
         );
         let routing = f64_col(&schema, "v2");
-        let splits = split_batch_by_range(&batch, &routing, &[0.0, 10.0]).unwrap();
+        let splits =
+            split_batch_by_range(&batch, &routing, &cuts([0.0, 10.0]), asc(true))
+                .unwrap();
         assert_eq!(splits[0].num_rows(), 1);
         assert_eq!(splits[1].num_rows(), 2);
         assert_eq!(splits[2].num_rows(), 1);
     }
 
     #[test]
-    fn split_routes_nulls_to_partition_zero() {
+    fn split_routes_the_whole_null_run_to_the_end_it_occupies() {
         let schema = schema_v2_id();
         let batch = batch(
             &schema,
@@ -487,9 +506,52 @@ mod tests {
             vec![0, 1, 2, 3],
         );
         let routing = f64_col(&schema, "v2");
-        let splits = split_batch_by_range(&batch, &routing, &[10.0]).unwrap();
+        // Two NULLs, 5.0 below the cut, 50.0 above it.
+        let first =
+            split_batch_by_range(&batch, &routing, &cuts([10.0]), asc(true)).unwrap();
+        assert_eq!(first[0].num_rows(), 3, "NULLs + 5.0");
+        assert_eq!(first[1].num_rows(), 1, "50.0");
+
+        let last =
+            split_batch_by_range(&batch, &routing, &cuts([10.0]), asc(false)).unwrap();
+        assert_eq!(last[0].num_rows(), 1, "5.0");
+        assert_eq!(last[1].num_rows(), 3, "50.0 + NULLs");
+    }
+
+    /// A DESC key's boundaries arrive descending, because that is the order
+    /// the sketch that produced them counts in. Routing has to read them in
+    /// that same order or every row lands in the mirrored partition.
+    #[test]
+    fn split_follows_a_descending_key() {
+        let schema = schema_v2_id();
+        let batch = batch(
+            &schema,
+            vec![Some(100.0), Some(10.0), Some(5.0), Some(-1.0)],
+            vec![0, 1, 2, 3],
+        );
+        let routing = f64_col(&schema, "v2");
+        let descending = SortOptions {
+            descending: true,
+            nulls_first: false,
+        };
+        let splits =
+            split_batch_by_range(&batch, &routing, &cuts([10.0, 0.0]), descending)
+                .unwrap();
+        assert_eq!(splits[0].num_rows(), 1, "100.0 sorts above the 10.0 cut");
+        assert_eq!(splits[1].num_rows(), 2, "10.0 and 5.0 sit between the cuts");
+        assert_eq!(splits[2].num_rows(), 1, "-1.0 sorts below the 0.0 cut");
+    }
+
+    /// No boundaries is the discovery fallback, and it has to stay the whole
+    /// batch in one bucket rather than erroring on the empty boundary set.
+    #[test]
+    fn split_without_boundaries_keeps_one_bucket() {
+        let schema = schema_v2_id();
+        let batch = batch(&schema, vec![Some(1.0), None, Some(3.0)], vec![0, 1, 2]);
+        let routing = f64_col(&schema, "v2");
+        let splits = split_batch_by_range(&batch, &routing, &[], asc(true)).unwrap();
+        assert_eq!(splits.len(), 1);
         assert_eq!(splits[0].num_rows(), 3);
-        assert_eq!(splits[1].num_rows(), 1);
     }
 
     #[test]
@@ -497,7 +559,9 @@ mod tests {
         let schema = schema_v2_id();
         let batch = batch(&schema, vec![], vec![]);
         let routing = f64_col(&schema, "v2");
-        let splits = split_batch_by_range(&batch, &routing, &[0.0, 10.0]).unwrap();
+        let splits =
+            split_batch_by_range(&batch, &routing, &cuts([0.0, 10.0]), asc(true))
+                .unwrap();
         assert_eq!(splits.len(), 3);
         assert!(splits.iter().all(|b| b.num_rows() == 0));
     }

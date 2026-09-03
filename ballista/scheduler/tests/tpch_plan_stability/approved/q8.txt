@@ -98,13 +98,13 @@ SortShuffleWriterExec: partitioning=Hash([o_year@0], 16)
           UnresolvedShuffleExec: stage=14, partitioning: Hash([r_regionkey@0], 16)
 
 === Stage 16 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: Hash([o_year@0], 16)
   SortExec: expr=[o_year@0 ASC NULLS LAST], preserve_partitioning=[true]
     ProjectionExec: expr=[o_year@0 as o_year, sum(CASE WHEN all_nations.nation = Utf8("BRAZIL") THEN all_nations.volume ELSE Int64(0) END)@1 / sum(all_nations.volume)@2 as mkt_share]
       AggregateExec: mode=FinalPartitioned, gby=[o_year@0 as o_year], aggr=[sum(CASE WHEN all_nations.nation = BRAZIL THEN all_nations.volume ELSE 0.0000 END) as sum(CASE WHEN all_nations.nation = Utf8("BRAZIL") THEN all_nations.volume ELSE Int64(0) END), sum(all_nations.volume)]
         UnresolvedShuffleExec: stage=15, partitioning: Hash([o_year@0], 16)
 
 === Stage 17 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: UnknownPartitioning(1)
   SortPreservingMergeExec: [o_year@0 ASC NULLS LAST]
     UnresolvedShuffleExec: stage=16, partitioning: Hash([o_year@0], 16)

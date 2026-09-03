@@ -19,6 +19,7 @@ use ballista_core::execution_plans::{
     CoalescePlan, stats_for_partition, stats_for_partitions,
 };
 use ballista_core::serde::scheduler::PartitionLocation;
+use datafusion::common::ScalarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::Statistics;
 use datafusion::{
@@ -41,7 +42,7 @@ use std::sync::{Arc, atomic::AtomicI64};
 /// task-specialization time to build per-downstream-partition range filters
 /// (see `PerPartitionFilterExec`).
 ///
-/// `cuts` are `K - 1` monotone `f64` boundaries expressed in the value space
+/// `cuts` are `K - 1` monotone boundaries expressed in the value space
 /// of `routing_expr`; downstream partition `k` owns `[cuts[k-1], cuts[k])`
 /// with virtual `-∞`/`+∞` sentinels on the ends (matching the range
 /// repartition's write-side convention). `routing_expr` is the same
@@ -49,7 +50,10 @@ use std::sync::{Arc, atomic::AtomicI64};
 /// with the writer's placement decision.
 #[derive(Clone, Debug)]
 pub struct RangeRepartitionRouting {
-    pub cuts: Vec<f64>,
+    pub cuts: Vec<ScalarValue>,
+    /// Which end of the order holds the NULL run, carried with the cuts so
+    /// the file router and the read-side filter cannot disagree about it.
+    pub nulls_first: bool,
     pub routing_expr: Arc<dyn PhysicalExpr>,
 }
 
@@ -191,7 +195,13 @@ impl ExchangeExec {
             (None, false) => input.output_partitioning().clone(),
             (_, true) => Partitioning::UnknownPartitioning(1),
         };
-        let eq_properties = input.properties().eq_properties.clone();
+        // An exchange redistributes rows, so a constant that only holds within
+        // each input partition does not hold afterwards. Keeping it lets
+        // `EnforceSorting` drop sort keys that are no longer constant — a
+        // `UNION ALL` branch projecting a literal, reshuffled by hash on that
+        // same column. `RepartitionExec` clears them for the same reason.
+        let mut eq_properties = input.properties().eq_properties.clone();
+        eq_properties.clear_per_partition_constants();
         let properties = Arc::new(PlanProperties::new(
             eq_properties,
             plan_partitioning,
@@ -516,6 +526,14 @@ mod range_repartition_routing_tests {
         ChildrenPropertiesMode, ExecutionPlan, Partitioning, ReplaceChildrenOptions,
     };
 
+    /// Cuts as `Float64` scalars, which is what merging produces.
+    fn cuts_f64<const N: usize>(values: [f64; N]) -> Vec<ScalarValue> {
+        values
+            .into_iter()
+            .map(|v| ScalarValue::Float64(Some(v)))
+            .collect()
+    }
+
     fn v_source() -> Arc<dyn ExecutionPlan> {
         let schema =
             Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
@@ -531,7 +549,8 @@ mod range_repartition_routing_tests {
 
     fn sample_routing() -> RangeRepartitionRouting {
         RangeRepartitionRouting {
-            cuts: vec![10.0, 20.0, 30.0],
+            cuts: cuts_f64([10.0, 20.0, 30.0]),
+            nulls_first: true,
             routing_expr: v_routing_expr(),
         }
     }
@@ -549,7 +568,7 @@ mod range_repartition_routing_tests {
         let recovered = exchange
             .range_repartition_routing()
             .expect("routing must be Some after resolve");
-        assert_eq!(recovered.cuts, vec![10.0, 20.0, 30.0]);
+        assert_eq!(recovered.cuts, cuts_f64([10.0, 20.0, 30.0]));
     }
 
     #[test]
@@ -558,11 +577,12 @@ mod range_repartition_routing_tests {
         let exchange = ExchangeExec::new(v_source(), None, 42);
         exchange.resolve_range_repartition_routing(sample_routing());
         exchange.resolve_range_repartition_routing(RangeRepartitionRouting {
-            cuts: vec![100.0],
+            cuts: cuts_f64([100.0]),
+            nulls_first: true,
             routing_expr: v_routing_expr(),
         });
         let recovered = exchange.range_repartition_routing().unwrap();
-        assert_eq!(recovered.cuts, vec![100.0], "second resolve wins");
+        assert_eq!(recovered.cuts, cuts_f64([100.0]), "second resolve wins");
     }
 
     /// `with_new_children` must carry the routing slot through: transform
@@ -588,6 +608,6 @@ mod range_repartition_routing_tests {
         let recovered = rebuilt_exchange
             .range_repartition_routing()
             .expect("routing must survive with_new_children");
-        assert_eq!(recovered.cuts, vec![10.0, 20.0, 30.0]);
+        assert_eq!(recovered.cuts, cuts_f64([10.0, 20.0, 30.0]));
     }
 }

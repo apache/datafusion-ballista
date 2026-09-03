@@ -36,9 +36,8 @@
 //! flows from parent to descendants via function arguments, so sibling
 //! subtrees never share state and there's no traversal-order dependency.
 
-use ballista_core::execution_plans::{
-    RangeFilterExec, RangeShuffleReaderExec, ShuffleReaderExec,
-};
+use ballista_core::execution_plans::plan_algebra::as_partition_sliceable;
+use ballista_core::execution_plans::{RangeShuffleReaderExec, ShuffleReaderExec};
 use datafusion::common::internal_err;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::physical_plan::{
@@ -87,41 +86,20 @@ fn restrict(
         return Ok(rewritten);
     }
 
-    // RangeFilterExec: raw_bounds is indexed by input partition; restriction
-    // slices bounds parallel to the input's partition subset. Halos + routing
-    // are carried over verbatim; RFE re-widens on the fresh operator.
-    if !under_collect && let Some(rf) = plan.downcast_ref::<RangeFilterExec>() {
+    // Operators carrying data indexed by global input partition slice it
+    // parallel to the input restriction. Each one implements the slicing
+    // beside its own fields; this walker only supplies the restricted child.
+    if !under_collect && let Some(sliceable) = as_partition_sliceable(&plan) {
         let children = plan.children();
         let [child] = children.as_slice() else {
             return internal_err!(
-                "RangeFilterExec must have exactly 1 child, got {}",
+                "{} is PartitionSliceable but has {} children, expected 1",
+                plan.name(),
                 children.len()
             );
         };
         let new_child = restrict((*child).clone(), partitions, false)?;
-        let raw_bounds = rf.raw_bounds().ok_or_else(|| {
-            datafusion::common::DataFusionError::Internal(
-                "RangeFilterExec: task-restriction before resolve_bounds()".into(),
-            )
-        })?;
-        let sliced_bounds: Vec<_> = partitions
-            .iter()
-            .map(|&global| {
-                raw_bounds.get(global).cloned().ok_or_else(|| {
-                    datafusion::common::DataFusionError::Internal(format!(
-                        "RangeFilterExec: partition index {global} out of bounds ({} raw bounds)",
-                        raw_bounds.len()
-                    ))
-                })
-            })
-            .collect::<datafusion::common::Result<_>>()?;
-        return Ok(Arc::new(RangeFilterExec::try_new_resolved(
-            new_child,
-            rf.routing_expr().clone(),
-            rf.halo_lo().clone(),
-            rf.halo_hi().clone(),
-            sliced_bounds,
-        )?));
+        return sliceable.slice_to_partitions(new_child, partitions);
     }
 
     // UnionExec: parent partition `p` maps to exactly one child's local
@@ -335,6 +313,23 @@ fn select_output_partitions(
             reader.merge_ordering().clone(),
         ) else {
             return Ok(None);
+        };
+        let restricted = restricted.with_fetch_limit(reader.fetch());
+        // Bounds are per output partition, so they follow the same slice the
+        // locations did. Dropping them here would leave the task reading its
+        // sources whole — right answer, none of the saving.
+        let restricted = match reader.bounds() {
+            Some(bounds) => {
+                let kept = indices
+                    .iter()
+                    .filter_map(|&p| bounds.get(p).cloned())
+                    .collect();
+                let Ok(restricted) = restricted.with_bounds(kept) else {
+                    return Ok(None);
+                };
+                restricted
+            }
+            None => restricted,
         };
         return Ok(Some(Arc::new(restricted)));
     }
@@ -727,7 +722,7 @@ mod tests {
         )
         .unwrap();
         use datafusion::scalar::ScalarValue;
-        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let filter_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
         // K=4 raw bounds derived from cuts [100, 200, 300].
         let sv = |v: f64| ScalarValue::Float64(Some(v));
         let raw_bounds: Vec<(Option<ScalarValue>, Option<ScalarValue>)> = vec![
@@ -739,9 +734,10 @@ mod tests {
         let plan: Arc<dyn ExecutionPlan> = Arc::new(
             RangeFilterExec::try_new_resolved(
                 Arc::new(reader) as Arc<dyn ExecutionPlan>,
-                routing_expr,
+                filter_expr,
                 ScalarValue::Float64(Some(0.0)),
                 ScalarValue::Float64(Some(0.0)),
+                None,
                 raw_bounds.clone(),
             )
             .unwrap(),

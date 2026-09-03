@@ -928,9 +928,9 @@ pub(crate) fn create_shuffle_writer_with_config(
 #[cfg(test)]
 mod test {
     use super::{can_stay_inline, holds_a_broadcast};
-    use crate::assert_plan;
     use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
     use crate::test_utils::{datafusion_test_context, scan_with_file_groups};
+    use ballista_core::assert_plan;
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
@@ -968,10 +968,10 @@ mod test {
 
         let rewritten = make_empty_exec_serde_safe(plan).unwrap();
 
-        assert_eq!(
-            displayable(rewritten.as_ref()).indent(false).to_string(),
-            "RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1\n  EmptyExec\n"
-        );
+        assert_plan!(rewritten.as_ref(), @r"
+        RepartitionExec: partitioning=RoundRobinBatch(4), input_partitions=1
+          EmptyExec
+        ");
     }
 
     #[test]
@@ -985,10 +985,7 @@ mod test {
 
         let rewritten = make_empty_exec_serde_safe(plan).unwrap();
 
-        assert_eq!(
-            displayable(rewritten.as_ref()).indent(false).to_string(),
-            "EmptyExec\n"
-        );
+        assert_plan!(rewritten.as_ref(), @"EmptyExec");
     }
 
     /// A plain scan branch restricts away cleanly, so it can stay inline in
@@ -1099,13 +1096,13 @@ mod test {
           AggregateExec: mode=Partial, gby=[l_returnflag@1 as l_returnflag], aggr=[sum(lineitem.l_extendedprice * Int64(1))]
             DataSourceExec: file_groups={2 groups: [[ballista/scheduler/testdata/lineitem/partition0.tbl], [ballista/scheduler/testdata/lineitem/partition1.tbl]]}, projection=[l_extendedprice, l_returnflag], file_type=csv, has_header=false
 
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: Hash([l_returnflag@0], 2)
           SortExec: expr=[l_returnflag@0 ASC NULLS LAST], preserve_partitioning=[true]
             ProjectionExec: expr=[l_returnflag@0 as l_returnflag, sum(lineitem.l_extendedprice * Int64(1))@1 as sum_disc_price]
               AggregateExec: mode=FinalPartitioned, gby=[l_returnflag@0 as l_returnflag], aggr=[sum(lineitem.l_extendedprice * Int64(1))]
                 UnresolvedShuffleExec: stage=1, partitioning: Hash([l_returnflag@0], 2)
 
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: UnknownPartitioning(1)
           SortPreservingMergeExec: [l_returnflag@0 ASC NULLS LAST]
             UnresolvedShuffleExec: stage=2, partitioning: Hash([l_returnflag@0], 2)
         */
@@ -1224,13 +1221,13 @@ order by
               UnresolvedShuffleExec: stage=1, partitioning: Hash([l_orderkey@0], 2)
               UnresolvedShuffleExec: stage=2, partitioning: Hash([o_orderkey@0], 2)
 
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: Hash([l_shipmode@0], 2)
           SortExec: expr=[l_shipmode@0 ASC NULLS LAST], preserve_partitioning=[true]
             ProjectionExec: expr=[l_shipmode@0 as l_shipmode, sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@1 as high_line_count, sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@2 as low_line_count]
             AggregateExec: mode=FinalPartitioned, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
               UnresolvedShuffleExec: stage=3, partitioning: Hash([l_shipmode@0], 2)
 
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: UnknownPartitioning(1)
           SortPreservingMergeExec: [l_shipmode@0 ASC NULLS LAST]
             UnresolvedShuffleExec: stage=4, partitioning: Hash([l_shipmode@0], 2)
         */
@@ -1421,10 +1418,11 @@ order by
 
         let schema =
             Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, true)]));
+        // Over `broadcast_join_threshold_bytes`, whose default is 128 MB.
         let left = Arc::new(StatisticsExec::new(
             Statistics {
-                num_rows: Precision::Exact(5_000_000),
-                total_byte_size: Precision::Exact(20 * 1024 * 1024),
+                num_rows: Precision::Exact(67_108_864),
+                total_byte_size: Precision::Exact(256 * 1024 * 1024),
                 column_statistics: vec![ColumnStatistics::new_unknown()],
             },
             schema.as_ref().clone(),
@@ -1533,7 +1531,7 @@ order by
         // Stage 0 holds the join, still a SortMergeJoinExec over sorted inputs
         // (no HashJoinExec, no broadcast UnresolvedShuffleExec).
         assert_plan!(stages[0].as_ref(), @r"
-        ShuffleWriterExec: partitioning: None
+        ShuffleWriterExec: partitioning: RoundRobinBatch(2)
           AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
             RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
               ProjectionExec: expr=[]
@@ -1686,8 +1684,9 @@ order by
         )
         .map_err(|e| BallistaError::General(e.to_string()))?;
 
-        // Match the PR's production session config: DF and Ballista thresholds
-        // both at 10 MB so DF's `JoinSelection` can promote on its own.
+        // Pin the DF and Ballista thresholds at 10 MB each, so DF's
+        // `JoinSelection` can promote on its own and the case under test does
+        // not move when the shipped defaults change.
         let session_config = SessionConfig::new()
             .with_target_partitions(2)
             .set_bool("datafusion.optimizer.prefer_hash_join", true)
@@ -2154,7 +2153,7 @@ order by
               DataSourceExec: file_groups={2 groups: [[ballista/scheduler/testdata/lineitem/partition0.tbl], [ballista/scheduler/testdata/lineitem/partition1.tbl]]}, projection=[l_shipdate, l_shipmode], file_type=csv, has_header=false
 
             Stage 1:
-            ShuffleWriterExec: partitioning: None
+            ShuffleWriterExec: partitioning: Hash([l_shipmode@0], 2)
               SortExec: expr=[l_shipdate@1 ASC NULLS LAST, rk@2 ASC NULLS LAST], preserve_partitioning=[true]
                 ProjectionExec: expr=[l_shipmode@1 as l_shipmode, l_shipdate@0 as l_shipdate, rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as rk]
                 FilterExec: rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 <= 100
@@ -2163,7 +2162,7 @@ order by
                       UnresolvedShuffleExec: stage=1, partitioning: Hash([l_shipmode@1], 2)
 
             Stage 2:
-            ShuffleWriterExec: partitioning: None
+            ShuffleWriterExec: partitioning: UnknownPartitioning(1)
               SortPreservingMergeExec: [l_shipdate@1 ASC NULLS LAST, rk@2 ASC NULLS LAST]
                 UnresolvedShuffleExec: stage=2, partitioning: Hash([l_shipmode@0], 2)
 

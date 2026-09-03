@@ -56,17 +56,20 @@ use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    BufferExec, BufferMode, ChaosExec, CoalescePlan, OrderedRangeRepartitionExec,
-    PartitionGroup, PartitionedBoundedWindowAggExec, PerPartitionFilterExec,
-    RangeFilterExec, RangeShuffleReaderExec, RuntimeStatsExec, ShuffleReaderExec,
+    BufferExec, BufferMode, ChaosExec, CoalescePlan, FinalizedPartitionState, InputOrder,
+    OrderedRangeRepartitionExec, PartitionGroup, PartitionedBoundedWindowAggExec,
+    PerPartitionFilterExec, PrefixMergeExec, RangeFilterExec, RangeShuffleReaderExec,
+    RangeShuffleWriterExec, RuntimeStatsExec, ScalarOp, ShuffleReaderExec,
     ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
-    UnresolvedShuffleExec,
+    UnresolvedShuffleExec, WindowApply,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
     ballista_physical_plan_node::PhysicalPlanType,
 };
 use crate::serde::scheduler::PartitionLocation;
+use datafusion::arrow::compute::SortOptions;
+use datafusion::execution::FunctionRegistry;
 pub use generated::ballista as protobuf;
 
 /// Generated protobuf code from Ballista protocol definitions.
@@ -366,6 +369,209 @@ impl Default for BallistaPhysicalExtensionCodec {
     }
 }
 
+/// Encode a `ScalarValue` list for the wire, naming what failed.
+fn encode_scalars(
+    values: &[datafusion::scalar::ScalarValue],
+    what: &str,
+) -> Result<Vec<datafusion_proto_common::ScalarValue>, DataFusionError> {
+    let mut out = Vec::with_capacity(values.len());
+    for value in values {
+        out.push(
+            datafusion_proto_common::ScalarValue::try_from(value).map_err(|e| {
+                DataFusionError::Internal(format!("failed to encode {what}: {e:?}"))
+            })?,
+        );
+    }
+    Ok(out)
+}
+
+/// Reverse of [`encode_scalars`].
+fn decode_scalars(
+    proto: &[datafusion_proto_common::ScalarValue],
+    what: &str,
+) -> Result<Vec<datafusion::scalar::ScalarValue>, DataFusionError> {
+    let mut out = Vec::with_capacity(proto.len());
+    for value in proto {
+        out.push(
+            datafusion::scalar::ScalarValue::try_from(value).map_err(|e| {
+                DataFusionError::Internal(format!("failed to decode {what}: {e:?}"))
+            })?,
+        );
+    }
+    Ok(out)
+}
+
+/// Encode `PrefixMergeExec`'s per-partition prefix state.
+///
+/// An absent slot stays absent: a window expression that published no state
+/// is not the same as one that published an empty state.
+fn encode_prefix_state(
+    state: &[FinalizedPartitionState],
+) -> Result<Vec<protobuf::FinalizedPartitionStateNode>, DataFusionError> {
+    let mut partitions = Vec::with_capacity(state.len());
+    for partition in state {
+        let mut slots = Vec::with_capacity(partition.len());
+        for slot in partition.slots() {
+            let state = match slot {
+                Some(values) => Some(protobuf::AggregateStateNode {
+                    values: encode_scalars(values, "prefix state")?,
+                }),
+                None => None,
+            };
+            slots.push(protobuf::AggregateStateSlotNode { state });
+        }
+        partitions.push(protobuf::FinalizedPartitionStateNode { slots });
+    }
+    Ok(partitions)
+}
+
+/// Reverse of [`encode_prefix_state`].
+fn decode_prefix_state(
+    proto: &[protobuf::FinalizedPartitionStateNode],
+) -> Result<Vec<FinalizedPartitionState>, DataFusionError> {
+    let mut partitions = Vec::with_capacity(proto.len());
+    for partition in proto {
+        let mut slots = Vec::with_capacity(partition.slots.len());
+        for slot in &partition.slots {
+            let state = match &slot.state {
+                Some(state) => Some(decode_scalars(&state.values, "prefix state")?),
+                None => None,
+            };
+            slots.push(state);
+        }
+        partitions.push(FinalizedPartitionState::new(slots));
+    }
+    Ok(partitions)
+}
+
+/// Encode `PrefixMergeExec`'s per-column apply descriptors.
+///
+/// The aggregate arm carries its UDAF by name, resolved from the executor's
+/// function registry on decode — the same way DataFusion moves UDFs
+/// generally.
+fn encode_window_applies(
+    applies: &[WindowApply],
+    codec: &dyn PhysicalExtensionCodec,
+) -> Result<Vec<protobuf::WindowApplyNode>, DataFusionError> {
+    let mut out = Vec::with_capacity(applies.len());
+    for apply in applies {
+        let apply = match apply {
+            WindowApply::Scalar {
+                op,
+                offset,
+                output_column,
+            } => protobuf::window_apply_node::Apply::Scalar(
+                protobuf::ScalarWindowApplyNode {
+                    op: encode_scalar_op(*op) as i32,
+                    offset: encode_scalars(offset, "scalar apply offset")?,
+                    output_column: *output_column as u32,
+                },
+            ),
+            WindowApply::Aggregate {
+                udf,
+                args,
+                output_column,
+                window_expr_index,
+            } => {
+                let mut encoded_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    encoded_args.push(
+                        datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
+                            arg, codec,
+                        )?,
+                    );
+                }
+                protobuf::window_apply_node::Apply::Aggregate(
+                    protobuf::AggregateWindowApplyNode {
+                        udf_name: udf.name().to_string(),
+                        args: encoded_args,
+                        output_column: *output_column as u32,
+                        window_expr_index: *window_expr_index as u32,
+                    },
+                )
+            }
+        };
+        out.push(protobuf::WindowApplyNode { apply: Some(apply) });
+    }
+    Ok(out)
+}
+
+/// Reverse of [`encode_window_applies`]. `schema` is the operator's input
+/// schema, which the aggregate arm's argument expressions resolve against.
+fn decode_window_applies(
+    proto: &[protobuf::WindowApplyNode],
+    ctx: &TaskContext,
+    schema: &datafusion::arrow::datatypes::Schema,
+    codec: &dyn PhysicalExtensionCodec,
+) -> Result<Vec<WindowApply>, DataFusionError> {
+    let mut out = Vec::with_capacity(proto.len());
+    for node in proto {
+        let apply = node.apply.as_ref().ok_or_else(|| {
+            DataFusionError::Internal("WindowApplyNode missing apply".into())
+        })?;
+        out.push(match apply {
+            protobuf::window_apply_node::Apply::Scalar(scalar) => WindowApply::Scalar {
+                op: decode_scalar_op(scalar.op()),
+                offset: decode_scalars(&scalar.offset, "scalar apply offset")?,
+                output_column: scalar.output_column as usize,
+            },
+            protobuf::window_apply_node::Apply::Aggregate(aggregate) => {
+                let mut args = Vec::with_capacity(aggregate.args.len());
+                for arg in &aggregate.args {
+                    args.push(
+                        datafusion_proto::physical_plan::from_proto::parse_physical_expr(
+                            arg, ctx, schema, codec,
+                        )?,
+                    );
+                }
+                WindowApply::Aggregate {
+                    udf: ctx.udaf(&aggregate.udf_name)?,
+                    args,
+                    output_column: aggregate.output_column as usize,
+                    window_expr_index: aggregate.window_expr_index as usize,
+                }
+            }
+        });
+    }
+    Ok(out)
+}
+
+fn encode_scalar_op(op: ScalarOp) -> protobuf::ScalarOpNode {
+    match op {
+        ScalarOp::Add => protobuf::ScalarOpNode::Add,
+        ScalarOp::Min => protobuf::ScalarOpNode::Min,
+        ScalarOp::Max => protobuf::ScalarOpNode::Max,
+        ScalarOp::Overwrite => protobuf::ScalarOpNode::Overwrite,
+    }
+}
+
+fn decode_scalar_op(op: protobuf::ScalarOpNode) -> ScalarOp {
+    match op {
+        protobuf::ScalarOpNode::Add => ScalarOp::Add,
+        protobuf::ScalarOpNode::Min => ScalarOp::Min,
+        protobuf::ScalarOpNode::Max => ScalarOp::Max,
+        protobuf::ScalarOpNode::Overwrite => ScalarOp::Overwrite,
+    }
+}
+
+/// Decode a `ScalarValue` carried on a Ballista physical plan node.
+fn scalar_from_proto(
+    proto: &datafusion_proto_common::ScalarValue,
+) -> Result<datafusion::scalar::ScalarValue, DataFusionError> {
+    datafusion::scalar::ScalarValue::try_from(proto).map_err(|e| {
+        DataFusionError::Internal(format!("failed to decode ScalarValue: {e:?}"))
+    })
+}
+
+/// Encode a `ScalarValue` for a Ballista physical plan node.
+fn scalar_to_proto(
+    value: &datafusion::scalar::ScalarValue,
+) -> Result<datafusion_proto_common::ScalarValue, DataFusionError> {
+    datafusion_proto_common::ScalarValue::try_from(value).map_err(|e| {
+        DataFusionError::Internal(format!("failed to encode ScalarValue: {e:?}"))
+    })
+}
+
 impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
     fn try_decode(
         &self,
@@ -409,6 +615,16 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // this is intentional but hacky - the executor will fill this in
+                )?))
+            }
+            PhysicalPlanType::RangeShuffleWriter(range_shuffle_writer) => {
+                let input = inputs[0].clone();
+
+                Ok(Arc::new(RangeShuffleWriterExec::try_new(
+                    range_shuffle_writer.job_id.clone().into(),
+                    range_shuffle_writer.stage_id as usize,
+                    input,
+                    "".to_string(), // the executor fills the work dir in
                 )?))
             }
             PhysicalPlanType::SortShuffleWriter(sort_shuffle_writer) => {
@@ -542,12 +758,34 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         "RangeShuffleReaderExec: merge_ordering must be non-empty",
                     )
                 })?;
-                Ok(Arc::new(RangeShuffleReaderExec::try_new(
+                let reader = RangeShuffleReaderExec::try_new(
                     stage_id,
                     partition_location,
                     schema,
                     merge_ordering,
-                )?))
+                )?
+                .with_fetch_limit(range_reader.fetch.map(|f| f as usize));
+
+                // Empty means the scheduler had no cuts to give, which is a
+                // reader that reads its sources whole — not a reader whose
+                // every partition covers nothing.
+                let reader = if range_reader.bounds.is_empty() {
+                    reader
+                } else {
+                    let bounds = range_reader
+                        .bounds
+                        .iter()
+                        .map(|bound| {
+                            let lo =
+                                bound.lo.as_ref().map(scalar_from_proto).transpose()?;
+                            let hi =
+                                bound.hi.as_ref().map(scalar_from_proto).transpose()?;
+                            Ok::<_, DataFusionError>((lo, hi))
+                        })
+                        .collect::<Result<Vec<_>, DataFusionError>>()?;
+                    reader.with_bounds(bounds)?
+                };
+                Ok(Arc::new(reader))
             }
             PhysicalPlanType::UnresolvedShuffle(unresolved_shuffle) => {
                 let schema: SchemaRef =
@@ -704,6 +942,20 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     predicates,
                 )?))
             }
+            PhysicalPlanType::PrefixMerge(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "PrefixMergeExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                let schema = input.schema();
+                Ok(Arc::new(PrefixMergeExec::try_new_resolved(
+                    input.clone(),
+                    decode_window_applies(&node.applies, ctx, schema.as_ref(), self)?,
+                    decode_prefix_state(&node.per_partition_state)?,
+                )?))
+            }
             PhysicalPlanType::RangeFilter(node) => {
                 let [input] = inputs else {
                     return Err(DataFusionError::Internal(format!(
@@ -712,51 +964,58 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     )));
                 };
                 let schema = input.schema();
-                let routing_expr_proto = node.routing_expr.as_ref().ok_or_else(|| {
+                let filter_expr_proto = node.filter_expr.as_ref().ok_or_else(|| {
                     DataFusionError::Internal(
-                        "RangeFilterExecNode missing routing_expr".into(),
+                        "RangeFilterExecNode missing filter_expr".into(),
                     )
                 })?;
-                let routing_expr =
+                let filter_expr =
                     datafusion_proto::physical_plan::from_proto::parse_physical_expr(
-                        routing_expr_proto,
+                        filter_expr_proto,
                         ctx,
                         schema.as_ref(),
                         self,
                     )?;
-                let sv_from_proto = |p: &datafusion_proto_common::ScalarValue| {
-                    datafusion::scalar::ScalarValue::try_from(p).map_err(|e| {
-                        DataFusionError::Internal(format!(
-                            "RangeFilterExec: failed to decode ScalarValue: {e:?}"
-                        ))
-                    })
-                };
+                let input_order = node.input_order.as_ref().map(|order| match order {
+                    protobuf::range_filter_exec_node::InputOrder::UnorderedNullsFirst(
+                        nulls_first,
+                    ) => InputOrder::Unordered {
+                        nulls_first: *nulls_first,
+                    },
+                    protobuf::range_filter_exec_node::InputOrder::Ordered(options) => {
+                        InputOrder::Ordered(SortOptions {
+                            descending: options.descending,
+                            nulls_first: options.nulls_first,
+                        })
+                    }
+                });
                 let halo_lo_proto = node.halo_lo.as_ref().ok_or_else(|| {
                     DataFusionError::Internal(
                         "RangeFilterExecNode missing halo_lo".into(),
                     )
                 })?;
-                let halo_lo = sv_from_proto(halo_lo_proto)?;
+                let halo_lo = scalar_from_proto(halo_lo_proto)?;
                 let halo_hi_proto = node.halo_hi.as_ref().ok_or_else(|| {
                     DataFusionError::Internal(
                         "RangeFilterExecNode missing halo_hi".into(),
                     )
                 })?;
-                let halo_hi = sv_from_proto(halo_hi_proto)?;
+                let halo_hi = scalar_from_proto(halo_hi_proto)?;
                 let raw_bounds = node
                     .raw_bounds
                     .iter()
                     .map(|b| {
-                        let lo = b.lo.as_ref().map(sv_from_proto).transpose()?;
-                        let hi = b.hi.as_ref().map(sv_from_proto).transpose()?;
+                        let lo = b.lo.as_ref().map(scalar_from_proto).transpose()?;
+                        let hi = b.hi.as_ref().map(scalar_from_proto).transpose()?;
                         Ok::<_, DataFusionError>((lo, hi))
                     })
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
                 Ok(Arc::new(RangeFilterExec::try_new_resolved(
                     input.clone(),
-                    routing_expr,
+                    filter_expr,
                     halo_lo,
                     halo_hi,
+                    input_order,
                     raw_bounds,
                 )?))
             }
@@ -811,6 +1070,24 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode shuffle writer execution plan: {e:?}"
+                ))
+            })?;
+
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<RangeShuffleWriterExec>() {
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::RangeShuffleWriter(
+                    protobuf::RangeShuffleWriterExecNode {
+                        job_id: exec.job_id().to_string(),
+                        stage_id: exec.stage_id() as u32,
+                        input: None,
+                    },
+                )),
+            };
+
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode range shuffle writer execution plan: {e:?}"
                 ))
             })?;
 
@@ -934,6 +1211,17 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         partition,
                         schema: Some(exec.schema().as_ref().try_into()?),
                         merge_ordering,
+                        fetch: exec.fetch().map(|f| f as u64),
+                        bounds: exec
+                            .bounds()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|(lo, hi)| {
+                                let lo = lo.as_ref().map(scalar_to_proto).transpose()?;
+                                let hi = hi.as_ref().map(scalar_to_proto).transpose()?;
+                                Ok::<_, DataFusionError>(protobuf::RangeBound { lo, hi })
+                            })
+                            .collect::<Result<Vec<_>, DataFusionError>>()?,
                     },
                 )),
             };
@@ -1086,41 +1374,73 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 ))
             })?;
             Ok(())
+        } else if let Some(exec) = node.downcast_ref::<PrefixMergeExec>() {
+            // An executor has no route to prefix state, so a plan reaching
+            // the wire unresolved could only emit partition-local aggregates.
+            // Refuse, the way RangeFilterExec refuses unresolved bounds.
+            let state = exec.per_partition_state().ok_or_else(|| {
+                DataFusionError::Internal(
+                    "PrefixMergeExec: cannot serialize before resolve_state()".into(),
+                )
+            })?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::PrefixMerge(
+                    protobuf::PrefixMergeExecNode {
+                        applies: encode_window_applies(
+                            exec.applies(),
+                            self.default_codec.as_ref(),
+                        )?,
+                        per_partition_state: encode_prefix_state(&state)?,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode PrefixMergeExecNode: {e:?}"
+                ))
+            })?;
+            Ok(())
         } else if let Some(exec) = node.downcast_ref::<RangeFilterExec>() {
             let raw_bounds = exec.raw_bounds().ok_or_else(|| {
                 DataFusionError::Internal(
                     "RangeFilterExec: cannot serialize before resolve_bounds()".into(),
                 )
             })?;
-            let routing_expr =
+            let filter_expr =
                 datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
-                    exec.routing_expr(),
+                    exec.filter_expr(),
                     self.default_codec.as_ref(),
                 )?;
-            let encode_sv = |sv: &datafusion::scalar::ScalarValue| {
-                datafusion_proto_common::ScalarValue::try_from(sv).map_err(|e| {
-                    DataFusionError::Internal(format!(
-                        "failed to encode RangeFilterExec ScalarValue: {e:?}"
-                    ))
-                })
-            };
-            let halo_lo = encode_sv(exec.halo_lo())?;
-            let halo_hi = encode_sv(exec.halo_hi())?;
+            let halo_lo = scalar_to_proto(exec.halo_lo())?;
+            let halo_hi = scalar_to_proto(exec.halo_hi())?;
             let raw_bounds_proto = raw_bounds
                 .iter()
                 .map(|(lo, hi)| {
-                    let lo = lo.as_ref().map(&encode_sv).transpose()?;
-                    let hi = hi.as_ref().map(&encode_sv).transpose()?;
+                    let lo = lo.as_ref().map(&scalar_to_proto).transpose()?;
+                    let hi = hi.as_ref().map(&scalar_to_proto).transpose()?;
                     Ok::<_, DataFusionError>(protobuf::RangeBound { lo, hi })
                 })
                 .collect::<Result<Vec<_>, DataFusionError>>()?;
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::RangeFilter(
                     protobuf::RangeFilterExecNode {
-                        routing_expr: Some(routing_expr),
+                        filter_expr: Some(filter_expr),
                         halo_lo: Some(halo_lo),
                         halo_hi: Some(halo_hi),
                         raw_bounds: raw_bounds_proto,
+                        input_order: exec.input_order().map(|order| match order {
+                            InputOrder::Unordered { nulls_first } => {
+                                protobuf::range_filter_exec_node::InputOrder::UnorderedNullsFirst(nulls_first)
+                            }
+                            InputOrder::Ordered(options) => {
+                                protobuf::range_filter_exec_node::InputOrder::Ordered(
+                                    protobuf::SortOptions {
+                                        descending: options.descending,
+                                        nulls_first: options.nulls_first,
+                                    },
+                                )
+                            }
+                        }),
                     },
                 )),
             };
@@ -1409,6 +1729,92 @@ mod test {
     /// `RangeShuffleReaderExec` carries its merge ordering across the wire —
     /// the reader's k-way merge machinery is inert without it, and the
     /// scheduler side plants the reader with the child's declared ordering.
+    /// Both `WindowApply` shapes and the prefix state must survive the wire.
+    /// The aggregate arm is the interesting one: its UDAF crosses by name and
+    /// is resolved from the executor's registry, and its state is an opaque
+    /// `Vec<ScalarValue>` rather than a number.
+    #[tokio::test]
+    async fn test_prefix_merge_exec_roundtrip() {
+        use datafusion::functions_aggregate::sum::sum_udaf;
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::scalar::ScalarValue;
+
+        let schema = create_test_schema();
+        let input = Arc::new(EmptyExec::new(schema.clone()));
+        let applies = vec![
+            WindowApply::Scalar {
+                op: ScalarOp::Overwrite,
+                offset: vec![ScalarValue::Float64(Some(1.5))],
+                output_column: 0,
+            },
+            WindowApply::Aggregate {
+                udf: sum_udaf(),
+                args: vec![col("id", schema.as_ref()).unwrap()],
+                output_column: 1,
+                window_expr_index: 3,
+            },
+        ];
+        // One partition; slot 0 carries state, slot 1 is a window function
+        // that published none. `None` and `Some(vec![])` must stay distinct.
+        let state = vec![FinalizedPartitionState::new(vec![
+            Some(vec![ScalarValue::Float64(Some(42.0))]),
+            None,
+        ])];
+        let original =
+            PrefixMergeExec::try_new_resolved(input, applies, state.clone()).unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(
+                Arc::new(original),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec
+            .try_decode(
+                &buf,
+                &[Arc::new(EmptyExec::new(schema.clone()))],
+                &ctx,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
+        let decoded = decoded_plan
+            .downcast_ref::<PrefixMergeExec>()
+            .expect("Expected PrefixMergeExec");
+
+        assert_eq!(decoded.per_partition_state(), Some(state));
+        match &decoded.applies()[0] {
+            WindowApply::Scalar {
+                op,
+                offset,
+                output_column,
+            } => {
+                assert!(matches!(op, ScalarOp::Overwrite));
+                assert_eq!(offset, &[ScalarValue::Float64(Some(1.5))]);
+                assert_eq!(*output_column, 0);
+            }
+            other => panic!("expected Scalar apply, got {other:?}"),
+        }
+        match &decoded.applies()[1] {
+            WindowApply::Aggregate {
+                udf,
+                args,
+                output_column,
+                window_expr_index,
+            } => {
+                assert_eq!(udf.name(), "sum");
+                assert_eq!(args.len(), 1);
+                assert_eq!(*output_column, 1);
+                assert_eq!(*window_expr_index, 3);
+            }
+            other => panic!("expected Aggregate apply, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn test_range_shuffle_reader_exec_roundtrip() {
         use datafusion::arrow::compute::SortOptions;
@@ -1430,7 +1836,8 @@ mod test {
             schema.clone(),
             merge_ordering.clone(),
         )
-        .unwrap();
+        .unwrap()
+        .with_fetch_limit(Some(20));
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
@@ -1461,6 +1868,13 @@ mod test {
         assert_eq!(
             decoded.merge_ordering().first().expr.to_string(),
             sort_expr.expr.to_string(),
+        );
+        // Dropped on the wire, the limit would silently stop applying: the
+        // reader only ever executes after being decoded on an executor.
+        assert_eq!(
+            ExecutionPlan::fetch(decoded),
+            Some(20),
+            "fetch must round-trip"
         );
         // The ordering must land on `PlanProperties.eq_properties` — downstream
         // consumers (BWAG, SMJ build side) read it there.
@@ -2005,14 +2419,14 @@ mod test {
         // EmptyExec exposes one partition, so partition-0 is the only slot.
         assert_eq!(original.row_count(0).unwrap(), 0);
         assert_eq!(original.total_row_count(), 0);
-        assert_eq!(original.quantile_sketch(0).unwrap().unwrap().count(), 0.0);
+        assert_eq!(original.sort_key_sketch(0).unwrap().unwrap().count(), 0);
         assert_eq!(
-            original.merged_quantile_sketch().unwrap().unwrap().count(),
-            0.0
+            original.merged_sort_key_sketch().unwrap().unwrap().count(),
+            0
         );
         // Out-of-range partition surfaces as an internal error, not a panic.
         assert!(original.row_count(1).is_err());
-        assert!(original.quantile_sketch(1).is_err());
+        assert!(original.sort_key_sketch(1).is_err());
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
@@ -2039,10 +2453,10 @@ mod test {
         assert_eq!(order_by[0].expr.to_string(), sort_expr.expr.to_string());
         assert!(!order_by[0].options.descending);
         assert_eq!(decoded.row_count(0).unwrap(), 0);
-        assert_eq!(decoded.quantile_sketch(0).unwrap().unwrap().count(), 0.0);
+        assert_eq!(decoded.sort_key_sketch(0).unwrap().unwrap().count(), 0);
         assert_eq!(
-            decoded.merged_quantile_sketch().unwrap().unwrap().count(),
-            0.0
+            decoded.merged_sort_key_sketch().unwrap().unwrap().count(),
+            0
         );
     }
 
@@ -2063,10 +2477,10 @@ mod test {
         assert!(original.order_by().is_none());
         assert_eq!(original.row_count(0).unwrap(), 0);
         assert!(
-            original.quantile_sketch(0).unwrap().is_none(),
+            original.sort_key_sketch(0).unwrap().is_none(),
             "no sketch was requested at construction"
         );
-        assert!(original.merged_quantile_sketch().unwrap().is_none());
+        assert!(original.merged_sort_key_sketch().unwrap().is_none());
 
         let codec = BallistaPhysicalExtensionCodec::default();
         let mut buf: Vec<u8> = vec![];
@@ -2086,8 +2500,8 @@ mod test {
             .downcast_ref::<RuntimeStatsExec>()
             .expect("Expected RuntimeStatsExec");
         assert!(decoded.order_by().is_none());
-        assert!(decoded.quantile_sketch(0).unwrap().is_none());
-        assert!(decoded.merged_quantile_sketch().unwrap().is_none());
+        assert!(decoded.sort_key_sketch(0).unwrap().is_none());
+        assert!(decoded.merged_sort_key_sketch().unwrap().is_none());
     }
 
     /// `try_new` refuses an empty ORDER BY — no routing key means the
@@ -2112,10 +2526,12 @@ mod test {
     }
 
     /// `try_new` refuses a routing expression whose evaluated type is
-    /// not `Float64` — TDigest can't ingest anything else, so failing
-    /// at construction beats a downcast error mid-stream.
+    /// not encodable — the sketch needs a fixed-width key, so failing
+    /// An `Int64` key and a nullable key are both sketchable now: the codec
+    /// covers every fixed-width type and NULLs are counted beside the values
+    /// rather than having nowhere to go.
     #[test]
-    fn test_runtime_stats_exec_rejects_non_float64_routing_expr() {
+    fn test_runtime_stats_exec_accepts_widened_routing_exprs() {
         use crate::execution_plans::RuntimeStatsExec;
         use datafusion::arrow::compute::SortOptions;
         use datafusion::physical_expr::PhysicalSortExpr;
@@ -2123,53 +2539,29 @@ mod test {
         use datafusion::physical_plan::expressions::col;
 
         let schema = Arc::new(Schema::new(vec![
-            Field::new("v", DataType::Float64, true),
+            Field::new("nullable_float", DataType::Float64, true),
             Field::new("id", DataType::Int64, false),
+            Field::new("when", DataType::Utf8, false),
         ]));
         let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
-        let sort_expr = PhysicalSortExpr {
-            expr: col("id", schema.as_ref()).unwrap(),
+        let sort_on = |name: &str| PhysicalSortExpr {
+            expr: col(name, schema.as_ref()).unwrap(),
             options: SortOptions {
                 descending: false,
                 nulls_first: true,
             },
         };
-        let err = RuntimeStatsExec::try_new(input, Some(vec![sort_expr]))
-            .expect_err("non-Float64 routing expr must be rejected");
-        assert!(
-            err.to_string()
-                .contains("routing expression must be Float64"),
-            "got: {err}"
-        );
-    }
 
-    /// `try_new` refuses a nullable routing expression — TDigest has no
-    /// NULL slot, so allowing nulls would silently exclude them from
-    /// the sketch while `row_count` still saw them. The KLL swap lifts
-    /// this by positioning nulls per `SortOptions::nulls_first`.
-    #[test]
-    fn test_runtime_stats_exec_rejects_nullable_routing_expr() {
-        use crate::execution_plans::RuntimeStatsExec;
-        use datafusion::arrow::compute::SortOptions;
-        use datafusion::physical_expr::PhysicalSortExpr;
-        use datafusion::physical_plan::empty::EmptyExec;
-        use datafusion::physical_plan::expressions::col;
+        for name in ["nullable_float", "id"] {
+            RuntimeStatsExec::try_new(input.clone(), Some(vec![sort_on(name)]))
+                .unwrap_or_else(|e| panic!("{name} must be sketchable: {e}"));
+        }
 
-        let schema =
-            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, true)]));
-        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
-        let sort_expr = PhysicalSortExpr {
-            expr: col("v", schema.as_ref()).unwrap(),
-            options: SortOptions {
-                descending: false,
-                nulls_first: true,
-            },
-        };
-        let err = RuntimeStatsExec::try_new(input, Some(vec![sort_expr]))
-            .expect_err("nullable routing expr must be rejected");
+        // What the codec does not cover is still refused, and says so.
+        let err = RuntimeStatsExec::try_new(input, Some(vec![sort_on("when")]))
+            .expect_err("a variable-width key has no fixed-width encoding");
         assert!(
-            err.to_string()
-                .contains("routing expression must be non-nullable"),
+            err.to_string().contains("no sort-key encoding"),
             "got: {err}"
         );
     }
@@ -2257,7 +2649,7 @@ mod test {
             RepartitionExec::try_new(source, Partitioning::RoundRobinBatch(3)).unwrap(),
         );
         use datafusion::scalar::ScalarValue;
-        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let filter_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
         // K=3 raw bounds: (-∞, 10), [10, 20), [20, +∞)
         let raw_bounds: Vec<(Option<ScalarValue>, Option<ScalarValue>)> = vec![
             (None, Some(ScalarValue::Float64(Some(10.0)))),
@@ -2267,11 +2659,18 @@ mod test {
             ),
             (Some(ScalarValue::Float64(Some(20.0))), None),
         ];
+        // Round-tripped alongside the bounds: the placement of the NULL run is
+        // not recoverable from the child on the far side.
+        let original_input_order = Some(InputOrder::Ordered(SortOptions {
+            descending: false,
+            nulls_first: true,
+        }));
         let original = RangeFilterExec::try_new_resolved(
             input.clone(),
-            routing_expr.clone(),
+            filter_expr.clone(),
             ScalarValue::Float64(Some(3.0)),
             ScalarValue::Float64(Some(0.0)),
+            original_input_order,
             raw_bounds.clone(),
         )
         .unwrap();
@@ -2296,7 +2695,8 @@ mod test {
         assert_eq!(decoded.raw_bounds().unwrap(), raw_bounds);
         assert_eq!(decoded.halo_lo(), &ScalarValue::Float64(Some(3.0)));
         assert_eq!(decoded.halo_hi(), &ScalarValue::Float64(Some(0.0)));
-        assert_eq!(decoded.routing_expr().to_string(), routing_expr.to_string());
+        assert_eq!(decoded.filter_expr().to_string(), filter_expr.to_string());
+        assert_eq!(decoded.input_order(), original_input_order);
     }
 
     /// A pending RangeFilterExec (unresolved bounds) refuses to serialize —
@@ -2317,12 +2717,13 @@ mod test {
             RepartitionExec::try_new(source, Partitioning::RoundRobinBatch(2)).unwrap(),
         );
         use datafusion::scalar::ScalarValue;
-        let routing_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
+        let filter_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("v", 0));
         let pending = RangeFilterExec::try_new_pending(
             input,
-            routing_expr,
+            filter_expr,
             ScalarValue::Float64(Some(0.0)),
             ScalarValue::Float64(Some(0.0)),
+            None,
         )
         .unwrap();
 
@@ -2542,5 +2943,61 @@ mod test {
         assert_eq!(order_by.len(), 1, "ORDER BY must round-trip");
         assert_eq!(order_by[0].expr.to_string(), sort_expr.expr.to_string());
         assert_eq!(decoded.output_partitions(), 8, "K must round-trip");
+    }
+
+    /// Cross-version wire compatibility for `CopyTo` file formats.
+    ///
+    /// Ballista <= 54 encodes a file format as `FileFormatProto { encoder_position, blob }`,
+    /// where `encoder_position` indexes `[Parquet, Csv, Json, Arrow, Avro]`. Released clients
+    /// on the 54 crates talk to schedulers built from this branch, so the decoder has to keep
+    /// understanding those bytes.
+    ///
+    /// This is deliberately independent of the production `FileFormatProto`: it re-declares the
+    /// legacy layout locally, so a future change to how Ballista encodes file formats fails here
+    /// instead of silently mis-decoding. `file_format_serialization_roundtrip` cannot catch that,
+    /// because it encodes and decodes with the same codec and so passes for any self-consistent
+    /// encoding. See #2376, where delegating to DataFusion's codec made position 0 (Parquet)
+    /// decode as `FILE_FORMAT_KIND_UNSPECIFIED` and position 3 (Arrow) decode as Parquet.
+    #[tokio::test]
+    async fn decodes_file_format_bytes_from_a_54_client() {
+        /// The pre-#2348 on-the-wire layout, declared here so the test does not depend on the
+        /// production type.
+        #[derive(Clone, PartialEq, prost::Message)]
+        struct LegacyFileFormatProto {
+            #[prost(uint32, tag = 1)]
+            pub encoder_position: u32,
+            #[prost(bytes, tag = 2)]
+            pub blob: Vec<u8>,
+        }
+
+        let codec = BallistaLogicalExtensionCodec::default();
+        let ctx = SessionContext::new().task_ctx();
+
+        // Position -> the extension the decoded factory must report. Avro (position 4) is
+        // omitted: DataFusion's `AvroLogicalExtensionCodec::try_decode_file_format` returns an
+        // `ArrowFormatFactory` in both 54 and 55, which is an upstream bug unrelated to this.
+        for (encoder_position, expected_ext) in
+            [(0u32, "parquet"), (1, "csv"), (2, "json"), (3, "arrow")]
+        {
+            let mut buf = Vec::new();
+            LegacyFileFormatProto {
+                encoder_position,
+                blob: Vec::new(),
+            }
+            .encode(&mut buf)
+            .unwrap();
+
+            let factory = codec
+                .try_decode_file_format(&buf, &ctx)
+                .unwrap_or_else(|e| {
+                    panic!("position {encoder_position} must still decode, got {e}")
+                });
+
+            assert_eq!(
+                factory.get_ext(),
+                expected_ext,
+                "position {encoder_position} must decode as {expected_ext}"
+            );
+        }
     }
 }

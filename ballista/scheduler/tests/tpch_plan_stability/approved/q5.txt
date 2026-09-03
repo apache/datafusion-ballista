@@ -71,13 +71,13 @@ SortShuffleWriterExec: partitioning=Hash([n_name@0], 16)
           UnresolvedShuffleExec: stage=10, partitioning: Hash([r_regionkey@0], 16)
 
 === Stage 12 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: Hash([n_name@0], 16)
   ProjectionExec: expr=[n_name@0 as n_name, sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 as revenue]
     SortExec: expr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 DESC], preserve_partitioning=[true]
       AggregateExec: mode=FinalPartitioned, gby=[n_name@0 as n_name], aggr=[sum(lineitem.l_extendedprice * 1 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
         UnresolvedShuffleExec: stage=11, partitioning: Hash([n_name@0], 16)
 
 === Stage 13 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: UnknownPartitioning(1)
   SortPreservingMergeExec: [revenue@1 DESC]
     UnresolvedShuffleExec: stage=12, partitioning: Hash([n_name@0], 16)

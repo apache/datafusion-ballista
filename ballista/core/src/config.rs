@@ -246,9 +246,11 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::UInt64,
                          Some((300).to_string())),
         ConfigEntry::new(BALLISTA_ADAPTIVE_PLANNER_ENABLED.to_string(),
-                         "Enables Adaptive Query Planning (EXPERIMENTAL)".to_string(),
+                         "Enables Adaptive Query Planning: joins and partition counts are \
+                         chosen from measured runtime statistics instead of planning-time \
+                         estimates. Set to false to use the static distributed planner.".to_string(),
                          DataType::Boolean,
-                         Some(false.to_string())),
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
@@ -276,7 +278,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           single-task CollectLeft execution. Set to 0 to disable promotion \
                           and reject null-aware anti joins.".to_string(),
                          DataType::UInt64,
-                         Some((10 * 1024 * 1024).to_string())),
+                         Some((128 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS.to_string(),
                          "Row-count threshold below which a hash join's smaller side is \
                           promoted to CollectLeft and lowered via the broadcast pattern, \
@@ -415,15 +417,14 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(
             BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK.to_string(),
             "Upper bound on the number of input partitions packed into a single \
-             task's `partition_slice`. `1` (default) means one task per input \
-             partition. Raise to enable multi-partition tasks (fewer tasks, \
-             parallel-sort / parallel-join wins); `0` means unbounded — the \
+             task's `partition_slice`. `0` (default) means unbounded — the \
              scheduler fills each task up to the executor's free vcore count. \
-             Does not apply to collapse stages, which must pack their full \
-             pending queue into a single task for correctness."
+             `1` means one task per input partition. Does not apply to collapse \
+             stages, which must pack their full pending queue into a single \
+             task for correctness."
                 .to_string(),
             DataType::UInt64,
-            Some(1.to_string()),
+            Some(0.to_string()),
         ),
     ];
     entries
@@ -580,8 +581,14 @@ impl BallistaConfig {
     }
 
     /// Returns the standalone processing parallelism level.
-    pub fn default_standalone_parallelism(&self) -> usize {
+    pub fn standalone_parallelism(&self) -> usize {
         self.get_usize_setting(BALLISTA_STANDALONE_PARALLELISM)
+    }
+
+    /// Deprecated alias for [`Self::standalone_parallelism`].
+    #[deprecated(since = "55.0.0", note = "renamed to `standalone_parallelism`")]
+    pub fn default_standalone_parallelism(&self) -> usize {
+        self.standalone_parallelism()
     }
 
     /// Returns the maximum number of concurrent shuffle reader requests.
@@ -745,8 +752,8 @@ impl BallistaConfig {
 
     /// Returns the target post-coalesce partition byte size in bytes
     /// (Spark's `advisoryPartitionSizeInBytes`).
-    pub fn coalesce_target_partition_bytes(&self) -> u64 {
-        self.get_usize_setting(BALLISTA_COALESCE_TARGET_PARTITION_BYTES) as u64
+    pub fn coalesce_target_partition_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_COALESCE_TARGET_PARTITION_BYTES)
     }
 
     /// Returns the small-partition merge factor (Spark legacy).
@@ -797,8 +804,14 @@ impl BallistaConfig {
     }
 
     /// should client use TLS to communicate with ballista cluster
-    pub fn client_use_tls(&self) -> bool {
+    pub fn use_tls(&self) -> bool {
         self.get_bool_setting(BALLISTA_CLIENT_USE_TLS)
+    }
+
+    /// Deprecated alias for [`Self::use_tls`].
+    #[deprecated(since = "55.0.0", note = "renamed to `use_tls`")]
+    pub fn client_use_tls(&self) -> bool {
+        self.use_tls()
     }
 
     /// Returns the number of retries for IO operations in the Ballista client.

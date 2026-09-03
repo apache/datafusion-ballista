@@ -42,28 +42,31 @@
 //!   `OrderedRangeRepartitionExec`, which is one-to-one and never fanned
 //!   into a broadcast.
 //!
-//! # Future work
+//! # Narrowing what gets read
 //!
-//! Today the reader pulls whole upstream files and lets `StreamingMerge`
-//! do the work. Once value-indexed shuffle files land end-to-end (writer
-//! side in [PR #2204]), the reader will consult per-file ValueIndex
-//! offsets and fetch only the byte ranges covering its target output
-//! partition — dropping the "read the whole file to throw most of it
-//! away" cost that dominates when K is large.
+//! A source written by [`RangeShuffleWriterExec`] carries a value index, and
+//! when the scheduler supplies this reader's per-partition value range, only
+//! the batches that can hold a row in that range are read. Selection is at
+//! batch granularity; the `RangeFilterExec` above still does the exact trim,
+//! so this changes the volume read and not the rows produced.
 //!
-//! [PR #2204]: https://github.com/apache/datafusion-ballista/pull/2204
+//! Sources without an index, and partitions with no bounds, are read whole.
+//!
+//! [`RangeShuffleWriterExec`]: super::RangeShuffleWriterExec
 
 use crate::client_pool::BallistaClientPool;
+use crate::execution_plans::range_filter::WidenedBound;
+use crate::execution_plans::range_shuffle::{is_ipc_file, open_ipc_file_range};
 use crate::execution_plans::shuffle_reader::{
-    fetch_partition_local, fetch_partition_remote, local_remote_read_split,
-    stats_for_partition,
+    LocalShuffleStream, fetch_partition_local, fetch_partition_remote,
+    fetch_range_remote, local_remote_read_split, stats_for_partition,
 };
 use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::PartitionLocation;
 use crate::utils::GrpcClientConfig;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{Result, Statistics};
+use datafusion::common::{Result, Statistics, internal_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::MemoryConsumer;
@@ -81,8 +84,22 @@ use futures::TryStreamExt;
 use log::debug;
 use std::sync::Arc;
 
+/// Render per-partition bounds the way `RangeFilterExec` renders its own, so
+/// a plan shows whether the reader narrowed its reads and to what.
+fn render_bounds(bounds: &[WidenedBound]) -> String {
+    let rendered = bounds
+        .iter()
+        .map(|(lo, hi)| {
+            let lo = lo.as_ref().map(|v| v.to_string()).unwrap_or("-inf".into());
+            let hi = hi.as_ref().map(|v| v.to_string()).unwrap_or("+inf".into());
+            format!("[{lo}, {hi})")
+        })
+        .collect::<Vec<_>>();
+    format!("[{}]", rendered.join(", "))
+}
+
 /// Ordering-preserving shuffle reader. See module docs.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RangeShuffleReaderExec {
     /// Upstream stage that produced these files.
     pub stage_id: usize,
@@ -93,6 +110,17 @@ pub struct RangeShuffleReaderExec {
     /// Sort key the merge preserves. Advertised in `PlanProperties.eq_properties`
     /// so downstream operators (BWAG, SMJ build side) see the output ordering.
     merge_ordering: LexOrdering,
+    /// Row limit pushed down by a consumer. `None` means read everything.
+    fetch: Option<usize>,
+    /// Half-open value range each output partition covers, halo already
+    /// applied, or `None` when the scheduler had no cuts to give.
+    ///
+    /// Used to skip the parts of an indexed source that cannot hold a row this
+    /// partition wants. Selection is at batch granularity and the
+    /// `RangeFilterExec` above still does the exact trim, so a bound that is
+    /// too wide costs bytes and a missing one costs the saving — neither
+    /// changes the answer.
+    bounds: Option<Vec<WidenedBound>>,
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
     work_dir: Option<String>,
@@ -126,6 +154,8 @@ impl RangeShuffleReaderExec {
             schema,
             partition,
             merge_ordering,
+            fetch: None,
+            bounds: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,
@@ -133,31 +163,44 @@ impl RangeShuffleReaderExec {
         })
     }
 
+    /// Set the row limit at construction, without cloning the reader.
+    pub fn with_fetch_limit(mut self, fetch: Option<usize>) -> Self {
+        self.fetch = fetch;
+        self
+    }
+
+    /// Bind the per-output-partition value ranges this reader may narrow its
+    /// reads to. One entry per output partition.
+    pub fn with_bounds(mut self, bounds: Vec<WidenedBound>) -> Result<Self> {
+        if bounds.len() != self.partition.len() {
+            return internal_err!(
+                "RangeShuffleReaderExec got {} bounds for {} output partitions",
+                bounds.len(),
+                self.partition.len()
+            );
+        }
+        self.bounds = Some(bounds);
+        Ok(self)
+    }
+
+    /// Per-output-partition value ranges, halo already applied.
+    pub fn bounds(&self) -> Option<&[WidenedBound]> {
+        self.bounds.as_deref()
+    }
+
     /// Late-bound by the executor.
     pub fn with_work_dir(&self, work_dir: String) -> Self {
         Self {
-            stage_id: self.stage_id,
-            schema: self.schema.clone(),
-            partition: self.partition.clone(),
-            merge_ordering: self.merge_ordering.clone(),
-            metrics: self.metrics.clone(),
-            properties: self.properties.clone(),
             work_dir: Some(work_dir),
-            client_pool: self.client_pool.clone(),
+            ..self.clone()
         }
     }
 
     /// Late-bound by the executor.
     pub fn with_client_pool(&self, client_pool: Arc<dyn BallistaClientPool>) -> Self {
         Self {
-            stage_id: self.stage_id,
-            schema: self.schema.clone(),
-            partition: self.partition.clone(),
-            merge_ordering: self.merge_ordering.clone(),
-            metrics: self.metrics.clone(),
-            properties: self.properties.clone(),
-            work_dir: self.work_dir.clone(),
             client_pool: Some(client_pool),
+            ..self.clone()
         }
     }
 
@@ -181,12 +224,24 @@ impl DisplayAs for RangeShuffleReaderExec {
                     self.stage_id,
                     self.partition.len(),
                     self.merge_ordering,
-                )
+                )?;
+                if let Some(fetch) = self.fetch {
+                    write!(f, ", fetch: {fetch}")?;
+                }
+                match &self.bounds {
+                    Some(bounds) => write!(f, ", bounds: {}", render_bounds(bounds))?,
+                    None => write!(f, ", bounds: none")?,
+                }
+                Ok(())
             }
             DisplayFormatType::TreeRender => {
                 writeln!(f, "upstream_stage={}", self.stage_id)?;
                 writeln!(f, "output_partitions={}", self.partition.len())?;
-                writeln!(f, "ordering={}", self.merge_ordering)
+                writeln!(f, "ordering={}", self.merge_ordering)?;
+                if let Some(fetch) = self.fetch {
+                    writeln!(f, "fetch={fetch}")?;
+                }
+                Ok(())
             }
         }
     }
@@ -231,14 +286,8 @@ impl ExecutionPlan for RangeShuffleReaderExec {
             ));
         }
         Ok(Arc::new(Self {
-            stage_id: self.stage_id,
-            schema: self.schema.clone(),
-            partition: self.partition.clone(),
-            merge_ordering: self.merge_ordering.clone(),
             metrics: ExecutionPlanMetricsSet::new(),
-            properties: self.properties.clone(),
-            work_dir: self.work_dir.clone(),
-            client_pool: self.client_pool.clone(),
+            ..self.as_ref().clone()
         }))
     }
 
@@ -270,9 +319,34 @@ impl ExecutionPlan for RangeShuffleReaderExec {
         let mut sub_streams: Vec<SendableRecordBatchStream> =
             Vec::with_capacity(local_locations.len() + remote_locations.len());
 
+        // The range this output partition covers, when the scheduler had cuts
+        // to give. Sources carrying an index are read down to the batches that
+        // can hold a row in it; everything else is read whole.
+        let bound = self
+            .bounds
+            .as_ref()
+            .and_then(|bounds| bounds.get(output_partition));
+
         for loc in local_locations {
-            let stream = fetch_partition_local(work_dir, &loc)
+            let path = loc
+                .path(work_dir)
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            // Narrowing needs a range to narrow to and a source that can be
+            // seeked, and the source itself is what says whether it can: an IPC
+            // stream has no footer, so asking one to seek fails rather than
+            // degrading. Nothing configures this — the file answers it.
+            let stream = match bound.filter(|_| is_ipc_file(path.as_path())) {
+                Some((lo, hi)) => {
+                    let reader =
+                        open_ipc_file_range(path.as_path(), lo.as_ref(), hi.as_ref())
+                            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                    let schema = self.schema.clone();
+                    Box::pin(LocalShuffleStream::new(reader, schema))
+                        as SendableRecordBatchStream
+                }
+                None => fetch_partition_local(work_dir, &loc)
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?,
+            };
             sub_streams.push(stream);
         }
 
@@ -281,7 +355,14 @@ impl ExecutionPlan for RangeShuffleReaderExec {
                 Arc::new((&config.ballista_config()).into());
             let customize_endpoint =
                 config.ballista_override_create_grpc_client_endpoint();
-            let prefer_flight = config.ballista_shuffle_reader_remote_prefer_flight();
+            // The `IO_BLOCK_TRANSPORT` action ships raw file bytes for the
+            // client to decode with a `StreamDecoder`, which only speaks the
+            // IPC stream format. This reader's sources come from
+            // `RangeShuffleWriterExec`, which writes the IPC file format, so
+            // they have to come back decoded over `do_get`. Teaching block
+            // transport a byte range is what lets these reads use it again,
+            // and is the same mechanism a remote seek needs.
+            let prefer_flight = true;
             let client_pool = self.client_pool.clone();
 
             for loc in remote_locations {
@@ -294,15 +375,36 @@ impl ExecutionPlan for RangeShuffleReaderExec {
                 // remote fetch; subsequent polls stream batches directly. No
                 // buffering, no retry — task-level retry covers transport
                 // failures.
+                //
+                // With a range to narrow to, the fetch is two round trips —
+                // index, then the bytes it points at — and the searching
+                // happens here so the executor stays a byte server.
+                let bound = bound.cloned();
+                let fetch_schema = schema.clone();
                 let lazy = futures::stream::once(async move {
-                    fetch_partition_remote(
-                        &loc,
-                        grpc_config,
-                        prefer_flight,
-                        customize_endpoint,
-                        client_pool,
-                    )
-                    .await
+                    match bound {
+                        Some(bound) => {
+                            fetch_range_remote(
+                                &loc,
+                                bound,
+                                fetch_schema,
+                                grpc_config,
+                                customize_endpoint,
+                                client_pool,
+                            )
+                            .await
+                        }
+                        None => {
+                            fetch_partition_remote(
+                                &loc,
+                                grpc_config,
+                                prefer_flight,
+                                customize_endpoint,
+                                client_pool,
+                            )
+                            .await
+                        }
+                    }
                     .map_err(|e| DataFusionError::External(Box::new(e)))
                 })
                 .try_flatten();
@@ -330,11 +432,25 @@ impl ExecutionPlan for RangeShuffleReaderExec {
             .with_schema(self.schema.clone())
             .with_expressions(&self.merge_ordering)
             .with_batch_size(config.batch_size())
+            .with_fetch(self.fetch)
             .with_metrics(baseline)
             .with_reservation(reservation)
             .build()?;
 
         Ok(merged)
+    }
+
+    fn fetch(&self) -> Option<usize> {
+        self.fetch
+    }
+
+    /// Output is sorted on `merge_ordering`, so the first `n` rows can only
+    /// come from the first `n` of each input.
+    fn with_fetch(&self, limit: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
+        Some(Arc::new(Self {
+            fetch: limit,
+            ..self.clone()
+        }))
     }
 
     fn metrics(&self) -> Option<datafusion::physical_plan::metrics::MetricsSet> {
@@ -371,6 +487,7 @@ mod tests {
     use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
     use datafusion::prelude::SessionContext;
     use std::fs::{File, create_dir_all};
     use tempfile::tempdir;
@@ -548,6 +665,35 @@ mod tests {
         let stream = reader.execute(0, ctx.task_ctx()).unwrap();
         let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
         assert!(batches.is_empty());
+    }
+
+    /// A limit must survive a rebuild, or the merge quietly goes back to
+    /// reading everything.
+    #[test]
+    fn fetch_roundtrips_through_with_fetch() {
+        use datafusion::physical_plan::ExecutionPlan;
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let merge_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+            Arc::new(Column::new("v", 0)),
+        )])
+        .unwrap();
+        let reader =
+            RangeShuffleReaderExec::try_new(3, vec![vec![]; 4], schema, merge_ordering)
+                .unwrap();
+        assert_eq!(reader.fetch(), None, "reader starts unlimited");
+
+        let limited = ExecutionPlan::with_fetch(&reader, Some(20))
+            .expect("RangeShuffleReaderExec must accept a pushed-down limit");
+        assert_eq!(limited.fetch(), Some(20));
+
+        let rebuilt = Arc::clone(&limited)
+            .replace_children(
+                vec![],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .expect("rebuild");
+        assert_eq!(rebuilt.fetch(), Some(20), "fetch must survive a rebuild");
     }
 
     /// The reader must advertise its merge ordering so downstream operators

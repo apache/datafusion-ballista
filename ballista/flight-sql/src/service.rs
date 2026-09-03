@@ -44,7 +44,9 @@ use arrow_flight::{
 use ballista_core::error::BallistaError;
 use ballista_core::flight_proxy_service::BallistaFlightProxyService;
 use ballista_core::serde::protobuf::PartitionLocation;
-use ballista_core::serde::scheduler::Action as BallistaAction;
+use ballista_core::serde::scheduler::{
+    Action as BallistaAction, ShuffleFileKind, ShuffleLayout,
+};
 use ballista_core::serde::{decode_protobuf, protobuf};
 use datafusion::logical_expr::{DdlStatement, LogicalPlan};
 use datafusion::prelude::SessionContext;
@@ -361,7 +363,18 @@ fn partition_handle(
         host: executor.host,
         port: executor.port as u16,
         file_id: location.file_id,
-        is_sort_shuffle: location.is_sort_shuffle,
+        // Mirrors `PartitionLocation::layout()`. We map the protobuf message
+        // directly rather than going through its `TryInto`, because that
+        // conversion also requires `partition_stats`, which a partition fetch
+        // does not need.
+        layout: if location.is_sort_shuffle {
+            ShuffleLayout::Sort
+        } else {
+            ShuffleLayout::Passthrough
+        },
+        // A Flight client wants the whole partition: the data file, in full.
+        file_kind: ShuffleFileKind::Data,
+        byte_ranges: vec![],
     };
 
     let encoded: protobuf::Action = action.try_into()?;
@@ -825,7 +838,9 @@ mod test {
             host: "executor".to_string(),
             port: 50051,
             file_id: None,
-            is_sort_shuffle: false,
+            layout: ShuffleLayout::Passthrough,
+            file_kind: ShuffleFileKind::Data,
+            byte_ranges: vec![],
         };
         let encoded: protobuf::Action = action.try_into().unwrap();
         let bytes = encoded.encode_to_vec();
