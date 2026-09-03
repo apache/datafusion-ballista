@@ -39,7 +39,7 @@ pub const BALLISTA_VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// Zero is reserved as the proto-default "unset" value, produced by executors
 /// that predate this field — it never matches a real scheduler version.
-pub const BALLISTA_PROTOCOL_VERSION: u32 = 2;
+pub const BALLISTA_PROTOCOL_VERSION: u32 = 3;
 
 /// Prints the current Ballista version to stdout.
 pub fn print_version() {
@@ -68,8 +68,6 @@ pub mod client;
 pub mod client_pool;
 /// Configuration options and settings for Ballista components.
 pub mod config;
-/// Utilities for generating execution plan diagrams.
-pub mod diagram;
 /// Error types and result definitions for Ballista operations.
 pub mod error;
 /// Event loop infrastructure for asynchronous message processing.

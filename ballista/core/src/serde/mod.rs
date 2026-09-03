@@ -27,6 +27,10 @@ use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::Extension;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion_proto::logical_plan::file_formats::{
+    ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
+    JsonLogicalExtensionCodec, ParquetLogicalExtensionCodec,
+};
 use datafusion_proto::physical_plan::from_proto::parse_physical_sort_exprs;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
@@ -55,9 +59,9 @@ use crate::execution_plans::{
     BufferExec, BufferMode, ChaosExec, CoalescePlan, FinalizedPartitionState, InputOrder,
     OrderedRangeRepartitionExec, PartitionGroup, PartitionedBoundedWindowAggExec,
     PerPartitionFilterExec, PrefixMergeExec, RangeFilterExec, RangeShuffleReaderExec,
-    RuntimeStatsExec, ScalarOp, ShuffleReaderExec, ShuffleWriterExec,
-    SortShuffleWriterExec, UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
-    WindowApply,
+    RangeShuffleWriterExec, RuntimeStatsExec, ScalarOp, ShuffleReaderExec,
+    ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
+    UnresolvedShuffleExec, WindowApply,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -188,12 +192,49 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, 
 #[derive(Debug)]
 pub struct BallistaLogicalExtensionCodec {
     default_codec: Arc<dyn LogicalExtensionCodec>,
+    file_format_codecs: Vec<Arc<dyn LogicalExtensionCodec>>,
+}
+
+impl BallistaLogicalExtensionCodec {
+    /// looks for a codec which can operate on this node
+    /// returns a position of codec in the list and result.
+    ///
+    /// position is important with encoding process
+    /// as position of used codecs is needed
+    /// so the same codec can be used for decoding
+    fn try_any<R>(
+        &self,
+        mut f: impl FnMut(&dyn LogicalExtensionCodec) -> Result<R>,
+    ) -> Result<(u32, R)> {
+        let mut last_err = None;
+        for (position, codec) in self.file_format_codecs.iter().enumerate() {
+            match f(codec.as_ref()) {
+                Ok(result) => return Ok((position as u32, result)),
+                Err(err) => last_err = Some(err),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            DataFusionError::Internal(
+                "List of provided extended logical codecs is empty".to_owned(),
+            )
+        }))
+    }
 }
 
 impl Default for BallistaLogicalExtensionCodec {
     fn default() -> Self {
         Self {
             default_codec: Arc::new(DefaultLogicalExtensionCodec {}),
+            // Position in this list is important as it will be used for decoding.
+            // If new codec is added it should go to last position.
+            file_format_codecs: vec![
+                Arc::new(ParquetLogicalExtensionCodec {}),
+                Arc::new(CsvLogicalExtensionCodec {}),
+                Arc::new(JsonLogicalExtensionCodec {}),
+                Arc::new(ArrowLogicalExtensionCodec {}),
+                Arc::new(AvroLogicalExtensionCodec {}),
+            ],
         }
     }
 }
@@ -282,7 +323,17 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         buf: &[u8],
         ctx: &TaskContext,
     ) -> Result<Arc<dyn datafusion::datasource::file_format::FileFormatFactory>> {
-        self.default_codec.try_decode_file_format(buf, ctx)
+        let proto = FileFormatProto::decode(buf)
+            .map_err(|e| DataFusionError::Internal(e.to_string()))?;
+
+        let codec = self
+            .file_format_codecs
+            .get(proto.encoder_position as usize)
+            .ok_or(DataFusionError::Internal(
+                "Can't find required codec in file codec list".to_owned(),
+            ))?;
+
+        codec.try_decode_file_format(&proto.blob, ctx)
     }
 
     fn try_encode_file_format(
@@ -290,7 +341,17 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         buf: &mut Vec<u8>,
         node: Arc<dyn datafusion::datasource::file_format::FileFormatFactory>,
     ) -> Result<()> {
-        self.default_codec.try_encode_file_format(buf, node)
+        let mut blob = vec![];
+        let (encoder_position, _) =
+            self.try_any(|codec| codec.try_encode_file_format(&mut blob, node.clone()))?;
+
+        let proto = FileFormatProto {
+            encoder_position,
+            blob,
+        };
+        proto
+            .encode(buf)
+            .map_err(|e| DataFusionError::Internal(e.to_string()))
     }
 }
 
@@ -493,6 +554,24 @@ fn decode_scalar_op(op: protobuf::ScalarOpNode) -> ScalarOp {
     }
 }
 
+/// Decode a `ScalarValue` carried on a Ballista physical plan node.
+fn scalar_from_proto(
+    proto: &datafusion_proto_common::ScalarValue,
+) -> Result<datafusion::scalar::ScalarValue, DataFusionError> {
+    datafusion::scalar::ScalarValue::try_from(proto).map_err(|e| {
+        DataFusionError::Internal(format!("failed to decode ScalarValue: {e:?}"))
+    })
+}
+
+/// Encode a `ScalarValue` for a Ballista physical plan node.
+fn scalar_to_proto(
+    value: &datafusion::scalar::ScalarValue,
+) -> Result<datafusion_proto_common::ScalarValue, DataFusionError> {
+    datafusion_proto_common::ScalarValue::try_from(value).map_err(|e| {
+        DataFusionError::Internal(format!("failed to encode ScalarValue: {e:?}"))
+    })
+}
+
 impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
     fn try_decode(
         &self,
@@ -536,6 +615,16 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // this is intentional but hacky - the executor will fill this in
+                )?))
+            }
+            PhysicalPlanType::RangeShuffleWriter(range_shuffle_writer) => {
+                let input = inputs[0].clone();
+
+                Ok(Arc::new(RangeShuffleWriterExec::try_new(
+                    range_shuffle_writer.job_id.clone().into(),
+                    range_shuffle_writer.stage_id as usize,
+                    input,
+                    "".to_string(), // the executor fills the work dir in
                 )?))
             }
             PhysicalPlanType::SortShuffleWriter(sort_shuffle_writer) => {
@@ -674,10 +763,29 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     partition_location,
                     schema,
                     merge_ordering,
-                )?;
-                Ok(Arc::new(
-                    reader.with_fetch_limit(range_reader.fetch.map(|f| f as usize)),
-                ))
+                )?
+                .with_fetch_limit(range_reader.fetch.map(|f| f as usize));
+
+                // Empty means the scheduler had no cuts to give, which is a
+                // reader that reads its sources whole — not a reader whose
+                // every partition covers nothing.
+                let reader = if range_reader.bounds.is_empty() {
+                    reader
+                } else {
+                    let bounds = range_reader
+                        .bounds
+                        .iter()
+                        .map(|bound| {
+                            let lo =
+                                bound.lo.as_ref().map(scalar_from_proto).transpose()?;
+                            let hi =
+                                bound.hi.as_ref().map(scalar_from_proto).transpose()?;
+                            Ok::<_, DataFusionError>((lo, hi))
+                        })
+                        .collect::<Result<Vec<_>, DataFusionError>>()?;
+                    reader.with_bounds(bounds)?
+                };
+                Ok(Arc::new(reader))
             }
             PhysicalPlanType::UnresolvedShuffle(unresolved_shuffle) => {
                 let schema: SchemaRef =
@@ -881,31 +989,24 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         })
                     }
                 });
-                let sv_from_proto = |p: &datafusion_proto_common::ScalarValue| {
-                    datafusion::scalar::ScalarValue::try_from(p).map_err(|e| {
-                        DataFusionError::Internal(format!(
-                            "RangeFilterExec: failed to decode ScalarValue: {e:?}"
-                        ))
-                    })
-                };
                 let halo_lo_proto = node.halo_lo.as_ref().ok_or_else(|| {
                     DataFusionError::Internal(
                         "RangeFilterExecNode missing halo_lo".into(),
                     )
                 })?;
-                let halo_lo = sv_from_proto(halo_lo_proto)?;
+                let halo_lo = scalar_from_proto(halo_lo_proto)?;
                 let halo_hi_proto = node.halo_hi.as_ref().ok_or_else(|| {
                     DataFusionError::Internal(
                         "RangeFilterExecNode missing halo_hi".into(),
                     )
                 })?;
-                let halo_hi = sv_from_proto(halo_hi_proto)?;
+                let halo_hi = scalar_from_proto(halo_hi_proto)?;
                 let raw_bounds = node
                     .raw_bounds
                     .iter()
                     .map(|b| {
-                        let lo = b.lo.as_ref().map(sv_from_proto).transpose()?;
-                        let hi = b.hi.as_ref().map(sv_from_proto).transpose()?;
+                        let lo = b.lo.as_ref().map(scalar_from_proto).transpose()?;
+                        let hi = b.hi.as_ref().map(scalar_from_proto).transpose()?;
                         Ok::<_, DataFusionError>((lo, hi))
                     })
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
@@ -969,6 +1070,24 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode shuffle writer execution plan: {e:?}"
+                ))
+            })?;
+
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<RangeShuffleWriterExec>() {
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::RangeShuffleWriter(
+                    protobuf::RangeShuffleWriterExecNode {
+                        job_id: exec.job_id().to_string(),
+                        stage_id: exec.stage_id() as u32,
+                        input: None,
+                    },
+                )),
+            };
+
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode range shuffle writer execution plan: {e:?}"
                 ))
             })?;
 
@@ -1093,6 +1212,16 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         schema: Some(exec.schema().as_ref().try_into()?),
                         merge_ordering,
                         fetch: exec.fetch().map(|f| f as u64),
+                        bounds: exec
+                            .bounds()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|(lo, hi)| {
+                                let lo = lo.as_ref().map(scalar_to_proto).transpose()?;
+                                let hi = hi.as_ref().map(scalar_to_proto).transpose()?;
+                                Ok::<_, DataFusionError>(protobuf::RangeBound { lo, hi })
+                            })
+                            .collect::<Result<Vec<_>, DataFusionError>>()?,
                     },
                 )),
             };
@@ -1282,20 +1411,13 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     exec.filter_expr(),
                     self.default_codec.as_ref(),
                 )?;
-            let encode_sv = |sv: &datafusion::scalar::ScalarValue| {
-                datafusion_proto_common::ScalarValue::try_from(sv).map_err(|e| {
-                    DataFusionError::Internal(format!(
-                        "failed to encode RangeFilterExec ScalarValue: {e:?}"
-                    ))
-                })
-            };
-            let halo_lo = encode_sv(exec.halo_lo())?;
-            let halo_hi = encode_sv(exec.halo_hi())?;
+            let halo_lo = scalar_to_proto(exec.halo_lo())?;
+            let halo_hi = scalar_to_proto(exec.halo_hi())?;
             let raw_bounds_proto = raw_bounds
                 .iter()
                 .map(|(lo, hi)| {
-                    let lo = lo.as_ref().map(&encode_sv).transpose()?;
-                    let hi = hi.as_ref().map(&encode_sv).transpose()?;
+                    let lo = lo.as_ref().map(&scalar_to_proto).transpose()?;
+                    let hi = hi.as_ref().map(&scalar_to_proto).transpose()?;
                     Ok::<_, DataFusionError>(protobuf::RangeBound { lo, hi })
                 })
                 .collect::<Result<Vec<_>, DataFusionError>>()?;
@@ -1360,6 +1482,25 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             )))
         }
     }
+}
+
+/// FileFormatProto captures data encoded by file format codecs
+///
+/// it captures position of codec used to encode FileFormat
+/// and actual encoded value.
+///
+/// capturing codec position is required, as same codec can decode
+/// blobs encoded by different encoders (probability is low but  it
+/// happened in the past)
+///
+#[derive(Clone, PartialEq, prost::Message)]
+struct FileFormatProto {
+    /// encoder id used to encode blob
+    /// (to be used for decoding)
+    #[prost(uint32, tag = 1)]
+    pub encoder_position: u32,
+    #[prost(bytes, tag = 2)]
+    pub blob: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -2802,5 +2943,61 @@ mod test {
         assert_eq!(order_by.len(), 1, "ORDER BY must round-trip");
         assert_eq!(order_by[0].expr.to_string(), sort_expr.expr.to_string());
         assert_eq!(decoded.output_partitions(), 8, "K must round-trip");
+    }
+
+    /// Cross-version wire compatibility for `CopyTo` file formats.
+    ///
+    /// Ballista <= 54 encodes a file format as `FileFormatProto { encoder_position, blob }`,
+    /// where `encoder_position` indexes `[Parquet, Csv, Json, Arrow, Avro]`. Released clients
+    /// on the 54 crates talk to schedulers built from this branch, so the decoder has to keep
+    /// understanding those bytes.
+    ///
+    /// This is deliberately independent of the production `FileFormatProto`: it re-declares the
+    /// legacy layout locally, so a future change to how Ballista encodes file formats fails here
+    /// instead of silently mis-decoding. `file_format_serialization_roundtrip` cannot catch that,
+    /// because it encodes and decodes with the same codec and so passes for any self-consistent
+    /// encoding. See #2376, where delegating to DataFusion's codec made position 0 (Parquet)
+    /// decode as `FILE_FORMAT_KIND_UNSPECIFIED` and position 3 (Arrow) decode as Parquet.
+    #[tokio::test]
+    async fn decodes_file_format_bytes_from_a_54_client() {
+        /// The pre-#2348 on-the-wire layout, declared here so the test does not depend on the
+        /// production type.
+        #[derive(Clone, PartialEq, prost::Message)]
+        struct LegacyFileFormatProto {
+            #[prost(uint32, tag = 1)]
+            pub encoder_position: u32,
+            #[prost(bytes, tag = 2)]
+            pub blob: Vec<u8>,
+        }
+
+        let codec = BallistaLogicalExtensionCodec::default();
+        let ctx = SessionContext::new().task_ctx();
+
+        // Position -> the extension the decoded factory must report. Avro (position 4) is
+        // omitted: DataFusion's `AvroLogicalExtensionCodec::try_decode_file_format` returns an
+        // `ArrowFormatFactory` in both 54 and 55, which is an upstream bug unrelated to this.
+        for (encoder_position, expected_ext) in
+            [(0u32, "parquet"), (1, "csv"), (2, "json"), (3, "arrow")]
+        {
+            let mut buf = Vec::new();
+            LegacyFileFormatProto {
+                encoder_position,
+                blob: Vec::new(),
+            }
+            .encode(&mut buf)
+            .unwrap();
+
+            let factory = codec
+                .try_decode_file_format(&buf, &ctx)
+                .unwrap_or_else(|e| {
+                    panic!("position {encoder_position} must still decode, got {e}")
+                });
+
+            assert_eq!(
+                factory.get_ext(),
+                expected_ext,
+                "position {encoder_position} must decode as {expected_ext}"
+            );
+        }
     }
 }

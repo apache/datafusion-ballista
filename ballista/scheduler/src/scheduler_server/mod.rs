@@ -159,41 +159,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name.clone(),
             config.clone(),
         ));
-        #[cfg(feature = "rest-api")]
-        let event_log = config.event_log_dir.as_ref().map(|dir| {
-            ballista_history::writer::EventLogWriter::new(
-                std::path::PathBuf::from(dir),
-                config.event_loop_buffer_size as usize,
-            )
-        });
-        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
-            state.clone(),
-            metrics_collector,
-            config.clone(),
-            #[cfg(feature = "rest-api")]
-            event_log,
-        ));
-        let query_stage_event_loop = EventLoop::new(
-            "query_stage".to_owned(),
-            config.event_loop_buffer_size as usize,
-            query_stage_scheduler.clone(),
-        );
 
-        let generator = config
-            .job_id_generator
-            .clone()
-            .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
-
-        Self {
-            scheduler_name,
-            start_time: timestamp_millis() as u128,
-            state,
-            query_stage_event_loop,
-            #[cfg(feature = "rest-api")]
-            query_stage_scheduler,
-            config,
-            generator,
-        }
+        Self::from_state(scheduler_name, state, config, metrics_collector)
     }
 
     /// Creates a new `SchedulerServer` with a custom task launcher.
@@ -213,6 +180,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             config.clone(),
             task_launcher,
         ));
+
+        Self::from_state(scheduler_name, state, config, metrics_collector)
+    }
+
+    fn from_state(
+        scheduler_name: String,
+        state: Arc<SchedulerState<T, U>>,
+        config: Arc<SchedulerConfig>,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+    ) -> Self {
         #[cfg(feature = "rest-api")]
         let event_log = config.event_log_dir.as_ref().map(|dir| {
             ballista_history::writer::EventLogWriter::new(

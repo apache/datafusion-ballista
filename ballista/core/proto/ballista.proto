@@ -60,6 +60,7 @@ message BallistaPhysicalPlanNode {
     RangeShuffleReaderExecNode range_shuffle_reader = 12;
     RangeFilterExecNode range_filter = 13;
     PrefixMergeExecNode prefix_merge = 14;
+    RangeShuffleWriterExecNode range_shuffle_writer = 15;
   }
 }
 
@@ -320,6 +321,15 @@ message SortShuffleWriterExecNode {
   optional uint64 memory_limit_per_task_bytes = 9;
 }
 
+// Passthrough shuffle writer that emits the seekable Arrow IPC file format.
+// Carries no output partitioning: like `ShuffleWriterExecNode`'s passthrough
+// case it writes its input's partitioning through, one file per partition.
+message RangeShuffleWriterExecNode {
+  string job_id = 1;
+  uint32 stage_id = 2;
+  datafusion.PhysicalPlanNode input = 3;
+}
+
 message UnresolvedShuffleExecNode {
   uint32 stage_id = 1;
   datafusion_common.Schema schema = 2;
@@ -359,6 +369,11 @@ message RangeShuffleReaderExecNode {
   repeated datafusion.PhysicalSortExprNode merge_ordering = 4;
   // Row limit pushed down by a consuming merge. Absent means read everything.
   optional uint64 fetch = 5;
+  // Half-open value range each output partition covers, halo already applied.
+  // One per output partition, or empty when the scheduler had no cuts. Lets
+  // the reader skip the parts of an indexed source that cannot hold a row the
+  // partition wants; the consuming RangeFilterExec still does the exact trim.
+  repeated RangeBound bounds = 6;
 }
 
 // CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
@@ -507,6 +522,32 @@ message ExecutePartition {
   datafusion.PhysicalHashRepartition output_partitioning = 6;
 }
 
+// How a shuffle writer laid its output out on disk. Selects the path shape,
+// and with it how a client parses the index beside the data. It says nothing
+// about the framing of the bytes inside the data file.
+enum ShuffleLayout {
+  // {stage_id}/{partition_id}/data-{file_id}.arrow — one file per output
+  // partition, written by the passthrough and range writers.
+  SHUFFLE_LAYOUT_PASSTHROUGH = 0;
+  // {stage_id}/{file_id}/data.arrow — one file per task holding every
+  // partition, written by the sort-based writer.
+  SHUFFLE_LAYOUT_SORT = 1;
+}
+
+// Which of the files making up a shuffle output is being asked for. Which
+// index sits beside the data, and how to read it, follows from the layout, so
+// it is not spelled out here.
+enum ShuffleFileKind {
+  SHUFFLE_FILE_KIND_DATA = 0;
+  SHUFFLE_FILE_KIND_INDEX = 1;
+}
+
+// A half-open byte range of a file: `[offset, offset + length)`.
+message ByteRange {
+  uint64 offset = 1;
+  uint64 length = 2;
+}
+
 message FetchPartition {
   string job_id = 1;
   uint32 stage_id = 2;
@@ -514,11 +555,32 @@ message FetchPartition {
   string host = 5;
   uint32 port = 6;
   optional uint64 file_id = 7;
-  bool is_sort_shuffle = 8;
-  
+  // How the producing writer laid its output out, which is what turns the
+  // identifiers above into a path.
+  ShuffleLayout layout = 9;
+  // Which file beside that partition to serve.
+  ShuffleFileKind file_kind = 10;
+  // Ranges to return, concatenated in request order, as absolute offsets into
+  // the file.
+  //
+  // Empty asks for whatever the identifiers above address. Under the sort
+  // layout that is the named partition's slice, which the executor resolves
+  // through its own index — one round trip, as it has always been. Under the
+  // passthrough layout it is the whole file.
+  //
+  // With ranges given the executor serves bytes and nothing else: no index
+  // read, no comparison, no notion of what a range means. That is what a
+  // consumer needs against object storage, where there is no executor to ask,
+  // and it is why the range shuffle's index carries byte offsets at all.
+  repeated ByteRange byte_ranges = 11;
+
   // reserved after removing deprecated `path`.
   reserved 4;
   reserved "path";
+  // reserved after `is_sort_shuffle` became `layout`: the bool selected a path
+  // shape, which reads as data-vs-index once a file_kind exists beside it.
+  reserved 8;
+  reserved "is_sort_shuffle";
 }
 
 message PartitionLocation {
