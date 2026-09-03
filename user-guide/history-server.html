@@ -410,9 +410,13 @@ to:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>ballista-scheduler<span class="w"> </span>--event-log-dir<span class="w"> </span>/var/lib/ballista/history
 </pre></div>
 </div>
-<p>The scheduler writes one file per job, <code class="docutils literal notranslate"><span class="pre">&lt;job_id&gt;.eventlog</span></code>, in
-<a class="reference external" href="https://jsonlines.org/">JSON Lines</a> format. Files are appended as the job runs
-and closed when it reaches a terminal state.</p>
+<p>The scheduler writes one file per job, in
+<a class="reference external" href="https://jsonlines.org/">JSON Lines</a> format. While the job runs, records are
+appended to <code class="docutils literal notranslate"><span class="pre">&lt;job_id&gt;.eventlog.running</span></code>; when it reaches a terminal state
+(succeeds, fails, or is cancelled) the scheduler flushes, closes, and renames
+the file to <code class="docutils literal notranslate"><span class="pre">&lt;job_id&gt;.eventlog</span></code>. Only <code class="docutils literal notranslate"><span class="pre">.eventlog</span></code> files are ever indexed by
+the history server, so the <code class="docutils literal notranslate"><span class="pre">.running</span></code> suffix alone marks a job as not yet
+ready to read.</p>
 <p>Writes happen on a background task, so the scheduler’s event loop never waits on
 disk. If the queue backs up, progress records are dropped rather than allowed to
 stall scheduling. The terminal record is the exception: it waits for queue
@@ -505,11 +509,18 @@ future UI can show a job progressing rather than only its end state.</p>
 <li><p><strong>Disk is not reclaimed automatically.</strong> Logs accumulate until you remove
 them. Size them against your job volume and prune with whatever you already
 use for log rotation.</p></li>
-<li><p><strong>A corrupt log is skipped, not fatal.</strong> If the scheduler dies mid-write the
-affected file simply has no terminal record, so the history server ignores it
-and still serves every other job. Damage confined to a job’s stored responses
-is only found when that job is opened, and shows up as a failed request for
-that one job.</p></li>
+<li><p><strong>A crash mid-job leaves a <code class="docutils literal notranslate"><span class="pre">.running</span></code> file, never listed.</strong> If the scheduler
+dies (or is killed) before a job finishes, the file stays named
+<code class="docutils literal notranslate"><span class="pre">&lt;job_id&gt;.eventlog.running</span></code> and the history server excludes it by name alone
+without ever opening it. A restarted scheduler has no persisted memory of
+the job and will never write to, rename, or otherwise touch that file again,
+so a leftover <code class="docutils literal notranslate"><span class="pre">.running</span></code> file is permanently orphaned — safe (and necessary,
+since nothing does it automatically) to remove during routine log pruning,
+like any other stale log. This is also a directly visible signal, via <code class="docutils literal notranslate"><span class="pre">ls</span></code>,
+that a job never finished cleanly, with no need to open and inspect it.
+Damage confined to a job’s stored responses in an already-<code class="docutils literal notranslate"><span class="pre">.eventlog</span></code>-named
+file is a separate, orthogonal case: it is only found when that job is
+opened, and shows up as a failed request for that one job.</p></li>
 <li><p><strong>Deleting a log takes up to one rescan to show.</strong> Until the next pass the
 job is still listed, and opening it fails.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/jobs</span></code> returns every job in one response.</strong> There is no paging
