@@ -87,6 +87,10 @@ def main() -> int:
         with conn.cursor() as cur:
             # DDL is executed on the scheduler and registers the table in this
             # connection's catalog.
+            # Unauthenticated clients share one session, so a scheduler that
+            # has already run this example still has the table registered.
+            cur.execute("DROP TABLE IF EXISTS test")
+            cur.fetch_arrow_table()
             cur.execute(
                 f"""
                 CREATE EXTERNAL TABLE test
@@ -95,6 +99,7 @@ def main() -> int:
                 OPTIONS ('format.has_header' 'true')
                 """
             )
+            cur.fetch_arrow_table()
 
             # This query is planned by the scheduler and executed across the
             # cluster; results stream back through the scheduler, one Flight

@@ -244,6 +244,11 @@ def main():
             location = table_location(args.path, table, args.format)
             print(f"Registering table {table} at {location}")
             with conn.cursor() as cursor:
+                # Unauthenticated clients share one session, so a scheduler that
+                # has already served this benchmark still has the tables. Drop
+                # them first, or the second run dies on "already exists".
+                cursor.execute(f"DROP TABLE IF EXISTS {table}")
+                cursor.fetch_arrow_table()
                 cursor.execute(create_table_sql(table, location, args.format))
                 cursor.fetch_arrow_table()
 
