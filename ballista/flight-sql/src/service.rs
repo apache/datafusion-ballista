@@ -44,9 +44,7 @@ use arrow_flight::{
 use ballista_core::error::BallistaError;
 use ballista_core::flight_proxy_service::BallistaFlightProxyService;
 use ballista_core::serde::protobuf::PartitionLocation;
-use ballista_core::serde::scheduler::{
-    Action as BallistaAction, ShuffleFileKind, ShuffleLayout,
-};
+use ballista_core::serde::scheduler::{Action as BallistaAction, ShuffleFileKind};
 use ballista_core::serde::{decode_protobuf, protobuf};
 use datafusion::logical_expr::{DdlStatement, LogicalPlan};
 use datafusion::prelude::SessionContext;
@@ -66,7 +64,7 @@ use crate::ticket::StatementHandle;
 ///
 /// Anonymous clients cannot be told apart, so they necessarily share catalog
 /// state. Configure an [`Authenticator`] to get a session per connection.
-const ANONYMOUS_SESSION: &str = "flight-sql-anonymous";
+pub const ANONYMOUS_SESSION: &str = "flight-sql-anonymous";
 
 /// How long a session, prepared statement, or unredeemed local result may sit
 /// idle before it is discarded.
@@ -93,7 +91,6 @@ pub struct BallistaFlightSqlService<B: QueryBackend> {
     store: Arc<SessionStore>,
     sql_info: SqlInfoData,
     xdbc_info: XdbcTypeInfoData,
-    advertised_endpoint: Option<String>,
 }
 
 impl<B: QueryBackend> BallistaFlightSqlService<B> {
@@ -122,7 +119,6 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
             store,
             sql_info: metadata::sql_info(),
             xdbc_info: metadata::xdbc_type_info(),
-            advertised_endpoint: None,
         }
     }
 
@@ -130,35 +126,6 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
     /// unauthenticated clients share a single session.
     pub fn with_authenticator(mut self, auth: Arc<dyn Authenticator>) -> Self {
         self.auth = auth;
-        self
-    }
-
-    /// Overrides the idle TTL for sessions, prepared statements, and
-    /// unredeemed results.
-    pub fn with_session_ttl(mut self, ttl: Duration) -> Self {
-        self.store = Arc::new(SessionStore::new(ttl));
-
-        let backend = self.backend.clone();
-        self.store.spawn_reaper(REAP_INTERVAL, move |session_id| {
-            let backend = backend.clone();
-            async move {
-                if let Err(e) = backend.close_session(&session_id).await {
-                    log::warn!("flight-sql: failed to close session {session_id}: {e}");
-                }
-            }
-        });
-
-        self
-    }
-
-    /// Sets the `grpc://host:port` clients should dial to redeem tickets.
-    ///
-    /// Leave this unset unless clients cannot reach the address they used to
-    /// call `GetFlightInfo`. Endpoints with no location tell the client to
-    /// reuse its existing connection, which is what makes the frontend work
-    /// unchanged behind a load balancer or an ingress.
-    pub fn with_advertised_endpoint(mut self, endpoint: Option<String>) -> Self {
-        self.advertised_endpoint = endpoint;
         self
     }
 
@@ -183,17 +150,35 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
         }
     }
 
-    async fn session_context(
+    /// Returns the context for `session_id`, building it on first use.
+    ///
+    /// The cache is what makes a session a session: [`QueryBackend::session`]
+    /// builds a fresh `SessionContext` every call, so without it a table
+    /// created by one request would be invisible to the next — and every
+    /// request would pay for a full DataFusion session to be constructed.
+    async fn open_session(
         &self,
-        metadata: &MetadataMap,
-    ) -> Result<(String, Arc<SessionContext>), Status> {
-        let session_id = self.session_id(metadata)?;
+        session_id: &str,
+    ) -> Result<Arc<SessionContext>, Status> {
+        if let Some(ctx) = self.store.context(session_id) {
+            return Ok(ctx);
+        }
+
         let ctx = self
             .backend
-            .session(&session_id)
+            .session(session_id)
             .await
             .map_err(|e| Status::internal(format!("failed to open session: {e}")))?;
-        Ok((session_id, ctx))
+
+        Ok(self.store.insert_context(session_id.to_string(), ctx))
+    }
+
+    /// Resolves a request to the context it should be planned against.
+    async fn context(
+        &self,
+        metadata: &MetadataMap,
+    ) -> Result<Arc<SessionContext>, Status> {
+        self.open_session(&self.session_id(metadata)?).await
     }
 
     /// Plans `sql` against the session's catalog.
@@ -212,11 +197,11 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
         descriptor: FlightDescriptor,
         job_name: &str,
     ) -> Result<FlightInfo, Status> {
-        if let Some(reason) = unsupported_reason(&plan) {
+        if let Disposition::Unsupported(reason) = disposition(&plan) {
             return Err(Status::unimplemented(reason));
         }
 
-        if runs_on_scheduler(&plan) {
+        if disposition(&plan) == Disposition::RunOnScheduler {
             let (schema, batches) = execute_locally(&ctx, plan).await?;
             let handle = Uuid::new_v4().to_string();
             self.store.insert_result(
@@ -227,7 +212,7 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
                 },
             );
 
-            let endpoint = self.endpoint(StatementHandle::Local(handle));
+            let endpoint = Self::endpoint(StatementHandle::Local(handle));
             return build_flight_info(&schema, vec![endpoint], descriptor);
         }
 
@@ -240,9 +225,7 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
         let endpoints = result
             .partitions
             .into_iter()
-            .map(|location| {
-                partition_handle(location).map(|handle| self.endpoint(handle))
-            })
+            .map(|location| partition_handle(location).map(Self::endpoint))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| Status::internal(format!("invalid partition location: {e}")))?;
 
@@ -255,20 +238,19 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
         build_flight_info(&result.schema, endpoints, descriptor)
     }
 
-    fn endpoint(&self, handle: StatementHandle) -> FlightEndpoint {
+    /// Builds the endpoint a client redeems for one slice of the result.
+    ///
+    /// Endpoints carry no location, which Flight defines as "fetch from the
+    /// server that gave you this FlightInfo". That keeps every cluster-internal
+    /// address off the wire and lets the frontend work unchanged behind NAT, a
+    /// load balancer, or an ingress.
+    fn endpoint(handle: StatementHandle) -> FlightEndpoint {
         let ticket = TicketStatementQuery {
             statement_handle: handle.encode().into(),
         };
-        let endpoint = FlightEndpoint::new().with_ticket(Ticket {
+        FlightEndpoint::new().with_ticket(Ticket {
             ticket: ticket.as_any().encode_to_vec().into(),
-        });
-
-        match &self.advertised_endpoint {
-            Some(location) => endpoint.with_location(location.clone()),
-            // No location means "fetch from the server that gave you this
-            // FlightInfo", so no cluster-internal address ever reaches a client.
-            None => endpoint,
-        }
+        })
     }
 
     /// Serves a metadata command by round-tripping the command itself as the
@@ -285,38 +267,44 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
     }
 }
 
-/// Statements the scheduler executes itself rather than distributing.
-///
-/// DDL mutates the session catalog and produces no data, and `SET`-style
-/// statements only touch session config; shipping either to executors would be
-/// meaningless.
-///
-/// Check [`unsupported_reason`] first: `CREATE TABLE AS SELECT` is also DDL,
-/// but running it here would quietly execute its query on a single node.
-fn runs_on_scheduler(plan: &LogicalPlan) -> bool {
-    matches!(plan, LogicalPlan::Ddl(_) | LogicalPlan::Statement(_))
+/// What the frontend should do with a planned statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Disposition {
+    /// Execute on the scheduler: it mutates session state and produces no data
+    /// worth distributing.
+    RunOnScheduler,
+    /// Submit to the cluster.
+    Distribute,
+    /// Refuse, with an explanation for the client.
+    Unsupported(&'static str),
 }
 
-/// Explains why a plan cannot be served, or `None` if it can.
-fn unsupported_reason(plan: &LogicalPlan) -> Option<&'static str> {
+/// Classifies a plan.
+///
+/// One function rather than two predicates, because the interesting cases are
+/// the ones where the answers overlap: `CREATE TABLE AS SELECT` is DDL, and
+/// DDL runs on the scheduler, so a caller that asked "is this DDL?" before
+/// asking "is this supported?" would silently execute its query on one node.
+/// Returning a single verdict makes that ordering impossible to get wrong.
+fn disposition(plan: &LogicalPlan) -> Disposition {
     match plan {
-        LogicalPlan::Dml(_) => Some(
+        LogicalPlan::Dml(_) => Disposition::Unsupported(
             "Ballista Flight SQL does not support INSERT/UPDATE/DELETE; \
              the distributed write path is not implemented",
         ),
-        LogicalPlan::Copy(_) => Some(
+        LogicalPlan::Copy(_) => Disposition::Unsupported(
             "Ballista Flight SQL does not support COPY; \
              the distributed write path is not implemented",
         ),
-        // CTAS reaches us as DDL, and DDL runs on the scheduler. Executing the
-        // query part there would silently give up distribution on exactly the
-        // kind of statement a user runs over a large table.
-        LogicalPlan::Ddl(DdlStatement::CreateMemoryTable(_)) => Some(
+        LogicalPlan::Ddl(DdlStatement::CreateMemoryTable(_)) => Disposition::Unsupported(
             "Ballista Flight SQL does not support CREATE TABLE AS SELECT, \
              because it would execute on the scheduler rather than the cluster; \
              use CREATE EXTERNAL TABLE over data the executors can read",
         ),
-        _ => None,
+        // Other DDL only edits the session catalog, and `SET`-style statements
+        // only edit session config; neither has anything to distribute.
+        LogicalPlan::Ddl(_) | LogicalPlan::Statement(_) => Disposition::RunOnScheduler,
+        _ => Disposition::Distribute,
     }
 }
 
@@ -349,6 +337,7 @@ async fn execute_locally(
 fn partition_handle(
     location: PartitionLocation,
 ) -> Result<StatementHandle, BallistaError> {
+    let layout = location.layout();
     let partition_id = location.partition_id.ok_or_else(|| {
         BallistaError::Internal("partition location has no partition id".to_string())
     })?;
@@ -363,15 +352,7 @@ fn partition_handle(
         host: executor.host,
         port: executor.port as u16,
         file_id: location.file_id,
-        // Mirrors `PartitionLocation::layout()`. We map the protobuf message
-        // directly rather than going through its `TryInto`, because that
-        // conversion also requires `partition_stats`, which a partition fetch
-        // does not need.
-        layout: if location.is_sort_shuffle {
-            ShuffleLayout::Sort
-        } else {
-            ShuffleLayout::Passthrough
-        },
+        layout,
         // A Flight client wants the whole partition: the data file, in full.
         file_kind: ShuffleFileKind::Data,
         byte_ranges: vec![],
@@ -392,6 +373,11 @@ fn build_flight_info(
         .map(|info| info.with_descriptor(descriptor).with_endpoints(endpoints))
 }
 
+/// Streams a single metadata batch back to the client.
+fn one_batch_response(batch: RecordBatch) -> Response<DoGetStream> {
+    batch_response(batch.schema(), vec![batch])
+}
+
 fn batch_response(schema: SchemaRef, batches: Vec<RecordBatch>) -> Response<DoGetStream> {
     let stream = FlightDataEncoderBuilder::new()
         .with_schema(schema)
@@ -407,6 +393,10 @@ fn bearer_token(metadata: &MetadataMap) -> Option<String> {
         .strip_prefix("Bearer ")
         .or_else(|| value.strip_prefix("bearer "))
         .map(str::to_string)
+}
+
+fn invalid_ticket(e: impl std::fmt::Display) -> Status {
+    Status::invalid_argument(format!("invalid ticket: {e}"))
 }
 
 fn query_failed(e: BallistaError) -> Status {
@@ -437,12 +427,10 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
         let token = Uuid::new_v4().to_string();
         let session_id = format!("flight-sql-{}", Uuid::new_v4());
 
-        // Create the session eagerly so a failure surfaces at handshake time
-        // rather than on the client's first query.
-        self.backend
-            .session(&session_id)
-            .await
-            .map_err(|e| Status::internal(format!("failed to open session: {e}")))?;
+        // Build the session eagerly so a failure surfaces at handshake time
+        // rather than on the client's first query, and so the first query does
+        // not pay for it.
+        self.open_session(&session_id).await?;
         self.store.insert_session(token.clone(), session_id.clone());
 
         log::debug!(
@@ -477,8 +465,7 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
         request: Request<Ticket>,
         _message: Any,
     ) -> Result<Response<DoGetStream>, Status> {
-        decode_protobuf(&request.get_ref().ticket)
-            .map_err(|e| Status::invalid_argument(format!("unrecognized ticket: {e}")))?;
+        decode_protobuf(&request.get_ref().ticket).map_err(invalid_ticket)?;
         self.proxy.do_get(request).await
     }
 
@@ -487,7 +474,7 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
         query: CommandStatementQuery,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        let (_, ctx) = self.session_context(request.metadata()).await?;
+        let ctx = self.context(request.metadata()).await?;
         let plan = Self::plan(&ctx, &query.query).await?;
         let descriptor = request.into_inner();
 
@@ -506,11 +493,7 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
             Status::not_found("unknown or expired prepared statement handle")
         })?;
 
-        let ctx = self
-            .backend
-            .session(&prepared.session_id)
-            .await
-            .map_err(|e| Status::internal(format!("failed to open session: {e}")))?;
+        let ctx = self.open_session(&prepared.session_id).await?;
         let descriptor = request.into_inner();
 
         self.flight_info_for(ctx, prepared.plan, descriptor, "flight-sql prepared")
@@ -577,8 +560,8 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
         ticket: TicketStatementQuery,
         _request: Request<Ticket>,
     ) -> Result<Response<DoGetStream>, Status> {
-        let handle = StatementHandle::decode(&ticket.statement_handle)
-            .map_err(|e| Status::invalid_argument(format!("invalid ticket: {e}")))?;
+        let handle =
+            StatementHandle::decode(&ticket.statement_handle).map_err(invalid_ticket)?;
 
         match handle {
             StatementHandle::Partition(action) => {
@@ -605,9 +588,8 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
         query: CommandGetCatalogs,
         request: Request<Ticket>,
     ) -> Result<Response<DoGetStream>, Status> {
-        let (_, ctx) = self.session_context(request.metadata()).await?;
-        let (schema, batches) = metadata::one(metadata::catalogs(&ctx, query)?);
-        Ok(batch_response(schema, batches))
+        let ctx = self.context(request.metadata()).await?;
+        Ok(one_batch_response(metadata::catalogs(&ctx, query)?))
     }
 
     async fn do_get_schemas(
@@ -615,9 +597,8 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
         query: CommandGetDbSchemas,
         request: Request<Ticket>,
     ) -> Result<Response<DoGetStream>, Status> {
-        let (_, ctx) = self.session_context(request.metadata()).await?;
-        let (schema, batches) = metadata::one(metadata::db_schemas(&ctx, query)?);
-        Ok(batch_response(schema, batches))
+        let ctx = self.context(request.metadata()).await?;
+        Ok(one_batch_response(metadata::db_schemas(&ctx, query)?))
     }
 
     async fn do_get_tables(
@@ -625,9 +606,8 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
         query: CommandGetTables,
         request: Request<Ticket>,
     ) -> Result<Response<DoGetStream>, Status> {
-        let (_, ctx) = self.session_context(request.metadata()).await?;
-        let (schema, batches) = metadata::one(metadata::tables(&ctx, query).await?);
-        Ok(batch_response(schema, batches))
+        let ctx = self.context(request.metadata()).await?;
+        Ok(one_batch_response(metadata::tables(&ctx, query).await?))
     }
 
     async fn do_get_table_types(
@@ -635,8 +615,7 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
         query: CommandGetTableTypes,
         _request: Request<Ticket>,
     ) -> Result<Response<DoGetStream>, Status> {
-        let (schema, batches) = metadata::one(metadata::table_types(query)?);
-        Ok(batch_response(schema, batches))
+        Ok(one_batch_response(metadata::table_types(query)?))
     }
 
     async fn do_get_sql_info(
@@ -648,8 +627,7 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
             .into_builder(&self.sql_info)
             .build()
             .map_err(|e| Status::internal(format!("failed to build SqlInfo: {e}")))?;
-        let (schema, batches) = metadata::one(batch);
-        Ok(batch_response(schema, batches))
+        Ok(one_batch_response(batch))
     }
 
     async fn do_get_xdbc_type_info(
@@ -661,8 +639,7 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
             .into_builder(&self.xdbc_info)
             .build()
             .map_err(|e| Status::internal(format!("failed to build type info: {e}")))?;
-        let (schema, batches) = metadata::one(batch);
-        Ok(batch_response(schema, batches))
+        Ok(one_batch_response(batch))
     }
 
     async fn do_put_statement_update(
@@ -670,17 +647,20 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
         ticket: CommandStatementUpdate,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<i64, Status> {
-        let (_, ctx) = self.session_context(request.metadata()).await?;
+        let ctx = self.context(request.metadata()).await?;
         let plan = Self::plan(&ctx, &ticket.query).await?;
 
-        if let Some(reason) = unsupported_reason(&plan) {
-            return Err(Status::unimplemented(reason));
-        }
-        if !runs_on_scheduler(&plan) {
-            return Err(Status::unimplemented(
-                "Ballista Flight SQL supports DDL and session statements on this path; \
-                 the distributed write path is not implemented",
-            ));
+        match disposition(&plan) {
+            Disposition::RunOnScheduler => {}
+            Disposition::Unsupported(reason) => {
+                return Err(Status::unimplemented(reason));
+            }
+            Disposition::Distribute => {
+                return Err(Status::unimplemented(
+                    "Ballista Flight SQL supports DDL and session statements on this \
+                     path; the distributed write path is not implemented",
+                ));
+            }
         }
 
         execute_locally(&ctx, plan).await?;
@@ -694,7 +674,8 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
         query: ActionCreatePreparedStatementRequest,
         request: Request<Action>,
     ) -> Result<ActionCreatePreparedStatementResult, Status> {
-        let (session_id, ctx) = self.session_context(request.metadata()).await?;
+        let session_id = self.session_id(request.metadata())?;
+        let ctx = self.open_session(&session_id).await?;
         let plan = Self::plan(&ctx, &query.query).await?;
         let schema = plan.schema().as_arrow().clone();
 
@@ -772,22 +753,17 @@ fn job_id_from_flight_info(info: &[u8]) -> Result<String, Status> {
         .and_then(|endpoint| endpoint.ticket.as_ref())
         .ok_or_else(|| Status::invalid_argument("FlightInfo carries no endpoint"))?;
 
-    let any = Any::decode(&*ticket.ticket)
-        .map_err(|e| Status::invalid_argument(format!("invalid ticket: {e}")))?;
-    let statement: TicketStatementQuery = any
+    let statement: TicketStatementQuery = Any::decode(&*ticket.ticket)
+        .map_err(invalid_ticket)?
         .unpack()
-        .map_err(|e| Status::invalid_argument(format!("invalid ticket: {e}")))?
+        .map_err(invalid_ticket)?
         .ok_or_else(|| Status::invalid_argument("ticket is not a statement ticket"))?;
 
-    match StatementHandle::decode(&statement.statement_handle)
-        .map_err(|e| Status::invalid_argument(format!("invalid ticket: {e}")))?
-    {
+    match StatementHandle::decode(&statement.statement_handle).map_err(invalid_ticket)? {
         StatementHandle::Partition(action) => {
-            match decode_protobuf(&action)
-                .map_err(|e| Status::invalid_argument(format!("invalid ticket: {e}")))?
-            {
-                BallistaAction::FetchPartition { job_id, .. } => Ok(job_id.to_string()),
-            }
+            let BallistaAction::FetchPartition { job_id, .. } =
+                decode_protobuf(&action).map_err(invalid_ticket)?;
+            Ok(job_id.to_string())
         }
         StatementHandle::Local(_) => Err(Status::invalid_argument(
             "this query did not run on the cluster and cannot be cancelled",
@@ -838,7 +814,7 @@ mod test {
             host: "executor".to_string(),
             port: 50051,
             file_id: None,
-            layout: ShuffleLayout::Passthrough,
+            layout: Default::default(),
             file_kind: ShuffleFileKind::Data,
             byte_ranges: vec![],
         };
@@ -856,16 +832,15 @@ mod test {
     }
 
     #[test]
-    fn ddl_runs_on_the_scheduler_and_writes_are_refused() {
+    fn plain_ddl_runs_on_the_scheduler() {
         use datafusion::common::DFSchema;
-        use datafusion::logical_expr::{DdlStatement, DropTable};
+        use datafusion::logical_expr::DropTable;
 
         let drop = LogicalPlan::Ddl(DdlStatement::DropTable(DropTable {
             name: "t".into(),
             if_exists: false,
             schema: Arc::new(DFSchema::empty()),
         }));
-        assert!(runs_on_scheduler(&drop));
-        assert!(unsupported_reason(&drop).is_none());
+        assert_eq!(disposition(&drop), Disposition::RunOnScheduler);
     }
 }

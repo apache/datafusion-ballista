@@ -175,7 +175,7 @@ impl FlightService for BallistaFlightProxyService {
     }
 }
 
-fn from_ballista_err(e: &crate::error::BallistaError) -> Status {
+fn from_ballista_err(e: &BallistaError) -> Status {
     Status::internal(format!("Ballista Error: {e:?}"))
 }
 

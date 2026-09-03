@@ -143,17 +143,19 @@ pub async fn start_grpc_service_with_listener<
     let mut tonic_builder = RoutesBuilder::default();
     tonic_builder.add_service(scheduler_grpc_server);
 
+    let max_decoding = config.grpc_server_max_decoding_message_size as usize;
+    let max_encoding = config.grpc_server_max_encoding_message_size as usize;
+
     // Wrap the endpoint override function in BallistaConfigGrpcEndpoint
     let customize_endpoint = config
         .override_create_grpc_client_endpoint
         .clone()
         .map(|f| Arc::new(BallistaConfigGrpcEndpoint::new(f)));
 
-    // `BallistaFlightProxyService::new` takes decoding before encoding; these sizes
-    // configure the proxy's own client to the executors.
+    // These sizes configure the proxy's own client to the executors.
     let flight_proxy = BallistaFlightProxyService::new(
-        config.grpc_server_max_decoding_message_size as usize,
-        config.grpc_server_max_encoding_message_size as usize,
+        max_decoding,
+        max_encoding,
         config.use_tls,
         customize_endpoint,
     );
@@ -164,36 +166,34 @@ pub async fn start_grpc_service_with_listener<
     // `arrow.flight.protocol.FlightService`, so at most one can be mounted.
     // The frontend subsumes the proxy: its `do_get_fallback` forwards Ballista's
     // own partition-fetch tickets, so Ballista clients keep working either way.
-    #[cfg(feature = "flight-sql")]
-    let flight_sql_enabled = config.flight_sql;
-    #[cfg(not(feature = "flight-sql"))]
-    let flight_sql_enabled = false;
+    let flight_sql_enabled = config.flight_sql_enabled();
 
     #[cfg(feature = "flight-sql")]
     if flight_sql_enabled {
-        let flight_sql = ballista_flight_sql::BallistaFlightSqlService::new(
+        let mut flight_sql = ballista_flight_sql::BallistaFlightSqlService::new(
             scheduler.clone(),
             flight_proxy.clone(),
         );
+
+        if let Some(authenticator) = config.override_flight_sql_authenticator.clone() {
+            flight_sql = flight_sql.with_authenticator(authenticator);
+        }
 
         if flight_sql.allows_anonymous() {
             log::warn!(
                 "Arrow Flight SQL is enabled with no authenticator: any client that can \
                  reach the scheduler port can run queries, and unauthenticated clients \
-                 share a single session. Supply an authenticator or restrict network \
-                 access before using this outside a trusted network."
+                 share a single session. Set \
+                 SchedulerConfig::with_flight_sql_authenticator, or restrict network \
+                 access, before using this outside a trusted network."
             );
         }
 
         info!("Adding Arrow Flight SQL service on scheduler");
         tonic_builder.add_service(
             FlightServiceServer::new(flight_sql)
-                .max_decoding_message_size(
-                    config.grpc_server_max_decoding_message_size as usize,
-                )
-                .max_encoding_message_size(
-                    config.grpc_server_max_encoding_message_size as usize,
-                ),
+                .max_decoding_message_size(max_decoding)
+                .max_encoding_message_size(max_encoding),
         );
     }
 
@@ -201,12 +201,8 @@ pub async fn start_grpc_service_with_listener<
         info!("Adding embedded flight proxy service on scheduler");
         tonic_builder.add_service(
             FlightServiceServer::new(flight_proxy)
-                .max_decoding_message_size(
-                    config.grpc_server_max_decoding_message_size as usize,
-                )
-                .max_encoding_message_size(
-                    config.grpc_server_max_encoding_message_size as usize,
-                ),
+                .max_decoding_message_size(max_decoding)
+                .max_encoding_message_size(max_encoding),
         );
     }
 

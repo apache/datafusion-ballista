@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
+use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::sql::server::FlightSqlService;
 use arrow_flight::sql::{
     ActionCreatePreparedStatementRequest, Any, CommandGetCatalogs, CommandGetTables,
@@ -44,7 +45,8 @@ use ballista_core::serde::scheduler::{
 };
 use ballista_flight_sql::backend::{QueryBackend, QueryResult};
 use ballista_flight_sql::{
-    AnonymousAuthenticator, Authenticator, BallistaFlightSqlService, Identity,
+    ANONYMOUS_SESSION, AnonymousAuthenticator, Authenticator, BallistaFlightSqlService,
+    Identity,
 };
 use dashmap::DashMap;
 use datafusion::arrow::array::RecordBatch;
@@ -170,13 +172,7 @@ fn ticket_for(info: &FlightInfo, index: usize) -> Request<Ticket> {
     Request::new(info.endpoint[index].ticket.clone().expect("ticket"))
 }
 
-/// The `DoGetStream` the `FlightSqlService` trait produces.
-type DoGetStream = std::pin::Pin<
-    Box<
-        dyn futures::Stream<Item = std::result::Result<arrow_flight::FlightData, Status>>
-            + Send,
-    >,
->;
+type DoGetStream = <BallistaFlightSqlService<StubBackend> as FlightService>::DoGetStream;
 
 async fn collect(response: tonic::Response<DoGetStream>) -> Vec<RecordBatch> {
     let stream = response
@@ -198,14 +194,10 @@ async fn register_table(backend: &StubBackend, session_id: &str) {
         .unwrap();
 }
 
-/// The session an unauthenticated client lands in, per the frontend's
-/// documented behaviour.
-const ANONYMOUS: &str = "flight-sql-anonymous";
-
 #[tokio::test]
 async fn select_produces_one_endpoint_per_partition_with_no_location() {
     let backend = Arc::new(StubBackend::default());
-    register_table(&backend, ANONYMOUS).await;
+    register_table(&backend, ANONYMOUS_SESSION).await;
     let service = make_service(backend.clone());
 
     let info = service
@@ -270,7 +262,7 @@ async fn ddl_runs_on_the_scheduler_and_its_result_is_single_use() {
     assert!(backend.executed.is_empty());
 
     // The schema really was created in the session the client will query.
-    let ctx = backend.session(ANONYMOUS).await.unwrap();
+    let ctx = backend.session(ANONYMOUS_SESSION).await.unwrap();
     assert!(
         ctx.catalog("datafusion")
             .unwrap()
@@ -299,7 +291,7 @@ async fn ddl_runs_on_the_scheduler_and_its_result_is_single_use() {
 #[tokio::test]
 async fn writes_are_refused_rather_than_run_on_the_scheduler() {
     let backend = Arc::new(StubBackend::default());
-    register_table(&backend, ANONYMOUS).await;
+    register_table(&backend, ANONYMOUS_SESSION).await;
     let service = make_service(backend.clone());
 
     let err = service
@@ -322,7 +314,7 @@ async fn writes_are_refused_rather_than_run_on_the_scheduler() {
 #[tokio::test]
 async fn ctas_is_refused_rather_than_run_on_one_node() {
     let backend = Arc::new(StubBackend::default());
-    register_table(&backend, ANONYMOUS).await;
+    register_table(&backend, ANONYMOUS_SESSION).await;
     let service = make_service(backend.clone());
 
     let err = expect_err(
@@ -340,7 +332,7 @@ async fn ctas_is_refused_rather_than_run_on_one_node() {
 
     assert_eq!(err.code(), tonic::Code::Unimplemented);
 
-    let ctx = backend.session(ANONYMOUS).await.unwrap();
+    let ctx = backend.session(ANONYMOUS_SESSION).await.unwrap();
     assert!(
         !ctx.table_exist("big").unwrap(),
         "the refused statement must not have taken effect"
@@ -350,7 +342,7 @@ async fn ctas_is_refused_rather_than_run_on_one_node() {
 #[tokio::test]
 async fn catalog_metadata_reflects_the_session() {
     let backend = Arc::new(StubBackend::default());
-    register_table(&backend, ANONYMOUS).await;
+    register_table(&backend, ANONYMOUS_SESSION).await;
     let service = make_service(backend.clone());
 
     let command = CommandGetTables {
@@ -388,7 +380,7 @@ async fn catalog_metadata_reflects_the_session() {
 #[tokio::test]
 async fn prepared_statements_are_planned_once_and_expire_on_close() {
     let backend = Arc::new(StubBackend::default());
-    register_table(&backend, ANONYMOUS).await;
+    register_table(&backend, ANONYMOUS_SESSION).await;
     let service = make_service(backend.clone());
 
     let prepared = service
@@ -477,7 +469,7 @@ async fn the_default_service_allows_anonymous_access() {
 #[tokio::test]
 async fn cancelling_a_query_reaches_the_backend() {
     let backend = Arc::new(StubBackend::default());
-    register_table(&backend, ANONYMOUS).await;
+    register_table(&backend, ANONYMOUS_SESSION).await;
     let service = make_service(backend.clone());
 
     let info = service
@@ -593,7 +585,7 @@ async fn sessions_are_isolated_per_token() -> std::result::Result<(), BallistaEr
 
     // The anonymous session and a handshake session are different sessions, so
     // a table registered in one is invisible to the other.
-    register_table(&backend, ANONYMOUS).await;
+    register_table(&backend, ANONYMOUS_SESSION).await;
     let other = backend.session("some-other-session").await?;
     assert!(other.table_exist("people").is_ok_and(|exists| !exists));
 

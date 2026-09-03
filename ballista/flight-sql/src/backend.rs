@@ -15,14 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! The transport-neutral contract between the Flight SQL frontend and whatever
-//! actually runs the query.
+//! The contract between the Flight SQL frontend and whatever runs the query.
 //!
-//! The frontend never touches scheduler internals. It plans SQL against a
-//! [`SessionContext`] the backend hands it, submits the resulting
-//! [`LogicalPlan`], and turns the returned partition locations into Flight
-//! endpoints. `ballista-scheduler` provides the only implementation today
-//! (behind its `flight-sql` feature); embedders can provide their own.
+//! This exists to invert a dependency, not to abstract over transports: the
+//! frontend crate has to sit *below* `ballista-scheduler` so the scheduler can
+//! mount it, which means it cannot name `SchedulerServer`. The scheduler
+//! implements this trait instead, behind its `flight-sql` feature. Coupling to
+//! scheduler internals is what made the pre-46.0.0 implementation
+//! unmaintainable, so the trait is the boundary that keeps it from coming back.
+//!
+//! The frontend plans SQL against a [`SessionContext`] the backend hands it,
+//! submits the resulting [`LogicalPlan`], and turns the returned partition
+//! locations into Flight endpoints.
 
 use std::sync::Arc;
 

@@ -161,13 +161,15 @@ gRPC; put a TLS-terminating proxy in front of it if you need encryption.
 The frontend has no built-in credentials. Ballista's default authenticator
 accepts every handshake, which is why the startup warning exists.
 
-To require authentication, implement
-`ballista_flight_sql::Authenticator` and supply it when constructing the
-service. Because the trait sees the request metadata, HTTP Basic credentials
-(the Flight convention) and bearer tokens both work:
+To require authentication, implement `ballista_flight_sql::Authenticator` and
+pass it to the scheduler through `SchedulerConfig`. Because the trait sees the
+request metadata, HTTP Basic credentials (the Flight convention) and bearer
+tokens both work:
 
 ```rust
+use std::sync::Arc;
 use ballista_flight_sql::{Authenticator, Identity};
+use ballista_scheduler::config::SchedulerConfig;
 use tonic::{Status, metadata::MetadataMap};
 
 struct MyAuth;
@@ -179,6 +181,10 @@ impl Authenticator for MyAuth {
         Ok(Identity::user("alice"))
     }
 }
+
+let config = SchedulerConfig::default()
+    .with_flight_sql(true)
+    .with_flight_sql_authenticator(Arc::new(MyAuth));
 ```
 
 With an authenticator installed, clients must complete the Flight handshake and

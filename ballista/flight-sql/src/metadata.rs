@@ -22,8 +22,6 @@
 //! hand-built record batches, so what a driver sees in its schema browser is
 //! what a query in the same session can actually reference.
 
-use std::sync::Arc;
-
 use arrow::array::RecordBatch;
 use arrow_flight::sql::metadata::{
     GetCatalogsBuilder, GetDbSchemasBuilder, GetTablesBuilder, SqlInfoData,
@@ -232,19 +230,12 @@ fn flight_to_status(e: arrow_flight::error::FlightError) -> Status {
     Status::internal(format!("failed to build metadata result: {e}"))
 }
 
-/// Convenience for the callers above, which all need the batch as a
-/// single-element vector.
-pub(crate) fn one(
-    batch: RecordBatch,
-) -> (Arc<arrow::datatypes::Schema>, Vec<RecordBatch>) {
-    (batch.schema(), vec![batch])
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::empty::EmptyTable;
+    use std::sync::Arc;
 
     fn ctx_with_table() -> SessionContext {
         let ctx = SessionContext::new();

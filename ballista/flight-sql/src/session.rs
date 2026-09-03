@@ -30,6 +30,7 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use dashmap::DashMap;
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::prelude::SessionContext;
 
 /// A prepared statement's server-side state.
 #[derive(Clone)]
@@ -37,7 +38,7 @@ pub(crate) struct Prepared {
     /// Session the statement was prepared in; it is planned and executed
     /// against that session's catalog.
     pub session_id: String,
-    /// The plan as prepared. Re-planned on execution only if absent.
+    /// The plan as prepared; execution never re-plans it.
     pub plan: LogicalPlan,
 }
 
@@ -69,6 +70,8 @@ pub(crate) struct SessionStore {
     ttl: Duration,
     /// Bearer token -> Ballista session id.
     sessions: DashMap<String, Tracked<String>>,
+    /// Ballista session id -> its context.
+    contexts: DashMap<String, Tracked<Arc<SessionContext>>>,
     /// Prepared statement handle -> prepared plan.
     prepared: DashMap<String, Tracked<Prepared>>,
     /// Local result handle -> materialized batches.
@@ -80,6 +83,7 @@ impl SessionStore {
         Self {
             ttl,
             sessions: DashMap::new(),
+            contexts: DashMap::new(),
             prepared: DashMap::new(),
             results: DashMap::new(),
         }
@@ -97,16 +101,38 @@ impl SessionStore {
         })
     }
 
-    /// Drops a token, returning the session it pointed at if no other token
-    /// still references that session.
+    /// Drops a token and the session it named, returning that session id.
+    ///
+    /// Each token gets its own session, so removing the token always releases
+    /// the session with it.
     pub(crate) fn remove_session(&self, token: &str) -> Option<String> {
         let (_, entry) = self.sessions.remove(token)?;
-        let session_id = entry.value;
-        let still_referenced = self
-            .sessions
-            .iter()
-            .any(|other| other.value().value == session_id);
-        (!still_referenced).then_some(session_id)
+        self.contexts.remove(&entry.value);
+        Some(entry.value)
+    }
+
+    /// Returns the cached context for a session, refreshing its idle timer.
+    pub(crate) fn context(&self, session_id: &str) -> Option<Arc<SessionContext>> {
+        self.contexts.get_mut(session_id).map(|mut entry| {
+            entry.last_used = Instant::now();
+            entry.value.clone()
+        })
+    }
+
+    /// Caches a context, or returns the one another caller cached first.
+    ///
+    /// Two requests for a cold session can both build one; letting the first
+    /// insertion win keeps them looking at the same catalog.
+    pub(crate) fn insert_context(
+        &self,
+        session_id: String,
+        ctx: Arc<SessionContext>,
+    ) -> Arc<SessionContext> {
+        self.contexts
+            .entry(session_id)
+            .or_insert_with(|| Tracked::new(ctx))
+            .value
+            .clone()
     }
 
     pub(crate) fn insert_prepared(&self, handle: String, prepared: Prepared) {
@@ -153,6 +179,8 @@ impl SessionStore {
             }
         }
 
+        self.contexts
+            .retain(|_, entry| entry.last_used.elapsed() <= ttl);
         self.prepared
             .retain(|_, entry| entry.last_used.elapsed() <= ttl);
         self.results
@@ -206,13 +234,29 @@ mod test {
     }
 
     #[test]
-    fn session_is_released_only_when_its_last_token_goes() {
+    fn dropping_a_token_drops_its_cached_context() {
         let store = SessionStore::new(Duration::from_secs(60));
-        store.insert_session("a".to_string(), "session".to_string());
-        store.insert_session("b".to_string(), "session".to_string());
+        store.insert_session("token".to_string(), "session".to_string());
+        store.insert_context("session".to_string(), Arc::new(SessionContext::new()));
 
-        assert_eq!(store.remove_session("a"), None);
-        assert_eq!(store.remove_session("b"), Some("session".to_string()));
+        assert_eq!(store.remove_session("token"), Some("session".to_string()));
+        assert!(store.context("session").is_none());
+    }
+
+    #[test]
+    fn the_first_cached_context_wins() {
+        let store = SessionStore::new(Duration::from_secs(60));
+        let first = Arc::new(SessionContext::new());
+        let second = Arc::new(SessionContext::new());
+
+        let kept = store.insert_context("session".to_string(), first.clone());
+        assert!(Arc::ptr_eq(&kept, &first));
+
+        let kept = store.insert_context("session".to_string(), second);
+        assert!(
+            Arc::ptr_eq(&kept, &first),
+            "a later caller must not swap it"
+        );
     }
 
     #[test]

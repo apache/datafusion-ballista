@@ -32,10 +32,13 @@ use std::time::Duration;
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_flight::sql::{CommandGetTables, SqlInfo};
 use ballista_core::config::TaskSchedulingPolicy;
-use ballista_core::error::{BallistaError, Result};
+use ballista_core::error::BallistaError;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
-use ballista_core::utils::{default_config_producer, default_session_builder};
+use ballista_core::utils::{
+    GrpcClientConfig, create_grpc_client_connection, default_config_producer,
+    default_session_builder,
+};
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::SchedulerConfig;
 use ballista_scheduler::metrics::default_metrics_collector;
@@ -45,6 +48,11 @@ use datafusion::arrow::array::RecordBatch;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use futures::TryStreamExt;
 use tonic::transport::Channel;
+
+/// Test errors are only ever printed, and the client, transport, and Ballista
+/// error types all implement `Error` — so one boxed type spares every call site
+/// a `map_err`.
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Boots a scheduler serving Flight SQL plus one executor, and returns the
 /// scheduler's URL.
@@ -95,19 +103,41 @@ async fn connect_with_retry(url: &str) -> Result<SchedulerGrpcClient<Channel>> {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    Err(BallistaError::General(format!(
-        "scheduler at {url} did not come up"
-    )))
+    Err(BallistaError::General(format!("scheduler at {url} did not come up")).into())
 }
 
-async fn flight_sql_client(url: &str) -> Result<FlightSqlServiceClient<Channel>> {
-    let channel = Channel::from_shared(url.to_string())
-        .map_err(|e| BallistaError::General(e.to_string()))?
-        .connect()
-        .await
-        .map_err(|e| BallistaError::General(e.to_string()))?;
+/// Connects a Flight SQL client, authenticates, and registers a `people` table
+/// for it to query.
+///
+/// The `TempDir` is returned because it owns the CSV the table points at; drop
+/// it and the executors have nothing to read.
+async fn client_with_people(
+    url: &str,
+) -> Result<(FlightSqlServiceClient<Channel>, tempfile::TempDir)> {
+    let channel =
+        create_grpc_client_connection(url.to_string(), &GrpcClientConfig::default())
+            .await?;
+    let mut client = FlightSqlServiceClient::new(channel);
+    client.handshake("anonymous", "").await?;
 
-    Ok(FlightSqlServiceClient::new(channel))
+    let csv = tempfile::tempdir()?;
+    let path = csv.path().join("data.csv");
+    std::fs::write(&path, "id,name\n1,alice\n2,bob\n3,carol\n")?;
+    let path = path.to_string_lossy();
+
+    // DDL runs on the scheduler and registers into the session catalog.
+    let info = client
+        .execute(
+            format!(
+                "CREATE EXTERNAL TABLE people STORED AS CSV LOCATION '{path}' \
+                 OPTIONS ('format.has_header' 'true')"
+            ),
+            None,
+        )
+        .await?;
+    collect(&mut client, info).await?;
+
+    Ok((client, csv))
 }
 
 /// Collects every endpoint of a `FlightInfo`, which is what a real client does
@@ -121,61 +151,32 @@ async fn collect(
         let ticket = endpoint
             .ticket
             .ok_or_else(|| BallistaError::General("endpoint has no ticket".into()))?;
-        let stream = client
-            .do_get(ticket)
-            .await
-            .map_err(|e| BallistaError::General(e.to_string()))?;
-        let mut collected: Vec<RecordBatch> = stream
-            .try_collect()
-            .await
-            .map_err(|e| BallistaError::General(e.to_string()))?;
+        let mut collected: Vec<RecordBatch> =
+            client.do_get(ticket).await?.try_collect().await?;
         batches.append(&mut collected);
     }
     Ok(batches)
 }
 
-fn write_csv(dir: &tempfile::TempDir) -> Result<String> {
-    let path = dir.path().join("data.csv");
-    std::fs::write(&path, "id,name\n1,alice\n2,bob\n3,carol\n")?;
-    Ok(path.to_string_lossy().to_string())
+/// Total rows across every batch a query returned.
+fn row_count(batches: &[RecordBatch]) -> usize {
+    batches.iter().map(|b| b.num_rows()).sum()
 }
 
 /// The headline path: authenticate, register a table with DDL, run a query
 /// that the cluster actually distributes, and read the results back through
 /// the scheduler.
 #[tokio::test]
-async fn flight_sql_runs_a_distributed_query() -> Result<()> {
+async fn flight_sql_runs_a_distributed_query() -> Result {
     let url = start_cluster().await?;
-    let mut client = flight_sql_client(&url).await?;
-
-    client
-        .handshake("anonymous", "")
-        .await
-        .map_err(|e| BallistaError::General(format!("handshake failed: {e}")))?;
-
-    let csv = tempfile::tempdir()?;
-    let path = write_csv(&csv)?;
-
-    // DDL runs on the scheduler and registers into the session catalog.
-    let info = client
-        .execute(
-            format!(
-                "CREATE EXTERNAL TABLE people STORED AS CSV LOCATION '{path}' \
-                 OPTIONS ('format.has_header' 'true')"
-            ),
-            None,
-        )
-        .await
-        .map_err(|e| BallistaError::General(format!("create table failed: {e}")))?;
-    collect(&mut client, info).await?;
+    let (mut client, _csv) = client_with_people(&url).await?;
 
     let info = client
         .execute(
             "SELECT name FROM people WHERE id > 1 ORDER BY name".to_string(),
             None,
         )
-        .await
-        .map_err(|e| BallistaError::General(format!("query failed: {e}")))?;
+        .await?;
 
     // Every endpoint must be redeemable on the connection we already have:
     // no executor address is allowed to leak to the client.
@@ -186,8 +187,28 @@ async fn flight_sql_runs_a_distributed_query() -> Result<()> {
     );
 
     let batches = collect(&mut client, info).await?;
-    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-    assert_eq!(rows, 2, "expected bob and carol, got {batches:?}");
+    assert_eq!(
+        row_count(&batches),
+        2,
+        "expected bob and carol, got {batches:?}"
+    );
+
+    Ok(())
+}
+
+/// A table registered through DDL must still be there for the next request.
+/// `QueryBackend::session` builds a fresh `SessionContext` every call, so this
+/// only holds because the frontend caches it per session.
+#[tokio::test]
+async fn a_session_keeps_its_catalog_across_requests() -> Result {
+    let url = start_cluster().await?;
+    let (mut client, _csv) = client_with_people(&url).await?;
+
+    let info = client
+        .execute("SELECT id FROM people".to_string(), None)
+        .await?;
+    let batches = collect(&mut client, info).await?;
+    assert_eq!(row_count(&batches), 3);
 
     Ok(())
 }
@@ -195,28 +216,9 @@ async fn flight_sql_runs_a_distributed_query() -> Result<()> {
 /// Drivers introspect before they query. Catalog answers must come from the
 /// same session the query will run in, or the schema browser lies.
 #[tokio::test]
-async fn flight_sql_serves_catalog_metadata() -> Result<()> {
+async fn flight_sql_serves_catalog_metadata() -> Result {
     let url = start_cluster().await?;
-    let mut client = flight_sql_client(&url).await?;
-
-    client
-        .handshake("anonymous", "")
-        .await
-        .map_err(|e| BallistaError::General(format!("handshake failed: {e}")))?;
-
-    let csv = tempfile::tempdir()?;
-    let path = write_csv(&csv)?;
-    let info = client
-        .execute(
-            format!(
-                "CREATE EXTERNAL TABLE people STORED AS CSV LOCATION '{path}' \
-                 OPTIONS ('format.has_header' 'true')"
-            ),
-            None,
-        )
-        .await
-        .map_err(|e| BallistaError::General(e.to_string()))?;
-    collect(&mut client, info).await?;
+    let (mut client, _csv) = client_with_people(&url).await?;
 
     let info = client
         .get_tables(CommandGetTables {
@@ -226,11 +228,13 @@ async fn flight_sql_serves_catalog_metadata() -> Result<()> {
             table_types: vec![],
             include_schema: true,
         })
-        .await
-        .map_err(|e| BallistaError::General(e.to_string()))?;
+        .await?;
     let batches = collect(&mut client, info).await?;
-    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-    assert_eq!(rows, 1, "the table registered above should be listed");
+    assert_eq!(
+        row_count(&batches),
+        1,
+        "the table registered above should be listed"
+    );
 
     // `CommandGetSqlInfo` is what the Arrow Flight JDBC driver needs and what
     // the old implementation never implemented.
@@ -239,11 +243,9 @@ async fn flight_sql_serves_catalog_metadata() -> Result<()> {
             SqlInfo::FlightSqlServerName,
             SqlInfo::FlightSqlServerVersion,
         ])
-        .await
-        .map_err(|e| BallistaError::General(e.to_string()))?;
+        .await?;
     let batches = collect(&mut client, info).await?;
-    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-    assert_eq!(rows, 2);
+    assert_eq!(row_count(&batches), 2);
 
     Ok(())
 }
@@ -251,46 +253,18 @@ async fn flight_sql_serves_catalog_metadata() -> Result<()> {
 /// A prepared statement is planned once and executed against the session it
 /// was prepared in.
 #[tokio::test]
-async fn flight_sql_supports_prepared_statements() -> Result<()> {
+async fn flight_sql_supports_prepared_statements() -> Result {
     let url = start_cluster().await?;
-    let mut client = flight_sql_client(&url).await?;
-
-    client
-        .handshake("anonymous", "")
-        .await
-        .map_err(|e| BallistaError::General(format!("handshake failed: {e}")))?;
-
-    let csv = tempfile::tempdir()?;
-    let path = write_csv(&csv)?;
-    let info = client
-        .execute(
-            format!(
-                "CREATE EXTERNAL TABLE people STORED AS CSV LOCATION '{path}' \
-                 OPTIONS ('format.has_header' 'true')"
-            ),
-            None,
-        )
-        .await
-        .map_err(|e| BallistaError::General(e.to_string()))?;
-    collect(&mut client, info).await?;
+    let (mut client, _csv) = client_with_people(&url).await?;
 
     let mut prepared = client
         .prepare("SELECT id FROM people".to_string(), None)
-        .await
-        .map_err(|e| BallistaError::General(format!("prepare failed: {e}")))?;
-
-    let info = prepared
-        .execute()
-        .await
-        .map_err(|e| BallistaError::General(format!("execute failed: {e}")))?;
+        .await?;
+    let info = prepared.execute().await?;
     let batches = collect(&mut client, info).await?;
-    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-    assert_eq!(rows, 3);
+    assert_eq!(row_count(&batches), 3);
 
-    prepared
-        .close()
-        .await
-        .map_err(|e| BallistaError::General(format!("close failed: {e}")))?;
+    prepared.close().await?;
 
     Ok(())
 }

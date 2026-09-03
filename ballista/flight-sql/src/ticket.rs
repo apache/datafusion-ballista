@@ -19,11 +19,10 @@
 //! `TicketStatementQuery`.
 //!
 //! Flight treats tickets as opaque bytes, so the framing is ours to choose: a
-//! one-byte tag followed by a payload. Keeping the distributed case byte-identical
-//! to the `ballista.protobuf.Action` the executors already understand means the
-//! handle can be forwarded to
+//! one-byte tag followed by a payload. The distributed case carries an encoded
+//! `ballista.protobuf.Action`, which is what
 //! [`BallistaFlightProxyService`](ballista_core::flight_proxy_service::BallistaFlightProxyService)
-//! without re-encoding.
+//! already decodes, so redeeming a ticket needs no server-side lookup.
 
 use ballista_core::error::{BallistaError, Result};
 
