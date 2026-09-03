@@ -268,3 +268,42 @@ async fn flight_sql_supports_prepared_statements() -> Result {
 
     Ok(())
 }
+
+/// `GetFlightInfo` promises a schema and `DoGet` has to deliver exactly it:
+/// clients (ADBC among them) reject a stream whose schema differs from the one
+/// they were given, down to per-field nullability.
+///
+/// DataFusion's logical and physical schemas disagree about nullability often
+/// enough that this cannot be papered over -- `version()` is nullable in the
+/// logical plan and not-null in the executed batches, and a list literal goes
+/// the other way -- so the advertised schema has to come from the physical
+/// side.
+#[tokio::test]
+async fn the_advertised_schema_matches_the_data() -> Result {
+    let url = start_cluster().await?;
+    let (mut client, _csv) = client_with_people(&url).await?;
+
+    for sql in [
+        "SELECT version()",
+        "SELECT [1, 2, 3] AS lst",
+        "SELECT id, name FROM people",
+        // The scheduler answers EXPLAIN with a plan of its own, so its output
+        // schema has to agree with the one a client is promised too.
+        "EXPLAIN SELECT id FROM people",
+    ] {
+        let info = client.execute(sql.to_string(), None).await?;
+        let advertised = info.clone().try_decode_schema()?;
+        let batches = collect(&mut client, info).await?;
+        let delivered = batches
+            .first()
+            .ok_or_else(|| BallistaError::General(format!("{sql} returned no data")))?
+            .schema();
+
+        assert_eq!(
+            advertised, *delivered,
+            "FlightInfo schema for `{sql}` does not match the schema of the data"
+        );
+    }
+
+    Ok(())
+}

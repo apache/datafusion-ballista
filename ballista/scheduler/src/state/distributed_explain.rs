@@ -148,9 +148,14 @@ pub(crate) fn construct_distributed_explain_exec(
             depth: 1,
         },
     ];
+    // Not nullable, to match both DataFusion's own `ExplainExec` and
+    // `DistributedExplainAnalyzeExec`: `EXPLAIN` should describe itself the same
+    // way however it is run, and a client promised one schema and handed
+    // another rejects the result. Every element unnested here is one of the
+    // three plan strings built above, so none of them can be null.
     let out_schema = Arc::new(Schema::new(vec![
-        Field::new("list_type", DataType::Utf8, true),
-        Field::new("list_plan", DataType::Utf8, true),
+        Field::new("list_type", DataType::Utf8, false),
+        Field::new("list_plan", DataType::Utf8, false),
     ]));
     let unnest = Arc::new(UnnestExec::new(
         proj_lists,

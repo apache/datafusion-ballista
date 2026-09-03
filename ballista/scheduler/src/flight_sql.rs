@@ -59,7 +59,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryBackend
         ctx: Arc<SessionContext>,
         plan: LogicalPlan,
     ) -> Result<QueryResult> {
-        let schema = Arc::new(plan.schema().as_arrow().clone());
+        // The schema handed to the client has to be the one the shuffle files
+        // actually carry, which is the physical plan's, not the logical plan's:
+        // the two disagree about nullability often enough to matter (`version()`
+        // is nullable logically and not-null in the data; a list literal goes the
+        // other way), and a Flight SQL client that is promised one schema and
+        // handed another -- ADBC among them -- rejects the result outright.
+        // Planning twice costs a few milliseconds against a job that is about to
+        // run on the cluster.
+        let schema = ctx.state().create_physical_plan(&plan).await?.schema();
 
         // Subscribe before submitting so no status can be missed, and follow
         // the status stream rather than polling `get_job_status`.
