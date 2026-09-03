@@ -43,6 +43,7 @@ use arrow_flight::{
 };
 use ballista_core::error::BallistaError;
 use ballista_core::flight_proxy_service::BallistaFlightProxyService;
+use ballista_core::planner::scans_only_local_tables;
 use ballista_core::serde::protobuf::PartitionLocation;
 use ballista_core::serde::scheduler::{Action as BallistaAction, ShuffleFileKind};
 use ballista_core::serde::{decode_protobuf, protobuf};
@@ -304,6 +305,11 @@ fn disposition(plan: &LogicalPlan) -> Disposition {
         // Other DDL only edits the session catalog, and `SET`-style statements
         // only edit session config; neither has anything to distribute.
         LogicalPlan::Ddl(_) | LogicalPlan::Statement(_) => Disposition::RunOnScheduler,
+        // `SHOW ...` and anything else reading `information_schema` describes
+        // the catalog held here. There is nothing to distribute, and the
+        // physical form of those scans cannot be serialized for an executor,
+        // so distributing one would hand the client a job that never runs.
+        _ if scans_only_local_tables(plan) => Disposition::RunOnScheduler,
         _ => Disposition::Distribute,
     }
 }

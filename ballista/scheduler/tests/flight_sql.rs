@@ -307,3 +307,33 @@ async fn the_advertised_schema_matches_the_data() -> Result {
 
     Ok(())
 }
+
+/// `SHOW TABLES` and friends read `information_schema`, which is a streaming
+/// table the physical codec cannot serialize. Distributing one produced a task
+/// the executors never got and a status the client never saw, so `GetFlightInfo`
+/// hung forever -- exactly what a BI tool does on connect.
+#[tokio::test]
+async fn catalog_queries_are_answered_without_distributing_them() -> Result {
+    let url = start_cluster().await?;
+    let (mut client, _csv) = client_with_people(&url).await?;
+
+    for sql in [
+        "SHOW TABLES",
+        "SELECT table_name FROM information_schema.tables",
+    ] {
+        let run = async {
+            let info = client.execute(sql.to_string(), None).await?;
+            collect(&mut client, info).await
+        };
+        let batches = tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .map_err(|_| BallistaError::General(format!("`{sql}` hung")))??;
+
+        assert!(
+            row_count(&batches) > 0,
+            "`{sql}` should list the session's tables, got {batches:?}"
+        );
+    }
+
+    Ok(())
+}
