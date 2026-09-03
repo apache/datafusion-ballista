@@ -406,7 +406,7 @@
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Ballista</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/commit/696ca29b3c1fe3013238822b7f5d8cdb918fdaa3"><code class="docutils literal notranslate"><span class="pre">696ca29b</span></code></a> (<code class="docutils literal notranslate"><span class="pre">main</span></code>, 2026-07-23), Cargo pkg <code class="docutils literal notranslate"><span class="pre">54.0.0</span></code>, DataFusion <code class="docutils literal notranslate"><span class="pre">54.1.0</span></code></p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/commit/67b3a19bb442db879c7056722d14696cc33341b9"><code class="docutils literal notranslate"><span class="pre">67b3a19b</span></code></a> (<code class="docutils literal notranslate"><span class="pre">main</span></code>, 2026-09-03), Cargo pkg <code class="docutils literal notranslate"><span class="pre">54.0.0</span></code>, DataFusion <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Spark</p></td>
 <td><p>3.4 (vanilla, no acceleration plugin)</p></td>
@@ -427,11 +427,11 @@ dedicated 1000 GiB <code class="docutils literal notranslate"><span class="pre">
 shuffle work-dir (see <a class="reference internal" href="#executor-storage"><span class="xref myst">Executor storage</span></a>).</p></li>
 <li><p><strong>Executor pod (Spark):</strong> x86_64, 8 vCPU, 64 GiB + 10 GiB overhead, plus a
 dedicated <code class="docutils literal notranslate"><span class="pre">gp3</span></code> PVC via <code class="docutils literal notranslate"><span class="pre">spark-local-dir-1</span></code>.</p></li>
-<li><p><strong>Client pod (Ballista):</strong> the Python benchmark runner submits SQL to
-Ballista via <code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> and collects results locally.
-Requires 64 GiB memory limit to complete the full 22-query suite —
-smaller limits (16 GiB) OOM the client partway through, even though the
-executor cluster is healthy.</p></li>
+<li><p><strong>Client pod (Ballista):</strong> the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> Rust benchmark runner from
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks"><code class="docutils literal notranslate"><span class="pre">benchmarks/</span></code></a>
+in this repo (<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">run</span> <span class="pre">--release</span> <span class="pre">--bin</span> <span class="pre">tpch</span> <span class="pre">--</span> <span class="pre">benchmark</span> <span class="pre">ballista</span> <span class="pre">...</span></code>),
+which submits SQL through a Ballista <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code> and collects
+results locally.</p></li>
 <li><p><strong>Data:</strong> TPC-H SF1000 Parquet on S3 (<code class="docutils literal notranslate"><span class="pre">us-west-2</span></code>), ZSTD compression,
 ~512 MiB row groups, one directory per table.</p></li>
 </ul>
@@ -572,8 +572,7 @@ The matching Ballista executor runs <code class="docutils literal notranslate"><
 <section id="results">
 <h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
 <p><strong>Times in seconds; lower is better.</strong> Ballista: single iteration. Spark:
-mean of 3 iterations (cold iteration dropped by the harness). <code class="docutils literal notranslate"><span class="pre">FAIL</span></code> = query
-did not complete on this Ballista configuration.</p>
+mean of 3 iterations (cold iteration dropped by the harness).</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head text-right"><p>Query</p></th>
@@ -583,110 +582,101 @@ did not complete on this Ballista configuration.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td class="text-right"><p>1</p></td>
-<td class="text-right"><p>21.71</p></td>
+<td class="text-right"><p>17.56</p></td>
 <td class="text-right"><p>67.58</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>2</p></td>
-<td class="text-right"><p>26.73</p></td>
+<td class="text-right"><p>27.13</p></td>
 <td class="text-right"><p>29.80</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>3</p></td>
-<td class="text-right"><p>34.77</p></td>
+<td class="text-right"><p>33.03</p></td>
 <td class="text-right"><p>25.13</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>4</p></td>
-<td class="text-right"><p>20.73</p></td>
+<td class="text-right"><p>18.34</p></td>
 <td class="text-right"><p>21.19</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>5</p></td>
-<td class="text-right"><p>42.26</p></td>
+<td class="text-right"><p>60.51</p></td>
 <td class="text-right"><p>54.12</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>6</p></td>
-<td class="text-right"><p>13.78</p></td>
+<td class="text-right"><p>14.25</p></td>
 <td class="text-right"><p>1.23</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>7</p></td>
-<td class="text-right"><p>47.17</p></td>
+<td class="text-right"><p>49.28</p></td>
 <td class="text-right"><p>19.57</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>8</p></td>
-<td class="text-right"><p>45.74</p></td>
+<td class="text-right"><p>96.02</p></td>
 <td class="text-right"><p>48.60</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>9</p></td>
-<td class="text-right"><p>67.27</p></td>
+<td class="text-right"><p>107.89</p></td>
 <td class="text-right"><p>69.38</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>10</p></td>
-<td class="text-right"><p>52.99</p></td>
+<td class="text-right"><p>55.78</p></td>
 <td class="text-right"><p>35.92</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>11</p></td>
-<td class="text-right"><p><strong>FAIL</strong></p></td>
+<td class="text-right"><p>13.46</p></td>
 <td class="text-right"><p>30.88</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>12</p></td>
-<td class="text-right"><p>25.97</p></td>
+<td class="text-right"><p>16.49</p></td>
 <td class="text-right"><p>10.78</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>13</p></td>
-<td class="text-right"><p>15.30</p></td>
+<td class="text-right"><p>14.58</p></td>
 <td class="text-right"><p>20.45</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>14</p></td>
-<td class="text-right"><p>21.13</p></td>
+<td class="text-right"><p>17.99</p></td>
 <td class="text-right"><p>7.00</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>15</p></td>
-<td class="text-right"><p>27.30</p></td>
+<td class="text-right"><p>18.46</p></td>
 <td class="text-right"><p>23.75</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>16</p></td>
-<td class="text-right"><p>17.38</p></td>
+<td class="text-right"><p>14.29</p></td>
 <td class="text-right"><p>23.41</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>17</p></td>
-<td class="text-right"><p>47.29</p></td>
+<td class="text-right"><p>35.20</p></td>
 <td class="text-right"><p>82.30</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>18</p></td>
-<td class="text-right"><p>78.32</p></td>
+<td class="text-right"><p>53.64</p></td>
 <td class="text-right"><p>129.40</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>19</p></td>
-<td class="text-right"><p>18.71</p></td>
+<td class="text-right"><p>18.87</p></td>
 <td class="text-right"><p>11.26</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>20</p></td>
-<td class="text-right"><p>97.13</p></td>
+<td class="text-right"><p>29.29</p></td>
 <td class="text-right"><p>19.22</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>21</p></td>
-<td class="text-right"><p><strong>FAIL</strong></p></td>
+<td class="text-right"><p>95.63</p></td>
 <td class="text-right"><p>101.53</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>22</p></td>
-<td class="text-right"><p><strong>FAIL</strong></p></td>
+<td class="text-right"><p>9.37</p></td>
 <td class="text-right"><p>12.71</p></td>
 </tr>
-<tr class="row-even"><td class="text-right"><p><strong>Total (comparable subset, 19Q)</strong></p></td>
-<td class="text-right"><p><strong>721.68</strong></p></td>
-<td class="text-right"><p><strong>700.09</strong></p></td>
+<tr class="row-even"><td class="text-right"><p><strong>Total</strong></p></td>
+<td class="text-right"><p><strong>817.07</strong></p></td>
+<td class="text-right"><p><strong>845.21</strong></p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>The total row sums Q1–Q10, Q12–Q20 — the queries that completed on both
-engines. Q11, Q21, Q22 currently fail on Ballista with an <code class="docutils literal notranslate"><span class="pre">OutOfRange</span></code>
-error (<code class="docutils literal notranslate"><span class="pre">decoded</span> <span class="pre">message</span> <span class="pre">length</span> <span class="pre">too</span> <span class="pre">large</span></code>); their physical plans encode
-above the client’s default 16 MiB gRPC ceiling. Bumping the ceiling to
-128 MiB via <code class="docutils literal notranslate"><span class="pre">ballista.client.grpc_max_message_size</span></code> on the client side is
-still under investigation — the scheduler and executor sides accept the
-raised limit (see <a class="reference internal" href="#ballista-configuration"><span class="xref myst">Ballista configuration</span></a>) but
-the client-submission channel is separate and continues to enforce 16 MiB
-in the current release.</p>
-<p>Row counts agree across engines for every query Ballista returned.</p>
+<p>Row counts agree across engines for every query.</p>
 </section>
 <section id="reproducing">
 <h2>Reproducing<a class="headerlink" href="#reproducing" title="Link to this heading">#</a></h2>
@@ -706,11 +696,12 @@ client. Executor sizing on each node:</p>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">/data</span></code> should be a dedicated volume (e.g. a <code class="docutils literal notranslate"><span class="pre">gp3</span></code> PVC) sized for the
 suite’s shuffle output — see <a class="reference internal" href="#executor-storage"><span class="xref myst">Executor storage</span></a>.</p>
-<p>Run all 22 queries:</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>tpch<span class="w"> </span>benchmark<span class="w"> </span>ballista<span class="w"> </span><span class="se">\</span>
+<p>Run all 22 queries with the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> Rust runner from
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks"><code class="docutils literal notranslate"><span class="pre">benchmarks/</span></code></a>:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>run<span class="w"> </span>--release<span class="w"> </span>--bin<span class="w"> </span>tpch<span class="w"> </span>--<span class="w"> </span>benchmark<span class="w"> </span>ballista<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--host<span class="w"> </span>&lt;scheduler&gt;<span class="w"> </span>--port<span class="w"> </span><span class="m">50050</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--path<span class="w"> </span>s3://&lt;bucket&gt;/tpch/sf1000<span class="w"> </span>--format<span class="w"> </span>parquet<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--partitions<span class="w"> </span><span class="m">256</span><span class="w"> </span>--iterations<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--partitions<span class="w"> </span><span class="m">256</span><span class="w"> </span>--iterations<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-c<span class="w"> </span>ballista.planner.adaptive.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-c<span class="w"> </span>datafusion.execution.collect_statistics<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-c<span class="w"> </span>ballista.shuffle.sort_based.memory_limit_per_task_bytes<span class="o">=</span><span class="m">0</span>
