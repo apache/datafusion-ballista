@@ -15,17 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::error::BallistaError;
+use crate::extension::BallistaConfigGrpcEndpoint;
+use crate::serde::decode_protobuf;
+use crate::serde::scheduler::Action as BallistaAction;
+use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
-use ballista_core::error::BallistaError;
-use ballista_core::extension::BallistaConfigGrpcEndpoint;
-use ballista_core::serde::decode_protobuf;
-use ballista_core::serde::scheduler::Action as BallistaAction;
-use ballista_core::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 
 use futures::{Stream, TryFutureExt};
 use log::debug;
@@ -49,6 +49,9 @@ pub struct BallistaFlightProxyService {
 }
 
 impl BallistaFlightProxyService {
+    /// Creates a proxy which forwards partition fetches to executors, applying
+    /// the given message size limits and TLS/endpoint customization when
+    /// dialling them.
     pub fn new(
         max_decoding_message_size: usize,
         max_encoding_message_size: usize,
@@ -172,7 +175,7 @@ impl FlightService for BallistaFlightProxyService {
     }
 }
 
-fn from_ballista_err(e: &ballista_core::error::BallistaError) -> Status {
+fn from_ballista_err(e: &BallistaError) -> Status {
     Status::internal(format!("Ballista Error: {e:?}"))
 }
 

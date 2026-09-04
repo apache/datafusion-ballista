@@ -165,6 +165,38 @@ cd $ARROW_HOME/benchmarks
 cargo run --release --bin tpch benchmark ballista --host localhost --port 50050 --query 1 --path $(pwd)/data --format tbl
 ```
 
+## Running the Ballista Benchmarks over Arrow Flight SQL
+
+`tpch_adbc.py` runs the same 22 queries through the scheduler's Arrow Flight SQL
+frontend using the generic ADBC driver, with no Ballista client library
+involved. It measures the path a JDBC/ODBC or BI-tool client takes.
+
+The frontend is a non-default feature and is also off at runtime:
+
+```bash
+cargo build --release -p ballista-scheduler --features flight-sql
+./target/release/ballista-scheduler --flight-sql
+./target/release/ballista-executor -c 8 -p 50051
+```
+
+```bash
+pip install adbc-driver-flightsql pyarrow
+cd $ARROW_HOME/benchmarks
+python tpch_adbc.py --path /mnt/bigdata/tpch/sf1-parquet --iterations 3
+```
+
+Each query reports two numbers, because they measure different things:
+`plan+exec` is `GetFlightInfo`, where the scheduler plans the query, runs it on
+the cluster, and only then replies; `fetch` is the `DoGet` calls that pull the
+result back through the scheduler. TPC-H answers are small, so almost all of the
+time is in the first.
+
+Ballista does not implement `PollFlightInfo` yet, so `GetFlightInfo` blocks for
+the whole query. Pass `--timeout` with a value above your slowest query, and be
+aware that a proxy or load balancer between client and scheduler may cut an idle
+connection regardless. Only `parquet` and header-bearing `csv` are supported;
+`.tbl` files carry no schema, so use the Rust harness for those.
+
 ## Recording and comparing results
 
 Pass `--output <dir>` (works for both the `ballista` and `datafusion` benchmark

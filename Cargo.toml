@@ -23,6 +23,7 @@ members = [
     "ballista/client",
     "ballista/core",
     "ballista/executor",
+    "ballista/flight-sql",
     "ballista/history",
     "ballista/scheduler",
     "benchmarks",
@@ -48,6 +49,7 @@ ballista = { path = "ballista/client", version = "54.0.0" }
 ballista-api-types = { path = "ballista/api-types", version = "54.0.0" }
 ballista-core = { path = "ballista/core", version = "54.0.0" }
 ballista-executor = { path = "ballista/executor", version = "54.0.0" }
+ballista-flight-sql = { path = "ballista/flight-sql", version = "54.0.0" }
 ballista-history = { path = "ballista/history", version = "54.0.0" }
 ballista-scheduler = { path = "ballista/scheduler", version = "54.0.0" }
 clap = { version = "4.5", features = ["derive", "cargo"] }

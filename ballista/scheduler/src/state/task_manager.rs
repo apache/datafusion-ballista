@@ -814,28 +814,42 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
-    /// Launch the given tasks on the specified executor
+    /// Launch the given tasks on the specified executor.
+    ///
+    /// Returns the jobs whose task definitions could not be prepared, with the
+    /// reason. Those tasks were never sent anywhere and will never report a
+    /// status, so the caller has to fail the job: left alone it stays `Running`
+    /// for ever and everything waiting on it blocks with no timeout. This is
+    /// distinct from `launch_tasks` failing, which says the executor is sick,
+    /// not the plan.
     pub(crate) async fn launch_multi_task(
         &self,
         executor: &ExecutorMetadata,
         tasks: Vec<Vec<TaskDescription>>,
         executor_manager: &ExecutorManager,
-    ) -> Result<()> {
+    ) -> Result<Vec<(JobId, String)>> {
         let mut multi_tasks = vec![];
+        let mut unpreparable = vec![];
         for stage_tasks in tasks {
+            let job_id = stage_tasks.first().map(|task| task.key.job_id.clone());
             match self.prepare_multi_task_definition(stage_tasks) {
                 Ok(stage_tasks) => multi_tasks.extend(stage_tasks),
-                Err(e) => error!("Fail to prepare task definition: {e:?}"),
+                Err(e) => {
+                    error!("Fail to prepare task definition: {e:?}");
+                    if let Some(job_id) = job_id {
+                        unpreparable.push((job_id, format!("{e}")));
+                    }
+                }
             }
         }
 
         if !multi_tasks.is_empty() {
             self.launcher
                 .launch_tasks(executor, multi_tasks, executor_manager)
-                .await
-        } else {
-            Ok(())
+                .await?;
         }
+
+        Ok(unpreparable)
     }
 
     #[allow(dead_code)]
@@ -1079,6 +1093,7 @@ mod tests {
     use super::*;
     use crate::cluster::JobStateEventStream;
     use crate::cluster::memory::InMemoryJobState;
+    use crate::test_utils::test_cluster_context;
     use crate::test_utils::{mock_completed_task, mock_executor, test_aggregation_plan};
     use ballista_core::serde::protobuf::job_status::Status;
     use ballista_core::utils::{default_config_producer, default_session_builder};
@@ -1454,6 +1469,44 @@ mod tests {
         assert_eq!(state.save_attempts.load(Ordering::SeqCst), 1);
         assert!(manager.get_active_execution_graph(&job_id).is_none());
         assert_eq!(manager.running_job_number(), 0);
+        Ok(())
+    }
+
+    /// A task whose definition cannot be prepared is never sent to an executor,
+    /// so no status will ever come back for it. `launch_multi_task` has to name
+    /// the job it dropped, or the job stays Running for the life of the
+    /// scheduler and everything awaiting its status blocks with no timeout.
+    #[tokio::test]
+    async fn tasks_that_cannot_be_prepared_are_reported_against_their_job() -> Result<()>
+    {
+        let (manager, _state, job_id, active_graph) = setup_job(false).await?;
+        let executor = mock_executor("executor-1".to_string());
+        let mut task = active_graph
+            .write()
+            .await
+            .pop_next_task(&executor.id)?
+            .expect("job should have a task to assign");
+
+        // Point the task at a job the manager has never heard of, which is what
+        // preparation refuses. Any preparation failure -- a plan the physical
+        // codec cannot encode, for instance -- lands in the same branch.
+        let orphan: JobId = "orphaned-job".into();
+        task.key.job_id = orphan.clone();
+
+        let executor_manager = ExecutorManager::new(
+            test_cluster_context().cluster_state(),
+            Arc::new(SchedulerConfig::default()),
+        );
+        let unpreparable = manager
+            .launch_multi_task(&executor, vec![vec![task]], &executor_manager)
+            .await?;
+
+        assert_eq!(
+            unpreparable.iter().map(|(job, _)| job).collect::<Vec<_>>(),
+            vec![&orphan],
+            "the job whose task could not be prepared must be reported"
+        );
+        assert_ne!(orphan, job_id);
         Ok(())
     }
 }

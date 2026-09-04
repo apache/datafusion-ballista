@@ -18,6 +18,7 @@
 use crate::cluster::{BallistaCluster, BoundTask, ExecutorSlot};
 use crate::config::SchedulerConfig;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
+use crate::scheduler_server::timestamp_millis;
 use crate::state::execution_graph::TaskDescription;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
@@ -25,7 +26,7 @@ use crate::state::task_manager::{TaskLauncher, TaskManager};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
 use ballista_core::serde::BallistaCodec;
-use ballista_core::serde::protobuf::TaskStatus;
+use ballista_core::serde::protobuf::{JobStatus, TaskStatus, job_status};
 use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::execution::context::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -256,6 +257,40 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
+    /// Fails a job whose tasks could never be handed to an executor.
+    ///
+    /// The tasks were dropped before they were launched, so nothing will ever
+    /// report a status for them. Without this the job stays `Running` for the
+    /// life of the scheduler and every caller awaiting its status -- a Flight
+    /// SQL `GetFlightInfo`, a `DistributedQueryExec` -- blocks for ever.
+    pub(crate) async fn fail_unlaunchable_job(
+        &self,
+        job_id: &JobId,
+        reason: String,
+        sender: &EventSender<QueryStageSchedulerEvent>,
+    ) {
+        let queued_at = match self.task_manager.get_job_status(job_id).await {
+            Ok(Some(JobStatus {
+                status: Some(job_status::Status::Running(running)),
+                ..
+            })) => running.queued_at,
+            _ => timestamp_millis(),
+        };
+
+        error!("Failing job {job_id}, its tasks cannot be launched: {reason}");
+        if let Err(e) = sender
+            .post_event(QueryStageSchedulerEvent::JobRunningFailed {
+                job_id: job_id.clone(),
+                fail_message: reason,
+                queued_at,
+                failed_at: timestamp_millis(),
+            })
+            .await
+        {
+            error!("Fail to post JobRunningFailed for job {job_id}: {e:?}");
+        }
+    }
+
     /// Given a vector of bound tasks,
     /// 1. Firstly reorganize according to: executor -> job stage -> tasks;
     /// 2. Then launch the task set vector to each executor one by one.
@@ -305,23 +340,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     .await
                 {
                     Ok(executor) => {
-                        if let Err(e) = state
+                        match state
                             .task_manager
                             .launch_multi_task(&executor, tasks, &state.executor_manager)
                             .await
                         {
-                            let err_msg = format!("Failed to launch new task: {e}");
-                            error!("{}", err_msg.clone());
+                            Ok(unpreparable) => {
+                                // These tasks were never sent anywhere, so no
+                                // status will ever come back for them. Fail the
+                                // job here or it stays Running for ever and its
+                                // client waits on it with no timeout.
+                                for (job_id, reason) in unpreparable {
+                                    state
+                                        .fail_unlaunchable_job(&job_id, reason, &sender)
+                                        .await;
+                                }
+                                true
+                            }
+                            Err(e) => {
+                                let err_msg = format!("Failed to launch new task: {e}");
+                                error!("{}", err_msg.clone());
 
-                            // It's OK to remove executor aggressively,
-                            // since if the executor is in healthy state, it will be registered again.
-                            state
-                                .remove_executor(&executor_id, Some(err_msg), &sender)
-                                .await;
+                                // It's OK to remove executor aggressively,
+                                // since if the executor is in healthy state, it will be registered again.
+                                state
+                                    .remove_executor(&executor_id, Some(err_msg), &sender)
+                                    .await;
 
-                            false
-                        } else {
-                            true
+                                false
+                            }
                         }
                     }
                     Err(e) => {
