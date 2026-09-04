@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-mod aqe;
+pub(crate) mod aqe;
 mod distributed_explain;
 /// Execution graph representation and management.
 pub mod execution_graph;

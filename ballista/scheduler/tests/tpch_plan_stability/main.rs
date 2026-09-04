@@ -75,14 +75,24 @@ async fn multi_statement_q15_plans() {
     );
 }
 
-fn golden_path(name: &str) -> PathBuf {
+fn golden_path(file: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/tpch_plan_stability/approved")
-        .join(format!("{name}.txt"))
+        .join(format!("{file}.txt"))
 }
 
 async fn check_query(name: &str) {
-    let actual = fixtures::staged_plan_text(name).await;
+    check_golden(name, fixtures::staged_plan_text(name).await).await;
+    // The adaptive planner is a separate lowering of the same query, so it gets
+    // its own golden rather than sharing one with the static planner.
+    check_golden(
+        &format!("{name}.adaptive"),
+        fixtures::adaptive_plan_text(name).await,
+    )
+    .await;
+}
+
+async fn check_golden(name: &str, actual: String) {
     let path = golden_path(name);
     if std::env::var("BALLISTA_GENERATE_GOLDEN").is_ok() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

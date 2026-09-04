@@ -1,0 +1,24 @@
+AdaptiveDatafusionExec: is_final=true, plan_id=7, stage_id=6, stage_resolved=true
+  SortPreservingMergeExec: [s_name@0 ASC NULLS LAST]
+    ExchangeExec: partitioning=None, plan_id=10, stage_id=5, stage_resolved=true
+      SortExec: expr=[s_name@0 ASC NULLS LAST], preserve_partitioning=[true]
+        HashJoinExec: mode=Partitioned, join_type=LeftSemi, on=[(s_suppkey@0, ps_suppkey@0)], projection=[s_name@1, s_address@2]
+          ExchangeExec: partitioning=Hash([s_suppkey@0], 16), plan_id=8, stage_id=3, stage_resolved=true
+            HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(n_nationkey@0, s_nationkey@3)], projection=[s_suppkey@1, s_name@2, s_address@3]
+              FilterExec: n_name@1 = CANADA, projection=[n_nationkey@0]
+                StatsExec: rows=25
+              StatsExec: rows=1000000
+          ExchangeExec: partitioning=Hash([ps_suppkey@0], 16), plan_id=9, stage_id=4, stage_resolved=true
+            HashJoinExec: mode=Partitioned, join_type=LeftSemi, on=[(ps_partkey@0, l_partkey@1), (ps_suppkey@1, l_suppkey@2)], filter=CAST(ps_availqty@0 AS Float64) > Float64(0.5) * sum(lineitem.l_quantity)@1, projection=[ps_suppkey@1]
+              ExchangeExec: partitioning=Hash([ps_partkey@0, ps_suppkey@1], 16), plan_id=4, stage_id=0, stage_resolved=true
+                HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(p_partkey@0, ps_partkey@0)]
+                  FilterExec: p_name@1 LIKE forest%, projection=[p_partkey@0]
+                    StatsExec: rows=20000000
+                  StatsExec: rows=80000000
+              ExchangeExec: partitioning=Hash([l_partkey@1, l_suppkey@2], 16), plan_id=5, stage_id=2, stage_resolved=true
+                ProjectionExec: expr=[0.5 * CAST(sum(lineitem.l_quantity)@2 AS Float64) as Float64(0.5) * sum(lineitem.l_quantity), l_partkey@0 as l_partkey, l_suppkey@1 as l_suppkey]
+                  AggregateExec: mode=FinalPartitioned, gby=[l_partkey@0 as l_partkey, l_suppkey@1 as l_suppkey], aggr=[sum(lineitem.l_quantity)]
+                    ExchangeExec: partitioning=Hash([l_partkey@0, l_suppkey@1], 16), plan_id=6, stage_id=1, stage_resolved=true
+                      AggregateExec: mode=Partial, gby=[l_partkey@0 as l_partkey, l_suppkey@1 as l_suppkey], aggr=[sum(lineitem.l_quantity)]
+                        FilterExec: l_shipdate@3 >= 1994-01-01 AND l_shipdate@3 < 1995-01-01, projection=[l_partkey@0, l_suppkey@1, l_quantity@2]
+                          StatsExec: rows=600037902
