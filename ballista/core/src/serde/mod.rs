@@ -188,14 +188,117 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, 
     }
 }
 
+/// Serialization seam for table providers owned by external data sources.
+pub trait BallistaTableProviderCodec: Debug + Send + Sync {
+    /// Stable wire name used to select this codec during decoding.
+    fn name(&self) -> &str;
+
+    /// Encodes a table provider when this codec owns it.
+    fn try_encode_table_provider(
+        &self,
+        table_ref: &datafusion::common::TableReference,
+        provider: Arc<dyn datafusion::catalog::TableProvider>,
+    ) -> Result<Option<Vec<u8>>>;
+
+    /// Rebuilds a table provider from this codec's payload.
+    fn decode_table_provider(
+        &self,
+        payload: &[u8],
+        table_ref: &datafusion::common::TableReference,
+        schema: SchemaRef,
+        ctx: &TaskContext,
+    ) -> Result<Arc<dyn datafusion::catalog::TableProvider>>;
+}
+
+/// Serialization seam for execution plans owned by external data sources.
+pub trait BallistaPhysicalPlanCodec: Debug + Send + Sync {
+    /// Stable wire name used to select this codec during decoding.
+    fn name(&self) -> &str;
+
+    /// Encodes an execution plan when this codec owns it.
+    fn try_encode_plan(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<Option<Vec<u8>>>;
+
+    /// Rebuilds an execution plan from this codec's payload.
+    fn decode_plan(
+        &self,
+        payload: &[u8],
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<Arc<dyn ExecutionPlan>>;
+}
+
+const DATA_SOURCE_CODEC_PREFIX: &[u8] = b"ballista-data-source-v1\0";
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct DataSourceCodecPayload {
+    #[prost(string, tag = 1)]
+    codec_name: String,
+    #[prost(bytes, tag = 2)]
+    payload: Vec<u8>,
+}
+
+fn encode_data_source_payload(
+    codec_name: &str,
+    payload: Vec<u8>,
+    buf: &mut Vec<u8>,
+) -> Result<()> {
+    buf.extend_from_slice(DATA_SOURCE_CODEC_PREFIX);
+    DataSourceCodecPayload {
+        codec_name: codec_name.to_owned(),
+        payload,
+    }
+    .encode(buf)
+    .map_err(|e| DataFusionError::Internal(format!("failed to encode data source: {e}")))
+}
+
+fn decode_data_source_payload(buf: &[u8]) -> Result<Option<DataSourceCodecPayload>> {
+    let Some(payload) = buf.strip_prefix(DATA_SOURCE_CODEC_PREFIX) else {
+        return Ok(None);
+    };
+    DataSourceCodecPayload::decode(payload)
+        .map(Some)
+        .map_err(|e| {
+            DataFusionError::Internal(format!("failed to decode data source: {e}"))
+        })
+}
+
+fn find_data_source_codec<'a, T: ?Sized>(
+    codecs: &'a [Arc<T>],
+    name: &str,
+    codec_name: impl Fn(&T) -> &str,
+) -> Result<&'a T> {
+    codecs
+        .iter()
+        .find(|codec| codec_name(codec.as_ref()) == name)
+        .map(AsRef::as_ref)
+        .ok_or_else(|| {
+            DataFusionError::Plan(format!("data source codec {name:?} is not registered"))
+        })
+}
+
 /// Logical extension codec for Ballista-specific plan nodes.
 #[derive(Debug)]
 pub struct BallistaLogicalExtensionCodec {
     default_codec: Arc<dyn LogicalExtensionCodec>,
     file_format_codecs: Vec<Arc<dyn LogicalExtensionCodec>>,
+    table_provider_codecs: Vec<Arc<dyn BallistaTableProviderCodec>>,
 }
 
 impl BallistaLogicalExtensionCodec {
+    /// Registers a table-provider codec while retaining Ballista's built-ins.
+    pub fn with_table_provider_codec(
+        mut self,
+        codec: Arc<dyn BallistaTableProviderCodec>,
+    ) -> Self {
+        self.table_provider_codecs.push(codec);
+        self
+    }
+
     /// looks for a codec which can operate on this node
     /// returns a position of codec in the list and result.
     ///
@@ -235,6 +338,7 @@ impl Default for BallistaLogicalExtensionCodec {
                 Arc::new(ArrowLogicalExtensionCodec {}),
                 Arc::new(AvroLogicalExtensionCodec {}),
             ],
+            table_provider_codecs: vec![],
         }
     }
 }
@@ -304,6 +408,14 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         schema: datafusion::arrow::datatypes::SchemaRef,
         ctx: &TaskContext,
     ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
+        if let Some(encoded) = decode_data_source_payload(buf)? {
+            return find_data_source_codec(
+                &self.table_provider_codecs,
+                &encoded.codec_name,
+                |codec| codec.name(),
+            )?
+            .decode_table_provider(&encoded.payload, table_ref, schema, ctx);
+        }
         self.default_codec
             .try_decode_table_provider(buf, table_ref, schema, ctx)
     }
@@ -314,6 +426,13 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         node: Arc<dyn datafusion::catalog::TableProvider>,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
+        for codec in &self.table_provider_codecs {
+            if let Some(payload) =
+                codec.try_encode_table_provider(table_ref, node.clone())?
+            {
+                return encode_data_source_payload(codec.name(), payload, buf);
+            }
+        }
         self.default_codec
             .try_encode_table_provider(table_ref, node, buf)
     }
@@ -359,12 +478,25 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
 #[derive(Debug)]
 pub struct BallistaPhysicalExtensionCodec {
     default_codec: Arc<dyn PhysicalExtensionCodec>,
+    physical_plan_codecs: Vec<Arc<dyn BallistaPhysicalPlanCodec>>,
+}
+
+impl BallistaPhysicalExtensionCodec {
+    /// Registers a physical-plan codec while retaining Ballista's built-ins.
+    pub fn with_physical_plan_codec(
+        mut self,
+        codec: Arc<dyn BallistaPhysicalPlanCodec>,
+    ) -> Self {
+        self.physical_plan_codecs.push(codec);
+        self
+    }
 }
 
 impl Default for BallistaPhysicalExtensionCodec {
     fn default() -> Self {
         Self {
             default_codec: Arc::new(DefaultPhysicalExtensionCodec {}),
+            physical_plan_codecs: vec![],
         }
     }
 }
@@ -578,8 +710,17 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         ctx: &TaskContext,
-        _proto_converter: &dyn PhysicalProtoConverterExtension,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        if let Some(encoded) = decode_data_source_payload(buf)? {
+            return find_data_source_codec(
+                &self.physical_plan_codecs,
+                &encoded.codec_name,
+                |codec| codec.name(),
+            )?
+            .decode_plan(&encoded.payload, inputs, ctx, proto_converter);
+        }
+
         let ballista_plan: protobuf::BallistaPhysicalPlanNode =
             protobuf::BallistaPhysicalPlanNode::decode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
@@ -1051,7 +1192,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         &self,
         node: Arc<dyn ExecutionPlan>,
         buf: &mut Vec<u8>,
-        _proto_converter: &dyn PhysicalProtoConverterExtension,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<(), DataFusionError> {
         if let Some(exec) = node.downcast_ref::<ShuffleWriterExec>() {
             let proto = protobuf::BallistaPhysicalPlanNode {
@@ -1476,6 +1617,13 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             })?;
             Ok(())
         } else {
+            for codec in &self.physical_plan_codecs {
+                if let Some(payload) =
+                    codec.try_encode_plan(node.clone(), proto_converter)?
+                {
+                    return encode_data_source_payload(codec.name(), payload, buf);
+                }
+            }
             Err(DataFusionError::Internal(format!(
                 "Unsupported plan node, name: [{}] ",
                 node.name()
@@ -2999,5 +3147,170 @@ mod test {
                 "position {encoder_position} must decode as {expected_ext}"
             );
         }
+    }
+
+    #[derive(Debug)]
+    struct TestDataSourceCodec {
+        name: &'static str,
+        claims_node: bool,
+        schema: SchemaRef,
+    }
+
+    impl BallistaTableProviderCodec for TestDataSourceCodec {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn try_encode_table_provider(
+            &self,
+            _table_ref: &datafusion::common::TableReference,
+            provider: Arc<dyn datafusion::catalog::TableProvider>,
+        ) -> Result<Option<Vec<u8>>> {
+            Ok((self.claims_node
+                && provider
+                    .downcast_ref::<datafusion::datasource::empty::EmptyTable>()
+                    .is_some())
+            .then(|| self.name.as_bytes().to_vec()))
+        }
+
+        fn decode_table_provider(
+            &self,
+            payload: &[u8],
+            _table_ref: &datafusion::common::TableReference,
+            _schema: SchemaRef,
+            _ctx: &TaskContext,
+        ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
+            assert_eq!(payload, self.name.as_bytes());
+            Ok(Arc::new(datafusion::datasource::empty::EmptyTable::new(
+                self.schema.clone(),
+            )))
+        }
+    }
+
+    impl BallistaPhysicalPlanCodec for TestDataSourceCodec {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn try_encode_plan(
+            &self,
+            plan: Arc<dyn ExecutionPlan>,
+            _proto_converter: &dyn PhysicalProtoConverterExtension,
+        ) -> Result<Option<Vec<u8>>> {
+            Ok((self.claims_node
+                && plan
+                    .downcast_ref::<datafusion::physical_plan::test::exec::MockExec>()
+                    .is_some())
+            .then(|| self.name.as_bytes().to_vec()))
+        }
+
+        fn decode_plan(
+            &self,
+            payload: &[u8],
+            _inputs: &[Arc<dyn ExecutionPlan>],
+            _ctx: &TaskContext,
+            _proto_converter: &dyn PhysicalProtoConverterExtension,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            assert_eq!(payload, self.name.as_bytes());
+            Ok(Arc::new(
+                datafusion::physical_plan::test::exec::MockExec::new(
+                    vec![],
+                    self.schema.clone(),
+                ),
+            ))
+        }
+    }
+
+    fn test_data_source_codec(
+        name: &'static str,
+        claims_node: bool,
+    ) -> Arc<TestDataSourceCodec> {
+        Arc::new(TestDataSourceCodec {
+            name,
+            claims_node,
+            schema: create_test_schema(),
+        })
+    }
+
+    #[test]
+    fn registered_data_source_codec_roundtrips_table_provider() {
+        let encoder = BallistaLogicalExtensionCodec::default()
+            .with_table_provider_codec(test_data_source_codec("hudi", true))
+            .with_table_provider_codec(test_data_source_codec("iceberg", false));
+        let decoder = BallistaLogicalExtensionCodec::default()
+            .with_table_provider_codec(test_data_source_codec("iceberg", false))
+            .with_table_provider_codec(test_data_source_codec("hudi", true));
+        let schema = create_test_schema();
+        let table_ref = datafusion::common::TableReference::bare("orders");
+        let provider: Arc<dyn datafusion::catalog::TableProvider> = Arc::new(
+            datafusion::datasource::empty::EmptyTable::new(schema.clone()),
+        );
+
+        let mut buf = Vec::new();
+        encoder
+            .try_encode_table_provider(&table_ref, provider, &mut buf)
+            .unwrap();
+        let ctx = SessionContext::new().task_ctx();
+        let decoded = decoder
+            .try_decode_table_provider(&buf, &table_ref, schema, &ctx)
+            .unwrap();
+
+        assert!(
+            decoded
+                .downcast_ref::<datafusion::datasource::empty::EmptyTable>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn registered_data_source_codec_roundtrips_physical_plan() {
+        let codec = BallistaPhysicalExtensionCodec::default()
+            .with_physical_plan_codec(test_data_source_codec("hudi", true));
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(datafusion::physical_plan::test::exec::MockExec::new(
+                vec![],
+                create_test_schema(),
+            ));
+
+        let proto = PhysicalPlanNode::try_from_physical_plan(plan, &codec).unwrap();
+        let ctx = SessionContext::new().task_ctx();
+        let decoded = proto.try_into_physical_plan(&ctx, &codec).unwrap();
+
+        assert!(
+            decoded
+                .downcast_ref::<datafusion::physical_plan::test::exec::MockExec>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn registered_data_source_codec_preserves_ballista_plans() {
+        let schema = create_test_schema();
+        let original = UnresolvedShuffleExec::new(
+            7,
+            schema.clone(),
+            Partitioning::UnknownPartitioning(3),
+        );
+        let codec = BallistaPhysicalExtensionCodec::default()
+            .with_physical_plan_codec(test_data_source_codec("hudi", true));
+        let mut buf = Vec::new();
+
+        codec
+            .try_encode(
+                Arc::new(original),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
+        let ctx = SessionContext::new().task_ctx();
+        let decoded = codec
+            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
+        let decoded = decoded
+            .downcast_ref::<UnresolvedShuffleExec>()
+            .expect("Ballista plan should keep using the Ballista codec");
+
+        assert_eq!(decoded.stage_id, 7);
+        assert_eq!(decoded.schema(), schema);
     }
 }
