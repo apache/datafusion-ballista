@@ -19,6 +19,7 @@ use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{
     AdaptiveDatafusionExec, ExchangeExec, RangeRepartitionRouting,
 };
+use crate::state::aqe::optimizer_rule::ReuseIdenticalStagesRule;
 use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
@@ -466,8 +467,20 @@ impl AdaptivePlanner {
                         self.stage_id_generator += 1;
                         runnable.push(exec);
                     }
-                    Some(_) => {
-                        runnable.push(exec);
+                    Some(exchange) => {
+                        // Two exchanges can share one stage (see
+                        // `ReuseIdenticalStagesRule`); return it once so it is
+                        // not launched twice.
+                        let stage_id = exchange.stage_id();
+                        let already = runnable.iter().any(|other| {
+                            other
+                                .downcast_ref::<ExchangeExec>()
+                                .map(|e| e.stage_id() == stage_id)
+                                .unwrap_or(false)
+                        });
+                        if !already {
+                            runnable.push(exec);
+                        }
                     }
                     None => exec_err!("It is not a exchange")?,
                 }
@@ -581,8 +594,13 @@ impl AdaptivePlanner {
             .push(Arc::new(PrefixWindowRule::new(plan_id_generator.clone())));
 
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
+        physical_optimizers.push(Arc::new(DistributedExchangeRule::new(
+            plan_id_generator.clone(),
+        )));
+        // After the exchanges exist: where two of them cover identical inputs,
+        // point the duplicates at the first one's stage so it runs once.
         physical_optimizers
-            .push(Arc::new(DistributedExchangeRule::new(plan_id_generator)));
+            .push(Arc::new(ReuseIdenticalStagesRule::new(plan_id_generator)));
 
         physical_optimizers
     }
