@@ -30,7 +30,8 @@ use ballista_core::JobId;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::{
     PartitionedBoundedWindowAggExec, PrefixMergeExec, RangeFilterExec, cut_partitions,
-    merge_runtime_stats_reports, prefix_merge_window_state, repartition_routing_expr,
+    merge_runtime_stats_reports, prefix_merge_window_state, rank_cut_partitions,
+    rank_widened_lower_bounds, repartition_routing_expr,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
@@ -39,10 +40,11 @@ use ballista_core::serde::protobuf::{
     job_status, task_status,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::context::SessionContext;
-use datafusion::logical_expr::LogicalPlan;
+use datafusion::logical_expr::{LogicalPlan, WindowFrameBound, WindowFrameUnits};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::windows::WindowExpr;
 use datafusion::prelude::SessionConfig;
@@ -358,6 +360,10 @@ impl AdaptiveExecutionGraph {
             cuts: entry.cuts.clone(),
             nulls_first: entry.nulls_first,
             routing_expr,
+            // Filled in by the caller, which is where the consuming window's
+            // frame is reachable.
+            widened_lower: Vec::new(),
+            preceding_rows: None,
         }))
     }
 
@@ -446,35 +452,74 @@ impl AdaptiveExecutionGraph {
             let maybe_stage = self.stages.get(&stage_id);
             let partitions = if let Some(ExecutionStage::Running(stage)) = maybe_stage
                 && let Some(routing_expr) = repartition_routing_expr(stage.plan.as_ref())?
-                && let Some(routing) = Self::repartition_routing(stage, routing_expr)?
+                && let Some(mut routing) = Self::repartition_routing(stage, routing_expr)?
             {
                 let reports = &stage.runtime_stats_reports;
-                // Reader-side halos widen each partition's effective
-                // range to `[cuts[k-1] - halo_lo, cuts[k] + halo_hi)`;
-                // files straddling that band must route to both sides.
-                // Range-repartition boundaries always have a consuming
-                // RFE (writer produces straddler duplicates that only
-                // the reader-side filter can trim), so the walker errors
-                // if none is found.
-                let (halo_lo, halo_hi) = downstream_halos(&self.planner.plan, stage_id)
-                    .map_err(|err| {
-                    BallistaError::General(format!(
-                        "range-repartition stage {stage_id}: halo lookup failed: {err}"
-                    ))
-                })?;
-                let remapped = cut_partitions(
-                    partitions,
-                    reports,
-                    &routing.cuts,
-                    &halo_lo,
-                    &halo_hi,
-                    routing.nulls_first,
+                let preceding_rows = downstream_preceding_rows(
+                    &self.planner.plan,
+                    stage_id,
                 )
                 .map_err(|err| {
                     BallistaError::General(format!(
-                        "range-repartition stage {stage_id}: overlap remap failed: {err}"
+                        "range-repartition stage {stage_id}: frame lookup failed: {err}"
                     ))
                 })?;
+                let remapped = if let Some(preceding_rows) = preceding_rows {
+                    // A bounded-ROWS consumer asks for rank, which only the
+                    // producer's own row counts can turn into a value. Once
+                    // walked, it is a band like any other: neither the router
+                    // below nor the filter above sees a rank.
+                    routing.widened_lower = rank_widened_lower_bounds(
+                        reports,
+                        &routing.cuts,
+                        preceding_rows,
+                    )
+                    .map_err(|err| {
+                        BallistaError::General(format!(
+                            "range-repartition stage {stage_id}: rank halo walk failed: {err}"
+                        ))
+                    })?;
+                    routing.preceding_rows = Some(preceding_rows);
+                    rank_cut_partitions(
+                        partitions,
+                        reports,
+                        &routing.cuts,
+                        &routing.widened_lower,
+                        routing.nulls_first,
+                    )
+                    .map_err(|err| {
+                        BallistaError::General(format!(
+                            "range-repartition stage {stage_id}: rank halo remap failed: {err}"
+                        ))
+                    })?
+                } else {
+                    // Reader-side halos widen each partition's effective
+                    // range to `[cuts[k-1] - halo_lo, cuts[k] + halo_hi)`;
+                    // files straddling that band must route to both sides.
+                    // Range-repartition boundaries always have a consuming
+                    // RFE (writer produces straddler duplicates that only
+                    // the reader-side filter can trim), so the walker errors
+                    // if none is found.
+                    let (halo_lo, halo_hi) =
+                        downstream_halos(&self.planner.plan, stage_id).map_err(|err| {
+                            BallistaError::General(format!(
+                                "range-repartition stage {stage_id}: halo lookup failed: {err}"
+                            ))
+                        })?;
+                    cut_partitions(
+                        partitions,
+                        reports,
+                        &routing.cuts,
+                        &halo_lo,
+                        &halo_hi,
+                        routing.nulls_first,
+                    )
+                    .map_err(|err| {
+                        BallistaError::General(format!(
+                            "range-repartition stage {stage_id}: overlap remap failed: {err}"
+                        ))
+                    })?
+                };
                 // Save boundaries to ExchangeExec so they are there for resolve_stage_partitions
                 self.planner.set_repartition_routing(stage_id, routing)?;
                 remapped
@@ -1553,6 +1598,66 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 ///   descends the whole tree looking for the RFE on this boundary.
 /// * `producer_stage_id` — the id of the completing upstream stage;
 ///   matches `ExchangeExec::stage_id()` on the boundary exchange.
+/// The `PRECEDING` row count of the bounded-`ROWS` window consuming the
+/// boundary `ExchangeExec` produced by `producer_stage_id`, and `None` when
+/// the consumer is anything else: a bounded-`RANGE` window states its context
+/// as a value delta and widens with [`downstream_halos`] instead, and most
+/// boundaries have no window at all.
+///
+/// This is what makes the walk necessary. A rank says nothing about values
+/// until the producer has reported how its rows fell across the key space, so
+/// unlike a `RANGE` halo it cannot be settled when the rule plants the plan.
+///
+/// Boundaries are disambiguated the same way [`downstream_halos`] does it, by
+/// the producing stage's id rather than by routing expression.
+fn downstream_preceding_rows(
+    full_plan: &Arc<dyn ExecutionPlan>,
+    producer_stage_id: usize,
+) -> datafusion::common::Result<Option<u64>> {
+    let mut result: Option<u64> = None;
+    full_plan.apply(|node| {
+        let Some(window) = node.downcast_ref::<PartitionedBoundedWindowAggExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let children = window.children();
+        let [child] = children.as_slice() else {
+            return datafusion::common::internal_err!(
+                "PartitionedBoundedWindowAggExec must have exactly 1 child, got {}",
+                children.len()
+            );
+        };
+        if descend_to_boundary_stage_id(child) != Some(producer_stage_id) {
+            return Ok(TreeNodeRecursion::Continue);
+        }
+        let [expr] = window.window_expr() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let frame = expr.get_window_frame();
+        if frame.units != WindowFrameUnits::Rows {
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        result = Some(match &frame.start_bound {
+            WindowFrameBound::CurrentRow => 0,
+            WindowFrameBound::Following(_) => 0,
+            WindowFrameBound::Preceding(rows) => {
+                let rows = rows.cast_to(&DataType::UInt64)?;
+                let ScalarValue::UInt64(Some(rows)) = rows else {
+                    // The rule gates on finite bounds, so a NULL here means
+                    // UNBOUNDED PRECEDING got planted on this path.
+                    return datafusion::common::internal_err!(
+                        "ROWS window on producer stage {producer_stage_id} has a \
+                         non-finite PRECEDING bound `{rows}`; the rank halo walk \
+                         has no row count to walk to"
+                    );
+                };
+                rows
+            }
+        });
+        Ok(TreeNodeRecursion::Stop)
+    })?;
+    Ok(result)
+}
+
 fn downstream_halos(
     full_plan: &Arc<dyn ExecutionPlan>,
     producer_stage_id: usize,

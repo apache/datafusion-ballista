@@ -1024,6 +1024,202 @@ pub fn cut_partitions(
     Ok(remapped)
 }
 
+/// Route producer files to consumers whose lower edge came from
+/// [`rank_widened_lower_bounds`] instead of from the cuts.
+///
+/// Sibling of [`cut_partitions`] with the same overlap semantics and the same
+/// one-file-to-many-consumers duplication. What differs is the band: consumer
+/// `k` owns `[widened_lower[k], cuts[k])`, whose lower end is a rank resolved
+/// to a value and so is not any shift of the cut array. Every bucket from the
+/// first one the file's minimum can reach is tested on its own.
+///
+/// # Arguments
+///
+/// * `original_partitions`, `reports`, `nulls_first` — as [`cut_partitions`].
+/// * `global_cuts` — the K-1 cuts, still the consumers' *upper* edges.
+/// * `widened_lower` — one lower edge per consumer, `None` for unbounded
+///   below. Length must be `global_cuts.len() + 1`.
+pub fn rank_cut_partitions(
+    original_partitions: Vec<Vec<PartitionLocation>>,
+    reports: &[TaskRuntimeStats],
+    global_cuts: &[ScalarValue],
+    widened_lower: &[Option<ScalarValue>],
+    nulls_first: bool,
+) -> Result<Vec<Vec<PartitionLocation>>> {
+    use std::collections::HashMap;
+
+    let partition_count = global_cuts.len() + 1;
+    if widened_lower.len() != partition_count {
+        return internal_err!(
+            "rank halo remap: {} lower bounds for {partition_count} consumers",
+            widened_lower.len()
+        );
+    }
+    debug_assert!(
+        global_cuts.windows(2).all(|w| w[0] <= w[1]),
+        "global_cuts must be non-decreasing: {global_cuts:?}"
+    );
+
+    let ranges: HashMap<(usize, u32), &RuntimeStatsPartitionEntry> =
+        reports
+            .iter()
+            .flat_map(|stats| {
+                stats.report.partitions.iter().map(move |entry| {
+                    ((stats.producer_task_id, entry.partition_id), entry)
+                })
+            })
+            .collect();
+
+    let mut remapped: Vec<Vec<PartitionLocation>> = vec![Vec::new(); partition_count];
+    for partition in original_partitions {
+        for file in partition {
+            let Some(task_id) = file.file_id else {
+                return internal_err!(
+                    "rank halo remap: missing file_id (partition_id={})",
+                    file.partition_id.partition_id
+                );
+            };
+            let sub_part_id = file.partition_id.partition_id as u32;
+            let entry = ranges.get(&(task_id as usize, sub_part_id));
+            // The NULL run belongs wholly to the partition the `nulls_first`
+            // end names, and no overlap check on value extremes can find it.
+            let null_part_idx = entry
+                .is_some_and(|entry| entry.null_count > 0)
+                .then(|| if nulls_first { 0 } else { partition_count - 1 });
+            let range = entry.and_then(|entry| {
+                let lo = entry.key_min.first()?;
+                let hi = entry.key_max.first()?;
+                Some((lo, hi))
+            });
+            let Some((min_proto, max_proto)) = range else {
+                match null_part_idx {
+                    Some(part_idx) => remapped[part_idx].push(file),
+                    None if file.partition_stats.num_rows != Some(0) => {
+                        return internal_err!(
+                            "rank halo remap: file has num_rows={:?} but no usable key range (task_id={task_id}, sub_part_id={sub_part_id})",
+                            file.partition_stats.num_rows
+                        );
+                    }
+                    None => {}
+                }
+                continue;
+            };
+            let sketch_min = ScalarValue::try_from(min_proto).map_err(|e| {
+                internal_datafusion_err!("rank halo remap: undecodable key_min: {e:?}")
+            })?;
+            let sketch_max = ScalarValue::try_from(max_proto).map_err(|e| {
+                internal_datafusion_err!("rank halo remap: undecodable key_max: {e:?}")
+            })?;
+            // Widening moves a consumer's lower edge only, so a file whose
+            // minimum sits at or above a bucket's upper cut still cannot
+            // reach into it: those buckets are skipped wholesale.
+            let first_reachable = global_cuts.partition_point(|cut| cut <= &sketch_min);
+            let buckets: Vec<usize> = (first_reachable..partition_count)
+                .filter(|bucket| {
+                    widened_lower[*bucket]
+                        .as_ref()
+                        .is_none_or(|lower| lower <= &sketch_max)
+                })
+                .collect();
+            if let Some(part) = null_part_idx.filter(|part| !buckets.contains(part)) {
+                remapped[part].push(file.clone());
+            }
+            for bucket in buckets {
+                remapped[bucket].push(file.clone());
+            }
+        }
+    }
+    Ok(remapped)
+}
+
+/// Lower edge of each consumer's read, widened below its own cut until the
+/// producer files wholly beneath it account for `halo_rows` rows.
+///
+/// The context a bounded-`ROWS` frame needs is a rank, and no arithmetic on a
+/// cut reaches it: `n` rows back can be one key away or a million. What makes
+/// it computable without reading a byte of data is that every producer file
+/// already reports its key range and its row count, so a file whose `key_max`
+/// sits strictly below the cut contributes all of its rows, exactly.
+///
+/// Walking those files descending by `key_min` and stopping when the total
+/// reaches `halo_rows` gives a key whose band up to the cut holds at least
+/// `halo_rows` predecessors. It is a superset: files are whole objects, and
+/// the walk is over their edges rather than their contents.
+///
+/// A file straddling the cut contributes zero rather than `row_count` —
+/// only some unknown prefix of it lies below, and over-counting would stop
+/// the walk short of the rows the frame asked for. It is still inside the
+/// band, so it is still read.
+///
+/// `None` means unbounded below: the files under that cut don't add up to
+/// `halo_rows`, so every one of them is needed. Index 0 is always `None`,
+/// the first consumer having nothing below it.
+///
+/// # Arguments
+///
+/// * `reports` — one per completed producer task, the same per-partition
+///   entries [`cut_partitions`] routes on. A file with no value range is an
+///   all-NULL or empty one; under the `NULLS LAST` the range rules enforce,
+///   its rows sort above every cut and cannot precede one.
+/// * `global_cuts` — the K-1 cuts, giving K consumers.
+/// * `halo_rows` — the frame's `PRECEDING` count. Zero widens by nothing.
+pub fn rank_widened_lower_bounds(
+    reports: &[TaskRuntimeStats],
+    global_cuts: &[ScalarValue],
+    halo_rows: u64,
+) -> Result<Vec<Option<ScalarValue>>> {
+    // Descending by `key_min` once, rather than per cut: the walk below every
+    // cut visits these in the same order and differs only in where it starts.
+    let mut files: Vec<(ScalarValue, ScalarValue, u64)> = Vec::new();
+    for stats in reports {
+        for entry in &stats.report.partitions {
+            let (Some(key_min), Some(key_max)) =
+                (entry.key_min.first(), entry.key_max.first())
+            else {
+                continue;
+            };
+            files.push((
+                ScalarValue::try_from(key_min).map_err(|e| {
+                    internal_datafusion_err!("rank halo walk: undecodable key_min: {e:?}")
+                })?,
+                ScalarValue::try_from(key_max).map_err(|e| {
+                    internal_datafusion_err!("rank halo walk: undecodable key_max: {e:?}")
+                })?,
+                entry.row_count,
+            ));
+        }
+    }
+    files.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut bounds = Vec::with_capacity(global_cuts.len() + 1);
+    bounds.push(None);
+    for cut in global_cuts {
+        if halo_rows == 0 {
+            bounds.push(Some(cut.clone()));
+            continue;
+        }
+        let mut rows_below = 0u64;
+        let mut bound = None;
+        for (key_min, key_max, row_count) in &files {
+            if key_max.partial_cmp(cut) != Some(std::cmp::Ordering::Less) {
+                continue;
+            }
+            rows_below += row_count;
+            bound = Some(key_min.clone());
+            if rows_below >= halo_rows {
+                break;
+            }
+        }
+        bounds.push(bound.filter(|_| rows_below >= halo_rows));
+    }
+    Ok(bounds)
+}
+
 /// Merge `reports` and log each group's merged view at `debug!`
 /// (`RUST_LOG` promotes when needed). Any merge error is logged at
 /// `warn!` — the scheduler doesn't want telemetry loss to tank a query
@@ -2365,6 +2561,167 @@ mod overlap_remap_tests {
             ids(&remapped[4]),
             vec![500u64],
             "P4 sees only its own bucket — 400's halo band belongs to P2/P3, not here",
+        );
+    }
+}
+
+#[cfg(test)]
+mod rank_halo_walk_tests {
+    //! `rank_widened_lower_bounds` — how far below its own cut a bounded-ROWS
+    //! consumer has to start reading before it can be sure it holds the `n`
+    //! rows preceding that cut.
+
+    use super::*;
+    use crate::serde::protobuf::{RuntimeStatsPartitionEntry, RuntimeStatsReport};
+
+    fn key(value: f64) -> ScalarValue {
+        ScalarValue::Float64(Some(value))
+    }
+
+    /// One producer task's report, `(key_min, key_max, row_count)` per output
+    /// partition — the three facts the walk reads.
+    fn report(producer_task_id: usize, files: &[(f64, f64, u64)]) -> TaskRuntimeStats {
+        let scalar = |value: f64| {
+            vec![datafusion_proto_common::ScalarValue::try_from(&key(value)).unwrap()]
+        };
+        let partitions = files
+            .iter()
+            .enumerate()
+            .map(|(partition_id, &(key_min, key_max, row_count))| {
+                RuntimeStatsPartitionEntry {
+                    partition_id: partition_id as u32,
+                    row_count,
+                    key_min: scalar(key_min),
+                    key_max: scalar(key_max),
+                    ..Default::default()
+                }
+            })
+            .collect();
+        TaskRuntimeStats {
+            producer_task_id,
+            report: RuntimeStatsReport {
+                order_by: vec![],
+                partitions,
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The first consumer has nothing below it, so it is never widened.
+    #[test]
+    fn the_lowest_consumer_is_always_unbounded() {
+        let reports = vec![report(1, &[(0.0, 90.0, 500)])];
+        assert_eq!(
+            rank_widened_lower_bounds(&reports, &[key(100.0)], 10).unwrap()[0],
+            None
+        );
+    }
+
+    #[test]
+    fn stops_at_the_first_file_that_covers_the_halo() {
+        // Highest file wholly below 100 starts at 80 and holds 400 rows, which
+        // already covers the 10 wanted.
+        let reports = vec![report(1, &[(0.0, 50.0, 400), (80.0, 99.0, 400)])];
+        assert_eq!(
+            rank_widened_lower_bounds(&reports, &[key(100.0)], 10).unwrap(),
+            vec![None, Some(key(80.0))]
+        );
+    }
+
+    /// The band has to hold `halo_rows`, so files keep being taken until they
+    /// add up — however far below the cut that reaches.
+    #[test]
+    fn keeps_walking_until_the_rows_add_up() {
+        let reports = vec![report(1, &[(0.0, 50.0, 400), (80.0, 99.0, 5)])];
+        assert_eq!(
+            rank_widened_lower_bounds(&reports, &[key(100.0)], 10).unwrap(),
+            vec![None, Some(key(0.0))]
+        );
+    }
+
+    /// Only some unknown prefix of a straddling file lies below the cut, so
+    /// counting its rows could stop the walk short of the rows asked for.
+    #[test]
+    fn a_file_straddling_the_cut_counts_as_zero() {
+        let reports = vec![report(1, &[(90.0, 500.0, 400), (10.0, 20.0, 50)])];
+        assert_eq!(
+            rank_widened_lower_bounds(&reports, &[key(100.0)], 10).unwrap(),
+            vec![None, Some(key(10.0))],
+            "the straddler is skipped and the walk falls back 80 keys further"
+        );
+    }
+
+    /// A file whose `key_max` is exactly the cut holds rows *at* the cut,
+    /// which are the consumer's own, not its predecessors.
+    #[test]
+    fn a_file_topping_out_at_the_cut_still_straddles_it() {
+        let reports = vec![report(1, &[(90.0, 100.0, 400), (10.0, 20.0, 50)])];
+        assert_eq!(
+            rank_widened_lower_bounds(&reports, &[key(100.0)], 10).unwrap(),
+            vec![None, Some(key(10.0))]
+        );
+    }
+
+    /// Draining one task's files before the next bounds correctly but far
+    /// lower, so the walk is over every task's files in key order.
+    #[test]
+    fn walks_every_tasks_files_in_key_order() {
+        let reports = vec![
+            report(1, &[(10.0, 20.0, 6), (60.0, 70.0, 6)]),
+            report(2, &[(30.0, 40.0, 6), (80.0, 90.0, 6)]),
+        ];
+        // Descending: 80 (6 rows), then 60 (12, enough).
+        assert_eq!(
+            rank_widened_lower_bounds(&reports, &[key(100.0)], 10).unwrap(),
+            vec![None, Some(key(60.0))]
+        );
+    }
+
+    /// Each cut is walked on its own: the files below it are a different set.
+    #[test]
+    fn every_consumer_gets_its_own_bound() {
+        let reports = vec![report(
+            1,
+            &[(0.0, 90.0, 20), (100.0, 190.0, 20), (200.0, 290.0, 20)],
+        )];
+        assert_eq!(
+            rank_widened_lower_bounds(&reports, &[key(100.0), key(200.0)], 10).unwrap(),
+            vec![None, Some(key(0.0)), Some(key(100.0))]
+        );
+    }
+
+    /// Not enough rows below the cut to satisfy the frame: every row down
+    /// there is needed, and no key bounds the read.
+    #[test]
+    fn too_few_rows_below_the_cut_is_unbounded() {
+        let reports = vec![report(1, &[(0.0, 90.0, 3)])];
+        assert_eq!(
+            rank_widened_lower_bounds(&reports, &[key(100.0)], 10).unwrap(),
+            vec![None, None]
+        );
+    }
+
+    /// `CURRENT ROW AND CURRENT ROW` asks for no context, so each consumer
+    /// starts at its own cut.
+    #[test]
+    fn no_preceding_rows_leaves_the_cut_alone() {
+        let reports = vec![report(1, &[(0.0, 90.0, 400)])];
+        assert_eq!(
+            rank_widened_lower_bounds(&reports, &[key(100.0)], 0).unwrap(),
+            vec![None, Some(key(100.0))]
+        );
+    }
+
+    /// An all-NULL or empty file reports no value range. Under the NULLS LAST
+    /// the range rules enforce, its rows sort above every cut.
+    #[test]
+    fn a_file_with_no_value_range_is_not_a_predecessor() {
+        let mut valueless = report(1, &[(0.0, 0.0, 400)]);
+        valueless.report.partitions[0].key_min.clear();
+        valueless.report.partitions[0].key_max.clear();
+        assert_eq!(
+            rank_widened_lower_bounds(&[valueless], &[key(100.0)], 10).unwrap(),
+            vec![None, None]
         );
     }
 }

@@ -56,7 +56,10 @@
 
 use crate::client_pool::BallistaClientPool;
 use crate::execution_plans::range_filter::WidenedBound;
-use crate::execution_plans::range_shuffle::{is_ipc_file, open_ipc_file_range};
+use crate::execution_plans::range_shuffle::{
+    has_range_index, index_path, is_ipc_file, open_ipc_file_range,
+    rank_widened_lower_bound, read_index_file,
+};
 use crate::execution_plans::shuffle_reader::{
     LocalShuffleStream, fetch_partition_local, fetch_partition_remote,
     fetch_range_remote, local_remote_read_split, stats_for_partition,
@@ -121,6 +124,20 @@ pub struct RangeShuffleReaderExec {
     /// too wide costs bytes and a missing one costs the saving — neither
     /// changes the answer.
     bounds: Option<Vec<WidenedBound>>,
+    /// The consuming `ROWS` frame's `PRECEDING` count, when `bounds` were
+    /// widened by a rank halo.
+    ///
+    /// The scheduler resolved that rank against per-file key ranges, the only
+    /// thing it can see without fetching. The indexes beside these sources say
+    /// the same thing per message, so the reader re-runs the walk and starts
+    /// higher — never lower, and never outside what was routed to it.
+    halo_rows: Option<u64>,
+    /// Each output partition's own cut range, before `bounds` widened it.
+    ///
+    /// The rank walk counts back from the lower end of this, and a task holding
+    /// a slice of the partitions cannot take that from a neighbour's upper
+    /// edge — the neighbour is in another task. Set with `halo_rows`.
+    cut_bounds: Option<Vec<WidenedBound>>,
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
     work_dir: Option<String>,
@@ -156,6 +173,8 @@ impl RangeShuffleReaderExec {
             merge_ordering,
             fetch: None,
             bounds: None,
+            halo_rows: None,
+            cut_bounds: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,
@@ -186,6 +205,112 @@ impl RangeShuffleReaderExec {
     /// Per-output-partition value ranges, halo already applied.
     pub fn bounds(&self) -> Option<&[WidenedBound]> {
         self.bounds.as_deref()
+    }
+
+    /// Bind the `PRECEDING` row count the widened `bounds` were derived from.
+    pub fn with_halo_rows(mut self, halo_rows: Option<u64>) -> Self {
+        self.halo_rows = halo_rows;
+        self
+    }
+
+    /// The `PRECEDING` row count behind the widened bounds, if any.
+    pub fn halo_rows(&self) -> Option<u64> {
+        self.halo_rows
+    }
+
+    /// Bind each output partition's own cut range, the one the rank walk
+    /// measures back from. One entry per output partition.
+    pub fn with_cut_bounds(
+        mut self,
+        cut_bounds: Option<Vec<WidenedBound>>,
+    ) -> Result<Self> {
+        if let Some(cut_bounds) = &cut_bounds
+            && cut_bounds.len() != self.partition.len()
+        {
+            return internal_err!(
+                "RangeShuffleReaderExec got {} cut bounds for {} output partitions",
+                cut_bounds.len(),
+                self.partition.len()
+            );
+        }
+        self.cut_bounds = cut_bounds;
+        Ok(self)
+    }
+
+    /// Per-output-partition cut ranges, before any halo widening.
+    pub fn cut_bounds(&self) -> Option<&[WidenedBound]> {
+        self.cut_bounds.as_deref()
+    }
+
+    /// Re-run the scheduler's rank walk against the indexes of the sources
+    /// this partition can read without a fetch, and start from the tighter of
+    /// the two bounds.
+    ///
+    /// The scheduler resolved the frame's `PRECEDING` count against per-file
+    /// key ranges, so the furthest it could stop was a whole file below the
+    /// cut. An index says the same thing per message.
+    ///
+    /// Local sources only. A remote index costs a round trip, and both bounds
+    /// are proven independently — the scheduler's over every routed file, this
+    /// one over the subset consulted — so a subset makes the saving smaller
+    /// rather than the answer wrong. Every file overlapping the tighter band
+    /// overlaps the wider one too, so it is still a file that was routed here.
+    fn tightened_bound(
+        &self,
+        output_partition: usize,
+        locations: &[PartitionLocation],
+        work_dir: &str,
+        bound: Option<WidenedBound>,
+    ) -> Result<Option<WidenedBound>> {
+        debug!(
+            "rank halo partition {output_partition}: halo_rows={:?}, bound={:?}, \
+             {} local sources",
+            self.halo_rows,
+            bound,
+            locations.len()
+        );
+        let (Some(halo_rows), Some(cut_bounds), Some((lower, upper))) =
+            (self.halo_rows, self.cut_bounds.as_ref(), bound.clone())
+        else {
+            return Ok(bound);
+        };
+        // The lowest consumer has nothing below it to reach into.
+        let Some(lower_cut) = cut_bounds
+            .get(output_partition)
+            .and_then(|(cut, _)| cut.clone())
+        else {
+            return Ok(bound);
+        };
+
+        let mut indexes = Vec::with_capacity(locations.len());
+        for loc in locations {
+            let path = loc
+                .path(work_dir)
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            if !has_range_index(path.as_path()) {
+                continue;
+            }
+            indexes.push(
+                read_index_file(&index_path(path.as_path()))
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?,
+            );
+        }
+        let tighter = rank_widened_lower_bound(&indexes, &lower_cut, halo_rows)
+            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+        debug!(
+            "rank halo partition {output_partition}: cut={lower_cut}, \
+             {} local indexes, coarse={lower:?}, fine={tighter:?}",
+            indexes.len()
+        );
+        let lower = match (lower, tighter) {
+            (Some(coarse), Some(fine)) => match coarse.partial_cmp(&fine) {
+                Some(std::cmp::Ordering::Less) => Some(fine),
+                _ => Some(coarse),
+            },
+            (None, fine) => fine,
+            (coarse, None) => coarse,
+        };
+        Ok(Some((lower, upper)))
     }
 
     /// Late-bound by the executor.
@@ -325,7 +450,11 @@ impl ExecutionPlan for RangeShuffleReaderExec {
         let bound = self
             .bounds
             .as_ref()
-            .and_then(|bounds| bounds.get(output_partition));
+            .and_then(|bounds| bounds.get(output_partition))
+            .cloned();
+        let bound =
+            self.tightened_bound(output_partition, &local_locations, work_dir, bound)?;
+        let bound = bound.as_ref();
 
         for loc in local_locations {
             let path = loc
