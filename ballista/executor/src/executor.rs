@@ -38,6 +38,7 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::SessionConfig;
 use futures::FutureExt;
 use futures::future::AbortHandle;
+use futures::task::AtomicWaker;
 use log::error;
 use log::warn;
 use std::future::Future;
@@ -57,7 +58,8 @@ pub struct TasksDrainedFuture(
 impl Future for TasksDrainedFuture {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.tasks_drained_waker.register(cx.waker());
         if !self.0.abort_handles.is_empty() {
             Poll::Pending
         } else {
@@ -94,6 +96,8 @@ pub struct Executor {
 
     /// Handles to abort executing tasks
     abort_handles: AbortHandles,
+
+    tasks_drained_waker: Arc<AtomicWaker>,
 
     /// Execution engine that the executor will delegate to
     /// for executing query stages
@@ -149,6 +153,7 @@ impl Executor {
             metrics_collector,
             vcores,
             abort_handles: Default::default(),
+            tasks_drained_waker: Default::default(),
             execution_engine,
             session_runtime_cache: None,
         }
@@ -173,6 +178,7 @@ impl Executor {
             metrics_collector,
             vcores,
             abort_handles: Default::default(),
+            tasks_drained_waker: Default::default(),
             execution_engine: Arc::new(DefaultExecutionEngine::new()),
             session_runtime_cache: None,
         }
@@ -180,6 +186,12 @@ impl Executor {
 }
 
 impl Executor {
+    fn wake_tasks_drained(&self) {
+        if self.abort_handles.is_empty() {
+            self.tasks_drained_waker.wake();
+        }
+    }
+
     /// Creates a [`RuntimeEnv`] using the configured runtime producer.
     pub fn produce_runtime(
         &self,
@@ -248,7 +260,9 @@ impl Executor {
             }
         };
 
+        // cancel_task only signals the abort; this task owns removal after unwinding.
         self.abort_handles.remove(&key);
+        self.wake_tasks_drained();
 
         self.metrics_collector.record_stage(
             &key.job_id,
@@ -269,7 +283,8 @@ impl Executor {
         stage_id: usize,
         task_id: usize,
     ) -> Result<bool, BallistaError> {
-        if let Some((_, handle)) = self.abort_handles.remove(&TaskKey {
+        // execute_query_stage removes the handle after the aborted task unwinds.
+        if let Some(handle) = self.abort_handles.get(&TaskKey {
             job_id,
             stage_id,
             task_id,
@@ -295,7 +310,7 @@ impl Executor {
 #[cfg(test)]
 mod test {
     use crate::execution_engine::{DefaultQueryStageExec, ShuffleWriterVariant};
-    use crate::executor::Executor;
+    use crate::executor::{Executor, TasksDrainedFuture};
     use crate::runtime_cache::{
         DefaultSessionRuntimeCache, MemoryPoolPolicy, SessionRuntimeCache,
     };
@@ -319,14 +334,26 @@ mod test {
     use datafusion::prelude::SessionConfig;
     use datafusion::prelude::SessionContext;
     use futures::Stream;
+    use futures::task::{ArcWake, waker_ref};
+    use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Context, Poll};
     use std::time::Duration;
     use tempfile::TempDir;
 
     /// A RecordBatchStream that will never terminate
     struct NeverendingRecordBatchStream;
+
+    #[derive(Default)]
+    struct WakeCounter(AtomicUsize);
+
+    impl ArcWake for WakeCounter {
+        fn wake_by_ref(arc_self: &Arc<Self>) {
+            arc_self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     impl RecordBatchStream for NeverendingRecordBatchStream {
         fn schema(&self) -> SchemaRef {
@@ -447,13 +474,13 @@ mod test {
         let runtime_producer: RuntimeProducer =
             Arc::new(move |_| Ok(runtime_env.clone()));
 
-        let executor = Executor::new_basic(
+        let executor = Arc::new(Executor::new_basic(
             executor_registration,
             &work_dir,
             runtime_producer,
             config_producer,
             2,
-        );
+        ));
 
         let (sender, receiver) = tokio::sync::oneshot::channel();
 
@@ -471,19 +498,27 @@ mod test {
             sender.send(task_result).expect("sending result");
         });
 
-        // Now cancel the task. We can only cancel once the task has been executed and has an `AbortHandle` registered, so
-        // poll until that happens.
         for _ in 0..20 {
-            if executor
-                .cancel_task("job-id".into(), 1, 0)
-                .await
-                .expect("cancelling task")
-            {
+            if executor.active_task_count() == 1 {
                 break;
             } else {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
+        assert_eq!(executor.active_task_count(), 1);
+
+        let wake_counter = Arc::new(WakeCounter::default());
+        let waker = waker_ref(&wake_counter);
+        let mut context = Context::from_waker(&waker);
+        let mut tasks_drained = Box::pin(TasksDrainedFuture(executor.clone()));
+        assert_eq!(tasks_drained.as_mut().poll(&mut context), Poll::Pending);
+        assert!(
+            executor
+                .cancel_task("job-id".into(), 1, 0)
+                .await
+                .expect("cancelling task")
+        );
+        assert_eq!(executor.active_task_count(), 1);
 
         // Wait for our task to complete
         let result = tokio::time::timeout(Duration::from_secs(5), receiver).await;
@@ -494,6 +529,9 @@ mod test {
         // Make sure the actual task failed
         let inner_result = result.unwrap().unwrap();
         assert!(inner_result.is_err());
+
+        assert_eq!(wake_counter.0.load(Ordering::SeqCst), 1);
+        assert_eq!(tasks_drained.as_mut().poll(&mut context), Poll::Ready(()));
     }
 
     #[test]
