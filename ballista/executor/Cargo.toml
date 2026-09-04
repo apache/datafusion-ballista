@@ -33,7 +33,7 @@ path = "src/bin/main.rs"
 required-features = ["build-binary"]
 
 [features]
-arrow-ipc-optimizations = []
+arrow-ipc-optimizations = ["ballista-core/arrow-ipc-optimizations"]
 build-binary = [
     "clap",
     "tracing-subscriber",
