@@ -1128,7 +1128,6 @@ dependencies = [
  "datafusion-proto-common",
  "datafusion-spark",
  "futures",
- "itertools 0.15.0",
  "log",
  "object_store",
  "parking_lot",
