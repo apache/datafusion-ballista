@@ -191,7 +191,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 // `finish_job` runs even when no `JobEnd` could be built, so a
                 // job that cannot be recorded still releases its file handle;
                 // such a log has no `JobEnd` line and the history server skips
-                // it rather than serving a half-written job.
+                // it rather than serving a half-written job. `finish_job` also
+                // renames the file from `.eventlog.running` to `.eventlog`, so
+                // a job whose `finish_job` never runs (the scheduler process is
+                // killed first) leaves a `.running`-suffixed file behind
+                // permanently — nothing else will ever rename it.
                 QueryStageSchedulerEvent::JobFinished {
                     job_id,
                     queued_at,
