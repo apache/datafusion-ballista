@@ -39,9 +39,13 @@ to:
 ballista-scheduler --event-log-dir /var/lib/ballista/history
 ```
 
-The scheduler writes one file per job, `<job_id>.eventlog`, in
-[JSON Lines](https://jsonlines.org/) format. Files are appended as the job runs
-and closed when it reaches a terminal state.
+The scheduler writes one file per job, in
+[JSON Lines](https://jsonlines.org/) format. While the job runs, records are
+appended to `<job_id>.eventlog.running`; when it reaches a terminal state
+(succeeds, fails, or is cancelled) the scheduler flushes, closes, and renames
+the file to `<job_id>.eventlog`. Only `.eventlog` files are ever indexed by
+the history server, so the `.running` suffix alone marks a job as not yet
+ready to read.
 
 Writes happen on a background task, so the scheduler's event loop never waits on
 disk. If the queue backs up, progress records are dropped rather than allowed to
@@ -127,11 +131,18 @@ future UI can show a job progressing rather than only its end state.
 - **Disk is not reclaimed automatically.** Logs accumulate until you remove
   them. Size them against your job volume and prune with whatever you already
   use for log rotation.
-- **A corrupt log is skipped, not fatal.** If the scheduler dies mid-write the
-  affected file simply has no terminal record, so the history server ignores it
-  and still serves every other job. Damage confined to a job's stored responses
-  is only found when that job is opened, and shows up as a failed request for
-  that one job.
+- **A crash mid-job leaves a `.running` file, never listed.** If the scheduler
+  dies (or is killed) before a job finishes, the file stays named
+  `<job_id>.eventlog.running` and the history server excludes it by name alone
+  without ever opening it. A restarted scheduler has no persisted memory of
+  the job and will never write to, rename, or otherwise touch that file again,
+  so a leftover `.running` file is permanently orphaned — safe (and necessary,
+  since nothing does it automatically) to remove during routine log pruning,
+  like any other stale log. This is also a directly visible signal, via `ls`,
+  that a job never finished cleanly, with no need to open and inspect it.
+  Damage confined to a job's stored responses in an already-`.eventlog`-named
+  file is a separate, orthogonal case: it is only found when that job is
+  opened, and shows up as a failed request for that one job.
 - **Deleting a log takes up to one rescan to show.** Until the next pass the
   job is still listed, and opening it fails.
 - **`GET /api/jobs` returns every job in one response.** There is no paging
