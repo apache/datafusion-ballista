@@ -24,8 +24,9 @@ edition = "2024"
 
 [package.metadata.cargo-machete]
 ignored = [
-    # not imported; pins the transitive `time` version so `cargo` keeps compiling
+    # not imported; pin transitive versions so `cargo` keeps compiling
     "time",
+    "tinyvec",
 ]
 
 [dependencies]
