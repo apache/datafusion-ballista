@@ -18,6 +18,9 @@
 //! Standalone history server: indexes completed event logs and serves the same
 //! `/api/*` responses the live scheduler does, from stored DTOs.
 
+mod source;
+mod trigger;
+
 use crate::api::SchedulerErrorResponse;
 use axum::response::IntoResponse;
 use axum::{
@@ -28,17 +31,17 @@ use axum::{
 use ballista_api_types::dto::{JobConfig, JobResponse};
 use ballista_core::BALLISTA_VERSION;
 use ballista_history::event::JobIndex;
-use ballista_history::reader::{
-    ReadError, ReplayedJob, read_completed_job, read_job_index,
-};
+use ballista_history::reader::{ReadError, ReplayedJob};
 use datafusion::DATAFUSION_VERSION;
+use futures::StreamExt;
 use http::StatusCode;
 use http::header::CONTENT_TYPE;
 use serde_json::value::RawValue;
-use std::collections::{HashMap, HashSet};
+use source::{EventLogSource, LocalDirSource};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock};
-use std::time::{Duration, SystemTime};
+use trigger::{EventLogEvent, EventLogTrigger, NotifyTrigger, OnceTrigger, ScanTrigger};
 
 /// Where one completed job lives, and just enough about it to list it.
 struct JobEntry {
@@ -50,52 +53,11 @@ struct JobEntry {
     path: PathBuf,
 }
 
-/// What a log file looked like when it was last indexed.
-///
-/// Cheap enough to take for every file on every rescan, which is the point: a
-/// directory of thousands of finished jobs costs a `stat` per file per pass,
-/// and only the files that actually changed are opened and parsed.
-///
-/// A rewrite that lands within the same modification-time tick *and* leaves the
-/// length unchanged is indistinguishable from no change here, so it is not
-/// picked up until the file changes again. Schedulers only ever append to a
-/// log and then close it, so that does not happen in practice.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct FileStamp {
-    /// `None` on the platforms/filesystems that do not report it.
-    modified: Option<SystemTime>,
-    len: u64,
-}
-
-/// Everything a rescan reads and writes, behind one lock.
+/// The in-memory job index, behind one lock.
 #[derive(Default)]
 struct Index {
     /// Completed jobs keyed by job id.
     jobs: HashMap<String, JobEntry>,
-    /// Every `.eventlog` seen so far and the job id it produced, if any.
-    /// Logs still running are named `.eventlog.running` and never reach this
-    /// map at all (see `scan_dir`); an entry with `None` here means an
-    /// `.eventlog` file that was unreadable or lacked its terminal record,
-    /// so a rescan can tell "already looked at, unchanged" from "never seen".
-    seen: HashMap<PathBuf, (FileStamp, Option<String>)>,
-}
-
-/// What one directory rescan changed.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct RefreshStats {
-    /// Jobs that appeared: a log written since the last pass, or one that has
-    /// gained its terminal record since it was last looked at.
-    pub added: usize,
-    /// Jobs dropped because their log is no longer in the directory.
-    pub removed: usize,
-}
-
-impl RefreshStats {
-    /// Whether the pass found nothing to do, which is the common case and the
-    /// one not worth logging.
-    fn is_noop(&self) -> bool {
-        self.added == 0 && self.removed == 0
-    }
 }
 
 /// Index of the completed jobs found in an event-log directory.
@@ -108,11 +70,14 @@ impl RefreshStats {
 /// clicks through a UI.
 ///
 /// The directory is normally one that one or more live schedulers are still
-/// writing to, so the index is not fixed at startup: [`HistoryStore::refresh`]
-/// rescans it, and [`spawn_refresh_task`] keeps that happening on a timer.
+/// writing to, so the index is not fixed at startup: [`spawn_service_tasks`]
+/// runs background loops that fold newly found logs into it as its triggers
+/// fire.
 pub struct HistoryStore {
-    /// The event-log directory this store indexes.
-    dir: PathBuf,
+    /// Where this store's completed logs are found and read.
+    source: Box<dyn EventLogSource>,
+    trigger: Box<dyn EventLogTrigger>,
+    scan_trigger: Box<dyn ScanTrigger>,
     index: RwLock<Index>,
 }
 
@@ -141,161 +106,61 @@ impl std::fmt::Display for JobReadError {
 }
 
 impl HistoryStore {
-    /// Index every completed job found under `dir`. Missing directories yield
-    /// an empty store rather than an error.
+    /// Open a store over the event logs in `dir`, watching it for new ones.
     ///
-    /// A single unreadable/corrupt `.eventlog` file (e.g. truncated by a
-    /// crash mid-write) is logged and skipped rather than failing the whole
-    /// load — one bad log must not hide every other completed job. Only a
-    /// failure to read the directory itself is propagated.
+    /// The initial index is built synchronously here, so the store is usable
+    /// the moment it is constructed; [`spawn_service_tasks`] then keeps it
+    /// current, both from full directory passes and from the `NotifyTrigger`
+    /// set up here as logs are renamed into place.
     ///
-    /// Each log is read once here, but only its summary is decoded, so this
-    /// costs a pass over the directory rather than a copy of it in memory.
-    /// Corruption confined to the payloads therefore surfaces when the job is
-    /// requested rather than at load.
-    pub fn load(dir: &Path) -> std::io::Result<HistoryStore> {
+    /// `dir` must already exist — the filesystem watch cannot be placed on a
+    /// missing path. Callers that may run before any scheduler has written
+    /// (the history server) create it first.
+    pub fn new(dir: &Path) -> std::io::Result<HistoryStore> {
         let store = HistoryStore {
-            dir: dir.to_path_buf(),
-            index: RwLock::new(Index::default()),
+            source: Box::new(LocalDirSource::new(dir.to_path_buf())),
+            scan_trigger: Box::new(OnceTrigger::default()),
+            trigger: Box::new(NotifyTrigger::new(dir).map_err(std::io::Error::other)?),
+            index: RwLock::new(Default::default()),
         };
-        store.refresh()?;
         Ok(store)
     }
 
-    /// Rescan the event-log directory and fold what changed into the index.
-    ///
-    /// This is what makes a job that finished after the server started
-    /// visible. Only logs whose size or modification time has moved are
-    /// opened, so a pass over an unchanged directory reads no files; logs that
-    /// have gone are dropped from the index, so deleting one no longer leaves
-    /// an entry that fails when opened.
-    ///
-    /// Blocking file I/O — call it from `spawn_blocking`, not on a runtime
-    /// worker.
-    pub fn refresh(&self) -> std::io::Result<RefreshStats> {
-        let found = self.scan_dir()?;
-
-        // Work out what needs reading under a read lock, then do the reading
-        // with the lock released: parsing a log is orders of magnitude slower
-        // than the bookkeeping, and requests are served from the index
-        // throughout.
-        let stale: Vec<PathBuf> = {
-            let index = self.read_index();
-            found
-                .iter()
-                .filter(|(path, stamp)| {
-                    index
-                        .seen
-                        .get(path.as_path())
-                        .is_none_or(|(s, _)| s != stamp)
-                })
-                .map(|(path, _)| path.clone())
-                .collect()
+    /// Open a store over `dir` as a fixed snapshot: the directory is read
+    /// once, here, and the index never changes afterwards. Both triggers are
+    /// `NoopTrigger`, so pairing this with [`spawn_service_tasks`] is a no-op
+    /// — it is for callers (tests, a one-shot server over an archived
+    /// directory) that want a frozen view rather than a live one.
+    pub async fn new_static(dir: &Path) -> std::io::Result<HistoryStore> {
+        let store = HistoryStore {
+            source: Box::new(LocalDirSource::new(dir.to_path_buf())),
+            scan_trigger: Box::new(trigger::NoopTrigger::default()),
+            trigger: Box::new(trigger::NoopTrigger::default()),
+            index: RwLock::new(Default::default()),
         };
-
-        let read: Vec<(PathBuf, Option<JobIndex>)> = stale
-            .into_iter()
-            .map(|path| {
-                let index = match read_job_index(&path) {
-                    Ok(index) => index,
-                    Err(err) => {
-                        tracing::warn!(
-                            "skipping unreadable event log {}: {err}",
-                            path.display()
-                        );
-                        None
-                    }
-                };
-                (path, index)
-            })
-            .collect();
-
-        let present: HashSet<&Path> = found.iter().map(|(p, _)| p.as_path()).collect();
-        let mut stats = RefreshStats::default();
-        let mut index = self.write_index();
-        let Index { jobs, seen } = &mut *index;
-
-        // Logs that have gone take their jobs with them.
-        seen.retain(|path, (_, job_id)| {
-            if present.contains(path.as_path()) {
-                return true;
-            }
-            if let Some(job_id) = job_id
-                && jobs.remove(job_id).is_some()
-            {
-                stats.removed += 1;
-            }
-            false
-        });
-
-        let stamps: HashMap<&Path, FileStamp> =
-            found.iter().map(|(p, s)| (p.as_path(), *s)).collect();
-        for (path, job_index) in read {
-            let Some(stamp) = stamps.get(path.as_path()).copied() else {
-                // Deleted between the scan and now; the next pass will see it.
-                continue;
-            };
-            // A rewritten log can name a different job than it used to.
-            let previous = seen.insert(
-                path.clone(),
-                (stamp, job_index.as_ref().map(|i| i.job_id.clone())),
-            );
-            if let Some((_, Some(previous_id))) = previous
-                && Some(previous_id.as_str())
-                    != job_index.as_ref().map(|i| i.job_id.as_str())
-                && jobs.remove(&previous_id).is_some()
-            {
-                stats.removed += 1;
-            }
-            if let Some(job_index) = job_index
-                && jobs
-                    .insert(
-                        job_index.job_id.clone(),
-                        JobEntry {
-                            index: job_index,
-                            path,
-                        },
-                    )
-                    .is_none()
-            {
-                stats.added += 1;
-            }
-        }
-
-        Ok(stats)
+        store.load_index().await;
+        Ok(store)
     }
 
-    /// Stat every `.eventlog` in the directory. A directory that does not
-    /// exist yet is an empty one: the history server is routinely started
-    /// before the scheduler has written anything.
-    fn scan_dir(&self) -> std::io::Result<Vec<(PathBuf, FileStamp)>> {
-        let mut found = Vec::new();
-        if !self.dir.exists() {
-            return Ok(found);
-        }
-        for entry in std::fs::read_dir(&self.dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            // A job still running (or abandoned by a crashed scheduler) is
-            // named `<job_id>.eventlog.running`, whose extension is
-            // "running", not "eventlog" — this check relies on that to skip
-            // it without ever opening it.
-            if path.extension().and_then(|e| e.to_str()) != Some("eventlog") {
-                continue;
+    /// Fold every completed log currently in the source into the index, once.
+    ///
+    /// A single full [`EventLogSource::scan_jobs`] pass: every readable log is
+    /// upserted, an unreadable one is logged and skipped, a directory-listing
+    /// failure is logged. Nothing is reconciled — a log that later disappears
+    /// or is rewritten under a new id is not removed. This is the whole index
+    /// for a store built by [`HistoryStore::new_static`]; a store built by
+    /// [`HistoryStore::new`] gets the same pass from [`spawn_service_tasks`]'s
+    /// scan loop instead.
+    async fn load_index(&self) {
+        let mut paths = self.source.scan_jobs();
+        while let Some(item) = paths.next().await {
+            match item {
+                Ok(path) => index_one(self, path).await,
+                Err(err) => tracing::warn!(
+                    "history server: listing the log directory failed: {err}"
+                ),
             }
-            // A file that disappears mid-scan is simply not there this pass.
-            let Ok(metadata) = entry.metadata() else {
-                continue;
-            };
-            found.push((
-                path,
-                FileStamp {
-                    modified: metadata.modified().ok(),
-                    len: metadata.len(),
-                },
-            ));
         }
-        Ok(found)
     }
 
     /// How many completed jobs are indexed.
@@ -303,16 +168,17 @@ impl HistoryStore {
         self.read_index().jobs.len()
     }
 
-    /// Whether the log directory holds no completed jobs.
+    /// Whether no completed jobs are indexed.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Read one job's stored payload back from its event log.
     ///
-    /// This is blocking file I/O, so the request handlers call it from
-    /// `spawn_blocking` rather than on a runtime worker.
-    pub fn read_job(&self, job_id: &str) -> Result<ReplayedJob, JobReadError> {
+    /// The read is file I/O; `EventLogSource` implementations move it off the
+    /// runtime worker (see `LocalDirSource`), so handlers can `await` this
+    /// directly.
+    pub async fn read_job(&self, job_id: &str) -> Result<ReplayedJob, JobReadError> {
         // Copy the path out rather than reading with the lock held, so a slow
         // read of one job does not block a rescan or the job list.
         let path = {
@@ -323,7 +189,7 @@ impl HistoryStore {
                 .map(|entry| entry.path.clone())
                 .ok_or(JobReadError::NotFound)?
         };
-        match read_completed_job(&path) {
+        match self.source.read_completed_job(&path).await {
             Ok(Some(replayed)) => Ok(replayed),
             Ok(None) => Err(JobReadError::Vanished),
             Err(e) => Err(JobReadError::Unreadable(e)),
@@ -339,7 +205,7 @@ impl HistoryStore {
             .collect()
     }
 
-    /// A poisoned index means a rescan panicked partway through. What is in
+    /// A poisoned index means an index write panicked partway through. What is in
     /// there is still a valid, if possibly stale, view of the directory, and
     /// serving it beats taking the whole server down, so poisoning is ignored
     /// on both paths.
@@ -352,83 +218,120 @@ impl HistoryStore {
     }
 }
 
-/// Rescan `store`'s directory every `interval` for as long as the returned
-/// task runs.
+/// Keep `store`'s index current after the synchronous initial build in
+/// [`HistoryStore::new`].
 ///
-/// The history server is normally pointed at a directory that one or more live
-/// schedulers are still writing to, so without this it would only ever serve
-/// the jobs that had finished before it started. Polling rather than watching
-/// the filesystem is deliberate: these directories are usually on a shared or
-/// network filesystem, where change notifications are unreliable or absent.
-pub fn spawn_refresh_task(
-    store: Arc<HistoryStore>,
-    interval: Duration,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        // Skip the immediate first tick: the caller has just loaded the store.
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        ticker.tick().await;
+/// Two loops, each driven by one of the store's triggers:
+///
+/// * the watch loop folds in a single log the moment `EventLogTrigger`'s
+///   `next_event` reports it appeared, and drops a job the moment its log is
+///   reported removed — both without waiting for the next full pass.
+/// * the scan loop does a full `EventLogSource::scan_jobs` pass every time
+///   `ScanTrigger::scan_tick` fires, folding every readable log it finds
+///   into the index.
+///
+/// The scan loop is upsert-only: a log that is gone or was rewritten under a
+/// new job id is not reconciled there. The watch loop does react to a removal,
+/// but only one it actually observes. With the triggers wired today
+/// (`NotifyTrigger` / `OnceTrigger`) that is one catch-up pass at startup plus
+/// a running index that follows every `*.eventlog` renamed in or deleted
+/// afterwards.
+///
+/// The returned [`ServiceTasks`] owns both loops and aborts them when it is
+/// dropped, so the caller must keep it alive for as long as the store is
+/// served.
+pub fn spawn_service_tasks(store: Arc<HistoryStore>) -> ServiceTasks {
+    let watch_store = Arc::clone(&store);
+    let watch_loop = tokio::spawn(async move {
         loop {
-            ticker.tick().await;
-            let store = Arc::clone(&store);
-            match tokio::task::spawn_blocking(move || store.refresh()).await {
-                Ok(Ok(stats)) if stats.is_noop() => {}
-                Ok(Ok(stats)) => tracing::info!(
-                    "history server: {} job(s) added, {} removed",
-                    stats.added,
-                    stats.removed
-                ),
-                Ok(Err(err)) => {
-                    tracing::warn!(
-                        "history server: rescanning the log directory failed: {err}"
-                    )
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        "history server: rescanning the log directory panicked: {err}"
-                    )
-                }
+            match watch_store.trigger.next_event().await {
+                EventLogEvent::Created(path) => index_one(&watch_store, path).await,
+                EventLogEvent::Removed(path) => deindex_one(&watch_store, path),
             }
         }
-    })
+    });
+    let scan_store = Arc::clone(&store);
+    let scan_loop = tokio::spawn(async move {
+        loop {
+            scan_store.scan_trigger.scan_tick().await;
+            scan_store.load_index().await;
+        }
+    });
+
+    ServiceTasks {
+        watch_loop,
+        scan_loop,
+    }
 }
 
-/// [`HistoryStore::read_job`] moved off the async runtime.
+/// Owns the background loops started by [`spawn_service_tasks`] and aborts
+/// both when dropped, so letting it go out of scope does not leak them.
+pub struct ServiceTasks {
+    watch_loop: tokio::task::JoinHandle<()>,
+    scan_loop: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ServiceTasks {
+    fn drop(&mut self) {
+        self.watch_loop.abort();
+        self.scan_loop.abort();
+    }
+}
+
+/// Read one log's summary and fold it into the index. A log with no terminal
+/// record yet is skipped silently; an unreadable one is logged and skipped, so
+/// one bad file never stalls the loop.
+async fn index_one(store: &HistoryStore, path: PathBuf) {
+    match store.source.read_job_index(&path).await {
+        Ok(Some(index)) => {
+            store
+                .write_index()
+                .jobs
+                .insert(index.job_id.clone(), JobEntry { index, path });
+        }
+        Ok(None) => {}
+        Err(err) => tracing::warn!(
+            "history server: skipping unreadable event log {}: {err}",
+            path.display()
+        ),
+    }
+}
+
+/// Drop the job whose event log was `path` from the index.
 ///
-/// A log that was indexed and cannot be read now means the file changed
-/// underneath us, so both failures are logged rather than only being reported
-/// to whoever happened to ask.
-async fn read_job_blocking(
-    store: Arc<HistoryStore>,
-    job_id: String,
-) -> Result<ReplayedJob, SchedulerErrorResponse> {
-    let result = tokio::task::spawn_blocking(move || {
-        store.read_job(&job_id).map_err(|e| (job_id, e))
-    })
-    .await
-    .map_err(|e| {
-        tracing::warn!("history server: reading an event log panicked: {e}");
-        SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
-    })?;
-
-    result.map_err(|(job_id, err)| match err {
-        JobReadError::NotFound => SchedulerErrorResponse::new(StatusCode::NOT_FOUND),
-        JobReadError::Vanished => {
-            tracing::warn!("history server: event log for {job_id} {err}");
-            SchedulerErrorResponse::with_error(StatusCode::NOT_FOUND, err.to_string())
-        }
-        JobReadError::Unreadable(_) => {
-            tracing::warn!("history server: event log for {job_id} {err}");
-            SchedulerErrorResponse::with_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                err.to_string(),
-            )
-        }
-    })
+/// A completed log is named `<job_id>.eventlog` (see [`JobEntry`]), so the job
+/// id is the file stem — the trigger only ever hands this a `*.eventlog` path,
+/// so the stem is the bare id, never `j1.eventlog` from a `j1.eventlog.running`.
+/// Keying off the file name also means it does not matter whether `path` is
+/// absolute or how the matching entry's path was spelled. A path with no stem,
+/// or a job id not in the index (a still-running log, one already reconciled,
+/// one that was unreadable when it appeared), is a silent no-op.
+fn deindex_one(store: &HistoryStore, path: PathBuf) {
+    let Some(job_id) = path.file_stem().and_then(|s| s.to_str()) else {
+        return;
+    };
+    if store.write_index().jobs.remove(job_id).is_some() {
+        tracing::debug!("history server: de-indexed job {job_id}");
+    }
 }
 
-/// Build the axum router serving `/api/*` from a loaded [`HistoryStore`].
+impl From<JobReadError> for SchedulerErrorResponse {
+    fn from(error: JobReadError) -> Self {
+        match error {
+            JobReadError::NotFound => SchedulerErrorResponse::new(StatusCode::NOT_FOUND),
+            JobReadError::Vanished => SchedulerErrorResponse::with_error(
+                StatusCode::NOT_FOUND,
+                error.to_string(),
+            ),
+            JobReadError::Unreadable(_) => SchedulerErrorResponse::with_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error.to_string(),
+            ),
+        }
+    }
+}
+
+/// Build the axum router serving `/api/*` from a [`HistoryStore`].
 pub fn history_router(store: Arc<HistoryStore>) -> Router {
     Router::new()
         .route("/api/jobs", get(get_jobs))
@@ -501,7 +404,7 @@ async fn get_job(
     State(store): State<Arc<HistoryStore>>,
     AxumPath(job_id): AxumPath<String>,
 ) -> Result<axum::response::Response, SchedulerErrorResponse> {
-    let job = read_job_blocking(store, job_id).await?;
+    let job = store.read_job(&job_id).await?;
     Ok(raw_json(&job.job))
 }
 
@@ -509,7 +412,7 @@ async fn get_stages(
     State(store): State<Arc<HistoryStore>>,
     AxumPath(job_id): AxumPath<String>,
 ) -> Result<axum::response::Response, SchedulerErrorResponse> {
-    let job = read_job_blocking(store, job_id).await?;
+    let job = store.read_job(&job_id).await?;
     Ok(raw_json(&job.stages))
 }
 
@@ -517,7 +420,7 @@ async fn get_config(
     State(store): State<Arc<HistoryStore>>,
     AxumPath(job_id): AxumPath<String>,
 ) -> Result<Json<JobConfig>, SchedulerErrorResponse> {
-    let job = read_job_blocking(store, job_id).await?;
+    let job = store.read_job(&job_id).await?;
     Ok(Json(job.config))
 }
 
@@ -525,7 +428,7 @@ async fn get_dot(
     State(store): State<Arc<HistoryStore>>,
     AxumPath(job_id): AxumPath<String>,
 ) -> Result<String, SchedulerErrorResponse> {
-    let job = read_job_blocking(store, job_id).await?;
+    let job = store.read_job(&job_id).await?;
     Ok(job.dot)
 }
 
@@ -562,6 +465,7 @@ mod tests {
     use ballista_api_types::dto::{QueryStageSummary, QueryStagesResponse};
     use ballista_history::event::{HistoryEvent, JobEnd, JobEndStatus, JobIndex};
     use std::io::Write;
+    use std::time::Duration;
     use tempfile::tempdir;
     use tower::ServiceExt; // oneshot
 
@@ -620,15 +524,15 @@ mod tests {
 
     /// Every test goes through a real directory of logs, because the store no
     /// longer holds payloads it could be handed directly.
-    fn store_with_one_job(dir: &tempfile::TempDir) -> Arc<HistoryStore> {
+    async fn store_with_one_job(dir: &tempfile::TempDir) -> Arc<HistoryStore> {
         write_job_end_log(&dir.path().join("job-1.eventlog"), "job-1");
-        Arc::new(HistoryStore::load(dir.path()).unwrap())
+        Arc::new(HistoryStore::new_static(dir.path()).await.unwrap())
     }
 
     #[tokio::test]
     async fn jobs_endpoint_nulls_plan_fields() {
         let dir = tempdir().unwrap();
-        let app = history_router(store_with_one_job(&dir));
+        let app = history_router(store_with_one_job(&dir).await);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -650,7 +554,7 @@ mod tests {
     #[tokio::test]
     async fn stages_endpoint_returns_stored_dto() {
         let dir = tempdir().unwrap();
-        let app = history_router(store_with_one_job(&dir));
+        let app = history_router(store_with_one_job(&dir).await);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -674,7 +578,7 @@ mod tests {
     #[tokio::test]
     async fn missing_job_returns_404_on_job_and_stages() {
         let dir = tempdir().unwrap();
-        let app = history_router(store_with_one_job(&dir));
+        let app = history_router(store_with_one_job(&dir).await);
 
         let resp = app
             .clone()
@@ -703,7 +607,7 @@ mod tests {
     #[tokio::test]
     async fn state_endpoint_returns_static_payload() {
         let dir = tempdir().unwrap();
-        let app = history_router(store_with_one_job(&dir));
+        let app = history_router(store_with_one_job(&dir).await);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -747,7 +651,9 @@ mod tests {
                 start_time,
             );
         }
-        let app = history_router(Arc::new(HistoryStore::load(dir.path()).unwrap()));
+        let app = history_router(Arc::new(
+            HistoryStore::new_static(dir.path()).await.unwrap(),
+        ));
 
         let (status, body) = get(&app, "/api/jobs").await;
         assert_eq!(status, StatusCode::OK);
@@ -769,7 +675,9 @@ mod tests {
                 7,
             );
         }
-        let app = history_router(Arc::new(HistoryStore::load(dir.path()).unwrap()));
+        let app = history_router(Arc::new(
+            HistoryStore::new_static(dir.path()).await.unwrap(),
+        ));
 
         let (_, body) = get(&app, "/api/jobs").await;
         let jobs: Vec<JobResponse> = serde_json::from_str(&body).unwrap();
@@ -799,7 +707,7 @@ mod tests {
     async fn detail_endpoints_read_the_log_on_demand() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("job-1.eventlog");
-        let app = history_router(store_with_one_job(&dir));
+        let app = history_router(store_with_one_job(&dir).await);
 
         let (status, body) = get(&app, "/api/job/job-1/stages").await;
         assert_eq!(status, StatusCode::OK);
@@ -822,7 +730,7 @@ mod tests {
     async fn a_log_that_breaks_after_indexing_reports_the_failure() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("job-1.eventlog");
-        let app = history_router(store_with_one_job(&dir));
+        let app = history_router(store_with_one_job(&dir).await);
 
         std::fs::write(&path, [0xff, 0xfe, 0xfd]).unwrap();
 
@@ -842,7 +750,7 @@ mod tests {
     async fn a_log_that_loses_its_terminal_record_returns_404() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("job-1.eventlog");
-        let app = history_router(store_with_one_job(&dir));
+        let app = history_router(store_with_one_job(&dir).await);
 
         std::fs::write(
             &path,
@@ -880,180 +788,8 @@ mod tests {
         std::fs::write(path, format!("{line}\n")).unwrap();
     }
 
-    /// The reason the store rescans at all: a history server is normally
-    /// pointed at a directory a live scheduler is still writing to, so a job
-    /// that finishes after startup has to show up without a restart.
-    #[test]
-    fn refresh_picks_up_a_job_written_after_load() {
-        let dir = tempdir().unwrap();
-        write_job_end_log(&dir.path().join("job-1.eventlog"), "job-1");
-        let store = HistoryStore::load(dir.path()).unwrap();
-        assert_eq!(store.len(), 1);
-
-        write_job_end_log(&dir.path().join("job-2.eventlog"), "job-2");
-
-        let stats = store.refresh().unwrap();
-        assert_eq!(
-            stats,
-            RefreshStats {
-                added: 1,
-                removed: 0
-            }
-        );
-        assert_eq!(store.len(), 2);
-        assert!(store.read_job("job-2").is_ok());
-    }
-
-    /// A rescan that finds nothing new must not re-read the logs it already
-    /// indexed, or a directory of thousands of finished jobs would be parsed
-    /// end to end on every tick.
-    #[test]
-    fn refresh_is_a_noop_when_nothing_changed() {
-        let dir = tempdir().unwrap();
-        write_job_end_log(&dir.path().join("job-1.eventlog"), "job-1");
-        let store = HistoryStore::load(dir.path()).unwrap();
-
-        // Truncating the log to garbage after it is indexed would break a
-        // rescan that re-parsed it; the stamp is unchanged only if the file is
-        // untouched, so a clean pass here means nothing was opened.
-        assert_eq!(store.refresh().unwrap(), RefreshStats::default());
-        assert_eq!(store.len(), 1);
-    }
-
-    /// A job still running is named `.eventlog.running` and is invisible to a
-    /// scan; it must not be written off, though: the next rescan after the
-    /// job ends and the writer renames the file has to pick it up.
-    #[test]
-    fn refresh_indexes_a_log_that_gains_its_terminal_record() {
-        let dir = tempdir().unwrap();
-        let running_path = dir.path().join("job-1.eventlog.running");
-        let final_path = dir.path().join("job-1.eventlog");
-        std::fs::write(
-            &running_path,
-            "{\"ev\":\"StageStart\",\"version\":1,\"data\":{\"stage_id\":1}}\n",
-        )
-        .unwrap();
-
-        let store = HistoryStore::load(dir.path()).unwrap();
-        assert!(store.is_empty(), "a .running file must not be indexed");
-
-        // Simulate what EventLogWriter::finish_job does on completion: write
-        // the real terminal content, then rename into place.
-        write_job_end_log(&running_path, "job-1");
-        std::fs::rename(&running_path, &final_path).unwrap();
-
-        assert_eq!(store.refresh().unwrap().added, 1);
-        assert_eq!(store.len(), 1);
-    }
-
-    /// Pruning a directory of old logs used to leave the jobs listed until the
-    /// server was restarted, with every click on one failing.
-    #[test]
-    fn refresh_drops_a_job_whose_log_was_deleted() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("job-1.eventlog");
-        write_job_end_log(&path, "job-1");
-        write_job_end_log(&dir.path().join("job-2.eventlog"), "job-2");
-        let store = HistoryStore::load(dir.path()).unwrap();
-        assert_eq!(store.len(), 2);
-
-        std::fs::remove_file(&path).unwrap();
-
-        let stats = store.refresh().unwrap();
-        assert_eq!(
-            stats,
-            RefreshStats {
-                added: 0,
-                removed: 1
-            }
-        );
-        assert!(matches!(
-            store.read_job("job-1"),
-            Err(JobReadError::NotFound)
-        ));
-        assert!(store.read_job("job-2").is_ok());
-    }
-
-    /// A log rewritten under a different job id must not leave the old id
-    /// pointing at a file that no longer describes it.
-    #[test]
-    fn refresh_replaces_the_job_when_a_log_is_rewritten() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("job.eventlog");
-        write_job_end_log(&path, "old-id");
-        let store = HistoryStore::load(dir.path()).unwrap();
-        assert!(store.read_job("old-id").is_ok());
-
-        write_job_end_log_with_stage(&path, "new-id", "another-stage", 99);
-
-        store.refresh().unwrap();
-        assert_eq!(store.len(), 1);
-        assert!(matches!(
-            store.read_job("old-id"),
-            Err(JobReadError::NotFound)
-        ));
-        assert!(store.read_job("new-id").is_ok());
-    }
-
-    /// Being started before the scheduler has written anything is normal, and
-    /// the directory appearing later has to be picked up like any other change.
-    #[test]
-    fn a_directory_that_does_not_exist_yet_is_empty_then_indexed() {
-        let dir = tempdir().unwrap();
-        let logs = dir.path().join("not-created-yet");
-        let store = HistoryStore::load(&logs).unwrap();
-        assert!(store.is_empty());
-
-        std::fs::create_dir(&logs).unwrap();
-        write_job_end_log(&logs.join("job-1.eventlog"), "job-1");
-
-        assert_eq!(store.refresh().unwrap().added, 1);
-        assert_eq!(store.len(), 1);
-    }
-
-    /// `/api/jobs` is served from the index, so the background rescan is what
-    /// makes a newly finished job visible over HTTP.
     #[tokio::test]
-    async fn jobs_endpoint_reflects_a_refresh() {
-        let dir = tempdir().unwrap();
-        let store = Arc::new(HistoryStore::load(dir.path()).unwrap());
-        let app = history_router(Arc::clone(&store));
-
-        let (status, body) = get(&app, "/api/jobs").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "[]");
-
-        write_job_end_log(&dir.path().join("job-1.eventlog"), "job-1");
-        store.refresh().unwrap();
-
-        let (status, body) = get(&app, "/api/jobs").await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("\"job_id\":\"job-1\""), "got: {body}");
-    }
-
-    /// The timer task is the only thing wiring rescans to wall-clock time, so
-    /// it is worth proving it actually runs one.
-    #[tokio::test]
-    async fn the_refresh_task_indexes_new_jobs() {
-        let dir = tempdir().unwrap();
-        let store = Arc::new(HistoryStore::load(dir.path()).unwrap());
-        let task = spawn_refresh_task(Arc::clone(&store), Duration::from_millis(10));
-
-        write_job_end_log(&dir.path().join("job-1.eventlog"), "job-1");
-
-        for _ in 0..200 {
-            if store.len() == 1 {
-                task.abort();
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        task.abort();
-        panic!("the refresh task never indexed the new job");
-    }
-
-    #[test]
-    fn load_skips_corrupt_eventlog_and_keeps_good_one() {
+    async fn new_skips_corrupt_eventlog_and_keeps_good_one() {
         let dir = tempdir().unwrap();
 
         // A good, readable event log.
@@ -1066,12 +802,44 @@ mod tests {
         corrupt.write_all(&[0xff, 0xfe, 0xfd]).unwrap();
         drop(corrupt);
 
-        let store = HistoryStore::load(dir.path()).unwrap();
+        let store = HistoryStore::new_static(dir.path()).await.unwrap();
         assert_eq!(store.len(), 1);
-        assert!(store.read_job("job-good").is_ok());
+        assert!(store.read_job("job-good").await.is_ok());
         assert!(matches!(
-            store.read_job("job-bad"),
+            store.read_job("job-bad").await,
             Err(JobReadError::NotFound)
         ));
+    }
+
+    /// Poll `cond` until it holds or the deadline passes; filesystem events are
+    /// delivered asynchronously, so the watch loop reacts a beat after the write.
+    async fn eventually(mut cond: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(cond(), "condition still false after 5s");
+    }
+
+    /// The watch loop folds a log in when it appears and drops it again when the
+    /// file is deleted, without any full rescan in between.
+    #[tokio::test]
+    async fn watch_loop_deindexes_a_removed_log() {
+        let dir = tempdir().unwrap();
+        // `new` wires a real `NotifyTrigger`; `OnceTrigger` does its single scan
+        // pass over the (empty) directory and then parks, so the removal below
+        // can only be picked up by the watch loop.
+        let store = Arc::new(HistoryStore::new(dir.path()).unwrap());
+        let _tasks = spawn_service_tasks(Arc::clone(&store));
+
+        let path = dir.path().join("job-1.eventlog");
+        write_job_end_log(&path, "job-1");
+        eventually(|| store.len() == 1).await;
+
+        std::fs::remove_file(&path).unwrap();
+        eventually(|| store.is_empty()).await;
     }
 }

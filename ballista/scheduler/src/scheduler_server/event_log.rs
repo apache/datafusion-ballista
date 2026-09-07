@@ -397,7 +397,7 @@ mod tests {
 
     /// End-to-end parity, and the reason the whole design stores built
     /// responses rather than re-deriving them: replaying a real event log
-    /// through `EventLogWriter` and `HistoryStore::load` must yield exactly the
+    /// through `EventLogWriter` and `HistoryStore::new` must yield exactly the
     /// JSON the live scheduler would have served for the same graph.
     ///
     /// This lives here rather than under `tests/` because `dto_build`,
@@ -428,8 +428,11 @@ mod tests {
         writer.flush_job(&job_id).await;
         writer.finish_job(&job_id).await;
 
-        let store = HistoryStore::load(dir.path()).unwrap();
-        let replayed = store.read_job(&job_id).expect("job should be replayed");
+        let store = HistoryStore::new_static(dir.path()).await.unwrap();
+        let replayed = store
+            .read_job(&job_id)
+            .await
+            .expect("job should be replayed");
 
         assert_eq!(
             replayed.job.get(),
