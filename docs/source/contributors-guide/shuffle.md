@@ -276,11 +276,21 @@ behavior it would be config-gated, leaving today's model as the default:
   per-partition metadata would cut the fixed cost of a stage boundary without
   changing where the data lives ([#660]).
 - **Shuffle affinity.** Schedule a consumer task on the executor that already
-  holds most of its input, turning Flight fetches into local reads. This one can
-  be prototyped without touching the core: task distribution is already
-  pluggable, so a `TaskDistributionPolicy::Custom` implementation can bind tasks
-  to the executors holding their `PartitionLocation`s and be measured against
-  the built-in bias and round-robin policies ([#2319]).
+  holds most of its input, turning Flight fetches into local reads. A first cut
+  ships as `--task-distribution shuffle-affinity` ([#2319]): it reads the byte
+  counts on each partition's `PartitionLocation`s, ranks every
+  `(partition, holder)` pair by size, and spends each executor's free vcores on
+  its strongest candidates before binding the remainder bias-style, so no vcore
+  idles waiting for a holder with no room.
+
+  How much locality is available depends on the producer stage — a partition
+  spread evenly over `E` executors leaves none holding more than `1/E` of it —
+  so the policy is off by default and reports the share of shuffle bytes it
+  kept local, to be compared against bias and round-robin on a given workload.
+  That share is exposed as the `shuffle_locality_*` metrics served from
+  `/api/metrics` (see the [metrics guide]), through
+  `ShuffleAffinityPolicy::stats` when the scheduler is embedded, and on a
+  per-round `debug!` line.
 - **Remote shuffle service.** Offload shuffle storage to a service such as
   Apache Celeborn or Apache Uniffle ([#1539]), which decouples shuffle
   durability from executor lifetime and makes aggressive autoscaling safer.
@@ -294,5 +304,6 @@ properties above it preserves and which it trades away.
 [#1539]: https://github.com/apache/datafusion-ballista/issues/1539
 [#2003]: https://github.com/apache/datafusion-ballista/issues/2003
 [#2318]: https://github.com/apache/datafusion-ballista/issues/2318
+[metrics guide]: ../user-guide/metrics.md
 [#2319]: https://github.com/apache/datafusion-ballista/issues/2319
 [#2320]: https://github.com/apache/datafusion-ballista/issues/2320

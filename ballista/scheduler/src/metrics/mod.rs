@@ -19,6 +19,7 @@
 /// Module implementing prometheus metrics.
 pub mod prometheus;
 
+use crate::cluster::affinity::LocalityStats;
 #[cfg(feature = "prometheus")]
 use crate::metrics::prometheus::PrometheusMetricsCollector;
 use ballista_core::{JobId, error::Result};
@@ -52,6 +53,13 @@ pub trait SchedulerMetricsCollector: Send + Sync {
     /// Set the current number of pending tasks in scheduler. A pending task is a task that is available
     /// to schedule on an executor but cannot be scheduled because no resources are available.
     fn set_pending_tasks_queue_size(&self, value: u64);
+
+    /// Record the shuffle locality one binding round achieved: input its tasks
+    /// will read from the executor running them, against what they read in all.
+    ///
+    /// Only the `shuffle-affinity` task distribution reports this, as a
+    /// per-round delta rather than a running total. Ignored by default.
+    fn record_shuffle_locality(&self, _round: &LocalityStats) {}
 
     /// Gather current metric set that should be returned when calling the scheduler's metrics API
     /// Should return a tuple containing the content of the metric set and the content type (e.g. `application/json`, `text/plain`, etc)

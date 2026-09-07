@@ -16,8 +16,9 @@
 // under the License.
 
 use crate::cluster::{
-    BoundTask, ClusterState, ExecutorSlot, JobState, JobStateEvent, JobStateEventStream,
-    JobStatus, TaskDistributionPolicy, bind_task_bias, bind_task_round_robin,
+    BoundTask, ClusterState, DistributionPolicy, ExecutorSlot, JobState, JobStateEvent,
+    JobStateEventStream, JobStatus, TaskDistributionPolicy, bind_task_bias,
+    bind_task_round_robin,
 };
 use crate::state::execution_graph::ExecutionGraphBox;
 use ballista_core::error::{BallistaError, Result};
@@ -90,6 +91,9 @@ impl ClusterState for InMemoryClusterState {
             }
             TaskDistributionPolicy::RoundRobin => {
                 bind_task_round_robin(budgets, active_jobs, |_| false).await
+            }
+            TaskDistributionPolicy::ShuffleAffinity(ref policy) => {
+                policy.bind_tasks(budgets, active_jobs).await?
             }
             TaskDistributionPolicy::Custom(ref policy) => {
                 policy.bind_tasks(budgets, active_jobs).await?
@@ -528,18 +532,22 @@ mod test {
     use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
     use crate::cluster::test_util::{test_job_lifecycle, test_job_planning_failure};
     use crate::cluster::{ClusterState, ClusterStateEvent, JobState, JobStateEvent};
+    use crate::config::TaskDistributionPolicy;
     use crate::test_utils::{
-        test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
+        mock_locality_executor, mock_shuffle_jobs, test_aggregation_plan, test_join_plan,
+        test_two_aggregations_plan,
     };
     use ballista_core::JobId;
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::JobStatus;
     use ballista_core::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+        ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
+        ExecutorSpecification,
     };
     use ballista_core::utils::{default_config_producer, default_session_builder};
     use datafusion::prelude::SessionConfig;
     use futures::StreamExt;
+    use std::collections::{HashMap, HashSet};
     use tokio::sync::Barrier;
 
     #[tokio::test]
@@ -765,6 +773,122 @@ mod test {
         ];
 
         assert_eq!(expected, result);
+
+        Ok(())
+    }
+
+    /// Registers `executor_id` with `vcores` free.
+    async fn register(
+        cluster_state: &InMemoryClusterState,
+        executor_id: &str,
+        vcores: u32,
+    ) -> Result<()> {
+        cluster_state
+            .register_executor(
+                mock_locality_executor(executor_id),
+                ExecutorData {
+                    executor_id: executor_id.to_string(),
+                    total_vcores: vcores,
+                    available_vcores: vcores,
+                },
+            )
+            .await
+    }
+
+    /// Which executor each bound partition landed on.
+    fn placements(bound: &[crate::cluster::BoundTask]) -> HashMap<usize, String> {
+        bound
+            .iter()
+            .flat_map(|(executor_id, task)| {
+                task.global_input_partition_ids
+                    .iter()
+                    .map(move |p| (*p, executor_id.clone()))
+            })
+            .collect()
+    }
+
+    /// Even partitions written large by `executor_1`, odd by `executor_2`.
+    fn split_layout(map_task: usize, partition: usize) -> u64 {
+        if partition % 2 == map_task % 2 {
+            900
+        } else {
+            100
+        }
+    }
+
+    /// Binds one fresh cluster with `policy` and reports where each partition
+    /// landed.
+    async fn place_with(
+        policy: TaskDistributionPolicy,
+    ) -> Result<HashMap<usize, String>> {
+        let cluster_state = InMemoryClusterState::default();
+        register(&cluster_state, "executor_1", 4).await?;
+        register(&cluster_state, "executor_2", 4).await?;
+        let jobs = mock_shuffle_jobs(&"job_a".into(), 4, &split_layout).await?;
+
+        let bound = cluster_state
+            .bind_schedulable_tasks(policy, Arc::new(jobs), None)
+            .await?;
+        Ok(placements(&bound))
+    }
+
+    /// The push path reaches the policy through
+    /// `ClusterState::bind_schedulable_tasks`, which must dispatch to the
+    /// *configured* instance — otherwise another policy binds, or the locality
+    /// this one measures is lost. Bias on the same input packs onto one
+    /// executor, so the placements tell the two arms apart.
+    #[tokio::test]
+    async fn in_memory_binding_dispatches_to_the_configured_affinity_policy() -> Result<()>
+    {
+        let policy = TaskDistributionPolicy::shuffle_affinity();
+        let affinity = place_with(policy.clone()).await?;
+        let bias = place_with(TaskDistributionPolicy::Bias).await?;
+
+        assert_eq!(4, affinity.len(), "every partition should be bound");
+        for (partition, executor_id) in &affinity {
+            let expected = if partition % 2 == 0 {
+                "executor_1"
+            } else {
+                "executor_2"
+            };
+            assert_eq!(
+                expected, executor_id,
+                "partition {partition} did not land on its home",
+            );
+        }
+        assert_eq!(
+            1,
+            bias.values().collect::<HashSet<_>>().len(),
+            "bias should pack every partition onto the first budget",
+        );
+
+        let stats = policy
+            .shuffle_affinity_policy()
+            .expect("configured policy")
+            .stats();
+        assert_eq!(4, stats.local_partitions);
+        assert_eq!(3_600, stats.local_bytes, "4 partitions x 900 bytes local");
+        assert_eq!(4_000, stats.total_bytes);
+
+        Ok(())
+    }
+
+    /// A cluster with no room binds nothing and must not error.
+    #[tokio::test]
+    async fn in_memory_binding_with_no_vcores_binds_nothing() -> Result<()> {
+        let cluster_state = InMemoryClusterState::default();
+        register(&cluster_state, "executor_1", 0).await?;
+
+        let jobs = mock_shuffle_jobs(&"job_a".into(), 4, &|_, _| 900).await?;
+        let bound = cluster_state
+            .bind_schedulable_tasks(
+                TaskDistributionPolicy::shuffle_affinity(),
+                Arc::new(jobs),
+                None,
+            )
+            .await?;
+
+        assert!(bound.is_empty());
 
         Ok(())
     }

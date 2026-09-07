@@ -27,6 +27,7 @@
 
 use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
+use crate::cluster::affinity::ShuffleAffinityPolicy;
 use crate::scheduler_server::JobIdGenerator;
 use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::{ConfigProducer, JobId, config::TaskSchedulingPolicy};
@@ -148,7 +149,7 @@ pub struct Config {
         help = "Delayed interval for cleaning up finished job state."
     )]
     pub finished_job_state_clean_up_interval_seconds: u64,
-    /// Task distribution policy (bias, round-robin, consistent-hash).
+    /// Task distribution policy (bias, round-robin or shuffle-affinity).
     #[arg(
         long,
         default_value_t = crate::config::TaskDistribution::default(),
@@ -724,6 +725,9 @@ pub enum TaskDistribution {
     /// Distribute tasks evenly across executors. This will try and iterate through available executors
     /// and assign one task to each executor until all tasks are assigned.
     RoundRobin,
+    /// Place each task on the executor already holding most of its shuffle
+    /// input, and bind whatever is left over the way bias does.
+    ShuffleAffinity,
 }
 
 impl Display for TaskDistribution {
@@ -731,6 +735,7 @@ impl Display for TaskDistribution {
         match self {
             TaskDistribution::Bias => f.write_str("bias"),
             TaskDistribution::RoundRobin => f.write_str("round-robin"),
+            TaskDistribution::ShuffleAffinity => f.write_str("shuffle-affinity"),
         }
     }
 }
@@ -754,8 +759,30 @@ pub enum TaskDistributionPolicy {
     /// Distribute tasks evenly across executors. This will try and iterate through available executors
     /// and assign one task to each executor until all tasks are assigned.
     RoundRobin,
-    /// User provided task distribution policy
+    /// Place each task on the executor already holding most of its shuffle
+    /// input, falling back to [`Self::Bias`] for the partitions left over.
+    ///
+    /// The policy is held, not rebuilt per round: it owns a per-stage locality
+    /// cache and cumulative stats, and cloning it shares both.
+    ShuffleAffinity(ShuffleAffinityPolicy),
+    /// A task distribution policy supplied by the embedder.
     Custom(Arc<dyn DistributionPolicy>),
+}
+
+impl TaskDistributionPolicy {
+    /// Locality-aware distribution. See [`ShuffleAffinityPolicy`].
+    pub fn shuffle_affinity() -> Self {
+        Self::ShuffleAffinity(ShuffleAffinityPolicy::default())
+    }
+
+    /// The running shuffle-affinity policy, when that is the configured one.
+    /// It accumulates how much shuffle input the scheduler kept local.
+    pub fn shuffle_affinity_policy(&self) -> Option<&ShuffleAffinityPolicy> {
+        match self {
+            Self::ShuffleAffinity(policy) => Some(policy),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(feature = "build-binary")]
@@ -766,6 +793,9 @@ impl TryFrom<Config> for SchedulerConfig {
         let task_distribution = match opt.task_distribution {
             TaskDistribution::Bias => TaskDistributionPolicy::Bias,
             TaskDistribution::RoundRobin => TaskDistributionPolicy::RoundRobin,
+            TaskDistribution::ShuffleAffinity => {
+                TaskDistributionPolicy::shuffle_affinity()
+            }
         };
 
         // Backward compatibility: a bare `--advertise-flight-endpoint` (empty value) used
@@ -846,6 +876,46 @@ impl TryFrom<Config> for SchedulerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An embedder that keeps its own handle on the policy reads the stats the
+    /// scheduler is accumulating, not a copy that stopped at construction.
+    #[test]
+    fn a_configured_policy_shares_the_callers_state() {
+        let policy = ShuffleAffinityPolicy::new();
+        let config = SchedulerConfig::default().with_task_distribution(
+            TaskDistributionPolicy::ShuffleAffinity(policy.clone()),
+        );
+
+        let configured = config
+            .task_distribution
+            .shuffle_affinity_policy()
+            .expect("configured policy should be reachable");
+        assert!(
+            Arc::ptr_eq(&policy.stats_handle(), &configured.stats_handle()),
+            "the config should share the caller's policy, not clone its state",
+        );
+    }
+
+    /// The policy accumulates the locality it achieved, so it has to stay
+    /// reachable through the accessor — and only through the matching arm.
+    #[test]
+    fn only_shuffle_affinity_answers_the_accessor() {
+        assert!(
+            TaskDistributionPolicy::shuffle_affinity()
+                .shuffle_affinity_policy()
+                .is_some()
+        );
+        assert!(
+            TaskDistributionPolicy::Bias
+                .shuffle_affinity_policy()
+                .is_none()
+        );
+        assert!(
+            TaskDistributionPolicy::RoundRobin
+                .shuffle_affinity_policy()
+                .is_none()
+        );
+    }
 
     #[test]
     fn default_grace_period_covers_executor_timeout() {

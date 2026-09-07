@@ -337,6 +337,34 @@ impl PendingPartitions {
         self.queue.drain(..take).collect()
     }
 
+    /// The partitions still waiting, front first. Locality-aware distribution
+    /// policies need the whole queue before they choose.
+    pub fn queued(&self) -> impl ExactSizeIterator<Item = usize> + '_ {
+        self.queue.iter().copied()
+    }
+
+    /// Take up to `max` partitions matching `keep`, front first and in queue
+    /// order. Partitions that don't match keep their place for a later bind.
+    pub fn next_slice_where(
+        &mut self,
+        max: usize,
+        keep: impl Fn(usize) -> bool,
+    ) -> Vec<usize> {
+        if max == 0 {
+            return vec![];
+        }
+        let mut taken = Vec::with_capacity(max.min(self.queue.len()));
+        self.queue.retain(|&p| {
+            if taken.len() < max && keep(p) {
+                taken.push(p);
+                false
+            } else {
+                true
+            }
+        });
+        taken
+    }
+
     /// Push failed partitions to the front of the queue so the next bind
     /// picks them up before any fresh partition.
     pub fn reschedule(&mut self, partitions: impl IntoIterator<Item = usize>) {
@@ -1434,6 +1462,27 @@ mod tests {
             HashMap::new(),
             Arc::new(SessionConfig::default()),
         )
+    }
+
+    #[test]
+    fn next_slice_where_skips_non_matching_and_keeps_order() {
+        let mut pending = PendingPartitions::new(6);
+
+        // Take the even partitions, capped at two.
+        assert_eq!(vec![0, 2], pending.next_slice_where(2, |p| p % 2 == 0));
+        // The odd ones the filter passed over kept their place in the queue.
+        assert_eq!(vec![1, 3, 4], pending.next_slice(3));
+        assert_eq!(vec![5], pending.next_slice_where(4, |_| true));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn next_slice_where_returns_empty_when_nothing_matches() {
+        let mut pending = PendingPartitions::new(3);
+
+        assert!(pending.next_slice_where(3, |_| false).is_empty());
+        assert!(pending.next_slice_where(0, |_| true).is_empty());
+        assert_eq!(3, pending.remaining());
     }
 
     fn make_task_status(task_id: u32) -> TaskStatus {
