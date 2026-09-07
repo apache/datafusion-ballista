@@ -291,6 +291,7 @@ behavior it would be config-gated, leaving today's model as the default:
   `/api/metrics` (see the [metrics guide]), through
   `ShuffleAffinityPolicy::stats` when the scheduler is embedded, and on a
   per-round `debug!` line.
+
 - **Remote shuffle service.** Offload shuffle storage to a service such as
   Apache Celeborn or Apache Uniffle ([#1539]), which decouples shuffle
   durability from executor lifetime and makes aggressive autoscaling safer.
