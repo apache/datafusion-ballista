@@ -30,14 +30,15 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
 | Spark    | 3.4 (vanilla, no acceleration plugin)                                                                                                                                        |
 
 ```{note}
-`da92ba8d` is the head of [#2434](https://github.com/apache/datafusion-ballista/pull/2434):
-`main` as of 2026-09-08 plus that PR's scheduler change, which stages a
-join's build side and reads its measured statistics before
-`DynamicJoinSelectionExec` commits to a strategy. It accounts for almost
-all of the improvement over the previous (`67b3a19b`) result set — Q8
-96.02 → 40.68, Q9 107.89 → 51.94, Q21 95.63 → 65.69 — so a run from
-`main` before #2434 lands will not reproduce these numbers. Re-pin this
-row to the merge commit once it does.
+`da92ba8d` is the scheduler commit of
+[#2434](https://github.com/apache/datafusion-ballista/pull/2434) — `main`
+as of 2026-09-08 plus that PR's change, which stages a join's build side
+and reads its measured statistics before `DynamicJoinSelectionExec`
+commits to a strategy. It accounts for almost all of the improvement over
+the previous (`67b3a19b`) result set — Q8 96.02 → 40.68, Q9 107.89 →
+51.94, Q21 95.63 → 65.69 — so a run from `main` before #2434 lands will
+not reproduce these numbers. Re-pin this row to the merge commit once it
+does.
 ```
 
 ## Environment
