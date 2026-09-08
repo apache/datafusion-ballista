@@ -1966,24 +1966,9 @@ mod tests {
     // qualify all partitions as remote
     #[tokio::test]
     async fn test_remote_local_read() {
-        let schema = get_test_partition_schema();
-        let data_array = Int32Array::from(vec![1]);
-        let batch =
-            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
-                .unwrap();
         let tmp_dir = tempdir().unwrap();
         let work_dir = tmp_dir.path();
-
-        // job name and stage id are hard-coded
-        let file_path =
-            create_shuffle_path(work_dir, &"job".into(), 1, 0, None, false).unwrap();
-
-        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
-
-        let file = File::create(&file_path).unwrap();
-        let mut writer = StreamWriter::try_new(file, &schema).unwrap();
-        writer.write(&batch).unwrap();
-        writer.finish().unwrap();
+        write_local_shuffle_files(work_dir, 1);
 
         let partition_locations = get_test_partition_locations(1, None);
 
@@ -2007,27 +1992,9 @@ mod tests {
     }
 
     async fn test_send_fetch_partitions(max_request_num: usize, partition_num: usize) {
-        let schema = get_test_partition_schema();
-        let data_array = Int32Array::from(vec![1]);
-        let batch =
-            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
-                .unwrap();
         let tmp_dir = tempdir().unwrap();
         let work_dir = tmp_dir.path();
-
-        for p in 0..partition_num {
-            // job name and stage id are hard-codded
-            let file_path =
-                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
-            // this unwrap should not be problem as
-            // this function never return root dir
-            std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
-            let file: File = File::create(&file_path).unwrap();
-
-            let mut writer = StreamWriter::try_new(file, &schema).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
-        }
+        let schema = write_local_shuffle_files(work_dir, partition_num);
 
         let partition_locations = get_test_partition_locations(partition_num, None);
         let config = SessionConfig::new_with_ballista()
@@ -2053,23 +2020,10 @@ mod tests {
 
     #[tokio::test]
     async fn send_fetch_partitions_records_local_metrics() {
-        let schema = get_test_partition_schema();
-        let data_array = Int32Array::from(vec![1]);
-        let batch =
-            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
-                .unwrap();
         let tmp_dir = tempdir().unwrap();
         let work_dir = tmp_dir.path();
         let partition_num = 3usize;
-        for p in 0..partition_num {
-            let file_path =
-                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
-            std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
-            let file = File::create(&file_path).unwrap();
-            let mut writer = StreamWriter::try_new(file, &schema).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
-        }
+        let schema = write_local_shuffle_files(work_dir, partition_num);
         let partition_locations = get_test_partition_locations(partition_num, None);
         let config = SessionConfig::new_with_ballista();
         let metrics_set = ExecutionPlanMetricsSet::new();
@@ -2133,6 +2087,27 @@ mod tests {
                 .map(|v| v.as_usize()),
             Some(0)
         );
+    }
+
+    /// Writes `n` single-row local shuffle files under `work_dir`, returning
+    /// the schema they share.
+    fn write_local_shuffle_files(work_dir: &std::path::Path, n: usize) -> Schema {
+        let schema = get_test_partition_schema();
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+        for p in 0..n {
+            let path =
+                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut writer =
+                StreamWriter::try_new(File::create(&path).unwrap(), &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        schema
     }
 
     fn get_test_partition_locations(
