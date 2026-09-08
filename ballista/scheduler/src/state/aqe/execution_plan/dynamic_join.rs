@@ -22,8 +22,8 @@ use datafusion::{
     arrow::compute::SortOptions,
     arrow::datatypes::{DataType, Schema},
     common::{
-        ColumnStatistics, JoinType, NullEquality, Result, exec_err, internal_err,
-        plan_err, tree_node::TreeNodeRecursion,
+        ColumnStatistics, JoinType, NullEquality, Result, Statistics, exec_err,
+        internal_err, plan_err, stats::Precision, tree_node::TreeNodeRecursion,
     },
     config::ConfigOptions,
     execution::{SendableRecordBatchStream, TaskContext},
@@ -212,6 +212,15 @@ impl DisplayAs for DynamicJoinSelectionExec {
 }
 
 pub enum JoinSelectionAction {
+    /// Shuffle only the prospective build side, leaving the probe side
+    /// untouched, and re-decide the join once the build side's *measured* size
+    /// is known. See [`should_stage_build_side`].
+    StageBuildSide {
+        join: Arc<DynamicJoinSelectionExec>,
+        /// Which child to give an exchange: `true` for `left`, `false` for
+        /// `right`.
+        build_is_left: bool,
+    },
     Repartition(Arc<DynamicJoinSelectionExec>),
     CollectLeft(Arc<HashJoinExec>),
     LateCollectLeft(Arc<HashJoinExec>),
@@ -385,6 +394,25 @@ impl DynamicJoinSelectionExec {
                 JoinInputState::Repartitioned,
                 PartitionMode::Partitioned | PartitionMode::CollectLeft,
             ) => self.to_sort_merge_join().map(JoinSelectionAction::Sort),
+            (JoinInputState::Unknown, PartitionMode::Partitioned)
+                if bc.stage_build_side_enabled()
+                    && !self.null_aware
+                    // Firing at most once per join is what keeps this from
+                    // ping-ponging: once it fires, one child is an
+                    // `ExchangeExec` and this guard never passes again.
+                    && !self.left.is::<ExchangeExec>()
+                    && !self.right.is::<ExchangeExec>()
+                    && should_stage_build_side(
+                        build_stats,
+                        if swap_inputs { &stats_left } else { &stats_right },
+                        threshold_collect_left_join_bytes,
+                    ) =>
+            {
+                Ok(JoinSelectionAction::StageBuildSide {
+                    join: Arc::new(self.with_selection_state(JoinInputState::Unknown)),
+                    build_is_left: !swap_inputs,
+                })
+            }
             (JoinInputState::Unknown, PartitionMode::Partitioned) => Ok(
                 JoinSelectionAction::Repartition(Arc::new(self.to_partitioned())),
             ),
@@ -394,6 +422,7 @@ impl DynamicJoinSelectionExec {
         }?;
 
         let action_label = match &action {
+            JoinSelectionAction::StageBuildSide { .. } => "StageBuildSide",
             JoinSelectionAction::Repartition(_) => "Repartition",
             JoinSelectionAction::CollectLeft(_) => "CollectLeft(broadcast)",
             JoinSelectionAction::LateCollectLeft(_) => "LateCollectLeft(broadcast)",
@@ -482,20 +511,39 @@ impl DynamicJoinSelectionExec {
         // a fixed width, so one `Utf8` column loses it for good.
         //
         // A row count on its own says nothing about how much data a broadcast
-        // would replicate to every probe task, so estimate the size and hold it
-        // to the same byte threshold. The row threshold is kept as an additional
-        // ceiling, so this can only ever reject a broadcast the row rule would
-        // have allowed, never introduce a new one.
+        // would replicate to every probe task, so estimate the size from the
+        // schema and hold that to the same byte threshold.
+        //
+        // `threshold_num_rows` is the fallback for when even the estimate
+        // cannot be formed, which is what `broadcast_join_threshold_rows`
+        // documents itself as. It is deliberately *not* an additional ceiling
+        // over the estimate: a row count is a poor proxy for broadcast cost
+        // once the width is known, and applying both vetoed narrow build sides
+        // that the byte budget comfortably allows — a 1M-row `i64` key column
+        // is 8 MB against a 128 MiB default budget. `0` still disables this
+        // whole row-count path, matching the config's documented behaviour.
+        if threshold_num_rows == 0 {
+            return false;
+        }
+
         let Some(num_rows) = stats.num_rows.get_value().copied() else {
             return false;
         };
 
-        if num_rows == 0 || num_rows >= threshold_num_rows {
+        if num_rows == 0 {
             return false;
         }
 
-        estimate_output_byte_size(&plan.schema(), num_rows, &stats.column_statistics)
-            .is_some_and(|estimated| estimated < threshold_byte_size)
+        match estimate_output_byte_size(
+            &plan.schema(),
+            num_rows,
+            &stats.column_statistics,
+        ) {
+            Some(estimated) => estimated < threshold_byte_size,
+            // The estimate only fails by overflowing, so the build side is far
+            // past any sane budget. The row rule then rejects it.
+            None => num_rows < threshold_num_rows,
+        }
     }
 
     /// Whether both inputs already satisfy the distribution this join needs.
@@ -520,6 +568,16 @@ impl DynamicJoinSelectionExec {
     }
 
     pub(crate) fn to_partitioned(&self) -> Self {
+        self.with_selection_state(JoinInputState::Repartitioned)
+    }
+
+    /// A copy of this join carrying `selection_state`, with the same children.
+    ///
+    /// Staging only the build side keeps the state `Unknown`, since the probe
+    /// side has not been repartitioned and the `Repartitioned` arms of
+    /// [`Self::to_actual_join`] would otherwise pick a `Partitioned` join over
+    /// inputs that are not co-partitioned.
+    pub(crate) fn with_selection_state(&self, selection_state: JoinInputState) -> Self {
         Self {
             left: self.left.clone(),
             right: self.right.clone(),
@@ -529,7 +587,7 @@ impl DynamicJoinSelectionExec {
             projection: self.projection.clone(),
             null_equality: self.null_equality,
             properties: self.properties.clone(),
-            selection_state: JoinInputState::Repartitioned,
+            selection_state,
             null_aware: self.null_aware,
             plan_id: self.plan_id,
         }
@@ -606,6 +664,82 @@ impl DynamicJoinSelectionExec {
 /// join always uses hash join); an unknown build size (`build_max_partition_bytes
 /// == None`) is treated as fitting too, since there is no evidence to force a
 /// fallback.
+/// How much larger the probe side must be before staging the build side alone
+/// is worth an extra round trip.
+///
+/// Staging serialises the two shuffles that `Repartition` would otherwise run
+/// concurrently, so the deferral costs at most the *smaller* side's runtime.
+/// Requiring an order of magnitude keeps that cost well under the probe-side
+/// shuffle it stands to avoid entirely.
+const STAGE_BUILD_SIDE_MIN_PROBE_RATIO: usize = 10;
+
+/// How far over the broadcast budget an *estimated* build side may sit and
+/// still be worth measuring.
+///
+/// TPC-H q8's filtered `part` scan estimates roughly 10x over budget, because
+/// the planner falls back to `default_filter_selectivity` for
+/// `p_type = '...'`, and measures three orders of magnitude under it. A raw
+/// fact-table scan sits far beyond this multiple and is shuffled without the
+/// extra round trip.
+const STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE: usize = 32;
+
+/// Whether to shuffle only the prospective build side now and re-decide the
+/// join once its measured size is known, rather than shuffling both sides.
+///
+/// [`JoinSelectionAction::Repartition`] shuffles both inputs at once, which for
+/// a fact-table probe side commits to the single most expensive stage in the
+/// query *before* any measurement exists. When the build side's size is only a
+/// guess, that guess is the sole reason the join is not a broadcast, and the
+/// probe side dwarfs it, one cheap stage buys an exact number and often flips
+/// the join to `CollectLeft`, leaving the probe side never shuffled at all.
+///
+/// Each of the three conditions is necessary:
+///
+/// * the build estimate must be **inexact**. An exact size over budget is a
+///   fact rather than a guess, so measuring it again cannot change the outcome
+///   and would only serialise two shuffles that could run concurrently.
+/// * the estimate must be **plausibly wrong enough to flip**. Past
+///   [`STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE`] the side is large on any
+///   reading, and no measurement brings it under budget.
+/// * the probe side must be **much larger**, per
+///   [`STAGE_BUILD_SIDE_MIN_PROBE_RATIO`], which is what bounds the cost of
+///   being wrong.
+///
+/// Both sides are compared in bytes. A missing probe-side size declines: with
+/// nothing to compare against there is no evidence the round trip pays off.
+fn should_stage_build_side(
+    build_stats: &Statistics,
+    probe_stats: &Statistics,
+    threshold_bytes: usize,
+) -> bool {
+    if threshold_bytes == 0 {
+        // Broadcast promotion is disabled, so there is no decision to revisit.
+        return false;
+    }
+
+    let Precision::Inexact(build_bytes) = build_stats.total_byte_size else {
+        return false;
+    };
+
+    // Already under budget, so size is not what pushed the caller to
+    // `Partitioned`. Leave whatever other reason it had alone.
+    if build_bytes < threshold_bytes {
+        return false;
+    }
+
+    if build_bytes
+        > threshold_bytes.saturating_mul(STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE)
+    {
+        return false;
+    }
+
+    let Some(probe_bytes) = probe_stats.total_byte_size.get_value().copied() else {
+        return false;
+    };
+
+    probe_bytes >= build_bytes.saturating_mul(STAGE_BUILD_SIDE_MIN_PROBE_RATIO)
+}
+
 fn hash_build_fits(
     max_build_bytes: usize,
     build_max_partition_bytes: Option<usize>,
@@ -858,16 +992,58 @@ mod tests {
         assert!(supports_collect(&under));
     }
 
-    // The row threshold is retained as a ceiling, so a row count at or above it
-    // is rejected without regard to how narrow the rows are.
+    // The row threshold is a fallback, not a ceiling over the byte estimate: a
+    // row count at or above it is fine when the rows are narrow enough that the
+    // estimate stays inside the byte budget. 1M `Int8` rows is 1 MB against a
+    // 10 MB budget, and rejecting that replicates nothing a probe task cannot
+    // hold.
     #[test]
-    fn row_threshold_remains_a_ceiling() {
+    fn row_threshold_does_not_veto_an_in_budget_estimate() {
         let plan = sizeless_stats_exec(
             ROW_THRESHOLD,
             vec![Field::new("a", DataType::Int8, false)],
         );
 
+        assert!(supports_collect(&plan));
+    }
+
+    // The byte estimate stays authoritative in the other direction too: the same
+    // row count over wide rows is rejected even though the row threshold alone
+    // would have been the only guard consulted.
+    #[test]
+    fn byte_estimate_still_rejects_wide_rows_at_the_row_threshold() {
+        let plan = sizeless_stats_exec(
+            ROW_THRESHOLD,
+            vec![Field::new("name", DataType::Utf8, false)],
+        );
+
         assert!(!supports_collect(&plan));
+    }
+
+    // The row threshold decides when no estimate can be formed at all, which
+    // happens only when the row count is large enough to overflow the width
+    // multiplication. Such a side is far past any budget and must be rejected.
+    #[test]
+    fn row_threshold_decides_when_the_estimate_overflows() {
+        let plan = sizeless_stats_exec(
+            usize::MAX,
+            vec![Field::new("x", DataType::Int32, false)],
+        );
+
+        assert!(!supports_collect(&plan));
+    }
+
+    // A row threshold of 0 still disables the whole row-count path, which is
+    // what the config documents it as doing.
+    #[test]
+    fn zero_row_threshold_disables_the_rows_only_path() {
+        let plan = sizeless_stats_exec(10, vec![Field::new("x", DataType::Int32, false)]);
+
+        assert!(!DynamicJoinSelectionExec::supports_collect_by_thresholds(
+            plan.as_ref(),
+            BYTE_THRESHOLD,
+            0,
+        ));
     }
 
     // Statistics with neither a size nor a row count carry no evidence that the
@@ -1092,9 +1268,9 @@ mod tests {
     // DataFusion's `hash_join_single_partition_threshold_rows`.
     #[test]
     fn broadcast_threshold_rows_drives_fallback_decision() {
-        // Byte-size is Absent on both sides, so only the row threshold applies.
-        // Smaller side = 100 rows. A generous byte threshold keeps the byte
-        // guard open so the row fallback is what decides.
+        // Byte-size is Absent on both sides, so the schema-derived estimate is
+        // what decides and the row threshold only has to be non-zero to keep
+        // that path open. Smaller side = 100 rows of `Int32`, ~400 bytes.
         assert!(
             is_collected(&run_to_actual_join(
                 stats_exec_rows_only(100),
@@ -1104,10 +1280,12 @@ mod tests {
                 10 * 1024 * 1024,
                 200,
             )),
-            "smaller side (100 rows) is under a 200-row threshold and must collect"
+            "smaller side estimates ~400 bytes, well under the byte threshold"
         );
+        // The row threshold is no longer an independent ceiling: 100 rows at or
+        // above a 50-row threshold still collects, because the estimate fits.
         assert!(
-            !is_collected(&run_to_actual_join(
+            is_collected(&run_to_actual_join(
                 stats_exec_rows_only(100),
                 stats_exec_rows_only(1000),
                 JoinType::Inner,
@@ -1115,7 +1293,19 @@ mod tests {
                 10 * 1024 * 1024,
                 50,
             )),
-            "neither side is under a 50-row threshold, so the join must repartition"
+            "a row count over the threshold must not veto an in-budget estimate"
+        );
+        // Zero disables the rows-only path entirely, so nothing collects.
+        assert!(
+            !is_collected(&run_to_actual_join(
+                stats_exec_rows_only(100),
+                stats_exec_rows_only(1000),
+                JoinType::Inner,
+                true,
+                10 * 1024 * 1024,
+                0,
+            )),
+            "broadcast_join_threshold_rows=0 must disable the rows-only path"
         );
     }
 
@@ -1164,6 +1354,221 @@ mod tests {
             !is_collected(&actual_join_with_threshold(JoinType::Inner, 1, 1, true, 0,)),
             "broadcast_join_threshold_bytes=0 must disable CollectLeft promotion"
         );
+    }
+
+    /// A source reporting `total_byte_size` with the given precision, shaped
+    /// like one side of the TPC-H q8 `part`/`lineitem` join.
+    fn sized_stats_exec(total_byte_size: Precision<usize>) -> Arc<dyn ExecutionPlan> {
+        Arc::new(StatisticsExec::new(
+            Statistics {
+                num_rows: Precision::Inexact(1_000),
+                total_byte_size,
+                column_statistics: vec![ColumnStatistics::new_unknown()],
+            },
+            Schema::new(vec![Field::new("k", DataType::Int32, false)]),
+        ))
+    }
+
+    /// The q8 shape: a filtered dimension scan whose size is a guess sitting
+    /// just over the broadcast budget, against a fact table that dwarfs it.
+    const STAGE_THRESHOLD: usize = 10 * MB;
+    const GUESSED_BUILD_BYTES: usize = 100 * MB;
+    const FACT_PROBE_BYTES: usize = 2000 * MB;
+
+    #[test]
+    fn stages_the_build_side_when_its_size_is_only_a_guess() {
+        assert!(should_stage_build_side(
+            &Statistics {
+                num_rows: Precision::Inexact(1_000),
+                total_byte_size: Precision::Inexact(GUESSED_BUILD_BYTES),
+                column_statistics: vec![],
+            },
+            &Statistics {
+                num_rows: Precision::Exact(1_000_000),
+                total_byte_size: Precision::Exact(FACT_PROBE_BYTES),
+                column_statistics: vec![],
+            },
+            STAGE_THRESHOLD,
+        ));
+    }
+
+    // An exact size over budget is a fact, not a guess. Measuring it again
+    // cannot flip the join, so both sides shuffle concurrently as before.
+    #[test]
+    fn does_not_stage_an_exactly_sized_build_side() {
+        assert!(!should_stage_build_side(
+            &Statistics {
+                num_rows: Precision::Exact(1_000),
+                total_byte_size: Precision::Exact(GUESSED_BUILD_BYTES),
+                column_statistics: vec![],
+            },
+            &Statistics {
+                num_rows: Precision::Exact(1_000_000),
+                total_byte_size: Precision::Exact(FACT_PROBE_BYTES),
+                column_statistics: vec![],
+            },
+            STAGE_THRESHOLD,
+        ));
+    }
+
+    // Far enough over the budget that no measurement brings it back under, so
+    // the extra round trip would only add latency.
+    #[test]
+    fn does_not_stage_a_build_side_far_past_the_budget() {
+        let far_over = STAGE_THRESHOLD * (STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE + 1);
+        assert!(!should_stage_build_side(
+            &Statistics {
+                num_rows: Precision::Inexact(1_000),
+                total_byte_size: Precision::Inexact(far_over),
+                column_statistics: vec![],
+            },
+            &Statistics {
+                num_rows: Precision::Exact(1_000_000),
+                total_byte_size: Precision::Exact(far_over * 1_000),
+                column_statistics: vec![],
+            },
+            STAGE_THRESHOLD,
+        ));
+    }
+
+    // Without a probe side much larger than the build side, serialising the two
+    // shuffles costs about as much as it could save.
+    #[test]
+    fn does_not_stage_when_the_probe_side_is_comparable() {
+        let probe_bytes = GUESSED_BUILD_BYTES * (STAGE_BUILD_SIDE_MIN_PROBE_RATIO - 1);
+        assert!(!should_stage_build_side(
+            &Statistics {
+                num_rows: Precision::Inexact(1_000),
+                total_byte_size: Precision::Inexact(GUESSED_BUILD_BYTES),
+                column_statistics: vec![],
+            },
+            &Statistics {
+                num_rows: Precision::Exact(1_000_000),
+                total_byte_size: Precision::Exact(probe_bytes),
+                column_statistics: vec![],
+            },
+            STAGE_THRESHOLD,
+        ));
+    }
+
+    // No probe-side size is no evidence the round trip pays off.
+    #[test]
+    fn does_not_stage_without_a_probe_side_size() {
+        assert!(!should_stage_build_side(
+            &Statistics {
+                num_rows: Precision::Inexact(1_000),
+                total_byte_size: Precision::Inexact(GUESSED_BUILD_BYTES),
+                column_statistics: vec![],
+            },
+            &Statistics {
+                num_rows: Precision::Exact(1_000_000),
+                total_byte_size: Precision::Absent,
+                column_statistics: vec![],
+            },
+            STAGE_THRESHOLD,
+        ));
+    }
+
+    // With broadcast promotion off there is no decision to revisit.
+    #[test]
+    fn does_not_stage_when_broadcast_promotion_is_disabled() {
+        assert!(!should_stage_build_side(
+            &Statistics {
+                num_rows: Precision::Inexact(1_000),
+                total_byte_size: Precision::Inexact(GUESSED_BUILD_BYTES),
+                column_statistics: vec![],
+            },
+            &Statistics {
+                num_rows: Precision::Exact(1_000_000),
+                total_byte_size: Precision::Exact(FACT_PROBE_BYTES),
+                column_statistics: vec![],
+            },
+            0,
+        ));
+    }
+
+    /// Runs the resolver over the q8 shape, with staging on or off.
+    fn q8_shaped_action(stage_build_side: bool) -> JoinSelectionAction {
+        q8_shaped_action_with_children(
+            sized_stats_exec(Precision::Inexact(GUESSED_BUILD_BYTES)),
+            sized_stats_exec(Precision::Exact(FACT_PROBE_BYTES)),
+            stage_build_side,
+        )
+    }
+
+    fn q8_shaped_action_with_children(
+        left: Arc<dyn ExecutionPlan>,
+        right: Arc<dyn ExecutionPlan>,
+        stage_build_side: bool,
+    ) -> JoinSelectionAction {
+        let on: JoinOn =
+            vec![(Arc::new(Column::new("k", 0)), Arc::new(Column::new("k", 0)))];
+        let dj = DynamicJoinSelectionExec {
+            properties: Arc::clone(left.properties()),
+            left,
+            right,
+            on,
+            filter: None,
+            join_type: JoinType::Inner,
+            projection: None,
+            null_equality: NullEquality::NullEqualsNothing,
+            selection_state: JoinInputState::Unknown,
+            null_aware: false,
+            plan_id: 0,
+        };
+        let mut config = ConfigOptions::new();
+        let mut bc = BallistaConfig::default();
+        bc.set(
+            "optimizer.broadcast_join_threshold_bytes",
+            &STAGE_THRESHOLD.to_string(),
+        )
+        .unwrap();
+        bc.set("optimizer.stage_build_side", &stage_build_side.to_string())
+            .unwrap();
+        config.extensions.insert(bc);
+        dj.to_actual_join(&config).unwrap()
+    }
+
+    // The whole point: a guessed-large build side against a fact-table probe
+    // side stages the build alone instead of committing to both shuffles.
+    #[test]
+    fn to_actual_join_stages_the_build_side_for_the_q8_shape() {
+        assert!(matches!(
+            q8_shaped_action(true),
+            JoinSelectionAction::StageBuildSide {
+                build_is_left: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stage_build_side_config_turns_the_behaviour_off() {
+        assert!(matches!(
+            q8_shaped_action(false),
+            JoinSelectionAction::Repartition(_)
+        ));
+    }
+
+    // Staging must fire at most once. Once a child is an exchange the resolver
+    // falls through to `Repartition`, which shuffles the remaining side and
+    // reuses the exchange already in place.
+    #[test]
+    fn does_not_stage_again_once_a_child_is_an_exchange() {
+        let staged: Arc<dyn ExecutionPlan> = Arc::new(ExchangeExec::new(
+            sized_stats_exec(Precision::Inexact(GUESSED_BUILD_BYTES)),
+            None,
+            0,
+        ));
+
+        assert!(matches!(
+            q8_shaped_action_with_children(
+                staged,
+                sized_stats_exec(Precision::Exact(FACT_PROBE_BYTES)),
+                true,
+            ),
+            JoinSelectionAction::Repartition(_)
+        ));
     }
 
     /// Constructs a minimal `DynamicJoinSelectionExec` around the given children.
@@ -1382,6 +1787,9 @@ mod tests {
     /// than matching on the action's structure.
     fn resolved_plan(action: &JoinSelectionAction) -> Arc<dyn ExecutionPlan> {
         match action {
+            JoinSelectionAction::StageBuildSide { join, .. } => {
+                Arc::clone(join) as Arc<dyn ExecutionPlan>
+            }
             JoinSelectionAction::Repartition(exec) => {
                 Arc::clone(exec) as Arc<dyn ExecutionPlan>
             }

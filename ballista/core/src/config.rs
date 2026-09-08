@@ -119,6 +119,15 @@ pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS: &str =
 pub const BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES: &str =
     "ballista.optimizer.hash_join_max_build_partition_bytes";
 
+/// Configuration key controlling whether AQE stages a join's prospective build
+/// side as its own shuffle before deciding how to run the join. When a build
+/// side's size is only an estimate and the probe side is far larger, shuffling
+/// both sides commits to the expensive shuffle before any measurement exists.
+/// With this enabled the planner shuffles the smaller side alone, reads back
+/// its measured size, and only then chooses broadcast or repartition. Enabled
+/// by default; set to `false` to always shuffle both sides at once.
+pub const BALLISTA_STAGE_BUILD_SIDE: &str = "ballista.optimizer.stage_build_side";
+
 /// Configuration key controlling the logical rewrite of uncorrelated
 /// `NOT IN (subquery)` filter predicates into a plain anti join plus a
 /// one-row count aggregate. The rewrite avoids DataFusion's null-aware hash
@@ -294,6 +303,15 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          which makes AQE use a hash join regardless of build size.".to_string(),
                          DataType::UInt64,
                          Some((64 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_STAGE_BUILD_SIDE.to_string(),
+                         "Stages a join's prospective build side as its own shuffle before \
+                          choosing the join strategy, when that side's size is only an \
+                          estimate and the probe side is far larger. Lets AQE measure the \
+                          build side and pick a broadcast join instead of committing to a \
+                          full shuffle of the probe side up front. Set to false to always \
+                          shuffle both sides at once.".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_NOT_IN_SUBQUERY_REWRITE.to_string(),
                          "Rewrites uncorrelated NOT IN (subquery) filter predicates into a \
                          plain anti join plus a one-row count aggregate during logical \
@@ -707,6 +725,12 @@ impl BallistaConfig {
     /// Maximum per-partition hash-join build-side bytes before falling back to SMJ.
     pub fn hash_join_max_build_partition_bytes(&self) -> usize {
         self.get_usize_setting(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES)
+    }
+
+    /// Returns whether AQE stages a join's prospective build side as its own
+    /// shuffle before choosing the join strategy.
+    pub fn stage_build_side_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_STAGE_BUILD_SIDE)
     }
 
     /// Whether uncorrelated `NOT IN (subquery)` filter predicates are rewritten

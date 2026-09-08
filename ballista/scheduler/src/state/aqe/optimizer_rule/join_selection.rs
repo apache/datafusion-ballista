@@ -24,7 +24,7 @@ use datafusion::{
     error::DataFusionError,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
-        ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions,
+        ChildrenPropertiesMode, ExecutionPlan, Partitioning, ReplaceChildrenOptions,
         joins::{HashJoinExec, PartitionMode, SortMergeJoinExec},
     },
 };
@@ -132,6 +132,43 @@ impl SelectJoinRule {
             },
         }
     }
+}
+
+/// The per-child shuffle partitioning a join's inputs need to be co-partitioned
+/// on its keys.
+fn join_key_partitioning(
+    join: &DynamicJoinSelectionExec,
+    partition_count: usize,
+) -> Vec<Partitioning> {
+    join._required_input_distribution()
+        .iter()
+        .map(|d| d.clone().create_partitioning(partition_count))
+        .collect()
+}
+
+/// Wraps `child` in an `ExchangeExec` shuffling on `partitioning`, unless it
+/// already is one that does.
+///
+/// `StageBuildSide` shuffles the build side on the join key ahead of the
+/// decision, so when the measured size then turns out to be too large to
+/// broadcast and the join falls back to `Repartition`, that side is already
+/// where it needs to be. Wrapping it again would nest one stage boundary
+/// inside another and move the same rows twice.
+fn exchange_on(
+    child: Arc<dyn ExecutionPlan>,
+    partitioning: &Partitioning,
+    plan_id: impl FnOnce() -> usize,
+) -> Arc<dyn ExecutionPlan> {
+    if let Some(exchange) = child.downcast_ref::<ExchangeExec>()
+        && exchange.partitioning.as_ref() == Some(partitioning)
+    {
+        return child;
+    }
+    Arc::new(ExchangeExec::new(
+        child,
+        Some(partitioning.clone()),
+        plan_id(),
+    ))
 }
 
 /// Whether giving the build side its own broadcast stage is worth it.
@@ -294,30 +331,57 @@ impl PhysicalOptimizerRule for SelectJoinRule {
 
                                 Ok(Transformed::yes(exec.data))
                             }
+                            JoinSelectionAction::StageBuildSide {
+                                join,
+                                build_is_left,
+                            } => {
+                                // Only the build side gets an exchange. The
+                                // probe side is left as it is, so no stage is
+                                // created for it and nothing of it is shuffled
+                                // until the join is decided for real.
+                                let partitioning = join_key_partitioning(
+                                    &join,
+                                    config.execution.target_partitions,
+                                );
+                                let build_idx = if build_is_left { 0 } else { 1 };
+
+                                let mut children =
+                                    vec![join.left.clone(), join.right.clone()];
+                                children[build_idx] = Arc::new(ExchangeExec::new(
+                                    children[build_idx].clone(),
+                                    Some(partitioning[build_idx].clone()),
+                                    self.plan_id(),
+                                ));
+
+                                let join = join.replace_children(
+                                    children,
+                                    ReplaceChildrenOptions::new(
+                                        ChildrenPropertiesMode::Recompute,
+                                    ),
+                                )?;
+
+                                Ok(Transformed::yes(join))
+                            }
                             JoinSelectionAction::Repartition(dynamic_join) => {
-                                let partition_count = config.execution.target_partitions;
-                                let partitioning = dynamic_join
-                                    ._required_input_distribution()
-                                    .iter()
-                                    .map(|d| {
-                                        d.clone().create_partitioning(partition_count)
-                                    })
-                                    .collect::<Vec<_>>();
+                                let partitioning = join_key_partitioning(
+                                    &dynamic_join,
+                                    config.execution.target_partitions,
+                                );
 
-                                let left = dynamic_join.left.clone();
-                                let right = dynamic_join.right.clone();
-
-                                let left = Arc::new(ExchangeExec::new(
-                                    left,
-                                    Some(partitioning[0].clone()),
-                                    self.plan_id(),
-                                ));
-
-                                let right = Arc::new(ExchangeExec::new(
-                                    right,
-                                    Some(partitioning[1].clone()),
-                                    self.plan_id(),
-                                ));
+                                // A build side already staged by
+                                // `StageBuildSide` carries an exchange on the
+                                // join key, so reuse it rather than shuffling
+                                // that side a second time.
+                                let left = exchange_on(
+                                    dynamic_join.left.clone(),
+                                    &partitioning[0],
+                                    || self.plan_id(),
+                                );
+                                let right = exchange_on(
+                                    dynamic_join.right.clone(),
+                                    &partitioning[1],
+                                    || self.plan_id(),
+                                );
 
                                 let dynamic_join = dynamic_join.replace_children(
                                     vec![left, right],
@@ -390,6 +454,69 @@ mod tests {
         },
         physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner},
     };
+
+    fn key_partitioning(name: &str, schema: &Schema) -> Partitioning {
+        Partitioning::Hash(
+            vec![Arc::new(
+                datafusion::physical_plan::expressions::Column::new_with_schema(
+                    name, schema,
+                )
+                .unwrap(),
+            )],
+            4,
+        )
+    }
+
+    // A build side that `StageBuildSide` already shuffled on the join key must
+    // not be shuffled again when the join later falls back to `Repartition`.
+    // Wrapping it a second time would nest one stage boundary inside another
+    // and move the same rows twice.
+    #[test]
+    fn exchange_on_reuses_a_matching_exchange() {
+        let schema = Schema::new(vec![Field::new("k", DataType::Int32, false)]);
+        let partitioning = key_partitioning("k", &schema);
+        let staged: Arc<dyn ExecutionPlan> = Arc::new(ExchangeExec::new(
+            Arc::new(EmptyExec::new(Arc::new(schema))),
+            Some(partitioning.clone()),
+            0,
+        ));
+
+        let reused = exchange_on(Arc::clone(&staged), &partitioning, || 1);
+
+        assert!(Arc::ptr_eq(&staged, &reused));
+    }
+
+    // An exchange on a different key is not reusable, so the join key's own
+    // exchange still has to be added on top.
+    #[test]
+    fn exchange_on_wraps_an_exchange_on_a_different_key() {
+        let schema = Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("other", DataType::Int32, false),
+        ]);
+        let staged: Arc<dyn ExecutionPlan> = Arc::new(ExchangeExec::new(
+            Arc::new(EmptyExec::new(Arc::new(schema.clone()))),
+            Some(key_partitioning("other", &schema)),
+            0,
+        ));
+
+        let wrapped = exchange_on(staged, &key_partitioning("k", &schema), || 1);
+        let outer = wrapped.downcast_ref::<ExchangeExec>().unwrap();
+
+        assert!(outer.input().is::<ExchangeExec>());
+    }
+
+    // A plain child always gets an exchange.
+    #[test]
+    fn exchange_on_wraps_a_non_exchange_child() {
+        let schema = Schema::new(vec![Field::new("k", DataType::Int32, false)]);
+        let child: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(Arc::new(schema.clone())));
+
+        let wrapped = exchange_on(child, &key_partitioning("k", &schema), || 1);
+
+        assert!(wrapped.is::<ExchangeExec>());
+    }
 
     fn make_table(schema: Arc<Schema>) -> Arc<MemTable> {
         let batch = RecordBatch::try_new(
