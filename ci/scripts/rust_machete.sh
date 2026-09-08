@@ -1,5 +1,5 @@
-#!/bin/bash
-
+#!/usr/bin/env bash
+#
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -16,9 +16,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-set -e
 
-ci/scripts/rust_fmt.sh
-ci/scripts/rust_clippy.sh
-ci/scripts/rust_toml_fmt.sh
-ci/scripts/rust_machete.sh
+# Checks for unused dependencies. Install with `cargo install cargo-machete`.
+# False positives can be added to the `[package.metadata.cargo-machete]`
+# `ignored` list of the crate's Cargo.toml, with a comment explaining why
+# the dependency is needed.
+
+set -ex
+cargo machete
