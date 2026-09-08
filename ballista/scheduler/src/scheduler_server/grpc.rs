@@ -50,7 +50,7 @@ use {
     datafusion_substrait::serializer::deserialize_bytes,
 };
 
-use crate::cluster::{DistributionPolicy, bind_task_bias, bind_task_round_robin};
+use crate::cluster::{bind_task_bias, bind_task_round_robin};
 use crate::config::TaskDistributionPolicy;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
@@ -157,10 +157,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 TaskDistributionPolicy::RoundRobin => {
                     bind_task_round_robin(budgets, running_jobs, |_| false).await
                 }
-                TaskDistributionPolicy::ShuffleAffinity(ref policy) => policy
-                    .bind_tasks(budgets, running_jobs)
-                    .await
-                    .map_err(|e| Status::internal(e.to_string()))?,
                 TaskDistributionPolicy::Custom(ref policy) => policy
                     .bind_tasks(budgets, running_jobs)
                     .await
@@ -915,6 +911,7 @@ mod test {
         datafusion_substrait::serializer::serialize_bytes,
     };
 
+    use crate::cluster::affinity::ShuffleAffinityPolicy;
     use crate::config::{SchedulerConfig, TaskDistributionPolicy};
     use crate::metrics::default_metrics_collector;
     use ballista_core::BALLISTA_PROTOCOL_VERSION;
@@ -1292,7 +1289,9 @@ mod test {
             .with_scheduler_policy(
                 ballista_core::config::TaskSchedulingPolicy::PullStaged,
             )
-            .with_task_distribution(TaskDistributionPolicy::shuffle_affinity());
+            .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(
+                ShuffleAffinityPolicy::new(),
+            )));
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),

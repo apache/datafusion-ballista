@@ -277,7 +277,8 @@ behavior it would be config-gated, leaving today's model as the default:
   changing where the data lives ([#660]).
 - **Shuffle affinity.** Schedule a consumer task on the executor that already
   holds most of its input, turning Flight fetches into local reads. A first cut
-  ships as `--task-distribution shuffle-affinity` ([#2319]): it reads the byte
+  ships as `ShuffleAffinityPolicy`, installed through
+  `TaskDistributionPolicy::Custom` ([#2319]): it reads the byte
   counts on each partition's `PartitionLocation`s, ranks every
   `(partition, holder)` pair by size, and spends each executor's free vcores on
   its strongest candidates before binding the remainder bias-style, so no vcore

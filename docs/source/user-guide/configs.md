@@ -192,7 +192,7 @@ _Example: Specifying configuration options when starting the scheduler_
 | -------------------------------------------- | ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------- |
 | scheduler-policy                             | Utf8   | push-staged | Sets the task scheduling policy for the scheduler, possible values: pull-staged, push-staged.                              |
 | event-loop-buffer-size                       | UInt32 | 10000       | Sets the event loop buffer size. for a system of high throughput, a larger value like 1000000 is recommended.              |
-| task-distribution                            | Utf8   | bias        | Sets the task distribution policy for the scheduler, possible values: bias, round-robin, shuffle-affinity                  |
+| task-distribution                            | Utf8   | bias        | Sets the task distribution policy for the scheduler, possible values: bias, round-robin                                     |
 | finished-job-data-clean-up-interval-seconds  | UInt64 | 300         | Sets the delayed interval for cleaning up finished job data, mainly the shuffle data, 0 means the cleaning up is disabled. |
 | finished-job-state-clean-up-interval-seconds | UInt64 | 3600        | Sets the delayed interval for cleaning up finished job state stored in the backend, 0 means the cleaning up is disabled.   |
 
@@ -202,15 +202,30 @@ _Example: Specifying configuration options when starting the scheduler_
 where a task's input already sits, so a reduce task often fetches its shuffle input over the network from an executor
 that had it on local disk.
 
-`shuffle-affinity` places each task on the executor already holding most of its input, binding whatever is left over
-the way `bias` does. Enable it when different tasks prefer different executors: plans with a collapse stage (a global
+`ShuffleAffinityPolicy` places each task on the executor already holding most of its input, binding whatever is left
+over the way `bias` does. It is not a value of this flag: an embedded scheduler installs it through
+`TaskDistributionPolicy::Custom`, which is how any locality-aware policy is supplied.
+
+```rust
+use ballista_scheduler::cluster::affinity::ShuffleAffinityPolicy;
+use ballista_scheduler::config::{SchedulerConfig, TaskDistributionPolicy};
+
+let policy = ShuffleAffinityPolicy::new();
+// Keep a handle: `policy.stats()` reports the locality it achieved, and
+// `policy.attach_metrics(collector)` publishes it as the `shuffle_locality_*` metrics.
+let config = SchedulerConfig::default()
+    .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(policy.clone())));
+```
+
+It is worth installing when different tasks prefer different executors: plans with a collapse stage (a global
 aggregate, or `ORDER BY ... LIMIT`, whose single task reads every partition), `UNION ALL`, and clusters where free
-capacity and data placement disagree — after a scale-up, or while other jobs occupy the executors holding your data.
+capacity and data placement disagree, such as after a scale-up or while other jobs occupy the executors holding your
+data.
 
 Expect no gain on a plain hash-partitioned aggregate. Every producer writes every output partition at roughly equal
 size, so all partitions prefer the same executor and every policy reads the same share locally. Measure rather than
 assume: the ratio of `shuffle_locality_local_bytes_total` to `shuffle_locality_input_bytes_total` (see the
 [metrics guide](metrics.md)) is the number to compare between policies.
 
-`shuffle-affinity` also requires `--scheduler-policy push-staged`. Under `pull-staged` the scheduler is offered one
-executor's capacity at a time and so has no placement choice to make.
+It also requires `--scheduler-policy push-staged`. Under `pull-staged` the scheduler is offered one executor's
+capacity at a time and so has no placement choice to make.

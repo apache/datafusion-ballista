@@ -16,9 +16,8 @@
 // under the License.
 
 use crate::cluster::{
-    BoundTask, ClusterState, DistributionPolicy, ExecutorSlot, JobState, JobStateEvent,
-    JobStateEventStream, JobStatus, TaskDistributionPolicy, bind_task_bias,
-    bind_task_round_robin,
+    BoundTask, ClusterState, ExecutorSlot, JobState, JobStateEvent, JobStateEventStream,
+    JobStatus, TaskDistributionPolicy, bind_task_bias, bind_task_round_robin,
 };
 use crate::state::execution_graph::ExecutionGraphBox;
 use ballista_core::error::{BallistaError, Result};
@@ -91,9 +90,6 @@ impl ClusterState for InMemoryClusterState {
             }
             TaskDistributionPolicy::RoundRobin => {
                 bind_task_round_robin(budgets, active_jobs, |_| false).await
-            }
-            TaskDistributionPolicy::ShuffleAffinity(ref policy) => {
-                policy.bind_tasks(budgets, active_jobs).await?
             }
             TaskDistributionPolicy::Custom(ref policy) => {
                 policy.bind_tasks(budgets, active_jobs).await?
@@ -529,6 +525,7 @@ impl JobState for InMemoryJobState {
 mod test {
     use std::sync::Arc;
 
+    use crate::cluster::affinity::ShuffleAffinityPolicy;
     use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
     use crate::cluster::test_util::{test_job_lifecycle, test_job_planning_failure};
     use crate::cluster::{ClusterState, ClusterStateEvent, JobState, JobStateEvent};
@@ -840,8 +837,9 @@ mod test {
     #[tokio::test]
     async fn in_memory_binding_dispatches_to_the_configured_affinity_policy() -> Result<()>
     {
-        let policy = TaskDistributionPolicy::shuffle_affinity();
-        let affinity = place_with(policy.clone()).await?;
+        let policy = ShuffleAffinityPolicy::new();
+        let affinity =
+            place_with(TaskDistributionPolicy::Custom(Arc::new(policy.clone()))).await?;
         let bias = place_with(TaskDistributionPolicy::Bias).await?;
 
         assert_eq!(4, affinity.len(), "every partition should be bound");
@@ -862,10 +860,7 @@ mod test {
             "bias should pack every partition onto the first budget",
         );
 
-        let stats = policy
-            .shuffle_affinity_policy()
-            .expect("configured policy")
-            .stats();
+        let stats = policy.stats();
         assert_eq!(4, stats.local_partitions);
         assert_eq!(3_600, stats.local_bytes, "4 partitions x 900 bytes local");
         assert_eq!(4_000, stats.total_bytes);
@@ -882,7 +877,7 @@ mod test {
         let jobs = mock_shuffle_jobs(&"job_a".into(), 4, &|_, _| 900).await?;
         let bound = cluster_state
             .bind_schedulable_tasks(
-                TaskDistributionPolicy::shuffle_affinity(),
+                TaskDistributionPolicy::Custom(Arc::new(ShuffleAffinityPolicy::new())),
                 Arc::new(jobs),
                 None,
             )

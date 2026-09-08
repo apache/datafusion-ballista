@@ -377,7 +377,7 @@ pub trait JobState: Send + Sync {
 /// "stop at any stage boundary"; if new stage-boundary operators appear, add
 /// them here (or, better, get `ExecutionPlan` upstream to expose an
 /// `is_stage_boundary()` property so we don't keep enumerating).
-fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bool {
+pub fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bool {
     fn walk(node: &Arc<dyn ExecutionPlan>) -> bool {
         if node.downcast_ref::<ShuffleReaderExec>().is_some()
             || node.downcast_ref::<RangeShuffleReaderExec>().is_some()
@@ -426,7 +426,7 @@ fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bool {
 ///   tasks run in parallel on the remaining vcores. Correctness still
 ///   requires packing the entire pending queue into one bind (a split
 ///   collapse would produce partial results downstream can't merge).
-fn bind_one(
+pub fn bind_one(
     running_stage: &mut crate::state::execution_stage::RunningStage,
     session_id: &str,
     job_id: &JobId,
@@ -438,6 +438,11 @@ fn bind_one(
 
 /// [`bind_one`] restricted to the partitions `keep` accepts.
 ///
+/// Public so a [`DistributionPolicy`] living outside this crate can turn a
+/// placement decision into a task without reimplementing task construction.
+/// Getting that wrong is not a slow query but a wrong answer: see the collapse
+/// rule below.
+///
 /// Lets a distribution policy pull a *subset* of the pending queue — say the
 /// partitions whose input already lives on `budget`'s executor — instead of the
 /// front slice; rejected partitions stay queued in order. A collapse stage
@@ -445,7 +450,7 @@ fn bind_one(
 ///
 /// `is_collapse` is [`stage_has_input_collapse`] for this stage, passed in
 /// rather than recomputed because binding calls this once per task.
-fn bind_one_where(
+pub fn bind_one_where(
     running_stage: &mut crate::state::execution_stage::RunningStage,
     session_id: &str,
     job_id: &JobId,

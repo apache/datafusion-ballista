@@ -35,7 +35,9 @@ The metrics currently collected automatically include:
 - _job_submitted_total_ - Counter of submitted jobs
 - _pending_task_queue_size_ - Number of pending tasks
 
-When the scheduler runs with `--task-distribution shuffle-affinity`, it also reports how much of the shuffle input its
+When the scheduler runs a locality-aware distribution policy such as `ShuffleAffinityPolicy` (see the
+[config guide](configs.md#choosing-a-task-distribution)) and the policy has been given the metrics collector, it also
+reports how much of the shuffle input its
 placement decisions kept on the executor that reads it:
 
 - _shuffle_locality_tasks_total_ - Counter of tasks bound by the policy

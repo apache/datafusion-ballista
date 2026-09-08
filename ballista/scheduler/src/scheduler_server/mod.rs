@@ -39,7 +39,6 @@ use ferroid::time::MonotonicClock;
 use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
-use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use log::{debug, warn};
 
@@ -198,26 +197,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 config.event_loop_buffer_size as usize,
             )
         });
-        if let Some(policy) = config.task_distribution.shuffle_affinity_policy() {
-            // Pull-staged offers one executor's capacity per call, so the
-            // policy has no placement to choose. It still reports a local
-            // share, which looks like it is working.
-            if matches!(config.scheduling_policy, TaskSchedulingPolicy::PullStaged) {
-                warn!(
-                    "Task distribution 'shuffle-affinity' has no effect under \
-                     pull-staged scheduling, which offers one executor at a \
-                     time; use --scheduler-policy push-staged"
-                );
-            }
-            // The policy measures locality while binding, a path that never
-            // sees the collector otherwise.
-            if !policy.attach_metrics(metrics_collector.clone()) {
-                warn!(
-                    "Shuffle-affinity policy is already reporting to another \
-                     scheduler; this one will publish no locality metrics"
-                );
-            }
-        }
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
@@ -553,6 +532,7 @@ mod test {
     use futures::StreamExt;
 
     use crate::cluster::ClusterStateEvent;
+    use crate::cluster::affinity::ShuffleAffinityPolicy;
     use crate::config::{SchedulerConfig, TaskDistributionPolicy};
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
@@ -809,17 +789,19 @@ mod test {
         Ok(())
     }
 
-    /// The policy lives in the config and the collector is built beside it, so
-    /// nothing connects the two unless the scheduler does it on construction.
+    /// The embedder attaches the collector to the policy itself, which is the
+    /// only path by which locality measured during binding reaches metrics.
     #[tokio::test]
     async fn test_shuffle_affinity_reports_locality_to_the_metrics_collector()
     -> Result<()> {
         let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let policy = ShuffleAffinityPolicy::new();
+        assert!(policy.attach_metrics(metrics_collector.clone()));
 
         let mut test = SchedulerTest::new(
             SchedulerConfig::default()
                 .with_scheduler_policy(TaskSchedulingPolicy::PushStaged)
-                .with_task_distribution(TaskDistributionPolicy::shuffle_affinity()),
+                .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(policy))),
             metrics_collector.clone(),
             4,
             1,

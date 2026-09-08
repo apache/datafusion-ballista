@@ -875,6 +875,28 @@ mod test {
         Arc::new(ShuffleReaderExec::try_new_broadcast(1, locations, schema, 1).unwrap())
     }
 
+    /// An embedder hands one clone to the scheduler and keeps another, so the
+    /// stats it reads must be the ones the scheduler is accumulating.
+    #[test]
+    fn clones_of_a_policy_share_their_state() {
+        let policy = ShuffleAffinityPolicy::new();
+        let clone = policy.clone();
+
+        assert!(Arc::ptr_eq(&policy.stats_handle(), &clone.stats_handle()));
+
+        clone.record(LocalityStats {
+            tasks: 1,
+            local_bytes: 10,
+            total_bytes: 10,
+            ..Default::default()
+        });
+        assert_eq!(
+            1,
+            policy.stats().tasks,
+            "the clone's round is the original's"
+        );
+    }
+
     #[test]
     fn preferred_executor_is_the_largest_byte_holder() {
         let plan = reader(vec![
