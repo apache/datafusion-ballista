@@ -118,6 +118,14 @@ pub(crate) struct AdaptiveExecutionGraph {
     end_time: u64,
     /// Map from Stage ID -> ExecutionStage
     stages: HashMap<usize, ExecutionStage>,
+    /// Stages retired after an AQE replan made them redundant. Tracked
+    /// separately from `stages` because `is_successful()` requires every
+    /// stage in the map to be Successful: a cancelled stage left behind in
+    /// a non-Successful state would block job completion forever. Late
+    /// task statuses for these stage ids are discarded instead of erroring.
+    /// Each value retains the vcores consumed per task (indexed by task_id)
+    /// so late completions can still refund the executor's reservation.
+    retired_stages: HashMap<usize, Vec<u32>>,
 
     /// Locations of this `ExecutionGraph` final output locations
     output_locations: Vec<PartitionLocation>,
@@ -196,6 +204,7 @@ impl AdaptiveExecutionGraph {
             start_time: started_at,
             end_time: 0,
             stages,
+            retired_stages: HashMap::new(),
             output_locations: vec![],
             failed_stage_attempts: HashMap::new(),
             session_config,
@@ -420,7 +429,7 @@ impl AdaptiveExecutionGraph {
         Ok(())
     }
 
-    /// Return a Vec of stages to cancel
+    /// Return the set of stage ids the replan cancelled
     fn update_stage_progress(
         &mut self,
         stage_id: usize,
@@ -506,15 +515,67 @@ impl AdaptiveExecutionGraph {
                 // we update output locations
                 self.output_locations = partitions.into_iter().flatten().collect();
             }
-            // marking stages which need cancelling as canceled.
-            // stage ids are returned for task cancellation action
+            // Drop stages the replan cancelled from both the planner and
+            // graph. Tasks already dispatched may still finish; statuses
+            // for their retired stage ids are ignored below.
             for stage_id in stages_to_cancel.iter() {
                 self.planner.cancel_stage(*stage_id)?;
+                self.retire_cancelled_stage(*stage_id);
             }
 
             Ok(stages_to_cancel)
         } else {
             Ok(HashSet::new())
+        }
+    }
+
+    /// Retire a stage the replan cancelled. The stage is moved out of
+    /// `self.stages` so the job no longer waits on it: `is_successful()`
+    /// requires every stage in the map to be Successful, so a cancelled
+    /// stage left behind in a non-Successful state would wedge the job.
+    /// The id is remembered in `retired_stages` so a late completion from
+    /// one of its tasks is discarded as coming from a cancelled attempt.
+    fn retire_cancelled_stage(&mut self, stage_id: usize) {
+        match self.stages.remove(&stage_id) {
+            Some(ExecutionStage::Running(running)) => {
+                let inflight = running.running_tasks().len();
+                self.retired_stages.insert(
+                    stage_id,
+                    running
+                        .task_infos
+                        .iter()
+                        .map(|task| task.vcores_consumed)
+                        .collect(),
+                );
+                debug!(
+                    "Job {} stage {stage_id} retired after AQE replan ({inflight} task(s) still in flight)",
+                    self.job_id(),
+                );
+            }
+            Some(stage) => {
+                // Resolved/UnResolved stages have no in-flight tasks; retire
+                // them the same way. Successful/Failed stages are already
+                // terminal and keep their outputs/history.
+                if matches!(
+                    stage,
+                    ExecutionStage::Resolved(_) | ExecutionStage::UnResolved(_)
+                ) {
+                    self.retired_stages.insert(stage_id, vec![]);
+                    debug!(
+                        "Job {} stage {stage_id} dropped after AQE replan",
+                        self.job_id(),
+                    );
+                } else {
+                    self.stages.insert(stage_id, stage);
+                }
+            }
+            None => {
+                warn!(
+                    "Stage {}/{} to be cancelled was not found in the execution graph",
+                    self.job_id(),
+                    stage_id
+                );
+            }
         }
     }
 
@@ -1035,9 +1096,9 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                     )?;
 
                     if !stages_to_cancel.is_empty() {
-                        warn!(
-                            "there are stages to be cancelled but its not implemented. stages to cancel: {:?}",
-                            stages_to_cancel
+                        debug!(
+                            "retired stages after AQE replan for job {}: {:?}",
+                            job_id, stages_to_cancel
                         );
                     }
                 } else {
@@ -1051,6 +1112,20 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             .collect::<Vec<_>>(),
                     );
                 }
+            } else if self.retired_stages.contains_key(&stage_id) {
+                // The stage was retired after an AQE replan made it
+                // redundant, so a late status from one of its tasks is
+                // stale: discard it instead of failing the whole update
+                // (which would wedge the job).
+                warn!(
+                    "Stage {}/{} was retired by an AQE replan; ignoring late status for task(s) {:?}",
+                    job_id,
+                    stage_id,
+                    stage_task_statuses
+                        .iter()
+                        .map(|task_status| task_status.task_id)
+                        .collect::<Vec<_>>(),
+                );
             } else {
                 return Err(BallistaError::Internal(format!(
                     "Invalid stage ID {stage_id} for job {job_id}"
@@ -1418,6 +1493,20 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     fn stages(&self) -> &HashMap<usize, ExecutionStage> {
         &self.stages
+    }
+
+    fn task_vcores(&self, stage_id: usize, task_id: usize) -> Option<u32> {
+        self.stages
+            .get(&stage_id)
+            .and_then(|stage| stage.task_infos())
+            .and_then(|infos| infos.get(task_id))
+            .map(|task| task.vcores_consumed)
+            .or_else(|| {
+                self.retired_stages
+                    .get(&stage_id)
+                    .and_then(|vcores| vcores.get(task_id))
+                    .copied()
+            })
     }
 
     fn stage_count(&self) -> usize {

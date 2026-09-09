@@ -1129,12 +1129,11 @@ mod test {
         .await?;
 
         let plan = test_plan();
-        let job_id = test.submit("", &plan).await?;
 
         // Hard wall-clock bound so a stuck job fails the test instead of hanging.
-        let status = tokio::time::timeout(
+        let (status, _) = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            test.await_completion(&job_id),
+            test.run("", &plan),
         )
         .await
         .expect(

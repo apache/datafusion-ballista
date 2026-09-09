@@ -568,12 +568,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 self.get_active_execution_graph(&job_id.clone().into())
             {
                 let mut graph = cached.write().await;
-                graph.update_task_status(
+                // A failure updating one job must not abort the batch and
+                // drop the remaining jobs' task updates. Log the failure and
+                // continue with the next job.
+                match graph.update_task_status(
                     executor,
                     statuses,
                     self.task_max_failures,
                     self.stage_max_failures,
-                )?
+                ) {
+                    Ok(events) => events,
+                    Err(error) => {
+                        warn!(
+                            "Failed to update task statuses for job {job_id}, skipping its updates: {error}"
+                        );
+                        vec![]
+                    }
+                }
             } else {
                 // TODO Deal with curator changed case
                 error!(
@@ -1083,8 +1094,12 @@ mod tests {
     use super::*;
     use crate::cluster::JobStateEventStream;
     use crate::cluster::memory::InMemoryJobState;
-    use crate::test_utils::{mock_completed_task, mock_executor, test_aggregation_plan};
+    use crate::test_utils::{
+        mock_completed_task, mock_executor, test_aggregation_plan,
+        test_aggregation_plan_with_job_id,
+    };
     use ballista_core::serde::protobuf::job_status::Status;
+    use ballista_core::serde::protobuf::task_status;
     use ballista_core::utils::{default_config_producer, default_session_builder};
     use datafusion_proto::protobuf::LogicalPlanNode;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1270,6 +1285,49 @@ mod tests {
         }
 
         Ok((manager, state, job_id, active_graph))
+    }
+
+    #[tokio::test]
+    async fn task_status_error_does_not_drop_other_jobs_updates() -> Result<()> {
+        let (manager, _, _, invalid_graph) = setup_job(false).await?;
+        let executor = mock_executor("executor-1".to_string());
+        let invalid_task = invalid_graph
+            .write()
+            .await
+            .pop_next_task(&executor.id)?
+            .expect("job should have a task to assign");
+        let mut invalid_status = mock_completed_task(invalid_task, &executor.id);
+        invalid_status.stage_id = u32::MAX;
+
+        let mut valid_graph: ExecutionGraphBox =
+            Box::new(test_aggregation_plan_with_job_id(2, &"valid-job".into()).await);
+        let valid_job_id = valid_graph.job_id().clone();
+        let valid_task = valid_graph
+            .pop_next_task(&executor.id)?
+            .expect("other job should have a task to assign");
+        let stage_id = valid_task.key.stage_id;
+        let task_id = valid_task.key.task_id;
+        let valid_status = mock_completed_task(valid_task, &executor.id);
+        manager
+            .active_job_cache
+            .insert(valid_job_id.clone(), JobInfoCache::new(valid_graph));
+
+        manager
+            .update_task_statuses(&executor, vec![invalid_status, valid_status])
+            .await?;
+
+        let graph = manager
+            .get_active_execution_graph(&valid_job_id)
+            .expect("other job should remain active");
+        let graph = graph.read().await;
+        let task_info = &graph.stages()[&stage_id]
+            .task_infos()
+            .expect("assigned stage should have task information")[task_id];
+        assert!(matches!(
+            task_info.task_status,
+            task_status::Status::Successful(_)
+        ));
+        Ok(())
     }
 
     #[tokio::test]
