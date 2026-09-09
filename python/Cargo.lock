@@ -3116,7 +3116,6 @@ dependencies = [
 name = "pyballista"
 version = "54.0.0"
 dependencies = [
- "async-trait",
  "ballista",
  "ballista-core",
  "ballista-executor",

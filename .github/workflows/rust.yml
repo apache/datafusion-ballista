@@ -239,7 +239,7 @@ jobs:
           rustup default stable
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Install taplo
-        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+        uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c # v2.87.6
         with:
           tool: taplo-cli@0.10.0
 
@@ -248,6 +248,25 @@ jobs:
           # if you encounter an error, run 'ci/scripts/rust_toml_fmt.sh --write'
           # (or 'taplo format') locally to fix the formatting, then commit the result.
           ci/scripts/rust_toml_fmt.sh
+
+  cargo-machete:
+    name: Check for unused dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2.87.5
+        with:
+          tool: cargo-machete@0.9.2
+
+      - name: Check for unused dependencies
+        run: |
+          # if a reported dependency is a false positive (e.g. only referenced
+          # through macros or generated code), add it to the crate's
+          # `[package.metadata.cargo-machete]` ignored list with a comment.
+          ci/scripts/rust_machete.sh
 
   datafusion-proto-sync-check:
     name: Check vendored DataFusion proto is in sync
