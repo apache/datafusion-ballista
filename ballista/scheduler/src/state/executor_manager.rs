@@ -419,28 +419,28 @@ impl ExecutorManager {
     }
 
     /// Launches multiple tasks on the specified executor.
+    ///
+    /// `Ok` means the RPC was dispatched; the returned set holds job IDs the
+    /// executor rejected (could not decode) and failed individually. `Err` is
+    /// only returned for a transport-level failure of the whole RPC.
     pub async fn launch_multi_task(
         &self,
         executor_id: &str,
         multi_tasks: Vec<MultiTaskDefinition>,
         scheduler_id: String,
-    ) -> Result<()> {
+    ) -> Result<HashSet<JobId>> {
         let mut client = self
             .get_client(executor_id, &self.grpc_client_config)
             .await?;
-        client
+        let res = client
             .launch_multi_task(protobuf::LaunchMultiTaskParams {
                 multi_tasks,
                 scheduler_id,
             })
-            .await
-            .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Failed to connect to executor {executor_id}: {e:?}"
-                ))
-            })?;
+            .await?
+            .into_inner();
 
-        Ok(())
+        Ok(res.failed_jobs.into_iter().map(JobId::from).collect())
     }
 
     pub(crate) fn drain_pending_cleanup_jobs(
