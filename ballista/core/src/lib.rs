@@ -76,6 +76,8 @@ pub mod event_loop;
 pub mod execution_plans;
 /// Extension traits and utilities for DataFusion integration.
 pub mod extension;
+/// Arrow Flight service which proxies partition fetches to executors.
+pub mod flight_proxy_service;
 /// Strongly-typed string identifiers (job ids, job names, ...).
 pub mod ids;
 /// KLL quantile sketch (Karnin-Lang-Liberty), generic over `Ord` items.

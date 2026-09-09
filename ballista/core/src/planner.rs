@@ -113,10 +113,7 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
         // like tables located in information_schema,
         // if that is the case, we run that plan
         // on this same context, not on cluster
-        let mut local_run = LocalRun::default();
-        let _ = logical_plan.visit(&mut local_run);
-
-        if local_run.can_be_local {
+        if scans_only_local_tables(logical_plan) {
             log::debug!("create_physical_plan - plan can be executed locally");
 
             self.local_planner
@@ -163,6 +160,19 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
             }
         }
     }
+}
+
+/// Returns `true` if every table `plan` scans lives in `information_schema`.
+///
+/// Such a plan reads the catalog of the node it is planned on and has nothing
+/// to distribute; worse, the physical form of those scans (`StreamingTableExec`)
+/// cannot be serialized for an executor, so distributing one produces a job
+/// that can never run. Callers that hand plans to the cluster should answer
+/// these locally instead.
+pub fn scans_only_local_tables(plan: &LogicalPlan) -> bool {
+    let mut local_run = LocalRun::default();
+    let _ = plan.visit(&mut local_run);
+    local_run.can_be_local
 }
 
 /// A Visitor which detect if query is using local tables,

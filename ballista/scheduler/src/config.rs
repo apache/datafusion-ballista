@@ -273,6 +273,14 @@ pub struct Config {
         help = "Number of attempts before stage is considered failed."
     )]
     pub stage_max_failures: usize,
+    #[cfg(feature = "flight-sql")]
+    /// Serve Arrow Flight SQL on the scheduler's gRPC port.
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Serve Arrow Flight SQL on the scheduler port, so JDBC/ODBC/ADBC clients can run SQL against the cluster. Note that this performs no authentication unless SchedulerConfig::with_flight_sql_authenticator is set."
+    )]
+    pub flight_sql: bool,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     #[arg(
@@ -397,6 +405,19 @@ pub struct SchedulerConfig {
     pub task_max_failures: usize,
     /// Number of failures attempts before stage is considered failed
     pub stage_max_failures: usize,
+    /// Whether to serve Arrow Flight SQL on the scheduler's gRPC port.
+    ///
+    /// The frontend subsumes the plain Flight result proxy when enabled, so
+    /// Ballista's own clients keep working on the same port.
+    #[cfg(feature = "flight-sql")]
+    pub flight_sql: bool,
+    /// Authenticates Arrow Flight SQL handshakes.
+    ///
+    /// Without one the frontend accepts every client, so this is the only way
+    /// to run it on an untrusted network without fronting it with a proxy.
+    #[cfg(feature = "flight-sql")]
+    pub override_flight_sql_authenticator:
+        Option<Arc<dyn ballista_flight_sql::Authenticator>>,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     pub disable_rest_api: bool,
@@ -452,6 +473,10 @@ impl Default for SchedulerConfig {
             min_ready_executors: 1,
             task_max_failures: 4,
             stage_max_failures: 4,
+            #[cfg(feature = "flight-sql")]
+            flight_sql: false,
+            #[cfg(feature = "flight-sql")]
+            override_flight_sql_authenticator: None,
             #[cfg(feature = "rest-api")]
             disable_rest_api: false,
             #[cfg(feature = "rest-api")]
@@ -499,6 +524,13 @@ impl SchedulerConfig {
                 "advertise_flight_endpoint is set to an empty string, which is treated \
                  as unset. If you meant to start the embedded flight proxy, use \
                  with_enable_embedded_flight_proxy(true)."
+            );
+        }
+        if self.flight_sql_enabled() && self.enable_embedded_flight_proxy {
+            info!(
+                "Both flight_sql and enable_embedded_flight_proxy are set; the Flight \
+                 SQL frontend serves partition fetches on the scheduler port, so no \
+                 separate proxy is started."
             );
         }
         // Not a misconfiguration: running the embedded proxy while advertising a load
@@ -608,6 +640,38 @@ impl SchedulerConfig {
     pub fn with_enable_embedded_flight_proxy(mut self, enable: bool) -> Self {
         self.enable_embedded_flight_proxy = enable;
         self
+    }
+
+    /// Sets whether to serve Arrow Flight SQL on the scheduler's gRPC port.
+    #[cfg(feature = "flight-sql")]
+    pub fn with_flight_sql(mut self, enable: bool) -> Self {
+        self.flight_sql = enable;
+        self
+    }
+
+    /// Sets the authenticator for Arrow Flight SQL handshakes.
+    #[cfg(feature = "flight-sql")]
+    pub fn with_flight_sql_authenticator(
+        mut self,
+        authenticator: Arc<dyn ballista_flight_sql::Authenticator>,
+    ) -> Self {
+        self.override_flight_sql_authenticator = Some(authenticator);
+        self
+    }
+
+    /// Whether the Arrow Flight SQL frontend should be served.
+    ///
+    /// Always false when the `flight-sql` feature is off, so callers can ask
+    /// without repeating the `cfg` themselves.
+    pub fn flight_sql_enabled(&self) -> bool {
+        #[cfg(feature = "flight-sql")]
+        {
+            self.flight_sql
+        }
+        #[cfg(not(feature = "flight-sql"))]
+        {
+            false
+        }
     }
 
     /// Sets the task distribution policy.
@@ -826,6 +890,10 @@ impl TryFrom<Config> for SchedulerConfig {
             min_ready_executors: opt.min_ready_executors,
             task_max_failures: opt.task_max_failures,
             stage_max_failures: opt.stage_max_failures,
+            #[cfg(feature = "flight-sql")]
+            flight_sql: opt.flight_sql,
+            #[cfg(feature = "flight-sql")]
+            override_flight_sql_authenticator: None,
             #[cfg(feature = "rest-api")]
             disable_rest_api: opt.disable_rest_api,
             #[cfg(feature = "rest-api")]
