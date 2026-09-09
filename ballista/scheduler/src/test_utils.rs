@@ -30,7 +30,7 @@ use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::{SchedulerServer, timestamp_millis};
 
 use crate::state::executor_manager::ExecutorManager;
-use crate::state::task_manager::{JobInfoCache, TaskLauncher};
+use crate::state::task_manager::TaskLauncher;
 
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
@@ -53,10 +53,8 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
-use crate::cluster::affinity::LocalityStats;
 use crate::cluster::{BallistaCluster, JobStateEventStream};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use ballista_core::config::BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK;
 
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionStage, StaticExecutionGraph, TaskDescription,
@@ -696,26 +694,9 @@ impl MetricEvent {
 pub struct TestMetricsCollector {
     /// Collected metric events.
     pub events: Arc<Mutex<Vec<MetricEvent>>>,
-    /// One entry per binding round the shuffle-affinity policy measured. Kept
-    /// apart from `events`, which are job-scoped; a round can span jobs.
-    pub locality_rounds: Arc<Mutex<Vec<LocalityStats>>>,
 }
 
 impl TestMetricsCollector {
-    /// The locality measurements reported so far, oldest first.
-    pub fn locality_rounds(&self) -> Vec<LocalityStats> {
-        self.locality_rounds.lock().clone()
-    }
-
-    /// Every locality round summed, as the collector's backend would.
-    pub fn locality_total(&self) -> LocalityStats {
-        let mut total = LocalityStats::default();
-        for round in self.locality_rounds.lock().iter() {
-            total += *round;
-        }
-        total
-    }
-
     /// Returns all events for the given job ID.
     pub fn job_events(&self, job_id: &JobId) -> Vec<MetricEvent> {
         let guard = self.events.lock();
@@ -763,10 +744,6 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
     }
 
     fn set_pending_tasks_queue_size(&self, _value: u64) {}
-
-    fn record_shuffle_locality(&self, round: &LocalityStats) {
-        self.locality_rounds.lock().push(*round);
-    }
 
     fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>> {
         Ok(None)
@@ -1187,146 +1164,8 @@ pub fn mock_executor(executor_id: String) -> ExecutorMetadata {
     }
 }
 
-/// Creates a test execution graph whose consumer stage *collapses*: an
-/// ungrouped aggregate puts a `CoalescePartitionsExec` above the shuffle
-/// reader, so one task must drain every input partition.
-pub async fn test_collapse_plan_with_config(
-    job_id: &JobId,
-    session_config: Arc<SessionConfig>,
-) -> StaticExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(2);
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
-
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
-        Field::new("gmv", DataType::UInt64, false),
-    ]);
-
-    // Two input partitions, no GROUP BY: the final aggregate consumes every
-    // partial through a collapse.
-    let logical_plan = scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
-        .unwrap()
-        .aggregate(Vec::<Expr>::new(), vec![sum(col("gmv"))])
-        .unwrap()
-        .build()
-        .unwrap();
-
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-
-    let mut planner = DefaultDistributedPlanner::new();
-    StaticExecutionGraph::new(
-        "localhost:50050",
-        job_id,
-        "",
-        "session",
-        plan,
-        0,
-        session_config,
-        &mut planner,
-        None,
-    )
-    .unwrap()
-}
-
-/// An executor with enough vcores that a placement decision is never masked
-/// by its budget running out.
-pub fn mock_locality_executor(executor_id: &str) -> ExecutorMetadata {
-    ExecutorMetadata {
-        id: executor_id.to_string(),
-        host: "localhost".to_string(),
-        port: 50051,
-        grpc_port: 50052,
-        specification: ExecutorSpecification::default().with_vcores(8),
-        os_info: ExecutorOperatingSystemSpecification::default(),
-    }
-}
-
-/// Available tasks in the first running stage — the map stage, before any
-/// consumer stage has been revived.
-pub fn first_running_stage_tasks(graph: &StaticExecutionGraph) -> usize {
-    graph
-        .stages()
-        .values()
-        .filter_map(|stage| match stage {
-            ExecutionStage::Running(stage) => Some(stage.available_tasks()),
-            _ => None,
-        })
-        .find(|available| *available > 0)
-        .unwrap()
-}
-
-/// An aggregation graph whose map stage has completed, leaving the consumer
-/// stage pending with real `PartitionLocation`s to place.
-///
-/// Map task `n` runs on `executor_1` when `n` is even and `executor_2` when
-/// odd, and `bytes(n, partition)` sizes what it wrote per output partition, so
-/// a test can state its locality layout as a function.
-pub async fn mock_shuffle_graph(
-    job_id: &JobId,
-    num_partitions: usize,
-    bytes: &(dyn Fn(usize, usize) -> u64 + Sync),
-) -> Result<StaticExecutionGraph> {
-    let session_config = Arc::new(
-        SessionConfig::new_with_ballista()
-            .set_str(BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK, "0"),
-    );
-    let mut graph =
-        test_aggregation_plan_with_config(num_partitions, job_id, session_config).await;
-    graph.revive();
-
-    // Complete exactly the map stage: popping past it would drain the
-    // consumer stage the caller wants left pending.
-    let map_tasks = first_running_stage_tasks(&graph);
-
-    for map_task in 0..map_tasks {
-        let Some(task) = graph.pop_next_task("executor_0")? else {
-            break;
-        };
-        let executor = mock_locality_executor(if map_task % 2 == 0 {
-            "executor_1"
-        } else {
-            "executor_2"
-        });
-        let status = mock_completed_task_with_partition_bytes(task, &executor.id, |p| {
-            bytes(map_task, p)
-        });
-        graph.update_task_status(&executor, vec![status], 1, 1)?;
-    }
-
-    Ok(graph)
-}
-
-/// [`mock_shuffle_graph`] wrapped as the running-job map a distribution policy
-/// binds against.
-pub async fn mock_shuffle_jobs(
-    job_id: &JobId,
-    num_partitions: usize,
-    bytes: &(dyn Fn(usize, usize) -> u64 + Sync),
-) -> Result<HashMap<JobId, JobInfoCache>> {
-    let graph = mock_shuffle_graph(job_id, num_partitions, bytes).await?;
-    let mut jobs = HashMap::new();
-    jobs.insert(job_id.clone(), JobInfoCache::new(Box::new(graph)));
-    Ok(jobs)
-}
-
 /// Creates a mock successful task status for the given task.
 pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStatus {
-    mock_completed_task_with_partition_bytes(task, executor_id, |_| 1)
-}
-
-/// Like [`mock_completed_task`], but sizes each shuffle output partition with
-/// `num_bytes(partition_id)`, which locality-aware scheduling reads back off
-/// the consumer stage's `PartitionLocation`s.
-pub fn mock_completed_task_with_partition_bytes(
-    task: TaskDescription,
-    executor_id: &str,
-    num_bytes: impl Fn(usize) -> u64,
-) -> TaskStatus {
     let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
 
     let num_partitions = task.get_output_partition_number();
@@ -1336,7 +1175,7 @@ pub fn mock_completed_task_with_partition_bytes(
             partition_id: partition_id as u64,
             num_batches: 1,
             num_rows: 1,
-            num_bytes: num_bytes(partition_id),
+            num_bytes: 1,
             file_id: None,
             is_sort_shuffle: false,
         })

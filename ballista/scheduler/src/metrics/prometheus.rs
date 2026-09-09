@@ -15,17 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::cluster::affinity::LocalityStats;
 use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 
 use once_cell::sync::OnceCell;
 use prometheus::{
-    Counter, Gauge, Histogram, IntCounter, IntGauge, Registry,
-    register_counter_with_registry, register_gauge_with_registry,
-    register_histogram_with_registry, register_int_counter_with_registry,
-    register_int_gauge_with_registry,
+    Counter, Gauge, Histogram, Registry, register_counter_with_registry,
+    register_gauge_with_registry, register_histogram_with_registry,
 };
 use prometheus::{Encoder, TextEncoder};
 use std::sync::Arc;
@@ -42,11 +39,6 @@ static COLLECTOR: OnceCell<Arc<dyn SchedulerMetricsCollector>> = OnceCell::new()
 /// *job_completed_total* - Counter of completed jobs
 /// *job_submitted_total* - Counter of submitted jobs
 /// *pending_task_queue_size* - Number of pending tasks
-///
-/// The `shuffle-affinity` task distribution adds the *shuffle_locality_\**
-/// counters, plus *shuffle_locality_imputed_bytes* saying whether the byte
-/// counts can be trusted. The share of input read without a network hop is
-/// `shuffle_locality_local_bytes_total / shuffle_locality_input_bytes_total`.
 pub struct PrometheusMetricsCollector {
     execution_time: Histogram,
     planning_time: Histogram,
@@ -55,12 +47,6 @@ pub struct PrometheusMetricsCollector {
     completed: Counter,
     submitted: Counter,
     pending_queue_size: Gauge,
-    locality_tasks: IntCounter,
-    locality_partitions: IntCounter,
-    locality_local_partitions: IntCounter,
-    locality_input_bytes: IntCounter,
-    locality_local_bytes: IntCounter,
-    locality_imputed_bytes: IntGauge,
 }
 
 impl PrometheusMetricsCollector {
@@ -131,60 +117,6 @@ impl PrometheusMetricsCollector {
             BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
-        let locality_tasks = register_int_counter_with_registry!(
-            "shuffle_locality_tasks_total",
-            "Counter of tasks bound by the shuffle-affinity task distribution",
-            registry
-        )
-        .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {e:?}"))
-        })?;
-
-        let locality_partitions = register_int_counter_with_registry!(
-            "shuffle_locality_partitions_total",
-            "Counter of input partitions covered by shuffle-affinity bound tasks",
-            registry
-        )
-        .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {e:?}"))
-        })?;
-
-        let locality_local_partitions = register_int_counter_with_registry!(
-            "shuffle_locality_local_partitions_total",
-            "Counter of input partitions bound to an executor holding some of their input",
-            registry
-        )
-        .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {e:?}"))
-        })?;
-
-        let locality_input_bytes = register_int_counter_with_registry!(
-            "shuffle_locality_input_bytes_total",
-            "Counter of shuffle input bytes bound tasks will read, local and remote",
-            registry
-        )
-        .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {e:?}"))
-        })?;
-
-        let locality_local_bytes = register_int_counter_with_registry!(
-            "shuffle_locality_local_bytes_total",
-            "Counter of shuffle input bytes bound tasks will read from the executor running them",
-            registry
-        )
-        .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {e:?}"))
-        })?;
-
-        let locality_imputed_bytes = register_int_gauge_with_registry!(
-            "shuffle_locality_imputed_bytes",
-            "1 once any producer reported no size, leaving the byte counters padded with placeholders and the local share untrustworthy",
-            registry
-        )
-        .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {e:?}"))
-        })?;
-
         Ok(Self {
             execution_time,
             planning_time,
@@ -193,12 +125,6 @@ impl PrometheusMetricsCollector {
             completed,
             submitted,
             pending_queue_size,
-            locality_tasks,
-            locality_partitions,
-            locality_local_partitions,
-            locality_input_bytes,
-            locality_local_bytes,
-            locality_imputed_bytes,
         })
     }
 
@@ -239,19 +165,6 @@ impl SchedulerMetricsCollector for PrometheusMetricsCollector {
         self.pending_queue_size.set(value as f64);
     }
 
-    fn record_shuffle_locality(&self, round: &LocalityStats) {
-        self.locality_tasks.inc_by(round.tasks);
-        self.locality_partitions.inc_by(round.partitions);
-        self.locality_local_partitions
-            .inc_by(round.local_partitions);
-        self.locality_input_bytes.inc_by(round.total_bytes);
-        self.locality_local_bytes.inc_by(round.local_bytes);
-        if round.imputed_bytes {
-            // Sticky, like `LocalityStats::imputed_bytes`.
-            self.locality_imputed_bytes.set(1);
-        }
-    }
-
     fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>> {
         let encoder = TextEncoder::new();
 
@@ -262,91 +175,5 @@ impl SchedulerMetricsCollector for PrometheusMetricsCollector {
         })?;
 
         Ok(Some((buffer, encoder.format_type().to_owned())))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Registered on a private registry so the test does not race the
-    /// process-wide default one.
-    #[test]
-    fn shuffle_locality_rounds_accumulate_into_the_counters() {
-        let registry = Registry::new();
-        let collector = PrometheusMetricsCollector::new(&registry).unwrap();
-
-        collector.record_shuffle_locality(&LocalityStats {
-            tasks: 2,
-            partitions: 8,
-            local_partitions: 6,
-            local_bytes: 900,
-            total_bytes: 1_000,
-            imputed_bytes: false,
-        });
-        collector.record_shuffle_locality(&LocalityStats {
-            tasks: 1,
-            partitions: 4,
-            local_partitions: 0,
-            local_bytes: 0,
-            total_bytes: 500,
-            imputed_bytes: false,
-        });
-
-        // Deltas add up, so the local share is a ratio of two counters.
-        assert_eq!(3, collector.locality_tasks.get());
-        assert_eq!(12, collector.locality_partitions.get());
-        assert_eq!(6, collector.locality_local_partitions.get());
-        assert_eq!(900, collector.locality_local_bytes.get());
-        assert_eq!(1_500, collector.locality_input_bytes.get());
-        assert_eq!(0, collector.locality_imputed_bytes.get());
-
-        // One unsized producer flags every later ratio, and stays flagged.
-        collector.record_shuffle_locality(&LocalityStats {
-            tasks: 1,
-            imputed_bytes: true,
-            ..Default::default()
-        });
-        assert_eq!(1, collector.locality_imputed_bytes.get());
-        collector.record_shuffle_locality(&LocalityStats {
-            tasks: 1,
-            imputed_bytes: false,
-            ..Default::default()
-        });
-        assert_eq!(1, collector.locality_imputed_bytes.get());
-    }
-
-    /// A registered metric that never reaches the exposition format is
-    /// invisible to the scraper, whatever its value.
-    #[test]
-    fn the_locality_counters_are_exported() {
-        let registry = Registry::new();
-        let collector = PrometheusMetricsCollector::new(&registry).unwrap();
-        collector.record_shuffle_locality(&LocalityStats {
-            tasks: 1,
-            partitions: 1,
-            local_partitions: 1,
-            local_bytes: 42,
-            total_bytes: 42,
-            imputed_bytes: false,
-        });
-
-        let mut buffer = vec![];
-        TextEncoder::new()
-            .encode(&registry.gather(), &mut buffer)
-            .unwrap();
-        let exposed = String::from_utf8(buffer).unwrap();
-
-        for metric in [
-            "shuffle_locality_tasks_total",
-            "shuffle_locality_partitions_total",
-            "shuffle_locality_local_partitions_total",
-            "shuffle_locality_input_bytes_total",
-            "shuffle_locality_local_bytes_total",
-            "shuffle_locality_imputed_bytes",
-        ] {
-            assert!(exposed.contains(metric), "{metric} was not exported");
-        }
-        assert!(exposed.contains("shuffle_locality_local_bytes_total 42"));
     }
 }

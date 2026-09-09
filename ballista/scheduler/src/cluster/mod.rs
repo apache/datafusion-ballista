@@ -39,8 +39,6 @@ use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
-/// Locality-aware task distribution.
-pub mod affinity;
 /// Event broadcasting and subscription for cluster state changes.
 pub mod event;
 /// In-memory cluster state implementation.
@@ -377,7 +375,7 @@ pub trait JobState: Send + Sync {
 /// "stop at any stage boundary"; if new stage-boundary operators appear, add
 /// them here (or, better, get `ExecutionPlan` upstream to expose an
 /// `is_stage_boundary()` property so we don't keep enumerating).
-pub fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bool {
+fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bool {
     fn walk(node: &Arc<dyn ExecutionPlan>) -> bool {
         if node.downcast_ref::<ShuffleReaderExec>().is_some()
             || node.downcast_ref::<RangeShuffleReaderExec>().is_some()
@@ -426,38 +424,13 @@ pub fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bool {
 ///   tasks run in parallel on the remaining vcores. Correctness still
 ///   requires packing the entire pending queue into one bind (a split
 ///   collapse would produce partial results downstream can't merge).
-pub fn bind_one(
+fn bind_one(
     running_stage: &mut crate::state::execution_stage::RunningStage,
     session_id: &str,
     job_id: &JobId,
     budget: &mut AvailableVcores,
 ) -> Option<BoundTask> {
     let is_collapse = stage_has_input_collapse(&running_stage.plan);
-    bind_one_where(running_stage, session_id, job_id, budget, is_collapse, None)
-}
-
-/// [`bind_one`] restricted to the partitions `keep` accepts.
-///
-/// Public so a [`DistributionPolicy`] living outside this crate can turn a
-/// placement decision into a task without reimplementing task construction.
-/// Getting that wrong is not a slow query but a wrong answer: see the collapse
-/// rule below.
-///
-/// Lets a distribution policy pull a *subset* of the pending queue — say the
-/// partitions whose input already lives on `budget`'s executor — instead of the
-/// front slice; rejected partitions stay queued in order. A collapse stage
-/// ignores the filter, since its single task must consume the whole queue.
-///
-/// `is_collapse` is [`stage_has_input_collapse`] for this stage, passed in
-/// rather than recomputed because binding calls this once per task.
-pub fn bind_one_where(
-    running_stage: &mut crate::state::execution_stage::RunningStage,
-    session_id: &str,
-    job_id: &JobId,
-    budget: &mut AvailableVcores,
-    is_collapse: bool,
-    keep: Option<&dyn Fn(usize) -> bool>,
-) -> Option<BoundTask> {
     // Cap non-collapse slices at the configured `max_partitions_per_task`.
     // Collapse stages must still pack their full pending queue into a single
     // task for correctness — a split collapse would produce partial results
@@ -475,12 +448,7 @@ pub fn bind_one_where(
     } else {
         (budget.vcores as usize).min(cap)
     };
-    let input_partition_ids = match keep {
-        Some(keep) if !is_collapse => {
-            running_stage.pending.next_slice_where(max_partitions, keep)
-        }
-        _ => running_stage.pending.next_slice(max_partitions),
-    };
+    let input_partition_ids = running_stage.pending.next_slice(max_partitions);
     if input_partition_ids.is_empty() {
         return None;
     }

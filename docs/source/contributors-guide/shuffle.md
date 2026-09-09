@@ -276,22 +276,29 @@ behavior it would be config-gated, leaving today's model as the default:
   per-partition metadata would cut the fixed cost of a stage boundary without
   changing where the data lives ([#660]).
 - **Shuffle affinity.** Schedule a consumer task on the executor that already
-  holds most of its input, turning Flight fetches into local reads. A first cut
-  ships as `ShuffleAffinityPolicy`, installed through
-  `TaskDistributionPolicy::Custom` ([#2319]): it reads the byte
-  counts on each partition's `PartitionLocation`s, ranks every
-  `(partition, holder)` pair by size, and spends each executor's free vcores on
-  its strongest candidates before binding the remainder bias-style, so no vcore
-  idles waiting for a holder with no room.
+  holds most of its input, turning Flight fetches into local reads. Task
+  distribution is already pluggable, so this needs no core change: a first cut
+  lives in the `examples` crate as `ShuffleAffinityPolicy` ([#2319]), a
+  `DistributionPolicy` built entirely on the scheduler's public API and
+  installed through `TaskDistributionPolicy::Custom`. It reads the byte counts
+  on each partition's `PartitionLocation`s, ranks every `(partition, holder)`
+  pair by size, and spends each executor's free vcores on its strongest
+  candidates before binding the remainder bias-style, so no vcore idles waiting
+  on a holder with no room.
 
-  How much locality is available depends on the producer stage — a partition
-  spread evenly over `E` executors leaves none holding more than `1/E` of it —
-  so the policy is off by default and reports the share of shuffle bytes it
-  kept local, to be compared against bias and round-robin on a given workload.
-  That share is exposed as the `shuffle_locality_*` metrics served from
-  `/api/metrics` (see the [metrics guide]), through
-  `ShuffleAffinityPolicy::stats` when the scheduler is embedded, and on a
+  How much locality is available depends on the producer stage. A partition
+  spread evenly over `E` executors leaves no holder with more than `1/E` of it,
+  so the policy is opt-in and reports the share of shuffle bytes it kept local,
+  to be compared against bias and round-robin on a given workload. That share
+  is available through `ShuffleAffinityPolicy::stats`, through a
+  `LocalityObserver` the embedder attaches to feed its own metrics, and on a
   per-round `debug!` line.
+
+  Nothing in the scheduler crate knows the policy exists. It copies the three
+  binding rules it needs (the collapse rule, the vcore reservation, and a
+  filtered take off the pending queue) rather than widening the scheduler's API
+  for a policy nobody has measured yet. Those copies become shared functions if
+  and when the measurements say this belongs in-tree.
 
 - **Remote shuffle service.** Offload shuffle storage to a service such as
   Apache Celeborn or Apache Uniffle ([#1539]), which decouples shuffle
@@ -306,6 +313,5 @@ properties above it preserves and which it trades away.
 [#1539]: https://github.com/apache/datafusion-ballista/issues/1539
 [#2003]: https://github.com/apache/datafusion-ballista/issues/2003
 [#2318]: https://github.com/apache/datafusion-ballista/issues/2318
-[metrics guide]: ../user-guide/metrics.md
 [#2319]: https://github.com/apache/datafusion-ballista/issues/2319
 [#2320]: https://github.com/apache/datafusion-ballista/issues/2320

@@ -148,7 +148,7 @@ pub struct Config {
         help = "Delayed interval for cleaning up finished job state."
     )]
     pub finished_job_state_clean_up_interval_seconds: u64,
-    /// Task distribution policy (bias or round-robin).
+    /// Task distribution policy (bias, round-robin, consistent-hash).
     #[arg(
         long,
         default_value_t = crate::config::TaskDistribution::default(),
@@ -754,8 +754,7 @@ pub enum TaskDistributionPolicy {
     /// Distribute tasks evenly across executors. This will try and iterate through available executors
     /// and assign one task to each executor until all tasks are assigned.
     RoundRobin,
-    /// A task distribution policy supplied by the embedder, such as
-    /// [`crate::cluster::affinity::ShuffleAffinityPolicy`].
+    /// User provided task distribution policy
     Custom(Arc<dyn DistributionPolicy>),
 }
 
@@ -847,21 +846,6 @@ impl TryFrom<Config> for SchedulerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cluster::affinity::ShuffleAffinityPolicy;
-
-    /// Locality-aware distribution is installed through `Custom`, so the
-    /// config carries the embedder's own policy object.
-    #[test]
-    fn a_custom_policy_is_installed_as_configured() {
-        let config = SchedulerConfig::default().with_task_distribution(
-            TaskDistributionPolicy::Custom(Arc::new(ShuffleAffinityPolicy::new())),
-        );
-
-        let TaskDistributionPolicy::Custom(policy) = &config.task_distribution else {
-            panic!("the configured policy should be the custom one");
-        };
-        assert_eq!("shuffle-affinity", policy.name());
-    }
 
     #[test]
     fn default_grace_period_covers_executor_timeout() {

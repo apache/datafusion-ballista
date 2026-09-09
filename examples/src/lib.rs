@@ -15,4 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+/// Shuffle-affinity task distribution: a [`DistributionPolicy`] that places
+/// each task on the executor already holding most of its shuffle input,
+/// written entirely against `ballista-scheduler`'s public API.
+///
+/// [`DistributionPolicy`]: ballista_scheduler::cluster::DistributionPolicy
+pub mod shuffle_affinity;
 pub mod test_util;

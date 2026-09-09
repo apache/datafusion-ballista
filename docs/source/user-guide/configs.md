@@ -198,34 +198,39 @@ _Example: Specifying configuration options when starting the scheduler_
 
 ### Choosing a task distribution
 
-`bias` packs tasks onto the executors with the most free vcores and `round-robin` spreads them evenly. Neither looks at
-where a task's input already sits, so a reduce task often fetches its shuffle input over the network from an executor
-that had it on local disk.
+`bias` packs tasks onto the executors with the most free vcores and `round-robin` spreads them evenly.
+Neither looks at where a task's input already sits, so a reduce task often fetches its shuffle input over
+the network from an executor that had it on local disk.
 
-`ShuffleAffinityPolicy` places each task on the executor already holding most of its input, binding whatever is left
-over the way `bias` does. It is not a value of this flag: an embedded scheduler installs it through
-`TaskDistributionPolicy::Custom`, which is how any locality-aware policy is supplied.
+An embedded scheduler can supply its own policy through `TaskDistributionPolicy::Custom`, which is not a
+value of this flag. `ShuffleAffinityPolicy` is one such policy: it places each task on the executor already
+holding most of its input, and binds whatever is left over the way `bias` does. It lives in the `examples`
+crate, which is unpublished, so it is a worked example to copy into your own scheduler rather than a
+dependency to add. It uses only the scheduler's public API, so it compiles anywhere `ballista-scheduler` does.
 
 ```rust
-use ballista_scheduler::cluster::affinity::ShuffleAffinityPolicy;
+use std::sync::Arc;
+
+use ballista_examples::shuffle_affinity::ShuffleAffinityPolicy;
 use ballista_scheduler::config::{SchedulerConfig, TaskDistributionPolicy};
 
 let policy = ShuffleAffinityPolicy::new();
-// Keep a handle: `policy.stats()` reports the locality it achieved, and
-// `policy.attach_metrics(collector)` publishes it as the `shuffle_locality_*` metrics.
+// Keep a handle: `policy.stats()` reports the locality achieved, and
+// `policy.attach_observer(observer)` publishes each binding round to your own metrics.
 let config = SchedulerConfig::default()
     .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(policy.clone())));
 ```
 
-It is worth installing when different tasks prefer different executors: plans with a collapse stage (a global
-aggregate, or `ORDER BY ... LIMIT`, whose single task reads every partition), `UNION ALL`, and clusters where free
-capacity and data placement disagree, such as after a scale-up or while other jobs occupy the executors holding your
-data.
+Install it when different tasks prefer different executors: plans with a collapse stage (a global aggregate,
+or `ORDER BY ... LIMIT`, whose single task reads every partition), `UNION ALL`, and clusters where free
+capacity and data placement disagree, such as after a scale-up or while other jobs occupy the executors
+holding your data.
 
-Expect no gain on a plain hash-partitioned aggregate. Every producer writes every output partition at roughly equal
-size, so all partitions prefer the same executor and every policy reads the same share locally. Measure rather than
-assume: the ratio of `shuffle_locality_local_bytes_total` to `shuffle_locality_input_bytes_total` (see the
-[metrics guide](metrics.md)) is the number to compare between policies.
+Expect no gain on a plain hash-partitioned aggregate. Every producer writes every output partition at
+roughly equal size, so all partitions prefer the same executor and every policy reads the same share
+locally. Measure rather than assume: the number to compare between policies is
+`LocalityStats::local_byte_ratio`, the share of shuffle bytes read without a network hop. The policy
+registers no metric of its own, so attach an observer to publish that number wherever you publish the rest.
 
-It also requires `--scheduler-policy push-staged`. Under `pull-staged` the scheduler is offered one executor's
-capacity at a time and so has no placement choice to make.
+It also requires `--scheduler-policy push-staged`. Under `pull-staged` the scheduler is offered one
+executor's capacity at a time, leaving it no placement to choose.

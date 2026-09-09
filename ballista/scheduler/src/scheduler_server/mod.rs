@@ -532,8 +532,7 @@ mod test {
     use futures::StreamExt;
 
     use crate::cluster::ClusterStateEvent;
-    use crate::cluster::affinity::ShuffleAffinityPolicy;
-    use crate::config::{SchedulerConfig, TaskDistributionPolicy};
+    use crate::config::SchedulerConfig;
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
 
@@ -785,48 +784,6 @@ mod test {
 
         assert_submitted_event(&job_id, &metrics_collector);
         assert_completed_event(&job_id, &metrics_collector);
-
-        Ok(())
-    }
-
-    /// The embedder attaches the collector to the policy itself, which is the
-    /// only path by which locality measured during binding reaches metrics.
-    #[tokio::test]
-    async fn test_shuffle_affinity_reports_locality_to_the_metrics_collector()
-    -> Result<()> {
-        let metrics_collector = Arc::new(TestMetricsCollector::default());
-        let policy = ShuffleAffinityPolicy::new();
-        assert!(policy.attach_metrics(metrics_collector.clone()));
-
-        let mut test = SchedulerTest::new(
-            SchedulerConfig::default()
-                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged)
-                .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(policy))),
-            metrics_collector.clone(),
-            4,
-            1,
-            None,
-        )
-        .await?;
-
-        let (status, _) = test.run("", &test_plan()).await.expect("running plan");
-        assert!(
-            matches!(status.status, Some(job_status::Status::Successful(_))),
-            "expected success but found {:?}",
-            status.status,
-        );
-
-        let total = metrics_collector.locality_total();
-        assert!(
-            total.tasks > 0,
-            "the collector saw no binding round: {total:?}",
-        );
-        // The consumer stage reads a real shuffle, so there are bytes to
-        // account for.
-        assert!(
-            total.total_bytes > 0,
-            "no shuffle input was measured: {total:?}",
-        );
 
         Ok(())
     }

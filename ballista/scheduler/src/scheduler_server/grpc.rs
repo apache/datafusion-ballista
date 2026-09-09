@@ -157,6 +157,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 TaskDistributionPolicy::RoundRobin => {
                     bind_task_round_robin(budgets, running_jobs, |_| false).await
                 }
+
                 TaskDistributionPolicy::Custom(ref policy) => policy
                     .bind_tasks(budgets, running_jobs)
                     .await
@@ -911,8 +912,7 @@ mod test {
         datafusion_substrait::serializer::serialize_bytes,
     };
 
-    use crate::cluster::affinity::ShuffleAffinityPolicy;
-    use crate::config::{SchedulerConfig, TaskDistributionPolicy};
+    use crate::config::SchedulerConfig;
     use crate::metrics::default_metrics_collector;
     use ballista_core::BALLISTA_PROTOCOL_VERSION;
     use ballista_core::error::BallistaError;
@@ -928,12 +928,6 @@ mod test {
     use crate::state::SchedulerState;
     use crate::test_utils::await_condition;
     use crate::test_utils::test_cluster_context;
-    use ballista_core::extension::SessionConfigExt;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{LogicalPlan, col};
-    use datafusion::prelude::SessionConfig as DfSessionConfig;
-    use datafusion::test_util::scan_empty_with_partitions;
 
     use super::{SchedulerGrpc, SchedulerServer};
 
@@ -1257,113 +1251,6 @@ mod test {
             .expect_err("heartbeat with no metadata should be rejected");
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
         assert!(status.message().contains("missing registration metadata"));
-        Ok(())
-    }
-
-    /// A two-stage aggregation, so the job has a leaf stage to schedule.
-    fn pull_test_plan() -> LogicalPlan {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-
-        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .build()
-            .unwrap()
-    }
-
-    /// The pull path reaches the policy through its own match arm in
-    /// `poll_work`, separate from the push path's in `ClusterState`.
-    ///
-    /// `poll_work` passes a *single* executor's budget, so affinity can only
-    /// choose which of that executor's partitions go first, never where to
-    /// place them.
-    #[tokio::test]
-    async fn poll_work_dispatches_to_the_shuffle_affinity_policy()
-    -> Result<(), BallistaError> {
-        let cluster = test_cluster_context();
-        let config = SchedulerConfig::default()
-            .with_scheduler_policy(
-                ballista_core::config::TaskSchedulingPolicy::PullStaged,
-            )
-            .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(
-                ShuffleAffinityPolicy::new(),
-            )));
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster.clone(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
-
-        let exec_meta = ExecutorRegistration {
-            id: "executor_1".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(4).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
-        };
-
-        let poll_params = |num_free_vcores: u32| PollWorkParams {
-            metadata: Some(exec_meta.clone()),
-            num_free_vcores,
-            task_status: vec![],
-        };
-
-        // Register with no capacity, then submit a job for the executor to pull.
-        let registered = scheduler
-            .poll_work(Request::new(poll_params(0)))
-            .await
-            .expect("poll_work should succeed")
-            .into_inner();
-        assert!(registered.tasks.is_empty(), "no capacity was offered");
-
-        let ctx = scheduler
-            .state
-            .session_manager
-            .create_or_update_session("session", &DfSessionConfig::new_with_ballista())
-            .await?;
-        scheduler
-            .submit_job("", ctx, &pull_test_plan(), None)
-            .await?;
-
-        // The job is planned on the event loop, so the first stage becomes
-        // pullable a moment after submit returns.
-        let mut tasks = vec![];
-        for _ in 0..20 {
-            tasks = scheduler
-                .poll_work(Request::new(poll_params(4)))
-                .await
-                .expect("poll_work should succeed")
-                .into_inner()
-                .tasks;
-            if !tasks.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        assert!(
-            !tasks.is_empty(),
-            "shuffle-affinity returned no work to the poller"
-        );
-
-        // Binding past the advertised budget would oversubscribe the only
-        // executor in the round.
-        let vcores: u32 = tasks.iter().map(|task| task.vcores_consumed).sum();
-        assert!(
-            vcores > 0 && vcores <= 4,
-            "bound {vcores} vcores against a budget of 4",
-        );
-
         Ok(())
     }
 
