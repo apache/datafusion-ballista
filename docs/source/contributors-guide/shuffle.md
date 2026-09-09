@@ -297,8 +297,31 @@ behavior it would be config-gated, leaving today's model as the default:
   Nothing in the scheduler crate knows the policy exists. It copies the three
   binding rules it needs (the collapse rule, the vcore reservation, and a
   filtered take off the pending queue) rather than widening the scheduler's API
-  for a policy nobody has measured yet. Those copies become shared functions if
-  and when the measurements say this belongs in-tree.
+  for a policy that is still being evaluated. Those copies become shared
+  functions if and when the case for moving it in-tree is made.
+
+  Measured against the built-in policies on the share of shuffle input a task
+  reads from the executor running it (`locality_benchmark_against_bias_and_round_robin`
+  in the policy's tests, `executor_1` holding the larger share throughout):
+
+  | layout                       |  bias | round-robin | affinity |
+  | ---------------------------- | ----: | ----------: | -------: |
+  | split, even capacity         | 50.0% |       50.0% |    90.0% |
+  | split, capacity elsewhere    | 50.0% |       50.0% |    90.0% |
+  | even shuffle                 | 50.0% |       50.0% |    50.0% |
+  | collapse, even capacity      | 90.0% |       10.0% |    90.0% |
+  | collapse, capacity elsewhere | 10.0% |       10.0% |    90.0% |
+
+  Two results are worth reading carefully. The even shuffle confirms there is
+  nothing to win when every producer writes every partition at the same size,
+  which is the shape of a plain hash-partitioned aggregate. And bias matches
+  affinity on the collapse row only while the budgets tie: it is picking the
+  right executor by luck, and moving the spare capacity drops it to 10%.
+
+  This measures placement, not wall-clock time. A higher share means fewer
+  Arrow Flight fetches, not a demonstrated speedup, and these are synthetic
+  layouts rather than a workload. Whether the placement win converts into
+  latency on a real cluster is still open.
 
 - **Remote shuffle service.** Offload shuffle storage to a service such as
   Apache Celeborn or Apache Uniffle ([#1539]), which decouples shuffle

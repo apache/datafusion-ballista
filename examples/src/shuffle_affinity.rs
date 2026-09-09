@@ -1663,6 +1663,215 @@ mod test {
         assert_eq!(3, pending.remaining());
     }
 
+    /// Locality achieved by *any* policy's placement, scored against the same
+    /// scan the affinity policy uses so the three can be compared on one
+    /// number. Mirrors `Binding::measure`, but reads the placement back off
+    /// the bound tasks instead of being told about them as they are made.
+    fn score(
+        locality: &StageLocality,
+        whole_stage: bool,
+        bound: &[BoundTask],
+    ) -> LocalityStats {
+        let mut stats = LocalityStats::default();
+        for (executor_id, task) in bound {
+            stats.tasks += 1;
+            let partitions = &task.global_input_partition_ids;
+            if whole_stage {
+                stats.partitions += partitions.len() as u64;
+                stats.local_bytes += locality.bytes_on(executor_id);
+                stats.total_bytes += locality.total_bytes();
+                continue;
+            }
+            for partition in partitions {
+                stats.partitions += 1;
+                let Some(per_partition) = locality.partitions.get(partition) else {
+                    continue;
+                };
+                let local = per_partition.bytes_on(executor_id);
+                stats.local_bytes += local;
+                stats.total_bytes += per_partition.total;
+                if local > 0 {
+                    stats.local_partitions += 1;
+                }
+            }
+        }
+        stats
+    }
+
+    /// Bind `jobs` on a fresh cluster with `policy` and score what it achieved.
+    ///
+    /// The consumer stage's plan is snapshotted first: binding drains the
+    /// pending queue, and the scan has to describe the stage as the policy saw
+    /// it.
+    async fn measure(
+        policy: TaskDistributionPolicy,
+        jobs: HashMap<JobId, JobInfoCache>,
+        executors: &[(&str, u32)],
+    ) -> Result<LocalityStats> {
+        let plan = {
+            let job = jobs.values().next().expect("one job");
+            let mut graph = job.execution_graph.write().await;
+            graph
+                .fetch_running_stage(&[])
+                .map(|stage| stage.plan.clone())
+        };
+        let plan = plan.expect("a consumer stage to bind");
+        let locality = StageLocality::of(&plan);
+        let whole_stage = super::stage_has_input_collapse(&plan);
+
+        let cluster_state = InMemoryClusterState::default();
+        for (executor_id, vcores) in executors {
+            register(&cluster_state, executor_id, *vcores).await?;
+        }
+        let bound = cluster_state
+            .bind_schedulable_tasks(policy, Arc::new(jobs), None)
+            .await?;
+
+        Ok(score(&locality, whole_stage, &bound))
+    }
+
+    /// The shuffle layouts the benchmark compares policies over.
+    #[derive(Clone, Copy)]
+    enum Layout {
+        /// Each partition has a clear home: 900 bytes on one executor, 100 on
+        /// the other, alternating by partition.
+        Split,
+        /// Every producer writes every partition at the same size, so each of
+        /// two executors holds half of every partition and no placement can do
+        /// better than 0.5.
+        Even,
+        /// One task reads the whole stage. `executor_1` holds 900 bytes per
+        /// partition, `executor_2` holds 100.
+        Collapse,
+    }
+
+    impl Layout {
+        async fn jobs(self) -> Result<HashMap<JobId, JobInfoCache>> {
+            match self {
+                Layout::Split => mock_jobs(8).await,
+                Layout::Even => {
+                    mock_shuffle_jobs(&"job_even".into(), 8, &|_, _| 500).await
+                }
+                Layout::Collapse => mock_collapse_job().await,
+            }
+        }
+    }
+
+    /// #2319 asks for this policy to be measured against `Bias` and
+    /// `RoundRobin` before deciding whether it belongs in the scheduler. This
+    /// is that comparison, on the one number the policy reports: the share of
+    /// shuffle input a task reads from the executor running it.
+    ///
+    /// It measures placement, not wall-clock time. A higher share means fewer
+    /// Arrow Flight fetches, not a proven speedup.
+    ///
+    /// `executor_1` is the big holder in every layout that has one. Rows that
+    /// give `executor_2` the larger budget are the case the user guide claims
+    /// this policy is for: free capacity and data placement disagreeing.
+    ///
+    /// Run it with:
+    ///   cargo test -p ballista-examples --lib locality_benchmark -- --nocapture
+    #[tokio::test]
+    async fn locality_benchmark_against_bias_and_round_robin() -> Result<()> {
+        /// A named layout bound against a named set of executor budgets.
+        type Scenario<'a> = (&'a str, Layout, &'a [(&'a str, u32)]);
+
+        let scenarios: Vec<Scenario> = vec![
+            (
+                "split, even capacity",
+                Layout::Split,
+                &[("executor_1", 8), ("executor_2", 8)],
+            ),
+            (
+                "split, capacity elsewhere",
+                Layout::Split,
+                &[("executor_1", 4), ("executor_2", 16)],
+            ),
+            (
+                "even shuffle",
+                Layout::Even,
+                &[("executor_1", 8), ("executor_2", 8)],
+            ),
+            (
+                "collapse, even capacity",
+                Layout::Collapse,
+                &[("executor_1", 8), ("executor_2", 8)],
+            ),
+            (
+                "collapse, capacity elsewhere",
+                Layout::Collapse,
+                &[("executor_1", 1), ("executor_2", 16)],
+            ),
+        ];
+
+        println!("\nshuffle-affinity vs bias vs round-robin");
+        println!("share of shuffle input read from the executor running the task\n");
+        println!(
+            "{:<30} {:>8} {:>13} {:>10}",
+            "layout", "bias", "round-robin", "affinity"
+        );
+        println!("{}", "-".repeat(65));
+
+        let mut results = vec![];
+        for (label, layout, executors) in &scenarios {
+            let mut row = vec![];
+            for policy in [
+                TaskDistributionPolicy::Bias,
+                TaskDistributionPolicy::RoundRobin,
+                TaskDistributionPolicy::Custom(Arc::new(ShuffleAffinityPolicy::new())),
+            ] {
+                row.push(measure(policy, layout.jobs().await?, executors).await?);
+            }
+            println!(
+                "{:<30} {:>7.1}% {:>12.1}% {:>9.1}%",
+                label,
+                row[0].local_byte_ratio() * 100.0,
+                row[1].local_byte_ratio() * 100.0,
+                row[2].local_byte_ratio() * 100.0,
+            );
+            results.push((*label, row));
+        }
+        println!();
+
+        let ratios = |name: &str| -> Vec<f64> {
+            results
+                .iter()
+                .find(|(label, _)| *label == name)
+                .map(|(_, row)| row.iter().map(|s| s.local_byte_ratio()).collect())
+                .expect("scenario")
+        };
+
+        // Where partitions have distinct homes, affinity beats both built-ins.
+        for scenario in ["split, even capacity", "split, capacity elsewhere"] {
+            let r = ratios(scenario);
+            assert!(
+                r[2] > r[0] && r[2] > r[1],
+                "affinity should win on {scenario}: {r:?}",
+            );
+        }
+
+        // The documented negative result: an even shuffle offers nothing to
+        // exploit, and claiming a win there would be measuring noise.
+        let even = ratios("even shuffle");
+        for policy in &even {
+            assert!(
+                (policy - even[0]).abs() < 1e-9,
+                "an even shuffle should read the same share whatever the policy: {even:?}",
+            );
+        }
+
+        // A collapse task reads the whole stage, so placing it on the holder is
+        // the whole game. Bias can stumble onto the right executor when budgets
+        // tie; it cannot when the spare capacity is somewhere else.
+        let collapse = ratios("collapse, capacity elsewhere");
+        assert!(
+            collapse[2] > collapse[0] && collapse[2] > collapse[1],
+            "affinity should place the collapse task on its holder: {collapse:?}",
+        );
+
+        Ok(())
+    }
+
     /// Repeated binding rounds reuse the scan; a new attempt invalidates it.
     #[test]
     fn locality_is_scanned_once_per_stage_attempt() {
