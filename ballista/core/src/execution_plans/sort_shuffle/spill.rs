@@ -78,15 +78,19 @@ impl SpillManager {
         work_dir: &str,
         job_id: &JobId,
         stage_id: usize,
+        task_id: usize,
         input_partition: usize,
         schema: SchemaRef,
         compression: Option<CompressionType>,
     ) -> Result<Self> {
+        // Spills live beside the task's data file, one directory per input
+        // partition, so a task owns exactly one directory under the stage and
+        // `cleanup` leaves only `data.arrow` and its index behind.
         let mut spill_dir = PathBuf::from(work_dir);
         spill_dir.push(job_id.as_str());
         spill_dir.push(format!("{stage_id}"));
-        spill_dir.push(format!("{input_partition}"));
-        spill_dir.push("spill");
+        spill_dir.push(format!("{task_id}"));
+        spill_dir.push(format!("spill-{input_partition}"));
 
         std::fs::create_dir_all(&spill_dir).map_err(BallistaError::IoError)?;
 
@@ -279,6 +283,7 @@ mod tests {
             &"job1".into(),
             1,
             0,
+            0,
             schema.clone(),
             Some(CompressionType::LZ4_FRAME),
         )?;
@@ -313,6 +318,7 @@ mod tests {
             temp_dir.path().to_str().unwrap(),
             &"job1".into(),
             1,
+            0,
             0,
             schema.clone(),
             Some(CompressionType::LZ4_FRAME),
@@ -350,6 +356,7 @@ mod tests {
             temp_dir.path().to_str().unwrap(),
             &"job1".into(),
             1,
+            0,
             0,
             schema.clone(),
             Some(CompressionType::LZ4_FRAME),
@@ -396,6 +403,7 @@ mod tests {
             temp_dir.path().to_str().unwrap(),
             &"job1".into(),
             1,
+            0,
             0,
             schema.clone(),
             Some(CompressionType::LZ4_FRAME),

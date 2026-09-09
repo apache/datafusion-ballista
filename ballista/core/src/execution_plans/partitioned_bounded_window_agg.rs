@@ -68,8 +68,11 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{Distribution, OrderingRequirements, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{CardinalityEffect, InputOrderMode};
 use datafusion::physical_plan::metrics::MetricsSet;
-use datafusion::physical_plan::windows::BoundedWindowAggExec;
-use datafusion::physical_plan::windows::WindowExpr;
+use datafusion::physical_plan::windows::{
+    BoundedWindowAggExec, WindowExpr, WindowStateObserver,
+};
+
+use crate::execution_plans::window_state::{ObservedWindowState, WindowStateCollector};
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     SendableRecordBatchStream, StatisticsArgs, statistics::ChildStats,
@@ -93,6 +96,10 @@ pub struct PartitionedBoundedWindowAggExec {
     inner_bwag: Arc<BoundedWindowAggExec>,
     /// Multi-partition input; same `Arc` `inner_bwag.input()` holds.
     input: Arc<dyn ExecutionPlan>,
+    /// Installed on `inner_bwag` when every frame permits it; see
+    /// [`Self::try_new`]. `None` for the halo shape, whose sliding frames
+    /// DataFusion refuses to observe.
+    state_collector: Option<Arc<WindowStateCollector>>,
 }
 
 impl PartitionedBoundedWindowAggExec {
@@ -104,13 +111,56 @@ impl PartitionedBoundedWindowAggExec {
         window_expr: Vec<Arc<dyn WindowExpr>>,
         input: Arc<dyn ExecutionPlan>,
     ) -> Result<Self> {
-        let inner_bwag = Arc::new(BoundedWindowAggExec::try_new(
+        let bwag = BoundedWindowAggExec::try_new(
             window_expr,
             input.clone(),
             BWAG_INPUT_ORDER_MODE,
             BWAG_CAN_REPARTITION,
-        )?);
-        Ok(Self { inner_bwag, input })
+        )?;
+        // Install a collector exactly when DataFusion will accept one: every
+        // frame ever-expanding, i.e. `UNBOUNDED PRECEDING`. A sliding frame's
+        // accumulator retracts as the frame advances, so at partition close
+        // it holds the last frame rather than the partition aggregate, and
+        // `with_state_observer` refuses it.
+        let state_collector = bwag
+            .window_expr()
+            .iter()
+            .all(|expr| expr.get_window_frame().is_ever_expanding())
+            .then(|| Arc::new(WindowStateCollector::new(bwag.window_expr().to_vec())));
+        let bwag = match &state_collector {
+            Some(collector) => bwag.with_state_observer(Some(
+                Arc::clone(collector) as Arc<dyn WindowStateObserver>
+            ))?,
+            None => bwag,
+        };
+        Ok(Self {
+            inner_bwag: Arc::new(bwag),
+            input,
+            state_collector,
+        })
+    }
+
+    /// The installed collector, or `None` when the frames don't permit one.
+    ///
+    /// Drained after the task completes to recover this task's contribution
+    /// to the cross-task prefix scan.
+    pub fn state_collector(&self) -> Option<&Arc<WindowStateCollector>> {
+        self.state_collector.as_ref()
+    }
+
+    /// Everything the collector captured, or empty when no collector was
+    /// installed.
+    ///
+    /// Each entry's `partition_idx` is **task-local** — it indexes this
+    /// task's partition slice, not the stage's global partitions. This
+    /// operator has no way to know otherwise, and shouldn't: the writer at
+    /// the stage root is handed the slice-to-global mapping by the scheduler
+    /// and does the translation.
+    pub fn observed_window_state(&self) -> Vec<ObservedWindowState> {
+        self.state_collector
+            .as_ref()
+            .map(|collector| collector.observed())
+            .unwrap_or_default()
     }
 
     /// The wrapped `BoundedWindowAggExec` — for accessors that don't exist

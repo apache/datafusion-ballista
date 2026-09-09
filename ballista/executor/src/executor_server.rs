@@ -23,7 +23,7 @@
 
 use ballista_core::BALLISTA_VERSION;
 use memory_stats::memory_stats;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -460,6 +460,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .collect::<Result<Vec<_>, BallistaError>>()
                     .ok();
                 let runtime_stats = exec.collect_runtime_stats_reports();
+                // Collect only when the task otherwise succeeded: a failed task's
+                // partial state is meaningless, and its own error is the useful one.
+                // A collection failure fails the task — these are load-bearing for the
+                // downstream stage's prefix merge, so continuing without them would
+                // ship a wrong answer that nothing later detects.
+                let (execution_result, window_state) = match execution_result {
+                    Ok(partitions) => match exec.collect_window_state_reports() {
+                        Ok(reports) => (Ok(partitions), reports),
+                        Err(e) => (Err(e.into()), Vec::new()),
+                    },
+                    Err(e) => (Err(e), Vec::new()),
+                };
                 let executor_id = &self.executor.metadata.id;
 
                 let end_exec_time = SystemTime::now()
@@ -481,6 +493,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     TaskCompletionExtras {
                         operator_metrics,
                         runtime_stats,
+                        window_state,
                     },
                 );
 
@@ -897,8 +910,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             scheduler_id,
         } = request.into_inner();
         let task_sender = self.executor_env.tx_task.clone();
+        let mut failed_jobs: HashSet<String> = HashSet::new();
         for multi_task in multi_tasks {
-            let multi_task: Vec<TaskDefinition> = get_task_definition_vec(
+            let job_id = multi_task.job_id.clone();
+            let multi_task: Vec<TaskDefinition> = match get_task_definition_vec(
                 multi_task,
                 self.executor.runtime_producer.clone(),
                 self.executor.produce_config(),
@@ -910,8 +925,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                     .higher_order_functions
                     .clone(),
                 self.codec.clone(),
-            )
-            .map_err(|e| Status::invalid_argument(format!("{e}")))?;
+            ) {
+                Ok(tasks) => tasks,
+                Err(e) => {
+                    error!("failed to decode tasks for {job_id} : {e}");
+                    failed_jobs.insert(job_id);
+                    continue;
+                }
+            };
+
             for task in multi_task {
                 task_sender
                     .send(CuratorTaskDefinition {
@@ -922,7 +944,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                     .unwrap();
             }
         }
-        Ok(Response::new(LaunchMultiTaskResult { success: true }))
+        Ok(Response::new(LaunchMultiTaskResult {
+            failed_jobs: failed_jobs.into_iter().collect(),
+        }))
     }
 
     async fn stop_executor(

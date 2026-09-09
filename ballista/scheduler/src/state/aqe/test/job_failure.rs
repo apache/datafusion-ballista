@@ -172,6 +172,10 @@ async fn test_replan_cancelled_stage_is_retired_and_late_task_discarded() -> Res
     }
     let held_task = held_task.expect("expected at least one dispatchable task");
     let held_stage_id = held_task.key.stage_id;
+    let held_vcores = graph
+        .task_vcores(held_stage_id, held_task.key.task_id)
+        .expect("a dispatched task must have a vcore reservation");
+    assert!(held_vcores > 0);
     assert!(
         !complete_tasks.is_empty(),
         "expected tasks from the sibling stage to drive the replan"
@@ -201,6 +205,7 @@ async fn test_replan_cancelled_stage_is_retired_and_late_task_discarded() -> Res
                     is_sort_shuffle: false,
                 }],
                 runtime_stats: vec![],
+                window_state: vec![],
             })),
         };
         graph.update_task_status(&executor, vec![status], 4, 4)?;
@@ -222,6 +227,13 @@ async fn test_replan_cancelled_stage_is_retired_and_late_task_discarded() -> Res
         "cancelled stage must be removed from the graph, found {:?}",
         graph.stages.get(&held_stage_id)
     );
+    // A late completion still has to refund the executor's reservation,
+    // even though the retired stage no longer blocks job completion.
+    assert_eq!(
+        graph.task_vcores(held_stage_id, held_task.key.task_id),
+        Some(held_vcores),
+        "retiring a stage must preserve its task reservations for late refunds"
+    );
 
     // A late completion from the already-cancelled held task must be
     // discarded instead of failing the whole status update (which used to
@@ -239,6 +251,7 @@ async fn test_replan_cancelled_stage_is_retired_and_late_task_discarded() -> Res
             executor_id: executor.id.clone(),
             partitions: vec![],
             runtime_stats: vec![],
+            window_state: vec![],
         })),
     };
     graph

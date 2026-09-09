@@ -54,27 +54,18 @@
 //! degraded-but-alive beats the alternative, and downstream sees an empty
 //! stream on the K-1 partitions that got no data.
 //!
-//! # Type generality
-//!
-//! The impl hardcodes Float64 downcast internally (that's what DataFusion's
-//! T-Digest speaks). The public API and the sibling [`RuntimeStatsExec`]
-//! stay type-agnostic; widening to other `Ord` `ScalarValue` types replaces
-//! the downcast + boundary computation, no API break.
-//!
-//! Sibling `OrderedRangeRepartitionExec` (not yet built) handles the sorted
-//! case (N sorted → M sorted range-disjoint via k-way merge). See
-//! `docs/source/contributors-guide/parallel-window-kll-adaptive.md`.
-//!
-//! [`RuntimeStatsExec`]: crate::execution_plans::RuntimeStatsExec
+//! [`RuntimeStatsExec`]: super::RuntimeStatsExec
 
 use std::fmt::{self, Debug, Formatter};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
+use datafusion::common::{
+    Result, ScalarValue, Statistics, internal_datafusion_err, internal_err,
+};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
     Distribution, EquivalenceProperties, OrderingRequirements, Partitioning,
@@ -95,6 +86,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::execution_plans::range_repartition_common::{
     discover_cuts, guarded_scatter, split_batch_by_range,
 };
+use crate::sort_key::SortKeyCodec;
 
 /// Per-output-partition channel capacity. Small = tight backpressure; the
 /// classic double-buffering shape (one batch in-flight while consumer works
@@ -109,7 +101,7 @@ pub struct UnorderedRangeRepartitionExec {
     input: Arc<dyn ExecutionPlan>,
     /// Lexicographic ORDER BY carried through from the wrapping window
     /// operator. `try_new` guarantees at least one element; the first entry
-    /// (a `Float64` column, until we widen) drives routing.
+    /// drives routing.
     order_by: Vec<PhysicalSortExpr>,
     /// K — number of output partitions. K=1 collapses all P inputs to a
     /// single bucket (the same shape discovery-failure fallback produces);
@@ -140,7 +132,7 @@ struct DispatchState {
 
 impl UnorderedRangeRepartitionExec {
     /// Wrap `input`. `order_by` must be non-empty and its first entry must
-    /// evaluate to `Float64` against `input.schema()`. `output_partitions`
+    /// evaluate to a type the sort-key codec encodes. `output_partitions`
     /// is K; any value works, K=1 gives a coalesce-shaped passthrough.
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
@@ -155,20 +147,11 @@ impl UnorderedRangeRepartitionExec {
         };
         let schema = input.schema();
         let routing_type = routing.expr.data_type(&schema)?;
-        if !matches!(routing_type, DataType::Float64) {
-            // TODO: support all continuous primitives
+        if SortKeyCodec::try_new(&routing_type, routing.options).is_none() {
             return internal_err!(
-                "UnorderedRangeRepartitionExec routing expression `{}` must be Float64, got {:?}",
+                "UnorderedRangeRepartitionExec routing expression `{}` has no sort-key encoding for {:?}",
                 routing.expr,
                 routing_type
-            );
-        }
-        // TODO: fixed by KLL — a NULL-aware sketch lifts this restriction and
-        // lets `split_batch_by_range` honor SortOptions::nulls_first properly.
-        if routing.expr.nullable(&schema)? {
-            return internal_err!(
-                "UnorderedRangeRepartitionExec: routing expression `{}` must be non-nullable",
-                routing.expr
             );
         }
         let properties = Arc::new(
@@ -335,16 +318,17 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
             state.receivers = receivers;
             state.initialized = true;
             let senders: Arc<[mpsc::Sender<Result<RecordBatch>>]> = senders.into();
-            let cuts_cell: Arc<OnceLock<Vec<f64>>> = Arc::new(OnceLock::new());
+            let cuts_cell: Arc<OnceLock<Result<Vec<ScalarValue>>>> =
+                Arc::new(OnceLock::new());
             let input_partitions = self.input.output_partitioning().partition_count();
-            let routing_expr = self.order_by[0].expr.clone(); // TODO: KLL for multi-column?
+            let routing_sort = self.order_by[0].clone();
             let mut drop_helper = Vec::with_capacity(input_partitions);
             for input_partition in 0..input_partitions {
                 let child = self.input.clone();
                 let scatter_senders = senders.clone();
                 let guard_senders = senders.clone();
                 let cuts_cell = cuts_cell.clone();
-                let routing_expr = routing_expr.clone();
+                let routing_sort = routing_sort.clone();
                 let ctx = ctx.clone();
                 let output_partitions = self.output_partitions;
                 // `guarded_scatter` wraps the body in `catch_unwind`: a
@@ -356,7 +340,7 @@ impl ExecutionPlan for UnorderedRangeRepartitionExec {
                         child,
                         input_partition,
                         ctx,
-                        routing_expr,
+                        routing_sort,
                         scatter_senders,
                         cuts_cell,
                         output_partitions,
@@ -404,9 +388,9 @@ async fn scatter_input_partition(
     child: Arc<dyn ExecutionPlan>,
     input_partition: usize,
     ctx: Arc<TaskContext>,
-    routing_expr: Arc<dyn PhysicalExpr>,
+    routing_sort: PhysicalSortExpr,
     senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
-    cuts_cell: Arc<OnceLock<Vec<f64>>>,
+    cuts_cell: Arc<OnceLock<Result<Vec<ScalarValue>>>>,
     output_partitions: usize,
 ) -> Result<()> {
     let mut stream = child.execute(input_partition, ctx)?;
@@ -419,9 +403,14 @@ async fn scatter_input_partition(
             return Ok(());
         }
         let batch = batch_result?;
-        let cuts = cuts_cell.get_or_init(|| {
-            discover_cuts(&child, routing_expr.as_ref(), output_partitions)
-        });
+        let cuts = cuts_cell
+            .get_or_init(|| {
+                discover_cuts(&child, routing_sort.expr.as_ref(), output_partitions)
+            })
+            .as_ref()
+            .map_err(|e| {
+                internal_datafusion_err!("UnorderedRangeRepartitionExec: {e}")
+            })?;
         // TODO(perf): `split_batch_by_range` materialises K sub-batches per
         // input batch via `take_arrays` — one copy per row into a fresh
         // allocation. Unlike the ordered variant we can't slice
@@ -429,7 +418,8 @@ async fn scatter_input_partition(
         // `Arc<RecordBatch>` broadcast + receiver-side filter would skip
         // the scatter-side allocations at the cost of duplicating the
         // filter work K times. Worth measuring under skew.
-        let splits = split_batch_by_range(&batch, &routing_expr, cuts)?;
+        let splits =
+            split_batch_by_range(&batch, &routing_sort.expr, cuts, routing_sort.options)?;
         for (output, sub) in splits.into_iter().enumerate() {
             if sub.num_rows() == 0 {
                 continue;
@@ -451,6 +441,7 @@ mod tests {
     use super::*;
     use crate::execution_plans::RuntimeStatsExec;
     use datafusion::arrow::array::{Float64Array, Int64Array};
+    use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::datatypes::{Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::execution::SessionStateBuilder;
@@ -501,36 +492,35 @@ mod tests {
         );
     }
 
+    /// An `Int64` key and a nullable key are both routable now. The sketch
+    /// encodes any fixed-width type, and a NULL run is counted beside the
+    /// values, sized into the cuts, and scattered to one end.
     #[test]
-    fn try_new_rejects_non_float64_routing_key() {
-        let schema = schema_v2_id();
-        let err = UnorderedRangeRepartitionExec::try_new(
-            empty_input(&schema),
-            vec![asc(&schema, "id")], // Int64
-            3,
-        )
-        .expect_err("Int64 routing key must be rejected");
-        assert!(
-            err.to_string().contains("must be Float64"),
-            "error should name the type mismatch, got: {err}"
-        );
-    }
-
-    #[test]
-    fn try_new_rejects_nullable_routing_key() {
+    fn try_new_accepts_widened_routing_keys() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("v2", DataType::Float64, true), // nullable
+            Field::new("v2", DataType::Float64, true),
             Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
         ]));
+        for key in ["v2", "id"] {
+            UnorderedRangeRepartitionExec::try_new(
+                empty_input(&schema),
+                vec![asc(&schema, key)],
+                3,
+            )
+            .unwrap_or_else(|e| panic!("{key} must be routable: {e}"));
+        }
+
+        // A variable-width key has no fixed-width encoding, and says so.
         let err = UnorderedRangeRepartitionExec::try_new(
             empty_input(&schema),
-            vec![asc(&schema, "v2")],
+            vec![asc(&schema, "name")],
             3,
         )
-        .expect_err("nullable routing key must be rejected");
+        .expect_err("Utf8 routing key has no sort-key encoding");
         assert!(
-            err.to_string().contains("must be non-nullable"),
-            "error should name the nullability constraint, got: {err}"
+            err.to_string().contains("no sort-key encoding"),
+            "error should name what is missing, got: {err}"
         );
     }
 

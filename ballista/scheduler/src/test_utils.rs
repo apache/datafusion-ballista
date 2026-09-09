@@ -309,6 +309,7 @@ pub fn default_task_runner() -> impl TaskRunner {
                     executor_id: executor_id.clone(),
                     partitions: partitions.clone(),
                     runtime_stats: vec![],
+                    window_state: vec![],
                 })),
             });
         }
@@ -341,8 +342,8 @@ impl TaskLauncher for BlackholeTaskLauncher {
         _executor: &ExecutorMetadata,
         _tasks: Vec<MultiTaskDefinition>,
         _executor_manager: &ExecutorManager,
-    ) -> Result<()> {
-        Ok(())
+    ) -> Result<HashSet<JobId>> {
+        Ok(HashSet::new())
     }
 }
 
@@ -363,7 +364,7 @@ impl TaskLauncher for VirtualTaskLauncher {
         executor: &ExecutorMetadata,
         tasks: Vec<MultiTaskDefinition>,
         _executor_manager: &ExecutorManager,
-    ) -> Result<()> {
+    ) -> Result<HashSet<JobId>> {
         if self.unreachable.lock().contains(&executor.id) {
             return Err(BallistaError::Internal(format!(
                 "test: executor {} is unreachable",
@@ -388,7 +389,30 @@ impl TaskLauncher for VirtualTaskLauncher {
             .await
             .map_err(|e| {
                 BallistaError::Internal(format!("Error sending task status: {e:?}"))
-            })
+            })?;
+        Ok(HashSet::new())
+    }
+}
+
+/// Launcher that reports every job in the batch as rejected via the
+/// `failed_jobs` channel, simulating an executor that cannot decode/validate
+/// the task (see issue #1908). The RPC itself succeeds; the jobs are failed
+/// individually rather than the whole batch.
+#[derive(Default)]
+pub struct RejectingTaskLauncher {}
+
+#[async_trait::async_trait]
+impl TaskLauncher for RejectingTaskLauncher {
+    async fn launch_tasks(
+        &self,
+        _executor: &ExecutorMetadata,
+        tasks: Vec<MultiTaskDefinition>,
+        _executor_manager: &ExecutorManager,
+    ) -> Result<HashSet<JobId>> {
+        Ok(tasks
+            .iter()
+            .map(|t| JobId::from(t.job_id.clone()))
+            .collect())
     }
 }
 
@@ -486,6 +510,84 @@ impl SchedulerTest {
             session_config,
             status_receiver: Some(status_receiver),
             unreachable_executors,
+        })
+    }
+
+    /// Like [`SchedulerTest::new`] but injects a custom [`TaskLauncher`].
+    pub async fn new_with_launcher(
+        config: SchedulerConfig,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+        num_executors: usize,
+        task_slots_per_executor: usize,
+        runner: Option<Arc<dyn TaskRunner>>,
+        launcher: Arc<dyn TaskLauncher>,
+    ) -> Result<Self> {
+        let cluster = BallistaCluster::new_from_config(&config).await?;
+
+        let session_config = if num_executors > 0 && task_slots_per_executor > 0 {
+            SessionConfig::new_with_ballista()
+                .with_target_partitions(num_executors * task_slots_per_executor)
+        } else {
+            SessionConfig::new_with_ballista()
+        };
+
+        let runner = runner.unwrap_or_else(|| Arc::new(default_task_runner()));
+
+        let executors: HashMap<String, VirtualExecutor> = (0..num_executors)
+            .map(|i| {
+                let id = format!("virtual-executor-{i}");
+                let executor = VirtualExecutor {
+                    executor_id: id.clone(),
+                    vcores: task_slots_per_executor,
+                    runner: runner.clone(),
+                };
+                (id, executor)
+            })
+            .collect();
+
+        // This launcher does not report task statuses back, so no receiver is needed.
+        let (_status_sender, status_receiver) = channel(1000);
+
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new_with_task_launcher(
+                "localhost:50050".to_owned(),
+                cluster,
+                BallistaCodec::default(),
+                Arc::new(config),
+                metrics_collector,
+                launcher,
+            );
+        scheduler.init().await?;
+
+        for (executor_id, VirtualExecutor { vcores, .. }) in executors {
+            let metadata = ExecutorMetadata {
+                id: executor_id.clone(),
+                host: String::default(),
+                port: 0,
+                grpc_port: 0,
+                specification: ExecutorSpecification::default()
+                    .with_vcores(vcores as u32),
+                os_info: ExecutorOperatingSystemSpecification::default(),
+            };
+
+            let executor_data = ExecutorData {
+                executor_id,
+                total_vcores: vcores as u32,
+                available_vcores: vcores as u32,
+            };
+
+            scheduler
+                .state
+                .executor_manager
+                .register_executor(metadata, executor_data)
+                .await?;
+        }
+
+        Ok(Self {
+            scheduler,
+            session_config,
+            status_receiver: Some(status_receiver),
+            unreachable_executors: Arc::default(),
         })
     }
 
@@ -601,76 +703,6 @@ impl SchedulerTest {
             .await
     }
 
-    /// Waits for job completion with a timeout in milliseconds.
-    pub async fn await_completion_timeout(
-        &self,
-        job_id: &JobId,
-        timeout_ms: u64,
-    ) -> Result<JobStatus> {
-        let mut time = 0;
-        let final_status: Result<JobStatus> = loop {
-            let status = self
-                .scheduler
-                .state
-                .task_manager
-                .get_job_status(job_id)
-                .await?;
-
-            if let Some(JobStatus {
-                status: Some(inner),
-                ..
-            }) = status.as_ref()
-            {
-                match inner {
-                    Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap());
-                    }
-                    _ => {
-                        if time >= timeout_ms {
-                            break Ok(status.unwrap());
-                        } else {
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            time += 100;
-        };
-
-        final_status
-    }
-
-    /// Waits for job completion indefinitely.
-    pub async fn await_completion(&self, job_id: &JobId) -> Result<JobStatus> {
-        let final_status: Result<JobStatus> = loop {
-            let status = self
-                .scheduler
-                .state
-                .task_manager
-                .get_job_status(job_id)
-                .await?;
-
-            if let Some(JobStatus {
-                status: Some(inner),
-                ..
-            }) = status.as_ref()
-            {
-                match inner {
-                    Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap());
-                    }
-                    _ => continue,
-                }
-            }
-
-            tokio::time::sleep(Duration::from_millis(100)).await
-        };
-
-        final_status
-    }
-
     /// Returns job status and job_id
     pub async fn run(
         &mut self,
@@ -719,16 +751,11 @@ impl SchedulerTest {
                 .await?;
 
             if let Some(JobStatus {
-                status: Some(inner),
+                status: Some(Status::Failed(_) | Status::Successful(_)),
                 ..
             }) = status.as_ref()
             {
-                match inner {
-                    Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap());
-                    }
-                    _ => continue,
-                }
+                break Ok(status.unwrap());
             }
 
             tokio::time::sleep(Duration::from_millis(100)).await
@@ -1269,6 +1296,7 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
             executor_id: executor_id.to_owned(),
             partitions,
             runtime_stats: vec![],
+            window_state: vec![],
         })),
     }
 }

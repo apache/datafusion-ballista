@@ -39,6 +39,22 @@ github:
     rebase: false
   features:
     issues: true
+  # Require at least one approving review before a pull request can be merged,
+  # matching apache/datafusion and apache/datafusion-comet.
+  #
+  # .asf.yaml does not support wildcards here, so each release branch has to be
+  # listed by name. Add the new branch as part of the release process.
+  # https://github.com/apache/infrastructure-asfyaml?tab=readme-ov-file#branch-protection
+  protected_branches:
+    main:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
+    branch-53:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
+    branch-54:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
   # publishes the content of the `asf-site` branch to
   # https://datafusion.apache.org/ballista/
   rulesets:

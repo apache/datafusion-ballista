@@ -261,6 +261,62 @@ impl<T: Ord + Clone> KllSketch<T> {
         }
     }
 
+    /// Nominal top-level compactor capacity
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    /// The compactor stack, level 0 first. `levels()[h]` holds the items
+    /// retained at height `h`, each standing for `2^h` of the stream, so the
+    /// stack plus `k` is the whole sketch apart from its extremes.
+    ///
+    /// Order within a level is not guaranteed. A caller that needs one
+    /// sorts, which is what [`Self::from_parts`] assumes on the way back in.
+    pub fn levels(&self) -> &[Vec<T>] {
+        &self.levels
+    }
+
+    /// Rebuild from what [`Self::levels`], [`Self::k`], [`Self::min`] and
+    /// [`Self::max`] expose. Levels are sorted here, so a caller that
+    /// serialized them in any order still gets a sketch whose per-level
+    /// ordering invariant holds.
+    ///
+    /// `None` when `levels` describes a stack this sketch could not have
+    /// produced — no levels at all, or a level holding more than its
+    /// capacity — rather than building something whose next compaction would
+    /// misbehave.
+    ///
+    /// The PRNG is reseeded from OS entropy, matching [`Clone`]: compaction
+    /// decisions after a rebuild are deliberately uncorrelated with the ones
+    /// the original made.
+    pub fn from_parts(
+        k: usize,
+        mut levels: Vec<Vec<T>>,
+        min: Option<T>,
+        max: Option<T>,
+    ) -> Option<Self> {
+        if levels.is_empty() || k < MIN_LEVEL_WIDTH {
+            return None;
+        }
+        let num_levels = levels.len();
+        for (height, level) in levels.iter().enumerate() {
+            if level.len() > level_capacity(k, num_levels, height) {
+                return None;
+            }
+        }
+        for level in &mut levels {
+            level.sort_unstable();
+        }
+        Some(Self {
+            levels,
+            sorted: vec![true; num_levels],
+            k,
+            rng: StdRng::seed_from_u64(rand::random::<u64>()),
+            min,
+            max,
+        })
+    }
+
     /// Consume `other` and fold its content into `self`.
     ///
     /// Same-height compactors concatenate: items promoted to level `h` in

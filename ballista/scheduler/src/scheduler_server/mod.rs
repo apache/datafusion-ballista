@@ -159,41 +159,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name.clone(),
             config.clone(),
         ));
-        #[cfg(feature = "rest-api")]
-        let event_log = config.event_log_dir.as_ref().map(|dir| {
-            ballista_history::writer::EventLogWriter::new(
-                std::path::PathBuf::from(dir),
-                config.event_loop_buffer_size as usize,
-            )
-        });
-        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
-            state.clone(),
-            metrics_collector,
-            config.clone(),
-            #[cfg(feature = "rest-api")]
-            event_log,
-        ));
-        let query_stage_event_loop = EventLoop::new(
-            "query_stage".to_owned(),
-            config.event_loop_buffer_size as usize,
-            query_stage_scheduler.clone(),
-        );
 
-        let generator = config
-            .job_id_generator
-            .clone()
-            .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
-
-        Self {
-            scheduler_name,
-            start_time: timestamp_millis() as u128,
-            state,
-            query_stage_event_loop,
-            #[cfg(feature = "rest-api")]
-            query_stage_scheduler,
-            config,
-            generator,
-        }
+        Self::from_state(scheduler_name, state, config, metrics_collector)
     }
 
     /// Creates a new `SchedulerServer` with a custom task launcher.
@@ -213,6 +180,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             config.clone(),
             task_launcher,
         ));
+
+        Self::from_state(scheduler_name, state, config, metrics_collector)
+    }
+
+    fn from_state(
+        scheduler_name: String,
+        state: Arc<SchedulerState<T, U>>,
+        config: Arc<SchedulerConfig>,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+    ) -> Self {
         #[cfg(feature = "rest-api")]
         let event_log = config.event_log_dir.as_ref().map(|dir| {
             ballista_history::writer::EventLogWriter::new(
@@ -573,9 +550,9 @@ mod test {
     use crate::scheduler_server::{SchedulerServer, timestamp_millis};
 
     use crate::test_utils::{
-        ExplodingTableProvider, SchedulerTest, TaskRunnerFn, TestMetricsCollector,
-        assert_completed_event, assert_failed_event, assert_no_submitted_event,
-        assert_submitted_event, test_cluster_context,
+        ExplodingTableProvider, RejectingTaskLauncher, SchedulerTest, TaskRunnerFn,
+        TestMetricsCollector, assert_completed_event, assert_failed_event,
+        assert_no_submitted_event, assert_submitted_event, test_cluster_context,
     };
 
     #[tokio::test]
@@ -688,6 +665,7 @@ mod test {
                         executor_id: "executor-1".to_owned(),
                         partitions,
                         runtime_stats: vec![],
+                        window_state: vec![],
                     })),
                 };
 
@@ -1130,6 +1108,48 @@ mod test {
             .find(|s| matches!(s.status, Some(Status::Successful(_))));
 
         assert!(successful_job.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deterministic_launch_rejection_fails_job() -> Result<()> {
+        // A launcher that always rejects with gRPC InvalidArgument (an executor that
+        // cannot decode the task). The job must fail fast instead of hanging (#1908).
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let mut test = SchedulerTest::new_with_launcher(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector,
+            1,
+            1,
+            None,
+            Arc::new(RejectingTaskLauncher::default()),
+        )
+        .await?;
+
+        let plan = test_plan();
+
+        // Hard wall-clock bound so a stuck job fails the test instead of hanging.
+        let (status, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            test.run("", &plan),
+        )
+        .await
+        .expect(
+            "job did not reach a terminal state within 10s — likely not being failed",
+        )?;
+
+        assert!(
+            matches!(
+                status,
+                JobStatus {
+                    status: Some(job_status::Status::Failed(_)),
+                    ..
+                }
+            ),
+            "expected job to fail on task rejection, got {status:?}"
+        );
 
         Ok(())
     }

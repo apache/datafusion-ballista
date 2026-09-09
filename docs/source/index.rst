@@ -37,6 +37,7 @@ Table of content
 
    Deployment <user-guide/deployment/index>
    Scheduler <user-guide/scheduler>
+   History Server <user-guide/history-server>
 
 .. toctree::
    :maxdepth: 1

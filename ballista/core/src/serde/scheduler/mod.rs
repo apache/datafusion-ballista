@@ -19,6 +19,7 @@ use crate::JobId;
 use crate::error::BallistaError;
 use crate::execution_plans::create_shuffle_path;
 use crate::registry::BallistaFunctionRegistry;
+use crate::serde::protobuf;
 use datafusion::arrow::array::{
     ArrayBuilder, StructArray, StructBuilder, UInt64Array, UInt64Builder,
 };
@@ -53,9 +54,64 @@ pub enum Action {
         port: u16,
         /// shuffle file block id
         file_id: Option<u64>,
-        /// whether this partition uses sort shuffle
-        is_sort_shuffle: bool,
+        /// how the producing writer laid its output out on disk
+        layout: ShuffleLayout,
+        /// which file making up that output to fetch
+        file_kind: ShuffleFileKind,
+        /// byte ranges of that file to return, concatenated in order. Empty
+        /// asks for whatever the identifiers above address.
+        byte_ranges: Vec<ByteRange>,
     },
+}
+
+impl PartitionLocation {
+    /// How the writer that produced this partition laid its output out.
+    ///
+    /// Derived from `is_sort_shuffle`, which is the same question asked in the
+    /// vocabulary of one writer. The stored field keeps that name until the
+    /// construction sites are swept; the wire protocol already speaks layouts.
+    pub fn layout(&self) -> ShuffleLayout {
+        if self.is_sort_shuffle {
+            ShuffleLayout::Sort
+        } else {
+            ShuffleLayout::Passthrough
+        }
+    }
+}
+
+/// How a shuffle writer laid its output out on disk.
+///
+/// Selects the path shape, and with it how a client parses the index beside
+/// the data. Says nothing about the framing of the data file's own bytes —
+/// that is the file's business, and a reader establishes it by opening it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShuffleLayout {
+    /// `{stage_id}/{partition_id}/data-{file_id}.arrow`, one file per output
+    /// partition. Written by the passthrough and range writers.
+    #[default]
+    Passthrough,
+    /// `{stage_id}/{file_id}/data.arrow`, one file per task holding every
+    /// partition. Written by the sort-based writer.
+    Sort,
+}
+
+/// Which file making up a shuffle output is wanted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShuffleFileKind {
+    /// The data itself.
+    #[default]
+    Data,
+    /// The index beside it, whose name and encoding follow from the layout.
+    Index,
+}
+
+/// A half-open byte range of a file: `[offset, offset + length)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ByteRange {
+    /// Where the range starts, from the beginning of the file.
+    pub offset: u64,
+    /// How many bytes it spans.
+    pub length: u64,
 }
 
 /// Unique identifier for the output partition of an operator.
@@ -552,4 +608,40 @@ pub struct TaskDefinition {
     pub session_config: SessionConfig,
     /// Function registry for UDFs.
     pub function_registry: Arc<BallistaFunctionRegistry>,
+}
+
+impl From<ShuffleLayout> for protobuf::ShuffleLayout {
+    fn from(layout: ShuffleLayout) -> Self {
+        match layout {
+            ShuffleLayout::Passthrough => protobuf::ShuffleLayout::Passthrough,
+            ShuffleLayout::Sort => protobuf::ShuffleLayout::Sort,
+        }
+    }
+}
+
+impl From<protobuf::ShuffleLayout> for ShuffleLayout {
+    fn from(layout: protobuf::ShuffleLayout) -> Self {
+        match layout {
+            protobuf::ShuffleLayout::Passthrough => ShuffleLayout::Passthrough,
+            protobuf::ShuffleLayout::Sort => ShuffleLayout::Sort,
+        }
+    }
+}
+
+impl From<ShuffleFileKind> for protobuf::ShuffleFileKind {
+    fn from(kind: ShuffleFileKind) -> Self {
+        match kind {
+            ShuffleFileKind::Data => protobuf::ShuffleFileKind::Data,
+            ShuffleFileKind::Index => protobuf::ShuffleFileKind::Index,
+        }
+    }
+}
+
+impl From<protobuf::ShuffleFileKind> for ShuffleFileKind {
+    fn from(kind: protobuf::ShuffleFileKind) -> Self {
+        match kind {
+            protobuf::ShuffleFileKind::Data => ShuffleFileKind::Data,
+            protobuf::ShuffleFileKind::Index => ShuffleFileKind::Index,
+        }
+    }
 }

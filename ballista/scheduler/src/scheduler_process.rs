@@ -40,10 +40,11 @@ use datafusion::DATAFUSION_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
-use http::StatusCode;
+use http::{HeaderName, HeaderValue, StatusCode};
 use log::info;
 use std::{net::SocketAddr, sync::Arc};
 use tonic::service::RoutesBuilder;
+use tower_http::set_header::SetResponseHeaderLayer;
 /// Creates as initialized scheduler service
 /// without exposing it as a grpc service
 pub async fn create_scheduler<
@@ -83,6 +84,28 @@ pub async fn create_scheduler<
     scheduler_server.init().await?;
 
     Ok(scheduler_server)
+}
+
+/// Wraps a router so every response carries `Server` and `X-App-Version`
+/// headers, regardless of whether it was handled by the REST or gRPC routes
+/// merged into it.
+fn with_version_headers(router: axum::Router) -> axum::Router {
+    let server_value = HeaderValue::from_str(&format!("ballista/{BALLISTA_VERSION}"))
+        .expect("BALLISTA_VERSION should be a valid header value");
+
+    let datafusion_value =
+        HeaderValue::from_str(&format!("datafusion/{DATAFUSION_VERSION}"))
+            .expect("DATAFUSION_VERSION should be a valid header value");
+
+    router
+        .layer(SetResponseHeaderLayer::overriding(
+            http::header::SERVER,
+            server_value,
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-powered-by"),
+            datafusion_value,
+        ))
 }
 
 /// Exposes scheduler grpc service
@@ -134,27 +157,26 @@ pub async fn start_grpc_service<
     let health = health_routes(scheduler.clone());
 
     #[cfg(feature = "rest-api")]
-    let final_route = if config.disable_rest_api {
+    let merged = if config.disable_rest_api {
         tonic
             .merge(route_disabled(
                 "REST API has been disabled at startup".to_string(),
             ))
             .merge(health)
-            .into_make_service_with_connect_info::<SocketAddr>()
     } else {
         let axum = get_routes(scheduler);
-        axum.merge(tonic)
-            .merge(health)
-            .into_make_service_with_connect_info::<SocketAddr>()
+        axum.merge(tonic).merge(health)
     };
 
     #[cfg(not(feature = "rest-api"))]
-    let final_route = tonic
+    let merged = tonic
         .merge(route_disabled(
             "REST API has been disabled at compile time".to_string(),
         ))
-        .merge(health)
-        .into_make_service_with_connect_info::<SocketAddr>();
+        .merge(health);
+
+    let final_route =
+        with_version_headers(merged).into_make_service_with_connect_info::<SocketAddr>();
 
     let listener = tokio::net::TcpListener::bind(&address)
         .await
@@ -181,4 +203,37 @@ pub async fn start_server(
         create_scheduler::<LogicalPlanNode, PhysicalPlanNode>(cluster, config).await?;
 
     start_grpc_service(address, scheduler).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::routing::get;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn adds_server_and_app_version_headers() {
+        let router = with_version_headers(
+            axum::Router::new().route("/ping", get(|| async { "pong" })),
+        );
+
+        let response = router
+            .oneshot(
+                http::Request::builder()
+                    .uri("/ping")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.headers().get(http::header::SERVER).unwrap(),
+            &format!("ballista/{BALLISTA_VERSION}")[..],
+        );
+        assert_eq!(
+            response.headers().get("x-powered-by").unwrap(),
+            &format!("datafusion/{DATAFUSION_VERSION}")[..],
+        );
+    }
 }

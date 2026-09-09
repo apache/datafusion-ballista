@@ -812,6 +812,7 @@ mod tests {
                 Arc::new(Column::new("v", 0)),
                 ScalarValue::Float64(Some(0.0)),
                 ScalarValue::Float64(Some(0.0)),
+                None,
             )
             .unwrap(),
         );

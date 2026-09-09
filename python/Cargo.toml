@@ -24,13 +24,12 @@ authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 description = "Apache DataFusion Ballista Python Client"
 readme = "README.md"
 license = "Apache-2.0"
-edition = "2021"
-rust-version = "1.82.0"
+edition = "2024"
+rust-version = "1.94.0"
 include = ["/src", "/ballista", "/LICENSE.txt", "pyproject.toml", "Cargo.toml", "Cargo.lock"]
 publish = false
 
 [dependencies]
-async-trait = "0.1.89"
 # ballista = { path = "../ballista/client", version = "54.0.0" }
 # ballista-core = { path = "../ballista/core", version = "54.0.0" }
 # ballista-executor = { path = "../ballista/executor", version = "54.0.0", default-features = false }

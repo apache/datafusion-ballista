@@ -122,7 +122,13 @@
 //! order, and variable-width types have no fixed encoding — leaving those
 //! to the arrow-row path.
 
-use datafusion::arrow::array::{Array, ArrowPrimitiveType, AsArray, PrimitiveArray};
+use std::sync::Arc;
+
+use datafusion::arrow::array::{
+    Array, ArrayRef, ArrowPrimitiveType, AsArray, ListArray, PrimitiveArray, RecordBatch,
+    StructArray, new_empty_array,
+};
+use datafusion::arrow::buffer::OffsetBuffer;
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::{
     DataType, Date32Type, Date64Type, DurationMicrosecondType, DurationMillisecondType,
@@ -132,9 +138,25 @@ use datafusion::arrow::datatypes::{
     TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type,
     UInt16Type, UInt32Type, UInt64Type,
 };
-use datafusion::common::{Result, ScalarValue, internal_datafusion_err};
+use datafusion::arrow::datatypes::{Field, Fields, Schema};
+use datafusion::arrow::ipc::reader::StreamReader;
+use datafusion::arrow::ipc::writer::StreamWriter;
+use datafusion::common::{Result, ScalarValue, internal_datafusion_err, internal_err};
 
 use crate::kll::KllSketch;
+use crate::serde::protobuf::SortKeySketchState;
+
+/// Field name for the one list-of-levels column in a serialized sketch.
+const LEVELS_FIELD_NAME: &str = "levels";
+/// Field name of the single key column inside each item struct.
+///
+/// The item is a struct so a multi-column key is siblings alongside it rather
+/// than a second payload shape. What holds that back is this module's key,
+/// not the format: a [`SortKeyCodec`] encodes one column to one `u64`. Adding
+/// columns means teaching the encode side to emit them *and* relaxing
+/// [`SortKeySketch::try_from_proto`], which refuses anything but one field so
+/// a half-widened producer fails loudly instead of silently dropping a key.
+const KEY_FIELD_NAME: &str = "expr_0";
 
 /// Bijection between a primitive's native value and a `u64` whose ascending
 /// order matches the native ascending order.
@@ -530,7 +552,13 @@ impl SortKeySketch {
     /// execution.
     pub fn ingest(&mut self, array: &dyn Array) -> Result<()> {
         let keys = self.codec.encode(array)?;
-        self.sketch.absorb_slice(&keys);
+        // Sketching a sort key usually means sitting above the `SortExec`
+        // that produced it, so the sorted path is the common case rather
+        // than a special one. It verifies sortedness in O(n) comparisons and
+        // falls through when the input isn't sorted, so it is correct to
+        // call unconditionally — a `DESC` key, whose encoding inverts every
+        // bit and so arrives descending, takes that fallback.
+        self.sketch.absorb_sorted_slice(&keys);
         self.null_count += array.null_count() as u64;
         Ok(())
     }
@@ -582,6 +610,28 @@ impl SortKeySketch {
     /// seen.
     pub fn max(&self) -> Result<Option<ScalarValue>> {
         self.extreme(!self.codec.options().nulls_first, self.sketch.max())
+    }
+
+    /// The least value observed, or `None` when no value was.
+    ///
+    /// Distinct from [`Self::min`], which answers about the least *row* and so
+    /// reports a typed NULL when NULLs sort first. A router comparing a key
+    /// against a range wants this one: a NULL bound makes its comparison NULL
+    /// and drops every row it was meant to select.
+    pub fn value_min(&self) -> Result<Option<ScalarValue>> {
+        self.sketch
+            .min()
+            .map(|key| self.codec.decode(*key))
+            .transpose()
+    }
+
+    /// The greatest value observed, or `None` when no value was. Counterpart
+    /// to [`Self::value_min`].
+    pub fn value_max(&self) -> Result<Option<ScalarValue>> {
+        self.sketch
+            .max()
+            .map(|key| self.codec.decode(*key))
+            .transpose()
     }
 
     /// Shared body of [`Self::min`] and [`Self::max`]: the extreme is a
@@ -649,10 +699,6 @@ impl SortKeySketch {
 
     /// The rank *among the values* that population-quantile `q` asks for,
     /// or `None` when it lands inside the NULL run.
-    ///
-    /// This is the remap [`Self::quantile`] documents, split out so that
-    /// [`Self::cuts`] can resolve every boundary against one pass over the
-    /// sketch. Callers must have checked that something was observed.
     fn value_rank(&self, q: f64) -> Option<u64> {
         let rank = (q.clamp(0.0, 1.0) * self.count() as f64) as u64;
         // No NULL run to step over, so the population rank *is* the value
@@ -672,47 +718,320 @@ impl SortKeySketch {
         }
     }
 
-    /// The `partitions - 1` boundaries that split everything observed into
-    /// `partitions` equally-sized runs, in sort order.
+    /// The `partitions - 1` boundaries splitting everything observed into
+    /// `partitions` runs of equal size, in sort order. If a cut _would be_ NULL, it is adjusted to
+    /// include the nearest value, so this function never returns a NULL cut.
     ///
-    /// Empty when `partitions < 2` or nothing was observed, and otherwise
-    /// exactly `partitions - 1` long so a caller can index it by output
-    /// partition. Entries may repeat where one value dominates, and may be
-    /// typed NULLs where the NULL run spans a boundary; both are faithful
-    /// answers about a skewed distribution rather than errors.
-    pub fn cuts(&self, partitions: usize) -> Result<Vec<ScalarValue>> {
-        if partitions < 2 || self.count() == 0 {
+    /// The run is indivisible, so it takes the partition at its end whole and
+    /// only the values beside it balance.
+    ///
+    /// ```text
+    /// nulls_first                        nulls_last
+    /// ┌──────┬─────────────────┐         ┌─────────────────┬──────┐
+    /// │NULLs │ values          │         │ values          │NULLs │
+    /// └──────┴─────────────────┘         └─────────────────┴──────┘
+    /// 0      n                 N         0                 v      N
+    ///
+    /// rank = max(pop − n, ...)           rank = min(pop, ...)
+    /// pulls UP from min                  pulls DOWN from max
+    /// ```
+    ///
+    /// | nulls_first | NULLs | values | K | cuts           | partition sizes   |
+    /// |-------------|------:|-------:|--:|----------------|-------------------|
+    /// | true        |    10 | 1..=90 | 4 | `[15, 40, 65]` | 24 / 25 / 25 / 26 |
+    /// | true        |    60 | 1..=40 | 4 | `[1, 14, 27]`  | 60 / 13 / 13 / 14 |
+    /// | false       |    60 | 1..=40 | 4 | `[14, 27, 40]` | 13 / 13 / 13 / 61 |
+    /// | false       |    90 | 1..=10 | 4 | `[4, 7, 10]`   | 3 / 3 / 3 / 91    |
+    ///
+    /// Empty when `partitions < 2` or no value was observed.
+    ///
+    /// Should only error if:
+    /// 1. invalid sketch: min/max is empty but levels are not - guarded against in proto decode
+    /// 2. codec.decode() failure - guarded against in try_new
+    pub fn cuts(&self, partition_cnt: usize) -> Result<Vec<ScalarValue>> {
+        if partition_cnt < 2 || self.sketch.count() == 0 {
             return Ok(Vec::new());
         }
-        let targets: Vec<Option<u64>> = (1..partitions)
-            .map(|cut| self.value_rank(cut as f64 / partitions as f64))
-            .collect();
-        // One sorted pass over the retained items for every boundary. Going
-        // through `quantile` per cut instead re-sorts the whole retained set
-        // each time, which at 256 partitions costs more than the ingest that
-        // built the sketch.
-        let value_ranks: Vec<u64> = targets.iter().flatten().copied().collect();
-        let mut value_keys = self.sketch.at_ranks(&value_ranks).into_iter();
+        /// NULLs are indivisible, so when they outgrow a partition they take one whole.
+        const PARTITION_FOR_NULLS: usize = 1;
+        /// `at_ranks` is 1-based: rank `r` names the `r`-th value, and nothing is rank 0.
+        const FIRST_RANK: u64 = 1;
 
-        targets
-            .iter()
-            .map(|target| match target {
-                None => self.codec.null_value(),
-                // Having observed something, every rank the remap produces
-                // names a row, so the only way back is a full vector.
-                // Dropping a missing cut would renumber every partition
-                // above it, and silently.
-                Some(rank) => {
-                    let key = value_keys.next().flatten().ok_or_else(|| {
-                        internal_datafusion_err!(
-                            "SortKeySketch: no value at rank {rank} of {} values",
-                            self.sketch.count()
-                        )
-                    })?;
-                    self.codec.decode(*key)
-                }
+        let total_cnt = self.count();
+        let sketch_cnt = self.sketch.count();
+        // Partitions sharing the not-NULLs: all but the one partition consumed by NULLs
+        let not_null_parts = (partition_cnt - PARTITION_FOR_NULLS) as u128;
+        let cut_cnt = partition_cnt - 1;
+        let last_cut_idx = cut_cnt - 1;
+        // null_count > total_cnt / partition_cnt (but without error inducing division)
+        let nulls_outgrow_a_partition =
+            self.null_count as u128 * partition_cnt as u128 > total_cnt as u128;
+        let mut sketch_ranks: Vec<u64> = Vec::with_capacity(cut_cnt);
+        for cut_idx in 0..cut_cnt {
+            let num_parts_closed = cut_idx as u128 + 1;
+            let total_rank =
+                (num_parts_closed * total_cnt as u128 / partition_cnt as u128) as u64;
+            if self.codec.options().nulls_first {
+                let sketch_rank = if !nulls_outgrow_a_partition {
+                    // no cut ever lands on a NULL value anyway
+                    total_rank.saturating_sub(self.null_count)
+                } else {
+                    // save a whole partition for the NULLs, divide evenly amongst the rest
+                    (cut_idx as u128 * sketch_cnt as u128 / not_null_parts) as u64
+                        + FIRST_RANK
+                };
+                let cuts_below = cut_idx as u64;
+                let lowest_unreserved_rank = cuts_below + FIRST_RANK;
+                let rank = sketch_rank.max(lowest_unreserved_rank).min(sketch_cnt);
+                sketch_ranks.push(rank);
+            } else {
+                // mirror of above
+                let sketch_rank = if !nulls_outgrow_a_partition {
+                    total_rank
+                } else {
+                    // round up, since we're going the other way
+                    (num_parts_closed * sketch_cnt as u128).div_ceil(not_null_parts)
+                        as u64
+                };
+                let cuts_above = (last_cut_idx - cut_idx) as u64;
+                let highest_unreserved_rank = sketch_cnt.saturating_sub(cuts_above);
+                let rank = sketch_rank.min(highest_unreserved_rank).max(FIRST_RANK);
+                sketch_ranks.push(rank);
+            }
+        }
+
+        // Turn ranks into values
+        self.sketch
+            .at_ranks(&sketch_ranks)
+            .into_iter()
+            .zip(&sketch_ranks)
+            .map(|(key, rank)| {
+                let key = key.ok_or_else(|| {
+                    internal_datafusion_err!(
+                        "SortKeySketch: no value at rank {rank} of {} values",
+                        self.sketch.count()
+                    )
+                })?;
+                self.codec.decode(*key)
             })
             .collect()
+    }
+
+    /// Serialize to [`SortKeySketchState`]. See that message for the layout
+    /// and for what was priced against it.
+    ///
+    /// The key's direction and NULL placement are deliberately absent: they
+    /// live once per report, in the `order_by` tag every consumer already
+    /// reads to know which expression a sketch describes.
+    pub fn to_proto(&self) -> Result<SortKeySketchState> {
+        let mut offsets: Vec<i32> = Vec::with_capacity(self.sketch.levels().len() + 1);
+        offsets.push(0);
+        let mut keys: Vec<u64> = Vec::new();
+        for level in self.sketch.levels() {
+            let mut ascending = level.clone();
+            ascending.sort_unstable();
+            keys.extend_from_slice(&ascending);
+            offsets.push(i32::try_from(keys.len()).map_err(|_| {
+                internal_datafusion_err!(
+                    "SortKeySketch: {} retained items overflow an arrow list offset",
+                    keys.len()
+                )
+            })?);
+        }
+
+        let item = Arc::new(Field::new(
+            KEY_FIELD_NAME,
+            self.codec.data_type().clone(),
+            false,
+        ));
+        let items = StructArray::try_new(
+            Fields::from(vec![item]),
+            vec![self.decode_all(&keys)?],
+            None,
+        )?;
+        let levels = ListArray::try_new(
+            Arc::new(Field::new("item", items.data_type().clone(), false)),
+            OffsetBuffer::new(offsets.into()),
+            Arc::new(items),
+            None,
+        )?;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            LEVELS_FIELD_NAME,
+            levels.data_type().clone(),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(levels)])?;
+
+        let mut ipc = Vec::new();
+        let mut writer = StreamWriter::try_new(&mut ipc, &schema)?;
+        writer.write(&batch)?;
+        writer.finish()?;
+        drop(writer);
+
+        Ok(SortKeySketchState {
+            k: u32::try_from(self.sketch.k()).map_err(|_| {
+                internal_datafusion_err!(
+                    "SortKeySketch: k={} exceeds u32",
+                    self.sketch.k()
+                )
+            })?,
+            null_count: self.null_count,
+            key_min: self.extreme_proto(self.sketch.min())?,
+            key_max: self.extreme_proto(self.sketch.max())?,
+            levels: ipc,
+        })
+    }
+
+    /// Rebuild what [`Self::to_proto`] wrote. `options` comes from the
+    /// report's `order_by` tag; the key's type comes from the payload's own
+    /// arrow schema, so the two together reconstruct the codec.
+    ///
+    /// Errors on a payload this sketch could not have produced — a schema
+    /// that isn't one list of structs, or a compactor stack over capacity —
+    /// rather than returning a sketch whose answers would be quietly wrong.
+    pub fn try_from_proto(
+        proto: &SortKeySketchState,
+        options: SortOptions,
+    ) -> Result<Self> {
+        let mut reader =
+            StreamReader::try_new(std::io::Cursor::new(&proto.levels), None)?;
+        let batch = reader.next().transpose()?.ok_or_else(|| {
+            internal_datafusion_err!("SortKeySketchState: levels payload holds no batch")
+        })?;
+        let levels = batch
+            .column_by_name(LEVELS_FIELD_NAME)
+            .and_then(|column| column.as_list_opt::<i32>())
+            .ok_or_else(|| {
+                internal_datafusion_err!(
+                    "SortKeySketchState: expected a `{LEVELS_FIELD_NAME}` list column, got {:?}",
+                    batch.schema()
+                )
+            })?;
+
+        let key_type = match levels.value_type() {
+            DataType::Struct(fields) => match fields.as_ref() {
+                [only] => only.data_type().clone(),
+                other => {
+                    return internal_err!(
+                        "SortKeySketchState: expected one key field per item, got {}",
+                        other.len()
+                    );
+                }
+            },
+            other => {
+                return internal_err!(
+                    "SortKeySketchState: expected items to be structs, got {other:?}"
+                );
+            }
+        };
+        let codec = SortKeyCodec::try_new(&key_type, options).ok_or_else(|| {
+            internal_datafusion_err!(
+                "SortKeySketchState: {key_type:?} is not an encodable key"
+            )
+        })?;
+
+        let mut stack: Vec<Vec<u64>> = Vec::with_capacity(levels.len());
+        for level in 0..levels.len() {
+            let items = levels.value(level);
+            let keys = items
+                .as_struct_opt()
+                .map(|items| codec.encode(items.column(0).as_ref()))
+                .transpose()?
+                .ok_or_else(|| {
+                    internal_datafusion_err!(
+                        "SortKeySketchState: level {level} is not a struct array"
+                    )
+                })?;
+            stack.push(keys);
+        }
+
+        let key_min = Self::extreme_key(&codec, &proto.key_min)?;
+        let key_max = Self::extreme_key(&codec, &proto.key_max)?;
+        // The extremes are set on the first insert and never cleared, so a
+        // stack holding keys has both and an empty one has neither. `cuts`
+        // reads a rank off an extreme and has no answer when it is missing.
+        let has_keys = stack.iter().any(|level| !level.is_empty());
+        if has_keys != key_min.is_some() || has_keys != key_max.is_some() {
+            return internal_err!(
+                "SortKeySketchState: {} retained keys against key_min={} key_max={} — \
+                 a stack holding keys carries both extremes",
+                stack.iter().map(Vec::len).sum::<usize>(),
+                proto.key_min.len(),
+                proto.key_max.len()
+            );
+        }
+
+        let sketch = KllSketch::from_parts(proto.k as usize, stack, key_min, key_max)
+            .ok_or_else(|| {
+                internal_datafusion_err!(
+                    "SortKeySketchState: k={} and the level widths describe a stack KLL \
+                 could not have produced",
+                    proto.k
+                )
+            })?;
+        Ok(Self {
+            codec,
+            sketch,
+            null_count: proto.null_count,
+        })
+    }
+
+    /// Every key decoded into one array of the codec's type, in the order
+    /// given. Its own function because `iter_to_array` refuses an empty
+    /// iterator, and a sketch that observed nothing still serializes.
+    fn decode_all(&self, keys: &[u64]) -> Result<ArrayRef> {
+        if keys.is_empty() {
+            return Ok(new_empty_array(self.codec.data_type()));
+        }
+        ScalarValue::iter_to_array(
+            keys.iter()
+                .map(|key| self.codec.decode(*key))
+                .collect::<Result<Vec<_>>>()?,
+        )
+    }
+
+    /// One extreme as the wire's `repeated ScalarValue`: a tuple with one
+    /// element per key column, empty when nothing was observed.
+    fn extreme_proto(
+        &self,
+        key: Option<&u64>,
+    ) -> Result<Vec<datafusion_proto_common::ScalarValue>> {
+        key.map(|key| {
+            let value = self.codec.decode(*key)?;
+            datafusion_proto_common::ScalarValue::try_from(&value).map_err(|e| {
+                internal_datafusion_err!(
+                    "SortKeySketch: failed to encode {value:?}: {e:?}"
+                )
+            })
+        })
+        .transpose()
+        .map(|encoded| encoded.into_iter().collect())
+    }
+
+    /// Reverses [`Self::extreme_proto`].
+    fn extreme_key(
+        codec: &SortKeyCodec,
+        proto: &[datafusion_proto_common::ScalarValue],
+    ) -> Result<Option<u64>> {
+        let [value] = proto else {
+            return match proto {
+                [] => Ok(None),
+                other => internal_err!(
+                    "SortKeySketchState: expected one element per key column in an \
+                     extreme, got {}",
+                    other.len()
+                ),
+            };
+        };
+        let value = ScalarValue::try_from(value).map_err(|e| {
+            internal_datafusion_err!("SortKeySketchState: undecodable extreme: {e:?}")
+        })?;
+        match codec.encode(value.to_array()?.as_ref())?.as_slice() {
+            [key] => Ok(Some(*key)),
+            // A NULL extreme would encode to nothing. The extremes are the
+            // sketch's *value* bounds, so a NULL there is a producer bug.
+            _ => internal_err!("SortKeySketchState: extreme encoded to no key"),
+        }
     }
 }
 
@@ -1191,31 +1510,312 @@ mod tests {
         );
     }
 
-    /// `cuts` splits the population, NULL run included, so a mostly-NULL
-    /// column spends its low cuts inside that run and only crosses into
-    /// the values once the run is behind it.
+    /// Boundaries as the `Int64` scalars `cuts` returns for an `Int64` key.
+    fn i64_cuts(values: &[i64]) -> Vec<ScalarValue> {
+        values
+            .iter()
+            .map(|v| ScalarValue::Int64(Some(*v)))
+            .collect()
+    }
+
+    /// A population of 12 over K=4 gives each partition a share of 3, which is
+    /// the smallest size where the end effects of the half-open convention stay
+    /// within one row. At 10 the same cuts spread by 2 and these assertions
+    /// would be measuring integer rounding rather than the repair.
     ///
-    /// 60 NULLs then values 1..=40, NULLs first. Quartile ranks are 25, 50
-    /// and 75 of 100; the first two sit inside the 60-row NULL run, and the
-    /// third is 15 rows past it, which is value 15 of 40.
+    /// No NULLs, so nothing displaces anything and the ranks land where the
+    /// population quartiles say: 3, 6, 9.
     #[test]
-    fn cuts_split_the_population_including_nulls() {
-        let mut values: Vec<Option<i64>> = vec![None; 60];
-        values.extend((1..=40).map(Some));
+    fn cuts_balance_when_nothing_is_null() {
+        let values = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let column = vec![
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+            Some(7),
+            Some(8),
+            Some(9),
+            Some(10),
+            Some(11),
+            Some(12),
+        ];
+        let sketch = int_sketch(column, sort_options(false, true));
+
+        let cuts = sketch.cuts(4).unwrap();
+
+        assert_eq!(cuts, i64_cuts(&[3, 6, 9]));
+        assert_eq!(partition_sizes(0, &values, &cuts, true), vec![2, 3, 3, 4]);
+    }
+
+    /// A run of 2 against a share of 3 fits inside partition 0 beside the
+    /// values below the first cut, so every boundary keeps its population rank
+    /// shifted down by the run and nothing needs repairing.
+    #[test]
+    fn cuts_balance_when_the_run_fits_inside_one_partition() {
+        let values = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let column = vec![
+            None,
+            None,
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+            Some(7),
+            Some(8),
+            Some(9),
+            Some(10),
+        ];
+        let sketch = int_sketch(column, sort_options(false, true));
+
+        let cuts = sketch.cuts(4).unwrap();
+
+        assert_eq!(cuts, i64_cuts(&[1, 4, 7]));
+        assert_eq!(partition_sizes(2, &values, &cuts, true), vec![2, 3, 3, 4]);
+    }
+
+    /// A run of 6 against a share of 3 is indivisible, so partition 0 takes it
+    /// whole and its size cannot be improved. What the boundaries above it owe
+    /// is an even split of the six values — `[2, 2, 2]`, not the `[4, 1, 1]`
+    /// that keeping the raw population ranks would give.
+    #[test]
+    fn cuts_balance_when_the_run_outgrows_one_partition() {
+        let values = vec![1, 2, 3, 4, 5, 6];
+        let column = vec![
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+        ];
+        let sketch = int_sketch(column, sort_options(false, true));
+
+        let cuts = sketch.cuts(4).unwrap();
+
+        assert_eq!(cuts, i64_cuts(&[1, 3, 5]));
+        assert_eq!(partition_sizes(6, &values, &cuts, true), vec![6, 2, 2, 2]);
+    }
+
+    /// The run leaves fewer values than partitions to spread them over, so the
+    /// best the boundaries can do is one value each. Every cut is still a real
+    /// value: a NULL boundary would silently drop its partition.
+    #[test]
+    fn cuts_balance_when_the_run_leaves_one_value_per_partition() {
+        let values = vec![1, 2, 3];
+        let column = vec![
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(2),
+            Some(3),
+        ];
+        let sketch = int_sketch(column, sort_options(false, true));
+
+        let cuts = sketch.cuts(4).unwrap();
+
+        assert_eq!(cuts, i64_cuts(&[1, 2, 3]));
+        assert_eq!(partition_sizes(9, &values, &cuts, true), vec![9, 1, 1, 1]);
+    }
+
+    /// K=8 over 6 values: there are not enough distinct values to give every
+    /// partition one, so the top boundary repeats and the partition between the
+    /// repeated pair gets nothing. Repeating beats emitting a NULL or a
+    /// decreasing boundary, both of which consumers read as a dropped range.
+    #[test]
+    fn cuts_balance_when_partitions_outnumber_the_values() {
+        let values = vec![1, 2, 3, 4, 5, 6];
+        let column = vec![
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+        ];
+        let sketch = int_sketch(column, sort_options(false, true));
+
+        let cuts = sketch.cuts(8).unwrap();
+
+        assert_eq!(cuts, i64_cuts(&[1, 2, 3, 4, 5, 6, 6]));
+        assert_eq!(
+            partition_sizes(6, &values, &cuts, true),
+            vec![6, 1, 1, 1, 1, 1, 0, 1]
+        );
+    }
+
+    /// Partition sizes a router would produce from `cuts`, under the half-open
+    /// convention every consumer uses: partition 0 takes the NULLs and every
+    /// value below `cuts[0]`, partition `i` takes `[cuts[i - 1], cuts[i])`, and
+    /// the last takes everything from the final cut up.
+    fn partition_sizes(
+        nulls: usize,
+        values: &[i64],
+        cuts: &[ScalarValue],
+        nulls_first: bool,
+    ) -> Vec<usize> {
+        let bound = |cut: &ScalarValue| match cut {
+            ScalarValue::Int64(Some(value)) => *value,
+            other => panic!("expected a non-NULL Int64 boundary, got {other:?}"),
+        };
+        let count = |predicate: &dyn Fn(i64) -> bool| {
+            values.iter().filter(|value| predicate(**value)).count()
+        };
+        let first = bound(&cuts[0]);
+        let last = bound(cuts.last().expect("at least one cut"));
+        // The run rides the partition at its own end of the sort order.
+        let (low_nulls, high_nulls) = if nulls_first { (nulls, 0) } else { (0, nulls) };
+        let mut sizes = vec![low_nulls + count(&|value| value < first)];
+        for pair in cuts.windows(2) {
+            let (lo, hi) = (bound(&pair[0]), bound(&pair[1]));
+            sizes.push(count(&|value| lo <= value && value < hi));
+        }
+        sizes.push(high_nulls + count(&|value| value >= last));
+        sizes
+    }
+
+    /// A run shorter than one partition's share costs no balance at all: the
+    /// boundaries keep their population ranks, so the run simply shares the
+    /// lowest partition with the values below the first cut.
+    #[test]
+    fn cuts_are_unrepaired_when_the_null_run_is_small() {
+        let mut values: Vec<Option<i64>> = vec![None; 10];
+        values.extend((1..=90).map(Some));
         let sketch = int_sketch(values, sort_options(false, true));
 
         let cuts = sketch.cuts(4).unwrap();
-        assert_eq!(cuts.len(), 3, "K-1 cuts for K partitions");
+        // Population ranks 25/50/75 minus the 10 NULLs, with no clamping.
         assert_eq!(
-            cuts[0],
-            ScalarValue::Int64(None),
-            "the first quarter is entirely NULL"
+            cuts,
+            vec![
+                ScalarValue::Int64(Some(15)),
+                ScalarValue::Int64(Some(40)),
+                ScalarValue::Int64(Some(65)),
+            ]
         );
-        assert_eq!(cuts[1], ScalarValue::Int64(None), "so is the second");
+        // Which leaves 10 NULLs + values 1..14, then 25, 25 and 26 rows: the
+        // NULL run cost one row of balance against a perfect 25 apiece.
+    }
+
+    /// The `nulls_last` mirror. The run sits above the values, so every
+    /// adjustment reverses: boundaries pull down toward the maximum and the run
+    /// takes the *top* partition. Same properties as its `nulls_first` twin,
+    /// and the shared no-NULL cases must agree between the two.
+    #[test]
+    fn cuts_mirror_the_repair_when_nulls_sort_last() {
+        for (nulls, value_count, partitions) in [
+            (60usize, 40i64, 4usize),
+            (90, 10, 4),
+            (60, 40, 8),
+            (10, 90, 4),
+            (95, 5, 4),
+        ] {
+            let values: Vec<i64> = (1..=value_count).collect();
+            let mut column: Vec<Option<i64>> = values.iter().copied().map(Some).collect();
+            column.extend(std::iter::repeat_n(None, nulls));
+            let sketch = int_sketch(column, sort_options(false, false));
+
+            let cuts = sketch.cuts(partitions).unwrap();
+            let context =
+                format!("{nulls} NULLs last, {value_count} values, K={partitions}");
+            assert_eq!(cuts.len(), partitions - 1, "{context}");
+            assert!(
+                cuts.iter().all(|cut| !cut.is_null()),
+                "{context}: got {cuts:?}"
+            );
+            assert!(
+                cuts.windows(2).all(|pair| pair[0] <= pair[1]),
+                "{context}: boundaries must be non-decreasing, got {cuts:?}"
+            );
+
+            let sizes = partition_sizes(nulls, &values, &cuts, false);
+            assert_eq!(
+                sizes.iter().sum::<usize>(),
+                nulls + value_count as usize,
+                "{context}: every row lands somewhere, got {sizes:?}"
+            );
+            // The run takes the last partition, so only the others can balance.
+            let below_the_run = &sizes[..sizes.len() - 1];
+            let spread =
+                below_the_run.iter().max().unwrap() - below_the_run.iter().min().unwrap();
+            assert!(
+                spread <= 1,
+                "{context}: partitions below the run should differ by at most \
+                 one row, got {sizes:?}"
+            );
+        }
+    }
+
+    /// The population rank sits *below* the even split once the run owns the
+    /// top partition, so honouring it strands the partitions beneath: cuts
+    /// `[1, 3]` give sizes `[0, 2, 3]`, an empty partition beside a double one.
+    /// The even split is what the run leaves room for, and nothing above it can
+    /// be improved by consulting a rank the run already displaced.
+    #[test]
+    fn cuts_fill_the_low_partitions_when_the_run_owns_the_top_one() {
+        let values = vec![1, 2, 3];
+        let column = vec![Some(1), Some(2), Some(3), None, None];
+        let sketch = int_sketch(column, sort_options(false, false));
+
+        let cuts = sketch.cuts(3).unwrap();
+
+        assert_eq!(cuts, i64_cuts(&[2, 3]));
+        assert_eq!(partition_sizes(2, &values, &cuts, false), vec![1, 1, 3]);
+    }
+
+    /// With no NULLs there is no run at either end, so the two layouts have
+    /// nothing to mirror and must produce identical boundaries.
+    #[test]
+    fn cuts_agree_across_null_placement_when_nothing_is_null() {
+        let column: Vec<Option<i64>> = (1..=100).map(Some).collect();
+        let first = int_sketch(column.clone(), sort_options(false, true));
+        let last = int_sketch(column, sort_options(false, false));
+        for partitions in [2usize, 4, 8, 16] {
+            assert_eq!(
+                first.cuts(partitions).unwrap(),
+                last.cuts(partitions).unwrap(),
+                "K={partitions}"
+            );
+        }
+    }
+
+    /// With no NULLs there is no run to sit above or below the values, so
+    /// `nulls_last` needs nothing mirrored and must not be refused.
+    #[test]
+    fn cuts_allow_nulls_last_without_nulls() {
+        let sketch =
+            int_sketch((1..=100).map(Some).collect(), sort_options(false, false));
+        let cuts = sketch.cuts(4).unwrap();
         assert_eq!(
-            cuts[2],
-            ScalarValue::Int64(Some(15)),
-            "the third crosses out of the run"
+            cuts,
+            vec![
+                ScalarValue::Int64(Some(25)),
+                ScalarValue::Int64(Some(50)),
+                ScalarValue::Int64(Some(75)),
+            ]
         );
     }
 
@@ -1596,5 +2196,126 @@ mod tests {
             .encode(array.as_ref())
             .expect_err("type mismatch must not silently reinterpret");
         assert!(err.to_string().contains("built for"), "got: {err}");
+    }
+    /// A round trip has to preserve every answer the sketch gives, not just
+    /// its byte count: the extremes exactly, and every rank the compactor
+    /// stack encodes. Rebuilding the stack wrongly — a dropped level, a
+    /// weight off by a factor of two — leaves `count` intact while moving
+    /// the quantiles, so the quantile sweep is the assertion that matters.
+    #[test]
+    fn wire_round_trip_preserves_every_answer() {
+        let options = SortOptions {
+            descending: false,
+            nulls_first: true,
+        };
+        let codec = SortKeyCodec::try_new(&DataType::Float64, options).unwrap();
+        let mut original = SortKeySketch::new(codec);
+        // Past k so the stack has several levels with real weights, rather
+        // than one level where every item weighs 1 and a broken rebuild
+        // would still answer correctly.
+        let values: Vec<Option<f64>> = (0..5_000)
+            .map(|row| Some(1.0 + row as f64 * 99.0 / 5_000.0))
+            .chain((0..40).map(|_| None))
+            .collect();
+        original.ingest(&Float64Array::from(values)).unwrap();
+
+        let decoded =
+            SortKeySketch::try_from_proto(&original.to_proto().unwrap(), options)
+                .unwrap();
+
+        assert_eq!(decoded.count(), original.count());
+        assert_eq!(decoded.null_count(), original.null_count());
+        assert_eq!(decoded.codec(), original.codec());
+        assert_eq!(decoded.min().unwrap(), original.min().unwrap());
+        assert_eq!(decoded.max().unwrap(), original.max().unwrap());
+        for step in 0..=100 {
+            let q = step as f64 / 100.0;
+            assert_eq!(
+                decoded.quantile(q).unwrap(),
+                original.quantile(q).unwrap(),
+                "quantile({q}) diverged across the wire"
+            );
+        }
+        assert_eq!(decoded.cuts(8).unwrap(), original.cuts(8).unwrap());
+    }
+
+    /// An empty sketch still has to survive the wire: a task may hold a
+    /// partition slot it never executed, and the report emits every slot.
+    #[test]
+    fn wire_round_trip_preserves_empty_sketch() {
+        let options = SortOptions::default();
+        let codec = SortKeyCodec::try_new(&DataType::Int64, options).unwrap();
+        let original = SortKeySketch::new(codec);
+
+        let decoded =
+            SortKeySketch::try_from_proto(&original.to_proto().unwrap(), options)
+                .unwrap();
+
+        assert_eq!(decoded.count(), 0);
+        assert_eq!(decoded.null_count(), 0);
+        assert_eq!(decoded.min().unwrap(), None);
+        assert_eq!(decoded.max().unwrap(), None);
+        assert!(decoded.cuts(8).unwrap().is_empty());
+    }
+
+    /// A payload carrying keys but no extremes is the one shape that makes
+    /// `cuts` fallible, so it has to die at decode instead.
+    #[test]
+    fn wire_refuses_retained_keys_without_extremes() {
+        let options = SortOptions::default();
+        let codec = SortKeyCodec::try_new(&DataType::Int64, options).unwrap();
+        let mut original = SortKeySketch::new(codec);
+        original.ingest(&Int64Array::from(vec![1, 2, 3])).unwrap();
+
+        let mut proto = original.to_proto().unwrap();
+        proto.key_max.clear();
+
+        let err = SortKeySketch::try_from_proto(&proto, options)
+            .expect_err("retained keys without a key_max must be refused");
+        assert!(
+            err.to_string().contains("carries both extremes"),
+            "got: {err}"
+        );
+    }
+
+    /// NULLs are counted beside the sketch rather than in it, so they have
+    /// their own way of not surviving serialization.
+    #[test]
+    fn wire_round_trip_preserves_a_nulls_only_sketch() {
+        let options = SortOptions {
+            descending: false,
+            nulls_first: false,
+        };
+        let codec = SortKeyCodec::try_new(&DataType::Int64, options).unwrap();
+        let mut original = SortKeySketch::new(codec);
+        original
+            .ingest(&Int64Array::from(vec![None, None, None]))
+            .unwrap();
+
+        let decoded =
+            SortKeySketch::try_from_proto(&original.to_proto().unwrap(), options)
+                .unwrap();
+
+        assert_eq!(decoded.count(), 3);
+        assert_eq!(decoded.null_count(), 3);
+        // NULLs sort last here, so both extremes are the typed NULL.
+        assert_eq!(decoded.min().unwrap(), original.min().unwrap());
+        assert_eq!(decoded.max().unwrap(), original.max().unwrap());
+    }
+
+    /// A truncated or foreign payload must fail rather than decode into a
+    /// sketch whose answers are quietly wrong.
+    #[test]
+    fn wire_rejects_a_payload_it_did_not_write() {
+        let proto = SortKeySketchState {
+            k: 800,
+            null_count: 0,
+            key_min: vec![],
+            key_max: vec![],
+            levels: b"not an arrow stream".to_vec(),
+        };
+        let err = SortKeySketch::try_from_proto(&proto, SortOptions::default())
+            .expect_err("a non-IPC payload must not decode");
+        assert!(!err.to_string().is_empty());
     }
 }
