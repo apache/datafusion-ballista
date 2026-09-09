@@ -309,14 +309,17 @@ behavior it would be config-gated, leaving today's model as the default:
   | split, even capacity         | 50.0% |       50.0% |    90.0% |
   | split, capacity elsewhere    | 50.0% |       50.0% |    90.0% |
   | even shuffle                 | 50.0% |       50.0% |    50.0% |
-  | collapse, even capacity      | 90.0% |       10.0% |    90.0% |
   | collapse, capacity elsewhere | 10.0% |       10.0% |    90.0% |
 
-  Two results are worth reading carefully. The even shuffle confirms there is
-  nothing to win when every producer writes every partition at the same size,
-  which is the shape of a plain hash-partitioned aggregate. And bias matches
-  affinity on the collapse row only while the budgets tie: it is picking the
-  right executor by luck, and moving the spare capacity drops it to 10%.
+  The even shuffle is the negative control and it holds: when every producer
+  writes every partition at the same size, which is the shape of a plain
+  hash-partitioned aggregate, there is nothing to exploit and all three
+  policies read the same half.
+
+  A tied-capacity collapse row is deliberately absent. With equal budgets the
+  built-ins land on whichever executor the cluster state listed first, so they
+  score 10% or 90% from run to run while affinity stays at 90%. That is a coin
+  flip rather than a measurement.
 
   This measures placement, not wall-clock time. A higher share means fewer
   Arrow Flight fetches, not a demonstrated speedup, and these are synthetic

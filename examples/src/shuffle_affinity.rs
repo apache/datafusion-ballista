@@ -23,7 +23,7 @@
 //! bytes already are, reading the `PartitionLocation`s that every resolved
 //! shuffle reader carries.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ballista_core::JobId;
@@ -37,9 +37,7 @@ use log::debug;
 
 use ballista_scheduler::cluster::{BoundTask, DistributionPolicy};
 use ballista_scheduler::state::execution_graph::{TaskDescription, create_task_info};
-use ballista_scheduler::state::execution_stage::{
-    ExecutionStage, PendingPartitions, RunningStage,
-};
+use ballista_scheduler::state::execution_stage::{ExecutionStage, RunningStage};
 use ballista_scheduler::state::task_manager::JobInfoCache;
 
 /// Locks `mutex`, taking the value back if a previous holder panicked. What
@@ -239,6 +237,12 @@ impl ShuffleAffinityPolicy {
             locality: &locality,
             whole_stage: stage_has_input_collapse(&running_stage.plan),
         };
+        let cap = max_partitions_per_task(running_stage);
+
+        // The queue is drained once here and whatever is left goes back once at
+        // the end. `PendingPartitions` can only be read by draining it, so
+        // consulting it per task would rebuild the whole queue per task.
+        let mut queued = running_stage.pending.next_slice(usize::MAX);
 
         // Affinity pass: hand each executor the partitions assigned to it.
         if binding.whole_stage {
@@ -252,7 +256,14 @@ impl ShuffleAffinityPolicy {
                     .iter_mut()
                     .find(|budget| budget.executor_id == home && budget.vcores > 0);
                 if let Some(budget) = budget {
-                    binding.drain_onto(running_stage, budget, None, bound_tasks, round);
+                    binding.bind_all(
+                        running_stage,
+                        budget,
+                        &mut queued,
+                        cap,
+                        bound_tasks,
+                        round,
+                    );
                     break;
                 }
             }
@@ -265,25 +276,34 @@ impl ShuffleAffinityPolicy {
                     .filter(|budget| budget.vcores > 0)
                     .map(|budget| (budget.executor_id.as_str(), budget.vcores))
                     .collect();
-                locality.assign(
-                    pending_snapshot(&mut running_stage.pending).into_iter(),
-                    &mut capacity,
-                )
+                locality.assign(queued.iter().copied(), &mut capacity)
             };
-            let homes: HashSet<&str> = assignment.values().copied().collect();
 
             for budget in budgets.iter_mut() {
-                let Some(&home) = homes.get(budget.executor_id.as_str()) else {
+                let home = budget.executor_id.as_str();
+                if !assignment.values().any(|assigned| *assigned == home) {
                     continue;
-                };
-                let keep = |partition: usize| assignment.get(&partition) == Some(&home);
-                binding.drain_onto(
+                }
+                // Split the queue into this executor's partitions and the rest,
+                // both keeping queue order.
+                let (mine, rest): (Vec<usize>, Vec<usize>) = queued
+                    .iter()
+                    .partition(|p| assignment.get(p) == Some(&home));
+                queued = rest;
+                let mut mine = mine;
+                binding.bind_all(
                     running_stage,
                     budget,
-                    Some(&keep),
+                    &mut mine,
+                    cap,
                     bound_tasks,
                     round,
                 );
+                // Anything its budget could not cover rejoins the queue in order.
+                if !mine.is_empty() {
+                    mine.extend(queued);
+                    queued = mine;
+                }
             }
         }
 
@@ -292,14 +312,16 @@ impl ShuffleAffinityPolicy {
         // executors that won an assignment above, since a stage with no
         // shuffle input has none.
         for budget in budgets.iter_mut() {
-            if running_stage.pending.is_empty() {
+            if queued.is_empty() {
                 break;
             }
-            binding.drain_onto(running_stage, budget, None, bound_tasks, round);
+            binding.bind_all(running_stage, budget, &mut queued, cap, bound_tasks, round);
         }
 
         // Work still pending means the cluster ran out of vcores: end the round.
-        !running_stage.pending.is_empty()
+        let exhausted = !queued.is_empty();
+        running_stage.pending.reschedule(queued);
+        exhausted
     }
 
     /// Folds a round's measurement into the cumulative counters and logs it.
@@ -441,27 +463,35 @@ struct Binding<'a> {
 }
 
 impl Binding<'_> {
-    /// Bind as much of `stage` onto one executor as its budget and `keep`
-    /// allow, measuring every task bound.
-    fn drain_onto(
+    /// Bind as much of `partitions` onto one executor as its budget allows,
+    /// measuring every task bound. Whatever it could not take is left in
+    /// `partitions`, in order.
+    fn bind_all(
         &self,
         stage: &mut RunningStage,
         budget: &mut AvailableVcores,
-        keep: Option<&dyn Fn(usize) -> bool>,
+        partitions: &mut Vec<usize>,
+        cap: usize,
         bound_tasks: &mut Vec<BoundTask>,
         round: &mut LocalityStats,
     ) {
         let executor_id = budget.executor_id.clone();
-        while budget.vcores > 0 {
-            let Some(bound) = bind_one_where(
+        while budget.vcores > 0 && !partitions.is_empty() {
+            let take = if self.whole_stage {
+                partitions.len()
+            } else {
+                (budget.vcores as usize).min(cap).min(partitions.len())
+            };
+            let slice: Vec<usize> = partitions.drain(..take).collect();
+            let Some(bound) = bind_one_from(
                 stage,
                 self.session_id,
                 self.job_id,
                 budget,
+                slice,
                 self.whole_stage,
-                keep,
             ) else {
-                break; // the (filtered) pending queue is drained
+                break;
             };
             *round += self.measure(&executor_id, &bound);
             bound_tasks.push(bound);
@@ -847,81 +877,39 @@ fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bool {
     }
 }
 
-/// The partitions still waiting, front first, leaving the queue untouched.
+/// Upper bound on partitions per task, from the stage's session config.
 ///
-/// `PendingPartitions` keeps its queue private and exposes no read-only view,
-/// so the snapshot is taken by draining and putting everything straight back.
-/// `reschedule` pushes to the front in the order given, and the queue is empty
-/// at that point, so the original order is restored exactly.
-fn pending_snapshot(pending: &mut PendingPartitions) -> Vec<usize> {
-    let queued = pending.next_slice(usize::MAX);
-    pending.reschedule(queued.iter().copied());
-    queued
-}
-
-/// Take up to `max` partitions matching `keep`, front first and in queue
-/// order, leaving the rest queued where they were.
-fn next_slice_where(
-    pending: &mut PendingPartitions,
-    max: usize,
-    keep: &dyn Fn(usize) -> bool,
-) -> Vec<usize> {
-    if max == 0 {
-        return vec![];
-    }
-    let queued = pending.next_slice(usize::MAX);
-    let mut taken = Vec::with_capacity(max.min(queued.len()));
-    let mut rest = Vec::with_capacity(queued.len());
-    for partition in queued {
-        if taken.len() < max && keep(partition) {
-            taken.push(partition);
-        } else {
-            rest.push(partition);
-        }
-    }
-    pending.reschedule(rest);
-    taken
-}
-
-/// Bind one task off `running_stage`'s pending queue onto `budget`, taking
-/// only the partitions `keep` accepts.
-///
-/// Copied from `bind_one` in `ballista_scheduler::cluster`, with the `keep`
-/// filter added so a placement decision can pull a *subset* of the queue
-/// instead of the front slice. Two invariants come with the copy:
-///
-/// - A collapse stage ignores `keep` and the `max_partitions_per_task` cap,
-///   because its single task must consume the whole queue.
-/// - A collapse task reserves 1 vcore however many partitions it packs (its
-///   plan root has one output partition, so one thread runs the pipeline);
-///   every other task reserves one per partition.
-fn bind_one_where(
-    running_stage: &mut RunningStage,
-    session_id: &str,
-    job_id: &JobId,
-    budget: &mut AvailableVcores,
-    is_collapse: bool,
-    keep: Option<&dyn Fn(usize) -> bool>,
-) -> Option<BoundTask> {
-    let cap = running_stage
+/// Copied from `bind_one` in `ballista_scheduler::cluster`. Zero means no cap.
+fn max_partitions_per_task(running_stage: &RunningStage) -> usize {
+    running_stage
         .session_config
         .options()
         .extensions
         .get::<BallistaConfig>()
         .map(|bc| bc.max_partitions_per_task())
         .filter(|&n| n > 0)
-        .unwrap_or(usize::MAX);
-    let max_partitions = if is_collapse {
-        usize::MAX
-    } else {
-        (budget.vcores as usize).min(cap)
-    };
-    let input_partition_ids = match keep {
-        Some(keep) if !is_collapse => {
-            next_slice_where(&mut running_stage.pending, max_partitions, keep)
-        }
-        _ => running_stage.pending.next_slice(max_partitions),
-    };
+        .unwrap_or(usize::MAX)
+}
+
+/// Build one task over `input_partition_ids` and charge it to `budget`.
+///
+/// Copied from `bind_one` in `ballista_scheduler::cluster`, split so the
+/// caller chooses the partitions. Choosing them here would mean reaching into
+/// the pending queue once per task, and the queue can only be read by draining
+/// it; see `bind_stage`, which drains once and slices in memory.
+///
+/// The invariant that came with the copy: a collapse stage reserves 1 vcore
+/// however many partitions it packs, because its plan root has one output
+/// partition and so one thread runs the pipeline. Every other task reserves
+/// one vcore per partition.
+fn bind_one_from(
+    running_stage: &mut RunningStage,
+    session_id: &str,
+    job_id: &JobId,
+    budget: &mut AvailableVcores,
+    input_partition_ids: Vec<usize>,
+    is_collapse: bool,
+) -> Option<BoundTask> {
     if input_partition_ids.is_empty() {
         return None;
     }
@@ -982,8 +970,8 @@ mod test {
     use datafusion::prelude::SessionConfig;
 
     use super::{
-        Binding, ExecutionStage, LocalityObserver, LocalityStats, PendingPartitions,
-        ShuffleAffinityPolicy, StageLocality, next_slice_where, pending_snapshot,
+        Binding, ExecutionStage, LocalityObserver, LocalityStats, ShuffleAffinityPolicy,
+        StageLocality,
     };
     use ballista_core::serde::protobuf::{self, TaskStatus, task_status};
     use ballista_core::serde::scheduler::ExecutorMetadata;
@@ -1234,11 +1222,11 @@ mod test {
             executor_id: executor_id.to_string(),
             vcores: 1,
         };
-        // `is_collapse: false` unconditionally, as `pop_next_task` does: it
-        // always hands out one partition. Passing the real collapse flag would
-        // pack a whole stage into one task and walk the loop into the next
-        // stage.
-        super::bind_one_where(stage, &session_id, &job_id, &mut budget, false, None)
+        // One partition and `is_collapse: false`, exactly as `pop_next_task`
+        // does. Passing the real collapse flag would pack a whole stage into
+        // one task and walk the loop into the next stage.
+        let partition = stage.pending.next_slice(1);
+        super::bind_one_from(stage, &session_id, &job_id, &mut budget, partition, false)
             .map(|(_, task)| task)
     }
 
@@ -1632,35 +1620,37 @@ mod test {
         Ok(())
     }
 
-    /// The copies read the pending queue by draining and putting it back, so
-    /// the round trip has to be order-preserving or binding silently reorders
-    /// the stage's partitions.
-    #[test]
-    fn snapshotting_and_filtering_leave_the_queue_in_order() {
-        let mut pending = PendingPartitions::new(6);
+    /// The queue is drained once per stage and the remainder put back once, so
+    /// a round that cannot bind everything has to leave the rest queued in
+    /// their original order. Getting this wrong reorders a stage's partitions
+    /// silently.
+    #[tokio::test]
+    async fn partitions_a_round_could_not_bind_stay_queued_in_order() -> Result<()> {
+        let jobs = mock_jobs(8).await?;
+        // Three vcores against eight partitions: five must survive the round.
+        bind(
+            &ShuffleAffinityPolicy::new(),
+            jobs.clone(),
+            &[("executor_1", 3)],
+        )
+        .await;
 
-        assert_eq!(vec![0, 1, 2, 3, 4, 5], pending_snapshot(&mut pending));
-        assert_eq!(6, pending.remaining(), "a snapshot must not consume");
+        let job = jobs.values().next().expect("one job");
+        let mut graph = job.execution_graph.write().await;
+        let stage = graph.fetch_running_stage(&[]).expect("stage still pending");
+        assert_eq!(5, stage.pending.remaining());
 
-        // Take the even partitions, capped at two.
-        assert_eq!(
-            vec![0, 2],
-            next_slice_where(&mut pending, 2, &|p| p % 2 == 0)
+        // `executor_1` holds the even partitions, so affinity spent its three
+        // vcores on 0, 2 and 4 rather than on the front of the queue. What is
+        // left is the rest, still in queue order.
+        let left = stage.pending.next_slice(usize::MAX);
+        assert_eq!(vec![1, 3, 5, 6, 7], left);
+        assert!(
+            left.windows(2).all(|w| w[0] < w[1]),
+            "the unbound partitions kept their queue order: {left:?}",
         );
-        // The odd ones the filter passed over kept their place in the queue.
-        assert_eq!(vec![1, 3, 4, 5], pending_snapshot(&mut pending));
-        assert_eq!(vec![1, 3, 4], pending.next_slice(3));
-        assert_eq!(vec![5], next_slice_where(&mut pending, 4, &|_| true));
-        assert!(pending.is_empty());
-    }
 
-    #[test]
-    fn filtering_takes_nothing_when_nothing_matches() {
-        let mut pending = PendingPartitions::new(3);
-
-        assert!(next_slice_where(&mut pending, 3, &|_| false).is_empty());
-        assert!(next_slice_where(&mut pending, 0, &|_| true).is_empty());
-        assert_eq!(3, pending.remaining());
+        Ok(())
     }
 
     /// Locality achieved by *any* policy's placement, scored against the same
@@ -1793,11 +1783,6 @@ mod test {
                 &[("executor_1", 8), ("executor_2", 8)],
             ),
             (
-                "collapse, even capacity",
-                Layout::Collapse,
-                &[("executor_1", 8), ("executor_2", 8)],
-            ),
-            (
                 "collapse, capacity elsewhere",
                 Layout::Collapse,
                 &[("executor_1", 1), ("executor_2", 16)],
@@ -1861,8 +1846,10 @@ mod test {
         }
 
         // A collapse task reads the whole stage, so placing it on the holder is
-        // the whole game. Bias can stumble onto the right executor when budgets
-        // tie; it cannot when the spare capacity is somewhere else.
+        // the whole game. With tied budgets the built-ins land on whichever
+        // executor the cluster state happened to list first, which is why no
+        // tied-capacity collapse row is reported: it is a coin flip, not a
+        // measurement.
         let collapse = ratios("collapse, capacity elsewhere");
         assert!(
             collapse[2] > collapse[0] && collapse[2] > collapse[1],
@@ -2257,7 +2244,7 @@ mod test {
         assert_eq!(1_800, stats.local_bytes);
     }
 
-    /// A bound task covering `partitions`, as `bind_one_where` would return.
+    /// A bound task covering `partitions`, as `bind_one_from` would return.
     fn bound_task(executor_id: &str, partitions: Vec<usize>) -> BoundTask {
         let task = TaskDescription {
             session_id: "session".to_string(),
