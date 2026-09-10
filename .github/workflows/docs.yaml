@@ -25,6 +25,10 @@ on:
       - .asf.yaml
       - .github/workflows/docs.yaml
       - docs/**
+      # The user guide pulls example sources in with `literalinclude`, so a
+      # change to one of these files changes the rendered site even though
+      # nothing under docs/ was touched.
+      - examples/examples/**
 
 name: Deploy DataFusion Ballista site
 
