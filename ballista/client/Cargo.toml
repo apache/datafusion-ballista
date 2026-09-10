@@ -35,7 +35,9 @@ ballista-executor = { path = "../executor", version = "54.0.0", optional = true,
 ] }
 ballista-scheduler = { path = "../scheduler", version = "54.0.0", optional = true, default-features = false }
 datafusion = { workspace = true }
+datafusion-proto = { workspace = true, optional = true }
 log = { workspace = true }
+prost = { workspace = true, optional = true }
 
 tokio = { workspace = true }
 url = { workspace = true }
@@ -53,6 +55,10 @@ uuid = { workspace = true }
 
 [features]
 default = ["standalone"]
+contrib-hudi = [
+    "dep:datafusion-proto",
+    "dep:prost",
+]
 standalone = ["ballista-executor", "ballista-scheduler"]
 # tests which need change of RUST_MIN_STACK in order for 
 # tests to run. 
