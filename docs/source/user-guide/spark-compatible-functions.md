@@ -38,10 +38,11 @@ cargo build -p ballista-scheduler --features spark-compat --release
 
 # Build executor only
 cargo build -p ballista-executor --features spark-compat --release
-
-# Build CLI with spark-compat
-cargo build -p ballista-cli --features spark-compat --release
 ```
+
+`spark-compat` exists on `ballista-core`, `ballista-scheduler`, and
+`ballista-executor` only. `ballista-cli` has no such feature; it picks up the
+Spark functions from the cluster it connects to.
 
 For more installation options, see [Installing with Cargo](deployment/cargo-install.md).
 

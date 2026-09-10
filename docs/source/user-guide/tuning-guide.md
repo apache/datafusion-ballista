@@ -81,9 +81,14 @@ and hash join to work across partitions within a task.
 
 Set it to `1` to get one task per partition, or to any positive value to cap the slice size.
 
-| key                                        | type   | default | description                                                                                                                                                                         |
-| ------------------------------------------ | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ballista.scheduler.max_partitions_per_task | UInt64 | 0       | Upper bound on the number of input partitions packed into a single task. `0` means unbounded, filling each task up to the executor's free vcores. `1` means one task per partition. |
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.scheduler.max_partitions_per_task -->
+
+<!-- prettier-ignore -->
+| key                                        | type   | default | description                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------------ | ------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ballista.scheduler.max_partitions_per_task | UInt64 | 0       | Upper bound on the number of input partitions packed into a single task's `partition_slice`. `0` (default) means unbounded — the scheduler fills each task up to the executor's free vcore count. `1` means one task per input partition. Does not apply to collapse stages, which must pack their full pending queue into a single task for correctness. |
+
+<!-- END GENERATED CONFIG REFERENCE -->
 
 Stages whose plan collapses all input into a single partition (for example under a `CoalescePartitionsExec` or
 `SortPreservingMergeExec`) ignore this cap and always pack their full pending queue into one task, since splitting
@@ -91,7 +96,7 @@ them would produce partial results that downstream stages cannot merge.
 
 Each task's plan is rewritten before dispatch so that its scan sees only the file groups belonging to its own slice.
 
-## Configuring Executor Concurrency Levels
+## Configuring Executor vcores
 
 Each executor instance advertises a fixed number of virtual cores (vcores) to the scheduler. This is specified by
 passing a `--vcores` command-line parameter. The default setting is to use all available CPU cores.
@@ -224,19 +229,24 @@ to `0` removes the budget entirely and is safe only with a bounded memory pool
 
 The following session-level keys tune its behavior:
 
-| key                                                     | type   | default   | description                                                                                                                                                                                                                                                                                |
-| ------------------------------------------------------- | ------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| ballista.shuffle.sort_based.batch_size                  | UInt64 | 8192      | Target row count when coalescing buffered batches before they are written or spilled.                                                                                                                                                                                                      |
-| ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64 | 268435456 | Per-task buffered-bytes budget at which the writer spills to disk (256 MiB default). Counted independently of the runtime memory pool. Set to `0` to spill only under memory pressure — safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory. |
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.shuffle.sort_based. -->
 
-## Adaptive Query Execution (Experimental)
+<!-- prettier-ignore -->
+| key                                                     | type   | default   | description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------- | ------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ballista.shuffle.sort_based.batch_size                  | UInt64 | 8192      | Target batch size in rows for coalescing small batches in sort shuffle                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64 | 268435456 | Per-task buffered-bytes budget at which the sort shuffle writer spills its in-memory batches to disk. Counted independently of the runtime memory pool, so spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle memory per executor is approximately vcores * this value. Set to 0 to disable the per-task budget and rely solely on runtime memory-pool pressure to trigger spilling; this is safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory. |
 
-Ballista has experimental support for adaptive query execution (AQE), where the
-scheduler re-runs the DataFusion physical optimizer between query stages. This
-lets the planner make decisions using statistics collected from completed
-stages rather than relying solely on pre-execution estimates.
+<!-- END GENERATED CONFIG REFERENCE -->
 
-AQE is enabled by default. To fall back to the static distributed planner, set
+## Adaptive Query Execution
+
+Ballista runs adaptive query execution (AQE) by default: the scheduler re-runs
+the DataFusion physical optimizer between query stages. This lets the planner
+make decisions using statistics collected from completed stages rather than
+relying solely on pre-execution estimates.
+
+To fall back to the static distributed planner, set
 `ballista.planner.adaptive.enabled` to `false` on your `SessionConfig`:
 
 ```rust
@@ -246,18 +256,23 @@ let session_config = SessionConfig::new_with_ballista()
 
 ### Configuration
 
-| key                                               | type    | default   | description                                                                                                                                                                                                                                    |
-| ------------------------------------------------- | ------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ballista.planner.adaptive.enabled                 | Boolean | true      | Enables the adaptive planner. Set to `false` to use the static distributed planner.                                                                                                                                                            |
-| ballista.optimizer.broadcast_join_threshold_bytes | UInt64  | 134217728 | Byte-size threshold below which a hash join's smaller side is broadcast (`CollectLeft`). Also caps null-aware anti joins with known build sizes because they run in one task. Set to 0 to disable broadcasts and reject null-aware anti joins. |
-| ballista.optimizer.broadcast_join_threshold_rows  | UInt64  | 1000000   | Row-count fallback threshold used when byte-size statistics are unavailable. Applies to AQE. Set to 0 to disable promotion via the row-count path.                                                                                             |
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.planner.adaptive.enabled,ballista.optimizer.broadcast_join_threshold_ -->
+
+<!-- prettier-ignore -->
+| key                                               | type    | default   | description                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------- | ------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ballista.optimizer.broadcast_join_threshold_bytes | UInt64  | 134217728 | Byte-size threshold below which a hash join's smaller side is promoted to CollectLeft and lowered via the broadcast pattern. Governs broadcast selection under both the static distributed planner and adaptive query planning (AQE). It also caps null-aware anti joins with a known build size because they require single-task CollectLeft execution. Set to 0 to disable promotion and reject null-aware anti joins. |
+| ballista.optimizer.broadcast_join_threshold_rows  | UInt64  | 1000000   | Row-count threshold below which a hash join's smaller side is promoted to CollectLeft and lowered via the broadcast pattern, used as a fallback when byte-size statistics are unavailable. Applies to adaptive query planning (AQE). Set to 0 to disable promotion via the row-count path.                                                                                                                               |
+| ballista.planner.adaptive.enabled                 | Boolean | true      | Enables Adaptive Query Planning: joins and partition counts are chosen from measured runtime statistics instead of planning-time estimates. Set to false to use the static distributed planner.                                                                                                                                                                                                                          |
+
+<!-- END GENERATED CONFIG REFERENCE -->
 
 ### What AQE does today
 
 When AQE is enabled, the scheduler builds the stage DAG incrementally. As each
 shuffle stage completes, the planner re-optimizes the remaining plan and emits
-the next set of runnable stages. Two adaptive optimizations are currently
-implemented:
+the next set of runnable stages. The following adaptive optimizations are
+currently implemented:
 
 - **Join reordering.** Uses runtime row counts from completed stages so the
   smaller side drives the join.
@@ -274,6 +289,15 @@ implemented:
 - **Empty stage elimination.** When a completed stage produces zero rows, its
   downstream exchange is replaced with an empty execution node, and emptiness
   is propagated up the plan so downstream stages are skipped entirely.
+- **Shuffle-partition coalescing.** Adjacent small output partitions of a
+  completed stage are merged so the next stage runs fewer, larger tasks.
+  Disabled by default; enable with `ballista.planner.coalesce.enabled` and tune
+  with the `ballista.planner.coalesce.*` keys documented in
+  [Configuration](configs.md).
+- **Parallel windows.** Bounded `RANGE`-frame windows are rewritten into a
+  distributed range shuffle so `BoundedWindowAggExec` is not a serial
+  bottleneck. Disabled by default; enable with
+  `ballista.planner.parallel_window.enabled`.
 
 ### Current limitations
 
@@ -281,13 +305,13 @@ The implementation covers the happy path only. The following are known to be
 missing or incomplete:
 
 - Executor failure handling on the AQE path ([#1986](https://github.com/apache/datafusion-ballista/issues/1986))
-- Dynamic coalescing of shuffle partitions ([#1987](https://github.com/apache/datafusion-ballista/issues/1987))
 - Switching from hash join to sort-merge join based on runtime statistics ([#1988](https://github.com/apache/datafusion-ballista/issues/1988))
 - Switching from streaming aggregation to hash aggregation based on runtime statistics ([#1989](https://github.com/apache/datafusion-ballista/issues/1989))
 
-Until these gaps are closed, AQE should be used for testing and experimentation
-rather than production workloads. See [issue #1359](https://github.com/apache/datafusion-ballista/issues/1359)
-for the tracking epic and ongoing work.
+Set `ballista.planner.adaptive.enabled` to `false` to fall back to the static
+distributed planner if you hit one of these. See
+[issue #1359](https://github.com/apache/datafusion-ballista/issues/1359) for the
+tracking epic and ongoing work.
 
 ## Push-based vs Pull-based Task Scheduling
 
@@ -297,7 +321,7 @@ which is the best for your use case.
 Pull-based scheduling works in a similar way to Apache Spark and push-based scheduling can result in lower latency.
 
 The scheduling policy can be specified in the `--scheduler-policy` parameter when starting the scheduler and executor
-processes. The default is `pull-staged`.
+processes. Both processes must be configured with the same policy. The default is `push-staged`.
 
 ## Viewing Query Plans and Metrics
 

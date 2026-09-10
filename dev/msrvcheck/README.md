@@ -17,7 +17,7 @@
   under the License.
 -->
 
-This directory contains a tool that ensures there MSRV is consistent with upstream
+This directory contains a tool that ensures the MSRV is consistent with upstream
 datafusion dependencies.
 
 [issue 1271]: https://github.com/apache/datafusion-ballista/issues/1271#issuecomment-3094456313

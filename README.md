@@ -22,7 +22,7 @@
 [![Apache licensed][license-badge]][license-url]
 
 [license-badge]: https://img.shields.io/badge/license-Apache%20v2-blue.svg
-[license-url]: https://github.com/apache/datafusion-comet/blob/main/LICENSE.txt
+[license-url]: https://github.com/apache/datafusion-ballista/blob/main/LICENSE.txt
 
 <img src="docs/source/_static/images/ballista-logo.png" width="512" alt="logo"/>
 
@@ -94,7 +94,7 @@ For documentation or more examples, please refer to the [Ballista User Guide][us
 Ballista serves several distinct audiences:
 
 - **DataFusion users going multi-node** — you already use [Apache DataFusion](https://github.com/apache/datafusion) on a single machine and have outgrown it. Ballista runs the same SQL and DataFrame workloads across a cluster with minimal code changes and the same results.
-- **Spark users wanting the same execution model** — you run Spark SQL or batch jobs and want a lighter, Rust-native alternative without relearning a new paradigm. Ballista keeps the familiar model: plans split into stages at shuffle boundaries, one task per partition, executors with vcores, and adaptive query execution (AQE).
+- **Spark users wanting the same execution model** — you run Spark SQL or batch jobs and want a lighter, Rust-native alternative without relearning a new paradigm. Ballista keeps the familiar model: plans split into stages at shuffle boundaries, tasks over partitions, executors with vcores, and adaptive query execution (AQE).
 - **Library users building a specialized engine** — you are building a bespoke distributed query engine and want reusable scheduler, executor, and plan-serialization building blocks with extension points, instead of writing distributed execution from scratch.
 
 These audiences are documented in more detail, along with the guarantees each relies on, in the [User Personas](docs/source/contributors-guide/user-personas.md) guide.
@@ -149,16 +149,16 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 
 ### ballista-scheduler
 
-| Feature                    | Default | Description                                      |
-| -------------------------- | ------- | ------------------------------------------------ |
-| `build-binary`             | Yes     | Builds the scheduler binary with CLI and logging |
-| `substrait`                | No      | Enables Substrait plan support                   |
-| `prometheus-metrics`       | No      | Enables Prometheus metrics collection            |
-| `graphviz-support`         | No      | Enables execution graph visualization            |
-| `spark-compat`             | No      | Enables Spark compatibility mode                 |
-| `keda-scaler`              | No      | Kubernetes Event Driven Autoscaling integration  |
-| `rest-api`                 | No      | Enables REST API endpoints                       |
-| `disable-stage-plan-cache` | No      | Disables caching of stage execution plans        |
+| Feature                    | Default | Description                                       |
+| -------------------------- | ------- | ------------------------------------------------- |
+| `build-binary`             | Yes     | Builds the scheduler binary with CLI and logging  |
+| `substrait`                | No      | Enables Substrait plan support                    |
+| `prometheus-metrics`       | No      | Enables Prometheus metrics collection             |
+| `graphviz-support`         | No      | Enables execution graph visualization             |
+| `spark-compat`             | No      | Enables Spark compatibility mode                  |
+| `keda-scaler`              | No      | Kubernetes Event Driven Autoscaling integration   |
+| `rest-api`                 | Yes     | Enables REST API endpoints and the history server |
+| `disable-stage-plan-cache` | No      | Disables caching of stage execution plans         |
 
 ### ballista-executor
 
@@ -171,9 +171,11 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 
 ### ballista-cli
 
-| Feature | Default | Description                                        |
-| ------- | ------- | -------------------------------------------------- |
-| `tui`   | Yes     | Enables a REST client with Terminal User Interface |
+| Feature | Default | Description                                                         |
+| ------- | ------- | ------------------------------------------------------------------- |
+| `cli`   | Yes     | Builds the `ballista-cli` SQL shell binary                          |
+| `tui`   | Yes     | Enables a REST client with Terminal User Interface                  |
+| `web`   | No      | Builds the WebAssembly Web TUI (see the Ballista CLI documentation) |
 
 ![TUI Jobs table](./docs/source/user-guide/screenshots/tui-jobs-table.png)
 
@@ -202,10 +204,10 @@ information on supported SQL.
 
 The following organizations use Ballista. To add yours, open a pull request.
 
-| Organization                                                                                                                   |                                                               |
-| ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| <a href="https://spice.ai"><img src="docs/source/_static/images/adopters/spiceai.png" height="36" alt="Spice AI"/></a>         | [Spice AI](https://spice.ai/blog/apache-ballista-at-spice-ai) |
-| <a href="https://coralogix.com"><img src="docs/source/_static/images/adopters/coralogix.png" height="36" alt="Coralogix"/></a> | [Coralogix](https://coralogix.com/)                           |
+| Organization                       | Reference                                                                        |
+| ---------------------------------- | -------------------------------------------------------------------------------- |
+| [Spice AI](https://spice.ai)       | [Apache Ballista at Spice AI](https://spice.ai/blog/apache-ballista-at-spice-ai) |
+| [Coralogix](https://coralogix.com) | —                                                                                |
 
 ## Contribution Guide
 

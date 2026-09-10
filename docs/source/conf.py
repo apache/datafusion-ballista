@@ -59,6 +59,11 @@ source_suffix = {
     '.md': 'markdown',
 }
 
+# Generate anchors for headings up to h4 so the GitHub-style `file.md#heading`
+# links used throughout the Markdown docs resolve in the rendered site too.
+# Without this MyST emits no heading ids and every such link silently 404s.
+myst_heading_anchors = 4
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 

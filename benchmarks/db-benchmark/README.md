@@ -21,7 +21,7 @@
 
 ## Directions
 
-Run the following from root `arrow-datafusion` directory
+Run the following from the root of the `datafusion-ballista` repository
 
 ```bash
 $ docker buildx build -t db-benchmark -f benchmarks/db-benchmark/db-benchmark.Dockerfile .

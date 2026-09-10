@@ -32,7 +32,7 @@ new configuration extensions, object stores, logical and physical codecs ...
 
 Ballista executor can be configured using `ExecutorProcessConfig` which supports overriding `function registry`,`runtime producer`, `config producer`, `logical codec`, `physical codec`.
 
-Ballista scheduler can be tunned using `SchedulerConfig` which supports overriding `config producer`, `session builder`, `logical codec`, `physical codec`
+Ballista scheduler can be tuned using `SchedulerConfig` which supports overriding `config producer`, `session builder`, `logical codec`, `physical codec`
 
 ## Example: Custom Object Store Integration
 
@@ -40,13 +40,16 @@ Extending basic building blocks will be demonstrated by integrating S3 object st
 
 For this specific task `config producer`, `runtime producer` and `session builder` have to be provided, and client, scheduler and executor need to be configured.
 
+These three functions ship in `ballista_core::object_store`, so the snippets below are the
+shipped implementations rather than something you have to write from scratch.
+
 ```rust
 /// Custom [SessionConfig] constructor method
 ///
 /// This method registers config extension [S3Options]
 /// which is used to configure [ObjectStore] with ACCESS and
 /// SECRET key
-pub fn custom_session_config_with_s3_options() -> SessionConfig {
+pub fn session_config_with_s3_support() -> SessionConfig {
     SessionConfig::new_with_ballista()
         .with_information_schema(true)
         .with_option_extension(S3Options::default())
@@ -59,7 +62,7 @@ pub fn custom_session_config_with_s3_options() -> SessionConfig {
 /// It will register [CustomObjectStoreRegistry] which will
 /// use configuration extension [S3Options] to configure
 /// and created [ObjectStore]s
-pub fn custom_runtime_env_with_s3_support(
+pub fn runtime_env_with_s3_support(
     session_config: &SessionConfig,
 ) -> Result<Arc<RuntimeEnv>> {
     let s3options = session_config
@@ -70,11 +73,13 @@ pub fn custom_runtime_env_with_s3_support(
             "S3 Options not set".to_string(),
         ))?;
 
-    let config = RuntimeConfig::new().with_object_store_registry(Arc::new(
-        CustomObjectStoreRegistry::new(s3options.clone()),
-    ));
+    let runtime_env = RuntimeEnvBuilder::new()
+        .with_object_store_registry(Arc::new(CustomObjectStoreRegistry::new(
+            s3options.clone(),
+        )))
+        .build()?;
 
-    Ok(Arc::new(RuntimeEnv::try_new(config)?))
+    Ok(Arc::new(runtime_env))
 }
 ```
 
@@ -83,91 +88,91 @@ pub fn custom_runtime_env_with_s3_support(
 ///
 /// It will configure [SessionState] with provided [SessionConfig],
 /// and [RuntimeEnv].
-pub fn custom_session_state_with_s3_support(
+pub fn session_state_with_s3_support(
     session_config: SessionConfig,
-) -> SessionState {
-    let runtime_env = custom_runtime_env_with_s3_support(&session_config).unwrap();
+) -> Result<SessionState> {
+    let runtime_env = runtime_env_with_s3_support(&session_config)?;
 
-    SessionStateBuilder::new()
+    Ok(SessionStateBuilder::new()
         .with_runtime_env(runtime_env)
         .with_config(session_config)
-        .build()
+        .with_default_features()
+        .build())
 }
 ```
 
-`S3Options` & `CustomObjectStoreRegistry` implementation can be found in examples sub-project.
+`S3Options` & `CustomObjectStoreRegistry` are implemented in `ballista_core::object_store`. Runnable
+versions of the scheduler, executor, and client wiring below are in
+[`examples/examples/`](https://github.com/apache/datafusion-ballista/tree/main/examples/examples)
+as `custom-scheduler.rs`, `custom-executor.rs`, and `custom-client.rs`.
 
 ### Configuring Scheduler
 
 ```rust
 #[tokio::main]
-async fn main() -> Result<()> {
-  // parse CLI options (default options which Ballista scheduler exposes)
-  let (opt, _remaining_args) =
-      Config::including_optional_config_files(&["/etc/ballista/scheduler.toml"])
-          .unwrap_or_exit();
+async fn main() -> ballista_core::error::Result<()> {
+    let config: SchedulerConfig = SchedulerConfig {
+        // overriding default config producer with custom producer
+        // which has required S3 configuration options
+        override_config_producer: Some(Arc::new(session_config_with_s3_support)),
+        // overriding default session builder, which has custom session configuration
+        // runtime environment and session state.
+        override_session_builder: Some(Arc::new(session_state_with_s3_support)),
+        ..Default::default()
+    };
 
-  let addr = format!("{}:{}", opt.bind_host, opt.bind_port);
-  let addr = addr.parse()?;
+    let addr = format!("{}:{}", config.bind_host, config.bind_port);
+    let addr = addr
+        .parse()
+        .map_err(|e: AddrParseError| BallistaError::Configuration(e.to_string()))?;
 
-  // converting CLI options to SchedulerConfig
-  let mut config: SchedulerConfig = opt.try_into()?;
+    let cluster = BallistaCluster::new_from_config(&config).await?;
+    start_server(cluster, addr, Arc::new(config)).await?;
 
-  // overriding default runtime producer with custom producer
-  // which knows how to create S3 connections
-  config.override_config_producer =
-      Some(Arc::new(custom_session_config_with_s3_options));
-
-  // overriding default session builder, which has custom session configuration
-  // runtime environment and session state.
-  config.override_session_builder = Some(Arc::new(|session_config: SessionConfig| {
-      custom_session_state_with_s3_support(session_config)
-  }));
-  let cluster = BallistaCluster::new_from_config(&config).await?;
-  start_server(cluster, addr, Arc::new(config)).await?;
-  Ok(())
+    Ok(())
 }
+```
+
+To keep the scheduler's own command-line interface, parse `ballista_scheduler::config::Config`
+with clap and convert it, then apply the overrides:
+
+```rust
+let opt = Config::parse();
+let mut config: SchedulerConfig = opt.try_into()?;
+config.override_config_producer = Some(Arc::new(session_config_with_s3_support));
 ```
 
 ### Configuring Executor
 
 ```rust
 #[tokio::main]
-async fn main() -> Result<()> {
-  // parse CLI options (default options which Ballista executor exposes)
-  let (opt, _remaining_args) =
-      Config::including_optional_config_files(&["/etc/ballista/executor.toml"])
-          .unwrap_or_exit();
+async fn main() -> ballista_core::error::Result<()> {
+    let config: ExecutorProcessConfig = ExecutorProcessConfig {
+        // overriding default config producer with custom producer
+        // which has required S3 configuration options
+        override_config_producer: Some(Arc::new(session_config_with_s3_support)),
+        // overriding default runtime producer with custom producer
+        // which knows how to create S3 connections
+        override_runtime_producer: Some(Arc::new(runtime_env_with_s3_support)),
+        ..Default::default()
+    };
 
-  // Converting CLI options to executor configuration
-  let mut config: ExecutorProcessConfig = opt.try_into().unwrap();
-
-  // overriding default config producer with custom producer
-  // which has required S3 configuration options
-  config.override_config_producer =
-      Some(Arc::new(custom_session_config_with_s3_options));
-
-  // overriding default runtime producer with custom producer
-  // which knows how to create S3 connections
-  config.override_runtime_producer =
-      Some(Arc::new(|session_config: &SessionConfig| {
-          custom_runtime_env_with_s3_support(session_config)
-      }));
-
-  start_executor_process(Arc::new(config)).await
-  Ok(())
+    start_executor_process(Arc::new(config)).await
 }
-
 ```
+
+As with the scheduler, `ballista_executor::executor_process::ExecutorProcessConfig` can be
+built from the executor's own clap-parsed options with `opt.try_into()` when you want to keep
+the standard command line.
 
 ### Configuring Client
 
 ```rust
 let test_data = ballista_examples::test_util::examples_test_data();
 
-// new sessions state with required custom session configuration and runtime environment
-let state =
-    custom_session_state_with_s3_support(custom_session_config_with_s3_options());
+// new session state with required custom session configuration and runtime environment
+// `state_with_s3_support()` is the shorthand for the two calls below
+let state = session_state_with_s3_support(session_config_with_s3_support())?;
 
 let ctx: SessionContext =
     SessionContext::remote_with_state("df://localhost:50050", state).await?;
@@ -193,7 +198,6 @@ ctx.sql("SET s3.endpoint = 'http://localhost:9000'")
     .await?
     .show()
     .await?;
-ctx.sql("SET s3.allow_http = true").await?.show().await?;
 
 ctx.register_parquet(
     "test",

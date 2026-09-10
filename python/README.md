@@ -62,10 +62,17 @@ df : DataFrame = ctx.sql("select * from t limit 5")
 df.show()
 ```
 
+Session and Ballista settings are set with the `cluster_config` argument:
+
+```python
+ctx = BallistaSessionContext(
+    "df://localhost:50050",
+    cluster_config={"datafusion.execution.target_partitions": "256"},
+)
+```
+
 Known limitations and inefficiencies of the current approach:
 
-- The client's `SessionConfig` is not propagated to Ballista.
-- Ballista-specific configuration cannot be set.
 - Anything requiring custom `datafusion_proto::logical_plan::LogicalExtensionCodec`.
 - No support for `UDF` as DataFusion Python does not serialise them.
 - A Ballista connection will be created for each request.
