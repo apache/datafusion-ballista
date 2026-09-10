@@ -26,16 +26,17 @@
 //! response serialize identically for the same graph state.
 
 use crate::api::dto_build::{
-    build_job_dot, graph_to_job_response, graph_to_query_stages,
+    StageMetricSlots, build_job_dot, graph_to_job_response, graph_to_query_stages,
     session_config_to_job_config, task_row_counts, task_status_to_dto,
 };
-use crate::state::execution_graph::ExecutionGraphBox;
+use crate::state::execution_graph::{ExecutionGraphBox, ExecutionStage};
 use ballista_api_types::dto::PlanFormat;
 use ballista_core::serde::protobuf::{TaskStatus, task_status};
 use ballista_history::event::{
     HistoryEvent, JobEnd, JobEndStatus, JobIndex, JobStart, TaskEnd, TaskEndMetrics,
 };
 use datafusion::physical_plan::displayable;
+use std::collections::HashMap;
 
 /// Builds the `JobStart` event for a job that has just been submitted.
 pub(crate) fn job_start_event(
@@ -63,10 +64,18 @@ pub(crate) fn job_start_event(
 /// Only terminal statuses are recorded: `Running` updates are transient
 /// in-flight reports, and a status-less update carries no outcome to record at
 /// all, so both are skipped.
+///
+/// `stages` are the job's stages, used to map each task's flat operator
+/// metrics onto its stage plan for the row counts; `None` (the job's graph is
+/// gone) records the events with zero rows rather than dropping them.
 pub(crate) fn task_end_events(
     executor_id: &str,
     statuses: &[TaskStatus],
+    stages: Option<&HashMap<usize, ExecutionStage>>,
 ) -> Vec<HistoryEvent> {
+    // A batch usually carries several tasks of the same stage; walk each
+    // stage plan once.
+    let mut slots_by_stage: HashMap<usize, Option<StageMetricSlots>> = HashMap::new();
     statuses
         .iter()
         .filter_map(|s| {
@@ -74,6 +83,13 @@ pub(crate) fn task_end_events(
                 task_status::Status::Running(_) => return None,
                 terminal => task_status_to_dto(terminal),
             };
+            let slots = slots_by_stage
+                .entry(s.stage_id as usize)
+                .or_insert_with(|| {
+                    stages
+                        .and_then(|stages| stages.get(&(s.stage_id as usize)))
+                        .map(|stage| StageMetricSlots::of(stage.plan()))
+                });
             Some(HistoryEvent::TaskEnd(TaskEnd {
                 stage_id: s.stage_id,
                 task_id: s.task_id,
@@ -82,18 +98,21 @@ pub(crate) fn task_end_events(
                 launch_time: s.launch_time,
                 start_exec_time: s.start_exec_time,
                 end_exec_time: s.end_exec_time,
-                metrics: task_end_metrics(s),
+                metrics: task_end_metrics(s, slots.as_ref()),
             }))
         })
         .collect()
 }
 
-/// Sums a task's raw operator metrics into the timeline's `TaskEndMetrics`,
+/// Reduces a task's raw operator metrics to the timeline's `TaskEndMetrics`,
 /// using the same extraction the stage-summary REST DTO performs so the
 /// timeline and stage views agree. Absent metrics yield zeros.
-fn task_end_metrics(status: &TaskStatus) -> TaskEndMetrics {
+fn task_end_metrics(
+    status: &TaskStatus,
+    slots: Option<&StageMetricSlots>,
+) -> TaskEndMetrics {
     let (input_rows, output_rows, elapsed_compute_nanos) =
-        task_row_counts(&status.metrics);
+        task_row_counts(&status.metrics, slots);
     TaskEndMetrics {
         input_rows,
         output_rows,
@@ -237,7 +256,7 @@ mod tests {
             metrics: vec![],
             status: Some(task_status::Status::Successful(SuccessfulTask::default())),
         }];
-        let events = task_end_events("exec-1", &statuses);
+        let events = task_end_events("exec-1", &statuses, None);
         assert_eq!(events.len(), 1);
         let line = serde_json::to_string(&events[0].to_record().unwrap()).unwrap();
         assert!(line.contains("\"ev\":\"TaskEnd\""));
@@ -260,7 +279,7 @@ mod tests {
             metrics: vec![],
             status: Some(task_status::Status::Running(Default::default())),
         }];
-        assert!(task_end_events("exec-1", &statuses).is_empty());
+        assert!(task_end_events("exec-1", &statuses, None).is_empty());
     }
 
     // A status update with no status at all reports no outcome, so there is
@@ -278,7 +297,7 @@ mod tests {
             metrics: vec![],
             status: None,
         }];
-        assert!(task_end_events("exec-1", &statuses).is_empty());
+        assert!(task_end_events("exec-1", &statuses, None).is_empty());
     }
 
     /// A cancelled job is recorded from a graph that has not yet been marked
