@@ -1,5 +1,3 @@
-#!/usr/bin/env bash
-#
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -16,15 +14,13 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# Ruff settings for Python outside `python/`, which keeps its own config in
+# `python/pyproject.toml`. Ruff resolves the nearest config per file, so both
+# apply when linting from the repository root.
 
-set -ex
-# Lint the whole workspace rather than an explicit crate list, so a new member
-# is covered the day it is added. Naming crates one by one had already left
-# ballista-api-types, ballista-history and ballista-chaos unlinted.
-#
-# ballista-cli is excluded here and linted separately below: its `tui` and `web`
-# features target different platforms and are not meant to be enabled together,
-# so --all-features is not meaningful for it.
-cargo clippy --all-targets --workspace --exclude ballista-cli --all-features -- -D warnings
-cargo clippy --all-targets --package ballista-cli --no-default-features --features cli,tui -- -D warnings
-cargo clippy --all-targets --package ballista-cli --no-default-features --features web -- -D warnings
+[lint.per-file-ignores]
+# Standalone benchmark scripts deliberately run code before importing: the
+# db-benchmark harness expects a banner on stdout first, and tpch.py parses
+# its arguments before importing the query engine.
+"benchmarks/db-benchmark/*.py" = ["E402"]
+"benchmarks/tpch.py" = ["E402"]

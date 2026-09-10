@@ -203,6 +203,13 @@ A release branch therefore only ever depends on published crates. Each `rev` bum
 that ports any DataFusion API changes, refreshes affected golden files, and keeps `cargo test` and
 `cargo clippy --all-targets --workspace -- -D warnings` green.
 
+`dev/update_datafusion_versions.py` rewrites the `datafusion*` entries across the workspace for you.
+It needs `tomlkit`:
+
+```shell
+uv run --no-project --with tomlkit dev/update_datafusion_versions.py 55.0.0
+```
+
 The remaining release steps are described in the
 [release process](https://github.com/apache/datafusion-ballista/blob/main/dev/release/README.md).
 

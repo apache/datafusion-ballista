@@ -94,9 +94,13 @@ jobs:
       # Update output format to enable automatic inline annotations.
       - name: Run Ruff
         run: |
+          # Linted from the repository root, not just python/: dev/, benchmarks/
+          # and docs/source/conf.py are Python too. Ruff resolves the nearest
+          # config per file, so python/ still uses python/pyproject.toml and
+          # everything else uses the root ruff.toml.
           cd python
-          uv run --no-project ruff check --output-format=github .
-          uv run --no-project ruff format --check .
+          uv run --no-project ruff check --output-format=github ..
+          uv run --no-project ruff format --check ..
 
   generate-license:
     if: github.event_name != 'pull_request'

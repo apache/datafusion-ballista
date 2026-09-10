@@ -19,7 +19,7 @@
 
 # This file is git pre-commit hook.
 #
-# Soft link it as git hook under top dir of apache arrow git repository:
+# Soft link it as a git hook from the top level of this repository:
 # $ ln -s  ../../pre-commit.sh .git/hooks/pre-commit
 #
 # This file be run directly:
@@ -63,20 +63,21 @@ echo -e "$(GREEN INFO): cargo clippy ..."
 cargo clippy
 echo -e "$(GREEN INFO): cargo clippy done"
 
-# 2. cargo fmt: format with nightly and stable.
+# 2. cargo fmt
+#
+# rust-toolchain.toml pins stable, and CI checks formatting with stable
+# (ci/scripts/rust_fmt.sh), so format with stable here too. Running nightly as
+# well used to be part of this hook, but it fails outright when no nightly
+# toolchain is installed.
 
 CHANGED_BY_CARGO_FMT=false
-echo -e "$(GREEN INFO): cargo fmt with nightly and stable ..."
+echo -e "$(GREEN INFO): cargo fmt ..."
 
-for version in nightly stable; do
-	CMD="cargo +${version} fmt"
-	${CMD} --all -q -- --check 2>/dev/null
-	if [ $? -ne 0 ]; then
-		${CMD} --all
-		echo -e "$(BYELLOW WARN): ${CMD} changed some files"
-		CHANGED_BY_CARGO_FMT=true
-	fi
-done
+if ! cargo fmt --all -q -- --check 2>/dev/null; then
+	cargo fmt --all
+	echo -e "$(BYELLOW WARN): cargo fmt changed some files"
+	CHANGED_BY_CARGO_FMT=true
+fi
 
 if ${CHANGED_BY_CARGO_FMT}; then
 	echo -e "$(RED FAIL): git commit $(RED ABORTED), please have a look and run git add/commit again"

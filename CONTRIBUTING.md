@@ -121,7 +121,6 @@ installed `prettier`, which may format differently:
 ```bash
 npx prettier@2.7.1 --write \
   '{ballista,docs}/**/*.md' \
-  '!ballista/CHANGELOG.md' \
   README.md \
   CONTRIBUTING.md
 ```

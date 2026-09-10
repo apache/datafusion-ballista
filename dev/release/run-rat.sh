@@ -31,7 +31,21 @@ RELEASE_DIR=$(cd "$(dirname "$BASH_SOURCE")"; pwd)
 
 # generate the rat report
 $RAT $1 > rat.txt
-python $RELEASE_DIR/check-rat-report.py $RELEASE_DIR/rat_exclude_files.txt rat.txt > filtered_rat.txt
+
+# python3, not python: on a host with no `python` on PATH this failed with
+# "command not found", left filtered_rat.txt empty, and then reported
+# "No unapproved licenses" because the grep below had nothing to count.
+python3 $RELEASE_DIR/check-rat-report.py $RELEASE_DIR/rat_exclude_files.txt rat.txt > filtered_rat.txt
+CHECK_STATUS=$?
+
+# 0 means everything is approved and 1 means unapproved files were found, which
+# is reported in detail below. Any other status means the check did not run, so
+# an empty filtered_rat.txt must not be read as a pass.
+if [ "${CHECK_STATUS}" -ne 0 ] && [ "${CHECK_STATUS}" -ne 1 ]; then
+  echo "check-rat-report.py did not run (exit ${CHECK_STATUS}); see rat.txt"
+  exit 1
+fi
+
 cat filtered_rat.txt
 UNAPPROVED=`cat filtered_rat.txt  | grep "NOT APPROVED" | wc -l`
 

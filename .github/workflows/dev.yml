@@ -51,10 +51,8 @@ jobs:
         run: |
           # if you encounter error, rerun the command below and commit the changes
           #
-          # ignore subproject CHANGELOG.md because they are machine generated
           npx prettier@2.7.1 --write \
             '{ballista,docs}/**/*.md' \
-            '!ballista/CHANGELOG.md' \
             README.md \
             CONTRIBUTING.md
           git diff --exit-code
