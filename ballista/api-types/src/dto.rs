@@ -95,9 +95,11 @@ pub struct TaskSummary {
     pub exec_duration: u64,
     /// Scheduler side finish time (ms since epoch)
     pub finish_time: u64,
-    /// Number of input rows
+    /// Rows the task read: rows produced by the stage plan's leaf operators
+    /// (shuffle readers, data sources) for the task's partitions.
     pub input_rows: usize,
-    /// Number of output rows
+    /// Rows the task wrote: rows produced by the stage's shuffle writer for
+    /// the task's partitions.
     pub output_rows: usize,
 }
 
@@ -123,9 +125,11 @@ pub struct QueryStageSummary {
     pub stage_id: String,
     /// Stage state, e.g. `Running`, `Successful`, `Failed`.
     pub stage_status: String,
-    /// Rows read by the stage, summed across tasks.
+    /// Rows read by the stage, summed across tasks: rows produced by the
+    /// stage plan's leaf operators (shuffle readers, data sources).
     pub input_rows: usize,
-    /// Rows produced by the stage, summed across tasks.
+    /// Rows written by the stage, summed across tasks: rows produced by the
+    /// stage's shuffle writer.
     pub output_rows: usize,
     /// Formatted wall time across the stage's tasks, if any have started.
     pub elapsed_compute: Option<String>,
