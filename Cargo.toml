@@ -71,7 +71,7 @@ object_store = "0.13.2"
 ordered-float = "5"
 pastey = "0.2.3"
 prost = "0.14"
-rstest = { version = "0.26" }
+rstest = { version = "0.27" }
 tonic = { version = "0.14" }
 tonic-build = { version = "0.14", default-features = false, features = [
     "transport",
