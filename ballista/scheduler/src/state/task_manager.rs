@@ -61,12 +61,16 @@ type ActiveJobCache = Arc<DashMap<JobId, JobInfoCache>>;
 #[async_trait::async_trait]
 pub trait TaskLauncher: Send + Sync + 'static {
     /// Launches the given tasks on the specified executor.
+    ///
+    /// `Ok` means the RPC was dispatched; the returned set holds job IDs the
+    /// executor rejected and failed individually. `Err` is only for a
+    /// transport-level failure of the whole RPC.
     async fn launch_tasks(
         &self,
         executor: &ExecutorMetadata,
         tasks: Vec<MultiTaskDefinition>,
         executor_manager: &ExecutorManager,
-    ) -> Result<()>;
+    ) -> Result<HashSet<JobId>>;
 }
 
 struct DefaultTaskLauncher {
@@ -86,7 +90,7 @@ impl TaskLauncher for DefaultTaskLauncher {
         executor: &ExecutorMetadata,
         tasks: Vec<MultiTaskDefinition>,
         executor_manager: &ExecutorManager,
-    ) -> Result<()> {
+    ) -> Result<HashSet<JobId>> {
         if log::max_level() >= log::Level::Info {
             let tasks_ids: Vec<String> = tasks
                 .iter()
@@ -104,10 +108,10 @@ impl TaskLauncher for DefaultTaskLauncher {
                 executor.id, tasks_ids
             );
         }
-        executor_manager
+        let res = executor_manager
             .launch_multi_task(&executor.id, tasks, self.scheduler_id.clone())
             .await?;
-        Ok(())
+        Ok(res)
     }
 }
 
@@ -820,7 +824,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         executor: &ExecutorMetadata,
         tasks: Vec<Vec<TaskDescription>>,
         executor_manager: &ExecutorManager,
-    ) -> Result<()> {
+    ) -> Result<HashSet<JobId>> {
         let mut multi_tasks = vec![];
         for stage_tasks in tasks {
             match self.prepare_multi_task_definition(stage_tasks) {
@@ -834,7 +838,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 .launch_tasks(executor, multi_tasks, executor_manager)
                 .await
         } else {
-            Ok(())
+            Ok(HashSet::new())
         }
     }
 

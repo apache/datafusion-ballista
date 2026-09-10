@@ -182,7 +182,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 }
                 QueryStageSchedulerEvent::TaskUpdating(executor_id, statuses) => {
                     for (job_id, group) in group_by_job(statuses) {
-                        for ev in event_log::task_end_events(executor_id, &group) {
+                        // Borrow the live graph read-only just long enough to
+                        // map each task's operator metrics onto its stage
+                        // plan; cloning the graph per status batch (as
+                        // `event_log_graph` does for the rarer job events)
+                        // would be far too costly here.
+                        let graph = self
+                            .state
+                            .task_manager
+                            .get_active_execution_graph(&JobId::new(job_id.as_str()));
+                        let guard = match &graph {
+                            Some(graph) => Some(graph.read().await),
+                            None => None,
+                        };
+                        let stages = guard.as_ref().map(|graph| graph.stages());
+                        for ev in event_log::task_end_events(executor_id, &group, stages)
+                        {
                             log.append(&job_id, ev);
                         }
                     }
