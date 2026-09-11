@@ -20,6 +20,7 @@ use datafusion::physical_plan::StatisticsArgs;
 use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::{
     catalog::memory::DataSourceExec,
+    common::JoinSide,
     common::tree_node::{Transformed, TreeNode},
     error::DataFusionError,
     physical_optimizer::PhysicalOptimizerRule,
@@ -331,10 +332,7 @@ impl PhysicalOptimizerRule for SelectJoinRule {
 
                                 Ok(Transformed::yes(exec.data))
                             }
-                            JoinSelectionAction::StageBuildSide {
-                                join,
-                                build_is_left,
-                            } => {
+                            JoinSelectionAction::StageBuildSide { join, build_side } => {
                                 // Only the build side gets an exchange. The
                                 // probe side is left as it is, so no stage is
                                 // created for it and nothing of it is shuffled
@@ -343,7 +341,16 @@ impl PhysicalOptimizerRule for SelectJoinRule {
                                     &join,
                                     config.execution.target_partitions,
                                 );
-                                let build_idx = if build_is_left { 0 } else { 1 };
+                                let build_idx = match build_side {
+                                    JoinSide::Left => 0,
+                                    JoinSide::Right => 1,
+                                    JoinSide::None => {
+                                        return Err(DataFusionError::Internal(
+                                            "StageBuildSide requires a build side"
+                                                .to_owned(),
+                                        ));
+                                    }
+                                };
 
                                 let mut children =
                                     vec![join.left.clone(), join.right.clone()];

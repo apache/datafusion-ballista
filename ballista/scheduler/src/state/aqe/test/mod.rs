@@ -30,6 +30,8 @@ mod plan_to_stages;
 /// Regression tests for range-repartition planning end-to-end
 /// through `AdaptivePlanner` (DER → routing park → filter injection).
 mod range_repartition;
+/// Multi-pass coverage for staging a join's build side before deciding the join
+mod stage_build_side;
 /// A table whose statistics are declared rather than measured
 mod stats_table;
 
@@ -46,6 +48,16 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use std::sync::Arc;
 
 pub(crate) fn mock_partitions_with_statistics() -> Vec<Vec<PartitionLocation>> {
+    mock_partitions_with_size(42, 10)
+}
+
+/// Shuffle output reporting `num_rows` rows over `num_bytes` bytes in a single
+/// partition. Tests that turn on the *value* of a measured size, rather than
+/// just its presence, pick their own figures.
+pub(crate) fn mock_partitions_with_size(
+    num_rows: u64,
+    num_bytes: u64,
+) -> Vec<Vec<PartitionLocation>> {
     let location = PartitionLocation {
         // next few properties are generic values
         map_partition_id: 0,
@@ -63,7 +75,7 @@ pub(crate) fn mock_partitions_with_statistics() -> Vec<Vec<PartitionLocation>> {
             os_info: ExecutorOperatingSystemSpecification::default(),
         },
         // next few properties are needed
-        partition_stats: PartitionStats::new(Some(42), None, Some(10)),
+        partition_stats: PartitionStats::new(Some(num_rows), None, Some(num_bytes)),
         file_id: None,
         is_sort_shuffle: false,
     };

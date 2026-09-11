@@ -224,6 +224,26 @@ pub(crate) fn sizeless_statistics(schema: &Schema, num_rows: usize) -> Statistic
     }
 }
 
+/// Statistics for a table whose size is an *estimate* rather than a
+/// measurement, as a filtered scan reports it before the filter has run.
+///
+/// This is the shape that makes staging a join's build side worthwhile: the
+/// planner falls back to `default_filter_selectivity` and produces a figure
+/// that is over the broadcast budget but carries no evidence behind it.
+pub(crate) fn estimated_statistics(
+    schema: &Schema,
+    num_rows: usize,
+    total_byte_size: usize,
+) -> Statistics {
+    use datafusion::common::{ColumnStatistics, stats::Precision};
+
+    Statistics {
+        num_rows: Precision::Inexact(num_rows),
+        total_byte_size: Precision::Inexact(total_byte_size),
+        column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
+    }
+}
+
 /// Statistics for a table of `num_rows` occupying a known `total_byte_size`.
 pub(crate) fn sized_statistics(
     schema: &Schema,
