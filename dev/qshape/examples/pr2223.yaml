@@ -1,0 +1,37 @@
+# PR #2223 — parallel BWAG for the range-window shape (h2o Q8)
+# Query: SELECT sum(v2) OVER (ORDER BY v2 RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) FROM large
+
+title: "h2o Q8 — parallel range-window"
+K: 8
+
+stages:
+  - id: s0
+    label: "Stage 0"
+    execs:
+      - {id: e1, slices: 4}
+      - {id: e2, slices: 4}
+    ops:
+      - {kind: scan,           label: "parquet (S3)"}
+      - {kind: sort,           label: "SortExec", keys: [v2]}
+      - {kind: runtime_stats,  label: "RuntimeStats (local sketch)"}
+      - {kind: orre,           label: "ORRE", K: 8}
+      - {kind: runtime_stats,  label: "RuntimeStats (post-ORRE sketch)"}
+      - {kind: shuffle_write,  label: "ShuffleWriter", K: 8, index_by: v2, out: rng}
+
+  - id: s1
+    label: "Stage 1"
+    execs:
+      - {id: e1, slices: 4}
+      - {id: e2, slices: 4}
+    input: {from: rng, merge: "kway(v2)"}
+    ops:
+      - {kind: range_filter,       label: "RangeFilter (wide + halo)", mode: wide,   halo: [-3, 0]}
+      - {kind: partitioned_bwag,   label: "PartitionedBWAG",           fn: "sum(v2)", frame: "range(-3, 0)"}
+      - {kind: range_filter,       label: "RangeFilter (narrow)",      mode: narrow, halo: [0, 0]}
+      - {kind: projection,         label: "Projection"}
+    sink: client
+
+shuffles:
+  rng:
+    index_by: v2
+    batches_per_writer: 6   # rendered as N cells per shuffle block
