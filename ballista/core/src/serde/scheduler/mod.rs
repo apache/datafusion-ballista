@@ -204,6 +204,7 @@ pub struct ExecutorMetadata {
 
 /// Specification of an executor, indicating its runtime-assigned vcore count.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ExecutorSpecification {
     /// Virtual cores assigned to this executor at runtime — analogous to YARN
     /// vcores (`yarn.nodemanager.resource.cpu-vcores`) or Spark's
@@ -241,6 +242,7 @@ impl ExecutorSpecification {
 
 /// Operating system level specification of an executor
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ExecutorOperatingSystemSpecification {
     /// System name
     pub system_name: String,

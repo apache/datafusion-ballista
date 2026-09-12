@@ -18,8 +18,12 @@ pub(crate) mod dto_build;
 mod handlers;
 mod health;
 #[cfg(feature = "rest-api")]
+pub mod openapi;
+#[cfg(feature = "rest-api")]
 mod routes;
 pub(super) use health::health_routes;
+#[cfg(feature = "rest-api")]
+pub use openapi::{ApiDoc, openapi_spec};
 #[cfg(feature = "rest-api")]
 pub use routes::get_routes;
 
@@ -37,6 +41,7 @@ pub(super) fn route_disabled(reason: String) -> Router {
 }
 
 #[derive(Debug, serde::Serialize)]
+#[cfg_attr(feature = "rest-api", derive(utoipa::ToSchema))]
 pub(crate) struct SchedulerErrorResponse {
     #[serde(skip)]
     status_code: StatusCode,
