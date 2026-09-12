@@ -1,0 +1,135 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Runs the Python client against a scheduler and executor built from the
+# working tree.
+#
+# The "Python Release Build" workflow cannot catch Rust regressions: its
+# tests call `setup_test_cluster()`, which starts the cluster IN-PROCESS from
+# the crates.io release that `python/Cargo.toml` pins, so the code under
+# review is never loaded. This workflow keeps the client on that same pinned
+# release (it has to: `pyballista` re-exports datafusion-python types, so it
+# can only move when datafusion-python does) and instead swaps the *cluster*
+# for one built from the branch. That is the combination users actually run
+# between releases, and it is the one that broke in #2367.
+
+name: Python Client Integration
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "ballista/**"
+      - "python/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/python-integration.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
+  pull_request:
+    paths:
+      - "ballista/**"
+      - "python/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/python-integration.yml"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
+  workflow_dispatch:
+
+jobs:
+  python-against-branch-cluster:
+    name: Python client vs branch-built cluster
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: "27.4"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      # The cluster comes from this branch. The client does not.
+      - name: Build scheduler and executor from the working tree
+        # Debug build on purpose: the test data is a handful of rows, so
+        # runtime speed is irrelevant and a release build would roughly
+        # double an already long job.
+        run: cargo build --locked -p ballista-scheduler -p ballista-executor
+
+      - name: Build Python client
+        working-directory: python
+        run: uv sync --dev --no-install-package ballista
+
+      - name: Start cluster
+        working-directory: python
+        run: |
+          # Started from python/ so the relative paths the tests register
+          # (testdata/test.parquet and friends) resolve on the executor too.
+          mkdir -p ../target/ci-logs
+          RUST_LOG=info ../target/debug/ballista-scheduler \
+            > ../target/ci-logs/scheduler.log 2>&1 &
+          RUST_LOG=info ../target/debug/ballista-executor \
+            > ../target/ci-logs/executor.log 2>&1 &
+
+          for _ in $(seq 1 60); do
+            if grep -q "Executor registration succeed" ../target/ci-logs/executor.log 2>/dev/null; then
+              echo "cluster is up"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "cluster did not come up within 60s"
+          echo "--- scheduler ---"; cat ../target/ci-logs/scheduler.log
+          echo "--- executor ---"; cat ../target/ci-logs/executor.log
+          exit 1
+
+      - name: Run Python tests against the cluster
+        working-directory: python
+        env:
+          BALLISTA_TEST_SCHEDULER: "localhost:50050"
+        run: uv run pytest
+
+      - name: Cluster logs
+        if: always()
+        run: |
+          echo "--- scheduler ---"; cat target/ci-logs/scheduler.log || true
+          echo "--- executor ---"; cat target/ci-logs/executor.log || true
