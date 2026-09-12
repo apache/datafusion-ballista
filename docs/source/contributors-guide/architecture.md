@@ -245,23 +245,6 @@ sort+window and OOMs at h2o 10 GB scale; with the KLL-adaptive range-repartition
 model, one slice-task per executor holds the sketch, buffered input, and per-partition halo state inside a
 single plan.
 
-#### Composition with in-flight DataFusion AQE
-
-Two upstream DataFusion PoCs are converging on the same primitives at the single-plan level:
-[apache/datafusion#23026](https://github.com/apache/datafusion/pull/23026) adds `RangeRepartitionExec`,
-`HaloDropExec`, and a `runtime_partition_extremes` trait method to parallelize `RANGE`-frame windows inside one
-plan; [apache/datafusion#23167](https://github.com/apache/datafusion/pull/23167) adds `PipelineBreakerBuffer` +
-`RuntimeOptimizerExec` + a `RuntimeRule` trait so a plan-root coordinator can observe post-pipeline-breaker
-runtime stats and mutate adaptive operators — build-side swaps, split points, skew fixes — in place,
-streaming-native, no disk materialization. Multi-partition tasks widens the plan a single coordinator sees: one
-`RuntimeOptimizerExec` now observes the full slice's pipeline-breaker state, so `RangeRepartitionExec`'s
-halo-aware routing and any `RuntimeRule`'s adaptive decisions cover an executor's whole vcore budget instead of
-one core. Ballista's AQE stage barriers are the cluster-scale analog of that plan-root coordinator, and the same
-rule library lifts unchanged: sketches and row counts collected inside each slice-task get reported at the
-shuffle boundary, and the scheduler applies the same rules cluster-wide. Three levels, one rule library —
-intra-plan (DataFusion), intra-executor slice (multi-partition tasks), inter-executor stage boundary
-(Ballista AQE).
-
 ## Adaptive Query Execution (AQE)
 
 The scheduling described above is _static_: the full set of query stages is computed once, at job
