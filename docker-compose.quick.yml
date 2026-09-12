@@ -1,0 +1,86 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Quick-start cluster using pre-built images from GHCR.
+# No local build required — Docker is the only prerequisite.
+#
+# Runs the last stable release. To test against unreleased changes,
+# use docker-compose.yml (requires `cargo build --release` first).
+#
+# Usage:
+#   docker compose -f docker-compose.quick.yml up
+#
+# Connect from Rust:
+#   SessionContext::remote("df://localhost:50050").await?
+#
+# Connect from the CLI:
+#   cargo run -p ballista-cli -- --host localhost --port 50050
+#
+# To make local data available inside executors, uncomment and
+# set the volume path under ballista-executor. The container-side
+# path must match exactly what you pass to register_parquet/register_csv
+# since the scheduler stores and forwards that path to executors as-is:
+#   volumes:
+#     - /absolute/path/to/your/data:/absolute/path/to/your/data:ro
+
+services:
+  ballista-scheduler:
+    image: ghcr.io/apache/datafusion-ballista-scheduler:latest
+    # --advertise-flight-sql-endpoint enables the scheduler to proxy all
+    # result fetching so clients only ever connect to port 50050.
+    # Without this flag, clients would need direct access to each
+    # executor's Arrow Flight port, which breaks in Docker networking.
+    command: >
+      --bind-host 0.0.0.0
+      --external-host ballista-scheduler
+      --advertise-flight-sql-endpoint
+    ports:
+      - "50050:50050"
+    environment:
+      - RUST_LOG=ballista=info,ballista_scheduler=info
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/50050"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: "no"
+
+  ballista-executor:
+    image: ghcr.io/apache/datafusion-ballista-executor:latest
+    command: >
+      --bind-host 0.0.0.0
+      --scheduler-host ballista-scheduler
+      --concurrent-tasks 4
+      --work-dir /work
+    environment:
+      - RUST_LOG=ballista=info,ballista_executor=info
+    # Uncomment to mount local data for queries:
+    # volumes:
+    #   - /absolute/path/to/your/data:/data:ro
+    depends_on:
+      ballista-scheduler:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/50051"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: "no"
+    # deploy.replicas requires Docker Compose v2 (the Go rewrite, default since Docker Desktop 3.x).
+    # It is not supported by the legacy Compose v1 (docker-compose) without Swarm.
+    deploy:
+      replicas: 2
