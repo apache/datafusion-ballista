@@ -35,8 +35,9 @@ import io
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Download python binary wheels from release candidate workflow runs.')
-    parser.add_argument('tag', type=str, help='datafusion RC release tag')
+        description="Download python binary wheels from release candidate workflow runs."
+    )
+    parser.add_argument("tag", type=str, help="datafusion RC release tag")
     args = parser.parse_args()
 
     tag = args.tag
@@ -44,7 +45,8 @@ def main():
     if not ghp_token:
         print(
             "ERROR: Personal Github token is required to download workflow artifacts. "
-            "Please specify a token through GH_TOKEN environment variable.")
+            "Please specify a token through GH_TOKEN environment variable."
+        )
         sys.exit(1)
 
     print(f"Downloading latest python wheels for RC tag {tag}...")
@@ -59,7 +61,9 @@ def main():
     # of a release branch (e.g. branch-51), GitHub associates the successful
     # workflow run with the branch rather than the tag, and the branch query
     # only returns the (possibly cancelled) tag-triggered run.
-    commit_url = f"https://api.github.com/repos/apache/datafusion-ballista/commits/{tag}"
+    commit_url = (
+        f"https://api.github.com/repos/apache/datafusion-ballista/commits/{tag}"
+    )
     resp = requests.get(commit_url, headers=headers)
     resp.raise_for_status()
     sha = resp.json()["sha"]
@@ -81,7 +85,8 @@ def main():
     if artifacts_url is None:
         print(
             f"ERROR: Could not find a successful 'Python Release Build' run for "
-            f"commit {sha}. Re-run the workflow or cut a new RC.")
+            f"commit {sha}. Re-run the workflow or cut a new RC."
+        )
         sys.exit(1)
     print(f"Found artifacts url: {artifacts_url}")
 
@@ -94,7 +99,9 @@ def main():
         break
 
     if download_url is None:
-        print(f"ERROR: Could not resolve python wheel download URL from list of artifacts: {artifacts}")
+        print(
+            f"ERROR: Could not resolve python wheel download URL from list of artifacts: {artifacts}"
+        )
         sys.exit(1)
     print(f"Extracting archive from: {download_url}...")
 
@@ -106,11 +113,16 @@ def main():
     for entry in os.listdir("./"):
         if entry.endswith(".whl") or entry.endswith(".tar.gz"):
             print(f"Sign and checksum artifact: {entry}")
-            subprocess.check_output([
-                "gpg", "--armor",
-                "--output", entry+".asc",
-                "--detach-sig", entry,
-            ])
+            subprocess.check_output(
+                [
+                    "gpg",
+                    "--armor",
+                    "--output",
+                    entry + ".asc",
+                    "--detach-sig",
+                    entry,
+                ]
+            )
 
             sha256 = hashlib.sha256()
             sha512 = hashlib.sha512()
@@ -121,12 +133,12 @@ def main():
                         break
                     sha256.update(data)
                     sha512.update(data)
-            with open(entry+".sha256", "w") as fd:
+            with open(entry + ".sha256", "w") as fd:
                 fd.write(sha256.hexdigest())
                 fd.write("  ")
                 fd.write(entry)
                 fd.write("\n")
-            with open(entry+".sha512", "w") as fd:
+            with open(entry + ".sha512", "w") as fd:
                 fd.write(sha512.hexdigest())
                 fd.write("  ")
                 fd.write(entry)

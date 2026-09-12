@@ -75,14 +75,26 @@ The scheduler also provides a REST API that allows jobs to be monitored.
 
 | API                                    | Method | Description                                                       |
 | -------------------------------------- | ------ | ----------------------------------------------------------------- |
+| /api/state                             | GET    | Get the current scheduler state.                                  |
+| /api/version                           | GET    | Get the scheduler's Ballista version.                             |
+| /api/executors                         | GET    | Get a list of executors registered with the scheduler.            |
+| /api/executor/{executor_id}            | GET    | Get details for a single executor.                                |
 | /api/jobs                              | GET    | Get a list of jobs that have been submitted to the cluster.       |
 | /api/job/{job_id}                      | GET    | Get a summary of a submitted job.                                 |
-| /api/job/{job_id}/dot                  | GET    | Produce a query plan in DOT (graphviz) format.                    |
-| /api/job/{job_id}/dot_svg              | GET    | Produce a query plan in SVG format. (`graphviz-support` required) |
 | /api/job/{job_id}                      | PATCH  | Cancel a currently running job                                    |
 | /api/job/{job_id}/config               | GET    | Get session configuration for a job.                              |
+| /api/job/{job_id}/stages               | GET    | Get per-stage and per-task detail for a job.                      |
+| /api/job/{job_id}/dot                  | GET    | Produce a query plan in DOT (graphviz) format.                    |
+| /api/job/{job_id}/dot_svg              | GET    | Produce a query plan in SVG format. (`graphviz-support` required) |
 | /api/job/{job_id}/stage/{stage_id}/dot | GET    | Produces stage plan in DOT (graphviz) format                      |
 | /api/metrics                           | GET    | Return current scheduler metric set                               |
+
+Two probe endpoints are always mounted, whether or not the `rest-api` feature is enabled:
+
+| API      | Method | Description                                                                         |
+| -------- | ------ | ----------------------------------------------------------------------------------- |
+| /healthz | GET    | Liveness. Always `200 OK` while the process runs.                                   |
+| /readyz  | GET    | Readiness. `200 OK` once at least `--min-ready-executors` executors are registered. |
 
 ## Web TUI Configuration
 

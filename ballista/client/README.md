@@ -96,16 +96,18 @@ RUST_LOG=info ballista-scheduler
 
 The scheduler will bind to port `50050` by default.
 
-Next, start an executor processes in a new terminal session with the specified concurrency level.
+Next, start an executor process in a new terminal session with the specified number of virtual cores.
 
 ```bash
 RUST_LOG=info ballista-executor -c 4
 ```
 
-The executor will bind to port `50051` by default. Additional executors can be started by manually specifying a bind port.
+The executor will bind to port `50051` by default.
 
-For full documentation, refer to the deployment section of the
-[Ballista User Guide](https://datafusion.apache.org/ballista/user-guide/deployment/)
+To run more than one executor on a host, to deploy with Docker or Kubernetes, or for the full flag
+reference, see the
+[deployment section](https://datafusion.apache.org/ballista/user-guide/deployment/) of the Ballista
+user guide.
 
 ## Executing a Query
 

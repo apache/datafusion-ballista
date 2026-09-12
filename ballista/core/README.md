@@ -17,7 +17,39 @@
   under the License.
 -->
 
-# Ballista Core Library
+# Ballista Core
 
-This crate contains the Ballista core library which is used as a dependency by the `ballista-client`,
-`ballista-scheduler`, and `ballista-executor` crates.
+Shared library underpinning the [Ballista](https://datafusion.apache.org/ballista/) distributed
+query engine. It is a dependency of the `ballista` client, `ballista-scheduler`, and
+`ballista-executor` crates rather than something you run on its own.
+
+Embedders depend on it directly when they need Ballista's plan serialization or shuffle operators
+without taking the scheduler or executor binaries.
+
+## What is in here
+
+| Module            | Purpose                                                                                   |
+| ----------------- | ----------------------------------------------------------------------------------------- |
+| `serde`           | Protobuf encoding of logical and physical plans, plus the extension-codec hooks           |
+| `execution_plans` | Distributed operators, including `ShuffleWriterExec`, `ShuffleReaderExec`, and the reader |
+| `config`          | The `ballista.*` configuration registry that the user guide's tables are generated from   |
+| `extension`       | `SessionConfigExt`, for reading and setting Ballista options on a DataFusion session      |
+| `object_store`    | S3-capable object-store registry and the `S3Options` config extension                     |
+| `planner`         | Shared planning helpers used by the scheduler's distributed planner                       |
+| `client`          | Arrow Flight client used to fetch result and shuffle partitions                           |
+| `error`           | `BallistaError` and the crate's `Result` alias                                            |
+
+## Cargo features
+
+| Feature                   | Default | Description                                                          |
+| ------------------------- | ------- | -------------------------------------------------------------------- |
+| `arrow-ipc-optimizations` | Yes     | Arrow IPC fast paths for shuffle read and write                      |
+| `build-binary`            | No      | Pulls in `clap` and an AWS-capable `object_store`, for binary builds |
+| `spark-compat`            | No      | Registers Spark-compatible functions from `datafusion-spark`         |
+| `force_hash_collisions`   | No      | Testing only: forces every value to the same hash bucket             |
+
+## Documentation
+
+- [Ballista user guide](https://datafusion.apache.org/ballista/)
+- [Architecture](https://datafusion.apache.org/ballista/contributors-guide/architecture.html)
+- [Extending Ballista](https://datafusion.apache.org/ballista/user-guide/extending-components.html)

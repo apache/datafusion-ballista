@@ -186,7 +186,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Sets the job name that will appear in the web user interface for any submitted jobs".to_string(),
                          DataType::Utf8, None),
         ConfigEntry::new(BALLISTA_STANDALONE_PARALLELISM.to_string(),
-                         "Number of concurrent tasks a standalone in-process executor will run.".to_string(),
+                         "Number of vcores advertised by the standalone in-process executor.".to_string(),
                          DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string()))
             .with_doc_default("number of available CPU cores"),
         ConfigEntry::new(BALLISTA_CACHE_NOOP.to_string(),

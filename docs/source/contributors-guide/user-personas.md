@@ -39,7 +39,7 @@ persona lists concrete "red flags" — the kinds of change that would quietly ta
 functionality away from that audience. A red flag does not mean a change is
 forbidden, but it does mean the change needs explicit discussion and maintainer
 sign-off, and usually a migration path (for example an entry in the
-[upgrade guide](../upgrading/index)), rather than landing silently.
+[upgrade guide](../upgrading/index.rst)), rather than landing silently.
 
 These personas are deliberately in tension with one another. One audience wants
 distributed execution to be a transparent implementation detail; another wants
@@ -82,9 +82,11 @@ to make sure a change that delights one audience does not quietly break another.
   paradigm.
 - **Coming from**: Apache Spark.
 - **Why Ballista**: Keep the Spark mental model — plans split into **stages** at
-  shuffle boundaries, one **task** per partition, shuffle files, executors with
-  task slots, and adaptive query execution (**AQE**) for runtime adaptivity — on
-  top of DataFusion and Arrow.
+  shuffle boundaries, **tasks** over partitions, shuffle files, executors with
+  vcores, and adaptive query execution (**AQE**) for runtime adaptivity — on
+  top of DataFusion and Arrow. Ballista packs several partitions into one task
+  by default rather than Spark's strict one-task-per-partition dispatch; set
+  `ballista.scheduler.max_partitions_per_task` to `1` for the Spark model.
 - **Depends on** (must not regress):
   - The stage/task execution model at shuffle boundaries.
   - The AQE / adaptive planner path (partition coalescing, dynamic join
@@ -92,7 +94,7 @@ to make sure a change that delights one audience does not quietly break another.
   - Broadcast joins for small build sides, to avoid shuffles and skew (the
     equivalent of Spark's broadcast hash join).
   - The operational surface Spark users expect: a scheduler plus executors,
-    task-slot concurrency, a tunable `target_partitions`, and stage/task
+    vcore-bounded concurrency, a tunable `target_partitions`, and stage/task
     observability (task timings, a history server / UI) for debugging skew.
   - Behavior driven by configuration and `SET`, not hard-coded planner choices.
 - **Red flags in a pull request**:
@@ -125,7 +127,7 @@ to make sure a change that delights one audience does not quietly break another.
   - Behavior that stays _configurable rather than hard-coded_, so an embedder can
     swap the planner, join strategy, partitioning, or runtime environment.
   - Backward-compatible public APIs, with breaking changes signaled in the
-    [upgrade guide](../upgrading/index).
+    [upgrade guide](../upgrading/index.rst).
   - No assumptions baked into the core that only fit the built-in clients or the
     TPC-H benchmark.
 - **Red flags in a pull request**:

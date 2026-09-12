@@ -74,6 +74,22 @@ The scheduler provides the following interfaces:
 - gRPC service for submitting and managing jobs
 - REST API for monitoring jobs
 
+The gRPC service is defined in
+[ballista.proto](https://github.com/apache/datafusion-ballista/blob/main/ballista/core/proto/ballista.proto).
+Its principal methods are:
+
+| Method                | Description                                                          |
+| --------------------- | -------------------------------------------------------------------- |
+| ExecuteQuery          | Submit a logical query plan or SQL query for execution               |
+| ExecuteQueryPush      | Same, but streams job status back to the client                      |
+| GetJobStatus          | Get the status of a submitted query                                  |
+| GetJobMetrics         | Get execution metrics for a submitted query                          |
+| CancelJob             | Cancel a running query                                               |
+| RegisterExecutor      | Executors call this method to register themselves with the scheduler |
+| HeartBeatFromExecutor | Executors report liveness and available capacity                     |
+| PollWork              | Pull-based executors ask for the next task                           |
+| UpdateTaskStatus      | Executors report task completion or failure                          |
+
 Jobs are submitted to the scheduler's gRPC service from a client context, either in the form of a logical query
 plan or a SQL string. The scheduler then creates an execution graph, which contains a physical plan broken down into
 stages (pipelines) that can be scheduled independently. This process is explained in detail in the Distributed
@@ -204,22 +220,47 @@ compares to the pipelined shuffle used by engines such as DataFusion Distributed
 [shufflewriterexec]: https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs
 [shufflereaderexec]: https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs
 
+### Multi-partition tasks
+
+Ballista dispatches at the _slice_ level, not the partition level. Each executor advertises a fixed number of
+virtual cores (`vcores`), and the scheduler packs up to that many of a stage's output partitions into a single
+task. All partitions in the slice execute concurrently under one DataFusion plan invocation: scans and shuffle
+readers are rewritten to see only the assigned partition ids, and DataFusion's per-partition `execute(N)`
+contract fans the work across the executor's threads. Slice size is bounded by the executor's free vcore count
+and by `ballista.scheduler.max_partitions_per_task` (`0` = unbounded — the default; fills each task up to the
+executor's free vcore count; `1` = one task per partition, the pre-multi-partition-tasks model).
+
+Compared to Apache Spark, whose unit of dispatch is one task per partition, Ballista's unit is one task per
+slice of partitions bound to a single executor. Spark achieves cluster-scale parallelism the same way — many
+tasks running concurrently across cores — but each task is single-threaded and doesn't share state with its
+neighbours. Ballista's slice model preserves cluster-scale parallelism _and_ adds intra-task shared-memory
+parallelism: partitions inside one slice share DataFusion's per-task memory pool budget, share the collect-left
+build side of a broadcast hash join (one hash table probed by every partition, instead of one materialization
+per task), share segment-tree indices needed for degenerate window aggregates (non-invertible aggregates like
+MIN/MAX, or wide/data-dependent frames where a sliding accumulator degrades to O(n × frame)), and can cooperate
+on shared-memory algorithms like PSRS parallel sort that a shuffle-based system can't express within a stage.
+It also unlocks pipelines whose intra-task state must be global-per-slice — e.g.
+`SELECT sum(v2) OVER (ORDER BY v2 RANGE 3 PRECEDING) FROM large`, which today collapses onto a single-partition
+sort+window and OOMs at h2o 10 GB scale; with the KLL-adaptive range-repartition rewrite that builds on this
+model, one slice-task per executor holds the sketch, buffered input, and per-partition halo state inside a
+single plan.
+
 ## Adaptive Query Execution (AQE)
 
 The scheduling described above is _static_: the full set of query stages is computed once, at job
-submission time, from the plan-time cost estimates. Adaptive Query Execution (AQE) is an experimental
-alternative in which the stage DAG is built _incrementally_, re-optimizing the remaining plan using the
-exact row counts and byte sizes observed as each shuffle stage completes. It is disabled by default and
-enabled with the `ballista.planner.adaptive.enabled` configuration setting.
+submission time, from the plan-time cost estimates. Adaptive Query Execution (AQE) is the default
+alternative, in which the stage DAG is built _incrementally_, re-optimizing the remaining plan using the
+exact row counts and byte sizes observed as each shuffle stage completes. Set
+`ballista.planner.adaptive.enabled` to `false` to go back to the static planner.
 
 ### Static vs adaptive execution graphs
 
 Job scheduling revolves around an `ExecutionGraph`, which translates a physical plan into a set of stages.
 There are two implementations, selected by configuration when a job is submitted:
 
-- **`StaticExecutionGraph`** — the default. All stages are planned up front by the `DistributedPlanner`,
-  which returns a static list of stages.
-- **`AdaptiveExecutionGraph`** — the adaptive counterpart. It is driven by the `AdaptivePlanner`, which runs
+- **`StaticExecutionGraph`** — used when AQE is turned off. All stages are planned up front by the
+  `DistributedPlanner`, which returns a static list of stages.
+- **`AdaptiveExecutionGraph`** — the default. It is driven by the `AdaptivePlanner`, which runs
   a set of pluggable physical optimizer rules after each stage completes and returns only the stages that are
   currently runnable. Because decisions are deferred, stages come back already resolved, so the
   `UnResolved` stage state used by the static path is not needed here.
@@ -234,25 +275,30 @@ optimizer rules are re-run. This is the key difference from DataFusion's normal 
 optimization, where each rule runs once per plan. Running the full rule set repeatedly means the rules must be
 **idempotent** — otherwise they would keep inserting redundant exec nodes on each pass.
 
-Two adaptive optimizations are implemented today:
+The adaptive optimizations implemented today are:
 
-- **Join reordering** — runtime row counts are used so the smaller side drives the join.
+- **Join selection** — `SelectJoinRule` and `DelayJoinSelectionRule` resolve a `DynamicJoinSelectionExec`
+  into a concrete hash, broadcast, or sort-merge join from runtime row counts and byte sizes, so the
+  smaller side drives the join.
 - **Empty stage elimination** — when a completed stage produces zero rows, its downstream exchange is
   replaced with an empty execution node and emptiness is propagated up the plan so dependent stages are
   skipped entirely.
+- **Shuffle-partition coalescing** — adjacent small partitions are merged so the next stage runs fewer,
+  larger tasks. Off by default; see `ballista.planner.coalesce.enabled`.
+- **Parallel windows** — bounded `RANGE`-frame windows are rewritten into a distributed range shuffle.
+  Off by default; see `ballista.planner.parallel_window.enabled`.
 
 ### Code layout
 
 The adaptive scheduler code lives under [`ballista/scheduler/src/state/aqe`], with the
-`AdaptiveExecutionGraph` in `mod.rs`, the planner in `planner.rs`, and the optimizer rules in
-`optimizer_rule.rs`.
+`AdaptiveExecutionGraph` in `mod.rs`, the planner in `planner.rs`, the optimizer rules under
+`optimizer_rule/`, and the adaptive execution plan nodes under `execution_plan/`.
 
 ### Current limitations
 
 The adaptive path currently covers the happy path only. Known gaps, each with a tracking issue:
 
 - Executor failure handling on the AQE path ([#1986])
-- Dynamic coalescing of shuffle partitions ([#1987])
 - Switching from hash join to sort-merge join based on runtime statistics ([#1988])
 - Switching from streaming aggregation to hash aggregation based on runtime statistics ([#1989])
 
@@ -262,6 +308,5 @@ Design and progress are tracked in the AQE epic ([#1359]). See also the
 [`ballista/scheduler/src/state/aqe`]: https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/src/state/aqe
 [#1359]: https://github.com/apache/datafusion-ballista/issues/1359
 [#1986]: https://github.com/apache/datafusion-ballista/issues/1986
-[#1987]: https://github.com/apache/datafusion-ballista/issues/1987
 [#1988]: https://github.com/apache/datafusion-ballista/issues/1988
 [#1989]: https://github.com/apache/datafusion-ballista/issues/1989

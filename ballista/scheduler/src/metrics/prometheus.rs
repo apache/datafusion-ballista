@@ -33,7 +33,6 @@ static COLLECTOR: OnceCell<Arc<dyn SchedulerMetricsCollector>> = OnceCell::new()
 /// 7 metrics:
 /// *job_exec_time_seconds* - Histogram of successful job execution time in seconds
 /// *planning_time_ms* - Histogram of job planning time in milliseconds
-/// *failed* - Counter of failed jobs
 /// *job_failed_total* - Counter of failed jobs
 /// *job_cancelled_total* - Counter of cancelled jobs
 /// *job_completed_total* - Counter of completed jobs

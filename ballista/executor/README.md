@@ -17,6 +17,45 @@
   under the License.
 -->
 
-# Ballista Executor Process
+# Ballista Executor
 
-This crate contains the Ballista executor process.
+The executor process for the [Ballista](https://datafusion.apache.org/ballista/) distributed query
+engine, and the library behind it. Executors register with a scheduler, run the tasks it assigns,
+write shuffle output to local storage, and serve those partitions over Arrow Flight.
+
+## Running
+
+```bash,ignore
+cargo install --locked ballista-executor
+RUST_LOG=info ballista-executor --vcores 4
+```
+
+Each executor binds three ports: Arrow Flight on `--bind-port` (50051), gRPC on `--bind-grpc-port`
+(50052), and HTTP health on `--bind-health-port` (50053). Running a second executor on one host
+means moving all three.
+
+`--vcores` sets how many partitions the executor runs at once, defaulting to the host's physical
+core count. The memory pool is auto-sized from the detected host or cgroup limit; see the
+[tuning guide](https://datafusion.apache.org/ballista/user-guide/tuning-guide.html).
+
+## Using it as a library
+
+`ExecutorProcessConfig` carries the same override hooks as the scheduler, so an embedder can supply
+its own runtime producer, config producer, or plan codecs. See
+`examples/examples/custom-executor.rs`. `new_standalone_executor` starts an in-process executor,
+which is what the client's standalone mode uses.
+
+## Cargo features
+
+| Feature                   | Default | Description                                              |
+| ------------------------- | ------- | -------------------------------------------------------- |
+| `arrow-ipc-optimizations` | Yes     | Arrow IPC fast paths for shuffle read and write          |
+| `build-binary`            | Yes     | Builds the binary, with CLI parsing, logging, and probes |
+| `mimalloc`                | Yes     | mimalloc allocator, enabled through `build-binary`       |
+| `spark-compat`            | No      | Registers Spark-compatible functions                     |
+
+## Documentation
+
+- [Ballista user guide](https://datafusion.apache.org/ballista/)
+- [Tuning guide](https://datafusion.apache.org/ballista/user-guide/tuning-guide.html)
+- [Architecture](https://datafusion.apache.org/ballista/contributors-guide/architecture.html)

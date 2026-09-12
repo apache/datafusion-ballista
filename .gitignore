@@ -18,47 +18,15 @@
 apache-rat-*.jar
 rat.txt
 filtered_rat.txt
-arrow-src.tar
-arrow-src.tar.gz
 CHANGELOG.md.bak
 Cargo.toml.bak
 data/
 
 # Compiled source
-*.a
-*.dll
-*.o
 *.py[ocd]
-*.so
-*.so.*
-*.bundle
-*.dylib
-.build_cache_dir
-dependency-reduced-pom.xml
-MANIFEST
-compile_commands.json
-build.ninja
 
-# Generated Visual Studio files
-*.vcxproj
-*.vcxproj.*
-*.sln
 *.iml
 
-# Linux perf sample data
-perf.data
-perf.data.old
-
-cpp/.idea/
-.clangd/
-cpp/.clangd/
-cpp/apidoc/xml/
-docs/example.gz
-docs/example1.dat
-docs/example3.dat
-python/.eggs/
-python/doc/
-python/examples/.ipynb_checkpoints
 # Egg metadata
 *.egg-info
 
@@ -66,23 +34,12 @@ python/examples/.ipynb_checkpoints
 .idea/
 .pytest_cache/
 .ruff_cache/
-pkgs
-docker_cache
 .gdb_history
 *.orig
 .*.swp
 .*.swo
 
-site/
-
-# R files
-**/.Rproj.user
-**/*.Rcheck/
-**/.Rhistory
-.Rproj.user
-
 # macOS
-cpp/Brewfile.lock.json
 .DS_Store
 
 # docker volumes used for caching
@@ -92,14 +49,9 @@ cpp/Brewfile.lock.json
 
 # Rust
 target
-# Cargo.lock
-!ballista-cli/Cargo.lock
 
-rusty-tags.vi
 .history
-.flatbuffers/
 
-.vscode
 venv/
 
 # apache release artifacts

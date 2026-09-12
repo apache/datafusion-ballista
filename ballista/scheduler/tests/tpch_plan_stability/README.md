@@ -46,10 +46,11 @@ default cargo tests — no dedicated job was added:
   scoping. Since the root `Cargo.toml` sets no `default-members`, this tests
   every workspace member, including `ballista-scheduler`, which picks up this
   target automatically.
-- `.github/workflows/rust.yml` → `clippy` already runs `cargo clippy --all-targets --package ballista-scheduler --all-features -- -D warnings`,
-  which lints this test target too.
-- `.github/workflows/rust.yml` → `lint` runs `cargo fmt --all -- --check`,
-  which covers these files as well.
+- `.github/workflows/rust.yml` → `clippy` runs `ci/scripts/rust_clippy.sh`, which includes
+  `cargo clippy --all-targets --package ballista-scheduler --all-features -- -D warnings`,
+  linting this test target too.
+- `.github/workflows/rust.yml` → `lint` runs `ci/scripts/rust_fmt.sh`
+  (`cargo fmt --all -- --check`), which covers these files as well.
 
 The generated `approved/*.txt` golden plans carry no license header (the test
 compares their exact bytes), so they are excluded from the Apache RAT license

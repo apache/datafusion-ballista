@@ -86,10 +86,10 @@ The benchmark can then be run (assuming the data created from `dbgen` is in `./d
 cargo run --release --bin tpch -- benchmark datafusion --iterations 3 --path ./data --format tbl --query 1 --batch-size 4096
 ```
 
-You can enable the feature `mimalloc` (to use the mimalloc allocator) as features by passing them in as `--features`:
+The `mimalloc` allocator is enabled by default. To build without it:
 
 ```
-cargo run --release --features "mimalloc" --bin tpch -- benchmark datafusion --iterations 3 --path ./data --format tbl --query 1 --batch-size 4096
+cargo run --release --no-default-features --bin tpch -- benchmark datafusion --iterations 3 --path ./data --format parquet --query 1 --batch-size 4096
 ```
 
 The benchmark program also supports CSV and Parquet input file formats and a utility is provided to convert from `tbl`
@@ -132,37 +132,23 @@ docker run -v /mnt:/mnt -it ballistacompute/spark-benchmarks:0.4.0-SNAPSHOT \
 
 ## Running the Ballista Benchmarks
 
-To run the benchmarks it is necessary to have at least one Ballista scheduler and one Ballista executor running.
+To run the benchmarks it is necessary to have at least one Ballista scheduler and one Ballista
+executor running. See
+[Ballista Quickstart](https://datafusion.apache.org/ballista/user-guide/deployment/quick-start.html)
+for how to build and start them, including the ports each executor binds.
 
-To run the scheduler from source:
-
-```bash
-cd $ARROW_HOME/ballista/scheduler
-RUST_LOG=info cargo run --release
-```
-
-By default the scheduler will bind to `0.0.0.0` and listen on port 50050.
-
-To run the executor from source:
-
-```bash
-cd $ARROW_HOME/ballista/executor
-RUST_LOG=info cargo run --release
-```
-
-By default the executor will bind to `0.0.0.0` and listen on port 50051.
-
-You can add mimalloc/LTO flags to improve speed (with longer build times):
+For benchmark runs specifically, LTO is worth the longer build. `mimalloc` is already on by default
+through the executor's `build-binary` feature:
 
 ```
-RUST_LOG=info RUSTFLAGS='-C target-cpu=native -C lto -C codegen-units=1 -C embed-bitcode' cargo run --release --bin executor --features "mimalloc" --target x86_64-unknown-linux-gnu
+RUST_LOG=info RUSTFLAGS='-C target-cpu=native -C lto -C codegen-units=1 -C embed-bitcode' cargo run --release --bin ballista-executor --target x86_64-unknown-linux-gnu
 ```
 
 To run the benchmarks:
 
 ```bash
-cd $ARROW_HOME/benchmarks
-cargo run --release --bin tpch benchmark ballista --host localhost --port 50050 --query 1 --path $(pwd)/data --format tbl
+cd benchmarks
+cargo run --release --bin tpch benchmark ballista --host localhost --port 50050 --query 1 --path $(pwd)/data --format parquet
 ```
 
 ## Recording and comparing results
@@ -190,7 +176,7 @@ cargo run --release --bin tpch compare baseline.json candidate.json
 ## Running the Ballista Benchmarks on docker-compose
 
 The `docker-compose.yml` at the repo root brings up one scheduler and two
-executors (8 vCPU / 8 GB memory pool each) plus a benchmark client. End to
+executors (4 vcores / 8 GB memory pool each) plus a benchmark client. End to
 end, including data generation, image builds, and running all 22 TPC-H
 queries:
 
@@ -291,7 +277,7 @@ Run the benchmark.
 ```bash
 $SPARK_HOME/bin/spark-submit \
     --master spark://ripper:7077 \
-    --class org.apache.arrow.ballista.SparkTpch \
+    --class org.apache.arrow.SparkTpch \
     --conf spark.driver.memory=8G \
     --num-executors=1 \
     --conf spark.executor.memory=32G \
