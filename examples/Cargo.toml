@@ -53,8 +53,8 @@ required-features = ["ballista-scheduler/substrait"]
 
 [dependencies]
 async-trait = { workspace = true }
-ballista-core = { workspace = true }
-ballista-scheduler = { workspace = true }
+ballista-core = { path = "../ballista/core", version = "54.0.0", default-features = false }
+ballista-scheduler = { path = "../ballista/scheduler", version = "54.0.0", default-features = false }
 datafusion = { workspace = true }
 log = { workspace = true }
 

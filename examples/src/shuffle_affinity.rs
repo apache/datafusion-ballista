@@ -147,7 +147,8 @@ pub struct ShuffleAffinityPolicy {
 }
 
 impl std::fmt::Debug for ShuffleAffinityPolicy {
-    /// Hand-written because a metrics collector is not [`Debug`].
+    /// Hand-written because [`LocalityObserver`] is not [`Debug`], and a
+    /// derived one would print the raw cache rather than its size.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ShuffleAffinityPolicy")
             .field("cached_stages", &self.cache_len())
@@ -279,18 +280,21 @@ impl ShuffleAffinityPolicy {
                 locality.assign(queued.iter().copied(), &mut capacity)
             };
 
-            for budget in budgets.iter_mut() {
-                let home = budget.executor_id.as_str();
-                if !assignment.values().any(|assigned| *assigned == home) {
-                    continue;
+            // Lift each executor's partitions out of the queue in one pass,
+            // both the groups and what stays behind keeping queue order.
+            let mut by_home: HashMap<&str, Vec<usize>> = HashMap::new();
+            queued.retain(|&partition| match assignment.get(&partition) {
+                Some(home) => {
+                    by_home.entry(home).or_default().push(partition);
+                    false
                 }
-                // Split the queue into this executor's partitions and the rest,
-                // both keeping queue order.
-                let (mine, rest): (Vec<usize>, Vec<usize>) = queued
-                    .iter()
-                    .partition(|p| assignment.get(p) == Some(&home));
-                queued = rest;
-                let mut mine = mine;
+                None => true,
+            });
+
+            for budget in budgets.iter_mut() {
+                let Some(mut mine) = by_home.remove(budget.executor_id.as_str()) else {
+                    continue;
+                };
                 binding.bind_all(
                     running_stage,
                     budget,
@@ -1759,33 +1763,59 @@ mod test {
     /// give `executor_2` the larger budget are the case the user guide claims
     /// this policy is for: free capacity and data placement disagreeing.
     ///
+    /// Every share is pinned, not just the ordering between policies, because
+    /// the printed table is quoted in the contributors guide. A placement
+    /// change that moves a number fails here rather than leaving the guide
+    /// quietly wrong.
+    ///
     /// Run it with:
     ///   cargo test -p ballista-examples --lib locality_benchmark -- --nocapture
     #[tokio::test]
     async fn locality_benchmark_against_bias_and_round_robin() -> Result<()> {
-        /// A named layout bound against a named set of executor budgets.
-        type Scenario<'a> = (&'a str, Layout, &'a [(&'a str, u32)]);
+        /// A named layout bound against a named set of executor budgets, with
+        /// the share `[bias, round-robin, affinity]` each reads locally. These
+        /// are the rows of the table in
+        /// `docs/source/contributors-guide/shuffle.md`; the two move together.
+        type Scenario<'a> = (&'a str, Layout, &'a [(&'a str, u32)], [f64; 3]);
+
+        /// The policies compared, in the order a scenario lists its shares.
+        const POLICIES: [&str; 3] = ["bias", "round-robin", "affinity"];
 
         let scenarios: Vec<Scenario> = vec![
+            // A partition with a clear home is what affinity is for, and it
+            // wins whether or not free capacity agrees with where the bytes
+            // are.
             (
                 "split, even capacity",
                 Layout::Split,
                 &[("executor_1", 8), ("executor_2", 8)],
+                [0.5, 0.5, 0.9],
             ),
             (
                 "split, capacity elsewhere",
                 Layout::Split,
                 &[("executor_1", 4), ("executor_2", 16)],
+                [0.5, 0.5, 0.9],
             ),
+            // The negative control: an even shuffle offers nothing to exploit,
+            // so all three read the same half and claiming a win here would be
+            // measuring noise.
             (
                 "even shuffle",
                 Layout::Even,
                 &[("executor_1", 8), ("executor_2", 8)],
+                [0.5, 0.5, 0.5],
             ),
+            // A collapse task reads the whole stage, so placing it on the
+            // holder is the whole game. No tied-capacity collapse row is
+            // reported: with equal budgets the built-ins land on whichever
+            // executor the cluster state happened to list first, which is a
+            // coin flip rather than a measurement.
             (
                 "collapse, capacity elsewhere",
                 Layout::Collapse,
                 &[("executor_1", 1), ("executor_2", 16)],
+                [0.1, 0.1, 0.9],
             ),
         ];
 
@@ -1797,64 +1827,35 @@ mod test {
         );
         println!("{}", "-".repeat(65));
 
-        let mut results = vec![];
-        for (label, layout, executors) in &scenarios {
-            let mut row = vec![];
+        for (label, layout, executors, expected) in &scenarios {
+            let mut measured = vec![];
             for policy in [
                 TaskDistributionPolicy::Bias,
                 TaskDistributionPolicy::RoundRobin,
                 TaskDistributionPolicy::Custom(Arc::new(ShuffleAffinityPolicy::new())),
             ] {
-                row.push(measure(policy, layout.jobs().await?, executors).await?);
+                let stats = measure(policy, layout.jobs().await?, executors).await?;
+                measured.push(stats.local_byte_ratio());
             }
             println!(
                 "{:<30} {:>7.1}% {:>12.1}% {:>9.1}%",
                 label,
-                row[0].local_byte_ratio() * 100.0,
-                row[1].local_byte_ratio() * 100.0,
-                row[2].local_byte_ratio() * 100.0,
+                measured[0] * 100.0,
+                measured[1] * 100.0,
+                measured[2] * 100.0,
             );
-            results.push((*label, row));
+            for (i, policy) in POLICIES.iter().enumerate() {
+                assert!(
+                    (measured[i] - expected[i]).abs() < 1e-9,
+                    "{label}: {policy} read {:.3} of its input locally, expected {:.3}. \
+                     Update the table in docs/source/contributors-guide/shuffle.md \
+                     alongside this scenario.",
+                    measured[i],
+                    expected[i],
+                );
+            }
         }
         println!();
-
-        let ratios = |name: &str| -> Vec<f64> {
-            results
-                .iter()
-                .find(|(label, _)| *label == name)
-                .map(|(_, row)| row.iter().map(|s| s.local_byte_ratio()).collect())
-                .expect("scenario")
-        };
-
-        // Where partitions have distinct homes, affinity beats both built-ins.
-        for scenario in ["split, even capacity", "split, capacity elsewhere"] {
-            let r = ratios(scenario);
-            assert!(
-                r[2] > r[0] && r[2] > r[1],
-                "affinity should win on {scenario}: {r:?}",
-            );
-        }
-
-        // The documented negative result: an even shuffle offers nothing to
-        // exploit, and claiming a win there would be measuring noise.
-        let even = ratios("even shuffle");
-        for policy in &even {
-            assert!(
-                (policy - even[0]).abs() < 1e-9,
-                "an even shuffle should read the same share whatever the policy: {even:?}",
-            );
-        }
-
-        // A collapse task reads the whole stage, so placing it on the holder is
-        // the whole game. With tied budgets the built-ins land on whichever
-        // executor the cluster state happened to list first, which is why no
-        // tied-capacity collapse row is reported: it is a coin flip, not a
-        // measurement.
-        let collapse = ratios("collapse, capacity elsewhere");
-        assert!(
-            collapse[2] > collapse[0] && collapse[2] > collapse[1],
-            "affinity should place the collapse task on its holder: {collapse:?}",
-        );
 
         Ok(())
     }
