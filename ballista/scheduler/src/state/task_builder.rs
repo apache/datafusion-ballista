@@ -435,17 +435,23 @@ mod tests {
         }
     }
 
+    /// A `ShuffleReaderExec` over `n` single-location partitions.
+    fn shuffle_reader(n: usize) -> Arc<dyn ExecutionPlan> {
+        let partitions = (0..n).map(|i| vec![create_partition(i)]).collect();
+        Arc::new(
+            ShuffleReaderExec::try_new(
+                1,
+                partitions,
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                Partitioning::UnknownPartitioning(n),
+            )
+            .unwrap(),
+        )
+    }
+
     #[test]
     fn keeps_only_the_wanted_partition() {
-        let partitions = (0..4).map(|i| vec![create_partition(i)]).collect();
-        let reader = ShuffleReaderExec::try_new(
-            1,
-            partitions,
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            Partitioning::UnknownPartitioning(4),
-        )
-        .unwrap();
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(reader);
+        let plan = shuffle_reader(4);
         let pruned = restrict_plan_to_partitions(plan, &[1]).unwrap();
         let r = pruned
             .downcast_ref::<ShuffleReaderExec>()
@@ -459,15 +465,7 @@ mod tests {
 
     #[test]
     fn keeps_multiple_wanted_partitions_in_request_order() {
-        let partitions = (0..4).map(|i| vec![create_partition(i)]).collect();
-        let reader = ShuffleReaderExec::try_new(
-            1,
-            partitions,
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            Partitioning::UnknownPartitioning(4),
-        )
-        .unwrap();
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(reader);
+        let plan = shuffle_reader(4);
         let pruned = restrict_plan_to_partitions(plan, &[0, 3]).unwrap();
         let r = pruned
             .downcast_ref::<ShuffleReaderExec>()
@@ -542,15 +540,7 @@ mod tests {
 
     #[test]
     fn restricting_to_every_partition_is_a_no_op() {
-        let partitions = (0..3).map(|i| vec![create_partition(i)]).collect();
-        let reader = ShuffleReaderExec::try_new(
-            1,
-            partitions,
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            Partitioning::UnknownPartitioning(3),
-        )
-        .unwrap();
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(reader);
+        let plan = shuffle_reader(3);
         let pruned = restrict_plan_to_partitions(plan, &[0, 1, 2]).unwrap();
         let r = pruned
             .downcast_ref::<ShuffleReaderExec>()
