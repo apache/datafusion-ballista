@@ -201,15 +201,15 @@ _Example: Specifying configuration options when starting the scheduler_
 
 ### Choosing a task distribution
 
-`bias` packs tasks onto the executors with the most free vcores and `round-robin` spreads them evenly.
-Neither looks at where a task's input already sits, so a reduce task often fetches its shuffle input over
-the network from an executor that had it on local disk.
+`bias` puts tasks on the executors with the most free vcores, and `round-robin` spreads them evenly. Neither
+looks at where a task's input is stored, so a task often fetches its shuffle input over the network even when
+another executor has it on local disk.
 
-An embedded scheduler can supply its own policy through `TaskDistributionPolicy::Custom`, which is not a
-value of this flag. `ShuffleAffinityPolicy` is one such policy: it places each task on the executor already
-holding most of its input, and binds whatever is left over the way `bias` does. It lives in the `examples`
-crate, which is unpublished, so it is a worked example to copy into your own scheduler rather than a
-dependency to add. It uses only the scheduler's public API, so it compiles anywhere `ballista-scheduler` does.
+A scheduler embedded in your own application can use a custom policy through `TaskDistributionPolicy::Custom`.
+Custom policies can't be selected with this flag. `ShuffleAffinityPolicy` is an example: it runs each task on
+the executor that holds most of its input, and places any remaining tasks the way `bias` does. It lives in the
+unpublished `examples` crate, so copy it into your scheduler rather than adding it as a dependency. It uses
+only the public `ballista-scheduler` API.
 
 ```rust
 use std::sync::Arc;
@@ -218,22 +218,26 @@ use ballista_examples::shuffle_affinity::ShuffleAffinityPolicy;
 use ballista_scheduler::config::{SchedulerConfig, TaskDistributionPolicy};
 
 let policy = ShuffleAffinityPolicy::new();
-// Keep a handle: `policy.stats()` reports the locality achieved, and
-// `policy.attach_observer(observer)` publishes each binding round to your own metrics.
+// Keep a clone: `policy.stats()` reports how much input was read locally, and
+// `policy.attach_observer(observer)` sends each scheduling round to your own metrics.
 let config = SchedulerConfig::default()
     .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(policy.clone())));
 ```
 
-Install it when different tasks prefer different executors: plans with a collapse stage (a global aggregate,
-or `ORDER BY ... LIMIT`, whose single task reads every partition), `UNION ALL`, and clusters where free
-capacity and data placement disagree, such as after a scale-up or while other jobs occupy the executors
-holding your data.
+It helps when different tasks are best run on different executors, for example:
 
-Expect no gain on a plain hash-partitioned aggregate. Every producer writes every output partition at
-roughly equal size, so all partitions prefer the same executor and every policy reads the same share
-locally. Measure rather than assume: the number to compare between policies is
-`LocalityStats::local_byte_ratio`, the share of shuffle bytes read without a network hop. The policy
-registers no metric of its own, so attach an observer to publish that number wherever you publish the rest.
+- a global aggregate or `ORDER BY ... LIMIT`, where a single task reads every partition
+- `UNION ALL`, whose inputs come from different producers
+- a cluster where free vcores and data are on different executors, such as after scaling up or while other
+  jobs are busy on the executors that hold your data
 
-It also requires `--scheduler-policy push-staged`. Under `pull-staged` the scheduler is offered one
-executor's capacity at a time, leaving it no placement to choose.
+It doesn't help a plain hash-partitioned aggregate. Every producer writes about the same amount to every
+partition, so no executor holds more of a partition than any other, and every policy reads the same share
+locally.
+
+To check whether it helps your workload, compare `LocalityStats::local_byte_ratio` across policies. This is the
+share of shuffle bytes read without a network fetch. The policy doesn't register any metrics itself, so attach
+an observer to publish the number alongside your other metrics.
+
+The policy requires `--scheduler-policy push-staged`. With `pull-staged`, each executor asks for work on its
+own, so the scheduler never has a choice of where to place a task.

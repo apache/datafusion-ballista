@@ -275,56 +275,68 @@ behavior it would be config-gated, leaving today's model as the default:
   indexed file per task, coalescing batches across partitions, and trimming the
   per-partition metadata would cut the fixed cost of a stage boundary without
   changing where the data lives ([#660]).
-- **Shuffle affinity.** Schedule a consumer task on the executor that already
-  holds most of its input, turning Flight fetches into local reads. Task
-  distribution is already pluggable, so this needs no core change: a first cut
-  lives in the `examples` crate as `ShuffleAffinityPolicy` ([#2319]), a
-  `DistributionPolicy` built entirely on the scheduler's public API and
-  installed through `TaskDistributionPolicy::Custom`. It reads the byte counts
-  on each partition's `PartitionLocation`s, ranks every `(partition, holder)`
-  pair by size, and spends each executor's free vcores on its strongest
-  candidates before binding the remainder bias-style, so no vcore idles waiting
-  on a holder with no room.
+- **Shuffle affinity.** Run each consumer task on the executor that already
+  holds most of its input, so the task reads from local disk instead of
+  fetching over Arrow Flight. Task distribution is already pluggable, so this
+  needs no core change. A prototype, `ShuffleAffinityPolicy`, lives in the
+  `examples` crate ([#2319]) and is installed through
+  `TaskDistributionPolicy::Custom`.
 
-  How much locality is available depends on the producer stage. A partition
-  spread evenly over `E` executors leaves no holder with more than `1/E` of it,
-  so the policy is opt-in and reports the share of shuffle bytes it kept local,
-  to be compared against bias and round-robin on a given workload. That share
-  is available through `ShuffleAffinityPolicy::stats`, through a
-  `LocalityObserver` the embedder attaches to feed its own metrics, and on a
-  per-round `debug!` line.
+  Each completed producer records how many bytes it wrote to each partition,
+  and the consumer stage sees those counts on its `PartitionLocation`s. The
+  policy gives each executor's free vcores to the partitions it holds the most
+  bytes of, then places any remaining partitions the way the bias policy does,
+  so no vcore sits idle.
 
-  Nothing in the scheduler crate knows the policy exists. It copies the three
-  binding rules it needs (the collapse rule, the vcore reservation, and a
-  filtered take off the pending queue) rather than widening the scheduler's API
-  for a policy that is still being evaluated. Those copies become shared
-  functions if and when the case for moving it in-tree is made.
+  The policy helps only when a partition's bytes are unevenly spread. When
+  every producer writes the same amount to every partition, each of `E`
+  executors holds `1/E` of it and no placement does better. The policy is
+  therefore opt-in. It reports the share of shuffle bytes read locally through
+  `ShuffleAffinityPolicy::stats`, through an attached `LocalityObserver`, and in
+  a `debug!` log line for each scheduling round.
 
-  Measured against the built-in policies on the share of shuffle input a task
-  reads from the executor running it (`locality_benchmark_against_bias_and_round_robin`
-  in the policy's tests, `executor_1` holding the larger share throughout):
+  The scheduler crate is unchanged. Rather than widen the scheduler's API while
+  the policy is still being evaluated, the policy copies the four scheduler
+  rules it depends on: when a stage must run as a single task, which inputs
+  every task reads in full, the per-task partition cap, and how a task reserves
+  vcores.
 
-  | layout                       |  bias | round-robin | affinity |
-  | ---------------------------- | ----: | ----------: | -------: |
-  | split, even capacity         | 50.0% |       50.0% |    90.0% |
-  | split, capacity elsewhere    | 50.0% |       50.0% |    90.0% |
-  | even shuffle                 | 50.0% |       50.0% |    50.0% |
-  | collapse, capacity elsewhere | 10.0% |       10.0% |    90.0% |
+  The policy's tests compare it with the built-in bias and round-robin policies
+  on synthetic jobs over two executors
+  (`locality_benchmark_against_bias_and_round_robin`):
 
-  The even shuffle is the negative control and it holds: when every producer
-  writes every partition at the same size, which is the shape of a plain
-  hash-partitioned aggregate, there is nothing to exploit and all three
-  policies read the same half.
+  - **Skewed partitions:** each partition has 90% of its bytes on one executor,
+    alternating between `executor_1` and `executor_2`.
+  - **Uniform partitions:** every partition is split evenly between the two
+    executors. This is the control.
+  - **Global aggregate:** a single task reads every partition, and `executor_1`
+    holds 90% of the bytes.
 
-  A tied-capacity collapse row is deliberately absent. With equal budgets the
-  built-ins land on whichever executor the cluster state listed first, so they
-  score 10% or 90% from run to run while affinity stays at 90%. That is a coin
-  flip rather than a measurement.
+  Each score is the share of shuffle bytes that tasks read from the executor
+  they run on, so higher is better. Free vcores are shown as `executor_1` /
+  `executor_2`.
 
-  This measures placement, not wall-clock time. A higher share means fewer
-  Arrow Flight fetches, not a demonstrated speedup, and these are synthetic
-  layouts rather than a workload. Whether the placement win converts into
-  latency on a real cluster is still open.
+  | Scenario           | Free vcores | Bias | Round-robin | Affinity |
+  | ------------------ | ----------: | ---: | ----------: | -------: |
+  | Skewed partitions  |       8 / 8 |  50% |         50% |      90% |
+  | Skewed partitions  |      4 / 16 |  50% |         50% |      90% |
+  | Uniform partitions |       8 / 8 |  50% |         50% |      50% |
+  | Global aggregate   |      1 / 16 |  10% |         10% |      90% |
+
+  With skewed partitions, bias and round-robin place tasks without looking at
+  the bytes and read half of them locally. Affinity reads 90%, even when most
+  free vcores are on the other executor. With uniform partitions there is
+  nothing to exploit, and all three policies read half. For the global
+  aggregate, bias and round-robin send the single task to the executor with the
+  most free vcores, which holds only 10% of the bytes.
+
+  The global aggregate is not measured with equal free vcores. Bias and
+  round-robin would then pick whichever executor the cluster state lists first,
+  so their score would change from run to run.
+
+  These scores measure placement, not speed. A higher share means fewer Arrow
+  Flight fetches, not a proven speedup, and the jobs are synthetic. Whether
+  better placement lowers latency on a real cluster is still an open question.
 
 - **Remote shuffle service.** Offload shuffle storage to a service such as
   Apache Celeborn or Apache Uniffle ([#1539]), which decouples shuffle

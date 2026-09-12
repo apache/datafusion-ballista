@@ -78,8 +78,8 @@ pub(super) fn max_partitions_per_task(running_stage: &RunningStage) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// Builds one task over `input_partition_ids` and charges `budget`. Copied from
-/// `bind_one` in `ballista_scheduler::cluster`, with the caller choosing partitions.
+/// Builds a task over non-empty `input_partition_ids` and charges `budget`. Copied
+/// from `bind_one` in `ballista_scheduler::cluster`, with the caller choosing partitions.
 pub(super) fn bind_one_from(
     running_stage: &mut RunningStage,
     session_id: &str,
@@ -87,10 +87,8 @@ pub(super) fn bind_one_from(
     budget: &mut AvailableVcores,
     input_partition_ids: Vec<usize>,
     is_collapse: bool,
-) -> Option<BoundTask> {
-    if input_partition_ids.is_empty() {
-        return None;
-    }
+) -> BoundTask {
+    debug_assert!(!input_partition_ids.is_empty(), "a task needs partitions");
     let vcores_consumed = if is_collapse {
         1
     } else {
@@ -123,5 +121,5 @@ pub(super) fn bind_one_from(
         session_config: running_stage.session_config.clone(),
     };
     budget.vcores -= vcores_consumed;
-    Some((executor_id, task_desc))
+    (executor_id, task_desc)
 }

@@ -18,7 +18,6 @@ type PartitionBytes<'a> = HashMap<&'a str, u64>;
 type ExecutorId = Arc<str>;
 
 /// Where a stage's input bytes live, per partition and per executor.
-#[derive(Debug, Default)]
 pub(super) struct StageLocality {
     /// Holders of each stage-global input partition.
     pub(super) partitions: HashMap<usize, PartitionLocality>,
@@ -30,7 +29,6 @@ pub(super) struct StageLocality {
 }
 
 /// Who holds one partition's input, best first.
-#[derive(Debug, Default)]
 pub(super) struct PartitionLocality {
     /// Every byte a task for this partition will read.
     pub(super) total: u64,
@@ -242,7 +240,7 @@ struct Candidate<'a> {
 }
 
 /// Running totals for one stage plan.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct LocalityAcc<'a> {
     /// Bytes per executor per partition, which drives per-partition placement.
     per_partition: HashMap<usize, PartitionBytes<'a>>,
@@ -261,20 +259,18 @@ fn collect_locations<'a>(
     under_collect: bool,
     acc: &mut LocalityAcc<'a>,
 ) {
-    // Inputs every task reads whole say nothing about per-partition placement.
-    if let Some(reader) = node.downcast_ref::<ShuffleReaderExec>() {
-        if reader.broadcast || under_collect {
-            acc.add_stage_bytes(&reader.partition);
+    let reader = match node.downcast_ref::<ShuffleReaderExec>() {
+        Some(reader) => Some((reader.partition.as_slice(), reader.broadcast)),
+        None => node
+            .downcast_ref::<RangeShuffleReaderExec>()
+            .map(|reader| (reader.partition.as_slice(), false)),
+    };
+    if let Some((partitions, broadcast)) = reader {
+        // Inputs every task reads whole say nothing about per-partition placement.
+        if broadcast || under_collect {
+            acc.add_stage_bytes(partitions);
         } else {
-            acc.add_partition_bytes(&reader.partition, offset);
-        }
-        return;
-    }
-    if let Some(reader) = node.downcast_ref::<RangeShuffleReaderExec>() {
-        if under_collect {
-            acc.add_stage_bytes(&reader.partition);
-        } else {
-            acc.add_partition_bytes(&reader.partition, offset);
+            acc.add_partition_bytes(partitions, offset);
         }
         return;
     }
@@ -303,16 +299,11 @@ impl<'a> LocalityAcc<'a> {
         partitions: &'a [Vec<PartitionLocation>],
         offset: usize,
     ) {
+        self.add_stage_bytes(partitions);
         for (partition, locations) in partitions.iter().enumerate() {
-            for (executor_id, bytes, measured) in held(locations) {
-                *self.totals.entry(executor_id).or_insert(0) += bytes;
-                *self
-                    .per_partition
-                    .entry(offset + partition)
-                    .or_default()
-                    .entry(executor_id)
-                    .or_insert(0) += bytes;
-                self.imputed |= !measured;
+            let by_executor = self.per_partition.entry(offset + partition).or_default();
+            for (executor_id, bytes, _) in held(locations) {
+                *by_executor.entry(executor_id).or_insert(0) += bytes;
             }
         }
     }

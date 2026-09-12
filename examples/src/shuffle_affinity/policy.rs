@@ -47,7 +47,6 @@ impl std::fmt::Debug for ShuffleAffinityPolicy {
 }
 
 /// A stage's scan, tagged with the attempt it was taken from.
-#[derive(Debug)]
 struct CachedLocality {
     stage_attempt_num: usize,
     locality: Arc<StageLocality>,
@@ -113,8 +112,8 @@ impl ShuffleAffinityPolicy {
             job_id,
             locality: &locality,
             whole_stage,
+            cap: max_partitions_per_task(running_stage),
         };
-        let cap = max_partitions_per_task(running_stage);
 
         // Pending partitions can only be read by draining, so drain once and requeue
         // the remainder at the end.
@@ -133,7 +132,6 @@ impl ShuffleAffinityPolicy {
                         running_stage,
                         budget,
                         &mut queued,
-                        cap,
                         bound_tasks,
                         round,
                     );
@@ -165,19 +163,12 @@ impl ShuffleAffinityPolicy {
                 let Some(mut mine) = by_home.remove(budget.executor_id.as_str()) else {
                     continue;
                 };
-                binding.bind_all(
-                    running_stage,
-                    budget,
-                    &mut mine,
-                    cap,
-                    bound_tasks,
-                    round,
+                binding.bind_all(running_stage, budget, &mut mine, bound_tasks, round);
+                // Assignment never exceeds an executor's free vcores, so all of it binds.
+                debug_assert!(
+                    mine.is_empty(),
+                    "assigned partitions left unbound: {mine:?}"
                 );
-                // Anything its budget could not cover rejoins the queue in order.
-                if !mine.is_empty() {
-                    mine.extend(queued);
-                    queued = mine;
-                }
             }
             // Each group is keyed by a budget walked above; a leftover would be lost.
             debug_assert!(
@@ -192,7 +183,7 @@ impl ShuffleAffinityPolicy {
             if queued.is_empty() {
                 break;
             }
-            binding.bind_all(running_stage, budget, &mut queued, cap, bound_tasks, round);
+            binding.bind_all(running_stage, budget, &mut queued, bound_tasks, round);
         }
 
         let exhausted = !queued.is_empty();
@@ -328,6 +319,8 @@ struct Binding<'a> {
     locality: &'a StageLocality,
     /// Whether this is a collapse stage, whose one task reads every partition.
     whole_stage: bool,
+    /// Most partitions a non-collapse task may take.
+    cap: usize,
 }
 
 impl Binding<'_> {
@@ -338,7 +331,6 @@ impl Binding<'_> {
         stage: &mut RunningStage,
         budget: &mut AvailableVcores,
         partitions: &mut Vec<usize>,
-        cap: usize,
         bound_tasks: &mut Vec<BoundTask>,
         round: &mut LocalityStats,
     ) {
@@ -346,19 +338,17 @@ impl Binding<'_> {
             let take = if self.whole_stage {
                 partitions.len()
             } else {
-                (budget.vcores as usize).min(cap).min(partitions.len())
+                (budget.vcores as usize).min(self.cap).min(partitions.len())
             };
             let slice: Vec<usize> = partitions.drain(..take).collect();
-            let Some((executor_id, task)) = bind_one_from(
+            let (executor_id, task) = bind_one_from(
                 stage,
                 self.session_id,
                 self.job_id,
                 budget,
                 slice,
                 self.whole_stage,
-            ) else {
-                break;
-            };
+            );
             *round += self.locality.measure(
                 &executor_id,
                 &task.global_input_partition_ids,
