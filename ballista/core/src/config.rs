@@ -119,6 +119,31 @@ pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS: &str =
 pub const BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES: &str =
     "ballista.optimizer.hash_join_max_build_partition_bytes";
 
+/// Configuration key controlling whether AQE stages a join's prospective build
+/// side as its own shuffle before deciding how to run the join. When a build
+/// side's size is only an estimate and the probe side is far larger, shuffling
+/// both sides commits to the expensive shuffle before any measurement exists.
+/// With this enabled the planner shuffles the smaller side alone, reads back
+/// its measured size, and only then chooses broadcast or repartition. Enabled
+/// by default; set to `false` to always shuffle both sides at once.
+pub const BALLISTA_STAGE_BUILD_SIDE: &str = "ballista.optimizer.stage_build_side";
+
+/// Configuration key for how many times larger the probe side must be before
+/// AQE stages a join's build side on its own. Staging serialises two shuffles
+/// that would otherwise run concurrently, so the deferral costs at most the
+/// smaller side's runtime; this ratio is what bounds the cost of being wrong.
+/// Only consulted when `ballista.optimizer.stage_build_side` is enabled.
+pub const BALLISTA_STAGE_BUILD_SIDE_MIN_PROBE_RATIO: &str =
+    "ballista.optimizer.stage_build_side_min_probe_ratio";
+
+/// Configuration key for how far over `broadcast_join_threshold_bytes` an
+/// *estimated* build side may sit and still be worth measuring. Past this
+/// multiple the side is large on any reading and no measurement brings it back
+/// under budget, so it is shuffled without the extra round trip. Only consulted
+/// when `ballista.optimizer.stage_build_side` is enabled.
+pub const BALLISTA_STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE: &str =
+    "ballista.optimizer.stage_build_side_max_estimate_multiple";
+
 /// Configuration key controlling the logical rewrite of uncorrelated
 /// `NOT IN (subquery)` filter predicates into a plain anti join plus a
 /// one-row count aggregate. The rewrite avoids DataFusion's null-aware hash
@@ -294,6 +319,35 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          which makes AQE use a hash join regardless of build size.".to_string(),
                          DataType::UInt64,
                          Some((64 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_STAGE_BUILD_SIDE.to_string(),
+                         "Stages a join's prospective build side as its own shuffle before \
+                          choosing the join strategy. Applies only when that side's size is \
+                          an estimate rather than a measurement, and the probe side is far \
+                          larger: an exact size over the broadcast budget is a fact that no \
+                          further measurement can change. Lets AQE measure the build side and \
+                          pick a broadcast join instead of committing to a full shuffle of \
+                          the probe side up front. Set to false to always shuffle both sides \
+                          at once.".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
+        ConfigEntry::new(BALLISTA_STAGE_BUILD_SIDE_MIN_PROBE_RATIO.to_string(),
+                         "How many times larger the probe side must be before AQE stages a \
+                          join's build side on its own. Staging serialises two shuffles that \
+                          would otherwise run concurrently, so the deferral costs at most the \
+                          smaller side's runtime; this ratio bounds the cost of being wrong. \
+                          Only consulted when stage_build_side is enabled, and only for build \
+                          sides whose size is an estimate rather than a measurement.".to_string(),
+                         DataType::UInt64,
+                         Some((10).to_string())),
+        ConfigEntry::new(BALLISTA_STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE.to_string(),
+                         "How far over broadcast_join_threshold_bytes an estimated build side \
+                          may sit and still be worth measuring. Past this multiple the side is \
+                          large on any reading and no measurement brings it back under budget, \
+                          so it is shuffled without the extra round trip. Only consulted when \
+                          stage_build_side is enabled, and only for build sides whose size is \
+                          an estimate rather than a measurement.".to_string(),
+                         DataType::UInt64,
+                         Some((32).to_string())),
         ConfigEntry::new(BALLISTA_NOT_IN_SUBQUERY_REWRITE.to_string(),
                          "Rewrites uncorrelated NOT IN (subquery) filter predicates into a \
                          plain anti join plus a one-row count aggregate during logical \
@@ -707,6 +761,24 @@ impl BallistaConfig {
     /// Maximum per-partition hash-join build-side bytes before falling back to SMJ.
     pub fn hash_join_max_build_partition_bytes(&self) -> usize {
         self.get_usize_setting(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES)
+    }
+
+    /// Returns whether AQE stages a join's prospective build side as its own
+    /// shuffle before choosing the join strategy.
+    pub fn stage_build_side_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_STAGE_BUILD_SIDE)
+    }
+
+    /// How many times larger the probe side must be before AQE stages a join's
+    /// build side on its own.
+    pub fn stage_build_side_min_probe_ratio(&self) -> usize {
+        self.get_usize_setting(BALLISTA_STAGE_BUILD_SIDE_MIN_PROBE_RATIO)
+    }
+
+    /// How far over `broadcast_join_threshold_bytes` an estimated build side may
+    /// sit and still be worth measuring.
+    pub fn stage_build_side_max_estimate_multiple(&self) -> usize {
+        self.get_usize_setting(BALLISTA_STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE)
     }
 
     /// Whether uncorrelated `NOT IN (subquery)` filter predicates are rewritten
