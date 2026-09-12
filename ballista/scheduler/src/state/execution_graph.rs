@@ -114,6 +114,9 @@ pub trait ExecutionGraph: Debug {
     /// Returns the session ID associated with this job.
     fn session_id(&self) -> &str;
 
+    /// Returns the scheduler that accepted and planned this job, if known.
+    fn scheduler_id(&self) -> Option<&str>;
+
     /// Returns the session config associated with this job.
     fn session_config(&self) -> Arc<SessionConfig>;
 
@@ -283,8 +286,7 @@ pub trait ExecutionGraph: Debug {
 /// all stages on job submission time
 #[derive(Clone)]
 pub struct StaticExecutionGraph {
-    /// Curator scheduler name. Can be `None` is `ExecutionGraph` is not currently curated by any scheduler
-    #[allow(dead_code)] // not used at the moment, will be used later
+    /// Scheduler currently curating this job, if known.
     scheduler_id: Option<String>,
     /// ID for this job
     job_id: JobId,
@@ -673,6 +675,10 @@ impl ExecutionGraph for StaticExecutionGraph {
 
     fn session_id(&self) -> &str {
         self.session_id.as_str()
+    }
+
+    fn scheduler_id(&self) -> Option<&str> {
+        self.scheduler_id.as_deref()
     }
 
     fn session_config(&self) -> Arc<SessionConfig> {
