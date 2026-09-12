@@ -179,11 +179,24 @@ The harness also has an opt-in Kubernetes backend (`K8sCluster`, in
 `src/k8s.rs`) that runs the scheduler and executors as pods in a local
 [kind](https://kind.sigs.k8s.io) cluster rather than as local processes. It is
 gated behind the `k8s` feature _and_ `CHAOS_BACKEND=kind`, so a plain `cargo
-test` never touches a cluster. Today it runs a single baseline scenario — a real
-query whose result must match plain local DataFusion — as a walking skeleton for
-the executor-kill scenarios the
-[#2029](https://github.com/apache/datafusion-ballista/issues/2029) follow-ups
-will add. It needs [Docker](https://docs.docker.com/get-docker/),
+test` never touches a cluster. It runs the scenarios that genuinely need a
+cluster — real pod lifecycle, rescheduling, and the port-forward/flight-proxy
+path — while the backend-agnostic fault-injection scenarios stay on the fast
+process harness:
+
+- **baseline** — a real query whose result must match plain local DataFusion
+  (exercises the mount, port-forward, flight proxy, and shuffle).
+- **G / [#2029](https://github.com/apache/datafusion-ballista/issues/2029)** —
+  every executor is force-killed mid-query and the Deployment is held at zero: a
+  total loss that is neither drained nor rescheduled (a graceful `scale 0` alone
+  lets the executors drain the query to success). The job must fail with an
+  executor-loss error, not hang. Run under both AQE settings, since #2029 had an
+  AQE-on-only hang path.
+- **F** — one executor pod is force-deleted; the Deployment reschedules a
+  replacement with a new id, and the cluster must reabsorb it and keep serving
+  queries. This proves genuine rescheduling, which the process backend cannot.
+
+It needs [Docker](https://docs.docker.com/get-docker/),
 [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation), and
 `kubectl`.
 

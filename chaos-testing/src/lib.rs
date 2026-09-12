@@ -26,4 +26,5 @@ pub mod fixture;
 #[cfg(feature = "k8s")]
 pub mod k8s;
 pub mod registry;
+pub(crate) mod rest;
 pub mod udf;
