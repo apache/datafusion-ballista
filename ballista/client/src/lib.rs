@@ -20,6 +20,9 @@
 
 /// Extension traits for integrating DataFusion with Ballista distributed execution.
 pub mod extension;
+/// Build-gated Apache Hudi integration.
+#[cfg(feature = "contrib-hudi")]
+pub mod hudi;
 /// Prelude module providing commonly used imports for Ballista client applications.
 pub mod prelude;
 /// Re-export of the DataFusion crate for convenience.
