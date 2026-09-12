@@ -141,7 +141,5 @@ jobs:
         with:
           name: h2o-window-small-cluster-logs
           retention-days: 14
-          path: |
-            ${{ runner.temp }}/scheduler.log
-            ${{ runner.temp }}/executor.log
-          if-no-files-found: ignore
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: warn

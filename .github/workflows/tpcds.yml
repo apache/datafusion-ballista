@@ -153,7 +153,5 @@ jobs:
         with:
           name: tpcds-sf1-cluster-logs-${{ matrix.slug }}
           retention-days: 14
-          path: |
-            ${{ runner.temp }}/scheduler.log
-            ${{ runner.temp }}/executor.log
-          if-no-files-found: ignore
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: warn
