@@ -321,11 +321,13 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          Some((64 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_STAGE_BUILD_SIDE.to_string(),
                          "Stages a join's prospective build side as its own shuffle before \
-                          choosing the join strategy, when that side's size is only an \
-                          estimate and the probe side is far larger. Lets AQE measure the \
-                          build side and pick a broadcast join instead of committing to a \
-                          full shuffle of the probe side up front. Set to false to always \
-                          shuffle both sides at once.".to_string(),
+                          choosing the join strategy. Applies only when that side's size is \
+                          an estimate rather than a measurement, and the probe side is far \
+                          larger: an exact size over the broadcast budget is a fact that no \
+                          further measurement can change. Lets AQE measure the build side and \
+                          pick a broadcast join instead of committing to a full shuffle of \
+                          the probe side up front. Set to false to always shuffle both sides \
+                          at once.".to_string(),
                          DataType::Boolean,
                          Some(true.to_string())),
         ConfigEntry::new(BALLISTA_STAGE_BUILD_SIDE_MIN_PROBE_RATIO.to_string(),
@@ -333,7 +335,8 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           join's build side on its own. Staging serialises two shuffles that \
                           would otherwise run concurrently, so the deferral costs at most the \
                           smaller side's runtime; this ratio bounds the cost of being wrong. \
-                          Only consulted when stage_build_side is enabled.".to_string(),
+                          Only consulted when stage_build_side is enabled, and only for build \
+                          sides whose size is an estimate rather than a measurement.".to_string(),
                          DataType::UInt64,
                          Some((10).to_string())),
         ConfigEntry::new(BALLISTA_STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE.to_string(),
@@ -341,7 +344,8 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           may sit and still be worth measuring. Past this multiple the side is \
                           large on any reading and no measurement brings it back under budget, \
                           so it is shuffled without the extra round trip. Only consulted when \
-                          stage_build_side is enabled.".to_string(),
+                          stage_build_side is enabled, and only for build sides whose size is \
+                          an estimate rather than a measurement.".to_string(),
                          DataType::UInt64,
                          Some((32).to_string())),
         ConfigEntry::new(BALLISTA_NOT_IN_SUBQUERY_REWRITE.to_string(),

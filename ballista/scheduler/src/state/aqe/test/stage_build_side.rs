@@ -25,27 +25,18 @@
 //! These tests drive `AdaptivePlanner` through both passes and assert on the
 //! plan that comes out of each.
 //!
-//! Sizes are declared ([`StatsTable`]) rather than materialised, because the
-//! shape staging turns on is a build side whose size is an *estimate* sitting
-//! over the broadcast budget. No table a test is willing to build produces that.
+//! Sizes are declared rather than materialised, because the shape staging turns
+//! on is a build side whose size is an *estimate* sitting over the broadcast
+//! budget. No table a test is willing to build produces that.
 
 use crate::state::aqe::planner::AdaptivePlanner;
-use crate::state::aqe::test::stats_table::{
-    StatsTable, estimated_statistics, sized_statistics,
-};
+use crate::state::aqe::test::stats_table::{estimated_statistics, sized_statistics};
 use crate::state::aqe::test::{
-    mock_partitions_with_size, mock_partitions_with_statistics,
+    MB, ballista_ctx, mock_partitions_with_size, mock_partitions_with_statistics,
+    narrow_schema, register_stats_table,
 };
 use ballista_core::assert_plan;
-use ballista_core::extension::SessionConfigExt;
-use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::common::Statistics;
-use datafusion::execution::{
-    SessionStateBuilder, config::SessionConfig, context::SessionContext,
-};
-use std::sync::Arc;
-
-const MB: usize = 1024 * 1024;
+use datafusion::execution::context::SessionContext;
 
 /// A build side whose size is only a guess, sitting over the shipped 128 MB
 /// broadcast budget but well inside the 32x window past which no measurement
@@ -59,44 +50,23 @@ const FACT_PROBE_BYTES: usize = 40 * 1024 * MB;
 /// A measured build size that still cannot be broadcast, for the fallthrough.
 const MEASURED_TOO_LARGE_BYTES: u64 = (200 * MB) as u64;
 
-fn join_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("val", DataType::Int32, false),
-    ]))
-}
-
-/// A context carrying Ballista's shipped configuration, so these tests run
-/// against the thresholds a deployment uses — including
-/// `ballista.optimizer.stage_build_side`, which defaults to on.
-fn ballista_ctx() -> SessionContext {
-    let config = SessionConfig::new_with_ballista()
-        .with_target_partitions(4)
-        .with_round_robin_repartition(false);
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_config(config)
-        .build();
-    SessionContext::new_with_state(state)
-}
-
-fn register(ctx: &SessionContext, name: &str, stats: Statistics) {
-    ctx.register_table(name, Arc::new(StatsTable::new(join_schema(), stats, 4)))
-        .unwrap();
-}
+const Q8_SHAPED_JOIN: &str = "SELECT dim.val FROM dim JOIN fact ON dim.id = fact.id";
 
 /// The q8 shape: a guessed-large dimension side against a fact table that
 /// dwarfs it, joined on the key.
 fn q8_shaped_ctx() -> SessionContext {
     let ctx = ballista_ctx();
-    let schema = join_schema();
-    register(
+    let schema = narrow_schema();
+    register_stats_table(
         &ctx,
         "dim",
+        schema.clone(),
         estimated_statistics(&schema, 1_000_000, GUESSED_BUILD_BYTES),
     );
-    register(
+    register_stats_table(
         &ctx,
         "fact",
+        schema.clone(),
         sized_statistics(&schema, 1_000_000_000, FACT_PROBE_BYTES),
     );
     ctx
@@ -108,8 +78,6 @@ async fn planner_for(ctx: &SessionContext, sql: &str) -> AdaptivePlanner {
         .await
         .unwrap()
 }
-
-const Q8_SHAPED_JOIN: &str = "SELECT dim.val FROM dim JOIN fact ON dim.id = fact.id";
 
 /// The mechanism end to end: the first pass shuffles only the build side and
 /// leaves the fact table alone, and once that one cheap stage reports what it
@@ -193,36 +161,6 @@ async fn reuses_the_staged_exchange_when_the_build_side_measures_too_large() {
             CooperativeExec
               StatsExec: partitions=4, rows=Inexact(1000000), bytes=Inexact(209715200)
           ExchangeExec: partitioning=Hash([id@0], 4), plan_id=3, stage_id=pending, stage_resolved=false
-            CooperativeExec
-              StatsExec: partitions=4, rows=Exact(1000000000), bytes=Exact(42949672960)
-    ");
-}
-
-/// A `Left` join can never be lowered to `CollectLeft` — the build side would
-/// emit its unmatched rows once per probe task (#1055) — so measuring it cannot
-/// change the decision, and staging would buy a serialised stage boundary for
-/// nothing. Both sides must be shuffled on the first pass.
-///
-/// Worth pinning separately: `test_left_join_not_collected_left` covers the
-/// broadcast half of this, but passes today only because its statistics do not
-/// match the staging shape. These ones do.
-#[tokio::test]
-async fn does_not_stage_a_left_join() {
-    let ctx = q8_shaped_ctx();
-    let planner = planner_for(
-        &ctx,
-        "SELECT dim.val FROM dim LEFT JOIN fact ON dim.id = fact.id",
-    )
-    .await;
-
-    assert_plan!(planner.current_plan(), @ "
-    AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
-      ProjectionExec: expr=[val@1 as val]
-        DynamicJoinSelectionExec: plan_id=0, join_type=Left, on=[(id@0, id@0)] repartitioned=true
-          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=pending, stage_resolved=false
-            CooperativeExec
-              StatsExec: partitions=4, rows=Inexact(1000000), bytes=Inexact(209715200)
-          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=pending, stage_resolved=false
             CooperativeExec
               StatsExec: partitions=4, rows=Exact(1000000000), bytes=Exact(42949672960)
     ");

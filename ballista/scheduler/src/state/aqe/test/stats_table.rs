@@ -235,13 +235,7 @@ pub(crate) fn estimated_statistics(
     num_rows: usize,
     total_byte_size: usize,
 ) -> Statistics {
-    use datafusion::common::{ColumnStatistics, stats::Precision};
-
-    Statistics {
-        num_rows: Precision::Inexact(num_rows),
-        total_byte_size: Precision::Inexact(total_byte_size),
-        column_statistics: vec![ColumnStatistics::new_unknown(); schema.fields().len()],
-    }
+    sized_statistics(schema, num_rows, total_byte_size).to_inexact()
 }
 
 /// Statistics for a table of `num_rows` occupying a known `total_byte_size`.

@@ -24,22 +24,10 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
 
 ## Versions under test
 
-| Engine   | Version                                                                                                                                                                      |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ballista | [`da92ba8d`](https://github.com/apache/datafusion-ballista/pull/2434/commits/da92ba8d1bce6e2fd76d01aa86a8c971fa34ac2f) (2026-09-08), Cargo pkg `54.0.0`, DataFusion `55.0.0` |
-| Spark    | 3.4 (vanilla, no acceleration plugin)                                                                                                                                        |
-
-```{note}
-`da92ba8d` is the scheduler commit of
-[#2434](https://github.com/apache/datafusion-ballista/pull/2434) — `main`
-as of 2026-09-08 plus that PR's change, which stages a join's build side
-and reads its measured statistics before `DynamicJoinSelectionExec`
-commits to a strategy. It accounts for almost all of the improvement over
-the previous (`67b3a19b`) result set — Q8 96.02 → 40.68, Q9 107.89 →
-51.94, Q21 95.63 → 65.69 — so a run from `main` before #2434 lands will
-not reproduce these numbers. Re-pin this row to the merge commit once it
-does.
-```
+| Engine   | Version                                                                                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ballista | [`67b3a19b`](https://github.com/apache/datafusion-ballista/commit/67b3a19bb442db879c7056722d14696cc33341b9) (`main`, 2026-09-03), Cargo pkg `54.0.0`, DataFusion `55.0.0` |
+| Spark    | 3.4 (vanilla, no acceleration plugin)                                                                                                                                     |
 
 ## Environment
 
@@ -147,29 +135,29 @@ mean of 3 iterations (cold iteration dropped by the harness).
 
 |     Query | Ballista (s) | Spark 3.4 (s) |
 | --------: | -----------: | ------------: |
-|         1 |        16.81 |         67.58 |
-|         2 |        30.24 |         29.80 |
-|         3 |        31.01 |         25.13 |
-|         4 |        20.50 |         21.19 |
-|         5 |        63.62 |         54.12 |
-|         6 |        15.28 |          1.23 |
-|         7 |        52.46 |         19.57 |
-|         8 |        40.68 |         48.60 |
-|         9 |        51.94 |         69.38 |
-|        10 |        56.01 |         35.92 |
-|        11 |        18.24 |         30.88 |
-|        12 |        19.60 |         10.78 |
-|        13 |        14.19 |         20.45 |
-|        14 |        15.70 |          7.00 |
-|        15 |        19.30 |         23.75 |
-|        16 |        17.40 |         23.41 |
-|        17 |        31.15 |         82.30 |
-|        18 |        51.41 |        129.40 |
-|        19 |        18.99 |         11.26 |
-|        20 |        33.49 |         19.22 |
-|        21 |        65.69 |        101.53 |
-|        22 |        12.40 |         12.71 |
-| **Total** |   **696.09** |    **845.21** |
+|         1 |        17.56 |         67.58 |
+|         2 |        27.13 |         29.80 |
+|         3 |        33.03 |         25.13 |
+|         4 |        18.34 |         21.19 |
+|         5 |        60.51 |         54.12 |
+|         6 |        14.25 |          1.23 |
+|         7 |        49.28 |         19.57 |
+|         8 |        96.02 |         48.60 |
+|         9 |       107.89 |         69.38 |
+|        10 |        55.78 |         35.92 |
+|        11 |        13.46 |         30.88 |
+|        12 |        16.49 |         10.78 |
+|        13 |        14.58 |         20.45 |
+|        14 |        17.99 |          7.00 |
+|        15 |        18.46 |         23.75 |
+|        16 |        14.29 |         23.41 |
+|        17 |        35.20 |         82.30 |
+|        18 |        53.64 |        129.40 |
+|        19 |        18.87 |         11.26 |
+|        20 |        29.29 |         19.22 |
+|        21 |        95.63 |        101.53 |
+|        22 |         9.37 |         12.71 |
+| **Total** |   **817.07** |    **845.21** |
 
 Row counts agree across engines for every query.
 
