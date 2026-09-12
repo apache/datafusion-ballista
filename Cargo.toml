@@ -89,6 +89,7 @@ dashmap = { version = "6.2" }
 env_logger = { version = "0.11" }
 futures = { version = "0.3" }
 log = { version = "0.4" }
+notify = { version = "8" }
 parking_lot = { version = "0.12" }
 rand = { version = "0.10" }
 serde = { version = "1.0" }

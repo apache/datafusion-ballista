@@ -54,7 +54,7 @@ disable-stage-plan-cache = []
 graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
-rest-api = ["dep:ballista-api-types", "dep:ballista-history", "dep:serde_json"]
+rest-api = ["dep:ballista-api-types", "dep:ballista-history", "dep:serde_json", "dep:notify"]
 spark-compat = ["ballista-core/spark-compat"]
 substrait = ["dep:datafusion-substrait"]
 
@@ -76,6 +76,7 @@ graphviz-rust = { version = "0.9", optional = true }
 http = "1.4"
 itertools = { workspace = true }
 log = { workspace = true }
+notify = { workspace = true, optional = true }
 object_store = { workspace = true }
 once_cell = { version = "1.21.4", optional = true }
 parking_lot = { workspace = true }

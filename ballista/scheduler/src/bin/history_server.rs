@@ -20,13 +20,12 @@
 //! so the existing TUI can connect to it unchanged.
 
 use ballista_core::error::{BallistaError, Result};
-use ballista_scheduler::history::{HistoryStore, history_router, spawn_refresh_task};
+use ballista_scheduler::history::{HistoryStore, history_router, spawn_service_tasks};
 use clap::Parser;
 use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, clap::Parser)]
@@ -45,10 +44,6 @@ struct Args {
     /// Port to bind the HTTP server to.
     #[arg(long, default_value_t = 50060)]
     bind_port: u16,
-    /// How often to rescan the event-log directory for jobs that finished
-    /// since the last pass, in seconds. Set to 0 to scan only at startup.
-    #[arg(long, default_value_t = 10)]
-    update_interval_seconds: u64,
 }
 
 fn main() -> Result<()> {
@@ -62,15 +57,17 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    // `HistoryStore::load` walks the log directory with blocking file I/O, and
-    // how long it takes scales with the number of stored jobs. Run it here,
-    // before the runtime exists, rather than parking a runtime worker on it.
-    let store = Arc::new(HistoryStore::load(&args.event_log_dir)?);
-    tracing::info!(
-        "Indexed {} completed job(s) from {}",
-        store.len(),
-        args.event_log_dir.display()
-    );
+    // The server is routinely started before any scheduler has written here,
+    // and `HistoryStore::new` places a filesystem watch that needs the
+    // directory to exist.
+    std::fs::create_dir_all(&args.event_log_dir).map_err(BallistaError::IoError)?;
+
+    // `HistoryStore::new` sets up the directory watch and builds the initial
+    // index with a blocking directory walk whose cost scales with the number
+    // of stored jobs. Run it here, before the runtime exists, rather than
+    // parking a runtime worker on it; `spawn_service_tasks` keeps the index
+    // current afterwards.
+    let store = Arc::new(HistoryStore::new(&args.event_log_dir)?);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_io()
@@ -82,18 +79,8 @@ fn main() -> Result<()> {
 }
 
 async fn serve(args: Args, store: Arc<HistoryStore>) -> Result<()> {
-    // Schedulers keep writing to this directory while the history server is
-    // up, so without a rescan the list is frozen at whatever had finished when
-    // the process started.
-    if args.update_interval_seconds > 0 {
-        let interval = Duration::from_secs(args.update_interval_seconds);
-        tracing::info!("Rescanning the event-log directory every {interval:?}");
-        spawn_refresh_task(Arc::clone(&store), interval);
-    } else {
-        tracing::info!(
-            "Rescanning is disabled; only jobs indexed at startup will be served"
-        );
-    }
+    // Held until `serve` returns; dropping it aborts the background loops.
+    let _service_tasks = spawn_service_tasks(Arc::clone(&store));
 
     let app = history_router(store);
 
