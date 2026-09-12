@@ -41,64 +41,25 @@ Extending basic building blocks will be demonstrated by integrating S3 object st
 For this specific task `config producer`, `runtime producer` and `session builder` have to be provided, and client, scheduler and executor need to be configured.
 
 These three functions ship in `ballista_core::object_store`, so the snippets below are the
-shipped implementations rather than something you have to write from scratch.
+shipped implementations rather than something you have to write from scratch. They are included
+from the source file at build time, so they cannot drift from it.
 
-```rust
-/// Custom [SessionConfig] constructor method
-///
-/// This method registers config extension [S3Options]
-/// which is used to configure [ObjectStore] with ACCESS and
-/// SECRET key
-pub fn session_config_with_s3_support() -> SessionConfig {
-    SessionConfig::new_with_ballista()
-        .with_information_schema(true)
-        .with_option_extension(S3Options::default())
-}
+```{literalinclude} ../../../ballista/core/src/object_store.rs
+:language: rust
+:start-at: /// Custom [SessionConfig] constructor method
+:end-before: /// Custom [RuntimeEnv] constructor method
 ```
 
-```rust
-/// Custom [RuntimeEnv] constructor method
-///
-/// It will register [CustomObjectStoreRegistry] which will
-/// use configuration extension [S3Options] to configure
-/// and created [ObjectStore]s
-pub fn runtime_env_with_s3_support(
-    session_config: &SessionConfig,
-) -> Result<Arc<RuntimeEnv>> {
-    let s3options = session_config
-        .options()
-        .extensions
-        .get::<S3Options>()
-        .ok_or(DataFusionError::Configuration(
-            "S3 Options not set".to_string(),
-        ))?;
-
-    let runtime_env = RuntimeEnvBuilder::new()
-        .with_object_store_registry(Arc::new(CustomObjectStoreRegistry::new(
-            s3options.clone(),
-        )))
-        .build()?;
-
-    Ok(Arc::new(runtime_env))
-}
+```{literalinclude} ../../../ballista/core/src/object_store.rs
+:language: rust
+:start-at: /// Custom [RuntimeEnv] constructor method
+:end-before: /// Custom [SessionState] with S3 support enabled
 ```
 
-```rust
-/// Custom [SessionState] constructor method
-///
-/// It will configure [SessionState] with provided [SessionConfig],
-/// and [RuntimeEnv].
-pub fn session_state_with_s3_support(
-    session_config: SessionConfig,
-) -> Result<SessionState> {
-    let runtime_env = runtime_env_with_s3_support(&session_config)?;
-
-    Ok(SessionStateBuilder::new()
-        .with_runtime_env(runtime_env)
-        .with_config(session_config)
-        .with_default_features()
-        .build())
-}
+```{literalinclude} ../../../ballista/core/src/object_store.rs
+:language: rust
+:start-at: /// Custom [SessionState] with S3 support enabled
+:end-before: /// Custom [SessionState] with S3 support.
 ```
 
 `S3Options` & `CustomObjectStoreRegistry` are implemented in `ballista_core::object_store`. Runnable
