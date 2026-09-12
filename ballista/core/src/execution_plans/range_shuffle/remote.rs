@@ -18,9 +18,9 @@
 //! Reading a remote range shuffle file down to the bytes a range covers.
 //!
 //! Two fetches per source: the index, then the bytes it points at. The
-//! consumer does the searching, so the executor never reads an index or
+//! consumer does the searching, so the server never reads an index or
 //! compares a value — which is what makes the same two steps work against
-//! object storage, where there is no executor to ask.
+//! object storage, where there is no flight server to ask.
 //!
 //! The extra round trip is paid once per source and, batched across sources,
 //! once per read. What it buys is the difference between a whole file and the

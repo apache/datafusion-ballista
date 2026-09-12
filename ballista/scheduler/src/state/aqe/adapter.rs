@@ -139,6 +139,14 @@ impl BallistaAdapter {
         self.inputs.insert(stage_id, stage_output);
         let partitioning = exchange.properties().partitioning.clone();
 
+        // Set together or not at all: the walk needs both the count and the
+        // cut it counts back from.
+        let rank_halo = exchange.range_repartition_routing().and_then(|routing| {
+            routing
+                .preceding_rows
+                .map(|rows| (rows, raw_bounds_from_cuts(&routing.cuts)))
+        });
+
         Ok(match (exchange.coalesce(), exchange.broadcast) {
             (Some(cp), false) => {
                 // Concatenate M-shape locations into K-shape per CoalescePlan.groups.
@@ -182,7 +190,12 @@ impl BallistaAdapter {
                             schema,
                             ordering.clone(),
                         )?
-                        .with_fetch_limit(fetch),
+                        .with_fetch_limit(fetch)
+                        // A rank halo widened this reader's bounds per file.
+                        // The count is what lets it re-walk them per message,
+                        // and the cut ranges are what it walks back from.
+                        .with_halo_rows(rank_halo.as_ref().map(|(rows, _)| *rows))
+                        .with_cut_bounds(rank_halo.map(|(_, cut_bounds)| cut_bounds))?,
                     )
                 } else {
                     Arc::new(ShuffleReaderExec::try_new(
@@ -237,6 +250,7 @@ impl BallistaAdapter {
     ) -> datafusion::error::Result<AdaptiveStageInfo> {
         if let Some(root) = plan.downcast_ref::<ExchangeExec>() {
             let mut adapter = BallistaAdapter::default();
+            resolve_rank_widened_bounds(root.input())?;
             resolve_range_filter_cuts(root.input())?;
             let plan = root
                 .input()
@@ -267,6 +281,7 @@ impl BallistaAdapter {
             })
         } else if let Some(root) = plan.downcast_ref::<AdaptiveDatafusionExec>() {
             let mut adapter = BallistaAdapter::default();
+            resolve_rank_widened_bounds(root.input())?;
             resolve_range_filter_cuts(root.input())?;
             let plan = root
                 .input()
@@ -393,6 +408,56 @@ fn resolve_range_filter_cuts(
         }
         let raw_bounds = raw_bounds_from_cuts(&routing.cuts);
         rf.resolve_bounds(raw_bounds)?;
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(())
+}
+
+/// Resolve the bounds of a `RangeFilterExec` sitting directly on a boundary
+/// whose consumer is a bounded-`ROWS` window: `[widened_lower[k], cuts[k])`,
+/// the band the scheduler's rank walk produced, in place of the cut range.
+///
+/// Runs before [`resolve_range_filter_cuts`], which then leaves these filters
+/// alone, resolving only the ones still pending. The narrow filter above the
+/// window operator is never one of them — its immediate child is the window,
+/// not the boundary — so it keeps the cut range and goes on trimming the halo
+/// rows back off.
+///
+/// A boundary with no such consumer reports an empty `widened_lower` and is
+/// left to the cut path.
+fn resolve_rank_widened_bounds(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Result<(), DataFusionError> {
+    plan.apply(|node| {
+        let Some(range_filter) = node.downcast_ref::<RangeFilterExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        if range_filter.raw_bounds().is_some() {
+            return Ok(TreeNodeRecursion::Continue);
+        }
+        let children = range_filter.children();
+        let [child] = children.as_slice() else {
+            return datafusion::common::internal_err!(
+                "RangeFilterExec must have exactly 1 child, got {}",
+                children.len()
+            );
+        };
+        let Some(exchange) = child.downcast_ref::<ExchangeExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let Some(routing) = exchange.range_repartition_routing() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        if routing.widened_lower.is_empty() {
+            return Ok(TreeNodeRecursion::Continue);
+        }
+        let bounds = routing
+            .widened_lower
+            .iter()
+            .enumerate()
+            .map(|(consumer, lower)| (lower.clone(), routing.cuts.get(consumer).cloned()))
+            .collect();
+        range_filter.resolve_bounds(bounds)?;
         Ok(TreeNodeRecursion::Continue)
     })?;
     Ok(())

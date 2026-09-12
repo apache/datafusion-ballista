@@ -22,7 +22,7 @@ use crate::state::aqe::execution_plan::{
 use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
-    DistributedExchangeRule, NormalizeInterleaveRule, ParallelWindowRule,
+    DistributedExchangeRule, HaloRowRule, NormalizeInterleaveRule, ParallelWindowRule,
     PrefixWindowRule, PropagateEmptyExecRule, SelectJoinRule,
 };
 use crate::state::distributed_explain::handle_explain_plan;
@@ -579,6 +579,13 @@ impl AdaptivePlanner {
         // because it plants its own state-sync ExchangeExec.
         physical_optimizers
             .push(Arc::new(PrefixWindowRule::new(plan_id_generator.clone())));
+
+        // Third sibling, for bounded ROWS frames. Same chain position for the
+        // same reason: all three gate on mutually exclusive frame shapes, so
+        // their relative order among themselves doesn't matter, and all three
+        // need DistributedExchangeRule downstream to turn the ORRE they plant
+        // into a stage boundary.
+        physical_optimizers.push(Arc::new(HaloRowRule));
 
         // `DistributedExchangeRule` should be the last plan mutator rule in the chain
         physical_optimizers

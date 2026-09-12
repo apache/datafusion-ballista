@@ -332,6 +332,95 @@ pub fn select_record_batches(
     Ok(Some((start..end.max(start)).collect()))
 }
 
+/// The value a consumer has to read down to, below `lower_cut`, before it
+/// holds `halo_rows` of the rows preceding that cut — at message granularity,
+/// from `indexes` alone, fetching no data.
+///
+/// The scheduler answers the same question from the producer's runtime stats,
+/// but only at file granularity: a file is one `[key_min, key_max]` with one
+/// row count, so the furthest it can stop is a whole file below the cut. These
+/// indexes carry a row per message, so the same walk stops a batch below it.
+///
+/// A message is counted only when its successor's first key proves it lies
+/// wholly below the cut, since messages within a file are sorted. The last
+/// message of a file has no successor and so always straddles: counting it
+/// would need the file's own largest key, which the index does not carry.
+/// Straddlers count zero — over-counting would stop the walk short of the rows
+/// the frame asked for — and are read anyway, being inside the band.
+///
+/// `None` when the messages below the cut don't add up to `halo_rows`: every
+/// row down there is needed, and the caller keeps whatever bound it had.
+/// Consulting a subset of a consumer's sources is therefore safe, always
+/// yielding a bound at or below the one every source would give.
+///
+/// Ascending keys only, matching the rules that plant a rank halo.
+pub fn rank_widened_lower_bound(
+    indexes: &[RecordBatch],
+    lower_cut: &ScalarValue,
+    halo_rows: u64,
+) -> Result<Option<ScalarValue>> {
+    if halo_rows == 0 {
+        return Ok(Some(lower_cut.clone()));
+    }
+    // (first_key, rows) of every message the walk may count, flattened across
+    // files and then ordered rather than merged with a cursor per file: an
+    // index is KB against a data file's MB, and the whole set is already in
+    // memory by the time this runs.
+    let mut countable: Vec<(ScalarValue, u64)> = Vec::new();
+    for index in indexes {
+        let is_dict = is_dict_column(index)?;
+        let num_rows = num_rows_column(index)?;
+        let keys = index.column(0);
+        // Dictionary rows describe bytes, not data, and carry no key.
+        let messages: Vec<usize> = (0..index.num_rows())
+            .filter(|row| !is_dict.value(*row))
+            .collect();
+        for (position, &row) in messages.iter().enumerate() {
+            // A NULL first key is the NULL run, which sorts above every cut.
+            if keys.is_null(row) {
+                continue;
+            }
+            let first_key = ScalarValue::try_from_array(keys, row)?;
+            if first_key.partial_cmp(lower_cut) != Some(std::cmp::Ordering::Less) {
+                continue;
+            }
+            let Some(&successor) = messages.get(position + 1) else {
+                continue;
+            };
+            if keys.is_null(successor) {
+                continue;
+            }
+            // Strictly below: a successor starting *at* the cut leaves this
+            // message holding rows at the cut, which are in range, not halo.
+            let upper_bound = ScalarValue::try_from_array(keys, successor)?;
+            if upper_bound.partial_cmp(lower_cut) != Some(std::cmp::Ordering::Less) {
+                continue;
+            }
+            if num_rows.is_null(row) {
+                continue;
+            }
+            countable.push((first_key, num_rows.value(row)));
+        }
+    }
+    countable.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut rows_found = 0u64;
+    let mut bound = None;
+    for (first_key, rows) in countable {
+        rows_found += rows;
+        bound = Some(first_key);
+        if rows_found >= halo_rows {
+            break;
+        }
+    }
+    Ok(bound.filter(|_| rows_found >= halo_rows))
+}
+
 /// Collect each batch's first-row sort key as batches pass through to the
 /// writer.
 ///
@@ -741,5 +830,145 @@ mod tests {
             !is_sort_shuffle_output(&index),
             "the sort shuffle probes for `.arrow.index`, which this must not be",
         );
+    }
+}
+
+#[cfg(test)]
+mod rank_walk_tests {
+    //! `rank_widened_lower_bound` — how far below its cut a bounded-ROWS
+    //! consumer has to start reading, resolved from index rows rather than
+    //! from the file ranges the scheduler sees.
+
+    use super::*;
+    use datafusion::arrow::array::{Float64Array, UInt64Array};
+
+    fn key(value: f64) -> ScalarValue {
+        ScalarValue::Float64(Some(value))
+    }
+
+    /// An index in file order: `(first_key, num_rows, is_dict)` per message.
+    fn index_of(rows: &[(Option<f64>, Option<u64>, bool)]) -> RecordBatch {
+        let mut fields = vec![Field::new("v", DataType::Float64, true)];
+        fields.extend(fixed_fields());
+        let count = rows.len();
+        RecordBatch::try_new(
+            Arc::new(Schema::new(fields)),
+            vec![
+                Arc::new(Float64Array::from(
+                    rows.iter().map(|row| row.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(BooleanArray::from(
+                    rows.iter().map(|row| row.2).collect::<Vec<_>>(),
+                )),
+                Arc::new(UInt64Array::from(
+                    (0..count).map(|row| row as u64 * 100).collect::<Vec<_>>(),
+                )),
+                Arc::new(UInt64Array::from(vec![100u64; count])),
+                Arc::new(UInt64Array::from(
+                    rows.iter().map(|row| row.1).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Messages, all record batches, none of them a dictionary.
+    fn batches(messages: &[(f64, u64)]) -> RecordBatch {
+        index_of(
+            &messages
+                .iter()
+                .map(|&(first_key, rows)| (Some(first_key), Some(rows), false))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn walk(indexes: &[RecordBatch], lower_cut: f64, halo_rows: u64) -> Option<f64> {
+        match rank_widened_lower_bound(indexes, &key(lower_cut), halo_rows).unwrap() {
+            Some(ScalarValue::Float64(Some(bound))) => Some(bound),
+            Some(other) => panic!("bound came back as {other}"),
+            None => None,
+        }
+    }
+
+    /// The highest message the walk can prove lies wholly below the cut, whose
+    /// own rows already cover what the frame asked for.
+    #[test]
+    fn stops_at_the_highest_message_that_covers_the_halo() {
+        let index = batches(&[(10.0, 500), (300.0, 500), (995.0, 500), (1200.0, 500)]);
+        // 995 has a successor at 1200, so it straddles; 300's successor at 995
+        // proves it wholly below, and its 500 rows cover the 100 wanted.
+        assert_eq!(walk(&[index], 1000.0, 100), Some(300.0));
+    }
+
+    /// Draining one file before the next bounds correctly but hundreds of keys
+    /// lower, so the walk is over every file's messages in key order.
+    #[test]
+    fn walks_every_files_messages_in_key_order() {
+        let left = batches(&[(100.0, 60), (500.0, 60), (950.0, 60)]);
+        let right = batches(&[(200.0, 60), (600.0, 60), (980.0, 60)]);
+        // Descending over the countable messages: 600 (60 rows), then 500
+        // (120, enough). Draining `left` first would take 500 then 100.
+        assert_eq!(walk(&[left, right], 1000.0, 100), Some(500.0));
+    }
+
+    /// The last message of a file has no successor to bound it, and the index
+    /// carries no file-level maximum, so it can hold rows above the cut.
+    #[test]
+    fn the_last_message_in_a_file_always_straddles() {
+        let index = batches(&[(100.0, 500), (900.0, 500)]);
+        // 900's rows are unprovable, so the walk takes 100 instead.
+        assert_eq!(walk(&[index], 1000.0, 100), Some(100.0));
+    }
+
+    /// A message whose successor starts exactly at the cut holds rows *at* the
+    /// cut, which are the consumer's own rows, not its halo.
+    #[test]
+    fn a_successor_at_the_cut_leaves_a_straddler() {
+        let index = batches(&[(100.0, 500), (900.0, 500), (1000.0, 500)]);
+        // 900 is bounded by a successor starting at the cut, so the walk falls
+        // back to 100 rather than counting it.
+        assert_eq!(walk(&[index], 1000.0, 100), Some(100.0));
+    }
+
+    /// A dictionary row describes bytes, carries no key, and must not be
+    /// mistaken for the successor that bounds the message before it.
+    #[test]
+    fn a_dictionary_row_is_not_a_successor() {
+        let index = index_of(&[
+            (Some(100.0), Some(500), false),
+            (None, None, true),
+            (Some(900.0), Some(500), false),
+            (Some(950.0), Some(500), false),
+        ]);
+        // 100 is bounded by 900, not by the dictionary between them, so it
+        // counts; 900 is bounded by 950 and counts too, and being higher it
+        // is what the walk stops on.
+        assert_eq!(walk(&[index], 1000.0, 100), Some(900.0));
+    }
+
+    /// A NULL first key is the NULL run, which sorts above every cut.
+    #[test]
+    fn a_null_keyed_message_is_not_a_predecessor() {
+        let index = index_of(&[
+            (Some(100.0), Some(500), false),
+            (None, Some(500), false),
+            (Some(900.0), Some(500), false),
+        ]);
+        assert_eq!(walk(&[index], 1000.0, 100), None);
+    }
+
+    /// Not enough provable rows below the cut: the caller keeps the bound it
+    /// already had rather than being handed a tighter one.
+    #[test]
+    fn too_few_rows_below_the_cut_gives_no_bound() {
+        let index = batches(&[(100.0, 3), (200.0, 3), (900.0, 500)]);
+        assert_eq!(walk(&[index], 1000.0, 100), None);
+    }
+
+    /// A frame wanting no preceding rows is not widened at all.
+    #[test]
+    fn no_preceding_rows_leaves_the_cut_alone() {
+        let index = batches(&[(100.0, 500), (900.0, 500)]);
+        assert_eq!(walk(&[index], 1000.0, 0), Some(1000.0));
     }
 }
