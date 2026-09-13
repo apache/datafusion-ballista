@@ -577,72 +577,73 @@ fn preferred_executor_is_the_largest_byte_holder() {
     assert_eq!(locality.dominant_executor(), Some("executor_2"));
 }
 
-/// A holder below the share bar is not preferred, but its bytes still count.
+/// A partition is offered to at most its three largest holders with room, but every
+/// holder's bytes still count.
 #[test]
-fn a_holder_below_the_threshold_is_still_measured() {
-    let holders: Vec<(&str, u64)> = vec![
-        ("executor_1", 600),
-        ("executor_2", 500),
-        ("executor_3", 400),
-        ("executor_4", 300),
-        ("executor_5", 200),
-    ];
-    let plan = reader(vec![holders]);
+fn only_the_three_largest_holders_with_room_are_offered() {
+    let plan = reader(vec![
+        vec![
+            ("executor_1", 600),
+            ("executor_2", 500),
+            ("executor_3", 400),
+            ("executor_4", 300),
+            ("executor_5", 200),
+        ],
+        vec![("executor_1", 1_000)],
+        vec![("executor_2", 1_000)],
+        vec![("executor_3", 1_000)],
+    ]);
     let locality = StageLocality::of(&plan);
-    let partition = &locality.partitions[&0];
+    assert_eq!(200, locality.partitions[&0].bytes_on("executor_5"));
 
-    assert_eq!(200, partition.bytes_on("executor_5"));
-    assert_eq!(0, partition.bytes_on("executor_9"));
-
-    // 200 of 2000 is under the bar, so the slot is not offered.
-    let mut capacity = HashMap::from([("executor_5", 1)]);
-    assert!(locality.assign(0..1, &mut capacity).is_empty());
+    // Partitions 1 to 3 take the top three holders' only vcores, and `executor_4`
+    // is not offered partition 0 even though it has room.
+    let mut capacity = HashMap::from([
+        ("executor_1", 1),
+        ("executor_2", 1),
+        ("executor_3", 1),
+        ("executor_4", 1),
+    ]);
+    let assignment = locality.assign(0..4, &mut capacity);
+    assert!(!assignment.contains_key(&0), "{assignment:?}");
+    assert_eq!(Some(&1), capacity.get("executor_4"));
 }
 
-/// An evenly spread partition has no preferred holder.
+/// The largest holder is preferred even with less than a fifth of the partition.
 #[test]
-fn an_evenly_spread_partition_has_no_home() {
-    // Eight executors, an eighth of the partition each.
+fn a_holder_under_a_fifth_is_still_preferred() {
     let locality = StageLocality::of(&reader(vec![vec![
-        ("executor_1", 125),
-        ("executor_2", 125),
-        ("executor_3", 125),
-        ("executor_4", 125),
-        ("executor_5", 125),
-        ("executor_6", 125),
-        ("executor_7", 125),
-        ("executor_8", 125),
+        ("executor_1", 120),
+        ("executor_2", 160),
+        ("executor_3", 120),
+        ("executor_4", 120),
+        ("executor_5", 120),
+        ("executor_6", 120),
+        ("executor_7", 120),
+        ("executor_8", 120),
     ]]));
 
     let mut capacity = HashMap::from([("executor_1", 1), ("executor_2", 1)]);
-    assert!(
-        locality.assign(0..1, &mut capacity).is_empty(),
-        "no executor holds enough to be worth preferring",
-    );
     assert_eq!(
-        Some(&1),
-        capacity.get("executor_1"),
-        "and no capacity was spent pretending otherwise",
+        HashMap::from([(0, "executor_2")]),
+        locality.assign(0..1, &mut capacity),
     );
-
-    // The bytes are still recorded.
-    assert_eq!(125, locality.partitions[&0].bytes_on("executor_1"));
 }
 
-/// The share bar is inclusive.
+/// Holders without free vcores don't use up a partition's three offers.
 #[test]
-fn an_exact_threshold_share_counts_as_a_home() {
+fn busy_holders_do_not_use_up_the_offers() {
     let locality = StageLocality::of(&reader(vec![vec![
-        ("executor_1", 200),
-        ("executor_2", 200),
+        ("executor_1", 400),
+        ("executor_2", 300),
         ("executor_3", 200),
-        ("executor_4", 200),
-        ("executor_5", 200),
+        ("executor_4", 100),
     ]]));
 
-    let mut capacity = HashMap::from([("executor_5", 1)]);
+    // Only the smallest holder has room.
+    let mut capacity = HashMap::from([("executor_4", 1)]);
     assert_eq!(
-        HashMap::from([(0, "executor_5")]),
+        HashMap::from([(0, "executor_4")]),
         locality.assign(0..1, &mut capacity),
     );
 }

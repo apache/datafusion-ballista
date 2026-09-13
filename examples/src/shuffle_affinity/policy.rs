@@ -20,10 +20,10 @@ use super::stats::{LocalityObserver, LocalityStats};
 
 /// Places each task on the executor already holding most of its shuffle input.
 ///
-/// Every `(partition, holder)` pair is ranked by bytes and holders are filled
-/// greedily; a collapse stage goes whole to its largest holder. The remainder is
-/// bound bias-style, so no vcore idles. Only uneven splits help: an even shuffle
-/// over `E` executors reads `1/E` locally under any placement.
+/// Each partition is offered to its three largest holders with free vcores, and the
+/// largest holdings are filled first; a collapse stage goes whole to its largest
+/// holder. The remainder is bound bias-style, so no vcore idles. Only uneven splits
+/// help: an even shuffle over `E` executors reads `1/E` locally under any placement.
 #[derive(Clone, Default)]
 pub struct ShuffleAffinityPolicy {
     /// Memoized scans by job, then stage. Shared by clones, but a policy shared across
@@ -121,8 +121,7 @@ impl ShuffleAffinityPolicy {
 
         // Affinity pass.
         if whole_stage {
-            // A collapse task reads the whole stage: bind it to the largest holder with
-            // room. No holder-share floor, since one task has no spread to protect.
+            // A collapse task reads the whole stage: bind it to the largest holder with room.
             for home in locality.ranked_executors() {
                 let budget = budgets
                     .iter_mut()

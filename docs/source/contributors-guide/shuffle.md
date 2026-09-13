@@ -284,9 +284,10 @@ behavior it would be config-gated, leaving today's model as the default:
 
   Each completed producer records how many bytes it wrote to each partition,
   and the consumer stage sees those counts on its `PartitionLocation`s. The
-  policy gives each executor's free vcores to the partitions it holds the most
-  bytes of, then places any remaining partitions the way the bias policy does,
-  so no vcore sits idle.
+  policy offers each partition to the three executors with free vcores that
+  hold the most of its bytes, and hands out vcores to the largest holdings
+  first. Partitions left over are placed the way the bias policy does, so no
+  vcore sits idle.
 
   The policy helps only when a partition's bytes are unevenly spread. When
   every producer writes the same amount to every partition, each of `E`

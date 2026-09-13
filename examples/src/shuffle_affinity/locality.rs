@@ -37,14 +37,6 @@ pub(super) struct PartitionLocality {
 }
 
 impl PartitionLocality {
-    /// Whether `bytes` reaches [`MIN_HOLDER_SHARE`] of this partition, compared
-    /// exactly in widened integers.
-    fn is_home(&self, bytes: u64) -> bool {
-        let (numerator, denominator) = MIN_HOLDER_SHARE;
-        u128::from(bytes) * u128::from(denominator)
-            >= u128::from(self.total) * u128::from(numerator)
-    }
-
     /// Bytes `executor_id` holds of this partition, or zero if it holds none.
     pub(super) fn bytes_on(&self, executor_id: &str) -> u64 {
         bytes_held(&self.holders, executor_id)
@@ -81,9 +73,9 @@ fn bytes_held(ranked: &[(ExecutorId, u64)], executor_id: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Share of a partition an executor must hold to be preferred, as a fraction.
-/// Spark also uses 1/5; an even shuffle over more than five executors prefers none.
-pub(super) const MIN_HOLDER_SHARE: (u64, u64) = (1, 5);
+/// How many of its largest holders with free vcores a partition is offered to.
+/// Offering every holder placed no better, and fewer candidates keep the sort small.
+const MAX_HOLDERS_OFFERED: usize = 3;
 
 impl StageLocality {
     pub(super) fn of(plan: &Arc<dyn ExecutionPlan>) -> Self {
@@ -177,7 +169,8 @@ impl StageLocality {
     }
 
     /// Assigns pending partitions to holders, largest holdings first, spending
-    /// `capacity`. Unassigned partitions are left to the fallback pass.
+    /// `capacity`. Each partition is offered to its [`MAX_HOLDERS_OFFERED`] largest
+    /// holders with free vcores; unassigned partitions are left to the fallback pass.
     pub(super) fn assign<'a>(
         &'a self,
         pending: impl Iterator<Item = usize>,
@@ -188,18 +181,19 @@ impl StageLocality {
             let Some(locality) = self.partitions.get(&partition) else {
                 continue;
             };
-            for (executor_id, held) in &locality.holders {
-                if !locality.is_home(*held) {
-                    // Holders are sorted, so none after this qualifies.
-                    break;
-                }
-                if capacity.contains_key(&**executor_id) {
-                    candidates.push(Candidate {
-                        bytes: *held,
-                        partition,
-                        executor_id,
-                    });
-                }
+            let with_room = locality
+                .holders
+                .iter()
+                .filter(|(executor_id, _)| {
+                    capacity.get(&**executor_id).is_some_and(|&free| free > 0)
+                })
+                .take(MAX_HOLDERS_OFFERED);
+            for (executor_id, held) in with_room {
+                candidates.push(Candidate {
+                    bytes: *held,
+                    partition,
+                    executor_id,
+                });
             }
         }
         // Bytes descending, then partition and executor for determinism.
