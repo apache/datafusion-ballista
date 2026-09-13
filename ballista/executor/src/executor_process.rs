@@ -658,10 +658,12 @@ pub async fn start_executor_process(
     // Graceful shutdown notification
     let shutdown_notification = ShutdownNotifier::new();
     let flight_work_dir = work_dir.clone();
+    let clean_job_data_on_shutdown = opt.job_data_clean_up_interval_seconds > 0;
 
-    if opt.job_data_clean_up_interval_seconds > 0 {
+    if clean_job_data_on_shutdown {
         let mut interval_time =
             time::interval(Duration::from_secs(opt.job_data_clean_up_interval_seconds));
+        let cleaner_work_dir = work_dir.clone();
 
         let mut shuffle_cleaner_shutdown = shutdown_notification.subscribe_for_shutdown();
         let shuffle_cleaner_complete = shutdown_notification.shutdown_complete_tx.clone();
@@ -671,18 +673,12 @@ pub async fn start_executor_process(
             while !shuffle_cleaner_shutdown.is_shutdown() {
                 tokio::select! {
                     _ = interval_time.tick() => {
-                            if let Err(e) = clean_shuffle_data_loop(&work_dir, job_data_ttl_seconds).await
+                            if let Err(e) = clean_shuffle_data_loop(&cleaner_work_dir, job_data_ttl_seconds).await
                         {
                             error!("Ballista executor fail to clean_shuffle_data {e:?}")
                         }
                         },
                     _ = shuffle_cleaner_shutdown.recv() => {
-                        if let Err(e) = clean_all_shuffle_data(&work_dir).await
-                        {
-                            error!("Ballista executor fail to clean_shuffle_data {e:?}")
-                        } else {
-                            info!("Shuffle data cleaned.");
-                        }
                         drop(shuffle_cleaner_complete);
                         return;
                     }
@@ -737,7 +733,7 @@ pub async fn start_executor_process(
     let shutdown = shutdown_notification.subscribe_for_shutdown();
     let override_flight = opt.override_arrow_flight_service.clone();
 
-    service_handlers.push(match override_flight {
+    let flight_server = match override_flight {
         None => {
             info!("Starting built-in arrow flight service");
             flight_server_task(
@@ -759,7 +755,14 @@ pub async fn start_executor_process(
                 opt.grpc_server_config.clone(),
             )
         }
-    });
+    };
+    // Keep shutdown completion open until tonic has drained existing Flight connections.
+    let flight_complete = shutdown_notification.shutdown_complete_tx.clone();
+    service_handlers.push(tokio::spawn(async move {
+        let result = flight_server.await.map_err(BallistaError::TokioError)?;
+        drop(flight_complete);
+        result
+    }));
 
     let tasks_drained = TasksDrainedFuture(executor);
 
@@ -842,6 +845,13 @@ pub async fn start_executor_process(
 
     // Wait for all related components to finish the shutdown processing.
     let _ = shutdown_complete_rx.recv().await;
+    if clean_job_data_on_shutdown {
+        if let Err(e) = clean_all_shuffle_data(&work_dir).await {
+            error!("Ballista executor fail to clean_shuffle_data {e:?}")
+        } else {
+            info!("Shuffle data cleaned.");
+        }
+    }
     info!("Executor stopped.");
     Ok(())
 }
