@@ -292,9 +292,11 @@ behavior it would be config-gated, leaving today's model as the default:
   The policy helps only when a partition's bytes are unevenly spread. When
   every producer writes the same amount to every partition, each of `E`
   executors holds `1/E` of it and no placement does better. The policy is
-  therefore opt-in. It reports the share of shuffle bytes read locally through
-  `ShuffleAffinityPolicy::stats`, through an attached `LocalityObserver`, and in
-  a `debug!` log line for each scheduling round.
+  therefore opt-in. It reports the share of shuffle bytes it placed on the
+  executor holding them through `ShuffleAffinityPolicy::stats`, through an
+  attached `LocalityObserver`, and in a `debug!` log line for each scheduling
+  round. These counts are taken when tasks are bound, so a task retried after a
+  failed launch or a lost executor is counted again.
 
   The scheduler crate is unchanged. Rather than widen the scheduler's API while
   the policy is still being evaluated, the policy copies the four scheduler

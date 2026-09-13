@@ -46,10 +46,11 @@ impl std::fmt::Debug for ShuffleAffinityPolicy {
     }
 }
 
-/// A stage's scan, tagged with the attempt it was taken from.
+/// A stage's scan and single-task check, tagged with the attempt they came from.
 struct CachedLocality {
     stage_attempt_num: usize,
     locality: Arc<StageLocality>,
+    whole_stage: bool,
 }
 
 impl ShuffleAffinityPolicy {
@@ -58,7 +59,7 @@ impl ShuffleAffinityPolicy {
         Self::default()
     }
 
-    /// Cumulative locality achieved so far.
+    /// Cumulative locality of the policy's placements so far; see [`LocalityStats`].
     pub fn stats(&self) -> LocalityStats {
         *lock(&self.stats)
     }
@@ -69,29 +70,33 @@ impl ShuffleAffinityPolicy {
         self.observer.set(observer).is_ok()
     }
 
-    /// The stage's scan, memoized per stage attempt. Every path that replaces a
-    /// stage's plan bumps the attempt, so it is a sound cache key.
+    /// The stage's scan and whether it runs as one task, memoized per stage attempt.
+    /// Every path that replaces a stage's plan bumps the attempt, so it is a sound
+    /// cache key.
     pub(super) fn locality_for(
         &self,
         job_id: &JobId,
         running_stage: &RunningStage,
-    ) -> Arc<StageLocality> {
+    ) -> (Arc<StageLocality>, bool) {
         let mut cache = lock(&self.cache);
-        let stages = cache.entry(job_id.clone()).or_default();
-        if let Some(cached) = stages.get(&running_stage.stage_id)
+        if let Some(cached) = cache
+            .get(job_id)
+            .and_then(|stages| stages.get(&running_stage.stage_id))
             && cached.stage_attempt_num == running_stage.stage_attempt_num
         {
-            return cached.locality.clone();
+            return (cached.locality.clone(), cached.whole_stage);
         }
         let locality = Arc::new(StageLocality::of(&running_stage.plan));
-        stages.insert(
+        let whole_stage = stage_has_input_collapse(&running_stage.plan);
+        cache.entry(job_id.clone()).or_default().insert(
             running_stage.stage_id,
             CachedLocality {
                 stage_attempt_num: running_stage.stage_attempt_num,
                 locality: locality.clone(),
+                whole_stage,
             },
         );
-        locality
+        (locality, whole_stage)
     }
 
     /// Binds one stage: affinity first, then a fallback over the remaining vcores.
@@ -102,11 +107,9 @@ impl ShuffleAffinityPolicy {
         session_id: &str,
         job_id: &JobId,
         budgets: &mut [&mut AvailableVcores],
-        bound_tasks: &mut Vec<BoundTask>,
-        round: &mut LocalityStats,
+        round: &mut Round,
     ) -> bool {
-        let locality = self.locality_for(job_id, running_stage);
-        let whole_stage = stage_has_input_collapse(&running_stage.plan);
+        let (locality, whole_stage) = self.locality_for(job_id, running_stage);
         let binding = Binding {
             session_id,
             job_id,
@@ -127,13 +130,7 @@ impl ShuffleAffinityPolicy {
                     .iter_mut()
                     .find(|budget| budget.executor_id == home && budget.vcores > 0);
                 if let Some(budget) = budget {
-                    binding.bind_all(
-                        running_stage,
-                        budget,
-                        &mut queued,
-                        bound_tasks,
-                        round,
-                    );
+                    binding.bind_all(running_stage, budget, &mut queued, round);
                     break;
                 }
             }
@@ -162,7 +159,7 @@ impl ShuffleAffinityPolicy {
                 let Some(mut mine) = by_home.remove(budget.executor_id.as_str()) else {
                     continue;
                 };
-                binding.bind_all(running_stage, budget, &mut mine, bound_tasks, round);
+                binding.bind_all(running_stage, budget, &mut mine, round);
                 // Assignment never exceeds an executor's free vcores, so all of it binds.
                 debug_assert!(
                     mine.is_empty(),
@@ -182,7 +179,7 @@ impl ShuffleAffinityPolicy {
             if queued.is_empty() {
                 break;
             }
-            binding.bind_all(running_stage, budget, &mut queued, bound_tasks, round);
+            binding.bind_all(running_stage, budget, &mut queued, round);
         }
 
         let exhausted = !queued.is_empty();
@@ -222,12 +219,6 @@ impl ShuffleAffinityPolicy {
         );
     }
 
-    /// The shared stats handle, for tests asserting two policies share state.
-    #[cfg(test)]
-    pub(super) fn stats_handle(&self) -> Arc<Mutex<LocalityStats>> {
-        self.stats.clone()
-    }
-
     /// Number of memoized stage scans currently held.
     pub(super) fn cache_len(&self) -> usize {
         lock(&self.cache).values().map(HashMap::len).sum()
@@ -261,14 +252,13 @@ impl DistributionPolicy for ShuffleAffinityPolicy {
         mut budgets: Vec<&mut AvailableVcores>,
         running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     ) -> datafusion::error::Result<Vec<BoundTask>> {
-        let mut schedulable_tasks: Vec<BoundTask> = vec![];
-        let mut round = LocalityStats::default();
+        let mut round = Round::default();
 
         self.prune_cache(&running_jobs);
 
         if budgets.iter().all(|budget| budget.vcores == 0) {
             debug!("No executor vcores available for task binding");
-            return Ok(schedulable_tasks);
+            return Ok(vec![]);
         }
 
         // Largest budget first, as `Bias` does; ties on id keep rounds deterministic.
@@ -293,7 +283,6 @@ impl DistributionPolicy for ShuffleAffinityPolicy {
                     &session_id,
                     job_id,
                     &mut budgets,
-                    &mut schedulable_tasks,
                     &mut round,
                 );
                 if cluster_exhausted {
@@ -302,13 +291,20 @@ impl DistributionPolicy for ShuffleAffinityPolicy {
             }
         }
 
-        self.record(round);
-        Ok(schedulable_tasks)
+        self.record(round.stats);
+        Ok(round.tasks)
     }
 
     fn name(&self) -> &str {
         "shuffle-affinity"
     }
+}
+
+/// What one binding round has produced so far.
+#[derive(Default)]
+struct Round {
+    tasks: Vec<BoundTask>,
+    stats: LocalityStats,
 }
 
 /// One stage's binding context, shared by the affinity and fallback passes.
@@ -330,16 +326,19 @@ impl Binding<'_> {
         stage: &mut RunningStage,
         budget: &mut AvailableVcores,
         partitions: &mut Vec<usize>,
-        bound_tasks: &mut Vec<BoundTask>,
-        round: &mut LocalityStats,
+        round: &mut Round,
     ) {
-        while budget.vcores > 0 && !partitions.is_empty() {
+        // Bound partitions are removed once at the end, not shifted out per task.
+        let mut bound = 0;
+        while budget.vcores > 0 && bound < partitions.len() {
+            let remaining = partitions.len() - bound;
             let take = if self.whole_stage {
-                partitions.len()
+                remaining
             } else {
-                (budget.vcores as usize).min(self.cap).min(partitions.len())
+                (budget.vcores as usize).min(self.cap).min(remaining)
             };
-            let slice: Vec<usize> = partitions.drain(..take).collect();
+            let slice = partitions[bound..bound + take].to_vec();
+            bound += take;
             let (executor_id, task) = bind_one_from(
                 stage,
                 self.session_id,
@@ -348,12 +347,13 @@ impl Binding<'_> {
                 slice,
                 self.whole_stage,
             );
-            *round += self.locality.measure(
+            round.stats += self.locality.measure(
                 &executor_id,
                 &task.global_input_partition_ids,
                 self.whole_stage,
             );
-            bound_tasks.push((executor_id, task));
+            round.tasks.push((executor_id, task));
         }
+        partitions.drain(..bound);
     }
 }

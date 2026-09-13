@@ -1,6 +1,8 @@
 //! Locality measurements and the observer hook that publishes them.
 
-/// Locality the policy achieved, summed over its life and logged per round at `debug`.
+/// Locality of the policy's placements, summed over its life and logged per round at
+/// `debug`. Counted when tasks are bound, so a task bound again after a failed launch
+/// or a lost executor counts again.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LocalityStats {
     /// Tasks bound.
@@ -9,9 +11,10 @@ pub struct LocalityStats {
     pub partitions: u64,
     /// Of those, the ones bound to an executor holding some of their input.
     pub local_partitions: u64,
-    /// Input bytes those tasks will read from the executor running them.
+    /// Of `total_bytes`, the bytes on the executor each task was bound to.
     pub local_bytes: u64,
-    /// Input bytes those tasks will read in total, counting shuffle input only.
+    /// Shuffle bytes those tasks read from their own partitions. Inputs every task reads
+    /// in full, such as a broadcast, count only for single-task stages.
     pub total_bytes: u64,
     /// Whether any count includes a placeholder for a producer that reported no
     /// size. Sticky once set.
@@ -19,8 +22,9 @@ pub struct LocalityStats {
 }
 
 impl LocalityStats {
-    /// Share of shuffle bytes read locally, in `0.0..=1.0`, or zero before any are
-    /// bound. Counts locations rather than bytes while [`Self::imputed_bytes`] is set.
+    /// Share of `total_bytes` placed on the executor holding them, in `0.0..=1.0`, or
+    /// zero before any are bound. Counts locations rather than bytes while
+    /// [`Self::imputed_bytes`] is set.
     pub fn local_byte_ratio(&self) -> f64 {
         if self.total_bytes == 0 {
             return 0.0;

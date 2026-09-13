@@ -1,6 +1,7 @@
 //! The scan: where a stage's input bytes live, read from its shuffle readers.
 
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::Arc;
 
 use ballista_core::execution_plans::{RangeShuffleReaderExec, ShuffleReaderExec};
@@ -10,9 +11,6 @@ use datafusion::physical_plan::union::UnionExec;
 
 use super::scheduler_internals::child_scopes;
 use super::stats::LocalityStats;
-
-/// Bytes per executor for one partition during the scan, keyed by borrowed ids.
-type PartitionBytes<'a> = HashMap<&'a str, u64>;
 
 /// An interned executor id, so a scan holds one allocation per executor.
 type ExecutorId = Arc<str>;
@@ -58,7 +56,7 @@ fn rank<'a>(
             (id.clone(), held)
         })
         .collect();
-    ranked.sort_by(|(a_id, a), (b_id, b)| {
+    ranked.sort_unstable_by(|(a_id, a), (b_id, b)| {
         Ord::cmp(b, a).then_with(|| Ord::cmp(a_id, b_id))
     });
     ranked
@@ -80,7 +78,7 @@ const MAX_HOLDERS_OFFERED: usize = 3;
 impl StageLocality {
     pub(super) fn of(plan: &Arc<dyn ExecutionPlan>) -> Self {
         let mut acc = LocalityAcc::default();
-        collect_locations(plan, 0, false, &mut acc);
+        acc.add_plan(plan, 0, false);
         let mut ids: HashMap<&str, ExecutorId> = HashMap::new();
 
         let mut partitions = HashMap::with_capacity(acc.per_partition.len());
@@ -105,12 +103,6 @@ impl StageLocality {
         self.totals.iter().map(|(executor_id, _)| &**executor_id)
     }
 
-    /// The executor holding the most of the stage's input bytes overall.
-    #[cfg(test)]
-    pub(super) fn dominant_executor(&self) -> Option<&str> {
-        self.ranked_executors().next()
-    }
-
     /// Every input byte of the stage, wherever it lives.
     pub(super) fn total_bytes(&self) -> u64 {
         self.totals.iter().map(|(_, bytes)| bytes).sum()
@@ -122,7 +114,8 @@ impl StageLocality {
     }
 
     /// What a task on `executor_id` over `partitions` reads locally versus in total.
-    /// A collapse task (`whole_stage`) reads the whole stage.
+    /// A collapse task (`whole_stage`) counts the whole stage; any other task counts
+    /// only its partitions, not inputs every task reads in full.
     pub(super) fn measure(
         &self,
         executor_id: &str,
@@ -177,6 +170,7 @@ impl StageLocality {
         capacity: &mut HashMap<&str, u32>,
     ) -> HashMap<usize, &'a str> {
         let mut candidates: Vec<Candidate<'a>> = vec![];
+        let mut placeable = 0;
         for partition in pending {
             let Some(locality) = self.partitions.get(&partition) else {
                 continue;
@@ -188,6 +182,7 @@ impl StageLocality {
                     capacity.get(&**executor_id).is_some_and(|&free| free > 0)
                 })
                 .take(MAX_HOLDERS_OFFERED);
+            let offered = candidates.len();
             for (executor_id, held) in with_room {
                 candidates.push(Candidate {
                     bytes: *held,
@@ -195,20 +190,20 @@ impl StageLocality {
                     executor_id,
                 });
             }
+            placeable += usize::from(candidates.len() > offered);
         }
-        // Bytes descending, then partition and executor for determinism.
-        candidates.sort_by(|a, b| {
-            Ord::cmp(&b.bytes, &a.bytes)
-                .then_with(|| Ord::cmp(&a.partition, &b.partition))
-                .then_with(|| Ord::cmp(a.executor_id, b.executor_id))
-        });
-
+        // Pop the strongest candidates first. Stop once no executor has room or every
+        // partition with a candidate is placed, since anything left could only be skipped.
+        let mut room: u64 = capacity.values().map(|&vcores| u64::from(vcores)).sum();
+        let mut candidates = BinaryHeap::from(candidates);
         let mut assignment = HashMap::new();
-        for Candidate {
-            partition,
-            executor_id,
-            ..
-        } in candidates
+        while room > 0
+            && assignment.len() < placeable
+            && let Some(Candidate {
+                partition,
+                executor_id,
+                ..
+            }) = candidates.pop()
         {
             if assignment.contains_key(&partition) {
                 continue;
@@ -220,6 +215,7 @@ impl StageLocality {
                 continue;
             }
             *free -= 1;
+            room -= 1;
             assignment.insert(partition, executor_id);
         }
         assignment
@@ -227,66 +223,85 @@ impl StageLocality {
 }
 
 /// One executor that could take one pending partition, holding `bytes` of it.
+#[derive(PartialEq, Eq)]
 struct Candidate<'a> {
     bytes: u64,
     partition: usize,
     executor_id: &'a str,
 }
 
+/// Most bytes is greatest, then the lowest partition and executor id, so ties resolve
+/// the same way every round.
+impl Ord for Candidate<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.bytes
+            .cmp(&other.bytes)
+            .then_with(|| other.partition.cmp(&self.partition))
+            .then_with(|| other.executor_id.cmp(self.executor_id))
+    }
+}
+
+impl PartialOrd for Candidate<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Running totals for one stage plan.
 #[derive(Default)]
 struct LocalityAcc<'a> {
     /// Bytes per executor per partition, which drives per-partition placement.
-    per_partition: HashMap<usize, PartitionBytes<'a>>,
+    per_partition: HashMap<usize, HashMap<&'a str, u64>>,
     /// Bytes per executor across the stage, including inputs every task reads.
     totals: HashMap<&'a str, u64>,
     /// Whether any producer reported no size.
     imputed: bool,
 }
 
-/// Accumulates every shuffle reader's bytes. `offset` maps a reader's partitions
-/// to stage-global ones under a `UnionExec`, as `task_builder` does, and
-/// `under_collect` marks inputs every task reads whole.
-fn collect_locations<'a>(
-    node: &'a Arc<dyn ExecutionPlan>,
-    offset: usize,
-    under_collect: bool,
-    acc: &mut LocalityAcc<'a>,
-) {
-    let reader = match node.downcast_ref::<ShuffleReaderExec>() {
-        Some(reader) => Some((reader.partition.as_slice(), reader.broadcast)),
-        None => node
-            .downcast_ref::<RangeShuffleReaderExec>()
-            .map(|reader| (reader.partition.as_slice(), false)),
-    };
-    if let Some((partitions, broadcast)) = reader {
-        // Inputs every task reads whole say nothing about per-partition placement.
-        if broadcast || under_collect {
-            acc.add_stage_bytes(partitions);
-        } else {
-            acc.add_partition_bytes(partitions, offset);
-        }
-        return;
-    }
-    // Under a collect a union's partition ranges don't apply, as in `task_builder`.
-    if !under_collect && node.is::<UnionExec>() {
-        let mut child_offset = offset;
-        for child in node.children() {
-            collect_locations(child, child_offset, false, acc);
-            child_offset += child.properties().output_partitioning().partition_count();
-        }
-        return;
-    }
-    for (child, collect) in node
-        .children()
-        .into_iter()
-        .zip(child_scopes(node, under_collect))
-    {
-        collect_locations(child, offset, collect, acc);
-    }
-}
-
 impl<'a> LocalityAcc<'a> {
+    /// Adds every shuffle reader's bytes under `node`. `offset` maps a reader's
+    /// partitions to stage-global ones under a `UnionExec`, as `task_builder` does,
+    /// and `under_collect` marks inputs every task reads whole.
+    fn add_plan(
+        &mut self,
+        node: &'a Arc<dyn ExecutionPlan>,
+        offset: usize,
+        under_collect: bool,
+    ) {
+        let reader = match node.downcast_ref::<ShuffleReaderExec>() {
+            Some(reader) => Some((reader.partition.as_slice(), reader.broadcast)),
+            None => node
+                .downcast_ref::<RangeShuffleReaderExec>()
+                .map(|reader| (reader.partition.as_slice(), false)),
+        };
+        if let Some((partitions, broadcast)) = reader {
+            // Inputs every task reads whole say nothing about per-partition placement.
+            if broadcast || under_collect {
+                self.add_stage_bytes(partitions);
+            } else {
+                self.add_partition_bytes(partitions, offset);
+            }
+            return;
+        }
+        // Under a collect a union's partition ranges don't apply, as in `task_builder`.
+        if !under_collect && node.is::<UnionExec>() {
+            let mut child_offset = offset;
+            for child in node.children() {
+                self.add_plan(child, child_offset, false);
+                child_offset +=
+                    child.properties().output_partitioning().partition_count();
+            }
+            return;
+        }
+        for (child, collect) in node
+            .children()
+            .into_iter()
+            .zip(child_scopes(node, under_collect))
+        {
+            self.add_plan(child, offset, collect);
+        }
+    }
+
     /// Counts a reader's bytes toward the stage and toward each partition.
     fn add_partition_bytes(
         &mut self,
@@ -302,7 +317,7 @@ impl<'a> LocalityAcc<'a> {
         }
     }
 
-    /// Count a reader's bytes towards the stage totals only.
+    /// Counts a reader's bytes toward the stage totals only.
     fn add_stage_bytes(&mut self, partitions: &'a [Vec<PartitionLocation>]) {
         for locations in partitions {
             for (executor_id, bytes, measured) in held(locations) {

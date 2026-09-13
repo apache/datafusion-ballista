@@ -218,7 +218,7 @@ use ballista_examples::shuffle_affinity::ShuffleAffinityPolicy;
 use ballista_scheduler::config::{SchedulerConfig, TaskDistributionPolicy};
 
 let policy = ShuffleAffinityPolicy::new();
-// Keep a clone: `policy.stats()` reports how much input was read locally, and
+// Keep a clone: `policy.stats()` reports how much input was placed locally, and
 // `policy.attach_observer(observer)` sends each scheduling round to your own metrics.
 let config = SchedulerConfig::default()
     .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(policy.clone())));
@@ -236,8 +236,11 @@ partition, so no executor holds more of a partition than any other, and every po
 locally.
 
 To check whether it helps your workload, compare `LocalityStats::local_byte_ratio` across policies. This is the
-share of shuffle bytes read without a network fetch. The policy doesn't register any metrics itself, so attach
-an observer to publish the number alongside your other metrics.
+share of shuffle bytes placed on the executor that holds them, so they can be read without a network fetch.
+Inputs every task reads in full, such as a broadcast, count only for stages that run as a single task. The
+share is counted when tasks are bound, so a task retried after a failed launch or a lost executor counts again.
+The policy doesn't register any metrics itself, so attach an observer to publish the number alongside your
+other metrics.
 
 The policy requires `--scheduler-policy push-staged`. With `pull-staged`, each executor asks for work on its
 own, so the scheduler never has a choice of where to place a task.

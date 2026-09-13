@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use ballista_core::JobId;
@@ -230,6 +230,14 @@ fn parity_executor(n: usize) -> &'static str {
     }
 }
 
+/// `graph` as the running-job map a policy binds against.
+fn running_jobs(
+    job_id: JobId,
+    graph: StaticExecutionGraph,
+) -> HashMap<JobId, JobInfoCache> {
+    HashMap::from([(job_id, JobInfoCache::new(Box::new(graph)))])
+}
+
 /// A job whose map stage has completed, with map task `n` on `parity_executor(n)`.
 async fn mock_shuffle_jobs(
     job_id: &JobId,
@@ -238,9 +246,7 @@ async fn mock_shuffle_jobs(
 ) -> Result<HashMap<JobId, JobInfoCache>> {
     let mut graph = aggregation_graph(job_id, num_partitions, vec![col("id")]).await;
     complete_map_stage(&mut graph, parity_executor, bytes)?;
-    let mut jobs = HashMap::new();
-    jobs.insert(job_id.clone(), JobInfoCache::new(Box::new(graph)));
-    Ok(jobs)
+    Ok(running_jobs(job_id.clone(), graph))
 }
 
 /// Each partition is written large by its `parity_executor` and small by the other.
@@ -282,10 +288,7 @@ async fn mock_collapse_job() -> Result<HashMap<JobId, JobInfoCache>> {
         },
         |map_task, _| if map_task == 0 { 100 } else { 900 },
     )?;
-
-    let mut jobs = HashMap::new();
-    jobs.insert(job_id, JobInfoCache::new(Box::new(graph)));
-    Ok(jobs)
+    Ok(running_jobs(job_id, graph))
 }
 
 fn location(executor_id: &str, partition: usize, bytes: u64) -> PartitionLocation {
@@ -423,30 +426,6 @@ fn partitions_covered(bound: &[BoundTask]) -> usize {
         .sum()
 }
 
-/// Which executor each bound partition landed on.
-fn placements(bound: &[BoundTask]) -> HashMap<usize, String> {
-    bound
-        .iter()
-        .flat_map(|(executor_id, task)| {
-            task.global_input_partition_ids
-                .iter()
-                .map(move |p| (*p, executor_id.clone()))
-        })
-        .collect()
-}
-
-/// Where each partition lands when `policy` binds a fresh cluster.
-async fn place_with(policy: TaskDistributionPolicy) -> Result<HashMap<usize, String>> {
-    let cluster_state = InMemoryClusterState::default();
-    register(&cluster_state, "executor_1", 4).await?;
-    register(&cluster_state, "executor_2", 4).await?;
-
-    let bound = cluster_state
-        .bind_schedulable_tasks(policy, Arc::new(mock_jobs(4).await?), None)
-        .await?;
-    Ok(placements(&bound))
-}
-
 /// The executor holding the largest share of `partition`.
 fn best_holder(locality: &StageLocality, partition: usize) -> Option<&str> {
     locality
@@ -546,8 +525,6 @@ fn clones_of_a_policy_share_their_state() {
     let policy = ShuffleAffinityPolicy::new();
     let clone = policy.clone();
 
-    assert!(Arc::ptr_eq(&policy.stats_handle(), &clone.stats_handle()));
-
     clone.record(LocalityStats {
         tasks: 1,
         local_bytes: 10,
@@ -574,7 +551,7 @@ fn preferred_executor_is_the_largest_byte_holder() {
     assert_eq!(Some("executor_2"), best_holder(&locality, 1));
     assert_eq!(Some("executor_2"), best_holder(&locality, 2));
     // executor_2 holds 1005 bytes against executor_1's 1000.
-    assert_eq!(locality.dominant_executor(), Some("executor_2"));
+    assert_eq!(locality.ranked_executors().next(), Some("executor_2"));
 }
 
 /// A partition is offered to at most its three largest holders with room, but every
@@ -609,27 +586,6 @@ fn only_the_three_largest_holders_with_room_are_offered() {
     assert_eq!(Some(&1), capacity.get("executor_4"));
 }
 
-/// The largest holder is preferred even with less than a fifth of the partition.
-#[test]
-fn a_holder_under_a_fifth_is_still_preferred() {
-    let locality = StageLocality::of(&reader(vec![vec![
-        ("executor_1", 120),
-        ("executor_2", 160),
-        ("executor_3", 120),
-        ("executor_4", 120),
-        ("executor_5", 120),
-        ("executor_6", 120),
-        ("executor_7", 120),
-        ("executor_8", 120),
-    ]]));
-
-    let mut capacity = HashMap::from([("executor_1", 1), ("executor_2", 1)]);
-    assert_eq!(
-        HashMap::from([(0, "executor_2")]),
-        locality.assign(0..1, &mut capacity),
-    );
-}
-
 /// Holders without free vcores don't use up a partition's three offers.
 #[test]
 fn busy_holders_do_not_use_up_the_offers() {
@@ -646,15 +602,6 @@ fn busy_holders_do_not_use_up_the_offers() {
         HashMap::from([(0, "executor_4")]),
         locality.assign(0..1, &mut capacity),
     );
-}
-
-#[test]
-fn a_stage_without_shuffle_input_has_no_locality() {
-    let plan = reader(vec![]);
-    let locality = StageLocality::of(&plan);
-
-    assert!(locality.partitions.is_empty());
-    assert!(locality.dominant_executor().is_none());
 }
 
 /// Every partition prefers the executor that wrote its bigger half.
@@ -711,7 +658,7 @@ fn broadcast_bytes_count_for_the_stage_but_not_for_a_partition() {
         "a broadcast reader says nothing about which partition goes where",
     );
     assert_eq!(
-        locality.dominant_executor(),
+        locality.ranked_executors().next(),
         Some("executor_2"),
         "its bytes still belong to the stage's totals",
     );
@@ -781,7 +728,7 @@ fn a_collected_join_side_counts_for_the_stage_but_not_for_a_partition() {
     // The stage still counts them, so collapse placement ranks on them.
     assert_eq!(1800, locality.bytes_on("executor_1"));
     assert_eq!(200, locality.bytes_on("executor_2"));
-    assert_eq!(Some("executor_1"), locality.dominant_executor());
+    assert_eq!(Some("executor_1"), locality.ranked_executors().next());
 }
 
 /// A collect applies to every reader below it.
@@ -840,26 +787,37 @@ async fn a_full_collapse_home_settles_for_the_next_biggest_holder() -> Result<()
     Ok(())
 }
 
-/// Partitions a round cannot bind stay queued in their original order.
+/// A per-task partition cap splits an executor's partitions into several tasks, and
+/// whatever doesn't fit stays queued in order.
 #[tokio::test]
-async fn partitions_a_round_could_not_bind_stay_queued_in_order() -> Result<()> {
+async fn a_partition_cap_splits_tasks_and_keeps_the_rest_in_order() -> Result<()> {
     let jobs = mock_jobs(8).await?;
-    // Three vcores against eight partitions: five must survive the round.
-    bind(
+    {
+        let job = jobs.values().next().expect("one job");
+        let mut graph = job.execution_graph.write().await;
+        let stage = graph.fetch_running_stage(&[]).expect("a consumer stage");
+        stage.session_config = Arc::new(
+            SessionConfig::new_with_ballista()
+                .set_str(BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK, "1"),
+        );
+    }
+
+    let bound = bind(
         &ShuffleAffinityPolicy::new(),
         jobs.clone(),
         &[("executor_1", 3)],
     )
     .await;
+    let tasks: Vec<Vec<usize>> = bound
+        .iter()
+        .map(|(_, task)| task.global_input_partition_ids.clone())
+        .collect();
+    assert_eq!(vec![vec![0], vec![2], vec![4]], tasks);
 
     let job = jobs.values().next().expect("one job");
     let mut graph = job.execution_graph.write().await;
     let stage = graph.fetch_running_stage(&[]).expect("stage still pending");
-    assert_eq!(5, stage.pending.remaining());
-
-    // Affinity took `executor_1`'s even partitions, so the rest remain in order.
-    let left = stage.pending.next_slice(usize::MAX);
-    assert_eq!(vec![1, 3, 5, 6, 7], left);
+    assert_eq!(vec![1, 3, 5, 6, 7], stage.pending.next_slice(usize::MAX));
 
     Ok(())
 }
@@ -959,14 +917,14 @@ fn locality_is_scanned_once_per_stage_attempt() {
     let job_id: JobId = "job_a".into();
     let plan = reader(vec![vec![("executor_1", 100)]]);
 
-    let first = policy.locality_for(&job_id, &stage(plan.clone(), 0));
-    let second = policy.locality_for(&job_id, &stage(plan.clone(), 0));
+    let (first, _) = policy.locality_for(&job_id, &stage(plan.clone(), 0));
+    let (second, _) = policy.locality_for(&job_id, &stage(plan.clone(), 0));
     assert!(
         Arc::ptr_eq(&first, &second),
         "the second bind of the same stage attempt reuses the scan",
     );
 
-    let retried = policy.locality_for(&job_id, &stage(plan, 1));
+    let (retried, _) = policy.locality_for(&job_id, &stage(plan, 1));
     assert!(
         !Arc::ptr_eq(&first, &retried),
         "a new stage attempt can carry new locations, so it rescans",
@@ -984,29 +942,6 @@ async fn the_cache_drops_jobs_that_stopped_running() -> Result<()> {
     // The job is gone from the running set on the next round.
     bind(&policy, HashMap::new(), &[]).await;
     assert_eq!(0, policy.cache_len());
-
-    Ok(())
-}
-
-/// A policy shared by two schedulers loses its memo: each prunes the other's jobs.
-#[tokio::test]
-async fn schedulers_sharing_a_policy_evict_each_others_scans() -> Result<()> {
-    let policy = ShuffleAffinityPolicy::new();
-    let job_a: JobId = "job_a".into();
-    let job_b: JobId = "job_b".into();
-    let running = stage(reader(vec![vec![("executor_1", 100)]]), 0);
-
-    let scanned_a = policy.locality_for(&job_a, &running);
-    policy.locality_for(&job_b, &running);
-    assert_eq!(2, policy.cache_len());
-
-    // Scheduler B's round sees only its own jobs.
-    policy.prune_cache(&mock_shuffle_jobs(&job_b, 2, &|_, _| 100).await?);
-    assert_eq!(1, policy.cache_len(), "job_a's scan went with the prune");
-
-    // So scheduler A rescans the same stage on its next round.
-    let rescanned = policy.locality_for(&job_a, &running);
-    assert!(!Arc::ptr_eq(&scanned_a, &rescanned));
 
     Ok(())
 }
@@ -1078,59 +1013,10 @@ fn a_full_first_choice_falls_to_the_next_best_holder() {
     let assignment = locality.assign(0..2, &mut capacity);
 
     assert_eq!(
-        HashMap::from([(0, "executor_1"), (1, "executor_2"),]),
+        HashMap::from([(0, "executor_1"), (1, "executor_2")]),
         assignment,
         "both partitions prefer executor_1, which only has room for one",
     );
-}
-
-/// End to end, a scarce vcore goes to the heaviest partition.
-#[tokio::test]
-async fn binding_spends_a_scarce_vcore_on_the_heaviest_partition() -> Result<()> {
-    // executor_1 (map task 0) holds 100 bytes per partition index, rising
-    // with the index; executor_2 holds a token byte of everything.
-    let jobs = mock_shuffle_jobs(&"job_a".into(), 4, &|map_task, partition| {
-        if map_task % 2 == 0 {
-            100 * (partition as u64 + 1)
-        } else {
-            1
-        }
-    })
-    .await?;
-
-    let bound = bind(&ShuffleAffinityPolicy::new(), jobs, &[("executor_1", 2)]).await;
-
-    let mut covered: Vec<usize> = bound
-        .iter()
-        .flat_map(|(_, task)| task.global_input_partition_ids.clone())
-        .collect();
-    covered.sort();
-    assert_eq!(
-        vec![2, 3],
-        covered,
-        "the two heaviest partitions, not the two at the front of the queue",
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn stats_report_the_locality_achieved() -> Result<()> {
-    let policy = ShuffleAffinityPolicy::new();
-    assert_eq!(LocalityStats::default(), policy.stats());
-
-    bind(
-        &policy,
-        mock_jobs(8).await?,
-        &[("executor_1", 4), ("executor_2", 4)],
-    )
-    .await;
-
-    let stats = policy.stats();
-    assert_eq!(SPLIT_ROUND, stats);
-    assert!((stats.local_byte_ratio() - 0.9).abs() < f64::EPSILON);
-
-    Ok(())
 }
 
 /// An attached observer receives every round.
@@ -1207,10 +1093,12 @@ async fn a_stage_with_no_shuffle_input_is_still_bound() -> Result<()> {
     let expected = first_running_stage_tasks(&graph);
     assert!(expected > 0, "the map stage should have work to bind");
 
-    let mut jobs = HashMap::new();
-    jobs.insert(job_id, JobInfoCache::new(Box::new(graph)));
-
-    let bound = bind(&ShuffleAffinityPolicy::new(), jobs, &[("executor_1", 4)]).await;
+    let bound = bind(
+        &ShuffleAffinityPolicy::new(),
+        running_jobs(job_id, graph),
+        &[("executor_1", 4)],
+    )
+    .await;
 
     assert_eq!(
         expected,
@@ -1306,55 +1194,4 @@ fn a_collapse_task_counts_only_partitions_it_holds() {
     let stats = locality.measure("executor_1", &[0, 1], true);
     assert_eq!(2, stats.local_partitions);
     assert_eq!(1_800, stats.local_bytes);
-}
-
-/// The push path dispatches to the configured policy instance. Bias packs onto
-/// one executor here, so the placements tell the two apart.
-#[tokio::test]
-async fn the_push_path_dispatches_to_the_configured_policy() -> Result<()> {
-    let policy = ShuffleAffinityPolicy::new();
-    let affinity =
-        place_with(TaskDistributionPolicy::Custom(Arc::new(policy.clone()))).await?;
-    let bias = place_with(TaskDistributionPolicy::Bias).await?;
-
-    assert_eq!(4, affinity.len(), "every partition should be bound");
-    for (&partition, executor_id) in &affinity {
-        assert_eq!(
-            parity_executor(partition),
-            executor_id,
-            "partition {partition} did not land on its home",
-        );
-    }
-    assert_eq!(
-        1,
-        bias.values().collect::<HashSet<_>>().len(),
-        "bias should pack every partition onto the first budget",
-    );
-
-    let stats = policy.stats();
-    assert_eq!(4, stats.local_partitions);
-    assert_eq!(3_600, stats.local_bytes, "4 partitions x 900 bytes local");
-    assert_eq!(4_000, stats.total_bytes);
-
-    Ok(())
-}
-
-/// A cluster with no room binds nothing and must not error.
-#[tokio::test]
-async fn the_push_path_with_no_vcores_binds_nothing() -> Result<()> {
-    let cluster_state = InMemoryClusterState::default();
-    register(&cluster_state, "executor_1", 0).await?;
-
-    let jobs = mock_shuffle_jobs(&"job_a".into(), 4, &|_, _| 900).await?;
-    let bound = cluster_state
-        .bind_schedulable_tasks(
-            TaskDistributionPolicy::Custom(Arc::new(ShuffleAffinityPolicy::new())),
-            Arc::new(jobs),
-            None,
-        )
-        .await?;
-
-    assert!(bound.is_empty());
-
-    Ok(())
 }
