@@ -29,22 +29,18 @@
 //!   build. Sizes are the input to this decision, so they need to be the thing
 //!   the test varies.
 
-use crate::state::aqe::test::stats_table::{
-    StatsTable, sized_statistics, sizeless_statistics,
-};
-use crate::state::aqe::{
-    planner::AdaptivePlanner, test::mock_partitions_with_statistics,
+use crate::state::aqe::planner::AdaptivePlanner;
+use crate::state::aqe::test::stats_table::{sized_statistics, sizeless_statistics};
+use crate::state::aqe::test::{
+    MB, ballista_ctx, mock_partitions_with_statistics, narrow_schema,
+    register_stats_table as register,
 };
 use ballista_core::extension::SessionConfigExt;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::common::Statistics;
-use datafusion::execution::{
-    SessionStateBuilder, config::SessionConfig, context::SessionContext,
-};
+use datafusion::execution::config::SessionConfig;
+use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::displayable;
 use std::sync::Arc;
-
-const MB: usize = 1024 * 1024;
 
 /// A join key plus two variable-width columns, so the row width is realistic and
 /// `Statistics::calculate_total_byte_size` cannot reconstruct a size for it.
@@ -65,31 +61,6 @@ fn wide_schema() -> Arc<Schema> {
         Field::new("payload", DataType::Binary, false),
         Field::new("thumbnail", DataType::Binary, false),
     ]))
-}
-
-/// A join key plus one fixed-width column.
-fn narrow_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("val", DataType::Int32, false),
-    ]))
-}
-
-/// A context carrying Ballista's shipped configuration, so these tests exercise
-/// the thresholds a deployment runs with.
-fn ballista_ctx() -> SessionContext {
-    let config = SessionConfig::new_with_ballista()
-        .with_target_partitions(4)
-        .with_round_robin_repartition(false);
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_config(config)
-        .build();
-    SessionContext::new_with_state(state)
-}
-
-fn register(ctx: &SessionContext, name: &str, schema: Arc<Schema>, stats: Statistics) {
-    ctx.register_table(name, Arc::new(StatsTable::new(schema, stats, 4)))
-        .unwrap();
 }
 
 /// Resolves the join and reports whether any side ended up broadcast.

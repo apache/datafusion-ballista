@@ -75,6 +75,7 @@ The scheduler also provides a REST API that allows jobs to be monitored.
 
 | API                                    | Method | Description                                                       |
 | -------------------------------------- | ------ | ----------------------------------------------------------------- |
+| /api/openapi.json                      | GET    | Return OpenAPI v3 specification document for the REST API.        |
 | /api/state                             | GET    | Get the current scheduler state.                                  |
 | /api/version                           | GET    | Get the scheduler's Ballista version.                             |
 | /api/executors                         | GET    | Get a list of executors registered with the scheduler.            |
