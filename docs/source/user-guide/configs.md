@@ -193,8 +193,51 @@ _Example: Specifying configuration options when starting the scheduler_
 
 | key                                          | type   | default     | description                                                                                                                |
 | -------------------------------------------- | ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------- |
-| scheduler-policy                             | Utf8   | pull-staged | Sets the task scheduling policy for the scheduler, possible values: pull-staged, push-staged.                              |
+| scheduler-policy                             | Utf8   | push-staged | Sets the task scheduling policy for the scheduler, possible values: pull-staged, push-staged.                              |
 | event-loop-buffer-size                       | UInt32 | 10000       | Sets the event loop buffer size. for a system of high throughput, a larger value like 1000000 is recommended.              |
 | task-distribution                            | Utf8   | bias        | Sets the task distribution policy for the scheduler, possible values: bias, round-robin                                    |
 | finished-job-data-clean-up-interval-seconds  | UInt64 | 300         | Sets the delayed interval for cleaning up finished job data, mainly the shuffle data, 0 means the cleaning up is disabled. |
 | finished-job-state-clean-up-interval-seconds | UInt64 | 3600        | Sets the delayed interval for cleaning up finished job state stored in the backend, 0 means the cleaning up is disabled.   |
+
+### Choosing a task distribution
+
+`bias` puts tasks on the executors with the most free vcores, and `round-robin` spreads them evenly. Neither
+looks at where a task's input is stored, so a task often fetches its shuffle input over the network even when
+another executor has it on local disk.
+
+A scheduler embedded in your own application can use a custom policy through `TaskDistributionPolicy::Custom`.
+Custom policies can't be selected with this flag. `ShuffleAffinityPolicy` is an example: it runs each task on
+the executor that holds most of its input, and places any remaining tasks the way `bias` does. It lives in the
+unpublished `examples` crate, so copy it into your scheduler rather than adding it as a dependency. It uses
+only the public `ballista-scheduler` API.
+
+```rust
+use std::sync::Arc;
+
+use ballista_examples::shuffle_affinity::ShuffleAffinityPolicy;
+use ballista_scheduler::config::{SchedulerConfig, TaskDistributionPolicy};
+
+let policy = ShuffleAffinityPolicy::new();
+// Keep a clone: `policy.stats()` reports how much input was read locally, and
+// `policy.attach_observer(observer)` sends each scheduling round to your own metrics.
+let config = SchedulerConfig::default()
+    .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(policy.clone())));
+```
+
+It helps when different tasks are best run on different executors, for example:
+
+- a global aggregate or `ORDER BY ... LIMIT`, where a single task reads every partition
+- `UNION ALL`, whose inputs come from different producers
+- a cluster where free vcores and data are on different executors, such as after scaling up or while other
+  jobs are busy on the executors that hold your data
+
+It doesn't help a plain hash-partitioned aggregate. Every producer writes about the same amount to every
+partition, so no executor holds more of a partition than any other, and every policy reads the same share
+locally.
+
+To check whether it helps your workload, compare `LocalityStats::local_byte_ratio` across policies. This is the
+share of shuffle bytes read without a network fetch. The policy doesn't register any metrics itself, so attach
+an observer to publish the number alongside your other metrics.
+
+The policy requires `--scheduler-policy push-staged`. With `pull-staged`, each executor asks for work on its
+own, so the scheduler never has a choice of where to place a task.

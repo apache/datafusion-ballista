@@ -52,6 +52,12 @@ name = "standalone-substrait"
 required-features = ["ballista-scheduler/substrait"]
 
 [dependencies]
+async-trait = { workspace = true }
+ballista-core = { path = "../ballista/core", version = "54.0.0", default-features = false }
+ballista-scheduler = { path = "../ballista/scheduler", version = "54.0.0", default-features = false }
+datafusion = { workspace = true }
+log = { workspace = true }
+
 # Optional dependency for TLS support
 rustls = { version = "0.23", features = ["ring"], optional = true }
 
