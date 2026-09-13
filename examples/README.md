@@ -332,3 +332,63 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
+
+### Shuffle Affinity Scheduler Example
+
+This example runs a scheduler that places each task on the executor holding most of its shuffle input. Start it
+instead of `ballista-scheduler`, start executors as in [Start a standalone cluster](#start-a-standalone-cluster),
+then run a query such as the distributed SQL example. The scheduler logs how many shuffle bytes each scheduling
+round placed locally.
+
+```bash
+cargo run --release --example shuffle-affinity
+```
+
+#### Source code for shuffle affinity scheduler example
+
+<!-- TODO: this source is hard-coded and can drift from the code. Replace it with a reference to
+examples/examples/shuffle-affinity.rs, such as an include, in the future. -->
+
+```rust
+use std::net::AddrParseError;
+use std::sync::Arc;
+
+use ballista_core::config::TaskSchedulingPolicy;
+use ballista_core::error::BallistaError;
+use ballista_examples::shuffle_affinity::{LocalityStats, ShuffleAffinityPolicy};
+use ballista_scheduler::cluster::BallistaCluster;
+use ballista_scheduler::config::{SchedulerConfig, TaskDistributionPolicy};
+use ballista_scheduler::scheduler_process::start_server;
+use log::info;
+
+#[tokio::main]
+async fn main() -> ballista_core::error::Result<()> {
+    let _ = env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .try_init();
+
+    let policy = ShuffleAffinityPolicy::new();
+    // Called after each round that places tasks; forward it to your own metrics here.
+    policy.attach_observer(Arc::new(|round: &LocalityStats| {
+        info!(
+            "shuffle affinity placed {} of {} shuffle bytes locally ({:.1}%)",
+            round.local_bytes,
+            round.total_bytes,
+            round.local_byte_ratio() * 100.0,
+        );
+    }));
+
+    // The policy only applies when the scheduler pushes tasks to executors.
+    let config = SchedulerConfig::default()
+        .with_scheduler_policy(TaskSchedulingPolicy::PushStaged)
+        .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(policy)));
+
+    let addr = format!("{}:{}", config.bind_host, config.bind_port);
+    let addr = addr
+        .parse()
+        .map_err(|e: AddrParseError| BallistaError::Configuration(e.to_string()))?;
+
+    let cluster = BallistaCluster::new_from_config(&config).await?;
+    start_server(cluster, addr, Arc::new(config)).await
+}
+```

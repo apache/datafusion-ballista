@@ -211,18 +211,44 @@ the executor that holds most of its input, and places any remaining tasks the wa
 unpublished `examples` crate, so copy it into your scheduler rather than adding it as a dependency. It uses
 only the public `ballista-scheduler` API.
 
+<!-- TODO: this snippet is hard-coded and can drift from the code. Replace it with a reference to
+examples/examples/shuffle-affinity.rs, such as an include, in the future. -->
+
 ```rust
 use std::sync::Arc;
 
-use ballista_examples::shuffle_affinity::ShuffleAffinityPolicy;
+use ballista_core::config::TaskSchedulingPolicy;
+use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::{SchedulerConfig, TaskDistributionPolicy};
+use ballista_scheduler::scheduler_process::start_server;
 
-let policy = ShuffleAffinityPolicy::new();
-// Keep a clone: `policy.stats()` reports how much input was placed locally, and
-// `policy.attach_observer(observer)` sends each scheduling round to your own metrics.
-let config = SchedulerConfig::default()
-    .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(policy.clone())));
+// `examples/src/shuffle_affinity`.
+mod shuffle_affinity;
+use shuffle_affinity::{LocalityStats, ShuffleAffinityPolicy};
+
+#[tokio::main]
+async fn main() -> ballista_core::error::Result<()> {
+    let policy = ShuffleAffinityPolicy::new();
+    // Called after each round that places tasks: publish it to your own metrics.
+    policy.attach_observer(Arc::new(|round: &LocalityStats| {
+        log::info!("{:.1}% of shuffle bytes placed locally", round.local_byte_ratio() * 100.0);
+    }));
+
+    let config = SchedulerConfig::default()
+        .with_scheduler_policy(TaskSchedulingPolicy::PushStaged)
+        // Keep a clone to read the running total with `policy.stats()`.
+        .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(policy.clone())));
+
+    let addr = format!("{}:{}", config.bind_host, config.bind_port)
+        .parse()
+        .expect("a valid bind address");
+    let cluster = BallistaCluster::new_from_config(&config).await?;
+    start_server(cluster, addr, Arc::new(config)).await
+}
 ```
+
+`cargo run --example shuffle-affinity` runs the same scheduler; `examples/README.md` shows how to start
+executors and a query against it.
 
 It helps when different tasks are best run on different executors, for example:
 
