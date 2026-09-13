@@ -19,7 +19,7 @@ use nix::fcntl::{Flock, FlockArg};
 use std::fs::{File, OpenOptions};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -676,6 +676,38 @@ impl TestCluster {
         kill(Pid::from_raw(pid as i32), Signal::SIGKILL).map_err(|e| e.to_string())?;
         let _ = self.executors[index].child.wait();
         Ok(())
+    }
+
+    /// Request graceful shutdown without waiting, so a client can keep streaming.
+    pub fn terminate_executor(&self, index: usize) -> Result<(), String> {
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+
+        let pid = self.executors[index].child.id();
+        kill(Pid::from_raw(pid as i32), Signal::SIGTERM).map_err(|e| e.to_string())
+    }
+
+    pub async fn await_executor_exit(
+        &mut self,
+        index: usize,
+    ) -> Result<ExitStatus, String> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(status) = self.executors[index]
+                .child
+                .try_wait()
+                .map_err(|e| e.to_string())?
+            {
+                return Ok(status);
+            }
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "executor {index} did not exit\n{}",
+                    self.log_tails()
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     pub async fn await_successful_shuffle_output(
