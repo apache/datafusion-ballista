@@ -21,6 +21,9 @@
 //! input, using [`ShuffleAffinityPolicy`]. Each scheduling round that places tasks logs
 //! how many shuffle bytes were placed locally.
 //!
+//! `--bind-host` (an IP address, default `0.0.0.0`) and `--external-host` (the name
+//! executors connect to, default `localhost`) match `ballista-scheduler`.
+//!
 //! ## Running
 //!
 //! ```bash
@@ -34,12 +37,19 @@
 //! # Terminal 4: run a query
 //! cargo run --release --example remote-sql
 //! ```
+//!
+//! On a cluster, advertise a name the executors can reach and point them at it:
+//!
+//! ```bash
+//! cargo run --release --example shuffle-affinity -- --external-host scheduler.example.com
+//! ./target/release/ballista-executor --scheduler-host scheduler.example.com
+//! ```
 
 use std::net::AddrParseError;
 use std::sync::Arc;
 
 use ballista_core::config::TaskSchedulingPolicy;
-use ballista_core::error::BallistaError;
+use ballista_core::error::{BallistaError, Result};
 use ballista_examples::shuffle_affinity::{LocalityStats, ShuffleAffinityPolicy};
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::{SchedulerConfig, TaskDistributionPolicy};
@@ -47,10 +57,12 @@ use ballista_scheduler::scheduler_process::start_server;
 use log::info;
 
 #[tokio::main]
-async fn main() -> ballista_core::error::Result<()> {
+async fn main() -> Result<()> {
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .try_init();
+
+    let (bind_host, external_host) = host_args()?;
 
     let policy = ShuffleAffinityPolicy::new();
     // Called after each round that places tasks; forward it to your own metrics here.
@@ -64,9 +76,13 @@ async fn main() -> ballista_core::error::Result<()> {
     }));
 
     // The policy only applies when the scheduler pushes tasks to executors.
-    let config = SchedulerConfig::default()
-        .with_scheduler_policy(TaskSchedulingPolicy::PushStaged)
-        .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(policy)));
+    let config = SchedulerConfig {
+        bind_host,
+        ..Default::default()
+    }
+    .with_hostname(external_host)
+    .with_scheduler_policy(TaskSchedulingPolicy::PushStaged)
+    .with_task_distribution(TaskDistributionPolicy::Custom(Arc::new(policy)));
 
     let addr = format!("{}:{}", config.bind_host, config.bind_port);
     let addr = addr
@@ -75,4 +91,26 @@ async fn main() -> ballista_core::error::Result<()> {
 
     let cluster = BallistaCluster::new_from_config(&config).await?;
     start_server(cluster, addr, Arc::new(config)).await
+}
+
+/// Reads `--bind-host` and `--external-host`, defaulting to `ballista-scheduler`'s values.
+fn host_args() -> Result<(String, String)> {
+    let mut bind_host = "0.0.0.0".to_string();
+    let mut external_host = "localhost".to_string();
+    let mut args = std::env::args().skip(1);
+    while let Some(flag) = args.next() {
+        let target = match flag.as_str() {
+            "--bind-host" => &mut bind_host,
+            "--external-host" => &mut external_host,
+            _ => {
+                return Err(BallistaError::Configuration(format!(
+                    "unknown argument {flag}; expected --bind-host or --external-host"
+                )));
+            }
+        };
+        *target = args.next().ok_or_else(|| {
+            BallistaError::Configuration(format!("{flag} needs a value"))
+        })?;
+    }
+    Ok((bind_host, external_host))
 }
