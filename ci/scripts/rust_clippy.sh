@@ -18,13 +18,7 @@
 # under the License.
 
 set -ex
-# Lint the whole workspace rather than an explicit crate list, so a new member
-# is covered the day it is added. Naming crates one by one had already left
-# ballista-api-types, ballista-history and ballista-chaos unlinted.
-#
-# ballista-cli is excluded here and linted separately below: its `tui` and `web`
-# features target different platforms and are not meant to be enabled together,
-# so --all-features is not meaningful for it.
+# ballista-cli is linted separately: its tui and web features can't be combined.
 cargo clippy --all-targets --workspace --exclude ballista-cli --all-features -- -D warnings
 cargo clippy --all-targets --package ballista-cli --no-default-features --features cli,tui -- -D warnings
 cargo clippy --all-targets --package ballista-cli --no-default-features --features web -- -D warnings

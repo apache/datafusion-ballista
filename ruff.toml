@@ -14,13 +14,10 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-# Ruff settings for Python outside `python/`, which keeps its own config in
-# `python/pyproject.toml`. Ruff resolves the nearest config per file, so both
-# apply when linting from the repository root.
+
+# Config for Python outside python/, which has its own in pyproject.toml.
 
 [lint.per-file-ignores]
-# Standalone benchmark scripts deliberately run code before importing: the
-# db-benchmark harness expects a banner on stdout first, and tpch.py parses
-# its arguments before importing the query engine.
+# Benchmark scripts intentionally run code before their imports.
 "benchmarks/db-benchmark/*.py" = ["E402"]
 "benchmarks/tpch.py" = ["E402"]

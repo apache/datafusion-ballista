@@ -18,8 +18,4 @@
 # under the License.
 
 rm -rf build
-
-# -W turns Sphinx warnings into errors, so a broken cross-reference or a bad
-# heading fails the build instead of shipping quietly to the site.
-# --keep-going reports every warning rather than stopping at the first.
 SPHINXOPTS="-W --keep-going" make html

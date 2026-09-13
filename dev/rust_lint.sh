@@ -18,8 +18,7 @@
 # under the License.
 set -e
 
-# Keep this list in sync with the lint jobs in .github/workflows/rust.yml and
-# dev.yml, so that a clean local run means a clean CI run.
+# Keep in sync with the lint jobs in .github/workflows/rust.yml and dev.yml.
 ci/scripts/rust_fmt.sh
 ci/scripts/rust_clippy.sh
 ci/scripts/rust_toml_fmt.sh
