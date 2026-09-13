@@ -63,12 +63,7 @@ echo -e "$(GREEN INFO): cargo clippy ..."
 cargo clippy
 echo -e "$(GREEN INFO): cargo clippy done"
 
-# 2. cargo fmt
-#
-# rust-toolchain.toml pins stable, and CI checks formatting with stable
-# (ci/scripts/rust_fmt.sh), so format with stable here too. Running nightly as
-# well used to be part of this hook, but it fails outright when no nightly
-# toolchain is installed.
+# 2. cargo fmt: stable only, matching rust-toolchain.toml and CI.
 
 CHANGED_BY_CARGO_FMT=false
 echo -e "$(GREEN INFO): cargo fmt ..."
