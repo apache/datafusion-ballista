@@ -13,9 +13,7 @@ use ballista_scheduler::state::task_manager::JobInfoCache;
 
 use super::locality::StageLocality;
 use super::lock;
-use super::scheduler_internals::{
-    bind_one_from, max_partitions_per_task, stage_has_input_collapse,
-};
+use super::scheduler_internals::{bind_one_from, max_partitions_per_task};
 use super::stats::{LocalityObserver, LocalityStats};
 
 /// Places each task on the executor already holding most of its shuffle input.
@@ -46,11 +44,10 @@ impl std::fmt::Debug for ShuffleAffinityPolicy {
     }
 }
 
-/// A stage's scan and single-task check, tagged with the attempt they came from.
+/// A stage's scan, tagged with the attempt it came from.
 struct CachedLocality {
     stage_attempt_num: usize,
     locality: Arc<StageLocality>,
-    whole_stage: bool,
 }
 
 impl ShuffleAffinityPolicy {
@@ -70,33 +67,30 @@ impl ShuffleAffinityPolicy {
         self.observer.set(observer).is_ok()
     }
 
-    /// The stage's scan and whether it runs as one task, memoized per stage attempt.
-    /// Every path that replaces a stage's plan bumps the attempt, so it is a sound
-    /// cache key.
+    /// The stage's scan, memoized per stage attempt. Every path that replaces a
+    /// stage's plan bumps the attempt, so it is a sound cache key.
     pub(super) fn locality_for(
         &self,
         job_id: &JobId,
         running_stage: &RunningStage,
-    ) -> (Arc<StageLocality>, bool) {
+    ) -> Arc<StageLocality> {
         let mut cache = lock(&self.cache);
         if let Some(cached) = cache
             .get(job_id)
             .and_then(|stages| stages.get(&running_stage.stage_id))
             && cached.stage_attempt_num == running_stage.stage_attempt_num
         {
-            return (cached.locality.clone(), cached.whole_stage);
+            return cached.locality.clone();
         }
         let locality = Arc::new(StageLocality::of(&running_stage.plan));
-        let whole_stage = stage_has_input_collapse(&running_stage.plan);
         cache.entry(job_id.clone()).or_default().insert(
             running_stage.stage_id,
             CachedLocality {
                 stage_attempt_num: running_stage.stage_attempt_num,
                 locality: locality.clone(),
-                whole_stage,
             },
         );
-        (locality, whole_stage)
+        locality
     }
 
     /// Binds one stage: affinity first, then a fallback over the remaining vcores.
@@ -109,12 +103,11 @@ impl ShuffleAffinityPolicy {
         budgets: &mut [&mut AvailableVcores],
         round: &mut Round,
     ) -> bool {
-        let (locality, whole_stage) = self.locality_for(job_id, running_stage);
+        let locality = self.locality_for(job_id, running_stage);
         let binding = Binding {
             session_id,
             job_id,
             locality: &locality,
-            whole_stage,
             cap: max_partitions_per_task(running_stage),
         };
 
@@ -123,7 +116,7 @@ impl ShuffleAffinityPolicy {
         let mut queued = running_stage.pending.next_slice(usize::MAX);
 
         // Affinity pass.
-        if whole_stage {
+        if locality.whole_stage {
             // A collapse task reads the whole stage: bind it to the largest holder with room.
             for home in locality.ranked_executors() {
                 let budget = budgets
@@ -166,11 +159,6 @@ impl ShuffleAffinityPolicy {
                     "assigned partitions left unbound: {mine:?}"
                 );
             }
-            // Each group is keyed by a budget walked above; a leftover would be lost.
-            debug_assert!(
-                by_home.is_empty(),
-                "assigned partitions left unbound and unqueued: {by_home:?}",
-            );
         }
 
         // Fallback: anything unassigned or unplaced takes the remaining vcores on any
@@ -202,7 +190,7 @@ impl ShuffleAffinityPolicy {
         }
         debug!(
             "shuffle-affinity: bound {} tasks / {} partitions ({} with local input); \
-             {} of {} input bytes local ({:.1}%); cumulative {:.1}% of {} bytes{}",
+             {} of {} input bytes local ({:.1}%); cumulative {:.1}% of {} bytes",
             round.tasks,
             round.partitions,
             round.local_partitions,
@@ -211,11 +199,6 @@ impl ShuffleAffinityPolicy {
             round.local_byte_ratio() * 100.0,
             cumulative.local_byte_ratio() * 100.0,
             cumulative.total_bytes,
-            if cumulative.imputed_bytes {
-                " (some producers reported no size, so the byte counts are padded)"
-            } else {
-                ""
-            },
         );
     }
 
@@ -312,8 +295,6 @@ struct Binding<'a> {
     session_id: &'a str,
     job_id: &'a JobId,
     locality: &'a StageLocality,
-    /// Whether this is a collapse stage, whose one task reads every partition.
-    whole_stage: bool,
     /// Most partitions a non-collapse task may take.
     cap: usize,
 }
@@ -332,7 +313,7 @@ impl Binding<'_> {
         let mut bound = 0;
         while budget.vcores > 0 && bound < partitions.len() {
             let remaining = partitions.len() - bound;
-            let take = if self.whole_stage {
+            let take = if self.locality.whole_stage {
                 remaining
             } else {
                 (budget.vcores as usize).min(self.cap).min(remaining)
@@ -345,13 +326,11 @@ impl Binding<'_> {
                 self.job_id,
                 budget,
                 slice,
-                self.whole_stage,
+                self.locality.whole_stage,
             );
-            round.stats += self.locality.measure(
-                &executor_id,
-                &task.global_input_partition_ids,
-                self.whole_stage,
-            );
+            round.stats += self
+                .locality
+                .measure(&executor_id, &task.global_input_partition_ids);
             round.tasks.push((executor_id, task));
         }
         partitions.drain(..bound);

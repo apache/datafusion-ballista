@@ -35,7 +35,7 @@ use datafusion::test_util::scan_empty_with_partitions;
 use super::locality::StageLocality;
 use super::lock;
 use super::policy::ShuffleAffinityPolicy;
-use super::scheduler_internals::{bind_one_from, stage_has_input_collapse};
+use super::scheduler_internals::bind_one_from;
 use super::stats::{LocalityObserver, LocalityStats};
 
 /// An executor large enough that its budget never masks a placement.
@@ -269,7 +269,6 @@ const SPLIT_ROUND: LocalityStats = LocalityStats {
     local_partitions: 8,
     local_bytes: 7_200,
     total_bytes: 8_000,
-    imputed_bytes: false,
 };
 
 /// A collapse job: `executor_2` wrote the first map partition with a tenth of the
@@ -501,7 +500,6 @@ async fn local_share(
     };
     let plan = plan.expect("a consumer stage to bind");
     let locality = StageLocality::of(&plan);
-    let whole_stage = stage_has_input_collapse(&plan);
 
     let cluster_state = InMemoryClusterState::default();
     for (executor_id, vcores) in executors {
@@ -513,8 +511,7 @@ async fn local_share(
 
     let mut stats = LocalityStats::default();
     for (executor_id, task) in &bound {
-        stats +=
-            locality.measure(executor_id, &task.global_input_partition_ids, whole_stage);
+        stats += locality.measure(executor_id, &task.global_input_partition_ids);
     }
     Ok(stats.local_byte_ratio())
 }
@@ -917,14 +914,14 @@ fn locality_is_scanned_once_per_stage_attempt() {
     let job_id: JobId = "job_a".into();
     let plan = reader(vec![vec![("executor_1", 100)]]);
 
-    let (first, _) = policy.locality_for(&job_id, &stage(plan.clone(), 0));
-    let (second, _) = policy.locality_for(&job_id, &stage(plan.clone(), 0));
+    let first = policy.locality_for(&job_id, &stage(plan.clone(), 0));
+    let second = policy.locality_for(&job_id, &stage(plan.clone(), 0));
     assert!(
         Arc::ptr_eq(&first, &second),
         "the second bind of the same stage attempt reuses the scan",
     );
 
-    let (retried, _) = policy.locality_for(&job_id, &stage(plan, 1));
+    let retried = policy.locality_for(&job_id, &stage(plan, 1));
     assert!(
         !Arc::ptr_eq(&first, &retried),
         "a new stage attempt can carry new locations, so it rescans",
@@ -1076,7 +1073,6 @@ fn the_observer_is_attached_only_once() {
         local_partitions: 1,
         local_bytes: 10,
         total_bytes: 10,
-        imputed_bytes: false,
     });
 
     assert_eq!(1, first.rounds().len());
@@ -1109,9 +1105,9 @@ async fn a_stage_with_no_shuffle_input_is_still_bound() -> Result<()> {
     Ok(())
 }
 
-/// With no sizes, ranking counts locations and the stage is flagged unmeasured.
+/// With no sizes, ranking counts locations.
 #[test]
-fn unsized_producers_still_rank_but_leave_the_stage_unmeasured() {
+fn unsized_producers_still_rank() {
     let plan = reader_without_sizes(vec![
         vec!["executor_1", "executor_1", "executor_2"],
         vec!["executor_2"],
@@ -1121,54 +1117,6 @@ fn unsized_producers_still_rank_but_leave_the_stage_unmeasured() {
     // Two placeholder bytes against one: the order is still right.
     assert_eq!(Some("executor_1"), best_holder(&locality, 0));
     assert_eq!(Some("executor_2"), best_holder(&locality, 1));
-    // But nothing here is a byte count.
-    assert!(!locality.measured);
-}
-
-/// One unsized producer pads its partition's total and marks the whole stage.
-#[test]
-fn one_unsized_producer_marks_the_whole_stage_unmeasured() {
-    let plan = reader_over(vec![
-        vec![
-            location("executor_1", 0, 900),
-            unsized_location("executor_2", 0),
-        ],
-        vec![
-            location("executor_1", 1, 100),
-            location("executor_2", 1, 900),
-        ],
-    ]);
-    let locality = StageLocality::of(&plan);
-
-    assert_eq!(901, locality.partitions[&0].total, "900 plus a placeholder");
-    assert_eq!(1_000, locality.partitions[&1].total, "fully reported");
-    assert!(!locality.measured);
-}
-
-/// The flag is sticky: one padded round taints the cumulative total.
-#[test]
-fn imputed_bytes_survives_a_later_measured_round() {
-    assert!(!LocalityStats::default().imputed_bytes);
-
-    let mut stats = LocalityStats {
-        tasks: 1,
-        partitions: 2,
-        local_partitions: 2,
-        local_bytes: 900,
-        total_bytes: 901,
-        imputed_bytes: true,
-    };
-
-    stats += LocalityStats {
-        tasks: 1,
-        partitions: 2,
-        local_partitions: 0,
-        local_bytes: 0,
-        total_bytes: 1_000,
-        imputed_bytes: false,
-    };
-    assert!(stats.imputed_bytes);
-    assert_eq!(4, stats.partitions);
 }
 
 /// A collapse task's local bytes include broadcast input, but its local
@@ -1180,9 +1128,11 @@ fn a_collapse_task_counts_only_partitions_it_holds() {
         broadcast_reader(vec![("executor_2", 5_000)]),
     ])
     .unwrap();
-    let locality = StageLocality::of(&plan);
+    let mut locality = StageLocality::of(&plan);
+    // Real collapse stages read through a collect, which hides per-partition holders.
+    locality.whole_stage = true;
 
-    let stats = locality.measure("executor_2", &[0, 1], true);
+    let stats = locality.measure("executor_2", &[0, 1]);
     assert_eq!(5_000, stats.local_bytes, "the broadcast is read locally");
     assert_eq!(
         0, stats.local_partitions,
@@ -1191,7 +1141,7 @@ fn a_collapse_task_counts_only_partitions_it_holds() {
     assert_eq!(2, stats.partitions);
 
     // The executor that wrote them holds both.
-    let stats = locality.measure("executor_1", &[0, 1], true);
+    let stats = locality.measure("executor_1", &[0, 1]);
     assert_eq!(2, stats.local_partitions);
     assert_eq!(1_800, stats.local_bytes);
 }

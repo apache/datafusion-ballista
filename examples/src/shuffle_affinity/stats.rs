@@ -16,15 +16,11 @@ pub struct LocalityStats {
     /// Shuffle bytes those tasks read from their own partitions. Inputs every task reads
     /// in full, such as a broadcast, count only for single-task stages.
     pub total_bytes: u64,
-    /// Whether any count includes a placeholder for a producer that reported no
-    /// size. Sticky once set.
-    pub imputed_bytes: bool,
 }
 
 impl LocalityStats {
     /// Share of `total_bytes` placed on the executor holding them, in `0.0..=1.0`, or
-    /// zero before any are bound. Counts locations rather than bytes while
-    /// [`Self::imputed_bytes`] is set.
+    /// zero before any are bound.
     pub fn local_byte_ratio(&self) -> f64 {
         if self.total_bytes == 0 {
             return 0.0;
@@ -40,7 +36,6 @@ impl std::ops::AddAssign for LocalityStats {
         self.local_partitions += other.local_partitions;
         self.local_bytes += other.local_bytes;
         self.total_bytes += other.total_bytes;
-        self.imputed_bytes |= other.imputed_bytes;
     }
 }
 

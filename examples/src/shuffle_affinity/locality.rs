@@ -9,7 +9,7 @@ use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::union::UnionExec;
 
-use super::scheduler_internals::child_scopes;
+use super::scheduler_internals::{child_scopes, stage_has_input_collapse};
 use super::stats::LocalityStats;
 
 /// An interned executor id, so a scan holds one allocation per executor.
@@ -22,8 +22,8 @@ pub(super) struct StageLocality {
     /// Bytes per executor across the whole stage, broadcast and collected inputs
     /// included, largest first.
     totals: Vec<(ExecutorId, u64)>,
-    /// Whether every producer feeding the stage reported a real size.
-    pub(super) measured: bool,
+    /// Whether this is a collapse stage, whose one task reads every partition.
+    pub(super) whole_stage: bool,
 }
 
 /// Who holds one partition's input, best first.
@@ -94,7 +94,7 @@ impl StageLocality {
         Self {
             partitions,
             totals: rank(acc.totals, &mut ids),
-            measured: !acc.imputed,
+            whole_stage: stage_has_input_collapse(plan),
         }
     }
 
@@ -114,27 +114,18 @@ impl StageLocality {
     }
 
     /// What a task on `executor_id` over `partitions` reads locally versus in total.
-    /// A collapse task (`whole_stage`) counts the whole stage; any other task counts
-    /// only its partitions, not inputs every task reads in full.
+    /// A collapse task counts the whole stage's bytes; any other task counts only its
+    /// partitions, not inputs every task reads in full.
     pub(super) fn measure(
         &self,
         executor_id: &str,
         partitions: &[usize],
-        whole_stage: bool,
     ) -> LocalityStats {
         let mut stats = LocalityStats {
             tasks: 1,
             partitions: partitions.len() as u64,
-            imputed_bytes: !self.measured,
             ..Default::default()
         };
-        if whole_stage {
-            // Its bytes are the stage's, but local partitions still count per partition.
-            stats.local_partitions = self.local_partitions(executor_id, partitions);
-            stats.local_bytes = self.bytes_on(executor_id);
-            stats.total_bytes = self.total_bytes();
-            return stats;
-        }
         for partition in partitions {
             let Some(locality) = self.partitions.get(partition) else {
                 continue;
@@ -146,19 +137,12 @@ impl StageLocality {
                 stats.local_partitions += 1;
             }
         }
+        if self.whole_stage {
+            // Its bytes are the stage's, but local partitions still count per partition.
+            stats.local_bytes = self.bytes_on(executor_id);
+            stats.total_bytes = self.total_bytes();
+        }
         stats
-    }
-
-    /// Of `partitions`, how many the executor holds any bytes of.
-    fn local_partitions(&self, executor_id: &str, partitions: &[usize]) -> u64 {
-        partitions
-            .iter()
-            .filter(|&&partition| {
-                self.partitions
-                    .get(&partition)
-                    .is_some_and(|locality| locality.bytes_on(executor_id) > 0)
-            })
-            .count() as u64
     }
 
     /// Assigns pending partitions to holders, largest holdings first, spending
@@ -208,13 +192,10 @@ impl StageLocality {
             if assignment.contains_key(&partition) {
                 continue;
             }
-            let Some(free) = capacity.get_mut(executor_id) else {
-                continue;
-            };
-            if *free == 0 {
-                continue;
+            match capacity.get_mut(executor_id) {
+                Some(free) if *free > 0 => *free -= 1,
+                _ => continue,
             }
-            *free -= 1;
             room -= 1;
             assignment.insert(partition, executor_id);
         }
@@ -254,8 +235,6 @@ struct LocalityAcc<'a> {
     per_partition: HashMap<usize, HashMap<&'a str, u64>>,
     /// Bytes per executor across the stage, including inputs every task reads.
     totals: HashMap<&'a str, u64>,
-    /// Whether any producer reported no size.
-    imputed: bool,
 }
 
 impl<'a> LocalityAcc<'a> {
@@ -311,7 +290,7 @@ impl<'a> LocalityAcc<'a> {
         self.add_stage_bytes(partitions);
         for (partition, locations) in partitions.iter().enumerate() {
             let by_executor = self.per_partition.entry(offset + partition).or_default();
-            for (executor_id, bytes, _) in held(locations) {
+            for (executor_id, bytes) in held(locations) {
                 *by_executor.entry(executor_id).or_insert(0) += bytes;
             }
         }
@@ -320,23 +299,20 @@ impl<'a> LocalityAcc<'a> {
     /// Counts a reader's bytes toward the stage totals only.
     fn add_stage_bytes(&mut self, partitions: &'a [Vec<PartitionLocation>]) {
         for locations in partitions {
-            for (executor_id, bytes, measured) in held(locations) {
+            for (executor_id, bytes) in held(locations) {
                 *self.totals.entry(executor_id).or_insert(0) += bytes;
-                self.imputed |= !measured;
             }
         }
     }
 }
 
-/// `(executor, bytes, measured)` per location. An unsized location counts as
-/// one placeholder byte: enough to rank, but not measured.
-fn held(locations: &[PartitionLocation]) -> impl Iterator<Item = (&str, u64, bool)> {
+/// `(executor, bytes)` per location. An unsized location counts as one placeholder
+/// byte, enough to rank.
+fn held(locations: &[PartitionLocation]) -> impl Iterator<Item = (&str, u64)> {
     locations.iter().map(|location| {
-        let bytes = location.partition_stats.num_bytes();
         (
             location.executor_meta.id.as_str(),
-            bytes.unwrap_or(1),
-            bytes.is_some(),
+            location.partition_stats.num_bytes().unwrap_or(1),
         )
     })
 }
