@@ -41,12 +41,13 @@ without taking the scheduler or executor binaries.
 
 ## Cargo features
 
-| Feature                   | Default | Description                                                          |
-| ------------------------- | ------- | -------------------------------------------------------------------- |
-| `arrow-ipc-optimizations` | Yes     | Arrow IPC fast paths for shuffle read and write                      |
-| `build-binary`            | No      | Pulls in `clap` and an AWS-capable `object_store`, for binary builds |
-| `spark-compat`            | No      | Registers Spark-compatible functions from `datafusion-spark`         |
-| `force_hash_collisions`   | No      | Testing only: forces every value to the same hash bucket             |
+| Feature                   | Default | Description                                                                                    |
+| ------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `arrow-ipc-optimizations` | Yes     | Arrow IPC fast paths for shuffle read and write                                                |
+| `build-binary`            | No      | Pulls in `clap` and an AWS-capable `object_store`, for binary builds                           |
+| `spark-compat`            | No      | Registers Spark-compatible functions from `datafusion-spark`                                   |
+| `force_hash_collisions`   | No      | Testing only: forces every value to the same hash bucket                                       |
+| `utoipa`                  | No      | Derives OpenAPI schemas for scheduler REST types; `ballista-scheduler`'s `rest-api` enables it |
 
 ## Documentation
 

@@ -47,16 +47,16 @@ and `examples/examples/custom-scheduler.rs`.
 
 ## Cargo features
 
-| Feature                    | Default | Description                                          |
-| -------------------------- | ------- | ---------------------------------------------------- |
-| `build-binary`             | Yes     | Builds the binaries, with CLI parsing and logging    |
-| `rest-api`                 | Yes     | REST API endpoints and the history server            |
-| `substrait`                | No      | Accepts Substrait plans                              |
-| `prometheus-metrics`       | No      | Prometheus metrics behind `GET /api/metrics`         |
-| `graphviz-support`         | No      | SVG plan rendering for `GET /api/job/{id}/dot_svg`   |
-| `keda-scaler`              | No      | KEDA external-scaler endpoint for executor autoscale |
-| `spark-compat`             | No      | Registers Spark-compatible functions                 |
-| `disable-stage-plan-cache` | No      | Disables stage plan caching, for plan-rewrite work   |
+| Feature                    | Default | Description                                                  |
+| -------------------------- | ------- | ------------------------------------------------------------ |
+| `build-binary`             | Yes     | Builds the binaries, with CLI parsing and logging            |
+| `rest-api`                 | Yes     | REST API endpoints, the OpenAPI spec, and the history server |
+| `substrait`                | No      | Accepts Substrait plans                                      |
+| `prometheus-metrics`       | No      | Prometheus metrics behind `GET /api/metrics`                 |
+| `graphviz-support`         | No      | SVG plan rendering for `GET /api/job/{id}/dot_svg`           |
+| `keda-scaler`              | No      | KEDA external-scaler endpoint for executor autoscale         |
+| `spark-compat`             | No      | Registers Spark-compatible functions                         |
+| `disable-stage-plan-cache` | No      | Disables stage plan caching, for plan-rewrite work           |
 
 ## Documentation
 

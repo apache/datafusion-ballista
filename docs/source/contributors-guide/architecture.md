@@ -280,6 +280,10 @@ The adaptive optimizations implemented today are:
 - **Join selection** — `SelectJoinRule` and `DelayJoinSelectionRule` resolve a `DynamicJoinSelectionExec`
   into a concrete hash, broadcast, or sort-merge join from runtime row counts and byte sizes, so the
   smaller side drives the join.
+- **Build-side staging** — when a join's build side has only an estimated size and the probe side is far
+  larger, AQE shuffles the build side alone first (`JoinSelectionAction::StageBuildSide`). Its measured size
+  then decides the join, so an over-estimated build side can still be broadcast instead of forcing a shuffle
+  of the probe side. On by default; see `ballista.optimizer.stage_build_side`.
 - **Empty stage elimination** — when a completed stage produces zero rows, its downstream exchange is
   replaced with an empty execution node and emptiness is propagated up the plan so dependent stages are
   skipped entirely.

@@ -150,7 +150,38 @@ Because operators spill to disk rather than fail, make sure the executor's
 
 ## Join Strategy
 
-Ballista defaults to **sort-merge join** rather than hash join. This is the
+How Ballista picks a join depends on whether adaptive query execution is on.
+
+### With AQE (the default)
+
+AQE chooses each join at runtime, from measured sizes, after the join's inputs
+have run. It turns both hash joins and sort-merge joins into a single runtime
+node and decides from that evidence, so `datafusion.optimizer.prefer_hash_join`
+has no effect here.
+
+- **Broadcast.** If the smaller side is under
+  `ballista.optimizer.broadcast_join_threshold_bytes` (128 MiB by default) and
+  the join type allows it, that side is broadcast and the join runs as a
+  `CollectLeft` hash join, without shuffling the larger side.
+- **Partitioned hash join.** Otherwise both sides are shuffled on the join key,
+  and the join runs as a hash join when every build partition is under
+  `ballista.optimizer.hash_join_max_build_partition_bytes` (64 MiB by default).
+- **Sort-merge join.** A build partition over that limit falls back to
+  sort-merge join, which spills to disk under memory pressure.
+
+When a build side's size is only an estimate, AQE can shuffle that side on its
+own first to measure it, so a join whose build side was over-estimated can still
+be broadcast. See [What AQE does today](#what-aqe-does-today).
+
+Setting `ballista.optimizer.hash_join_max_build_partition_bytes` to `0` disables
+the per-partition check, so AQE uses a hash join regardless of build size and
+sort-merge join becomes unreachable.
+
+### With AQE turned off
+
+The static planner keeps DataFusion's physical planning choice.
+`SessionConfig::new_with_ballista()` sets `datafusion.optimizer.prefer_hash_join`
+to `false`, so joins are planned as **sort-merge joins** by default. This is the
 opposite of DataFusion's standalone default and reflects two facts:
 
 - DataFusion's hash join implementation does not yet support spilling: the
@@ -158,15 +189,16 @@ opposite of DataFusion's standalone default and reflects two facts:
 - Ballista executors run multiple tasks in parallel per host, so per-task
   build sides aggregate quickly under load and can OOM the executor.
 
-Sort-merge join spills under memory pressure (via the executor's memory
-pool, when configured), making it the safer default for distributed
-execution.
+Sort-merge join spills under memory pressure via the executor's memory pool,
+making it the safer default for distributed execution.
 
-If you know the build side of a particular query fits comfortably in
-memory and you want hash-join performance, opt back in at the session
-level:
+The static planner only promotes hash joins to broadcast, so with this default
+Ballista does not broadcast joins. If you know the build side of a particular
+query fits comfortably in memory and you want hash-join performance, including
+broadcast promotion, opt back in at the session level:
 
 ```sql
+SET ballista.planner.adaptive.enabled = false;
 SET datafusion.optimizer.prefer_hash_join = true;
 ```
 
@@ -174,10 +206,11 @@ or in code:
 
 ```rust
 let session_config = SessionConfig::new_with_ballista()
+    .set_bool("ballista.planner.adaptive.enabled", false)
     .set_bool("datafusion.optimizer.prefer_hash_join", true);
 ```
 
-This setting applies per session and does not require restarting the
+These settings apply per session and do not require restarting the
 scheduler or executors.
 
 ## Shuffle Implementation
@@ -274,8 +307,9 @@ shuffle stage completes, the planner re-optimizes the remaining plan and emits
 the next set of runnable stages. The following adaptive optimizations are
 currently implemented:
 
-- **Join reordering.** Uses runtime row counts from completed stages so the
-  smaller side drives the join.
+- **Join reordering.** Uses runtime byte sizes from completed stages, falling
+  back to row counts when sizes are unavailable, so the smaller side drives the
+  join.
 - **Broadcast join selection.** When a join input's runtime size falls under
   `ballista.optimizer.broadcast_join_threshold_bytes` (or the row-count
   fallback), the smaller side is broadcast (`CollectLeft`) instead of shuffled.
@@ -286,6 +320,16 @@ currently implemented:
   `ballista.optimizer.not_in_subquery_rewrite` (enabled by default) rewrites
   them into a fully distributable anti join plus a one-row count aggregate
   during logical optimization.
+- **Build-side staging.** When a join's build side has only an estimated size,
+  the join type can be broadcast, the probe side is at least
+  `ballista.optimizer.stage_build_side_min_probe_ratio` times larger (10 by
+  default), and the estimate is no more than
+  `ballista.optimizer.stage_build_side_max_estimate_multiple` times the broadcast
+  threshold (32 by default), AQE shuffles the build side on its own first and
+  reads back its measured size before choosing the join. A side that turns out
+  small enough is broadcast, so the much larger probe side is never shuffled.
+  Enabled by default; set `ballista.optimizer.stage_build_side` to `false` to
+  shuffle both sides at once.
 - **Empty stage elimination.** When a completed stage produces zero rows, its
   downstream exchange is replaced with an empty execution node, and emptiness
   is propagated up the plan so downstream stages are skipped entirely.
@@ -328,7 +372,7 @@ processes. Both processes must be configured with the same policy. The default i
 The scheduler provides a REST API for monitoring jobs. See the
 [scheduler documentation](scheduler.md) for more information.
 
-> This is optional scheduler feature which should be enabled with rest-api feature
+> These endpoints require the scheduler's `rest-api` feature, which is enabled by default.
 
 To download a query plan in dot format from the scheduler, submit a request to the following API endpoint
 

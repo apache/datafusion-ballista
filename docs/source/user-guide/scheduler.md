@@ -71,7 +71,7 @@ significant.
 
 The scheduler also provides a REST API that allows jobs to be monitored.
 
-> This is optional scheduler feature which should be enabled with the `rest-api` feature.
+> These endpoints require the scheduler's `rest-api` feature, which is enabled by default.
 
 | API                                    | Method | Description                                                       |
 | -------------------------------------- | ------ | ----------------------------------------------------------------- |

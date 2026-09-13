@@ -140,25 +140,26 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 
 ### ballista-core
 
-| Feature                   | Default | Description                                                            |
-| ------------------------- | ------- | ---------------------------------------------------------------------- |
-| `arrow-ipc-optimizations` | Yes     | Enables Arrow IPC optimizations for better shuffle performance         |
-| `spark-compat`            | No      | Enables Spark compatibility mode via datafusion-spark                  |
-| `build-binary`            | No      | Required for building binary executables (AWS S3 support, CLI parsing) |
-| `force_hash_collisions`   | No      | Testing-only: forces all values to hash to same value                  |
+| Feature                   | Default | Description                                                                                    |
+| ------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `arrow-ipc-optimizations` | Yes     | Enables Arrow IPC optimizations for better shuffle performance                                 |
+| `spark-compat`            | No      | Enables Spark compatibility mode via datafusion-spark                                          |
+| `build-binary`            | No      | Required for building binary executables (AWS S3 support, CLI parsing)                         |
+| `force_hash_collisions`   | No      | Testing-only: forces all values to hash to same value                                          |
+| `utoipa`                  | No      | Derives OpenAPI schemas for scheduler REST types; enabled by `ballista-scheduler`'s `rest-api` |
 
 ### ballista-scheduler
 
-| Feature                    | Default | Description                                       |
-| -------------------------- | ------- | ------------------------------------------------- |
-| `build-binary`             | Yes     | Builds the scheduler binary with CLI and logging  |
-| `substrait`                | No      | Enables Substrait plan support                    |
-| `prometheus-metrics`       | No      | Enables Prometheus metrics collection             |
-| `graphviz-support`         | No      | Enables execution graph visualization             |
-| `spark-compat`             | No      | Enables Spark compatibility mode                  |
-| `keda-scaler`              | No      | Kubernetes Event Driven Autoscaling integration   |
-| `rest-api`                 | Yes     | Enables REST API endpoints and the history server |
-| `disable-stage-plan-cache` | No      | Disables caching of stage execution plans         |
+| Feature                    | Default | Description                                                          |
+| -------------------------- | ------- | -------------------------------------------------------------------- |
+| `build-binary`             | Yes     | Builds the scheduler binary with CLI and logging                     |
+| `substrait`                | No      | Enables Substrait plan support                                       |
+| `prometheus-metrics`       | No      | Enables Prometheus metrics collection                                |
+| `graphviz-support`         | No      | Enables execution graph visualization                                |
+| `spark-compat`             | No      | Enables Spark compatibility mode                                     |
+| `keda-scaler`              | No      | Kubernetes Event Driven Autoscaling integration                      |
+| `rest-api`                 | Yes     | Enables REST API endpoints, the OpenAPI spec, and the history server |
+| `disable-stage-plan-cache` | No      | Disables caching of stage execution plans                            |
 
 ### ballista-executor
 
