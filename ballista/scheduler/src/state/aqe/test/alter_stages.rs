@@ -15,17 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::assert_plan;
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{
     mock_batch, mock_context, mock_partitions_with_statistics_no_data,
 };
+use ballista_core::assert_plan;
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
     PartitionId, PartitionLocation, PartitionStats,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::stats::Precision;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{ColumnStatistics, DataFusionError, JoinType, Statistics};
 use datafusion::config::ConfigOptions;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -71,7 +72,7 @@ async fn should_propagate_empty_stage() -> datafusion::error::Result<()> {
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().plan.as_ref(),  @ r"
-    ShuffleWriterExec: partitioning: None
+    ShuffleWriterExec: partitioning: RoundRobinBatch(2)
       RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
         EmptyExec
     ");
@@ -146,7 +147,7 @@ async fn should_propagate_empty_stage_and_remove() -> datafusion::error::Result<
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().plan.as_ref(),  @ r"
-    ShuffleWriterExec: partitioning: None
+    ShuffleWriterExec: partitioning: RoundRobinBatch(2)
       RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
         EmptyExec
     ");
@@ -301,7 +302,7 @@ async fn should_support_cross_join() -> datafusion::error::Result<()> {
     assert_eq!(1, stages.len());
 
     assert_plan!(stages[0].plan.as_ref(),  @ r"
-    ShuffleWriterExec: partitioning: None
+    ShuffleWriterExec: partitioning: UnknownPartitioning(2)
       MockPartitionedScan: num_partitions=2, statistics=[Rows=Exact(1024), Bytes=Exact(8192), [(Col[0]:)]]
     ");
 
@@ -325,7 +326,7 @@ async fn should_support_cross_join() -> datafusion::error::Result<()> {
     assert_eq!(1, stages.len());
 
     assert_plan!(stages[0].plan.as_ref(),  @ r"
-    ShuffleWriterExec: partitioning: None
+    ShuffleWriterExec: partitioning: UnknownPartitioning(2)
       ProjectionExec: expr=[big_col@1 as big_col, big_col@0 as big_col]
         CrossJoinExec
           CoalescePartitionsExec
@@ -653,6 +654,15 @@ impl ExecutionPlan for MockPartitionedScan {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn PhysicalExpr>,
+        ) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(

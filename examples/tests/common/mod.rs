@@ -34,6 +34,14 @@ pub const BUCKET: &str = "ballista";
 pub const ACCESS_KEY_ID: &str = "MINIO";
 pub const SECRET_KEY: &str = "MINIOMINIO";
 
+/// Registry override for the image pinned by `testcontainers-modules`.
+///
+/// MinIO withdrew `minio/minio` from Docker Hub on 2026-09-11, so the image the
+/// crate pins no longer resolves and every test that starts a container panics.
+/// quay.io still serves the same tag, so only the registry changes here.
+/// See <https://github.com/apache/datafusion/issues/25215>.
+const MINIO_IMAGE_NAME: &str = "quay.io/minio/minio";
+
 #[allow(dead_code)]
 pub fn create_s3_store(
     host: &str,
@@ -53,6 +61,7 @@ pub fn create_s3_store(
 #[allow(dead_code)]
 pub fn create_minio_container() -> ContainerRequest<minio::MinIO> {
     MinIO::default()
+        .with_name(MINIO_IMAGE_NAME)
         .with_env_var("MINIO_ACCESS_KEY", ACCESS_KEY_ID)
         .with_env_var("MINIO_SECRET_KEY", SECRET_KEY)
 }

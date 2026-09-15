@@ -18,6 +18,7 @@
 #[cfg(not(feature = "web"))]
 use crate::tui::TuiError;
 use crate::tui::TuiResult;
+use crate::tui::domain::jobs::JobStatusExt;
 use crate::tui::event::Event;
 #[cfg(feature = "web")]
 use crate::tui::event::web::Sender;
@@ -57,7 +58,7 @@ use crate::tui::ui::{
     load_metrics_data, load_stage_plan,
 };
 
-const INVALID_DATE: &str = "Invalid date";
+pub(crate) const INVALID_DATE: &str = "Invalid date";
 
 #[derive(Debug, PartialEq)]
 enum Views {
@@ -1335,6 +1336,9 @@ mod tests {
             num_stages: 1,
             completed_stages: 0,
             percent_complete: 0,
+            logical_plan: None,
+            physical_plan: None,
+            stage_plan: None,
         }
     }
 

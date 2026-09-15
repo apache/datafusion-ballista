@@ -62,8 +62,8 @@ pub use standalone::new_standalone_executor_from_state;
 use crate::shutdown::Shutdown;
 use ballista_core::execution_plans::ShuffleWriteResult;
 use ballista_core::serde::protobuf::{
-    FailedTask, OperatorMetricsSet, RuntimeStatsReport, SuccessfulTask, TaskStatus,
-    task_status,
+    FailedTask, OperatorMetricsSet, RuntimeStatsReport, ShuffleWritePartition,
+    SuccessfulTask, TaskStatus, WindowStateReport, task_status,
 };
 use ballista_core::serde::scheduler::TaskKey;
 use ballista_core::utils::GrpcServerConfig;
@@ -111,6 +111,10 @@ pub struct TaskCompletionExtras {
     pub operator_metrics: Option<Vec<OperatorMetricsSet>>,
     /// Runtime-stats reports harvested from `RuntimeStatsExec` taps in the plan.
     pub runtime_stats: Vec<RuntimeStatsReport>,
+    /// Finalized window-aggregate state captured by an ever-expanding-frame
+    /// window, already stamped with the global partition each entry belongs
+    /// to by the stage's `ShuffleWriterExec`.
+    pub window_state: Vec<WindowStateReport>,
 }
 
 /// Converts a task execution result into a [`TaskStatus`] protobuf message.
@@ -129,6 +133,7 @@ pub fn as_task_status(
     let TaskCompletionExtras {
         operator_metrics,
         runtime_stats,
+        window_state,
     } = extras;
     let metrics = operator_metrics.unwrap_or_default();
     let task_id = key.task_id;
@@ -136,9 +141,10 @@ pub fn as_task_status(
         Ok(shuffle_write_result) => {
             debug!(
                 "Task {task_id} finished with operator_metrics array size {} \
-                 and {} runtime-stats report(s)",
+                 and {} runtime-stats report(s), {} window-state report(s)",
                 metrics.len(),
                 runtime_stats.len(),
+                window_state.len(),
             );
             let partition = shuffle_write_result.partitions;
             let col_stats = shuffle_write_result.column_stats;
@@ -156,6 +162,7 @@ pub fn as_task_status(
                     partitions: partition,
                     runtime_stats,
                     task_column_stats: col_stats,
+                    window_state,
                 })),
             }
         }

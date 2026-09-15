@@ -182,7 +182,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 }
                 QueryStageSchedulerEvent::TaskUpdating(executor_id, statuses) => {
                     for (job_id, group) in group_by_job(statuses) {
-                        for ev in event_log::task_end_events(executor_id, &group) {
+                        // Borrow the live graph read-only just long enough to
+                        // map each task's operator metrics onto its stage
+                        // plan; cloning the graph per status batch (as
+                        // `event_log_graph` does for the rarer job events)
+                        // would be far too costly here.
+                        let graph = self
+                            .state
+                            .task_manager
+                            .get_active_execution_graph(&JobId::new(job_id.as_str()));
+                        let guard = match &graph {
+                            Some(graph) => Some(graph.read().await),
+                            None => None,
+                        };
+                        let stages = guard.as_ref().map(|graph| graph.stages());
+                        for ev in event_log::task_end_events(executor_id, &group, stages)
+                        {
                             log.append(&job_id, ev);
                         }
                     }
@@ -191,7 +206,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 // `finish_job` runs even when no `JobEnd` could be built, so a
                 // job that cannot be recorded still releases its file handle;
                 // such a log has no `JobEnd` line and the history server skips
-                // it rather than serving a half-written job.
+                // it rather than serving a half-written job. `finish_job` also
+                // renames the file from `.eventlog.running` to `.eventlog`, so
+                // a job whose `finish_job` never runs (the scheduler process is
+                // killed first) leaves a `.running`-suffixed file behind
+                // permanently — nothing else will ever rename it.
                 QueryStageSchedulerEvent::JobFinished {
                     job_id,
                     queued_at,
@@ -797,7 +816,10 @@ mod tests {
             .session_manager
             .create_or_update_session(
                 "session",
-                &SessionConfig::new_with_ballista().with_target_partitions(2),
+                &SessionConfig::new_with_ballista()
+                    .with_target_partitions(2)
+                    // Asserts the static planner's stage/partition layout.
+                    .with_ballista_adaptive_query_planner(false),
             )
             .await?;
         let job_id = scheduler.submit_job("", ctx, &test_plan(2), None).await?;
@@ -868,6 +890,7 @@ mod tests {
                         .collect(),
                     runtime_stats: vec![],
                     task_column_stats: vec![],
+                    window_state: vec![],
                 })),
             })
             .collect();

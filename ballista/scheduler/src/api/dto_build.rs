@@ -159,13 +159,15 @@ pub fn graph_to_query_stages(
 
             let has_started = started.is_some();
             let (metrics, task_infos, elapsed_compute) = started.unwrap_or_default();
-            let tasks = task_summaries(task_infos, metrics);
+            let slots = StageMetricSlots::of(stage.plan());
+            let (input_rows, output_rows) = slots.row_counts(metrics, None);
+            let tasks = task_summaries(task_infos, metrics, &slots);
 
             QueryStageSummary {
                 stage_id: id.to_string(),
                 stage_status: stage.variant_name().to_string(),
-                input_rows: get_combined_count(metrics, "input_rows"),
-                output_rows: get_combined_count(metrics, "output_rows"),
+                input_rows,
+                output_rows,
                 elapsed_compute,
                 stage_plan: has_started
                     .then(|| render_stage_plan(stage.plan(), metrics, plan_format)),
@@ -202,12 +204,13 @@ fn render_stage_plan(
 fn task_summaries(
     task_infos: &[TaskInfo],
     metrics: &[MetricsSet],
+    slots: &StageMetricSlots,
 ) -> Vec<Option<TaskSummary>> {
     task_infos
         .iter()
         .map(|info| {
             let (input_rows, output_rows) =
-                get_partition_counts(metrics, &info.global_input_partition_ids);
+                slots.row_counts(metrics, Some(&info.global_input_partition_ids));
 
             let start_exec_time = info.start_exec_time as u64;
             let end_exec_time = info.end_exec_time as u64;
@@ -238,36 +241,34 @@ pub fn build_job_dot(graph: &ExecutionGraphBox) -> Result<String, std::fmt::Erro
     ExecutionGraphDot::generate(graph.as_ref())
 }
 
-/// Sum one task's raw operator metrics into
+/// Reduce one task's raw operator metrics to
 /// `(input_rows, output_rows, elapsed_compute_nanos)`.
 ///
-/// Distinct from [`get_partition_counts`], which reads a stage's already-merged
-/// [`MetricsSet`]s and filters by partition. This takes the raw protobuf
-/// [`OperatorMetricsSet`]s an executor reports for a single task, so there is no
-/// partition to filter on, and it also sums `elapsed_compute` for the event
-/// log's per-task timeline records.
-pub fn task_row_counts(metrics: &[OperatorMetricsSet]) -> (u64, u64, u64) {
-    let mut input_rows: u64 = 0;
-    let mut output_rows: u64 = 0;
-    let mut elapsed_compute_nanos: u64 = 0;
+/// Distinct from [`StageMetricSlots::row_counts`] on a stage's already-merged
+/// [`MetricsSet`]s: this takes the raw protobuf [`OperatorMetricsSet`]s an
+/// executor reports for a single task, so there is no partition to filter on,
+/// and it also sums `elapsed_compute` over every operator for the event log's
+/// per-task timeline records. The row counts still need the stage plan to
+/// tell the writer and the leaves apart from the operators in between; without
+/// `slots` they are reported as zero.
+pub fn task_row_counts(
+    metrics: &[OperatorMetricsSet],
+    slots: Option<&StageMetricSlots>,
+) -> (u64, u64, u64) {
+    let metrics: Vec<MetricsSet> = metrics
+        .iter()
+        .filter_map(|operator_metrics| operator_metrics.clone().try_into().ok())
+        .collect();
 
-    for operator_metrics in metrics {
-        let Ok(metrics_set) = TryInto::<MetricsSet>::try_into(operator_metrics.clone())
-        else {
-            continue;
-        };
-        for metric in metrics_set.iter() {
-            let value = metric.value();
-            match value.name() {
-                "input_rows" => input_rows += value.as_usize() as u64,
-                "output_rows" => output_rows += value.as_usize() as u64,
-                "elapsed_compute" => elapsed_compute_nanos += value.as_usize() as u64,
-                _ => {}
-            }
-        }
-    }
+    let elapsed_compute_nanos = metrics
+        .iter()
+        .map(|operator| sum_metric(operator, "elapsed_compute", None) as u64)
+        .sum();
+    let (input_rows, output_rows) = slots
+        .map(|slots| slots.row_counts(&metrics, None))
+        .unwrap_or((0, 0));
 
-    (input_rows, output_rows, elapsed_compute_nanos)
+    (input_rows as u64, output_rows as u64, elapsed_compute_nanos)
 }
 
 /// Map a protobuf task status onto the wire enum.
@@ -424,53 +425,98 @@ fn failed_reason(failed: &FailedTask) -> String {
     .to_string()
 }
 
-/// Sum a task's `input_rows` / `output_rows` across the global partitions the
-/// task owns. Metrics are keyed by global partition id — for single-partition
-/// tasks `partitions` is a one-element slice; for multi-partition tasks it is
-/// the task's `global_input_partition_ids`.
-fn get_partition_counts(metrics: &[MetricsSet], partitions: &[usize]) -> (usize, usize) {
-    let input_rows = get_partition_count(metrics, partitions, "input_rows");
-    let output_rows = get_partition_count(metrics, partitions, "output_rows");
-    (input_rows, output_rows)
+/// Where a stage plan's root and leaf operators sit in the flat metrics vector
+/// executors report for the stage.
+///
+/// Executors flatten a task's metrics with
+/// [`ballista_core::utils::collect_plan_metrics`]: a pre-order walk of the
+/// stage plan that appends one [`MetricsSet`] per operator that reports
+/// metrics. The scheduler holds the same plan, so walking it the same way
+/// recovers which slot belongs to which operator; the wire format carries no
+/// operator names.
+///
+/// A stage's rows in are the rows its leaves (shuffle readers, data sources)
+/// produce and its rows out are the rows its root (the shuffle writer)
+/// produces. Summing every operator's `input_rows` / `output_rows` instead
+/// counts a row once per operator that touches it: a hash join reports its
+/// probe side as `input_rows`, so a scan-join-write stage looked like it read
+/// its input twice and wrote more rows than it scanned.
+pub struct StageMetricSlots {
+    /// Slot of the root operator; `None` if it reports no metrics.
+    root: Option<usize>,
+    /// Slots of the leaf operators, in plan order.
+    leaves: Vec<usize>,
+    /// Number of slots the plan produces. A metrics vector of any other
+    /// length was collected from a different plan shape and cannot be mapped.
+    len: usize,
 }
 
-fn get_partition_count(
-    metrics: &[MetricsSet],
-    partitions: &[usize],
-    name: &str,
-) -> usize {
-    metrics
-        .iter()
-        .flat_map(|vec| {
-            vec.iter().map(|metric| {
-                let metric_value = metric.value();
-                let owned_by_task = metric
-                    .partition()
-                    .map(|p| partitions.contains(&p))
-                    .unwrap_or(false);
-                if owned_by_task && metric_value.name() == name {
-                    metric_value.as_usize()
-                } else {
-                    0
-                }
-            })
-        })
-        .sum()
+impl StageMetricSlots {
+    pub fn of(plan: &dyn ExecutionPlan) -> Self {
+        let mut slots = Self {
+            root: None,
+            leaves: Vec::new(),
+            len: 0,
+        };
+        slots.visit(plan, true);
+        slots
+    }
+
+    /// Mirrors `collect_plan_metrics`: pre-order, and an operator without
+    /// metrics takes no slot.
+    fn visit(&mut self, plan: &dyn ExecutionPlan, is_root: bool) {
+        if plan.metrics().is_some() {
+            if is_root {
+                self.root = Some(self.len);
+            }
+            if plan.children().is_empty() {
+                self.leaves.push(self.len);
+            }
+            self.len += 1;
+        }
+        for child in plan.children() {
+            self.visit(child.as_ref(), false);
+        }
+    }
+
+    /// `(input_rows, output_rows)` over the whole stage, or over the global
+    /// partitions in `partitions` when given (the per-task view; for
+    /// multi-partition tasks that is the task's `global_input_partition_ids`).
+    ///
+    /// Returns zeros when `metrics` does not line up with the plan (nothing
+    /// reported yet, or a shape mismatch that `print_stage_metrics` already
+    /// logs when the stage finishes): attributing the slots to the wrong
+    /// operators would silently produce plausible-looking wrong numbers.
+    pub fn row_counts(
+        &self,
+        metrics: &[MetricsSet],
+        partitions: Option<&[usize]>,
+    ) -> (usize, usize) {
+        if metrics.len() != self.len {
+            return (0, 0);
+        }
+        let output_rows_of =
+            |slot: usize| sum_metric(&metrics[slot], "output_rows", partitions);
+        let input_rows = self.leaves.iter().map(|&slot| output_rows_of(slot)).sum();
+        let output_rows = self.root.map(output_rows_of).unwrap_or(0);
+        (input_rows, output_rows)
+    }
 }
 
-fn get_combined_count(metrics: &[MetricsSet], name: &str) -> usize {
+/// Sum the metrics named `name` in one operator's [`MetricsSet`], restricted to
+/// the given global partitions when `partitions` is `Some`. Metrics with no
+/// partition only count towards the unrestricted total.
+fn sum_metric(metrics: &MetricsSet, name: &str, partitions: Option<&[usize]>) -> usize {
     metrics
         .iter()
-        .flat_map(|vec| {
-            vec.iter().map(|metric| {
-                let metric_value = metric.value();
-                if metric_value.name() == name {
-                    metric_value.as_usize()
-                } else {
-                    0
-                }
-            })
+        .filter(|metric| metric.value().name() == name)
+        .filter(|metric| match partitions {
+            None => true,
+            Some(partitions) => {
+                metric.partition().is_some_and(|p| partitions.contains(&p))
+            }
         })
+        .map(|metric| metric.value().as_usize())
         .sum()
 }
 
@@ -478,7 +524,15 @@ fn get_combined_count(metrics: &[MetricsSet], name: &str) -> usize {
 mod tests {
     use super::*;
     use crate::state::execution_stage::TaskInfo;
-    use ballista_core::serde::protobuf::task_status;
+    use ballista_core::serde::protobuf::{OperatorMetric, operator_metric, task_status};
+    use ballista_core::utils::collect_plan_metrics;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::metrics::{Count, Metric, MetricValue};
+    use datafusion::physical_plan::union::UnionExec;
+    use std::sync::Arc;
 
     fn make_task_info(start: u128, end: u128) -> TaskInfo {
         TaskInfo {
@@ -492,6 +546,153 @@ mod tests {
             global_input_partition_ids: vec![],
             vcores_consumed: 0,
         }
+    }
+
+    fn test_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]))
+    }
+
+    fn scan() -> Arc<dyn ExecutionPlan> {
+        MemorySourceConfig::try_new_exec(&[vec![]], test_schema(), None).unwrap()
+    }
+
+    /// `CoalescePartitionsExec <- UnionExec <- [scan, scan]`. Every operator
+    /// reports metrics, so pre-order gives slots root=0, union=1, scans=2,3.
+    fn union_plan() -> Arc<dyn ExecutionPlan> {
+        Arc::new(CoalescePartitionsExec::new(
+            UnionExec::try_new(vec![scan(), scan()]).unwrap(),
+        ))
+    }
+
+    /// One operator's merged metrics: an `output_rows` count per
+    /// `(partition, rows)` pair.
+    fn output_rows(per_partition: &[(usize, usize)]) -> MetricsSet {
+        let mut set = MetricsSet::new();
+        for &(partition, rows) in per_partition {
+            let count = Count::new();
+            count.add(rows);
+            set.push(Arc::new(Metric::new(
+                MetricValue::OutputRows(count),
+                Some(partition),
+            )));
+        }
+        set
+    }
+
+    /// Merged metrics for `union_plan()` with two partitions. Per partition
+    /// the stage reads `scan_a + scan_b` rows and writes `root` rows; the
+    /// union's own count must not leak into either.
+    fn union_plan_metrics() -> Vec<MetricsSet> {
+        vec![
+            output_rows(&[(0, 5), (1, 7)]),   // root
+            output_rows(&[(0, 12), (1, 70)]), // union
+            output_rows(&[(0, 10), (1, 30)]), // scan a
+            output_rows(&[(0, 2), (1, 40)]),  // scan b
+        ]
+    }
+
+    // --- StageMetricSlots ---
+
+    #[test]
+    fn test_slots_follow_collect_plan_metrics_order() {
+        let plan = union_plan();
+        let slots = StageMetricSlots::of(plan.as_ref());
+        assert_eq!(slots.len, collect_plan_metrics(plan.as_ref()).len());
+        assert_eq!(slots.root, Some(0));
+        assert_eq!(slots.leaves, vec![2, 3]);
+    }
+
+    #[test]
+    fn test_operators_without_metrics_take_no_slot() {
+        // `EmptyExec` reports no metrics, so the plan has a single slot (the
+        // root) and no leaf slot at all.
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(
+            Arc::new(EmptyExec::new(test_schema())),
+        ));
+        let slots = StageMetricSlots::of(plan.as_ref());
+        assert_eq!(slots.len, collect_plan_metrics(plan.as_ref()).len());
+        assert_eq!(slots.len, 1);
+        assert_eq!(slots.root, Some(0));
+        assert!(slots.leaves.is_empty());
+        let (input_rows, output_rows) = slots.row_counts(&[output_rows(&[(0, 3)])], None);
+        assert_eq!((input_rows, output_rows), (0, 3));
+    }
+
+    #[test]
+    fn test_stage_rows_are_leaf_input_and_root_output() {
+        let plan = union_plan();
+        let slots = StageMetricSlots::of(plan.as_ref());
+        let (input_rows, output_rows) = slots.row_counts(&union_plan_metrics(), None);
+        assert_eq!(input_rows, 10 + 30 + 2 + 40);
+        assert_eq!(output_rows, 5 + 7);
+    }
+
+    #[test]
+    fn test_task_rows_are_restricted_to_owned_partitions() {
+        let plan = union_plan();
+        let slots = StageMetricSlots::of(plan.as_ref());
+        let metrics = union_plan_metrics();
+        assert_eq!(slots.row_counts(&metrics, Some(&[0])), (10 + 2, 5));
+        assert_eq!(slots.row_counts(&metrics, Some(&[1])), (30 + 40, 7));
+        assert_eq!(slots.row_counts(&metrics, Some(&[0, 1])), (82, 12));
+        assert_eq!(slots.row_counts(&metrics, Some(&[9])), (0, 0));
+    }
+
+    #[test]
+    fn test_unpartitioned_metrics_only_count_stage_wide() {
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(scan()));
+        let slots = StageMetricSlots::of(plan.as_ref());
+        let mut root = MetricsSet::new();
+        let count = Count::new();
+        count.add(4);
+        root.push(Arc::new(Metric::new(MetricValue::OutputRows(count), None)));
+        let metrics = vec![root, output_rows(&[(0, 9)])];
+        assert_eq!(slots.row_counts(&metrics, None), (9, 4));
+        assert_eq!(slots.row_counts(&metrics, Some(&[0])), (9, 0));
+    }
+
+    #[test]
+    fn test_mismatched_metrics_report_zero_rows() {
+        let plan = union_plan();
+        let slots = StageMetricSlots::of(plan.as_ref());
+        // Nothing reported yet.
+        assert_eq!(slots.row_counts(&[], None), (0, 0));
+        // Collected from a different plan shape.
+        let short = union_plan_metrics()[..3].to_vec();
+        assert_eq!(slots.row_counts(&short, None), (0, 0));
+    }
+
+    // --- task_row_counts ---
+
+    fn raw_operator_metrics(output_rows: u64, elapsed_nanos: u64) -> OperatorMetricsSet {
+        OperatorMetricsSet {
+            metrics: vec![
+                OperatorMetric {
+                    metric: Some(operator_metric::Metric::OutputRows(output_rows)),
+                    partition: Some(0),
+                },
+                OperatorMetric {
+                    metric: Some(operator_metric::Metric::ElapseTime(elapsed_nanos)),
+                    partition: Some(0),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn test_task_row_counts_use_stage_plan_when_known() {
+        let plan = union_plan();
+        let slots = StageMetricSlots::of(plan.as_ref());
+        let raw = vec![
+            raw_operator_metrics(5, 100),  // root
+            raw_operator_metrics(12, 200), // union
+            raw_operator_metrics(10, 300), // scan a
+            raw_operator_metrics(2, 400),  // scan b
+        ];
+        assert_eq!(task_row_counts(&raw, Some(&slots)), (12, 5, 1000));
+        // Elapsed compute is still summed when the plan is unknown; the row
+        // counts cannot be attributed and are reported as zero.
+        assert_eq!(task_row_counts(&raw, None), (0, 0, 1000));
     }
 
     // --- get_finished_stage_time ---

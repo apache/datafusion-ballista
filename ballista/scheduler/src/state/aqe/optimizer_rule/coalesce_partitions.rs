@@ -286,7 +286,8 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
         // get parallelism preservation unless they explicitly trade it for
         // larger tasks. This corresponds to Spark's
         // `parallelismFirst=false` mode — direct advisory-driven packing.
-        let starts = split_size_list_by_target_size(&summed, target, small, merged);
+        let starts =
+            split_size_list_by_target_size(&summed, target as u64, small, merged);
         let k = starts.len();
         debug!("[coalesce-rule] bin-pack result: K={k} M={m}");
         if k >= m || k <= 1 {

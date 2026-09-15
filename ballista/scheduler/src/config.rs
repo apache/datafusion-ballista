@@ -32,7 +32,7 @@ use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::{ConfigProducer, JobId, config::TaskSchedulingPolicy};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-use log::warn;
+use log::{info, warn};
 use std::fmt::Display;
 use std::sync::Arc;
 
@@ -72,14 +72,27 @@ pub type OnWorkAvailableFn = Arc<dyn Fn(WorkAvailableReason) + Send + Sync>;
 #[derive(clap::Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Config {
-    /// Route for proxying flight results via scheduler (IP:PORT format).
+    /// Address advertised to clients for fetching result partitions over Arrow
+    /// Flight (HOST:PORT format).
+    ///
+    /// `--advertise-flight-sql-endpoint` is accepted as a deprecated alias: this
+    /// is plain Arrow Flight, not Flight SQL, which was removed in
+    /// <https://github.com/apache/datafusion-ballista/pull/1228>.
     #[arg(
         long,
+        alias = "advertise-flight-sql-endpoint",
         num_args = 0..=1,
         default_missing_value = "",
-        help = "Route for proxying flight results via scheduler. Use 'HOST:PORT' to let clients fetch results from the specified address. If empty a flight proxy will be started on the scheduler host and port."
+        help = "Address advertised to clients for fetching result partitions over Arrow Flight. Use 'HOST:PORT' to point clients at that address, e.g. a load balancer or a standalone proxy in front of the executors. Passing the flag with no value is deprecated; use --enable-embedded-flight-proxy to start the embedded proxy instead. The old name --advertise-flight-sql-endpoint is a deprecated alias."
     )]
-    pub advertise_flight_sql_endpoint: Option<String>,
+    pub advertise_flight_endpoint: Option<String>,
+    /// Start an embedded Arrow Flight proxy on the scheduler host/port.
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Start an embedded Arrow Flight proxy on the scheduler, so clients can fetch result partitions through the scheduler instead of connecting to executors directly. Independent of --advertise-flight-endpoint: if that is set to a non-empty address, clients are pointed at it rather than at this scheduler."
+    )]
+    pub enable_embedded_flight_proxy: bool,
     /// Namespace for the ballista cluster.
     #[arg(
         short = 'n',
@@ -316,8 +329,26 @@ pub struct SchedulerConfig {
     pub finished_job_data_clean_up_interval_seconds: u64,
     /// The delayed interval for cleaning up finished job state stored in the backend, 0 means the cleaning up is disabled.
     pub finished_job_state_clean_up_interval_seconds: u64,
-    /// The route endpoint for proxying flight sql results via scheduler
-    pub advertise_flight_sql_endpoint: Option<String>,
+    /// The address advertised to clients for fetching result partitions over
+    /// Arrow Flight, for example a load balancer or a standalone proxy sitting
+    /// in front of the executors.
+    ///
+    /// This is plain Arrow Flight, not Flight SQL, which was removed in
+    /// <https://github.com/apache/datafusion-ballista/pull/1228>.
+    ///
+    /// An empty string is treated as unset. Setting this does not start any
+    /// proxy; see [`Self::enable_embedded_flight_proxy`] for that.
+    pub advertise_flight_endpoint: Option<String>,
+    /// Whether to start an embedded Arrow Flight proxy on the scheduler's own
+    /// host and port, so clients can fetch result partitions through the
+    /// scheduler instead of connecting to executors directly.
+    ///
+    /// This is independent of [`Self::advertise_flight_endpoint`]: it controls
+    /// whether the proxy *runs*, while the endpoint controls what clients are
+    /// *told*. When a non-empty endpoint is also set it takes precedence for
+    /// the advertisement, which is how you put a load balancer in front of an
+    /// embedded proxy.
+    pub enable_embedded_flight_proxy: bool,
     /// If provided, submitted jobs which do not have tasks scheduled will be resubmitted after `job_resubmit_interval_ms`
     /// milliseconds
     pub job_resubmit_interval_ms: Option<u64>,
@@ -399,7 +430,8 @@ impl Default for SchedulerConfig {
             task_distribution: Default::default(),
             finished_job_data_clean_up_interval_seconds: 300,
             finished_job_state_clean_up_interval_seconds: 3600,
-            advertise_flight_sql_endpoint: None,
+            advertise_flight_endpoint: None,
+            enable_embedded_flight_proxy: false,
             job_resubmit_interval_ms: None,
             executor_termination_grace_period: 0,
             scheduler_event_expected_processing_duration: 0,
@@ -459,6 +491,32 @@ impl SchedulerConfig {
                  expire_dead_executor_interval_seconds ({}); dead executors may not \
                  be detected within the timeout window.",
                 self.executor_timeout_seconds, self.expire_dead_executor_interval_seconds,
+            );
+        }
+
+        if self.advertise_flight_endpoint.as_deref() == Some("") {
+            warn!(
+                "advertise_flight_endpoint is set to an empty string, which is treated \
+                 as unset. If you meant to start the embedded flight proxy, use \
+                 with_enable_embedded_flight_proxy(true)."
+            );
+        }
+        // Not a misconfiguration: running the embedded proxy while advertising a load
+        // balancer in front of it is a supported deployment. Spell out which one wins so
+        // that operators setting both do not have to guess.
+        if self.enable_embedded_flight_proxy
+            && self
+                .advertise_flight_endpoint
+                .as_deref()
+                .is_some_and(|e| !e.is_empty())
+        {
+            info!(
+                "Both enable_embedded_flight_proxy and advertise_flight_endpoint ({}) \
+                 are set; the embedded proxy will run, but clients will be pointed at \
+                 the advertised endpoint.",
+                self.advertise_flight_endpoint
+                    .as_deref()
+                    .unwrap_or_default(),
             );
         }
         Ok(())
@@ -522,12 +580,33 @@ impl SchedulerConfig {
         self
     }
 
-    /// Sets the Flight SQL endpoint to advertise.
-    pub fn with_advertise_flight_sql_endpoint(
-        mut self,
-        endpoint: Option<String>,
-    ) -> Self {
-        self.advertise_flight_sql_endpoint = endpoint;
+    /// Sets the Arrow Flight endpoint advertised to clients for fetching result
+    /// partitions.
+    ///
+    /// An empty string is treated as unset. (Previously an empty value enabled
+    /// the embedded flight proxy; use
+    /// [`Self::with_enable_embedded_flight_proxy`] for that)
+    pub fn with_advertise_flight_endpoint(mut self, endpoint: Option<String>) -> Self {
+        self.advertise_flight_endpoint = endpoint.filter(|e| !e.is_empty());
+        self
+    }
+
+    /// Sets the Arrow Flight endpoint advertised to clients for fetching result
+    /// partitions.
+    #[deprecated(
+        since = "55.0.0",
+        note = "this endpoint serves plain Arrow Flight, not Flight SQL; use `with_advertise_flight_endpoint` instead"
+    )]
+    pub fn with_advertise_flight_sql_endpoint(self, endpoint: Option<String>) -> Self {
+        self.with_advertise_flight_endpoint(endpoint)
+    }
+
+    /// Sets whether to start an embedded Arrow Flight proxy on the scheduler.
+    ///
+    /// This is independent of [`Self::with_advertise_flight_endpoint`]: it
+    /// controls whether the proxy runs, not what clients are told to connect to.
+    pub fn with_enable_embedded_flight_proxy(mut self, enable: bool) -> Self {
+        self.enable_embedded_flight_proxy = enable;
         self
     }
 
@@ -689,6 +768,21 @@ impl TryFrom<Config> for SchedulerConfig {
             TaskDistribution::RoundRobin => TaskDistributionPolicy::RoundRobin,
         };
 
+        // Backward compatibility: a bare `--advertise-flight-endpoint` (empty value) used
+        // to enable the embedded flight proxy. Map it to the explicit flag
+        let (advertise_flight_endpoint, legacy_embedded) =
+            match opt.advertise_flight_endpoint {
+                Some(ref s) if s.is_empty() => {
+                    warn!(
+                        "Passing --advertise-flight-endpoint with an empty value to \
+                        enable the embedded flight proxy is deprecated and will be \
+                        removed in a future release; use --enable-embedded-flight-proxy"
+                    );
+                    (None, true)
+                }
+                other => (other, false),
+            };
+
         let config = SchedulerConfig {
             namespace: opt.namespace,
             external_host: opt.external_host,
@@ -701,7 +795,9 @@ impl TryFrom<Config> for SchedulerConfig {
                 .finished_job_data_clean_up_interval_seconds,
             finished_job_state_clean_up_interval_seconds: opt
                 .finished_job_state_clean_up_interval_seconds,
-            advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
+            advertise_flight_endpoint,
+            enable_embedded_flight_proxy: opt.enable_embedded_flight_proxy
+                || legacy_embedded,
             job_resubmit_interval_ms: (opt.job_resubmit_interval_ms > 0)
                 .then_some(opt.job_resubmit_interval_ms),
             executor_termination_grace_period: opt.executor_termination_grace_period,
@@ -794,6 +890,86 @@ mod tests {
     #[test]
     fn validate_accepts_default_config() {
         SchedulerConfig::default().validate().unwrap();
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_bare_advertise_endpoint_enables_embedded_proxy() {
+        use clap::Parser;
+        let opt = Config::parse_from(["scheduler", "--advertise-flight-endpoint"]);
+        assert_eq!(opt.advertise_flight_endpoint.as_deref(), Some(""));
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert!(cfg.enable_embedded_flight_proxy);
+        assert_eq!(cfg.advertise_flight_endpoint, None);
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_explicit_embedded_proxy_flag() {
+        use clap::Parser;
+        let opt = Config::parse_from(["scheduler", "--enable-embedded-flight-proxy"]);
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert!(cfg.enable_embedded_flight_proxy);
+        assert_eq!(cfg.advertise_flight_endpoint, None);
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_deprecated_flight_sql_alias_still_parses() {
+        use clap::Parser;
+        // The pre-rename flag name keeps working, both with and without a value.
+        let opt = Config::parse_from([
+            "scheduler",
+            "--advertise-flight-sql-endpoint",
+            "lb.example.com:50055",
+        ]);
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert_eq!(
+            cfg.advertise_flight_endpoint.as_deref(),
+            Some("lb.example.com:50055")
+        );
+        assert!(!cfg.enable_embedded_flight_proxy);
+
+        let opt = Config::parse_from(["scheduler", "--advertise-flight-sql-endpoint"]);
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert_eq!(cfg.advertise_flight_endpoint, None);
+        assert!(cfg.enable_embedded_flight_proxy);
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_endpoint_and_embedded_proxy_are_independent() {
+        use clap::Parser;
+        let opt = Config::parse_from([
+            "scheduler",
+            "--advertise-flight-endpoint",
+            "lb.example.com:50055",
+            "--enable-embedded-flight-proxy",
+        ]);
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert!(cfg.enable_embedded_flight_proxy);
+        assert_eq!(
+            cfg.advertise_flight_endpoint.as_deref(),
+            Some("lb.example.com:50055")
+        );
+        // A supported combination, so it must stay a warning-free config.
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn empty_advertise_endpoint_is_treated_as_unset() {
+        let cfg = SchedulerConfig::default()
+            .with_advertise_flight_endpoint(Some(String::new()));
+        assert_eq!(cfg.advertise_flight_endpoint, None);
+        assert!(!cfg.enable_embedded_flight_proxy);
+
+        // The struct-literal path can still carry the old sentinel; validate() only
+        // warns about it, it must not reject the config.
+        let cfg = SchedulerConfig {
+            advertise_flight_endpoint: Some(String::new()),
+            ..Default::default()
+        };
+        cfg.validate().unwrap();
     }
 
     #[test]

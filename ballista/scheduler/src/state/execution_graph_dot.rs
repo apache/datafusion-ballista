@@ -19,30 +19,16 @@
 
 use crate::state::execution_graph::ExecutionGraph;
 use ballista_core::execution_plans::{
-    ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
+    ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
 };
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::physical_plan::aggregates::AggregateExec;
-#[allow(deprecated)]
-use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
-use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::filter::FilterExec;
-use datafusion::physical_plan::joins::CrossJoinExec;
-use datafusion::physical_plan::joins::HashJoinExec;
-use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
-use datafusion::physical_plan::projection::ProjectionExec;
-use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::sorts::sort::SortExec;
-use datafusion::physical_plan::union::UnionExec;
-use datafusion::physical_plan::{ExecutionPlan, Partitioning, PhysicalExpr};
-use log::debug;
+use datafusion::physical_plan::{DisplayFormatType, ExecutionPlan};
 use object_store::path::Path;
 use std::collections::HashMap;
 use std::fmt::{self, Write};
-use std::sync::Arc;
 
 /// Utility for producing dot diagrams from execution graphs
 pub struct ExecutionGraphDot<'a> {
@@ -228,147 +214,66 @@ fn sanitize(str: &str, max_len: Option<usize>) -> String {
     }
     sanitized
 }
-#[allow(deprecated)]
+
+/// Renders a single operator the way `EXPLAIN` would, without its children
+struct ExplainText<'a>(&'a dyn ExecutionPlan);
+
+impl fmt::Display for ExplainText<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt_as(DisplayFormatType::Default, f)
+    }
+}
+
+/// Label for a node in the DOT graph.
+///
+/// The name goes on the first line and the operator's own `EXPLAIN` text on the
+/// second, so boxes stay narrow. Because every `ExecutionPlan` implements
+/// `DisplayAs`, an operator Ballista has never heard of still gets a real label:
+/// there is no fall-through case that can render a node blank.
 fn get_operator_name(plan: &dyn ExecutionPlan) -> String {
-    if let Some(exec) = plan.downcast_ref::<FilterExec>() {
-        format!("Filter: {}", exec.predicate())
-    } else if let Some(exec) = plan.downcast_ref::<ProjectionExec>() {
-        let expr = exec
-            .expr()
-            .iter()
-            // FIXME: not sure about this change
-            .map(|e| format!("{e:?}"))
-            .collect::<Vec<String>>()
-            .join(", ");
-        format!("Projection: {}", sanitize_dot_label(&expr))
-    } else if let Some(exec) = plan.downcast_ref::<SortExec>() {
-        let sort_expr = exec
-            .expr()
-            .iter()
-            .map(|e| {
-                let asc = if e.options.descending { " DESC" } else { "" };
-                let nulls = if e.options.nulls_first {
-                    " NULLS FIRST"
-                } else {
-                    ""
-                };
-                format!("{}{}{}", e.expr, asc, nulls)
-            })
-            .collect::<Vec<String>>()
-            .join(", ");
-        format!("Sort: {}", sanitize_dot_label(&sort_expr))
-    } else if let Some(exec) = plan.downcast_ref::<AggregateExec>() {
-        let group_exprs_with_alias = exec.group_expr().expr();
-        let group_expr = group_exprs_with_alias
-            .iter()
-            .map(|(e, _)| format!("{e}"))
-            .collect::<Vec<String>>()
-            .join(", ");
-        let aggr_expr = exec
-            .aggr_expr()
-            .iter()
-            .map(|e| e.name().to_owned())
-            .collect::<Vec<String>>()
-            .join(", ");
-        format!(
-            "Aggregate
-groupBy=[{}]
-aggr=[{}]",
-            sanitize_dot_label(&group_expr),
-            sanitize_dot_label(&aggr_expr)
-        )
-    } else if let Some(exec) = plan.downcast_ref::<CoalesceBatchesExec>() {
-        format!("CoalesceBatches [batchSize={}]", exec.target_batch_size())
-    } else if let Some(exec) = plan.downcast_ref::<CoalescePartitionsExec>() {
-        format!(
-            "CoalescePartitions [{}]",
-            format_partitioning(exec.properties().output_partitioning().clone())
-        )
-    } else if let Some(exec) = plan.downcast_ref::<RepartitionExec>() {
-        format!(
-            "RepartitionExec [{}]",
-            format_partitioning(exec.properties().output_partitioning().clone())
-        )
-    } else if let Some(exec) = plan.downcast_ref::<HashJoinExec>() {
-        let join_expr = exec
-            .on()
-            .iter()
-            .map(|(l, r)| format!("{l} = {r}"))
-            .collect::<Vec<String>>()
-            .join(" AND ");
-        let filter_expr = if let Some(f) = exec.filter() {
-            format!("{}", f.expression())
-        } else {
-            "".to_string()
-        };
-        format!(
-            "HashJoin
-join_expr={}
-filter_expr={}",
-            sanitize_dot_label(&join_expr),
-            sanitize_dot_label(&filter_expr)
-        )
-    } else if plan.downcast_ref::<CrossJoinExec>().is_some() {
-        "CrossJoin".to_string()
-    } else if plan.downcast_ref::<UnionExec>().is_some() {
-        "Union".to_string()
-    } else if let Some(exec) = plan.downcast_ref::<UnresolvedShuffleExec>() {
-        format!("UnresolvedShuffleExec [stage_id={}]", exec.stage_id)
-    } else if let Some(exec) = plan.downcast_ref::<ShuffleReaderExec>() {
-        format!("ShuffleReader [{} partitions]", exec.partition.len())
-    } else if let Some(exec) = plan.downcast_ref::<ShuffleWriterExec>() {
-        format!(
-            "ShuffleWriter [{} partitions]",
-            exec.input_partition_count()
-        )
-    } else if let Some(exec) = plan.downcast_ref::<SortShuffleWriterExec>() {
-        format!(
-            "SortShuffleWriter [{} partitions]",
-            exec.input_partition_count()
-        )
-    } else if let Some(exec) = plan.downcast_ref::<DataSourceExec>() {
+    let detail = get_operator_detail(plan);
+    if detail.is_empty() {
+        plan.name().to_string()
+    } else {
+        format!("{}\n{}", plan.name(), sanitize_dot_label(&detail))
+    }
+}
+
+/// The detail line for an operator.
+///
+/// Defaults to what `EXPLAIN` prints, minus the leading operator name that
+/// `get_operator_name` has already written. The special cases below are
+/// enhancements, not requirements: an operator dropping out of them degrades to
+/// the DataFusion default rather than to nothing.
+fn get_operator_detail(plan: &dyn ExecutionPlan) -> String {
+    if let Some(exec) = plan.downcast_ref::<DataSourceExec>() {
+        // the default rendering lists every file group, which is far too long for a
+        // graph node, so summarize the scan instead
         let config =
             if let Some(config) = exec.data_source().downcast_ref::<FileScanConfig>() {
                 get_file_scan(config)
-            } else if let Some(_config) =
-                exec.data_source().downcast_ref::<MemorySourceConfig>()
+            } else if exec
+                .data_source()
+                .downcast_ref::<MemorySourceConfig>()
+                .is_some()
             {
                 "Memory".to_string()
             } else {
                 "Unknown".to_string()
             };
-
         let parts = exec.properties().output_partitioning().partition_count();
-
-        format!("DataSourceExec: ({config}) [{parts} partitions]")
-    } else if let Some(exec) = plan.downcast_ref::<GlobalLimitExec>() {
-        format!(
-            "GlobalLimit(skip={}, fetch={:?})",
-            exec.skip(),
-            exec.fetch()
-        )
-    } else if let Some(exec) = plan.downcast_ref::<LocalLimitExec>() {
-        format!("LocalLimit({})", exec.fetch())
+        format!("{config} [{parts} partitions]")
+    } else if let Some(exec) = plan.downcast_ref::<ShuffleWriterExec>() {
+        // this writer never repartitions, so its own rendering is a constant
+        format!("{} partitions", exec.input_partition_count())
     } else {
-        debug!("Unknown physical operator when producing DOT graph: {plan:?}");
-        "Unknown Operator".to_string()
+        let display = format!("{}", ExplainText(plan));
+        // operators render as "Name: detail", and the name is already on line one
+        display
+            .strip_prefix(plan.name())
+            .map(|detail| detail.trim_start_matches([':', ' ']).to_string())
+            .unwrap_or(display)
     }
-}
-
-fn format_partitioning(x: Partitioning) -> String {
-    match x {
-        Partitioning::UnknownPartitioning(n) | Partitioning::RoundRobinBatch(n) => {
-            format!("{n} partitions")
-        }
-        Partitioning::Hash(expr, n) => {
-            format!("{} partitions, expr={}", n, format_expr_list(&expr))
-        }
-    }
-}
-
-fn format_expr_list(exprs: &[Arc<dyn PhysicalExpr>]) -> String {
-    let expr_strings: Vec<String> = exprs.iter().map(|e| format!("{e}")).collect();
-    expr_strings.join(", ")
 }
 
 /// Get summary of file scan locations
@@ -426,43 +331,53 @@ pub(crate) mod tests {
         let expected = r#"digraph G {
 	subgraph cluster0 {
 		label = "Stage 1 [Resolved]";
-		stage_1_0 [shape=box, label="SortShuffleWriter [2 partitions]"]
-		stage_1_0_0 [shape=box, label="DataSourceExec: (Memory) [2 partitions]"]
+		stage_1_0 [shape=box, label="SortShuffleWriterExec
+partitioning=Hash([a@0], 48)"]
+		stage_1_0_0 [shape=box, label="DataSourceExec
+Memory [2 partitions]"]
 		stage_1_0_0 -> stage_1_0
 	}
 	subgraph cluster1 {
 		label = "Stage 2 [Resolved]";
-		stage_2_0 [shape=box, label="SortShuffleWriter [2 partitions]"]
-		stage_2_0_0 [shape=box, label="DataSourceExec: (Memory) [2 partitions]"]
+		stage_2_0 [shape=box, label="SortShuffleWriterExec
+partitioning=Hash([a@0], 48)"]
+		stage_2_0_0 [shape=box, label="DataSourceExec
+Memory [2 partitions]"]
 		stage_2_0_0 -> stage_2_0
 	}
 	subgraph cluster2 {
 		label = "Stage 3 [Unresolved]";
-		stage_3_0 [shape=box, label="SortShuffleWriter [48 partitions]"]
-		stage_3_0_0 [shape=box, label="HashJoin
-join_expr=a@0 = a@0
-filter_expr="]
-		stage_3_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
+		stage_3_0 [shape=box, label="SortShuffleWriterExec
+partitioning=Hash([b@3], 48)"]
+		stage_3_0_0 [shape=box, label="HashJoinExec
+mode=Partitioned, join_type=Inner, on=[(a@0, a@0)]"]
+		stage_3_0_0_0 [shape=box, label="UnresolvedShuffleExec
+stage=1, partitioning: Hash([a@0], 48)"]
 		stage_3_0_0_0 -> stage_3_0_0
-		stage_3_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
+		stage_3_0_0_1 [shape=box, label="UnresolvedShuffleExec
+stage=2, partitioning: Hash([a@0], 48)"]
 		stage_3_0_0_1 -> stage_3_0_0
 		stage_3_0_0 -> stage_3_0
 	}
 	subgraph cluster3 {
 		label = "Stage 4 [Resolved]";
-		stage_4_0 [shape=box, label="SortShuffleWriter [2 partitions]"]
-		stage_4_0_0 [shape=box, label="DataSourceExec: (Memory) [2 partitions]"]
+		stage_4_0 [shape=box, label="SortShuffleWriterExec
+partitioning=Hash([b@1], 48)"]
+		stage_4_0_0 [shape=box, label="DataSourceExec
+Memory [2 partitions]"]
 		stage_4_0_0 -> stage_4_0
 	}
 	subgraph cluster4 {
 		label = "Stage 5 [Unresolved]";
-		stage_5_0 [shape=box, label="ShuffleWriter [48 partitions]"]
-		stage_5_0_0 [shape=box, label="HashJoin
-join_expr=b@3 = b@1
-filter_expr="]
-		stage_5_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
+		stage_5_0 [shape=box, label="ShuffleWriterExec
+48 partitions"]
+		stage_5_0_0 [shape=box, label="HashJoinExec
+mode=Partitioned, join_type=Inner, on=[(b@3, b@1)]"]
+		stage_5_0_0_0 [shape=box, label="UnresolvedShuffleExec
+stage=3, partitioning: Hash([b@3], 48)"]
 		stage_5_0_0_0 -> stage_5_0_0
-		stage_5_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=4]"]
+		stage_5_0_0_1 [shape=box, label="UnresolvedShuffleExec
+stage=4, partitioning: Hash([b@1], 48)"]
 		stage_5_0_0_1 -> stage_5_0_0
 		stage_5_0_0 -> stage_5_0
 	}
@@ -483,13 +398,15 @@ filter_expr="]
             .map_err(|e| BallistaError::Internal(format!("{e:?}")))?;
 
         let expected = r#"digraph G {
-		stage_3_0 [shape=box, label="SortShuffleWriter [48 partitions]"]
-		stage_3_0_0 [shape=box, label="HashJoin
-join_expr=a@0 = a@0
-filter_expr="]
-		stage_3_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
+		stage_3_0 [shape=box, label="SortShuffleWriterExec
+partitioning=Hash([b@3], 48)"]
+		stage_3_0_0 [shape=box, label="HashJoinExec
+mode=Partitioned, join_type=Inner, on=[(a@0, a@0)]"]
+		stage_3_0_0_0 [shape=box, label="UnresolvedShuffleExec
+stage=1, partitioning: Hash([a@0], 48)"]
 		stage_3_0_0_0 -> stage_3_0_0
-		stage_3_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
+		stage_3_0_0_1 [shape=box, label="UnresolvedShuffleExec
+stage=2, partitioning: Hash([a@0], 48)"]
 		stage_3_0_0_1 -> stage_3_0_0
 		stage_3_0_0 -> stage_3_0
 }
@@ -507,37 +424,45 @@ filter_expr="]
         let expected = r#"digraph G {
 	subgraph cluster0 {
 		label = "Stage 1 [Resolved]";
-		stage_1_0 [shape=box, label="SortShuffleWriter [2 partitions]"]
-		stage_1_0_0 [shape=box, label="DataSourceExec: (Memory) [2 partitions]"]
+		stage_1_0 [shape=box, label="SortShuffleWriterExec
+partitioning=Hash([a@0], 48)"]
+		stage_1_0_0 [shape=box, label="DataSourceExec
+Memory [2 partitions]"]
 		stage_1_0_0 -> stage_1_0
 	}
 	subgraph cluster1 {
 		label = "Stage 2 [Resolved]";
-		stage_2_0 [shape=box, label="SortShuffleWriter [2 partitions]"]
-		stage_2_0_0 [shape=box, label="DataSourceExec: (Memory) [2 partitions]"]
+		stage_2_0 [shape=box, label="SortShuffleWriterExec
+partitioning=Hash([a@0], 48)"]
+		stage_2_0_0 [shape=box, label="DataSourceExec
+Memory [2 partitions]"]
 		stage_2_0_0 -> stage_2_0
 	}
 	subgraph cluster2 {
 		label = "Stage 3 [Resolved]";
-		stage_3_0 [shape=box, label="SortShuffleWriter [2 partitions]"]
-		stage_3_0_0 [shape=box, label="DataSourceExec: (Memory) [2 partitions]"]
+		stage_3_0 [shape=box, label="SortShuffleWriterExec
+partitioning=Hash([a@0], 48)"]
+		stage_3_0_0 [shape=box, label="DataSourceExec
+Memory [2 partitions]"]
 		stage_3_0_0 -> stage_3_0
 	}
 	subgraph cluster3 {
 		label = "Stage 4 [Unresolved]";
-		stage_4_0 [shape=box, label="ShuffleWriter [48 partitions]"]
-		stage_4_0_0 [shape=box, label="HashJoin
-join_expr=a@1 = a@0
-filter_expr="]
-		stage_4_0_0_0 [shape=box, label="HashJoin
-join_expr=a@0 = a@0
-filter_expr="]
-		stage_4_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
+		stage_4_0 [shape=box, label="ShuffleWriterExec
+48 partitions"]
+		stage_4_0_0 [shape=box, label="HashJoinExec
+mode=Partitioned, join_type=Inner, on=[(a@1, a@0)]"]
+		stage_4_0_0_0 [shape=box, label="HashJoinExec
+mode=Partitioned, join_type=Inner, on=[(a@0, a@0)]"]
+		stage_4_0_0_0_0 [shape=box, label="UnresolvedShuffleExec
+stage=1, partitioning: Hash([a@0], 48)"]
 		stage_4_0_0_0_0 -> stage_4_0_0_0
-		stage_4_0_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
+		stage_4_0_0_0_1 [shape=box, label="UnresolvedShuffleExec
+stage=2, partitioning: Hash([a@0], 48)"]
 		stage_4_0_0_0_1 -> stage_4_0_0_0
 		stage_4_0_0_0 -> stage_4_0_0
-		stage_4_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
+		stage_4_0_0_1 [shape=box, label="UnresolvedShuffleExec
+stage=3, partitioning: Hash([a@0], 48)"]
 		stage_4_0_0_1 -> stage_4_0_0
 		stage_4_0_0 -> stage_4_0
 	}
@@ -557,24 +482,73 @@ filter_expr="]
             .map_err(|e| BallistaError::Internal(format!("{e:?}")))?;
 
         let expected = r#"digraph G {
-		stage_4_0 [shape=box, label="ShuffleWriter [48 partitions]"]
-		stage_4_0_0 [shape=box, label="HashJoin
-join_expr=a@1 = a@0
-filter_expr="]
-		stage_4_0_0_0 [shape=box, label="HashJoin
-join_expr=a@0 = a@0
-filter_expr="]
-		stage_4_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
+		stage_4_0 [shape=box, label="ShuffleWriterExec
+48 partitions"]
+		stage_4_0_0 [shape=box, label="HashJoinExec
+mode=Partitioned, join_type=Inner, on=[(a@1, a@0)]"]
+		stage_4_0_0_0 [shape=box, label="HashJoinExec
+mode=Partitioned, join_type=Inner, on=[(a@0, a@0)]"]
+		stage_4_0_0_0_0 [shape=box, label="UnresolvedShuffleExec
+stage=1, partitioning: Hash([a@0], 48)"]
 		stage_4_0_0_0_0 -> stage_4_0_0_0
-		stage_4_0_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
+		stage_4_0_0_0_1 [shape=box, label="UnresolvedShuffleExec
+stage=2, partitioning: Hash([a@0], 48)"]
 		stage_4_0_0_0_1 -> stage_4_0_0_0
 		stage_4_0_0_0 -> stage_4_0_0
-		stage_4_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
+		stage_4_0_0_1 [shape=box, label="UnresolvedShuffleExec
+stage=3, partitioning: Hash([a@0], 48)"]
 		stage_4_0_0_1 -> stage_4_0_0
 		stage_4_0_0 -> stage_4_0
 }
 "#;
         assert_eq!(expected, &dot);
+        Ok(())
+    }
+
+    /// Ballista disables `prefer_hash_join`, so a sort-merge join and the merge at the
+    /// top of a sorted plan are both routine. Neither used to be labeled.
+    #[tokio::test]
+    async fn dot_labels_every_operator() -> Result<()> {
+        let ctx = SessionContext::new_with_config(
+            SessionConfig::new_with_ballista().with_target_partitions(4),
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, false),
+            Field::new("b", DataType::UInt32, false),
+        ]));
+        let table = Arc::new(MemTable::try_new(schema, vec![vec![], vec![]])?);
+        ctx.register_table("foo", table.clone())?;
+        ctx.register_table("bar", table)?;
+        let df = ctx
+            .sql("SELECT foo.a FROM foo JOIN bar ON foo.a = bar.a ORDER BY foo.a")
+            .await?;
+        let plan = ctx
+            .state()
+            .create_physical_plan(&df.into_optimized_plan()?)
+            .await?;
+        let mut planner = DefaultDistributedPlanner::new();
+        let graph = StaticExecutionGraph::new(
+            "scheduler_id",
+            &"job_id".into(),
+            "job_name",
+            "session_id",
+            plan,
+            0,
+            Arc::new(SessionConfig::new_with_ballista()),
+            &mut planner,
+            None,
+        )?;
+        let dot = ExecutionGraphDot::generate(&graph)
+            .map_err(|e| BallistaError::Internal(format!("{e:?}")))?;
+
+        for operator in ["SortMergeJoinExec", "SortPreservingMergeExec"] {
+            assert!(
+                dot.contains(operator),
+                "{operator} is missing from the graph:\n{dot}"
+            );
+        }
+        // every node carries a label, and none of them is empty
+        assert!(!dot.contains("label=\"\""), "unlabeled node in:\n{dot}");
         Ok(())
     }
 

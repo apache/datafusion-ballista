@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::assert_plan;
 use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::AdaptivePlanner;
@@ -24,6 +23,7 @@ use crate::state::aqe::test::{
 };
 use crate::state::execution_graph::ExecutionGraph;
 use ballista_core::JobId;
+use ballista_core::assert_plan;
 use ballista_core::execution_plans::SortShuffleWriterExec;
 use ballista_core::serde::protobuf::job_status::Status;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -145,7 +145,7 @@ async fn should_split_plan_into_stages() -> datafusion::error::Result<()> {
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().plan.as_ref(),  @ r"
-    ShuffleWriterExec: partitioning: None
+    ShuffleWriterExec: partitioning: Hash([c2@2], 2)
       ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
           ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@0], 2)
@@ -188,7 +188,7 @@ async fn should_create_initial_plan() -> datafusion::error::Result<()> {
         AggregateExec: mode=FinalPartitioned, gby=[c0@0 as c0], aggr=[sum(t0.c0)]
           RepartitionExec: partitioning=Hash([c0@0], 2), input_partitions=2
             AggregateExec: mode=Partial, gby=[c0@0 as c0], aggr=[sum(t0.c0)]
-              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(p2@0, c2@1)], projection=[c0@1]
+              HashJoinExec: mode=CollectLeft, join_type=RightSemi, on=[(p2@0, c2@1)], projection=[c0@0]
                 CoalescePartitionsExec
                   ProjectionExec: expr=[c@0 as p2]
                     AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[]

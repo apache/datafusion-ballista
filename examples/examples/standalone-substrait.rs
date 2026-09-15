@@ -24,6 +24,7 @@ use ballista_core::serde::protobuf::{
     ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, PartitionLocation,
     SuccessfulJob, execute_query_result, job_status,
 };
+use ballista_core::serde::scheduler::ShuffleLayout;
 use ballista_core::utils::{GrpcClientConfig, create_grpc_client_connection};
 use ballista_examples::test_util;
 use datafusion::arrow::array::RecordBatch;
@@ -433,7 +434,11 @@ impl SubstraitSchedulerClient {
                 &metadata.id,
                 &partition_id.into(),
                 location.file_id,
-                location.is_sort_shuffle,
+                if location.is_sort_shuffle {
+                    ShuffleLayout::Sort
+                } else {
+                    ShuffleLayout::Passthrough
+                },
                 flight_transport,
             )
             .await

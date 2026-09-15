@@ -18,19 +18,27 @@
 use crate::client::BallistaClient;
 use crate::client_pool::BallistaClientPool;
 use crate::error::BallistaError;
+use crate::execution_plans::range_filter::WidenedBound;
+use crate::execution_plans::range_shuffle::{
+    SORT_OPTIONS_METADATA, byte_ranges_for, count_record_batches, is_ipc_file,
+    open_ipc_file, schema_message, select_record_batches,
+};
 use crate::execution_plans::sort_shuffle::{
     get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
 };
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
-use crate::serde::scheduler::{PartitionLocation, PartitionStats};
+use crate::serde::scheduler::{PartitionLocation, PartitionStats, ShuffleFileKind};
 use crate::utils::GrpcClientConfig;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::stats::Precision;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::coalesce::{LimitedBatchCoalescer, PushBatchStatus};
 use datafusion::physical_plan::metrics::{
     self, BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
@@ -42,7 +50,6 @@ use datafusion::physical_plan::{
 };
 use datafusion::prelude::SessionConfig;
 use futures::{Stream, StreamExt, TryStreamExt, ready};
-use itertools::Itertools;
 use log::{debug, error, trace};
 use rand::prelude::SliceRandom;
 use rand::rng;
@@ -322,6 +329,14 @@ impl ExecutionPlan for ShuffleReaderExec {
         vec![]
     }
 
+    /// Owns no expressions — it replays batches written by an upstream stage.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -373,20 +388,8 @@ impl ExecutionPlan for ShuffleReaderExec {
             config.ballista_shuffle_reader_maximum_concurrent_requests(),
             config.ballista_grpc_client_max_message_size()
         );
-        let mut partition_locations = HashMap::new();
-        for p in &self.partition[partition] {
-            partition_locations
-                .entry(p.executor_meta.id.clone())
-                .or_insert_with(Vec::new)
-                .push(p.clone());
-        }
-        // Sort partitions for evenly send fetching partition requests to avoid hot executors within one task
-        let mut partition_locations: Vec<PartitionLocation> = partition_locations
-            .into_values()
-            .flat_map(|ps| ps.into_iter().enumerate())
-            .sorted_by(|(p1_idx, _), (p2_idx, _)| Ord::cmp(p1_idx, p2_idx))
-            .map(|(_, p)| p)
-            .collect();
+        let mut partition_locations: Vec<PartitionLocation> =
+            self.partition[partition].clone();
         // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
         partition_locations.shuffle(&mut rng());
 
@@ -550,17 +553,31 @@ pub fn stats_for_partitions(
     }
 }
 
-struct LocalShuffleStream {
-    reader: StreamReader<BufReader<File>>,
+/// Streams batches off a node-local shuffle file.
+///
+/// Generic over the decoder because the two shuffle formats need different
+/// ones — `StreamReader` for the IPC stream the passthrough shuffle writes,
+/// `FileReader` for the IPC file the range shuffle writes — and they share no
+/// arrow trait beyond `Iterator`. The schema is captured at construction
+/// rather than delegated for the same reason.
+pub(crate) struct LocalShuffleStream<R> {
+    reader: R,
+    schema: SchemaRef,
 }
 
-impl LocalShuffleStream {
-    pub fn new(reader: StreamReader<BufReader<File>>) -> Self {
-        LocalShuffleStream { reader }
+impl<R> LocalShuffleStream<R>
+where
+    R: Iterator<Item = std::result::Result<RecordBatch, ArrowError>>,
+{
+    pub(crate) fn new(reader: R, schema: SchemaRef) -> Self {
+        LocalShuffleStream { reader, schema }
     }
 }
 
-impl Stream for LocalShuffleStream {
+impl<R> Stream for LocalShuffleStream<R>
+where
+    R: Iterator<Item = std::result::Result<RecordBatch, ArrowError>> + Unpin,
+{
     type Item = Result<RecordBatch>;
 
     fn poll_next(
@@ -574,9 +591,12 @@ impl Stream for LocalShuffleStream {
     }
 }
 
-impl RecordBatchStream for LocalShuffleStream {
+impl<R> RecordBatchStream for LocalShuffleStream<R>
+where
+    R: Iterator<Item = std::result::Result<RecordBatch, ArrowError>> + Unpin,
+{
     fn schema(&self) -> SchemaRef {
-        self.reader.schema()
+        self.schema.clone()
     }
 }
 
@@ -1046,7 +1066,7 @@ pub(crate) async fn fetch_partition_remote(
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
     let file_id = location.file_id;
-    let is_sort_shuffle = location.is_sort_shuffle;
+    let layout = location.layout();
     let host = metadata.host.as_str();
     let port = metadata.port;
 
@@ -1065,13 +1085,7 @@ pub(crate) async fn fetch_partition_remote(
             })?;
 
         let result = pooled
-            .fetch_partition(
-                &metadata.id,
-                partition_id,
-                file_id,
-                is_sort_shuffle,
-                prefer_flight,
-            )
+            .fetch_partition(&metadata.id, partition_id, file_id, layout, prefer_flight)
             .await;
         if result.is_err() {
             pooled.discard();
@@ -1096,14 +1110,145 @@ pub(crate) async fn fetch_partition_remote(
                 })?;
 
         ballista_client
-            .fetch_partition(
-                &metadata.id,
-                partition_id,
-                file_id,
-                is_sort_shuffle,
-                prefer_flight,
+            .fetch_partition(&metadata.id, partition_id, file_id, layout, prefer_flight)
+            .await
+    }
+}
+
+/// Fetch a remote range shuffle source down to the bytes `[lo, hi)` covers.
+///
+/// Two round trips: the index, then the ranges it points at. The searching
+/// happens here rather than on the executor, so the executor stays a byte
+/// server and the same two steps work against object storage.
+///
+/// Falls back to fetching the whole partition when the source has no index to
+/// search — the answer is the same, only the volume differs.
+pub(crate) async fn fetch_range_remote(
+    location: &PartitionLocation,
+    bound: WidenedBound,
+    schema: SchemaRef,
+    config: Arc<GrpcClientConfig>,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    client_pool: Option<Arc<dyn BallistaClientPool>>,
+) -> result::Result<SendableRecordBatchStream, BallistaError> {
+    let metadata = &location.executor_meta;
+    let partition_id = &location.partition_id;
+
+    if let Some(pool) = client_pool {
+        let mut pooled = pool
+            .acquire(
+                metadata.host.as_str(),
+                metadata.port,
+                &config,
+                customize_endpoint,
             )
             .await
+            .map_err(|error| as_fetch_failed(metadata, partition_id, error))?;
+        let result = fetch_ranges_with(&mut pooled, location, bound, schema).await;
+        if result.is_err() {
+            pooled.discard();
+        }
+        result
+    } else {
+        let mut client = new_ballista_client(
+            metadata.host.as_str(),
+            metadata.port,
+            &config,
+            customize_endpoint,
+        )
+        .await
+        .map_err(|error| as_fetch_failed(metadata, partition_id, error))?;
+        fetch_ranges_with(&mut client, location, bound, schema).await
+    }
+}
+
+/// The two-step fetch itself, over an already-connected client.
+async fn fetch_ranges_with(
+    client: &mut BallistaClient,
+    location: &PartitionLocation,
+    bound: WidenedBound,
+    schema: SchemaRef,
+) -> result::Result<SendableRecordBatchStream, BallistaError> {
+    let metadata = &location.executor_meta;
+    let partition_id = &location.partition_id;
+    let (lo, hi) = bound;
+
+    let mut index_stream = client
+        .fetch_byte_ranges(
+            &metadata.id,
+            partition_id,
+            location.file_id,
+            location.layout(),
+            ShuffleFileKind::Index,
+            vec![],
+            None,
+        )
+        .await?;
+    let index = crate::utils::collect_stream(&mut index_stream).await?;
+    let [index] = index.as_slice() else {
+        return Err(BallistaError::General(format!(
+            "range shuffle index for {partition_id:?} came back as {} batches",
+            index.len()
+        )));
+    };
+
+    let descending = index
+        .schema()
+        .metadata()
+        .get(SORT_OPTIONS_METADATA)
+        .and_then(|options| options.split(',').next())
+        .is_some_and(|options| options.starts_with("desc"));
+
+    let selected =
+        match select_record_batches(index, lo.as_ref(), hi.as_ref(), descending)? {
+            Some(selected) => selected,
+            // The index declined to narrow, so take everything it lists.
+            None => (0..count_record_batches(index)?).collect(),
+        };
+
+    let Some(ranges) = byte_ranges_for(index, &selected)? else {
+        // Nothing in this file falls inside the range.
+        return Ok(Box::pin(RecordBatchStreamAdapter::new(
+            index.schema(),
+            futures::stream::empty(),
+        )));
+    };
+
+    debug!(
+        "range shuffle fetching {} ranges of {:?} from {}",
+        ranges.len(),
+        partition_id,
+        metadata.id,
+    );
+
+    client
+        .fetch_byte_ranges(
+            &metadata.id,
+            partition_id,
+            location.file_id,
+            location.layout(),
+            ShuffleFileKind::Data,
+            ranges,
+            Some(schema_message(schema.as_ref())?),
+        )
+        .await
+}
+
+/// Report a transport failure as a fetch failure, which is what lets the
+/// scheduler retry the task rather than fail the query.
+fn as_fetch_failed(
+    metadata: &crate::serde::scheduler::ExecutorMetadata,
+    partition_id: &crate::serde::scheduler::PartitionId,
+    error: BallistaError,
+) -> BallistaError {
+    match error {
+        BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
+            metadata.id.clone(),
+            partition_id.stage_id,
+            partition_id.partition_id,
+            msg,
+        ),
+        other => other,
     }
 }
 
@@ -1143,6 +1288,24 @@ pub(crate) fn fetch_partition_local(
             )
         });
     }
+    if is_ipc_file(data_path) {
+        // Range shuffle output. The two IPC framings are not
+        // interchangeable — a stream decoder rejects a file's leading magic —
+        // so the format is read off the file itself rather than carried on
+        // `PartitionLocation`, keeping it out of the wire protocol.
+        debug!("fetch local range shuffle file: {data_path:?}");
+        let reader = open_ipc_file(data_path).map_err(|e| {
+            BallistaError::FetchFailed(
+                metadata.id.clone(),
+                partition_id.stage_id,
+                partition_id.partition_id,
+                e.to_string(),
+            )
+        })?;
+        let schema = reader.schema();
+        return Ok(Box::pin(LocalShuffleStream::new(reader, schema)));
+    }
+
     debug!("fetch local partition file: {data_path:?} ");
     // Standard single-file shuffle output - read the file directly
     let reader = fetch_partition_local_inner(path).map_err(|e| {
@@ -1154,7 +1317,8 @@ pub(crate) fn fetch_partition_local(
             e.to_string(),
         )
     })?;
-    Ok(Box::pin(LocalShuffleStream::new(reader)))
+    let schema = reader.schema();
+    Ok(Box::pin(LocalShuffleStream::new(reader, schema)))
 }
 
 fn fetch_partition_local_inner(
@@ -1287,7 +1451,9 @@ mod tests {
     use datafusion::common::DataFusionError;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
+    use datafusion::physical_plan::StatisticsArgs;
     use datafusion::physical_plan::common;
+    use datafusion::physical_plan::statistics::StatisticsContext;
     use datafusion::prelude::SessionContext;
     use tempfile::{TempDir, tempdir};
 
@@ -1459,7 +1625,8 @@ mod tests {
             Partitioning::UnknownPartitioning(4),
         )?;
 
-        let stats = shuffle_reader_exec.partition_statistics(None)?;
+        let stats = StatisticsContext::new()
+            .compute(&shuffle_reader_exec, &StatisticsArgs::new())?;
         assert_eq!(8, *stats.num_rows.get_value().unwrap());
         assert_eq!(80, *stats.total_byte_size.get_value().unwrap());
 
@@ -1510,7 +1677,10 @@ mod tests {
             Partitioning::UnknownPartitioning(4),
         )?;
 
-        let stats = shuffle_reader_exec.partition_statistics(Some(3))?;
+        let stats = StatisticsContext::new().compute(
+            &shuffle_reader_exec,
+            &StatisticsArgs::new().with_partition(Some(3)),
+        )?;
         assert_eq!(2, *stats.num_rows.get_value().unwrap());
         assert_eq!(20, *stats.total_byte_size.get_value().unwrap());
 
@@ -1562,7 +1732,10 @@ mod tests {
             Partitioning::UnknownPartitioning(4),
         )?;
 
-        let stats = shuffle_reader_exec.partition_statistics(Some(4));
+        let stats = StatisticsContext::new().compute(
+            &shuffle_reader_exec,
+            &StatisticsArgs::new().with_partition(Some(4)),
+        );
         assert!(stats.is_err());
 
         Ok(())
@@ -1758,9 +1931,10 @@ mod tests {
         // from to input partitions test the first one with two batches
         let file_path = Path::new(path.value(0));
         let reader = fetch_partition_local_inner(file_path).unwrap();
+        let schema = reader.schema();
 
         let mut stream: Pin<Box<dyn RecordBatchStream + Send>> =
-            async { Box::pin(LocalShuffleStream::new(reader)) }.await;
+            async { Box::pin(LocalShuffleStream::new(reader, schema)) }.await;
 
         let result = utils::collect_stream(&mut stream)
             .await
@@ -1779,24 +1953,9 @@ mod tests {
     // qualify all partitions as remote
     #[tokio::test]
     async fn test_remote_local_read() {
-        let schema = get_test_partition_schema();
-        let data_array = Int32Array::from(vec![1]);
-        let batch =
-            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
-                .unwrap();
         let tmp_dir = tempdir().unwrap();
         let work_dir = tmp_dir.path();
-
-        // job name and stage id are hard-coded
-        let file_path =
-            create_shuffle_path(work_dir, &"job".into(), 1, 0, None, false).unwrap();
-
-        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
-
-        let file = File::create(&file_path).unwrap();
-        let mut writer = StreamWriter::try_new(file, &schema).unwrap();
-        writer.write(&batch).unwrap();
-        writer.finish().unwrap();
+        write_local_shuffle_files(work_dir, 1);
 
         let partition_locations = get_test_partition_locations(1, None);
 
@@ -1820,27 +1979,9 @@ mod tests {
     }
 
     async fn test_send_fetch_partitions(max_request_num: usize, partition_num: usize) {
-        let schema = get_test_partition_schema();
-        let data_array = Int32Array::from(vec![1]);
-        let batch =
-            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
-                .unwrap();
         let tmp_dir = tempdir().unwrap();
         let work_dir = tmp_dir.path();
-
-        for p in 0..partition_num {
-            // job name and stage id are hard-codded
-            let file_path =
-                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
-            // this unwrap should not be problem as
-            // this function never return root dir
-            std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
-            let file: File = File::create(&file_path).unwrap();
-
-            let mut writer = StreamWriter::try_new(file, &schema).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
-        }
+        let schema = write_local_shuffle_files(work_dir, partition_num);
 
         let partition_locations = get_test_partition_locations(partition_num, None);
         let config = SessionConfig::new_with_ballista()
@@ -1866,23 +2007,10 @@ mod tests {
 
     #[tokio::test]
     async fn send_fetch_partitions_records_local_metrics() {
-        let schema = get_test_partition_schema();
-        let data_array = Int32Array::from(vec![1]);
-        let batch =
-            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
-                .unwrap();
         let tmp_dir = tempdir().unwrap();
         let work_dir = tmp_dir.path();
         let partition_num = 3usize;
-        for p in 0..partition_num {
-            let file_path =
-                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
-            std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
-            let file = File::create(&file_path).unwrap();
-            let mut writer = StreamWriter::try_new(file, &schema).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
-        }
+        let schema = write_local_shuffle_files(work_dir, partition_num);
         let partition_locations = get_test_partition_locations(partition_num, None);
         let config = SessionConfig::new_with_ballista();
         let metrics_set = ExecutionPlanMetricsSet::new();
@@ -1946,6 +2074,27 @@ mod tests {
                 .map(|v| v.as_usize()),
             Some(0)
         );
+    }
+
+    /// Writes `n` single-row local shuffle files under `work_dir`, returning
+    /// the schema they share.
+    fn write_local_shuffle_files(work_dir: &std::path::Path, n: usize) -> Schema {
+        let schema = get_test_partition_schema();
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+        for p in 0..n {
+            let path =
+                create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut writer =
+                StreamWriter::try_new(File::create(&path).unwrap(), &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        schema
     }
 
     fn get_test_partition_locations(
@@ -2217,7 +2366,9 @@ mod tests {
         assert_eq!(reader.properties().partitioning.partition_count(), 1);
         assert_eq!(reader.partition[0].len(), 3);
 
-        let stats = reader.partition_statistics(Some(0)).unwrap();
+        let stats = StatisticsContext::new()
+            .compute(&reader, &StatisticsArgs::new().with_partition(Some(0)))
+            .unwrap();
         assert_eq!(stats.num_rows.get_value().copied(), Some(300));
         assert_eq!(stats.total_byte_size.get_value().copied(), Some(3072));
     }
@@ -2226,10 +2377,17 @@ mod tests {
     fn broadcast_reader_rejects_out_of_range_partition_index() {
         let schema = Arc::new(Schema::new(vec![Field::new("c", DataType::Int32, false)]));
         let reader = ShuffleReaderExec::try_new_broadcast(7, vec![], schema, 3).unwrap();
-        let err = reader.partition_statistics(Some(1)).unwrap_err();
+        let err = StatisticsContext::new()
+            .compute(&reader, &StatisticsArgs::new().with_partition(Some(1)))
+            .unwrap_err();
         let msg = err.to_string();
+        // DataFusion bounds-checks the partition index inside
+        // `StatisticsContext::compute` before dispatching to the operator, so
+        // this is upstream's assertion rather than the broadcast guard in
+        // `partition_statistics`. Pin the index so the test still fails if the
+        // out-of-range request stops being rejected.
         assert!(
-            msg.contains("invalid partition index 1"),
+            msg.contains("Invalid partition index: 1"),
             "unexpected error message: {msg}"
         );
     }
@@ -2313,11 +2471,13 @@ mod tests {
         )?;
 
         // partition[0] = upstream [0,1,2] -> 10+20+30 = 60 bytes, 1+2+3 = 6 rows
-        let stats0 = exec.partition_statistics(Some(0))?;
+        let stats0 = StatisticsContext::new()
+            .compute(&exec, &StatisticsArgs::new().with_partition(Some(0)))?;
         assert_eq!(60, *stats0.total_byte_size.get_value().unwrap());
         assert_eq!(6, *stats0.num_rows.get_value().unwrap());
         // partition[1] = upstream [3,4] -> 40+50 = 90 bytes, 4+5 = 9 rows
-        let stats1 = exec.partition_statistics(Some(1))?;
+        let stats1 = StatisticsContext::new()
+            .compute(&exec, &StatisticsArgs::new().with_partition(Some(1)))?;
         assert_eq!(90, *stats1.total_byte_size.get_value().unwrap());
         assert_eq!(9, *stats1.num_rows.get_value().unwrap());
         Ok(())

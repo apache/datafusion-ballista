@@ -39,6 +39,8 @@ on:
       - "rust-toolchain.toml"
       - ".github/workflows/h2o.yml"
       - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-benchmark-builder/**"
+      - "ci/scripts/ballista_cluster.sh"
       # docs-only changes cannot affect this job; exclusions are applied last
       - "!**/*.md"
   pull_request:
@@ -50,6 +52,8 @@ on:
       - "rust-toolchain.toml"
       - ".github/workflows/h2o.yml"
       - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-benchmark-builder/**"
+      - "ci/scripts/ballista_cluster.sh"
       # docs-only changes cannot affect this job; exclusions are applied last
       - "!**/*.md"
   workflow_dispatch:
@@ -60,31 +64,18 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
+    # A passing run takes ~21-23 minutes, mostly the cold-cache build. Cap it
+    # well under the 6-hour default so a hang frees the runner instead.
+    timeout-minutes: 45
     steps:
-      - name: Install dependencies
-        run: |
-          apt-get update
-          apt-get install -y netcat-traditional
-
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
 
-      - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: stable
-
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - name: Setup toolchain and build Ballista binaries
+        uses: ./.github/actions/setup-benchmark-builder
         with:
           shared-key: h2o-window-small
-
-      - name: Build Ballista binaries
-        run: |
-          cargo build --profile tpch-ci --locked \
-            -p ballista-scheduler \
-            -p ballista-executor \
-            -p ballista-benchmarks
 
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -101,62 +92,20 @@ jobs:
           cd benchmarks
           uv run falsa join --path-prefix "$H2O_DIR" --size SMALL --data-format PARQUET
 
+      - name: Start Ballista cluster
+        # Same expression the log-upload step globs, so the two cannot drift.
+        env:
+          CLUSTER_DIR: ${{ runner.temp }}
+        run: ci/scripts/ballista_cluster.sh start
+
       - name: Run h2o window suite against Ballista cluster
+        # On the step rather than the job so a hang still runs teardown and
+        # the log upload. The suite itself runs ~5 minutes.
+        timeout-minutes: 30
         env:
           H2O_DIR: ${{ runner.temp }}/h2o-data
-          WORK_DIR: ${{ runner.temp }}/work
-          SCHEDULER_LOG: ${{ runner.temp }}/scheduler.log
-          EXECUTOR_LOG: ${{ runner.temp }}/executor.log
         run: |
           set -euo pipefail
-
-          mkdir -p "$WORK_DIR"
-
-          ./target/tpch-ci/ballista-scheduler \
-            --bind-host 127.0.0.1 \
-            > "$SCHEDULER_LOG" 2>&1 &
-          SCHEDULER_PID=$!
-
-          ./target/tpch-ci/ballista-executor \
-            --bind-host 127.0.0.1 \
-            --bind-port 50051 \
-            --scheduler-host 127.0.0.1 \
-            --scheduler-connect-timeout-seconds 10 \
-            --vcores 4 \
-            --memory-pool-size 2GB \
-            --work-dir "$WORK_DIR" \
-            > "$EXECUTOR_LOG" 2>&1 &
-          EXECUTOR_PID=$!
-
-          cleanup() {
-            echo "::group::scheduler log (tail)"
-            tail -n 200 "$SCHEDULER_LOG" || true
-            echo "::endgroup::"
-            echo "::group::executor log (tail)"
-            tail -n 200 "$EXECUTOR_LOG" || true
-            echo "::endgroup::"
-            kill "$SCHEDULER_PID" "$EXECUTOR_PID" 2>/dev/null || true
-            wait "$SCHEDULER_PID" "$EXECUTOR_PID" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-
-          echo "Waiting for scheduler on 127.0.0.1:50050..."
-          for _ in $(seq 1 30); do
-            if nc -z 127.0.0.1 50050; then
-              break
-            fi
-            sleep 1
-          done
-          nc -z 127.0.0.1 50050 || { echo "scheduler did not start"; exit 1; }
-
-          echo "Waiting for executor on 127.0.0.1:50051..."
-          for _ in $(seq 1 30); do
-            if nc -z 127.0.0.1 50051; then
-              break
-            fi
-            sleep 1
-          done
-          nc -z 127.0.0.1 50051 || { echo "executor did not start"; exit 1; }
 
           JOIN_PATHS="$H2O_DIR/J1_1e7_NA_0.parquet,$H2O_DIR/J1_1e7_1e1_0.parquet,$H2O_DIR/J1_1e7_1e4_0.parquet,$H2O_DIR/J1_1e7_1e7_NA.parquet"
 
@@ -176,8 +125,18 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Stop Ballista cluster
+        # `always()`: still reap the processes and print the log tails when the
+        # suite times out or the run is cancelled.
+        if: always()
+        env:
+          CLUSTER_DIR: ${{ runner.temp }}
+        run: ci/scripts/ballista_cluster.sh stop
+
       - name: Upload cluster logs on failure
-        if: failure()
+        # `!success()` rather than `failure()` so timed-out and cancelled runs
+        # still surface their logs.
+        if: ${{ !success() }}
         uses: actions/upload-artifact@v7
         with:
           name: h2o-window-small-cluster-logs

@@ -855,7 +855,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             }
             #[cfg(feature = "substrait")]
             Query::SubstraitPlan(bytes) => {
-                let plan = deserialize_bytes(bytes).await.map_err(|e| BallistaError::DataFusionError(e.into()))?;
+                let plan = deserialize_bytes(&bytes).map_err(|e| BallistaError::DataFusionError(e.into()))?;
 
                 let ctx = session_ctx.clone();
                 from_substrait_plan(&ctx.state(), &plan)
@@ -878,15 +878,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         }
     }
 
+    /// Where clients should fetch result partitions from over Arrow Flight,
+    /// advertised in job-status responses. An explicitly advertised endpoint
+    /// wins over the embedded proxy, so a load balancer can front it.
     fn flight_proxy_config(&self) -> Option<FlightProxy> {
-        self.state
-            .config
-            .advertise_flight_sql_endpoint
-            .clone()
-            .map(|s| match s {
-                s if s.is_empty() => FlightProxy::Local(true),
-                s => FlightProxy::External(s),
-            })
+        let config = &self.state.config;
+        match config
+            .advertise_flight_endpoint
+            .as_deref()
+            .filter(|s| !s.is_empty())
+        {
+            Some(endpoint) => Some(FlightProxy::External(endpoint.to_string())),
+            None if config.enable_embedded_flight_proxy => Some(FlightProxy::Local(true)),
+            None => None,
+        }
     }
 }
 
@@ -1366,6 +1371,64 @@ mod test {
         assert!(active_executors.is_empty());
         Ok(())
     }
+
+    #[tokio::test]
+    async fn flight_proxy_config_reflects_explicit_flag_and_endpoint() {
+        use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
+
+        let server = |config: SchedulerConfig| {
+            SchedulerServer::<LogicalPlanNode, PhysicalPlanNode>::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(config),
+                default_metrics_collector().unwrap(),
+            )
+        };
+
+        // Neither set: nothing advertised.
+        assert_eq!(
+            server(SchedulerConfig::default()).flight_proxy_config(),
+            None
+        );
+
+        // Embedded proxy: advertise the scheduler itself.
+        let cfg = SchedulerConfig::default().with_enable_embedded_flight_proxy(true);
+        assert_eq!(
+            server(cfg).flight_proxy_config(),
+            Some(FlightProxy::Local(true))
+        );
+
+        // An advertised endpoint alone points clients elsewhere without starting
+        // anything locally.
+        let cfg = SchedulerConfig::default()
+            .with_advertise_flight_endpoint(Some("lb.example.com:50055".into()));
+        assert_eq!(
+            server(cfg).flight_proxy_config(),
+            Some(FlightProxy::External("lb.example.com:50055".into()))
+        );
+
+        // External endpoint wins, even alongside the embedded proxy.
+        let cfg = SchedulerConfig::default()
+            .with_enable_embedded_flight_proxy(true)
+            .with_advertise_flight_endpoint(Some("lb.example.com:50055".into()));
+        assert_eq!(
+            server(cfg).flight_proxy_config(),
+            Some(FlightProxy::External("lb.example.com:50055".into()))
+        );
+
+        // An empty endpoint is not advertised, and does not suppress the proxy.
+        let cfg = SchedulerConfig {
+            advertise_flight_endpoint: Some(String::new()),
+            enable_embedded_flight_proxy: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            server(cfg).flight_proxy_config(),
+            Some(FlightProxy::Local(true))
+        );
+    }
+
     #[tokio::test]
     #[cfg(feature = "substrait")]
     async fn test_substrait_compatibility() -> Result<(), BallistaError> {

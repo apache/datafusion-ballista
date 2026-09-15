@@ -26,16 +26,17 @@
 //! response serialize identically for the same graph state.
 
 use crate::api::dto_build::{
-    build_job_dot, graph_to_job_response, graph_to_query_stages,
+    StageMetricSlots, build_job_dot, graph_to_job_response, graph_to_query_stages,
     session_config_to_job_config, task_row_counts, task_status_to_dto,
 };
-use crate::state::execution_graph::ExecutionGraphBox;
+use crate::state::execution_graph::{ExecutionGraphBox, ExecutionStage};
 use ballista_api_types::dto::PlanFormat;
 use ballista_core::serde::protobuf::{TaskStatus, task_status};
 use ballista_history::event::{
     HistoryEvent, JobEnd, JobEndStatus, JobIndex, JobStart, TaskEnd, TaskEndMetrics,
 };
 use datafusion::physical_plan::displayable;
+use std::collections::HashMap;
 
 /// Builds the `JobStart` event for a job that has just been submitted.
 pub(crate) fn job_start_event(
@@ -63,10 +64,18 @@ pub(crate) fn job_start_event(
 /// Only terminal statuses are recorded: `Running` updates are transient
 /// in-flight reports, and a status-less update carries no outcome to record at
 /// all, so both are skipped.
+///
+/// `stages` are the job's stages, used to map each task's flat operator
+/// metrics onto its stage plan for the row counts; `None` (the job's graph is
+/// gone) records the events with zero rows rather than dropping them.
 pub(crate) fn task_end_events(
     executor_id: &str,
     statuses: &[TaskStatus],
+    stages: Option<&HashMap<usize, ExecutionStage>>,
 ) -> Vec<HistoryEvent> {
+    // A batch usually carries several tasks of the same stage; walk each
+    // stage plan once.
+    let mut slots_by_stage: HashMap<usize, Option<StageMetricSlots>> = HashMap::new();
     statuses
         .iter()
         .filter_map(|s| {
@@ -74,6 +83,13 @@ pub(crate) fn task_end_events(
                 task_status::Status::Running(_) => return None,
                 terminal => task_status_to_dto(terminal),
             };
+            let slots = slots_by_stage
+                .entry(s.stage_id as usize)
+                .or_insert_with(|| {
+                    stages
+                        .and_then(|stages| stages.get(&(s.stage_id as usize)))
+                        .map(|stage| StageMetricSlots::of(stage.plan()))
+                });
             Some(HistoryEvent::TaskEnd(TaskEnd {
                 stage_id: s.stage_id,
                 task_id: s.task_id,
@@ -82,18 +98,21 @@ pub(crate) fn task_end_events(
                 launch_time: s.launch_time,
                 start_exec_time: s.start_exec_time,
                 end_exec_time: s.end_exec_time,
-                metrics: task_end_metrics(s),
+                metrics: task_end_metrics(s, slots.as_ref()),
             }))
         })
         .collect()
 }
 
-/// Sums a task's raw operator metrics into the timeline's `TaskEndMetrics`,
+/// Reduces a task's raw operator metrics to the timeline's `TaskEndMetrics`,
 /// using the same extraction the stage-summary REST DTO performs so the
 /// timeline and stage views agree. Absent metrics yield zeros.
-fn task_end_metrics(status: &TaskStatus) -> TaskEndMetrics {
+fn task_end_metrics(
+    status: &TaskStatus,
+    slots: Option<&StageMetricSlots>,
+) -> TaskEndMetrics {
     let (input_rows, output_rows, elapsed_compute_nanos) =
-        task_row_counts(&status.metrics);
+        task_row_counts(&status.metrics, slots);
     TaskEndMetrics {
         input_rows,
         output_rows,
@@ -237,7 +256,7 @@ mod tests {
             metrics: vec![],
             status: Some(task_status::Status::Successful(SuccessfulTask::default())),
         }];
-        let events = task_end_events("exec-1", &statuses);
+        let events = task_end_events("exec-1", &statuses, None);
         assert_eq!(events.len(), 1);
         let line = serde_json::to_string(&events[0].to_record().unwrap()).unwrap();
         assert!(line.contains("\"ev\":\"TaskEnd\""));
@@ -260,7 +279,7 @@ mod tests {
             metrics: vec![],
             status: Some(task_status::Status::Running(Default::default())),
         }];
-        assert!(task_end_events("exec-1", &statuses).is_empty());
+        assert!(task_end_events("exec-1", &statuses, None).is_empty());
     }
 
     // A status update with no status at all reports no outcome, so there is
@@ -278,7 +297,7 @@ mod tests {
             metrics: vec![],
             status: None,
         }];
-        assert!(task_end_events("exec-1", &statuses).is_empty());
+        assert!(task_end_events("exec-1", &statuses, None).is_empty());
     }
 
     /// A cancelled job is recorded from a graph that has not yet been marked
@@ -325,7 +344,7 @@ mod tests {
         assert!(json.contains("\"job_id\":\"job_id\""));
         // The job's top-level physical plan, embedded via `build_job_response`.
         assert!(
-            json.contains("DataSourceExec: (Memory)"),
+            json.contains("\"physical_plan\":\"HashJoinExec"),
             "expected job physical plan in JobEnd event, got: {json}"
         );
         // The per-stage summaries, embedded via `build_query_stages_response`.
@@ -356,8 +375,7 @@ mod tests {
         assert!(json.contains("\"submitted_at\":10"));
         // `job_start_event` renders the graph's pre-staging physical plan
         // (`graph.physical_plan()`), unlike `job_end_event`'s embedded job
-        // DTO which shows the plan reconstructed from stages -- assert on the
-        // join at its root rather than the leaf scan string.
+        // DTO which shows the plan reconstructed from stages.
         assert!(
             json.contains("HashJoinExec"),
             "expected job physical plan in JobStart event, got: {json}"
@@ -384,6 +402,7 @@ mod tests {
             job_end_event(&graph, JobEndStatus::Succeeded, 1, 20),
         );
         writer.flush_job(&job_id).await;
+        writer.finish_job(&job_id).await;
 
         let path = dir.path().join(format!("{job_id}.eventlog"));
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
@@ -392,6 +411,53 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"ev\":\"JobStart\""));
         assert!(lines[1].contains("\"ev\":\"JobEnd\""));
-        assert!(lines[1].contains("DataSourceExec: (Memory)"));
+        assert!(lines[1].contains("\"physical_plan\":\"HashJoinExec"));
+    }
+
+    /// End-to-end parity, and the reason the whole design stores built
+    /// responses rather than re-deriving them: replaying a real event log
+    /// through `EventLogWriter` and `HistoryStore::load` must yield exactly the
+    /// JSON the live scheduler would have served for the same graph.
+    ///
+    /// This lives here rather than under `tests/` because `dto_build`,
+    /// `job_end_event` and `execution_graph_dot::tests::test_graph` are all
+    /// crate-internal, and an integration test only sees the public API.
+    #[tokio::test]
+    async fn history_store_serves_byte_identical_json_to_live_scheduler() {
+        use crate::history::HistoryStore;
+
+        let graph = test_graph().await.unwrap();
+        let graph: ExecutionGraphBox = Box::new(graph);
+        let job_id = graph.job_id().to_string();
+
+        // `completed_at` is the snapshot instant for both sides, so the
+        // comparison does not race the wall clock.
+        const COMPLETED_AT: u64 = 2;
+        let live_job = graph_to_job_response(&graph, PlanFormat::Default);
+        let live_stages =
+            graph_to_query_stages(&graph, PlanFormat::Default, COMPLETED_AT as u128);
+
+        // Emit the same JobEnd the scheduler writes on completion, through the
+        // real async writer, then load it back through the history server's own
+        // HistoryStore: the full write -> read -> serve path.
+        let event = job_end_event(&graph, JobEndStatus::Succeeded, 1, COMPLETED_AT);
+        let dir = tempfile::tempdir().unwrap();
+        let writer = EventLogWriter::new(dir.path().to_path_buf(), 16);
+        writer.append(&job_id, event);
+        writer.flush_job(&job_id).await;
+        writer.finish_job(&job_id).await;
+
+        let store = HistoryStore::load(dir.path()).unwrap();
+        let replayed = store.read_job(&job_id).expect("job should be replayed");
+
+        assert_eq!(
+            replayed.job.get(),
+            serde_json::to_string(&live_job).unwrap(),
+            "the history server must serve the live scheduler's exact bytes"
+        );
+        assert_eq!(
+            replayed.stages.get(),
+            serde_json::to_string(&live_stages).unwrap(),
+        );
     }
 }

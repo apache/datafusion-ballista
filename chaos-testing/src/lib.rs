@@ -23,5 +23,7 @@
 pub mod budget;
 pub mod cluster;
 pub mod fixture;
+#[cfg(feature = "k8s")]
+pub mod k8s;
 pub mod registry;
 pub mod udf;

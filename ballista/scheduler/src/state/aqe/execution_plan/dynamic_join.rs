@@ -16,18 +16,22 @@
 // under the License.
 
 use ballista_core::config::BallistaConfig;
+use datafusion::physical_plan::StatisticsArgs;
+use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::{
     arrow::compute::SortOptions,
     arrow::datatypes::{DataType, Schema},
     common::{
-        ColumnStatistics, JoinType, NullEquality, Result, exec_err, internal_err,
-        plan_err,
+        ColumnStatistics, JoinType, NullEquality, Result, Statistics, exec_err,
+        internal_err, plan_err, stats::Precision, tree_node::TreeNodeRecursion,
     },
     config::ConfigOptions,
     execution::{SendableRecordBatchStream, TaskContext},
+    physical_expr::PhysicalExpr,
     physical_expr_common::physical_expr::fmt_sql,
     physical_plan::{
-        DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, PlanProperties,
+        DisplayAs, DisplayFormatType, Distribution, ExecutionPlan,
+        ExecutionPlanProperties, PlanProperties, apply_expression_roots,
         joins::{
             HashJoinExec, HashJoinExecBuilder, JoinOn, PartitionMode, SortMergeJoinExec,
             utils::JoinFilter,
@@ -78,6 +82,23 @@ impl ExecutionPlan for DynamicJoinSelectionExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.left, &self.right]
+    }
+
+    /// Join keys and filter, same set the `HashJoinExec` / `SortMergeJoinExec`
+    /// this resolves into would report.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        let join_keys = self
+            .on
+            .iter()
+            .flat_map(|(left, right)| [Arc::clone(left), Arc::clone(right)]);
+        let filter = self
+            .filter
+            .iter()
+            .map(|filter| Arc::clone(filter.expression()));
+        apply_expression_roots(join_keys.chain(filter), f)
     }
 
     fn with_new_children(
@@ -191,6 +212,17 @@ impl DisplayAs for DynamicJoinSelectionExec {
 }
 
 pub enum JoinSelectionAction {
+    /// Shuffle only the prospective build side, leaving the probe side
+    /// untouched, and re-decide the join once the build side's *measured* size
+    /// is known. See [`requires_build_staging`].
+    ///
+    /// The join itself is not carried: `SelectJoinRule` is already visiting the
+    /// node this was resolved from, and staging changes none of its fields.
+    StageBuildSide {
+        /// Whether the build side is the join's right input rather than its
+        /// left, which is exactly whether the resolver swapped the inputs.
+        build_is_right: bool,
+    },
     Repartition(Arc<DynamicJoinSelectionExec>),
     CollectLeft(Arc<HashJoinExec>),
     LateCollectLeft(Arc<HashJoinExec>),
@@ -209,8 +241,8 @@ impl DynamicJoinSelectionExec {
             .map(|(l, r)| (Arc::clone(l), Arc::clone(r)))
             .unzip();
         vec![
-            Distribution::HashPartitioned(left_expr),
-            Distribution::HashPartitioned(right_expr),
+            Distribution::KeyPartitioned(left_expr),
+            Distribution::KeyPartitioned(right_expr),
         ]
     }
 
@@ -290,12 +322,14 @@ impl DynamicJoinSelectionExec {
             self.join_type
         };
 
-        let stats_left = self.left.partition_statistics(None)?;
-        let stats_right = self.right.partition_statistics(None)?;
-        let build_stats = if swap_inputs {
-            &stats_right
+        let stats_left = StatisticsContext::new()
+            .compute(self.left.as_ref(), &StatisticsArgs::new())?;
+        let stats_right = StatisticsContext::new()
+            .compute(self.right.as_ref(), &StatisticsArgs::new())?;
+        let (build_stats, probe_stats) = if swap_inputs {
+            (&stats_right, &stats_left)
         } else {
-            &stats_left
+            (&stats_left, &stats_right)
         };
         let build_size_known = match build_stats.total_byte_size.get_value() {
             Some(bytes) => *bytes != 0,
@@ -326,44 +360,73 @@ impl DynamicJoinSelectionExec {
             PartitionMode::Partitioned
         };
 
-        let action = match (&self.selection_state, partition_mode) {
+        // Repartitioning exists to give the resolver measured statistics. When
+        // the inputs are already co-partitioned there is nothing to wait for,
+        // so resolve now instead of inserting an exchange that reshuffles data
+        // already in the right place (TPC-H q18 moved 60M rows twice).
+        let selection_state = if self.selection_state == JoinInputState::Repartitioned
+            || self.inputs_already_partitioned(config)
+        {
+            JoinInputState::Repartitioned
+        } else {
+            JoinInputState::Unknown
+        };
+
+        let action = match (&selection_state, partition_mode) {
             (JoinInputState::Unknown, PartitionMode::CollectLeft) => self
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
-            (JoinInputState::Repartitioned, PartitionMode::Partitioned)
-                if hash_build_fits(max_build_bytes, build_max_partition_bytes) =>
+            // Null-aware anti joins require single-task `CollectLeft` even
+            // though both sides are already shuffled.
+            (JoinInputState::Repartitioned, PartitionMode::CollectLeft)
+                if self.null_aware =>
             {
-                self.to_hash_join(PartitionMode::Partitioned)
-                    .map(JoinSelectionAction::Hash)
+                self.to_hash_join(PartitionMode::CollectLeft)
+                    .map(JoinSelectionAction::LateCollectLeft)
             }
-            (JoinInputState::Repartitioned, PartitionMode::Partitioned) => {
-                self.to_sort_merge_join().map(JoinSelectionAction::Sort)
+            // Both inputs are already shuffled, so broadcasting would pay for
+            // the shuffle and the broadcast. Decide hash-vs-sort on build fit.
+            (
+                JoinInputState::Repartitioned,
+                PartitionMode::Partitioned | PartitionMode::CollectLeft,
+            ) if hash_build_fits(max_build_bytes, build_max_partition_bytes) => self
+                .to_hash_join(PartitionMode::Partitioned)
+                .map(JoinSelectionAction::Hash),
+            (
+                JoinInputState::Repartitioned,
+                PartitionMode::Partitioned | PartitionMode::CollectLeft,
+            ) => self.to_sort_merge_join().map(JoinSelectionAction::Sort),
+            (JoinInputState::Unknown, PartitionMode::Partitioned) => {
+                // Staging fires at most once per join: once it does one child is
+                // an `ExchangeExec`, and this guard never passes again.
+                if bc.stage_build_side_enabled()
+                    && !self.left.is::<ExchangeExec>()
+                    && !self.right.is::<ExchangeExec>()
+                    && requires_build_staging(
+                        build_stats,
+                        probe_stats,
+                        build_side_join_type,
+                        threshold_collect_left_join_bytes,
+                        bc.stage_build_side_min_probe_ratio(),
+                        bc.stage_build_side_max_estimate_multiple(),
+                    )
+                {
+                    Ok(JoinSelectionAction::StageBuildSide {
+                        build_is_right: swap_inputs,
+                    })
+                } else {
+                    Ok(JoinSelectionAction::Repartition(Arc::new(
+                        self.to_partitioned(),
+                    )))
+                }
             }
-            // TODO: not sure about this point
-            // at this point, both inputs has been repartitioned
-            // making it collect left may not make sense, perhaps only
-            // valid strategy at this point is to check if both sides
-            // are small enough to make it single partitioned join.
-            // if single partition join is possibility should we leave it
-            // to coalesce shuffle to make this decision? (if thats the
-            // case we should remove LateCollectLeft )
-            //
-            // would it be better if we try to shuffle build side first
-            // and then if build side is small enough make decision if
-            // this is CollectLeft or Partitioned join. The issue is
-            // we have flip coin chances to pick side which to run first
-            (JoinInputState::Repartitioned, PartitionMode::CollectLeft) => self
-                .to_hash_join(PartitionMode::CollectLeft)
-                .map(JoinSelectionAction::LateCollectLeft),
-            (JoinInputState::Unknown, PartitionMode::Partitioned) => Ok(
-                JoinSelectionAction::Repartition(Arc::new(self.to_partitioned())),
-            ),
             // this method calculates partition mode, and at the moment it
             // can't calculate it as PartitionMode::Auto
             (_, PartitionMode::Auto) => internal_err!("this case should not be possible"),
         }?;
 
         let action_label = match &action {
+            JoinSelectionAction::StageBuildSide { .. } => "StageBuildSide",
             JoinSelectionAction::Repartition(_) => "Repartition",
             JoinSelectionAction::CollectLeft(_) => "CollectLeft(broadcast)",
             JoinSelectionAction::LateCollectLeft(_) => "LateCollectLeft(broadcast)",
@@ -437,7 +500,8 @@ impl DynamicJoinSelectionExec {
     ) -> bool {
         // Currently we do not trust the 0 value from stats, due to stats collection might have bug
         // TODO check the logic in datasource::get_statistics_with_limit()
-        let Ok(stats) = plan.partition_statistics(None) else {
+        let Ok(stats) = StatisticsContext::new().compute(plan, &StatisticsArgs::new())
+        else {
             return false;
         };
 
@@ -465,6 +529,27 @@ impl DynamicJoinSelectionExec {
 
         estimate_output_byte_size(&plan.schema(), num_rows, &stats.column_statistics)
             .is_some_and(|estimated| estimated < threshold_byte_size)
+    }
+
+    /// Whether both inputs already satisfy the distribution this join needs.
+    ///
+    /// An equi-join leaves its output partitioned on both sides of every join
+    /// key, so a downstream join on the other key is already co-partitioned.
+    /// `satisfaction` consults equivalence classes and sees that.
+    fn inputs_already_partitioned(&self, config: &ConfigOptions) -> bool {
+        let partitions = config.execution.target_partitions;
+        self._required_input_distribution()
+            .iter()
+            .zip([&self.left, &self.right])
+            .all(|(required, input)| {
+                let current = input.output_partitioning();
+                current.partition_count() == partitions
+                    && current.satisfaction(
+                        required,
+                        input.equivalence_properties(),
+                        false,
+                    ) == datafusion::physical_expr::PartitioningSatisfaction::Exact
+            })
     }
 
     pub(crate) fn to_partitioned(&self) -> Self {
@@ -547,6 +632,65 @@ impl DynamicJoinSelectionExec {
             plan_id,
         }))
     }
+}
+
+/// Whether to shuffle only the prospective build side now and re-decide the
+/// join once its measured size is known, rather than shuffling both sides.
+///
+/// [`JoinSelectionAction::Repartition`] shuffles both inputs at once, which for
+/// a fact-table probe side commits to the single most expensive stage in the
+/// query *before* any measurement exists. When the build side's size is only a
+/// guess, that guess is the sole reason the join is not a broadcast, and the
+/// probe side dwarfs it, one cheap stage buys an exact number and often flips
+/// the join to `CollectLeft`, leaving the probe side never shuffled at all.
+///
+/// Staging serialises two shuffles that would otherwise run concurrently, so the
+/// deferral costs at most the *smaller* side's runtime; `min_probe_ratio` is
+/// what bounds the cost of being wrong.
+///
+/// `max_estimate_multiple` is measured evidence rather than a round number:
+/// TPC-H q8's filtered `part` scan estimates roughly 10x over budget, because
+/// the planner falls back to `default_filter_selectivity` for `p_type = '...'`,
+/// and measures three orders of magnitude under it. A raw fact-table scan sits
+/// far beyond this multiple and is shuffled without the extra round trip.
+fn requires_build_staging(
+    build_stats: &Statistics,
+    probe_stats: &Statistics,
+    build_side_join_type: JoinType,
+    broadcast_threshold_bytes: usize,
+    min_probe_ratio: usize,
+    max_estimate_multiple: usize,
+) -> bool {
+    // Measuring can only change the decision if `CollectLeft` is reachable at
+    // all, and that is a property of the post-swap join type alone: no size
+    // makes a `Full`, or a left-sided semi/anti/outer, join broadcastable.
+    if !collect_left_broadcast_safe(build_side_join_type) {
+        return false;
+    }
+
+    if broadcast_threshold_bytes == 0 {
+        return false;
+    }
+
+    let Precision::Inexact(build_bytes) = build_stats.total_byte_size else {
+        return false;
+    };
+
+    if build_bytes < broadcast_threshold_bytes {
+        return false;
+    }
+
+    if build_bytes > broadcast_threshold_bytes.saturating_mul(max_estimate_multiple) {
+        return false;
+    }
+
+    // A missing probe-side size declines: with nothing to compare against there
+    // is no evidence the round trip pays off.
+    let Some(probe_bytes) = probe_stats.total_byte_size.get_value().copied() else {
+        return false;
+    };
+
+    probe_bytes >= build_bytes.saturating_mul(min_probe_ratio)
 }
 
 /// Whether the build (left) side of a `Partitioned` hash join fits the
@@ -689,7 +833,6 @@ mod tests {
         PartitionId, PartitionLocation, PartitionStats,
     };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::common::{ColumnStatistics, Statistics, stats::Precision};
     use datafusion::config::ExtensionOptions;
     use datafusion::physical_plan::Partitioning;
     use datafusion::physical_plan::displayable;
@@ -843,32 +986,38 @@ mod tests {
         assert!(!supports_collect(&plan));
     }
 
-    fn stats_exec(num_rows: usize) -> Arc<dyn ExecutionPlan> {
+    /// A single-column `Int32` source reporting exactly the statistics given.
+    /// The wrappers around it differ only in how `total_byte_size` is filled.
+    fn stats_exec_with(
+        num_rows: Precision<usize>,
+        total_byte_size: Precision<usize>,
+    ) -> Arc<dyn ExecutionPlan> {
         Arc::new(StatisticsExec::new(
             Statistics {
-                num_rows: Precision::Inexact(num_rows),
-                total_byte_size: Precision::Inexact(num_rows * 16),
+                num_rows,
+                total_byte_size,
                 column_statistics: vec![ColumnStatistics::new_unknown()],
             },
             Schema::new(vec![Field::new("k", DataType::Int32, false)]),
         ))
+    }
+
+    /// A source reporting `num_rows` rows at 16 bytes each.
+    fn stats_exec(num_rows: usize) -> Arc<dyn ExecutionPlan> {
+        stats_exec_with(
+            Precision::Inexact(num_rows),
+            Precision::Inexact(num_rows * 16),
+        )
     }
 
     /// A source that reports a row count but no byte-size statistic, so the
     /// resolver must fall back to the row-count broadcast threshold.
     fn stats_exec_rows_only(num_rows: usize) -> Arc<dyn ExecutionPlan> {
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Inexact(num_rows),
-                total_byte_size: Precision::Absent,
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("k", DataType::Int32, false)]),
-        ))
+        stats_exec_with(Precision::Inexact(num_rows), Precision::Absent)
     }
 
     /// Core driver: runs the join-strategy decision for the given children with
-    /// explicit Ballista broadcast thresholds.
+    /// explicit Ballista broadcast thresholds and build-side staging setting.
     fn run_to_actual_join(
         left: Arc<dyn ExecutionPlan>,
         right: Arc<dyn ExecutionPlan>,
@@ -876,6 +1025,7 @@ mod tests {
         prefer_hash_join: bool,
         broadcast_threshold_bytes: usize,
         broadcast_threshold_rows: usize,
+        stage_build_side: bool,
     ) -> JoinSelectionAction {
         let on: JoinOn =
             vec![(Arc::new(Column::new("k", 0)), Arc::new(Column::new("k", 0)))];
@@ -905,6 +1055,8 @@ mod tests {
             &broadcast_threshold_rows.to_string(),
         )
         .unwrap();
+        bc.set("optimizer.stage_build_side", &stage_build_side.to_string())
+            .unwrap();
         config.extensions.insert(bc);
         dj.to_actual_join(&config).unwrap()
     }
@@ -947,6 +1099,9 @@ mod tests {
             // Large row threshold: byte stats are present here, so the row path
             // is never consulted; keep it out of the way of the byte decision.
             1_000_000,
+            // The shipped default. These sides are far too small to stage, so
+            // it only matters that the setting matches production.
+            true,
         )
     }
 
@@ -1051,6 +1206,7 @@ mod tests {
                 true,
                 10 * 1024 * 1024,
                 200,
+                true,
             )),
             "smaller side (100 rows) is under a 200-row threshold and must collect"
         );
@@ -1062,6 +1218,7 @@ mod tests {
                 true,
                 10 * 1024 * 1024,
                 50,
+                true,
             )),
             "neither side is under a 50-row threshold, so the join must repartition"
         );
@@ -1095,6 +1252,7 @@ mod tests {
             10_000,
             // Row ceiling well clear of both sides, so bytes decide.
             1_000_000,
+            true,
         );
 
         assert!(
@@ -1112,6 +1270,209 @@ mod tests {
             !is_collected(&actual_join_with_threshold(JoinType::Inner, 1, 1, true, 0,)),
             "broadcast_join_threshold_bytes=0 must disable CollectLeft promotion"
         );
+    }
+
+    /// A source reporting `total_byte_size` with the given precision, shaped
+    /// like one side of the TPC-H q8 `part`/`lineitem` join.
+    fn sized_stats_exec(total_byte_size: Precision<usize>) -> Arc<dyn ExecutionPlan> {
+        stats_exec_with(Precision::Inexact(1_000), total_byte_size)
+    }
+
+    /// The q8 shape: a filtered dimension scan whose size is a guess sitting
+    /// just over the broadcast budget, against a fact table that dwarfs it.
+    const STAGE_THRESHOLD: usize = 10 * MB;
+    const GUESSED_BUILD_BYTES: usize = 100 * MB;
+    const FACT_PROBE_BYTES: usize = 2000 * MB;
+
+    /// Statistics carrying only a byte size, which is all
+    /// [`requires_build_staging`] reads off each side.
+    fn byte_stats(total_byte_size: Precision<usize>) -> Statistics {
+        Statistics {
+            num_rows: Precision::Inexact(1_000),
+            total_byte_size,
+            column_statistics: vec![],
+        }
+    }
+
+    /// [`requires_build_staging`] for an `Inner` join under the shipped ratio
+    /// and multiple. Reading those from `BallistaConfig::default()` rather than
+    /// restating them means these tests pin the values a deployment runs with.
+    fn stages(
+        build: Precision<usize>,
+        probe: Precision<usize>,
+        broadcast_threshold_bytes: usize,
+    ) -> bool {
+        let bc = BallistaConfig::default();
+        requires_build_staging(
+            &byte_stats(build),
+            &byte_stats(probe),
+            JoinType::Inner,
+            broadcast_threshold_bytes,
+            bc.stage_build_side_min_probe_ratio(),
+            bc.stage_build_side_max_estimate_multiple(),
+        )
+    }
+
+    // Staging turns on a build side whose size is a *guess* over the budget,
+    // against a probe side big enough that deferring its shuffle repays the
+    // round trip. Each negative below removes exactly one of those properties.
+    #[test]
+    fn stages_only_a_guessed_build_side_against_a_much_larger_probe() {
+        let ratio = BallistaConfig::default().stage_build_side_min_probe_ratio();
+
+        assert!(
+            stages(
+                Precision::Inexact(GUESSED_BUILD_BYTES),
+                Precision::Exact(FACT_PROBE_BYTES),
+                STAGE_THRESHOLD
+            ),
+            "a guessed-large build side against a fact-table probe must stage"
+        );
+        assert!(
+            !stages(
+                Precision::Exact(GUESSED_BUILD_BYTES),
+                Precision::Exact(FACT_PROBE_BYTES),
+                STAGE_THRESHOLD
+            ),
+            "an exact size over budget is a fact, with nothing left to measure"
+        );
+        assert!(
+            !stages(
+                Precision::Inexact(GUESSED_BUILD_BYTES),
+                Precision::Exact(GUESSED_BUILD_BYTES * (ratio - 1)),
+                STAGE_THRESHOLD
+            ),
+            "a comparable probe side does not repay serialising the shuffles"
+        );
+        assert!(
+            !stages(
+                Precision::Inexact(GUESSED_BUILD_BYTES),
+                Precision::Absent,
+                STAGE_THRESHOLD
+            ),
+            "a missing probe size is no evidence the round trip pays off"
+        );
+    }
+
+    // The broadcast budget bounds staging at both ends, and `0` disables it
+    // along with the promotion it exists to reach.
+    #[test]
+    fn staging_is_bounded_by_the_broadcast_budget() {
+        let multiple = BallistaConfig::default().stage_build_side_max_estimate_multiple();
+        let far_over = STAGE_THRESHOLD * (multiple + 1);
+
+        assert!(
+            !stages(
+                Precision::Inexact(STAGE_THRESHOLD - 1),
+                Precision::Exact(FACT_PROBE_BYTES),
+                STAGE_THRESHOLD
+            ),
+            "a build side already under budget is not what forced Partitioned"
+        );
+        assert!(
+            !stages(
+                Precision::Inexact(far_over),
+                Precision::Exact(far_over * 1_000),
+                STAGE_THRESHOLD
+            ),
+            "past the multiple no measurement brings the side under budget"
+        );
+        assert!(
+            !stages(
+                Precision::Inexact(GUESSED_BUILD_BYTES),
+                Precision::Exact(FACT_PROBE_BYTES),
+                0
+            ),
+            "broadcast promotion disabled leaves no decision to revisit"
+        );
+    }
+
+    // The shipped defaults are what the benchmark numbers were measured under,
+    // so pin them here rather than only in the generated config docs.
+    #[test]
+    fn stage_build_side_ships_the_documented_defaults() {
+        let bc = BallistaConfig::default();
+
+        assert!(bc.stage_build_side_enabled());
+        assert_eq!(bc.stage_build_side_min_probe_ratio(), 10);
+        assert_eq!(bc.stage_build_side_max_estimate_multiple(), 32);
+    }
+
+    /// Runs the resolver over the q8 shape for `join_type`, staging on or off.
+    fn q8_shaped_action(
+        join_type: JoinType,
+        stage_build_side: bool,
+    ) -> JoinSelectionAction {
+        run_to_actual_join(
+            sized_stats_exec(Precision::Inexact(GUESSED_BUILD_BYTES)),
+            sized_stats_exec(Precision::Exact(FACT_PROBE_BYTES)),
+            join_type,
+            true,
+            STAGE_THRESHOLD,
+            ROW_THRESHOLD,
+            stage_build_side,
+        )
+    }
+
+    // Staging pays off only where `CollectLeft` is reachable, which is a
+    // property of the post-swap join type alone. The left side is the smaller
+    // one here, so `supports_swap_join_order` is false and the post-swap type
+    // equals the declared one, making `collect_left_broadcast_safe` the oracle.
+    // Looping all ten means a join type added to DataFusion cannot slip through
+    // untested — which two hand-partitioned lists would have let it do.
+    #[test]
+    fn stages_exactly_the_join_types_that_can_broadcast() {
+        for join_type in [
+            JoinType::Inner,
+            JoinType::Left,
+            JoinType::Right,
+            JoinType::Full,
+            JoinType::LeftSemi,
+            JoinType::RightSemi,
+            JoinType::LeftAnti,
+            JoinType::RightAnti,
+            JoinType::LeftMark,
+            JoinType::RightMark,
+        ] {
+            let action = q8_shaped_action(join_type, true);
+            assert_eq!(
+                matches!(action, JoinSelectionAction::StageBuildSide { .. }),
+                collect_left_broadcast_safe(join_type),
+                "join_type {join_type:?}: staging must follow broadcast safety",
+            );
+        }
+    }
+
+    #[test]
+    fn stage_build_side_config_turns_the_behaviour_off() {
+        assert!(matches!(
+            q8_shaped_action(JoinType::Inner, false),
+            JoinSelectionAction::Repartition(_)
+        ));
+    }
+
+    // Staging must fire at most once. Once a child is an exchange the resolver
+    // falls through to `Repartition`, which shuffles the remaining side and
+    // reuses the exchange already in place.
+    #[test]
+    fn does_not_stage_again_once_a_child_is_an_exchange() {
+        let staged: Arc<dyn ExecutionPlan> = Arc::new(ExchangeExec::new(
+            sized_stats_exec(Precision::Inexact(GUESSED_BUILD_BYTES)),
+            None,
+            0,
+        ));
+
+        let action = run_to_actual_join(
+            staged,
+            sized_stats_exec(Precision::Exact(FACT_PROBE_BYTES)),
+            JoinType::Inner,
+            true,
+            STAGE_THRESHOLD,
+            ROW_THRESHOLD,
+            true,
+        );
+
+        assert!(matches!(action, JoinSelectionAction::Repartition(_)));
     }
 
     /// Constructs a minimal `DynamicJoinSelectionExec` around the given children.
@@ -1330,6 +1691,9 @@ mod tests {
     /// than matching on the action's structure.
     fn resolved_plan(action: &JoinSelectionAction) -> Arc<dyn ExecutionPlan> {
         match action {
+            JoinSelectionAction::StageBuildSide { .. } => {
+                unreachable!("staging carries no resolved plan to render")
+            }
             JoinSelectionAction::Repartition(exec) => {
                 Arc::clone(exec) as Arc<dyn ExecutionPlan>
             }

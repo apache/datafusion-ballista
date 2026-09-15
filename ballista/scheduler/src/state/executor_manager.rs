@@ -381,6 +381,8 @@ impl ExecutorManager {
         reason: Option<String>,
     ) -> Result<()> {
         info!("Removing executor {executor_id}: {reason:?}");
+        // Drop the cached client
+        self.clients.remove(executor_id);
         self.cluster_state.remove_executor(executor_id).await
     }
 
@@ -417,28 +419,28 @@ impl ExecutorManager {
     }
 
     /// Launches multiple tasks on the specified executor.
+    ///
+    /// `Ok` means the RPC was dispatched; the returned set holds job IDs the
+    /// executor rejected (could not decode) and failed individually. `Err` is
+    /// only returned for a transport-level failure of the whole RPC.
     pub async fn launch_multi_task(
         &self,
         executor_id: &str,
         multi_tasks: Vec<MultiTaskDefinition>,
         scheduler_id: String,
-    ) -> Result<()> {
+    ) -> Result<HashSet<JobId>> {
         let mut client = self
             .get_client(executor_id, &self.grpc_client_config)
             .await?;
-        client
+        let res = client
             .launch_multi_task(protobuf::LaunchMultiTaskParams {
                 multi_tasks,
                 scheduler_id,
             })
-            .await
-            .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Failed to connect to executor {executor_id}: {e:?}"
-                ))
-            })?;
+            .await?
+            .into_inner();
 
-        Ok(())
+        Ok(res.failed_jobs.into_iter().map(JobId::from).collect())
     }
 
     pub(crate) fn drain_pending_cleanup_jobs(
@@ -608,6 +610,7 @@ mod tests {
     use crate::test_utils::test_cluster_context;
     use ballista_core::extension::SessionConfigExt;
     use datafusion::prelude::SessionConfig;
+    use tonic::transport::Endpoint;
 
     #[test]
     fn grpc_client_max_message_size_flag_reaches_client_config() {
@@ -645,5 +648,29 @@ mod tests {
             manager.grpc_client_config.max_message_size,
             32 * 1024 * 1024
         );
+    }
+
+    #[tokio::test]
+    async fn removing_an_executor_drops_its_cached_client() {
+        let manager = ExecutorManager::new(
+            test_cluster_context().cluster_state(),
+            Arc::new(SchedulerConfig::default()),
+        );
+
+        // `get_client` needs an executor to connect to, so cache a client
+        // directly. `connect_lazy` gives a `Channel` without a server behind it.
+        let channel = Endpoint::from_static("http://localhost:1").connect_lazy();
+        manager
+            .clients
+            .insert("executor-1".to_owned(), ExecutorGrpcClient::new(channel));
+
+        manager
+            .remove_executor("executor-1", None)
+            .await
+            .expect("executor removed");
+
+        // An executor id is a fresh uuid per executor process, so a client left
+        // behind here would never be reused, and never dropped either.
+        assert!(manager.clients.is_empty());
     }
 }

@@ -21,3 +21,4 @@ set -e
 ci/scripts/rust_fmt.sh
 ci/scripts/rust_clippy.sh
 ci/scripts/rust_toml_fmt.sh
+ci/scripts/rust_machete.sh

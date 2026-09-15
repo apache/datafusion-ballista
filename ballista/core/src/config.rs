@@ -119,6 +119,31 @@ pub const BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS: &str =
 pub const BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES: &str =
     "ballista.optimizer.hash_join_max_build_partition_bytes";
 
+/// Configuration key controlling whether AQE stages a join's prospective build
+/// side as its own shuffle before deciding how to run the join. When a build
+/// side's size is only an estimate and the probe side is far larger, shuffling
+/// both sides commits to the expensive shuffle before any measurement exists.
+/// With this enabled the planner shuffles the smaller side alone, reads back
+/// its measured size, and only then chooses broadcast or repartition. Enabled
+/// by default; set to `false` to always shuffle both sides at once.
+pub const BALLISTA_STAGE_BUILD_SIDE: &str = "ballista.optimizer.stage_build_side";
+
+/// Configuration key for how many times larger the probe side must be before
+/// AQE stages a join's build side on its own. Staging serialises two shuffles
+/// that would otherwise run concurrently, so the deferral costs at most the
+/// smaller side's runtime; this ratio is what bounds the cost of being wrong.
+/// Only consulted when `ballista.optimizer.stage_build_side` is enabled.
+pub const BALLISTA_STAGE_BUILD_SIDE_MIN_PROBE_RATIO: &str =
+    "ballista.optimizer.stage_build_side_min_probe_ratio";
+
+/// Configuration key for how far over `broadcast_join_threshold_bytes` an
+/// *estimated* build side may sit and still be worth measuring. Past this
+/// multiple the side is large on any reading and no measurement brings it back
+/// under budget, so it is shuffled without the extra round trip. Only consulted
+/// when `ballista.optimizer.stage_build_side` is enabled.
+pub const BALLISTA_STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE: &str =
+    "ballista.optimizer.stage_build_side_max_estimate_multiple";
+
 /// Configuration key controlling the logical rewrite of uncorrelated
 /// `NOT IN (subquery)` filter predicates into a plain anti join plus a
 /// one-row count aggregate. The rewrite avoids DataFusion's null-aware hash
@@ -246,9 +271,11 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::UInt64,
                          Some((300).to_string())),
         ConfigEntry::new(BALLISTA_ADAPTIVE_PLANNER_ENABLED.to_string(),
-                         "Enables Adaptive Query Planning (EXPERIMENTAL)".to_string(),
+                         "Enables Adaptive Query Planning: joins and partition counts are \
+                         chosen from measured runtime statistics instead of planning-time \
+                         estimates. Set to false to use the static distributed planner.".to_string(),
                          DataType::Boolean,
-                         Some(false.to_string())),
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
@@ -276,7 +303,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                           single-task CollectLeft execution. Set to 0 to disable promotion \
                           and reject null-aware anti joins.".to_string(),
                          DataType::UInt64,
-                         Some((10 * 1024 * 1024).to_string())),
+                         Some((128 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS.to_string(),
                          "Row-count threshold below which a hash join's smaller side is \
                           promoted to CollectLeft and lowered via the broadcast pattern, \
@@ -292,6 +319,35 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          which makes AQE use a hash join regardless of build size.".to_string(),
                          DataType::UInt64,
                          Some((64 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_STAGE_BUILD_SIDE.to_string(),
+                         "Stages a join's prospective build side as its own shuffle before \
+                          choosing the join strategy. Applies only when that side's size is \
+                          an estimate rather than a measurement, and the probe side is far \
+                          larger: an exact size over the broadcast budget is a fact that no \
+                          further measurement can change. Lets AQE measure the build side and \
+                          pick a broadcast join instead of committing to a full shuffle of \
+                          the probe side up front. Set to false to always shuffle both sides \
+                          at once.".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
+        ConfigEntry::new(BALLISTA_STAGE_BUILD_SIDE_MIN_PROBE_RATIO.to_string(),
+                         "How many times larger the probe side must be before AQE stages a \
+                          join's build side on its own. Staging serialises two shuffles that \
+                          would otherwise run concurrently, so the deferral costs at most the \
+                          smaller side's runtime; this ratio bounds the cost of being wrong. \
+                          Only consulted when stage_build_side is enabled, and only for build \
+                          sides whose size is an estimate rather than a measurement.".to_string(),
+                         DataType::UInt64,
+                         Some((10).to_string())),
+        ConfigEntry::new(BALLISTA_STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE.to_string(),
+                         "How far over broadcast_join_threshold_bytes an estimated build side \
+                          may sit and still be worth measuring. Past this multiple the side is \
+                          large on any reading and no measurement brings it back under budget, \
+                          so it is shuffled without the extra round trip. Only consulted when \
+                          stage_build_side is enabled, and only for build sides whose size is \
+                          an estimate rather than a measurement.".to_string(),
+                         DataType::UInt64,
+                         Some((32).to_string())),
         ConfigEntry::new(BALLISTA_NOT_IN_SUBQUERY_REWRITE.to_string(),
                          "Rewrites uncorrelated NOT IN (subquery) filter predicates into a \
                          plain anti join plus a one-row count aggregate during logical \
@@ -415,15 +471,14 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(
             BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK.to_string(),
             "Upper bound on the number of input partitions packed into a single \
-             task's `partition_slice`. `1` (default) means one task per input \
-             partition. Raise to enable multi-partition tasks (fewer tasks, \
-             parallel-sort / parallel-join wins); `0` means unbounded — the \
+             task's `partition_slice`. `0` (default) means unbounded — the \
              scheduler fills each task up to the executor's free vcore count. \
-             Does not apply to collapse stages, which must pack their full \
-             pending queue into a single task for correctness."
+             `1` means one task per input partition. Does not apply to collapse \
+             stages, which must pack their full pending queue into a single \
+             task for correctness."
                 .to_string(),
             DataType::UInt64,
-            Some(1.to_string()),
+            Some(0.to_string()),
         ),
     ];
     entries
@@ -580,8 +635,14 @@ impl BallistaConfig {
     }
 
     /// Returns the standalone processing parallelism level.
-    pub fn default_standalone_parallelism(&self) -> usize {
+    pub fn standalone_parallelism(&self) -> usize {
         self.get_usize_setting(BALLISTA_STANDALONE_PARALLELISM)
+    }
+
+    /// Deprecated alias for [`Self::standalone_parallelism`].
+    #[deprecated(since = "55.0.0", note = "renamed to `standalone_parallelism`")]
+    pub fn default_standalone_parallelism(&self) -> usize {
+        self.standalone_parallelism()
     }
 
     /// Returns the maximum number of concurrent shuffle reader requests.
@@ -702,6 +763,24 @@ impl BallistaConfig {
         self.get_usize_setting(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES)
     }
 
+    /// Returns whether AQE stages a join's prospective build side as its own
+    /// shuffle before choosing the join strategy.
+    pub fn stage_build_side_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_STAGE_BUILD_SIDE)
+    }
+
+    /// How many times larger the probe side must be before AQE stages a join's
+    /// build side on its own.
+    pub fn stage_build_side_min_probe_ratio(&self) -> usize {
+        self.get_usize_setting(BALLISTA_STAGE_BUILD_SIDE_MIN_PROBE_RATIO)
+    }
+
+    /// How far over `broadcast_join_threshold_bytes` an estimated build side may
+    /// sit and still be worth measuring.
+    pub fn stage_build_side_max_estimate_multiple(&self) -> usize {
+        self.get_usize_setting(BALLISTA_STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE)
+    }
+
     /// Whether uncorrelated `NOT IN (subquery)` filter predicates are rewritten
     /// into a plain anti join plus a one-row count aggregate during logical
     /// optimization, avoiding the single-task null-aware hash join.
@@ -745,8 +824,8 @@ impl BallistaConfig {
 
     /// Returns the target post-coalesce partition byte size in bytes
     /// (Spark's `advisoryPartitionSizeInBytes`).
-    pub fn coalesce_target_partition_bytes(&self) -> u64 {
-        self.get_usize_setting(BALLISTA_COALESCE_TARGET_PARTITION_BYTES) as u64
+    pub fn coalesce_target_partition_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_COALESCE_TARGET_PARTITION_BYTES)
     }
 
     /// Returns the small-partition merge factor (Spark legacy).
@@ -797,8 +876,14 @@ impl BallistaConfig {
     }
 
     /// should client use TLS to communicate with ballista cluster
-    pub fn client_use_tls(&self) -> bool {
+    pub fn use_tls(&self) -> bool {
         self.get_bool_setting(BALLISTA_CLIENT_USE_TLS)
+    }
+
+    /// Deprecated alias for [`Self::use_tls`].
+    #[deprecated(since = "55.0.0", note = "renamed to `use_tls`")]
+    pub fn client_use_tls(&self) -> bool {
+        self.use_tls()
     }
 
     /// Returns the number of retries for IO operations in the Ballista client.

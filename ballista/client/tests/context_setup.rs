@@ -109,16 +109,16 @@ mod standalone {
     use ballista_core::serde::BallistaPhysicalExtensionCodec;
     use datafusion::{
         assert_batches_eq,
+        catalog::Session,
         common::exec_err,
-        execution::{
-            SessionState, SessionStateBuilder, TaskContext, context::QueryPlanner,
-        },
+        execution::{SessionStateBuilder, TaskContext, context::QueryPlanner},
         logical_expr::LogicalPlan,
         physical_plan::ExecutionPlan,
         prelude::{SessionConfig, SessionContext},
     };
     use datafusion_proto::{
-        logical_plan::LogicalExtensionCodec, physical_plan::PhysicalExtensionCodec,
+        logical_plan::LogicalExtensionCodec,
+        physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension},
     };
 
     #[tokio::test]
@@ -299,7 +299,7 @@ mod standalone {
         fn try_decode_table_provider(
             &self,
             _buf: &[u8],
-            _table_ref: &datafusion::sql::TableReference,
+            _table_ref: &datafusion::common::TableReference,
             _schema: datafusion::arrow::datatypes::SchemaRef,
             _ctx: &TaskContext,
         ) -> datafusion::error::Result<
@@ -312,7 +312,7 @@ mod standalone {
 
         fn try_encode_table_provider(
             &self,
-            _table_ref: &datafusion::sql::TableReference,
+            _table_ref: &datafusion::common::TableReference,
             _node: std::sync::Arc<dyn datafusion::catalog::TableProvider>,
             _buf: &mut Vec<u8>,
         ) -> datafusion::error::Result<()> {
@@ -366,21 +366,23 @@ mod standalone {
             buf: &[u8],
             inputs: &[Arc<dyn datafusion::physical_plan::ExecutionPlan>],
             ctx: &TaskContext,
+            proto_converter: &dyn PhysicalProtoConverterExtension,
         ) -> datafusion::error::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>>
         {
             self.invoked
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.codec.try_decode(buf, inputs, ctx)
+            self.codec.try_decode(buf, inputs, ctx, proto_converter)
         }
 
         fn try_encode(
             &self,
             node: Arc<dyn datafusion::physical_plan::ExecutionPlan>,
             buf: &mut Vec<u8>,
+            proto_converter: &dyn PhysicalProtoConverterExtension,
         ) -> datafusion::error::Result<()> {
             self.invoked
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.codec.try_encode(node, buf)
+            self.codec.try_encode(node, buf, proto_converter)
         }
     }
 
@@ -392,7 +394,7 @@ mod standalone {
         async fn create_physical_plan(
             &self,
             _logical_plan: &LogicalPlan,
-            _session_state: &SessionState,
+            _session_state: &dyn Session,
         ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
             exec_err!("does not work")
         }

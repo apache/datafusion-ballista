@@ -13,7 +13,7 @@ SortShuffleWriterExec: partitioning=Hash([cntrycode@0], 16)
     ProjectionExec: expr=[substr(c_phone@1, 1, 2) as cntrycode, c_acctbal@2 as c_acctbal]
       NestedLoopJoinExec: join_type=Inner, filter=join_proj_push_down_1@1 > avg(customer.c_acctbal)@0, projection=[avg(customer.c_acctbal)@0, c_phone@1, c_acctbal@2]
         AggregateExec: mode=Single, gby=[], aggr=[avg(customer.c_acctbal)]
-          FilterExec: c_acctbal@1 > Some(0),15,2 AND substr(c_phone@0, 1, 2) IN (SET) ([13, 31, 23, 29, 30, 18, 17]), projection=[c_acctbal@1]
+          FilterExec: c_acctbal@1 > 0.00 AND substr(c_phone@0, 1, 2) IN (SET) ([13, 31, 23, 29, 30, 18, 17]), projection=[c_acctbal@1]
             StatsExec: rows=15000000
         ProjectionExec: expr=[c_phone@1 as c_phone, c_acctbal@2 as c_acctbal, CAST(c_acctbal@2 AS Decimal128(19, 6)) as join_proj_push_down_1]
           SortMergeJoinExec: join_type=LeftAnti, on=[(c_custkey@0, o_custkey@0)]
@@ -23,13 +23,13 @@ SortShuffleWriterExec: partitioning=Hash([cntrycode@0], 16)
               UnresolvedShuffleExec: stage=2, partitioning: Hash([o_custkey@0], 16)
 
 === Stage 4 ===
-ShuffleWriterExec: partitioning: None
-  SortExec: expr=[cntrycode@0 ASC NULLS LAST], preserve_partitioning=[true]
-    ProjectionExec: expr=[cntrycode@0 as cntrycode, count(Int64(1))@1 as numcust, sum(custsale.c_acctbal)@2 as totacctbal]
+ShuffleWriterExec: partitioning: Hash([cntrycode@0], 16)
+  ProjectionExec: expr=[cntrycode@0 as cntrycode, count(Int64(1))@1 as numcust, sum(custsale.c_acctbal)@2 as totacctbal]
+    SortExec: expr=[cntrycode@0 ASC NULLS LAST], preserve_partitioning=[true]
       AggregateExec: mode=FinalPartitioned, gby=[cntrycode@0 as cntrycode], aggr=[count(Int64(1)), sum(custsale.c_acctbal)]
         UnresolvedShuffleExec: stage=3, partitioning: Hash([cntrycode@0], 16)
 
 === Stage 5 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: UnknownPartitioning(1)
   SortPreservingMergeExec: [cntrycode@0 ASC NULLS LAST]
     UnresolvedShuffleExec: stage=4, partitioning: Hash([cntrycode@0], 16)
