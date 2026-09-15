@@ -89,7 +89,7 @@ jobs:
           shared-key: tpch-sf10
 
       - name: Install tpchgen-cli
-        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
         with:
           tool: tpchgen-cli@2.0.2
 
