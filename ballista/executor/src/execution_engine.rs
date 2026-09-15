@@ -24,8 +24,8 @@
 use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::execution_plans::{
-    RangeShuffleReaderExec, RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriteResult,
-    ShuffleWriterExec,
+    RangeShuffleReaderExec, RangeShuffleWriterExec, ShuffleReaderExec,
+    ShuffleWriteResult, ShuffleWriterExec,
 };
 use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::serde::scheduler::PartitionStats;
