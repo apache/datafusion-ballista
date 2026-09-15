@@ -62,8 +62,8 @@ pub use standalone::new_standalone_executor_from_state;
 use crate::shutdown::Shutdown;
 use ballista_core::execution_plans::ShuffleWriteResult;
 use ballista_core::serde::protobuf::{
-    FailedTask, OperatorMetricsSet, RuntimeStatsReport,
-    SuccessfulTask, TaskStatus, WindowStateReport, task_status,
+    FailedTask, OperatorMetricsSet, RuntimeStatsReport, SuccessfulTask, TaskStatus,
+    WindowStateReport, task_status,
 };
 use ballista_core::serde::scheduler::TaskKey;
 use ballista_core::utils::GrpcServerConfig;
