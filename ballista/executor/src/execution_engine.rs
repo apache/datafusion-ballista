@@ -27,7 +27,7 @@ use ballista_core::execution_plans::{
     RangeShuffleReaderExec, RangeShuffleWriterExec, ShuffleReaderExec,
     ShuffleWriteResult, ShuffleWriterExec,
 };
-use ballista_core::serde::protobuf::ShuffleWritePartition;
+use ballista_core::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
 use ballista_core::serde::scheduler::PartitionStats;
 use ballista_core::{JobId, utils};
 use datafusion::arrow::array::{
@@ -355,9 +355,24 @@ impl QueryStageExecutor for DefaultQueryStageExec {
             result.is_ok(),
             DisplayableExecutionPlan::with_metrics(plan_arc.as_ref()).indent(true)
         );
+
+        let column_stats = match &self.shuffle_writer {
+            ShuffleWriterVariant::Sort(writer) => writer
+                .column_null_counts()
+                .into_iter()
+                .enumerate()
+                .map(|(column, null_count)| TaskColumnStats {
+                    column: column as u32,
+                    null_count,
+                    hll_sketch: vec![],
+                })
+                .collect(),
+            _ => vec![],
+        };
+
         result.map(|partitions| ShuffleWriteResult {
             partitions,
-            column_stats: vec![],
+            column_stats,
         })
     }
 
