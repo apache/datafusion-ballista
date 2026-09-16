@@ -48,14 +48,31 @@ REPO_ROOT = Path(__file__).parent.parent.absolute()
 VENDOR_DIR = REPO_ROOT / "ballista" / "core" / "proto"
 
 # vendored file name -> (crate name, file name within the crate's `proto/` dir)
+#
+# DataFusion 55 moved the logical-plan proto out of `datafusion-proto` into the
+# new `datafusion-proto-models` crate.  We list both names so the script keeps
+# working on v54 (datafusion-proto) and v55+ (datafusion-proto-models).
 FILES = {
-    "datafusion.proto": ("datafusion-proto", "datafusion.proto"),
-    "datafusion_common.proto": ("datafusion-proto-common", "datafusion_common.proto"),
+    "datafusion.proto": (
+        ["datafusion-proto-models", "datafusion-proto"],
+        "datafusion.proto",
+    ),
+    "datafusion_common.proto": (
+        ["datafusion-proto-common"],
+        "datafusion_common.proto",
+    ),
+}
+
+# Every crate that might be referenced in FILES must be looked up.
+_ALL_CRATES = {
+    crate
+    for crate_list, _ in FILES.values()
+    for crate in crate_list
 }
 
 
 def crate_source_dirs():
-    """Map crate name -> source directory, as resolved in Cargo.lock."""
+    """Map crate name -> (source directory, version), as resolved in Cargo.lock."""
     out = subprocess.run(
         ["cargo", "metadata", "--format-version", "1", "--locked"],
         cwd=REPO_ROOT,
@@ -66,12 +83,9 @@ def crate_source_dirs():
     metadata = json.loads(out.stdout)
     dirs = {}
     for pkg in metadata["packages"]:
-        if pkg["name"] in ("datafusion-proto", "datafusion-proto-common"):
+        if pkg["name"] in _ALL_CRATES:
             # manifest_path points at the crate's Cargo.toml; protos sit alongside it.
             dirs[pkg["name"]] = (Path(pkg["manifest_path"]).parent, pkg["version"])
-    missing = {"datafusion-proto", "datafusion-proto-common"} - dirs.keys()
-    if missing:
-        sys.exit(f"could not resolve crate(s) from cargo metadata: {sorted(missing)}")
     return dirs
 
 
@@ -100,19 +114,35 @@ def main():
 
     dirs = crate_source_dirs()
     stale = []
-    for vendor_name, (crate, src_name) in FILES.items():
-        crate_dir, version = dirs[crate]
-        src = crate_dir / "proto" / src_name
-        if not src.exists():
-            # Some releases don't publish the `.proto` file (e.g. datafusion-proto-common
-            # only started shipping it in v54). Nothing to sync against, so leave the
-            # vendored copy as-is rather than failing.
-            print(
-                f"note: {crate}@{version} does not ship proto/{src_name}; "
-                f"leaving vendored {vendor_name} unchanged",
-                file=sys.stderr,
+    for vendor_name, (crate_list, src_name) in FILES.items():
+        # Try each crate in preference order; use the first one that ships the file.
+        src = None
+        chosen_crate = None
+        chosen_version = None
+        for crate in crate_list:
+            if crate not in dirs:
+                continue
+            crate_dir, version = dirs[crate]
+            candidate = crate_dir / "proto" / src_name
+            if candidate.exists():
+                src = candidate
+                chosen_crate = crate
+                chosen_version = version
+                break
+
+        if src is None:
+            # None of the candidate crates ship the expected file.  This is
+            # always an error: a missing source means the check cannot run and
+            # proto drift would go undetected.
+            tried = ", ".join(
+                f"{c}@{dirs[c][1]}" if c in dirs else f"{c} (not in Cargo.lock)"
+                for c in crate_list
             )
-            continue
+            sys.exit(
+                f"error: could not find proto/{src_name} in any of: {tried}\n"
+                f"  Update FILES in this script if the crate was renamed."
+            )
+
         expected = rewrite(src.read_text())
         dest = VENDOR_DIR / vendor_name
 
@@ -124,12 +154,15 @@ def main():
                     current.splitlines(keepends=True),
                     expected.splitlines(keepends=True),
                     fromfile=f"vendored/{vendor_name}",
-                    tofile=f"{crate}@{version}/proto/{src_name}",
+                    tofile=f"{chosen_crate}@{chosen_version}/proto/{src_name}",
                 )
                 sys.stderr.writelines(diff)
         else:
             dest.write_text(expected)
-            print(f"updated {dest.relative_to(REPO_ROOT)} from {crate}@{version}")
+            print(
+                f"updated {dest.relative_to(REPO_ROOT)} "
+                f"from {chosen_crate}@{chosen_version}"
+            )
 
     if args.check and stale:
         sys.exit(
