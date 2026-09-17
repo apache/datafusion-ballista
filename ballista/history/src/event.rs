@@ -116,8 +116,8 @@ pub struct JobStart {
     pub queued_at: u64,
     /// When the job was submitted for planning.
     pub submitted_at: u64,
-    /// Opaque scheduler id for the scheduler that accepted and planned the
-    /// job, if one is recorded.
+    /// Identifier for the scheduler that accepted and planned the job, if one
+    /// is recorded.
     pub scheduler_id: Option<String>,
     /// Rendered logical plan, if one was captured.
     pub logical_plan: Option<String>,

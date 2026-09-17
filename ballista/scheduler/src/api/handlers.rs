@@ -45,7 +45,7 @@ use std::sync::Arc;
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct SchedulerStateResponse {
     pub started: u128,
-    /// Opaque scheduler identity exposed in scheduler state.
+    /// Scheduler identity exposed in scheduler state.
     pub scheduler_id: String,
     pub version: &'static str,
     pub datafusion_version: &'static str,

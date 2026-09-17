@@ -21,11 +21,10 @@
 
 ## Scheduler Identity
 
-Each scheduler has an opaque scheduler id used to identify the scheduler in
-cluster state, `/api/state`, and history event logs. Set it explicitly with
-`--scheduler-id` when you want a stable value; otherwise the scheduler
-generates the same UUID-backed instance identity used for executor ids at
-startup.
+Each scheduler has an identifier used in cluster state, `/api/state`, and
+history event logs. Set it explicitly with `--scheduler-id` when you want a
+stable value; otherwise the scheduler generates the same UUID-backed instance
+identity used for executor ids at startup.
 
 Executors report task status to the scheduler callback endpoint, which is built
 from `--external-host` and `--bind-port`.

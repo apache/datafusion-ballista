@@ -103,9 +103,9 @@ pub struct Config {
         help = "Namespace for the ballista cluster that this executor will join."
     )]
     pub namespace: String,
-    /// Opaque identifier for this scheduler. If unset, a UUID is generated at
-    /// startup.
-    #[arg(long, help = "Opaque identifier for this scheduler.")]
+    /// Identifier for this scheduler. If unset, a UUID-backed instance identity
+    /// is generated at startup.
+    #[arg(long, help = "Identifier for this scheduler.")]
     pub scheduler_id: Option<String>,
     /// Local host name or IP address to bind to.
     #[arg(
@@ -319,7 +319,7 @@ pub struct SchedulerConfig {
     /// Namespace of this scheduler. Schedulers using the same cluster storage and namespace
     /// will share global cluster state.
     pub namespace: String,
-    /// Opaque identifier for this scheduler instance.
+    /// Identifier for this scheduler instance.
     pub scheduler_id: String,
     /// The external hostname of the scheduler
     pub external_host: String,
