@@ -86,14 +86,6 @@ use crate::{execution_loop, executor_server};
 /// overhead (in-flight Arrow batches, shuffle writer buffers, fragmentation).
 pub(crate) const DEFAULT_MEMORY_POOL_FRACTION: f64 = 0.70;
 
-pub(crate) fn new_executor_id() -> String {
-    new_executor_id_with(new_instance_id)
-}
-
-fn new_executor_id_with(generate: impl FnOnce() -> String) -> String {
-    generate()
-}
-
 /// How the operator interpreted `--memory-pool-size`.
 #[derive(Debug, PartialEq)]
 enum MemoryBudget {
@@ -446,7 +438,7 @@ pub async fn start_executor_process(
     };
     let task_scheduling_policy = opt.task_scheduling_policy;
     // assign this executor a unique ID
-    let executor_id = new_executor_id();
+    let executor_id = new_instance_id();
     info!(
         "Ballista Executor v{BALLISTA_VERSION} (DataFusion v{DATAFUSION_VERSION}) starting ..."
     );
@@ -1148,11 +1140,10 @@ mod tests {
 
     use super::ExecutorProcessConfig;
     use super::clean_shuffle_data_loop;
-    use super::new_executor_id;
-    use super::new_executor_id_with;
     use super::remove_job_data;
     use super::structure_executor_metadata;
     use ballista_core::JobId;
+    use ballista_core::ids::new_instance_id;
     use std::fs;
     use std::fs::File;
     use std::io::Write;
@@ -1160,16 +1151,8 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn executor_id_uses_generator() {
-        let executor_id = new_executor_id_with(|| "generated-executor-id".to_string());
-
-        assert_eq!(executor_id, "generated-executor-id");
-    }
-
-    #[test]
     fn executor_metadata_uses_uuid_backed_instance_id() {
-        let executor_id = new_executor_id();
-        uuid::Uuid::parse_str(&executor_id).unwrap();
+        let executor_id = new_instance_id();
 
         let metadata = structure_executor_metadata(
             &executor_id,
@@ -1178,6 +1161,7 @@ mod tests {
         );
 
         assert_eq!(metadata.id, executor_id);
+        uuid::Uuid::parse_str(&metadata.id).unwrap();
     }
 
     #[tokio::test]
