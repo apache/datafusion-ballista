@@ -114,6 +114,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub fn new(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
+        scheduler_id: String,
         scheduler_name: String,
         config: Arc<SchedulerConfig>,
     ) -> Self {
@@ -125,6 +126,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             task_manager: TaskManager::new(
                 cluster.job_state(),
                 codec.clone(),
+                scheduler_id,
                 scheduler_name,
                 config.clone(),
             ),
@@ -141,14 +143,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         codec: BallistaCodec<T, U>,
     ) -> Self {
         let config = Arc::new(SchedulerConfig::default());
-        SchedulerState::new(cluster, codec, "localhost:50050".to_owned(), config)
+        SchedulerState::new(
+            cluster,
+            codec,
+            config.scheduler_id.clone(),
+            "localhost:50050".to_owned(),
+            config,
+        )
     }
 
     #[allow(dead_code)]
     pub(crate) fn new_with_task_launcher(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
-        scheduler_name: String,
+        scheduler_id: String,
         config: Arc<SchedulerConfig>,
         dispatcher: Arc<dyn TaskLauncher>,
     ) -> Self {
@@ -160,7 +168,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             task_manager: TaskManager::with_launcher(
                 cluster.job_state(),
                 codec.clone(),
-                scheduler_name,
+                scheduler_id,
                 dispatcher,
                 config.clone(),
             ),

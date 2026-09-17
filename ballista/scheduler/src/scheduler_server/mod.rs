@@ -40,7 +40,7 @@ use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStre
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use log::{debug, warn};
+use log::{debug, info, warn};
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
@@ -127,7 +127,9 @@ impl JobIdGenerator for DefaultJobGenerator {
 /// - Tracking job progress and handling failures
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
-    /// Unique name identifying this scheduler instance.
+    /// Unique identifier for this scheduler instance.
+    pub scheduler_id: String,
+    /// Routable name for this scheduler in host:port format.
     pub scheduler_name: String,
     /// Timestamp when this scheduler was started.
     pub start_time: u128,
@@ -153,14 +155,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         config: Arc<SchedulerConfig>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     ) -> Self {
+        let scheduler_id = config.scheduler_id.clone();
         let state = Arc::new(SchedulerState::new(
             cluster,
             codec,
+            scheduler_id.clone(),
             scheduler_name.clone(),
             config.clone(),
         ));
 
-        Self::from_state(scheduler_name, state, config, metrics_collector)
+        Self::from_state(
+            scheduler_id,
+            scheduler_name,
+            state,
+            config,
+            metrics_collector,
+        )
     }
 
     /// Creates a new `SchedulerServer` with a custom task launcher.
@@ -173,18 +183,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
         task_launcher: Arc<dyn TaskLauncher>,
     ) -> Self {
+        let scheduler_id = config.scheduler_id.clone();
         let state = Arc::new(SchedulerState::new_with_task_launcher(
             cluster,
             codec,
-            scheduler_name.clone(),
+            scheduler_id.clone(),
             config.clone(),
             task_launcher,
         ));
 
-        Self::from_state(scheduler_name, state, config, metrics_collector)
+        Self::from_state(
+            scheduler_id,
+            scheduler_name,
+            state,
+            config,
+            metrics_collector,
+        )
     }
 
     fn from_state(
+        scheduler_id: String,
         scheduler_name: String,
         state: Arc<SchedulerState<T, U>>,
         config: Arc<SchedulerConfig>,
@@ -215,7 +233,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .clone()
             .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
 
+        info!("Scheduler id: {scheduler_id}");
+        info!("Scheduler callback endpoint: {scheduler_name}");
+
         Self {
+            scheduler_id,
             scheduler_name,
             start_time: timestamp_millis() as u128,
             state,
