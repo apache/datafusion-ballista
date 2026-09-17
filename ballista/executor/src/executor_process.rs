@@ -39,7 +39,6 @@ use tokio::signal;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::{fs, time};
-use uuid::Uuid;
 
 use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool};
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
@@ -63,6 +62,7 @@ use ballista_core::utils::{
 };
 use ballista_core::{
     BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer,
+    ids::new_instance_id,
 };
 
 use crate::client_pool::DefaultBallistaClientPool;
@@ -85,6 +85,14 @@ use crate::{execution_loop, executor_server};
 /// operators register with it, so the remaining budget absorbs untracked
 /// overhead (in-flight Arrow batches, shuffle writer buffers, fragmentation).
 pub(crate) const DEFAULT_MEMORY_POOL_FRACTION: f64 = 0.70;
+
+pub(crate) fn new_executor_id() -> String {
+    new_executor_id_with(new_instance_id)
+}
+
+fn new_executor_id_with(generate: impl FnOnce() -> String) -> String {
+    generate()
+}
 
 /// How the operator interpreted `--memory-pool-size`.
 #[derive(Debug, PartialEq)]
@@ -437,8 +445,8 @@ pub async fn start_executor_process(
         opt.vcores
     };
     let task_scheduling_policy = opt.task_scheduling_policy;
-    // assign this executor an unique ID
-    let executor_id = Uuid::new_v4().to_string();
+    // assign this executor a unique ID
+    let executor_id = new_executor_id();
     info!(
         "Ballista Executor v{BALLISTA_VERSION} (DataFusion v{DATAFUSION_VERSION}) starting ..."
     );
@@ -1136,15 +1144,41 @@ pub fn structure_executor_metadata(
 mod tests {
     use crate::executor_process::is_subdirectory;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
+    use super::ExecutorProcessConfig;
     use super::clean_shuffle_data_loop;
+    use super::new_executor_id;
+    use super::new_executor_id_with;
     use super::remove_job_data;
+    use super::structure_executor_metadata;
     use ballista_core::JobId;
     use std::fs;
     use std::fs::File;
     use std::io::Write;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    #[test]
+    fn executor_id_uses_generator() {
+        let executor_id = new_executor_id_with(|| "generated-executor-id".to_string());
+
+        assert_eq!(executor_id, "generated-executor-id");
+    }
+
+    #[test]
+    fn executor_metadata_uses_uuid_backed_instance_id() {
+        let executor_id = new_executor_id();
+        uuid::Uuid::parse_str(&executor_id).unwrap();
+
+        let metadata = structure_executor_metadata(
+            &executor_id,
+            &Arc::new(ExecutorProcessConfig::default()),
+            4,
+        );
+
+        assert_eq!(metadata.id, executor_id);
+    }
 
     #[tokio::test]
     async fn test_executor_clean_up() {

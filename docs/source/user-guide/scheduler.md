@@ -24,7 +24,8 @@
 Each scheduler has an opaque scheduler id used to identify the scheduler in
 cluster state, `/api/state`, and history event logs. Set it explicitly with
 `--scheduler-id` when you want a stable value; otherwise the scheduler
-generates a UUID at startup.
+generates the same UUID-backed instance identity used for executor ids at
+startup.
 
 The scheduler id is not a network address. Executors still use the scheduler's
 callback endpoint, built from `--external-host` and `--bind-port`, when they

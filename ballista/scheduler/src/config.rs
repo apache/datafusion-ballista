@@ -29,7 +29,9 @@ use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
 use crate::scheduler_server::JobIdGenerator;
 use ballista_core::extension::EndpointOverrideFn;
-use ballista_core::{ConfigProducer, JobId, config::TaskSchedulingPolicy};
+use ballista_core::{
+    ConfigProducer, JobId, config::TaskSchedulingPolicy, ids::new_instance_id,
+};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use log::{info, warn};
@@ -66,6 +68,17 @@ pub enum WorkAvailableReason {
 ///
 /// `Arc` rather than `Box` so [`SchedulerConfig`] remains [`Clone`].
 pub type OnWorkAvailableFn = Arc<dyn Fn(WorkAvailableReason) + Send + Sync>;
+
+fn scheduler_id_or_generate(
+    scheduler_id: Option<String>,
+    generate: impl FnOnce() -> String,
+) -> String {
+    scheduler_id.unwrap_or_else(generate)
+}
+
+fn scheduler_id_or_default(scheduler_id: Option<String>) -> String {
+    scheduler_id_or_generate(scheduler_id, new_instance_id)
+}
 
 /// Command-line configuration for the scheduler binary.
 #[cfg(feature = "build-binary")]
@@ -429,7 +442,7 @@ impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
             namespace: String::default(),
-            scheduler_id: uuid::Uuid::new_v4().to_string(),
+            scheduler_id: scheduler_id_or_default(None),
             external_host: "localhost".into(),
             bind_port: 50050,
             bind_host: "127.0.0.1".into(),
@@ -805,9 +818,7 @@ impl TryFrom<Config> for SchedulerConfig {
 
         let config = SchedulerConfig {
             namespace: opt.namespace,
-            scheduler_id: opt
-                .scheduler_id
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            scheduler_id: scheduler_id_or_default(opt.scheduler_id),
             external_host: opt.external_host,
             bind_port: opt.bind_port,
             bind_host: opt.bind_host,
@@ -926,6 +937,24 @@ mod tests {
         assert_eq!(opt.no_executors_grace_period_seconds, Some(5));
         let cfg = SchedulerConfig::try_from(opt).unwrap();
         assert_eq!(cfg.no_executors_grace_period_seconds, 5);
+    }
+
+    #[test]
+    fn scheduler_id_uses_generator_when_unset() {
+        let generated =
+            scheduler_id_or_generate(None, || "generated-scheduler-id".to_string());
+
+        assert_eq!(generated, "generated-scheduler-id");
+    }
+
+    #[test]
+    fn scheduler_id_preserves_configured_value() {
+        let scheduler_id =
+            scheduler_id_or_generate(Some("configured-scheduler-id".to_string()), || {
+                panic!("generator should not be called for configured scheduler id")
+            });
+
+        assert_eq!(scheduler_id, "configured-scheduler-id");
     }
 
     #[test]
