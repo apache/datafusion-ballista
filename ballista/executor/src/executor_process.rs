@@ -1142,8 +1142,10 @@ mod tests {
     use super::clean_shuffle_data_loop;
     use super::remove_job_data;
     use super::structure_executor_metadata;
+    use ballista_core::BALLISTA_PROTOCOL_VERSION;
     use ballista_core::JobId;
     use ballista_core::ids::new_instance_id;
+    use ballista_core::serde::protobuf::executor_resource::Resource;
     use std::fs;
     use std::fs::File;
     use std::io::Write;
@@ -1151,17 +1153,35 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn executor_metadata_uses_uuid_backed_instance_id() {
+    fn executor_metadata_reflects_process_configuration() {
         let executor_id = new_instance_id();
+        let config = Arc::new(ExecutorProcessConfig {
+            external_host: Some("executor.example.com".to_string()),
+            port: 10051,
+            grpc_port: 10052,
+            ..ExecutorProcessConfig::default()
+        });
 
-        let metadata = structure_executor_metadata(
-            &executor_id,
-            &Arc::new(ExecutorProcessConfig::default()),
-            4,
-        );
+        let metadata = structure_executor_metadata(&executor_id, &config, 4);
 
         assert_eq!(metadata.id, executor_id);
         uuid::Uuid::parse_str(&metadata.id).unwrap();
+        assert_eq!(metadata.host.as_deref(), Some("executor.example.com"));
+        assert_eq!(metadata.port, 10051);
+        assert_eq!(metadata.grpc_port, 10052);
+        assert_eq!(
+            metadata
+                .specification
+                .as_ref()
+                .and_then(|spec| spec.resources.first())
+                .and_then(|resource| resource.resource.as_ref()),
+            Some(&Resource::Vcores(4))
+        );
+        assert!(metadata.os_info.is_some());
+        assert_eq!(
+            metadata.ballista_protocol_version,
+            BALLISTA_PROTOCOL_VERSION
+        );
     }
 
     #[tokio::test]
