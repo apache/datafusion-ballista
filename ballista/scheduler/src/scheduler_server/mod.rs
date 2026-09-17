@@ -129,8 +129,8 @@ impl JobIdGenerator for DefaultJobGenerator {
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
     /// Unique identifier for this scheduler instance.
     pub scheduler_id: String,
-    /// Routable name for this scheduler in host:port format.
-    pub scheduler_name: String,
+    /// Scheduler callback endpoint in host:port format.
+    pub scheduler_endpoint: String,
     /// Timestamp when this scheduler was started.
     pub start_time: u128,
     /// Shared scheduler state for job and executor management.
@@ -149,7 +149,7 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
     /// Creates a new `SchedulerServer` with the given configuration.
     pub fn new(
-        scheduler_name: String,
+        scheduler_endpoint: String,
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         config: Arc<SchedulerConfig>,
@@ -160,13 +160,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             cluster,
             codec,
             scheduler_id.clone(),
-            scheduler_name.clone(),
+            scheduler_endpoint.clone(),
             config.clone(),
         ));
 
         Self::from_state(
             scheduler_id,
-            scheduler_name,
+            scheduler_endpoint,
             state,
             config,
             metrics_collector,
@@ -176,7 +176,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// Creates a new `SchedulerServer` with a custom task launcher.
     #[allow(dead_code)]
     pub fn new_with_task_launcher(
-        scheduler_name: String,
+        scheduler_endpoint: String,
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         config: Arc<SchedulerConfig>,
@@ -194,7 +194,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
         Self::from_state(
             scheduler_id,
-            scheduler_name,
+            scheduler_endpoint,
             state,
             config,
             metrics_collector,
@@ -203,7 +203,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
     fn from_state(
         scheduler_id: String,
-        scheduler_name: String,
+        scheduler_endpoint: String,
         state: Arc<SchedulerState<T, U>>,
         config: Arc<SchedulerConfig>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
@@ -234,11 +234,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
 
         info!("Scheduler id: {scheduler_id}");
-        info!("Scheduler callback endpoint: {scheduler_name}");
+        info!("Scheduler callback endpoint: {scheduler_endpoint}");
 
         Self {
             scheduler_id,
-            scheduler_name,
+            scheduler_endpoint,
             start_time: timestamp_millis() as u128,
             state,
             query_stage_event_loop,

@@ -115,7 +115,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         scheduler_id: String,
-        scheduler_name: String,
+        scheduler_endpoint: String,
         config: Arc<SchedulerConfig>,
     ) -> Self {
         Self {
@@ -127,7 +127,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 cluster.job_state(),
                 codec.clone(),
                 scheduler_id,
-                scheduler_name,
+                scheduler_endpoint,
                 config.clone(),
             ),
             session_manager: SessionManager::new(cluster.job_state()),
@@ -136,9 +136,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
-    /// Creates a new `SchedulerState` with default scheduler name (for testing only).
+    /// Creates a new `SchedulerState` with the default scheduler endpoint (for testing only).
     #[cfg(test)]
-    pub fn new_with_default_scheduler_name(
+    pub fn new_with_default_scheduler_endpoint(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
     ) -> Self {

@@ -319,8 +319,7 @@ pub struct SchedulerConfig {
     /// Namespace of this scheduler. Schedulers using the same cluster storage and namespace
     /// will share global cluster state.
     pub namespace: String,
-    /// Opaque identifier for this scheduler instance. This is distinct from
-    /// the callback endpoint built from `external_host` and `bind_port`.
+    /// Opaque identifier for this scheduler instance.
     pub scheduler_id: String,
     /// The external hostname of the scheduler
     pub external_host: String,
@@ -539,7 +538,7 @@ impl SchedulerConfig {
     }
 
     /// Returns the scheduler callback endpoint in host:port format.
-    pub fn scheduler_name(&self) -> String {
+    pub fn scheduler_endpoint(&self) -> String {
         format!("{}:{}", self.external_host, self.bind_port)
     }
 

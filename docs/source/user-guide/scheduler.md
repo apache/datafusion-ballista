@@ -27,9 +27,8 @@ cluster state, `/api/state`, and history event logs. Set it explicitly with
 generates the same UUID-backed instance identity used for executor ids at
 startup.
 
-The scheduler id is not a network address. Executors still use the scheduler's
-callback endpoint, built from `--external-host` and `--bind-port`, when they
-report task status back to the scheduler.
+Executors report task status to the scheduler callback endpoint, which is built
+from `--external-host` and `--bind-port`.
 
 ## Fetching Query Results
 
