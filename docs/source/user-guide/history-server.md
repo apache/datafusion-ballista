@@ -39,9 +39,10 @@ to:
 ballista-scheduler --event-log-dir /var/lib/ballista/history
 ```
 
-Each `JobStart` event records the scheduler id that created it. If you do not
-set one, the scheduler generates a UUID at startup; set `--scheduler-id` when
-you want a stable value for a deployment, test, or local debugging session:
+Each `JobStart` event records the opaque scheduler id that created it. This is
+not the scheduler's network callback address. If you do not set an id, the
+scheduler generates a UUID at startup; set `--scheduler-id` when you want a
+stable value for a deployment, test, or local debugging session:
 
 ```shell
 ballista-scheduler \

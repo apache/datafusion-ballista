@@ -193,6 +193,7 @@ _Example: Specifying configuration options when starting the scheduler_
 
 | key                                          | type   | default     | description                                                                                                                |
 | -------------------------------------------- | ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------- |
+| scheduler-id                                 | Utf8   | generated UUID | Sets the opaque scheduler identity exposed in scheduler state and history event logs. This is not the scheduler network address. |
 | scheduler-policy                             | Utf8   | pull-staged | Sets the task scheduling policy for the scheduler, possible values: pull-staged, push-staged.                              |
 | event-loop-buffer-size                       | UInt32 | 10000       | Sets the event loop buffer size. for a system of high throughput, a larger value like 1000000 is recommended.              |
 | task-distribution                            | Utf8   | bias        | Sets the task distribution policy for the scheduler, possible values: bias, round-robin                                    |

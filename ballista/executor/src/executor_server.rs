@@ -81,17 +81,19 @@ const HEARTBEAT_FAILURE_TERMINATION_THRESHOLD: u32 = 5;
 type ServerHandle = JoinHandle<Result<(), BallistaError>>;
 type SchedulerClients = Arc<DashMap<String, SchedulerGrpcClient<Channel>>>;
 
-/// Wrap TaskDefinition with its curator scheduler id for task update to its specific curator scheduler later
+/// Wrap TaskDefinition with its scheduler callback endpoint so task updates
+/// return to the scheduler that launched the task.
 #[derive(Debug)]
 struct CuratorTaskDefinition {
-    scheduler_id: String,
+    scheduler_endpoint: String,
     task: TaskDefinition,
 }
 
-/// Wrap TaskStatus with its curator scheduler id for task update to its specific curator scheduler later
+/// Wrap TaskStatus with its scheduler callback endpoint so task updates return
+/// to the scheduler that launched the task.
 #[derive(Debug)]
 struct CuratorTaskStatus {
-    scheduler_id: String,
+    scheduler_endpoint: String,
     task_status: TaskStatus,
 }
 
@@ -293,20 +295,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
     async fn get_scheduler_client(
         &self,
-        scheduler_id: &str,
+        scheduler_endpoint: &str,
     ) -> Result<SchedulerGrpcClient<Channel>, BallistaError> {
-        let scheduler = self.schedulers.get(scheduler_id).map(|value| value.clone());
+        let scheduler = self
+            .schedulers
+            .get(scheduler_endpoint)
+            .map(|value| value.clone());
         // If channel does not exist, create a new one
         if let Some(scheduler) = scheduler {
             Ok(scheduler)
         } else {
-            let scheduler_url = format!("http://{scheduler_id}");
+            let scheduler_url = format!("http://{scheduler_endpoint}");
             let mut endpoint = create_grpc_client_endpoint(scheduler_url, None)?;
 
             if let Some(ref override_fn) = self.override_create_grpc_client_endpoint {
                 endpoint = override_fn(endpoint).map_err(|e| {
                     BallistaError::GrpcConnectionError(format!(
-                        "Failed to customize endpoint for scheduler {scheduler_id}: {e}"
+                        "Failed to customize endpoint for scheduler {scheduler_endpoint}: {e}"
                     ))
                 })?;
             }
@@ -318,7 +323,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
             {
                 self.schedulers
-                    .insert(scheduler_id.to_owned(), scheduler.clone());
+                    .insert(scheduler_endpoint.to_owned(), scheduler.clone());
             }
 
             Ok(scheduler)
@@ -501,7 +506,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .executor_env
                     .tx_task_status
                     .send(CuratorTaskStatus {
-                        scheduler_id: curator_task.scheduler_id,
+                        scheduler_endpoint: curator_task.scheduler_endpoint,
                         task_status,
                     })
                     .await;
@@ -528,7 +533,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .executor_env
                     .tx_task_status
                     .send(CuratorTaskStatus {
-                        scheduler_id: curator_task.scheduler_id,
+                        scheduler_endpoint: curator_task.scheduler_endpoint,
                         task_status,
                     })
                     .await;
@@ -751,7 +756,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 let mut fetched_task_num = 0usize;
                 if let Some(task_status) = maybe_task_status {
                     let task_status_vec = curator_task_status_map
-                        .entry(task_status.scheduler_id)
+                        .entry(task_status.scheduler_endpoint)
                         .or_default();
                     task_status_vec.push(task_status.task_status);
                     fetched_task_num += 1;
@@ -766,7 +771,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     match rx_task_status.try_recv() {
                         Ok(task_status) => {
                             let task_status_vec = curator_task_status_map
-                                .entry(task_status.scheduler_id)
+                                .entry(task_status.scheduler_endpoint)
                                 .or_default();
                             task_status_vec.push(task_status.task_status);
                             fetched_task_num += 1;
@@ -785,8 +790,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     }
                 }
 
-                for (scheduler_id, tasks_status) in curator_task_status_map.into_iter() {
-                    match executor_server.get_scheduler_client(&scheduler_id).await {
+                for (scheduler_endpoint, tasks_status) in
+                    curator_task_status_map.into_iter()
+                {
+                    match executor_server
+                        .get_scheduler_client(&scheduler_endpoint)
+                        .await
+                    {
                         Ok(mut scheduler) => {
                             if let Err(e) = scheduler
                                 .update_task_status(UpdateTaskStatusParams {
@@ -806,7 +816,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                         }
                         Err(e) => {
                             error!(
-                                "Fail to connect to scheduler {scheduler_id} due to {e:?}"
+                                "Fail to connect to scheduler {scheduler_endpoint} due to {e:?}"
                             );
                         }
                     }
@@ -873,11 +883,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             tasks,
             scheduler_id,
         } = request.into_inner();
+        // This legacy protobuf field is named `scheduler_id`, but executors use
+        // it as the scheduler callback endpoint for task-status updates.
+        let scheduler_endpoint = scheduler_id;
         let task_sender = self.executor_env.tx_task.clone();
         for task in tasks {
             task_sender
                 .send(CuratorTaskDefinition {
-                    scheduler_id: scheduler_id.clone(),
+                    scheduler_endpoint: scheduler_endpoint.clone(),
                     task: get_task_definition(
                         task,
                         self.executor.runtime_producer.clone(),
@@ -909,6 +922,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             multi_tasks,
             scheduler_id,
         } = request.into_inner();
+        // This legacy protobuf field is named `scheduler_id`, but executors use
+        // it as the scheduler callback endpoint for task-status updates.
+        let scheduler_endpoint = scheduler_id;
         let task_sender = self.executor_env.tx_task.clone();
         let mut failed_jobs: HashSet<String> = HashSet::new();
         for multi_task in multi_tasks {
@@ -937,7 +953,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             for task in multi_task {
                 task_sender
                     .send(CuratorTaskDefinition {
-                        scheduler_id: scheduler_id.clone(),
+                        scheduler_endpoint: scheduler_endpoint.clone(),
                         task,
                     })
                     .await

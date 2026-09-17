@@ -45,6 +45,7 @@ use std::sync::Arc;
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct SchedulerStateResponse {
     pub started: u128,
+    /// Opaque scheduler identity, not a routable callback endpoint.
     pub scheduler_id: String,
     pub version: &'static str,
     pub datafusion_version: &'static str,

@@ -101,9 +101,9 @@ pub struct Config {
         help = "Namespace for the ballista cluster that this executor will join."
     )]
     pub namespace: String,
-    /// Unique identifier for this scheduler. If unset, a UUID is generated at
+    /// Opaque identifier for this scheduler. If unset, a UUID is generated at
     /// startup.
-    #[arg(long, help = "Unique identifier for this scheduler.")]
+    #[arg(long, help = "Opaque identifier for this scheduler.")]
     pub scheduler_id: Option<String>,
     /// Local host name or IP address to bind to.
     #[arg(
@@ -317,7 +317,8 @@ pub struct SchedulerConfig {
     /// Namespace of this scheduler. Schedulers using the same cluster storage and namespace
     /// will share global cluster state.
     pub namespace: String,
-    /// Unique identifier for this scheduler instance.
+    /// Opaque identifier for this scheduler instance. This is distinct from
+    /// the callback endpoint built from `external_host` and `bind_port`.
     pub scheduler_id: String,
     /// The external hostname of the scheduler
     pub external_host: String,
@@ -480,6 +481,12 @@ impl SchedulerConfig {
     /// Suspicious combinations are logged as warnings rather than rejected,
     /// since small values are legitimate for fail-fast setups and tests.
     pub fn validate(&self) -> ballista_core::error::Result<()> {
+        if self.scheduler_id.trim().is_empty() {
+            return Err(ballista_core::error::BallistaError::Configuration(
+                "scheduler_id must not be empty".to_string(),
+            ));
+        }
+
         if self.no_executors_grace_period_seconds != 0
             && self.no_executors_grace_period_seconds < self.executor_timeout_seconds
         {
@@ -924,6 +931,21 @@ mod tests {
     #[test]
     fn validate_accepts_default_config() {
         SchedulerConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn default_scheduler_id_is_uuid() {
+        let cfg = SchedulerConfig::default();
+
+        uuid::Uuid::parse_str(&cfg.scheduler_id).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_empty_scheduler_id() {
+        let cfg = SchedulerConfig::default().with_scheduler_id(" ");
+        let err = cfg.validate().unwrap_err();
+
+        assert!(err.to_string().contains("scheduler_id"));
     }
 
     #[cfg(feature = "build-binary")]
