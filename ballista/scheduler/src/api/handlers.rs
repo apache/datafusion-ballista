@@ -688,15 +688,20 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn scheduler_state_includes_scheduler_id() {
+    async fn scheduler_state_reflects_server_configuration() {
         use crate::config::SchedulerConfig;
         use crate::metrics::default_metrics_collector;
         use crate::test_utils::test_cluster_context;
         use axum::response::IntoResponse;
         use ballista_core::serde::BallistaCodec;
+        use datafusion::DATAFUSION_VERSION;
         use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
-        let config = SchedulerConfig::default().with_scheduler_id("scheduler-a");
+        let config = SchedulerConfig::default()
+            .with_scheduler_id("scheduler-a")
+            .with_advertise_flight_endpoint(Some("flight.example.com:50055".into()))
+            .with_enable_embedded_flight_proxy(true);
+        let expected_scheduling_policy = config.scheduling_policy.to_string();
         let server: Arc<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerServer::new(
                 "localhost:50050".to_owned(),
@@ -713,7 +718,17 @@ mod tests {
             .await
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert!(body["started"].is_number());
         assert_eq!(body["scheduler_id"], "scheduler-a");
+        assert_eq!(body["version"], BALLISTA_VERSION);
+        assert_eq!(body["datafusion_version"], DATAFUSION_VERSION);
+        assert_eq!(body["scheduling_policy"], expected_scheduling_policy);
+        assert_eq!(
+            body["advertise_flight_endpoint"],
+            "flight.example.com:50055"
+        );
+        assert_eq!(body["enable_embedded_flight_proxy"], true);
     }
 
     mod get_webtui {
