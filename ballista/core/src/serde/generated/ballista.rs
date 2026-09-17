@@ -1724,16 +1724,18 @@ pub struct LaunchTaskParams {
     /// Allow to launch a task set to an executor at once
     #[prost(message, repeated, tag = "1")]
     pub tasks: ::prost::alloc::vec::Vec<TaskDefinition>,
+    /// Scheduler callback endpoint in host:port format.
     #[prost(string, tag = "2")]
-    pub scheduler_id: ::prost::alloc::string::String,
+    pub scheduler_endpoint: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LaunchMultiTaskParams {
     /// Allow to launch a task set to an executor at once
     #[prost(message, repeated, tag = "1")]
     pub multi_tasks: ::prost::alloc::vec::Vec<MultiTaskDefinition>,
+    /// Scheduler callback endpoint in host:port format.
     #[prost(string, tag = "2")]
-    pub scheduler_id: ::prost::alloc::string::String,
+    pub scheduler_endpoint: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LaunchTaskResult {

@@ -366,7 +366,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         };
 
         for mut item in self.schedulers.iter_mut() {
-            let scheduler_id = item.key().clone();
+            let scheduler_endpoint = item.key().clone();
             let scheduler = item.value_mut();
 
             match scheduler
@@ -379,7 +379,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 }
                 Err(e) => {
                     warn!(
-                        "Fail to update heartbeat to scheduler {scheduler_id} due to {e:?}"
+                        "Fail to update heartbeat to scheduler {scheduler_endpoint} due to {e:?}"
                     );
                 }
             }
@@ -881,11 +881,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
     ) -> Result<Response<LaunchTaskResult>, Status> {
         let LaunchTaskParams {
             tasks,
-            scheduler_id,
+            scheduler_endpoint,
         } = request.into_inner();
-        // This legacy protobuf field is named `scheduler_id`, but executors use
-        // it as the scheduler callback endpoint for task-status updates.
-        let scheduler_endpoint = scheduler_id;
         let task_sender = self.executor_env.tx_task.clone();
         for task in tasks {
             task_sender
@@ -920,11 +917,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
     ) -> Result<Response<LaunchMultiTaskResult>, Status> {
         let LaunchMultiTaskParams {
             multi_tasks,
-            scheduler_id,
+            scheduler_endpoint,
         } = request.into_inner();
-        // This legacy protobuf field is named `scheduler_id`, but executors use
-        // it as the scheduler callback endpoint for task-status updates.
-        let scheduler_endpoint = scheduler_id;
         let task_sender = self.executor_env.tx_task.clone();
         let mut failed_jobs: HashSet<String> = HashSet::new();
         for multi_task in multi_tasks {

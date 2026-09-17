@@ -427,7 +427,7 @@ impl ExecutorManager {
         &self,
         executor_id: &str,
         multi_tasks: Vec<MultiTaskDefinition>,
-        scheduler_id: String,
+        scheduler_endpoint: String,
     ) -> Result<HashSet<JobId>> {
         let mut client = self
             .get_client(executor_id, &self.grpc_client_config)
@@ -435,7 +435,7 @@ impl ExecutorManager {
         let res = client
             .launch_multi_task(protobuf::LaunchMultiTaskParams {
                 multi_tasks,
-                scheduler_id,
+                scheduler_endpoint,
             })
             .await?
             .into_inner();
