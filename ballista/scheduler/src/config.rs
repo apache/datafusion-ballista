@@ -105,7 +105,7 @@ pub struct Config {
     pub namespace: String,
     /// Identifier for this scheduler. If unset, a UUID-backed instance identity
     /// is generated at startup.
-    #[arg(long, help = "Identifier for this scheduler.")]
+    #[arg(long = "id", help = "Identifier for this scheduler.")]
     pub scheduler_id: Option<String>,
     /// Local host name or IP address to bind to.
     #[arg(
@@ -887,7 +887,7 @@ mod tests {
     #[test]
     fn cli_scheduler_id_explicit_value_is_respected() {
         use clap::Parser;
-        let opt = Config::parse_from(["scheduler", "--scheduler-id", "scheduler-a"]);
+        let opt = Config::parse_from(["scheduler", "--id", "scheduler-a"]);
         let cfg = SchedulerConfig::try_from(opt).unwrap();
         assert_eq!(cfg.scheduler_id, "scheduler-a");
     }
