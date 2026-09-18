@@ -82,6 +82,19 @@ fn check_protocol_version(metadata: &ExecutorRegistration) -> Result<(), Status>
     )))
 }
 
+fn executor_registration_error(e: BallistaError) -> Status {
+    let msg = format!("Fail to do executor registration due to: {e}");
+    error!("{msg}");
+    match e {
+        BallistaError::Configuration(message)
+            if message.contains("already registered") =>
+        {
+            Status::already_exists(msg)
+        }
+        _ => Status::internal(msg),
+    }
+}
+
 #[tonic::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
     for SchedulerServer<T, U>
@@ -219,11 +232,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 os_info: metadata.os_info.unwrap().into(),
             };
 
-            self.do_register_executor(metadata).await.map_err(|e| {
-                let msg = format!("Fail to do executor registration due to: {e}");
-                error!("{msg}");
-                Status::internal(msg)
-            })?;
+            self.do_register_executor(metadata)
+                .await
+                .map_err(executor_registration_error)?;
 
             Ok(Response::new(RegisterExecutorResult { success: true }))
         } else {
@@ -278,11 +289,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     os_info: metadata.os_info.unwrap().into(),
                 };
 
-                self.do_register_executor(metadata).await.map_err(|e| {
-                    let msg = format!("Fail to do executor registration due to: {e}");
-                    error!("{msg}");
-                    Status::internal(msg)
-                })?;
+                self.do_register_executor(metadata)
+                    .await
+                    .map_err(executor_registration_error)?;
             } else {
                 return Err(Status::invalid_argument(format!(
                     "The registration spec for executor {executor_id} is not included"
@@ -902,7 +911,7 @@ mod test {
 
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
-    use tonic::Request;
+    use tonic::{Code, Request};
 
     #[cfg(feature = "substrait")]
     use {
@@ -929,7 +938,16 @@ mod test {
     use crate::test_utils::await_condition;
     use crate::test_utils::test_cluster_context;
 
-    use super::{SchedulerGrpc, SchedulerServer};
+    use super::{SchedulerGrpc, SchedulerServer, executor_registration_error};
+
+    #[test]
+    fn duplicate_executor_registration_maps_to_already_exists() {
+        let status = executor_registration_error(BallistaError::Configuration(
+            "executor_id id123 is already registered".to_string(),
+        ));
+
+        assert_eq!(status.code(), Code::AlreadyExists);
+    }
 
     #[tokio::test]
     async fn test_pull_work() -> Result<(), BallistaError> {
