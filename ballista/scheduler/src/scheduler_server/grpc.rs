@@ -136,14 +136,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     specification: metadata.specification.unwrap().into(),
                     os_info: metadata.os_info.unwrap().into(),
                 };
-                if let Err(e) = self
-                    .state
+                self.state
                     .executor_manager
                     .save_executor_metadata(metadata)
                     .await
-                {
-                    warn!("Could not save executor metadata: {e:?}");
-                }
+                    .map_err(executor_registration_error)?;
             }
 
             self.update_task_status(&executor_id, task_status)
@@ -1035,6 +1032,26 @@ mod test {
         assert_eq!(stored_executor.grpc_port, 0);
         assert_eq!(stored_executor.port, 0);
         assert_eq!(stored_executor.specification.vcores, 2);
+        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+
+        let mut conflicting_exec_meta = exec_meta.clone();
+        conflicting_exec_meta.host = Some("http://localhost:8081".to_owned());
+        let request: Request<PollWorkParams> = Request::new(PollWorkParams {
+            metadata: Some(conflicting_exec_meta),
+            num_free_vcores: 1,
+            task_status: vec![],
+        });
+        let err = match scheduler.poll_work(request).await {
+            Ok(_) => panic!("duplicate executor id should fail poll_work"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code(), Code::AlreadyExists);
+        let stored_executor = state
+            .executor_manager
+            .get_executor_metadata("abc")
+            .await
+            .expect("getting executor");
         assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
         Ok(())
