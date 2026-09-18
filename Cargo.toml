@@ -16,7 +16,7 @@
 # under the License.
 
 [workspace]
-exclude = ["dev/msrvcheck", "python"]
+exclude = ["dev/msrvcheck", "integrations/hudi", "python"]
 members = [
     "ballista-cli",
     "ballista/api-types",
