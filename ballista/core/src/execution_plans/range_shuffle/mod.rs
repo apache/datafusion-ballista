@@ -47,8 +47,8 @@ mod writer;
 pub use index::{
     BatchKey, KeyCollector, SORT_OPTIONS_METADATA, build_index_batch, byte_len_column,
     byte_offset_column, count_record_batches, has_range_index, index_path, index_schema,
-    is_dict_column, key_column_count, num_rows_column, read_index_file,
-    select_record_batches, write_index_file,
+    is_dict_column, key_column_count, num_rows_column, rank_widened_lower_bound,
+    read_index_file, select_record_batches, write_index_file,
 };
 pub use ipc_file::{
     FileLayout, MessageBlock, is_ipc_file, open_ipc_file, read_file_layout,
