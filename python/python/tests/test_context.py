@@ -117,6 +117,33 @@ def test_cluster_config_accepts_ballista_namespaced_keys():
     assert len(df.collect()) == 1
 
 
+def test_unset_ballista_config_does_not_override_scheduler_defaults():
+    """A client that never explicitly sets ballista.planner.adaptive.enabled
+    must not send that key to the scheduler.  Before the fix for #2371 the
+    Rust BallistaConfig::entries() always included all registered keys with
+    their client-side defaults, so a Python client built against an older
+    release would silently force the static planner on any cluster.
+    """
+    (address, port) = setup_test_cluster()
+    # No cluster_config — the user has not set anything.
+    ctx = BallistaSessionContext(address=f"df://{address}:{port}")
+
+    # Query the scheduler-side session value.  If the client forwarded its
+    # own default the scheduler would echo it back; if the fix is correct
+    # the scheduler uses its own default (true) regardless of the client version.
+    rows = ctx.sql(
+        "SELECT value FROM information_schema.df_settings "
+        "WHERE name = 'ballista.planner.adaptive.enabled'"
+    ).collect()
+
+    assert len(rows) == 1, "setting must appear in df_settings"
+    value = rows[0].column(0)[0].as_py()
+    assert value == "true", (
+        f"scheduler should default adaptive planner to true, got {value!r}; "
+        "a client sending its stale default would override this to false"
+    )
+
+
 def test_write_csv(ctx, tmp_path):
     df = ctx.read_csv("testdata/test.csv", has_header=True)
     out_dir = str(tmp_path / "out")
