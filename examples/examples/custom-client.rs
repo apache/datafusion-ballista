@@ -80,7 +80,6 @@ async fn main() -> Result<()> {
         .await?
         .show()
         .await?;
-    ctx.sql("SET s3.allow_http = true").await?.show().await?;
 
     ctx.register_parquet(
         "test",

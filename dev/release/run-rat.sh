@@ -31,7 +31,15 @@ RELEASE_DIR=$(cd "$(dirname "$BASH_SOURCE")"; pwd)
 
 # generate the rat report
 $RAT $1 > rat.txt
-python $RELEASE_DIR/check-rat-report.py $RELEASE_DIR/rat_exclude_files.txt rat.txt > filtered_rat.txt
+python3 $RELEASE_DIR/check-rat-report.py $RELEASE_DIR/rat_exclude_files.txt rat.txt > filtered_rat.txt
+CHECK_STATUS=$?
+
+# 0 = approved, 1 = unapproved files (reported below), anything else = did not run.
+if [ "${CHECK_STATUS}" -ne 0 ] && [ "${CHECK_STATUS}" -ne 1 ]; then
+  echo "check-rat-report.py did not run (exit ${CHECK_STATUS}); see rat.txt"
+  exit 1
+fi
+
 cat filtered_rat.txt
 UNAPPROVED=`cat filtered_rat.txt  | grep "NOT APPROVED" | wc -l`
 

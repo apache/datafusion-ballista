@@ -29,36 +29,37 @@ from pathlib import Path
 import tomlkit
 
 crates = {
-    'datafusion': 'datafusion/core/Cargo.toml',
-    'datafusion-cli': 'datafusion-cli/Cargo.toml',
-    'datafusion-common': 'datafusion/common/Cargo.toml',
-    'datafusion-data-access': 'datafusion/data-access/Cargo.toml',
-    'datafusion-expr': 'datafusion/expr/Cargo.toml',
-    'datafusion-jit': 'datafusion/jit/Cargo.toml',
-    'datafusion-physical-expr': 'datafusion/physical-expr/Cargo.toml',
-    'datafusion-proto': 'datafusion/proto/Cargo.toml',
-    'datafusion-python': 'datafusion-python/Cargo.toml',
-    'datafusion-row': 'datafusion/row/Cargo.toml'
+    "datafusion": "datafusion/core/Cargo.toml",
+    "datafusion-cli": "datafusion-cli/Cargo.toml",
+    "datafusion-common": "datafusion/common/Cargo.toml",
+    "datafusion-data-access": "datafusion/data-access/Cargo.toml",
+    "datafusion-expr": "datafusion/expr/Cargo.toml",
+    "datafusion-jit": "datafusion/jit/Cargo.toml",
+    "datafusion-physical-expr": "datafusion/physical-expr/Cargo.toml",
+    "datafusion-proto": "datafusion/proto/Cargo.toml",
+    "datafusion-python": "datafusion-python/Cargo.toml",
+    "datafusion-row": "datafusion/row/Cargo.toml",
 }
 
 ballista_crates = {
-    'ballista-cli': 'ballista-cli/Cargo.toml',
-    'core': 'ballista/core/Cargo.toml',
-    'client': 'ballista/client/Cargo.toml',
-    'executor': 'ballista/executor/Cargo.toml',
-    'scheduler': 'ballista/scheduler/Cargo.toml',
-    'pyballista': 'python/Cargo.toml',
+    "ballista-cli": "ballista-cli/Cargo.toml",
+    "core": "ballista/core/Cargo.toml",
+    "client": "ballista/client/Cargo.toml",
+    "executor": "ballista/executor/Cargo.toml",
+    "scheduler": "ballista/scheduler/Cargo.toml",
+    "pyballista": "python/Cargo.toml",
 }
 
+
 def update_datafusion_version(cargo_toml: str, new_version: str):
-    print(f'updating {cargo_toml}')
+    print(f"updating {cargo_toml}")
     with open(cargo_toml) as f:
         data = f.read()
 
     doc = tomlkit.parse(data)
-    doc.get('package')['version'] = new_version
+    doc.get("package")["version"] = new_version
 
-    with open(cargo_toml, 'w') as f:
+    with open(cargo_toml, "w") as f:
         f.write(tomlkit.dumps(doc))
 
 
@@ -69,46 +70,49 @@ def update_downstream_versions(cargo_toml: str, new_version: str):
     doc = tomlkit.parse(data)
 
     for crate in crates.keys():
-        df_dep = doc.get('dependencies', {}).get(crate)
+        df_dep = doc.get("dependencies", {}).get(crate)
         # skip crates that pin datafusion using git hash
-        if df_dep is not None and df_dep.get('version') is not None:
-            print(f'updating {crate} dependency in {cargo_toml}')
-            df_dep['version'] = new_version
+        if df_dep is not None and df_dep.get("version") is not None:
+            print(f"updating {crate} dependency in {cargo_toml}")
+            df_dep["version"] = new_version
 
-        df_dep = doc.get('dev-dependencies', {}).get(crate)
-        if df_dep is not None and df_dep.get('version') is not None:
-            print(f'updating {crate} dev-dependency in {cargo_toml}')
-            df_dep['version'] = new_version
+        df_dep = doc.get("dev-dependencies", {}).get(crate)
+        if df_dep is not None and df_dep.get("version") is not None:
+            print(f"updating {crate} dev-dependency in {cargo_toml}")
+            df_dep["version"] = new_version
 
-    with open(cargo_toml, 'w') as f:
+    with open(cargo_toml, "w") as f:
         f.write(tomlkit.dumps(doc))
 
 
 def update_docs(path: str, new_version: str):
     print(f"updating docs in {path}")
-    with open(path, 'r+') as fd:
+    with open(path, "r+") as fd:
         content = fd.read()
         fd.seek(0)
-        content = re.sub(r'datafusion = "(.+)"', f'datafusion = "{new_version}"', content)
+        content = re.sub(
+            r'datafusion = "(.+)"', f'datafusion = "{new_version}"', content
+        )
         fd.write(content)
 
 
 def update_pyproject_toml(path: str, new_version: str):
-    print(f'updating datafusion pin in {path}')
+    print(f"updating datafusion pin in {path}")
     with open(path) as f:
         data = f.read()
     new_data = re.sub(r'"datafusion==[^"]+"', f'"datafusion=={new_version}"', data)
-    with open(path, 'w') as f:
+    with open(path, "w") as f:
         f.write(new_data)
 
 
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            'Update datafusion crate version and corresponding version pins '
-            'in downstream crates.'
-        ))
-    parser.add_argument('new_version', type=str, help='new datafusion version')
+            "Update datafusion crate version and corresponding version pins "
+            "in downstream crates."
+        )
+    )
+    parser.add_argument("new_version", type=str, help="new datafusion version")
     args = parser.parse_args()
 
     new_version = args.new_version
@@ -118,12 +122,12 @@ def main():
     # the upstream apache/datafusion repo; those paths don't exist here. Only the keys are
     # load-bearing in this repo (used to find which deps to bump in ballista crates), so
     # skip paths that aren't present locally rather than erroring.
-    print(f'Updating datafusion crate versions in {repo_root} to {new_version}')
+    print(f"Updating datafusion crate versions in {repo_root} to {new_version}")
     for cargo_toml in crates.values():
         if os.path.exists(os.path.join(repo_root, cargo_toml)):
             update_datafusion_version(cargo_toml, new_version)
 
-    print(f'Updating datafusion dependency versions in {repo_root} to {new_version}')
+    print(f"Updating datafusion dependency versions in {repo_root} to {new_version}")
     for cargo_toml in crates.values():
         if os.path.exists(os.path.join(repo_root, cargo_toml)):
             update_downstream_versions(cargo_toml, new_version)
@@ -131,14 +135,16 @@ def main():
         update_downstream_versions(os.path.join(repo_root, cargo_toml), new_version)
 
     update_docs("README.md", new_version)
-    update_pyproject_toml(os.path.join(repo_root, "python", "pyproject.toml"), new_version)
+    update_pyproject_toml(
+        os.path.join(repo_root, "python", "pyproject.toml"), new_version
+    )
 
     print(
-        '\nNext steps:\n'
-        '  1. Run `cargo update` (or `cargo build`) so Cargo.lock resolves the new '
-        'datafusion crates.\n'
-        '  2. Run `dev/update_datafusion_proto.py` to re-sync the vendored '
-        'DataFusion proto files, then commit the result.'
+        "\nNext steps:\n"
+        "  1. Run `cargo update` (or `cargo build`) so Cargo.lock resolves the new "
+        "datafusion crates.\n"
+        "  2. Run `dev/update_datafusion_proto.py` to re-sync the vendored "
+        "DataFusion proto files, then commit the result."
     )
 
 

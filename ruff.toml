@@ -1,5 +1,3 @@
-#!/bin/bash
-
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -17,5 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 
-rm -rf build
-SPHINXOPTS="-W --keep-going" make html
+# Config for Python outside python/, which has its own in pyproject.toml.
+
+[lint.per-file-ignores]
+# Benchmark scripts intentionally run code before their imports.
+"benchmarks/db-benchmark/*.py" = ["E402"]
+"benchmarks/tpch.py" = ["E402"]
