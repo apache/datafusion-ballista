@@ -259,29 +259,37 @@ impl K8sCluster {
 
     /// How many executors the scheduler currently considers registered.
     pub async fn registered_executors(&self) -> Result<usize, String> {
-        // A short timeout so a stalled port-forward surfaces as a retryable
-        // error in the polling loop rather than hanging the whole wait.
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let body: serde_json::Value = client
-            .get(format!("{}/api/executors", self.rest_url()))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .json()
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(body.as_array().map(|a| a.len()).unwrap_or(0))
+        crate::rest::registered_executors(&self.rest_url()).await
     }
 
-    /// Scale the executor Deployment. `0` is a total loss that stays lost (the
-    /// controller does not recreate the pods); scaling back up recovers.
-    ///
-    /// Not yet exercised by a scenario — this is the k8s primitive the executor
-    /// kill/loss scenarios (the #2029 follow-ups) will drive; the baseline test
-    /// only needs a healthy cluster. Kept here so the backend is complete.
+    /// The ids of every executor the scheduler currently lists. A killed
+    /// executor's pod is rescheduled with a fresh id, so a scenario can compare
+    /// this before and after a kill to prove the replacement is genuinely new.
+    pub async fn executor_ids(&self) -> Result<Vec<String>, String> {
+        crate::rest::executor_ids(&self.rest_url()).await
+    }
+
+    /// The id of the single job the scheduler currently knows about.
+    pub async fn running_job_id(&self) -> Result<String, String> {
+        crate::rest::running_job_id(&self.rest_url()).await
+    }
+
+    /// Block until any task in any stage is Running, so a kill lands mid-flight.
+    pub async fn await_any_stage_running(&self, job_id: &str) -> Result<(), String> {
+        crate::rest::await_any_stage_running(&self.rest_url(), job_id).await
+    }
+
+    /// Block until the scheduler considers exactly `n` executors registered
+    /// (i.e. a killed executor has been reaped, or a rescheduled one re-joined).
+    pub async fn await_executor_count(&self, n: usize) -> Result<(), String> {
+        crate::rest::await_executor_count(&self.rest_url(), n).await
+    }
+
+    /// Scale the executor Deployment to `replicas`. Setting `0` stops the
+    /// controller from rescheduling, but it is a *graceful* scale-down: the pods
+    /// receive SIGTERM and the executors drain their in-flight tasks to
+    /// completion before exiting, so a query in flight will still succeed. To
+    /// lose work mid-query, use [`Self::kill_all_executors_hard`].
     pub async fn scale_executors(&self, replicas: usize) -> Result<(), String> {
         kubectl(&[
             "-n",
@@ -289,6 +297,28 @@ impl K8sCluster {
             "scale",
             &format!("deploy/{EXECUTOR_DEPLOYMENT}"),
             &format!("--replicas={replicas}"),
+        ])
+        .await
+        .map(|_| ())
+    }
+
+    /// Total, sustained executor loss *mid-query* (#2029): every executor dies at
+    /// once and none is rescheduled. Scales the Deployment to 0 first so the
+    /// controller will not recreate the pods, then force-deletes them
+    /// (`--grace-period=0 --force`) so they are SIGKILLed without the graceful
+    /// drain that [`Self::scale_executors`] alone allows — otherwise the
+    /// executors would finish the in-flight query and it would succeed.
+    pub async fn kill_all_executors_hard(&self) -> Result<(), String> {
+        self.scale_executors(0).await?;
+        kubectl(&[
+            "-n",
+            &self.namespace,
+            "delete",
+            "pod",
+            "-l",
+            "app=ballista-executor",
+            "--grace-period=0",
+            "--force",
         ])
         .await
         .map(|_| ())
