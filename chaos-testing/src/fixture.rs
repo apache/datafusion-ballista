@@ -32,6 +32,8 @@ const FACT_FILES: i64 = 8;
 /// is what creates the multi-stage plan the HA paths need.
 const DIM_KEYS: i64 = 50;
 
+pub const LARGE_RESULT_ROWS: usize = (FACT_FILES * FACT_ROWS * DIM_KEYS) as usize;
+
 /// A small deterministic Parquet dataset: `facts(key, value)` joined to
 /// `dims(key, name)`.
 pub struct Fixture {
@@ -132,6 +134,11 @@ impl Fixture {
         "SELECT f.value, d.name \
          FROM facts f JOIN dims d ON f.key = d.key \
          ORDER BY f.value"
+    }
+
+    pub fn large_result_query() -> &'static str {
+        "SELECT f.value, d.key FROM facts f CROSS JOIN dims d \
+         ORDER BY f.value, d.key"
     }
 
     /// The same query with a chaos UDF spliced into the WHERE clause.

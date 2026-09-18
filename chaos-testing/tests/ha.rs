@@ -17,8 +17,8 @@
 
 //! End-to-end high-availability scenarios against a real multi-process cluster.
 //!
-//! Every scenario runs under both AQE settings. The AQE-on axis is where bugs are
-//! expected: a resubmitted stage under AQE is re-planned against runtime
+//! Query-recovery scenarios run under both AQE settings. The AQE-on axis is where
+//! bugs are expected: a resubmitted stage under AQE is re-planned against runtime
 //! statistics, so a re-run map stage can come back with a different plan than the
 //! one whose output was lost.
 //!
@@ -28,8 +28,14 @@
 
 mod common;
 
+use ballista::prelude::SessionConfigExt;
+use chaos_testing::fixture::{Fixture, LARGE_RESULT_ROWS};
 use common::ChaosRun;
+use futures::TryStreamExt;
 use rstest::rstest;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::timeout;
 
 /// The cluster must agree with local DataFusion before any fault is injected.
 /// Every recovery scenario asserts against this baseline, so if it is wrong,
@@ -56,8 +62,6 @@ async fn baseline_matches_local_datafusion(#[case] aqe: bool) {
 fn ballista_chaos_query_baseline() -> &'static str {
     chaos_testing::fixture::Fixture::baseline_query()
 }
-
-use chaos_testing::fixture::Fixture;
 
 /// Scenario A: one retryable (IO) fault, budget 1.
 ///
@@ -180,8 +184,6 @@ async fn panicking_task_fails_the_job_but_the_executor_survives(#[case] aqe: boo
         .expect("cluster must still be healthy after a panicking task");
     assert_eq!(after, expected);
 }
-
-use std::time::Duration;
 
 /// Scenario D: SIGKILL an executor while it is running tasks.
 ///
@@ -417,4 +419,55 @@ async fn killing_every_executor_terminates_the_job(#[case] aqe: bool) {
         msg.contains("executor"),
         "failure should name the executor loss, got: {err}"
     );
+}
+
+/// Scenario H: SIGTERM an executor while the client is fetching final results.
+///
+/// Receiving the first batch means task execution has finished and the client is
+/// reading the final Flight response. Graceful shutdown must let that response
+/// finish before the executor exits.
+///
+/// Regression test for #2357.
+#[tokio::test]
+async fn final_results_survive_sigterm() {
+    let mut run = ChaosRun::start(false, 1).await;
+    let ctx = run.clone_ctx();
+    let config = ctx
+        .copied_config()
+        .with_target_partitions(1)
+        .with_ballista_override_create_grpc_client_endpoint(Arc::new(|endpoint| {
+            Ok(endpoint
+                .initial_stream_window_size(16 * 1024)
+                .http2_adaptive_window(false))
+        }));
+    *ctx.state_ref().write().config_mut() = config;
+
+    timeout(Duration::from_secs(120), async {
+        let df = ctx.sql(Fixture::large_result_query()).await.unwrap();
+        let mut stream = df.execute_stream().await.unwrap();
+        let mut rows = stream.try_next().await.unwrap().unwrap().num_rows();
+        assert!(
+            rows < LARGE_RESULT_ROWS,
+            "result must span multiple batches"
+        );
+
+        run.cluster.terminate_executor(0).unwrap();
+        run.cluster
+            .await_executor_count(0)
+            .await
+            .expect("scheduler must deregister the terminating executor");
+
+        while let Some(batch) = stream.try_next().await.unwrap_or_else(|e| {
+            panic!(
+                "result stream failed after {rows}/{LARGE_RESULT_ROWS} rows: {e}\n{}",
+                run.cluster.log_tails()
+            )
+        }) {
+            rows += batch.num_rows();
+        }
+        assert_eq!(rows, LARGE_RESULT_ROWS, "result was truncated");
+        assert!(run.cluster.await_executor_exit(0).await.unwrap().success());
+    })
+    .await
+    .expect("query and shutdown must not hang");
 }
