@@ -77,6 +77,128 @@ pub trait DistributedPlanner {
     ) -> Result<Vec<Arc<dyn ShuffleWriter>>>;
 }
 
+/// The plan the adaptive planner starts a job with, before any stage has run.
+///
+/// Companion to [`DefaultDistributedPlanner`] for callers that need to inspect
+/// AQE's output — plan-stability tests, explain tooling — without driving a job
+/// through the scheduler. AQE re-plans as stages complete, so this is the first
+/// of several plans a job will have.
+pub async fn adaptive_initial_plan(
+    ctx: &datafusion::prelude::SessionContext,
+    logical_plan: &datafusion::logical_expr::LogicalPlan,
+    job_id: JobId,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let planner =
+        crate::state::aqe::planner::AdaptivePlanner::try_new(ctx, logical_plan, job_id)
+            .await?;
+    Ok(planner.current_plan_owned())
+}
+
+/// The plan a job ends with, driven to the end without executing anything.
+///
+/// The adaptive planner re-plans after every stage completion, so its interesting
+/// output is the plan the job finishes on, not the one it starts with. This walks
+/// that loop, reporting each stage's own estimated output as the stage's result —
+/// as if every stage produced exactly what the optimizer predicted — so join
+/// strategies, coalesce decisions and stage boundaries all resolve.
+///
+/// Deterministic and data-free, for plan-stability tests and explain tooling. A
+/// real job reports measured statistics, which is what makes AQE worth having;
+/// a plan from here can differ from one a cluster produces.
+pub async fn adaptive_final_plan(
+    ctx: &datafusion::prelude::SessionContext,
+    logical_plan: &datafusion::logical_expr::LogicalPlan,
+    job_id: JobId,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    use std::collections::HashSet;
+
+    let mut planner =
+        crate::state::aqe::planner::AdaptivePlanner::try_new(ctx, logical_plan, job_id)
+            .await?;
+
+    let mut finalised: HashSet<usize> = HashSet::new();
+    // Each round resolves the stages whose inputs are ready, which lets the next
+    // round see further. Bounded so a planner that stops making progress fails
+    // the caller instead of hanging.
+    for _ in 0..MAX_ADAPTIVE_ROUNDS {
+        let (stages, _cancellable) = planner.actionable_stages()?;
+        let Some(stages) = stages else { break };
+        let pending: Vec<_> = stages
+            .into_iter()
+            .filter(|s| !finalised.contains(&s.plan.stage_id()))
+            .collect();
+        if pending.is_empty() {
+            break;
+        }
+        for stage in pending {
+            let stage_id = stage.plan.stage_id();
+            let output = estimated_stage_output(stage.plan.as_ref())?;
+            planner.finalise_stage_internal(stage_id, output)?;
+            finalised.insert(stage_id);
+        }
+    }
+
+    Ok(planner.current_plan_owned())
+}
+
+/// Rounds [`adaptive_final_plan`] will drive before giving up. TPC-H's widest
+/// query resolves in under ten.
+const MAX_ADAPTIVE_ROUNDS: usize = 64;
+
+/// One [`PartitionLocation`] per output partition of `stage`, carrying that
+/// stage's estimated rows and bytes split evenly across them. An estimate the
+/// planner could not make stays unknown, the way an absent runtime statistic
+/// would.
+fn estimated_stage_output(
+    stage: &dyn ShuffleWriter,
+) -> Result<Vec<Vec<ballista_core::serde::scheduler::PartitionLocation>>> {
+    use ballista_core::serde::scheduler::{
+        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+        PartitionId, PartitionLocation, PartitionStats,
+    };
+    use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
+
+    // A repartitioning stage writes its own partitioning; the rest keep their
+    // input's.
+    let partitions = stage
+        .shuffle_output_partitioning()
+        .map(|p| p.partition_count())
+        .unwrap_or_else(|| stage.input_partition_count())
+        .max(1);
+    let stats = StatisticsContext::new()
+        .compute(stage as &dyn ExecutionPlan, &StatisticsArgs::new())?;
+    let per_partition =
+        |total: Option<&usize>| total.map(|t| (*t as u64).div_ceil(partitions as u64));
+    let rows = per_partition(stats.num_rows.get_value());
+    let bytes = per_partition(stats.total_byte_size.get_value());
+
+    let executor = ExecutorMetadata {
+        id: "estimated".to_string(),
+        host: "localhost".to_string(),
+        port: 0,
+        grpc_port: 0,
+        specification: ExecutorSpecification::default(),
+        os_info: ExecutorOperatingSystemSpecification::default(),
+    };
+
+    Ok((0..partitions)
+        .map(|partition| {
+            vec![PartitionLocation {
+                map_partition_id: partition,
+                partition_id: PartitionId {
+                    job_id: "estimated".into(),
+                    stage_id: stage.stage_id(),
+                    partition_id: partition,
+                },
+                executor_meta: executor.clone(),
+                partition_stats: PartitionStats::new(rows, None, bytes),
+                file_id: None,
+                is_sort_shuffle: false,
+            }]
+        })
+        .collect())
+}
+
 /// Default implementation of [`DistributedPlanner`].
 ///
 /// Breaks execution plans into stages at shuffle boundaries (repartition, coalesce).

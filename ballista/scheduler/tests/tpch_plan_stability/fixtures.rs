@@ -27,7 +27,9 @@ use std::sync::Arc;
 
 use ballista_core::JobId;
 use ballista_core::extension::SessionConfigExt;
-use ballista_scheduler::planner::{DefaultDistributedPlanner, DistributedPlanner};
+use ballista_scheduler::planner::{
+    DefaultDistributedPlanner, DistributedPlanner, adaptive_final_plan,
+};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -160,10 +162,26 @@ fn is_query_stmt(stmt: &str) -> bool {
     u.starts_with("SELECT") || u.starts_with("WITH")
 }
 
-/// Produce the normalized distributed staged-plan text for a TPC-H query.
-pub async fn staged_plan_text(query_name: &str) -> String {
-    // Read the query SQL directly from the canonical benchmark location rather
-    // than a copy, so a change to a benchmark query surfaces as a golden diff.
+/// Plan a TPC-H query to a physical plan, returning it with its context.
+async fn physical_plan_for(
+    query_name: &str,
+) -> (
+    SessionContext,
+    Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+) {
+    let (ctx, logical) = logical_plan_for(query_name).await;
+    let physical = ctx.state().create_physical_plan(&logical).await.unwrap();
+    (ctx, physical)
+}
+
+/// The logical plan of a TPC-H query's answer statement, with its context.
+///
+/// The adaptive planner takes the logical plan: it runs its own physical
+/// planning so its rules see the plan before DataFusion's defaults have settled
+/// the join strategies.
+async fn logical_plan_for(
+    query_name: &str,
+) -> (SessionContext, datafusion::logical_expr::LogicalPlan) {
     let sql_path = format!(
         "{}/../../benchmarks/queries/{query_name}.sql",
         env!("CARGO_MANIFEST_DIR")
@@ -172,9 +190,6 @@ pub async fn staged_plan_text(query_name: &str) -> String {
         .unwrap_or_else(|e| panic!("read {sql_path}: {e}"));
 
     let ctx = make_ctx();
-
-    // Split into statements; execute DDL, capture the physical plan of the answer
-    // (last SELECT/WITH) statement. Single-statement queries take the one statement.
     let stmts: Vec<&str> = sql
         .split(';')
         .map(str::trim)
@@ -185,23 +200,35 @@ pub async fn staged_plan_text(query_name: &str) -> String {
         .rposition(|s| is_query_stmt(s))
         .expect("no SELECT/WITH statement in query");
 
-    let mut physical = None;
+    let mut logical = None;
     for (i, stmt) in stmts.iter().enumerate() {
         if i == answer_idx {
-            physical = Some(
-                ctx.sql(stmt)
-                    .await
-                    .unwrap()
-                    .create_physical_plan()
-                    .await
-                    .unwrap(),
-            );
+            logical = Some(ctx.sql(stmt).await.unwrap().into_optimized_plan().unwrap());
         } else {
-            // DDL such as CREATE VIEW / DROP VIEW (q15) — apply it.
             ctx.sql(stmt).await.unwrap().collect().await.unwrap();
         }
     }
-    let physical = physical.unwrap();
+    (ctx, logical.unwrap())
+}
+
+/// Produce the normalized adaptive (AQE) plan text for a TPC-H query.
+///
+/// This is the plan the job ends on: every stage is resolved, so join strategies
+/// and coalesce decisions are settled rather than still `DynamicJoinSelectionExec`.
+/// Stage outputs are the planner's own estimates (see [`adaptive_final_plan`]),
+/// so a cluster measuring different statistics can resolve differently.
+pub async fn adaptive_plan_text(query_name: &str) -> String {
+    let (ctx, logical) = logical_plan_for(query_name).await;
+    let plan = adaptive_final_plan(&ctx, &logical, JOB_ID.into())
+        .await
+        .unwrap();
+    let ep: &dyn datafusion::physical_plan::ExecutionPlan = plan.as_ref();
+    normalize(&DisplayableExecutionPlan::new(ep).indent(false).to_string())
+}
+
+/// Produce the normalized distributed staged-plan text for a TPC-H query.
+pub async fn staged_plan_text(query_name: &str) -> String {
+    let (ctx, physical) = physical_plan_for(query_name).await;
 
     let mut planner = DefaultDistributedPlanner::new();
     let state = ctx.state();

@@ -1,0 +1,20 @@
+AdaptiveDatafusionExec: is_final=true, plan_id=4, stage_id=5, stage_resolved=true
+  SortPreservingMergeExec: [supplier_cnt@3 DESC, p_brand@0 ASC NULLS LAST, p_type@1 ASC NULLS LAST, p_size@2 ASC NULLS LAST]
+    ExchangeExec: partitioning=None, plan_id=7, stage_id=4, stage_resolved=true
+      ProjectionExec: expr=[p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size, count(alias1)@3 as supplier_cnt]
+        SortExec: expr=[count(alias1)@3 DESC, p_brand@0 ASC NULLS LAST, p_type@1 ASC NULLS LAST, p_size@2 ASC NULLS LAST], preserve_partitioning=[true]
+          AggregateExec: mode=FinalPartitioned, gby=[p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size], aggr=[count(alias1)]
+            ExchangeExec: partitioning=Hash([p_brand@0, p_type@1, p_size@2], 16), plan_id=6, stage_id=3, stage_resolved=true
+              AggregateExec: mode=Partial, gby=[p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size], aggr=[count(alias1)]
+                AggregateExec: mode=FinalPartitioned, gby=[p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size, alias1@3 as alias1], aggr=[]
+                  ExchangeExec: partitioning=Hash([p_brand@0, p_type@1, p_size@2, alias1@3], 16), plan_id=5, stage_id=2, stage_resolved=true
+                    AggregateExec: mode=Partial, gby=[p_brand@1 as p_brand, p_type@2 as p_type, p_size@3 as p_size, ps_suppkey@0 as alias1], aggr=[]
+                      HashJoinExec: mode=CollectLeft, join_type=RightAnti, on=[(s_suppkey@0, ps_suppkey@0)]
+                        FilterExec: s_comment@1 LIKE %Customer%Complaints%, projection=[s_suppkey@0]
+                          StatsExec: rows=1000000
+                        HashJoinExec: mode=Partitioned, join_type=Inner, on=[(p_partkey@0, ps_partkey@0)], projection=[ps_suppkey@5, p_brand@1, p_type@2, p_size@3]
+                          ExchangeExec: partitioning=Hash([p_partkey@0], 16), plan_id=3, stage_id=1, stage_resolved=true
+                            FilterExec: p_brand@1 != Brand#45 AND p_size@3 IN (SET) ([49, 14, 23, 45, 19, 3, 36, 9]) AND p_type@2 NOT LIKE MEDIUM POLISHED%
+                              StatsExec: rows=20000000
+                          ExchangeExec: partitioning=Hash([ps_partkey@0], 16), plan_id=2, stage_id=0, stage_resolved=true
+                            StatsExec: rows=80000000
