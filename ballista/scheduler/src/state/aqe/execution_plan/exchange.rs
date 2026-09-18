@@ -175,6 +175,22 @@ impl ExchangeExec {
         )
     }
 
+    /// The inverse of [`Self::to_broadcast`]: the same stage read partitioned,
+    /// keeping this exchange's plan id so it replaces it in place.
+    pub fn to_partitioned(&self) -> Self {
+        Self::new_with_details(
+            self.input.clone(),
+            self.partitioning.clone(),
+            self.plan_id,
+            self.stage_id.clone(),
+            self.shuffle_partitions.clone(),
+            self.coalesce.clone(),
+            self.range_repartition_routing.clone(),
+            false,
+            self.inactive_stage,
+        )
+    }
+
     /// Creates a new `ExchangeExec` with explicitly-provided stage ID and
     /// partition storage. Used by the AQE rule infrastructure to construct
     /// exchanges that share atomic state with the enclosing `AdaptivePlanner`.
@@ -448,6 +464,15 @@ impl ExecutionPlan for ExchangeExec {
                 "ExchangeExec expects single child".to_owned(),
             ))
         }
+    }
+
+    /// A broadcast swapped onto the probe side reads the same stage partitioned.
+    /// Ordered inputs are left to the k-way merge reader.
+    fn as_probe_side(&self) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        if !self.broadcast || self.input.properties().output_ordering().is_some() {
+            return Ok(None);
+        }
+        Ok(Some(Arc::new(self.to_partitioned())))
     }
 
     fn execute(
