@@ -1149,6 +1149,15 @@ pub mod failed_task {
         TaskKilled(super::TaskKilled),
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TaskColumnStats {
+    #[prost(uint32, tag = "1")]
+    pub column: u32,
+    #[prost(uint64, tag = "2")]
+    pub null_count: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub hll_sketch: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuccessfulTask {
     #[prost(string, tag = "1")]
@@ -1184,6 +1193,8 @@ pub struct SuccessfulTask {
     /// keeps the completion message fixed-size regardless of aggregate.
     #[prost(message, repeated, tag = "4")]
     pub window_state: ::prost::alloc::vec::Vec<WindowStateReport>,
+    #[prost(message, repeated, tag = "5")]
+    pub task_column_stats: ::prost::alloc::vec::Vec<TaskColumnStats>,
 }
 /// One finalized window-aggregate state from a task's
 /// `BoundedWindowAggExec`.

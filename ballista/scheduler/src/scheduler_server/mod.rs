@@ -665,6 +665,7 @@ mod test {
                         executor_id: "executor-1".to_owned(),
                         partitions,
                         runtime_stats: vec![],
+                        task_column_stats: vec![],
                         window_state: vec![],
                     })),
                 };

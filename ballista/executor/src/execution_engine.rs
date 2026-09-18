@@ -24,9 +24,10 @@
 use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::execution_plans::{
-    RangeShuffleReaderExec, RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriterExec,
+    RangeShuffleReaderExec, RangeShuffleWriterExec, ShuffleReaderExec,
+    ShuffleWriteResult, ShuffleWriterExec,
 };
-use ballista_core::serde::protobuf::ShuffleWritePartition;
+use ballista_core::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
 use ballista_core::serde::scheduler::PartitionStats;
 use ballista_core::{JobId, utils};
 use datafusion::arrow::array::{
@@ -84,7 +85,7 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
         &self,
         task_id: usize,
         context: Arc<TaskContext>,
-    ) -> Result<Vec<ShuffleWritePartition>>;
+    ) -> Result<ShuffleWriteResult>;
 
     /// Collects execution metrics from all operators in the plan.
     fn collect_plan_metrics(&self) -> Vec<MetricsSet>;
@@ -328,7 +329,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         &self,
         task_id: usize,
         context: Arc<TaskContext>,
-    ) -> Result<Vec<ShuffleWritePartition>> {
+    ) -> Result<ShuffleWriteResult> {
         let (plan_arc, is_sort_shuffle): (Arc<dyn ExecutionPlan>, bool) =
             match &self.shuffle_writer {
                 ShuffleWriterVariant::Passthrough(writer) => {
@@ -354,7 +355,25 @@ impl QueryStageExecutor for DefaultQueryStageExec {
             result.is_ok(),
             DisplayableExecutionPlan::with_metrics(plan_arc.as_ref()).indent(true)
         );
-        result
+
+        let column_stats = match &self.shuffle_writer {
+            ShuffleWriterVariant::Sort(writer) => writer
+                .column_null_counts()
+                .into_iter()
+                .enumerate()
+                .map(|(column, null_count)| TaskColumnStats {
+                    column: column as u32,
+                    null_count,
+                    hll_sketch: vec![],
+                })
+                .collect(),
+            _ => vec![],
+        };
+
+        result.map(|partitions| ShuffleWriteResult {
+            partitions,
+            column_stats,
+        })
     }
 
     fn collect_plan_metrics(&self) -> Vec<MetricsSet> {

@@ -829,6 +829,12 @@ message FailedTask {
   }
 }
 
+message TaskColumnStats {
+  uint32 column      = 1;
+  uint64 null_count  = 2;
+  bytes  hll_sketch  = 3;
+}
+
 message SuccessfulTask {
   string executor_id = 1;
   // TODO tasks are currently always shuffle writes but this will not always be the case
@@ -859,6 +865,7 @@ message SuccessfulTask {
   // (`sort_shuffle::get_index_path`), and send only a reference here. That
   // keeps the completion message fixed-size regardless of aggregate.
   repeated WindowStateReport window_state = 4;
+  repeated TaskColumnStats taskColumnStats = 5;
 }
 
 // One finalized window-aggregate state from a task's
