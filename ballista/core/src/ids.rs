@@ -118,6 +118,15 @@ string_id! {
     JobId
 }
 
+/// Creates an opaque instance identifier for long-lived Ballista components.
+///
+/// Scheduler and executor identities use this UUID-backed format. Job ids use
+/// their own scheduler-local generator because they have different requirements
+/// around compactness and sortability.
+pub fn new_instance_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +140,12 @@ mod tests {
         let mut map: HashMap<JobId, u32> = HashMap::new();
         map.insert(JobId::new("job-123"), 7);
         assert_eq!(map.get("job-123"), Some(&7));
+    }
+
+    #[test]
+    fn instance_ids_are_uuid_backed() {
+        let id = new_instance_id();
+
+        uuid::Uuid::parse_str(&id).unwrap();
     }
 }

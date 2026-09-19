@@ -543,6 +543,7 @@ async fn get_executors_empty() -> Json<Vec<()>> {
 async fn get_state() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "started": 0,
+        "scheduler_id": "history-server",
         "version": BALLISTA_VERSION,
         "datafusion_version": DATAFUSION_VERSION,
         "substrait_support": false,
@@ -551,6 +552,7 @@ async fn get_state() -> Json<serde_json::Value> {
         "graphviz_support": false,
         "spark_support": false,
         "scheduling_policy": "history-server",
+        "enable_embedded_flight_proxy": false,
     }))
 }
 
@@ -720,6 +722,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         for field in [
             "started",
+            "scheduler_id",
             "version",
             "datafusion_version",
             "substrait_support",
@@ -728,9 +731,12 @@ mod tests {
             "graphviz_support",
             "spark_support",
             "scheduling_policy",
+            "enable_embedded_flight_proxy",
         ] {
             assert!(value.get(field).is_some(), "missing field: {field}");
         }
+        assert_eq!(value["scheduler_id"], "history-server");
+        assert_eq!(value["enable_embedded_flight_proxy"], false);
     }
 
     /// Job ids are random 7-character strings, so ordering the list by id puts
