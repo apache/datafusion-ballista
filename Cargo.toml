@@ -67,7 +67,7 @@ ctor = { version = "1.0" }
 insta = "1.47"
 itertools = "0.15"
 mimalloc = { version = "0.1" }
-object_store = "0.13.2"
+object_store = "0.14.2"
 ordered-float = "5"
 pastey = "0.2.3"
 prost = "0.14"
