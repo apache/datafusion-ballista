@@ -141,8 +141,6 @@ spec:
   ports:
     - port: 50050
       name: scheduler
-    - port: 80
-      name: scheduler-ui
   selector:
     app: ballista-scheduler
 ---
@@ -262,6 +260,7 @@ kubectl apply -f cluster.yaml
 This should show the following output:
 
 ```
+service/ballista-scheduler-registration created
 service/ballista-scheduler created
 deployment.apps/ballista-scheduler created
 deployment.apps/ballista-executor created
@@ -281,7 +280,7 @@ You can view the scheduler logs with `kubectl logs ballista-scheduler-<pod-id>`:
 
 ```
 $ kubectl logs ballista-scheduler-<pod-id>
-INFO ballista_scheduler::scheduler_process: Ballista v52.0.0 Scheduler listening on 0.0.0.0:50050
+INFO ballista_scheduler::scheduler_process: Ballista v54.0.0 Scheduler listening on 0.0.0.0:50050
 INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "b5e81711-1c5c-46ec-8522-d8b359793188", host: "10.1.23.149", port: 50051 }
 INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "816e4502-a876-4ed8-b33f-86d243dcf63f", host: "10.1.23.150", port: 50051 }
 ```
@@ -406,6 +405,9 @@ kubectl delete -f cluster.yaml
 Ballista supports autoscaling for executors through [Keda](http://keda.sh). Keda allows for the scaling of a
 deployment through custom metrics which are exposed through the Ballista scheduler, and it
 can even scale the number of executors down to 0 if there is no activity in the cluster.
+
+> This is an optional scheduler feature. The scheduler must be built with the `keda-scaler` feature
+> for the external scaler endpoint to exist.
 
 Keda can be installed in your kubernetes cluster through a single command line:
 

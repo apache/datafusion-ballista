@@ -23,12 +23,11 @@
 
 > This is optional scheduler feature which should be enabled with `prometheus-metrics` feature
 
-Built with default features, the ballista scheduler will automatically collect and expose a standard set of prometheus metrics.
-The metrics currently collected automatically include:
+Built with the `prometheus-metrics` feature, the ballista scheduler collects and exposes a standard set of
+prometheus metrics. The metrics collected are:
 
 - _job_exec_time_seconds_ - Histogram of successful job execution time in seconds
 - _planning_time_ms_ - Histogram of job planning time in milliseconds
-- _failed_ - Counter of failed jobs
 - _job_failed_total_ - Counter of failed jobs
 - _job_cancelled_total_ - Counter of cancelled jobs
 - _job_completed_total_ - Counter of completed jobs
@@ -36,7 +35,7 @@ The metrics currently collected automatically include:
 - _pending_task_queue_size_ - Number of pending tasks
 
 **NOTE** Currently the histogram buckets for the above metrics are set to reasonable defaults. If the defaults are not
-appropriate for a given use case, the only workaround is to implement a customer `SchedulerMetricsCollector`. In the future
+appropriate for a given use case, the only workaround is to implement a custom `SchedulerMetricsCollector`. In the future
 the buckets should be made configurable.
 
 The metrics are then exported through the scheduler REST API at `GET /api/metrics`. It should be sufficient to ingest metrics

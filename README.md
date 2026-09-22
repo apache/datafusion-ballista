@@ -22,7 +22,7 @@
 [![Apache licensed][license-badge]][license-url]
 
 [license-badge]: https://img.shields.io/badge/license-Apache%20v2-blue.svg
-[license-url]: https://github.com/apache/datafusion-comet/blob/main/LICENSE.txt
+[license-url]: https://github.com/apache/datafusion-ballista/blob/main/LICENSE.txt
 
 <img src="docs/source/_static/images/ballista-logo.png" width="512" alt="logo"/>
 
@@ -140,25 +140,26 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 
 ### ballista-core
 
-| Feature                   | Default | Description                                                            |
-| ------------------------- | ------- | ---------------------------------------------------------------------- |
-| `arrow-ipc-optimizations` | Yes     | Enables Arrow IPC optimizations for better shuffle performance         |
-| `spark-compat`            | No      | Enables Spark compatibility mode via datafusion-spark                  |
-| `build-binary`            | No      | Required for building binary executables (AWS S3 support, CLI parsing) |
-| `force_hash_collisions`   | No      | Testing-only: forces all values to hash to same value                  |
+| Feature                   | Default | Description                                                                                    |
+| ------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `arrow-ipc-optimizations` | Yes     | Enables Arrow IPC optimizations for better shuffle performance                                 |
+| `spark-compat`            | No      | Enables Spark compatibility mode via datafusion-spark                                          |
+| `build-binary`            | No      | Required for building binary executables (AWS S3 support, CLI parsing)                         |
+| `force_hash_collisions`   | No      | Testing-only: forces all values to hash to same value                                          |
+| `utoipa`                  | No      | Derives OpenAPI schemas for scheduler REST types; enabled by `ballista-scheduler`'s `rest-api` |
 
 ### ballista-scheduler
 
-| Feature                    | Default | Description                                      |
-| -------------------------- | ------- | ------------------------------------------------ |
-| `build-binary`             | Yes     | Builds the scheduler binary with CLI and logging |
-| `substrait`                | No      | Enables Substrait plan support                   |
-| `prometheus-metrics`       | No      | Enables Prometheus metrics collection            |
-| `graphviz-support`         | No      | Enables execution graph visualization            |
-| `spark-compat`             | No      | Enables Spark compatibility mode                 |
-| `keda-scaler`              | No      | Kubernetes Event Driven Autoscaling integration  |
-| `rest-api`                 | No      | Enables REST API endpoints                       |
-| `disable-stage-plan-cache` | No      | Disables caching of stage execution plans        |
+| Feature                    | Default | Description                                                          |
+| -------------------------- | ------- | -------------------------------------------------------------------- |
+| `build-binary`             | Yes     | Builds the scheduler binary with CLI and logging                     |
+| `substrait`                | No      | Enables Substrait plan support                                       |
+| `prometheus-metrics`       | No      | Enables Prometheus metrics collection                                |
+| `graphviz-support`         | No      | Enables execution graph visualization                                |
+| `spark-compat`             | No      | Enables Spark compatibility mode                                     |
+| `keda-scaler`              | No      | Kubernetes Event Driven Autoscaling integration                      |
+| `rest-api`                 | Yes     | Enables REST API endpoints, the OpenAPI spec, and the history server |
+| `disable-stage-plan-cache` | No      | Disables caching of stage execution plans                            |
 
 ### ballista-executor
 
@@ -171,9 +172,11 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 
 ### ballista-cli
 
-| Feature | Default | Description                                        |
-| ------- | ------- | -------------------------------------------------- |
-| `tui`   | Yes     | Enables a REST client with Terminal User Interface |
+| Feature | Default | Description                                                         |
+| ------- | ------- | ------------------------------------------------------------------- |
+| `cli`   | Yes     | Builds the `ballista-cli` SQL shell binary                          |
+| `tui`   | Yes     | Enables a REST client with Terminal User Interface                  |
+| `web`   | No      | Builds the WebAssembly Web TUI (see the Ballista CLI documentation) |
 
 ![TUI Jobs table](./docs/source/user-guide/screenshots/tui-jobs-table.png)
 
@@ -202,10 +205,10 @@ information on supported SQL.
 
 The following organizations use Ballista. To add yours, open a pull request.
 
-| Organization                                                                                                                   |                                                               |
-| ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| <a href="https://spice.ai"><img src="docs/source/_static/images/adopters/spiceai.png" height="36" alt="Spice AI"/></a>         | [Spice AI](https://spice.ai/blog/apache-ballista-at-spice-ai) |
-| <a href="https://coralogix.com"><img src="docs/source/_static/images/adopters/coralogix.png" height="36" alt="Coralogix"/></a> | [Coralogix](https://coralogix.com/)                           |
+| Organization                       | Reference                                                                        |
+| ---------------------------------- | -------------------------------------------------------------------------------- |
+| [Spice AI](https://spice.ai)       | [Apache Ballista at Spice AI](https://spice.ai/blog/apache-ballista-at-spice-ai) |
+| [Coralogix](https://coralogix.com) | —                                                                                |
 
 ## Contribution Guide
 

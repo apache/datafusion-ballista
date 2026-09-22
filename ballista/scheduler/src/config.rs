@@ -148,7 +148,7 @@ pub struct Config {
         help = "Delayed interval for cleaning up finished job state."
     )]
     pub finished_job_state_clean_up_interval_seconds: u64,
-    /// Task distribution policy (bias, round-robin, consistent-hash).
+    /// Task distribution policy (bias, round-robin).
     #[arg(
         long,
         default_value_t = crate::config::TaskDistribution::default(),
