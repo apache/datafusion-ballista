@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::cluster::{JobState, JobStateEventStream};
+use crate::cluster::{ExecutorSlot, JobState, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
@@ -646,7 +646,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         cancel_tasks: F,
     ) -> Result<usize>
     where
-        F: FnOnce(Vec<RunningTaskInfo>) -> Fut,
+        F: FnOnce(Vec<RunningTaskInfo>, Vec<ExecutorSlot>) -> Fut,
         Fut: Future<Output = Result<()>>,
     {
         let Some(graph) = self.get_active_execution_graph(job_id) else {
@@ -668,13 +668,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             (running_tasks, pending_tasks, snapshot)
         };
 
+        // The vcores those tasks hold on their executors. Their terminal
+        // status arrives after the job has left the active cache, so the
+        // `TaskUpdating` refund never sees them (#2418).
+        let mut freed: HashMap<String, u32> = HashMap::new();
+        for task in &running_tasks {
+            if let Some(vcores) = snapshot.task_vcores(task.stage_id, task.task_id) {
+                *freed.entry(task.executor_id.clone()).or_default() += vcores;
+            }
+        }
+        let freed_slots: Vec<ExecutorSlot> = freed.into_iter().collect();
+
         info!(
             "Cancelling {} running tasks for job {}",
             running_tasks.len(),
             job_id
         );
 
-        let cancel_result = cancel_tasks(running_tasks).await;
+        let cancel_result = cancel_tasks(running_tasks, freed_slots).await;
         let persist_result = self.persist_terminal_and_evict(job_id, &snapshot).await;
         match (cancel_result, persist_result) {
             (Ok(()), Ok(())) => Ok(pending_tasks),
@@ -1374,7 +1385,7 @@ mod tests {
                 .abort_job(
                     &job_id_for_abort,
                     "test failure".to_string(),
-                    move |tasks| async move {
+                    move |tasks, slots| async move {
                         let status = manager_for_cancel
                             .get_job_status(&job_id_for_cancel)
                             .await?
@@ -1386,6 +1397,7 @@ mod tests {
                             "job must be terminal before executor tasks are cancelled"
                         );
                         cancelled_tasks_for_abort.store(tasks.len(), Ordering::SeqCst);
+                        assert_eq!(slots, vec![("executor-1".to_string(), 1)]);
                         Ok(())
                     },
                 )
@@ -1435,7 +1447,7 @@ mod tests {
                 .abort_job(
                     &job_id_for_abort,
                     "test failure".to_string(),
-                    move |tasks| async move {
+                    move |tasks, _slots| async move {
                         cancelled_tasks_for_abort.store(tasks.len(), Ordering::SeqCst);
                         Ok(())
                     },
