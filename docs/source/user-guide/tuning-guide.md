@@ -292,9 +292,8 @@ shuffle stage completes, the planner re-optimizes the remaining plan and emits
 the next set of runnable stages. Two adaptive optimizations are currently
 implemented:
 
-- **Join reordering.** Uses runtime byte sizes from completed stages, falling
-  back to row counts when sizes are unavailable, so the smaller side drives the
-  join.
+- **Join reordering.** Uses runtime row counts from completed stages so the
+  smaller side drives the join.
 - **Broadcast join selection.** When a join input's runtime size falls under
   `ballista.optimizer.broadcast_join_threshold_bytes` (or the row-count
   fallback), the smaller side is broadcast (`CollectLeft`) instead of shuffled.
