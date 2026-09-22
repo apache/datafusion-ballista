@@ -280,9 +280,9 @@ You can view the scheduler logs with `kubectl logs ballista-scheduler-<pod-id>`:
 
 ```
 $ kubectl logs ballista-scheduler-<pod-id>
-INFO ballista_scheduler::scheduler_process: Ballista v54.0.0 Scheduler listening on 0.0.0.0:50050
-INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "b5e81711-1c5c-46ec-8522-d8b359793188", host: "10.1.23.149", port: 50051 }
-INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "816e4502-a876-4ed8-b33f-86d243dcf63f", host: "10.1.23.150", port: 50051 }
+INFO ballista_scheduler::scheduler_process: Ballista Scheduler v54.0.0 (DataFusion v55.1.0) listening on 0.0.0.0:50050
+INFO ballista_scheduler::scheduler_server::grpc: Received register executor request for ExecutorRegistration { id: "b5e81711-1c5c-46ec-8522-d8b359793188", host: None, port: 50051, grpc_port: 50052, ... }
+INFO ballista_scheduler::scheduler_server::grpc: Received register executor request for ExecutorRegistration { id: "816e4502-a876-4ed8-b33f-86d243dcf63f", host: None, port: 50051, grpc_port: 50052, ... }
 ```
 
 ## Health Probes and Rolling Upgrades
@@ -407,7 +407,7 @@ deployment through custom metrics which are exposed through the Ballista schedul
 can even scale the number of executors down to 0 if there is no activity in the cluster.
 
 > This is an optional scheduler feature. The scheduler must be built with the `keda-scaler` feature
-> for the external scaler endpoint to exist.
+> for the external scaler endpoint to exist, and the published images are built without it.
 
 Keda can be installed in your kubernetes cluster through a single command line:
 

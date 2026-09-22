@@ -89,7 +89,7 @@ cargo run --release --bin tpch -- benchmark datafusion --iterations 3 --path ./d
 The `mimalloc` allocator is enabled by default. To build without it:
 
 ```
-cargo run --release --no-default-features --bin tpch -- benchmark datafusion --iterations 3 --path ./data --format parquet --query 1 --batch-size 4096
+cargo run --release --no-default-features --bin tpch -- benchmark datafusion --iterations 3 --path ./data --format tbl --query 1 --batch-size 4096
 ```
 
 The benchmark program also supports CSV and Parquet input file formats and a utility is provided to convert from `tbl`
@@ -148,7 +148,7 @@ To run the benchmarks:
 
 ```bash
 cd benchmarks
-cargo run --release --bin tpch benchmark ballista --host localhost --port 50050 --query 1 --path $(pwd)/data --format parquet
+cargo run --release --bin tpch benchmark ballista --host localhost --port 50050 --query 1 --path $(pwd)/data --format tbl
 ```
 
 ## Recording and comparing results

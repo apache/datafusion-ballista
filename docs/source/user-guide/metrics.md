@@ -21,10 +21,9 @@
 
 ## Prometheus
 
-> This is optional scheduler feature which should be enabled with `prometheus-metrics` feature
+> This is an optional scheduler feature, enabled with the `prometheus-metrics` Cargo feature.
 
-Built with the `prometheus-metrics` feature, the ballista scheduler collects and exposes a standard set of
-prometheus metrics. The metrics collected are:
+When built with it, the scheduler collects and exposes a standard set of Prometheus metrics:
 
 - _job_exec_time_seconds_ - Histogram of successful job execution time in seconds
 - _planning_time_ms_ - Histogram of job planning time in milliseconds

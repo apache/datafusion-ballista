@@ -69,9 +69,10 @@ cargo install --locked --features spark-compat ballista-scheduler
 cargo install --locked --features spark-compat ballista-executor
 ```
 
-The `spark-compat` feature is a scheduler and executor feature. `ballista-cli`
-does not have one; it picks up the Spark functions from the cluster it connects
-to.
+`ballista-cli` has no `spark-compat` feature, so a CLI installed with
+`cargo install` cannot call Spark functions: SQL is planned in the client, which
+has to know the functions too. To use them from the CLI, build it from source as
+described in [Spark-Compatible Functions](../spark-compatible-functions.md).
 
 When the `spark-compat` feature is enabled, additional functions like `sha1`, `expm1`, `sha2`, and others become available in SQL queries.
 
