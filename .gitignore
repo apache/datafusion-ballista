@@ -25,17 +25,19 @@ data/
 # Compiled source
 *.py[ocd]
 
-*.iml
-
 # Linux perf sample data
 perf.data
 perf.data.old
+
+# Jupyter
+.ipynb_checkpoints/
 
 # Egg metadata
 *.egg-info
 
 .vscode
 .idea/
+*.iml
 .pytest_cache/
 .ruff_cache/
 .gdb_history

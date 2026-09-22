@@ -50,7 +50,6 @@ jobs:
       - name: Prettier check
         run: |
           # if you encounter error, rerun the command below and commit the changes
-          #
           npx prettier@2.7.1 --write \
             '{ballista,docs}/**/*.md' \
             README.md \
