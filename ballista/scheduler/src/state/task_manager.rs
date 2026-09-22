@@ -670,7 +670,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
         // The vcores those tasks hold on their executors. Their terminal
         // status arrives after the job has left the active cache, so the
-        // `TaskUpdating` refund never sees them (#2418).
+        // `TaskUpdating` refund never sees them (#2418). They are refunded
+        // as soon as the cancel is sent, so an executor can be briefly
+        // oversubscribed while the cancelled tasks wind down.
         let mut freed: HashMap<String, u32> = HashMap::new();
         for task in &running_tasks {
             if let Some(vcores) = snapshot.task_vcores(task.stage_id, task.task_id) {
