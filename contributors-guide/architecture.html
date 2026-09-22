@@ -445,6 +445,46 @@ between the executor(s) and the scheduler for fetching tasks and reporting task 
 <li><p>gRPC service for submitting and managing jobs</p></li>
 <li><p>REST API for monitoring jobs</p></li>
 </ul>
+<p>The gRPC service is defined in
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/core/proto/ballista.proto">ballista.proto</a>.
+Its principal methods are:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Method</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>ExecuteQuery</p></td>
+<td><p>Submit a logical query plan or SQL query for execution</p></td>
+</tr>
+<tr class="row-odd"><td><p>ExecuteQueryPush</p></td>
+<td><p>Same, but streams job status back to the client</p></td>
+</tr>
+<tr class="row-even"><td><p>GetJobStatus</p></td>
+<td><p>Get the status of a submitted query</p></td>
+</tr>
+<tr class="row-odd"><td><p>GetJobMetrics</p></td>
+<td><p>Get execution metrics for a submitted query</p></td>
+</tr>
+<tr class="row-even"><td><p>CancelJob</p></td>
+<td><p>Cancel a running query</p></td>
+</tr>
+<tr class="row-odd"><td><p>RegisterExecutor</p></td>
+<td><p>Executors call this method to register themselves with the scheduler</p></td>
+</tr>
+<tr class="row-even"><td><p>HeartBeatFromExecutor</p></td>
+<td><p>Executors report liveness and available capacity</p></td>
+</tr>
+<tr class="row-odd"><td><p>PollWork</p></td>
+<td><p>Pull-based executors ask for the next task</p></td>
+</tr>
+<tr class="row-even"><td><p>UpdateTaskStatus</p></td>
+<td><p>Executors report task completion or failure</p></td>
+</tr>
+</tbody>
+</table>
+</div>
 <p>Jobs are submitted to the scheduler’s gRPC service from a client context, either in the form of a logical query
 plan or a SQL string. The scheduler then creates an execution graph, which contains a physical plan broken down into
 stages (pipelines) that can be scheduled independently. This process is explained in detail in the Distributed
@@ -557,6 +597,30 @@ scheduler rather than of the design — the output of a finished task is readabl
 so a downstream stage could in principle start on partial input when the cluster has capacity to spare. See
 <a class="reference internal" href="shuffle.html"><span class="std std-doc">Shuffle Design</span></a> for why Ballista materializes shuffle output at all, what that costs, and how it
 compares to the pipelined shuffle used by engines such as DataFusion Distributed and Sail.</p>
+</section>
+<section id="multi-partition-tasks">
+<h3>Multi-partition tasks<a class="headerlink" href="#multi-partition-tasks" title="Link to this heading">#</a></h3>
+<p>Ballista dispatches at the <em>slice</em> level, not the partition level. Each executor advertises a fixed number of
+virtual cores (<code class="docutils literal notranslate"><span class="pre">vcores</span></code>), and the scheduler packs up to that many of a stage’s output partitions into a single
+task. All partitions in the slice execute concurrently under one DataFusion plan invocation: scans and shuffle
+readers are rewritten to see only the assigned partition ids, and DataFusion’s per-partition <code class="docutils literal notranslate"><span class="pre">execute(N)</span></code>
+contract fans the work across the executor’s threads. Slice size is bounded by the executor’s free vcore count
+and by <code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code> (<code class="docutils literal notranslate"><span class="pre">0</span></code> = unbounded — the default; fills each task up to the
+executor’s free vcore count; <code class="docutils literal notranslate"><span class="pre">1</span></code> = one task per partition, the pre-multi-partition-tasks model).</p>
+<p>Compared to Apache Spark, whose unit of dispatch is one task per partition, Ballista’s unit is one task per
+slice of partitions bound to a single executor. Spark achieves cluster-scale parallelism the same way — many
+tasks running concurrently across cores — but each task is single-threaded and doesn’t share state with its
+neighbours. Ballista’s slice model preserves cluster-scale parallelism <em>and</em> adds intra-task shared-memory
+parallelism: partitions inside one slice share DataFusion’s per-task memory pool budget, share the collect-left
+build side of a broadcast hash join (one hash table probed by every partition, instead of one materialization
+per task), share segment-tree indices needed for degenerate window aggregates (non-invertible aggregates like
+MIN/MAX, or wide/data-dependent frames where a sliding accumulator degrades to O(n × frame)), and can cooperate
+on shared-memory algorithms like PSRS parallel sort that a shuffle-based system can’t express within a stage.
+It also unlocks pipelines whose intra-task state must be global-per-slice — e.g.
+<code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">sum(v2)</span> <span class="pre">OVER</span> <span class="pre">(ORDER</span> <span class="pre">BY</span> <span class="pre">v2</span> <span class="pre">RANGE</span> <span class="pre">3</span> <span class="pre">PRECEDING)</span> <span class="pre">FROM</span> <span class="pre">large</span></code>, which today collapses onto a single-partition
+sort+window and OOMs at h2o 10 GB scale; with the KLL-adaptive range-repartition rewrite that builds on this
+model, one slice-task per executor holds the sketch, buffered input, and per-partition halo state inside a
+single plan.</p>
 </section>
 </section>
 <section id="adaptive-query-execution-aqe">
@@ -680,6 +744,7 @@ skipped entirely.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#distributed-query-scheduling">Distributed Query Scheduling</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#producing-a-distributed-query-plan">Producing a Distributed Query Plan</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle">Shuffle</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-partition-tasks">Multi-partition tasks</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adaptive-query-execution-aqe">Adaptive Query Execution (AQE)</a><ul class="nav section-nav flex-column">
