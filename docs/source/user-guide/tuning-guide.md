@@ -81,9 +81,14 @@ and hash join to work across partitions within a task.
 
 Set it to `1` to get one task per partition, or to any positive value to cap the slice size.
 
-| key                                        | type   | default | description                                                                                                                                                                         |
-| ------------------------------------------ | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ballista.scheduler.max_partitions_per_task | UInt64 | 0       | Upper bound on the number of input partitions packed into a single task. `0` means unbounded, filling each task up to the executor's free vcores. `1` means one task per partition. |
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.scheduler.max_partitions_per_task -->
+
+<!-- prettier-ignore -->
+| key                                        | type   | default | description                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------------ | ------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ballista.scheduler.max_partitions_per_task | UInt64 | 0       | Upper bound on the number of input partitions packed into a single task's `partition_slice`. `0` (default) means unbounded — the scheduler fills each task up to the executor's free vcore count. `1` means one task per input partition. Does not apply to collapse stages, which must pack their full pending queue into a single task for correctness. |
+
+<!-- END GENERATED CONFIG REFERENCE -->
 
 Stages whose plan collapses all input into a single partition (for example under a `CoalescePartitionsExec` or
 `SortPreservingMergeExec`) ignore this cap and always pack their full pending queue into one task, since splitting
@@ -224,10 +229,15 @@ to `0` removes the budget entirely and is safe only with a bounded memory pool
 
 The following session-level keys tune its behavior:
 
-| key                                                     | type   | default   | description                                                                                                                                                                                                                                                                                |
-| ------------------------------------------------------- | ------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| ballista.shuffle.sort_based.batch_size                  | UInt64 | 8192      | Target row count when coalescing buffered batches before they are written or spilled.                                                                                                                                                                                                      |
-| ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64 | 268435456 | Per-task buffered-bytes budget at which the writer spills to disk (256 MiB default). Counted independently of the runtime memory pool. Set to `0` to spill only under memory pressure — safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory. |
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.shuffle.sort_based. -->
+
+<!-- prettier-ignore -->
+| key                                                     | type   | default   | description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------- | ------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ballista.shuffle.sort_based.batch_size                  | UInt64 | 8192      | Target batch size in rows for coalescing small batches in sort shuffle                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64 | 268435456 | Per-task buffered-bytes budget at which the sort shuffle writer spills its in-memory batches to disk. Counted independently of the runtime memory pool, so spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle memory per executor is approximately vcores * this value. Set to 0 to disable the per-task budget and rely solely on runtime memory-pool pressure to trigger spilling; this is safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory. |
+
+<!-- END GENERATED CONFIG REFERENCE -->
 
 ## Adaptive Query Execution (Experimental)
 
@@ -246,11 +256,16 @@ let session_config = SessionConfig::new_with_ballista()
 
 ### Configuration
 
-| key                                               | type    | default   | description                                                                                                                                                                                                                                    |
-| ------------------------------------------------- | ------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ballista.planner.adaptive.enabled                 | Boolean | true      | Enables the adaptive planner. Set to `false` to use the static distributed planner.                                                                                                                                                            |
-| ballista.optimizer.broadcast_join_threshold_bytes | UInt64  | 134217728 | Byte-size threshold below which a hash join's smaller side is broadcast (`CollectLeft`). Also caps null-aware anti joins with known build sizes because they run in one task. Set to 0 to disable broadcasts and reject null-aware anti joins. |
-| ballista.optimizer.broadcast_join_threshold_rows  | UInt64  | 1000000   | Row-count fallback threshold used when byte-size statistics are unavailable. Applies to AQE. Set to 0 to disable promotion via the row-count path.                                                                                             |
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.planner.adaptive.enabled,ballista.optimizer.broadcast_join_threshold_ -->
+
+<!-- prettier-ignore -->
+| key                                               | type    | default   | description                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------- | ------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ballista.optimizer.broadcast_join_threshold_bytes | UInt64  | 134217728 | Byte-size threshold below which a hash join's smaller side is promoted to CollectLeft and lowered via the broadcast pattern. Governs broadcast selection under both the static distributed planner and adaptive query planning (AQE). It also caps null-aware anti joins with a known build size because they require single-task CollectLeft execution. Set to 0 to disable promotion and reject null-aware anti joins. |
+| ballista.optimizer.broadcast_join_threshold_rows  | UInt64  | 1000000   | Row-count threshold below which a hash join's smaller side is promoted to CollectLeft and lowered via the broadcast pattern, used as a fallback when byte-size statistics are unavailable. Applies to adaptive query planning (AQE). Set to 0 to disable promotion via the row-count path.                                                                                                                               |
+| ballista.planner.adaptive.enabled                 | Boolean | true      | Enables Adaptive Query Planning: joins and partition counts are chosen from measured runtime statistics instead of planning-time estimates. Set to false to use the static distributed planner.                                                                                                                                                                                                                          |
+
+<!-- END GENERATED CONFIG REFERENCE -->
 
 ### What AQE does today
 

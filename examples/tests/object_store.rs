@@ -314,7 +314,6 @@ mod custom_s3_config {
         .await?
         .show()
         .await?;
-        ctx.sql("SET s3.allow_http = true").await?.show().await?;
 
         // verifying that we have set S3Options
         ctx.sql("select name, value from information_schema.df_settings where name like 's3.%'").await?.show().await?;
@@ -457,7 +456,6 @@ mod custom_s3_config {
         .await?
         .show()
         .await?;
-        ctx.sql("SET s3.allow_http = true").await?.show().await?;
 
         // verifying that we have set S3Options
         ctx.sql("select name, value from information_schema.df_settings where name like 's3.%'").await?.show().await?;
@@ -581,7 +579,6 @@ mod custom_s3_config {
         .await?
         .show()
         .await?;
-        ctx.sql("SET s3.allow_http = true").await?.show().await?;
 
         // verifying that we have set S3Options
         ctx.sql("select name, value from information_schema.df_settings where name like 's3.%'").await?.show().await?;
