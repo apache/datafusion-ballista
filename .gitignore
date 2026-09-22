@@ -27,6 +27,10 @@ data/
 
 *.iml
 
+# Linux perf sample data
+perf.data
+perf.data.old
+
 # Egg metadata
 *.egg-info
 
