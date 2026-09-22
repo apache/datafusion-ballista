@@ -18,4 +18,4 @@
 # under the License.
 
 rm -rf build
-make html
+SPHINXOPTS="-W --keep-going" make html

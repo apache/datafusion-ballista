@@ -59,6 +59,9 @@ source_suffix = {
     '.md': 'markdown',
 }
 
+# Emit heading ids so file.md#heading links resolve.
+myst_heading_anchors = 4
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 
