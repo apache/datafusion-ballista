@@ -22,7 +22,12 @@ RAT_VERSION=0.13
 
 # download apache rat
 if [ ! -f apache-rat-${RAT_VERSION}.jar ]; then
-  curl -s https://repo1.maven.org/maven2/org/apache/rat/apache-rat/${RAT_VERSION}/apache-rat-${RAT_VERSION}.jar > apache-rat-${RAT_VERSION}.jar
+  # -f so an HTTP error fails here instead of caching an error page as the jar.
+  if ! curl -sSfL -o apache-rat-${RAT_VERSION}.jar https://repo1.maven.org/maven2/org/apache/rat/apache-rat/${RAT_VERSION}/apache-rat-${RAT_VERSION}.jar; then
+    rm -f apache-rat-${RAT_VERSION}.jar
+    echo "Failed to download apache-rat-${RAT_VERSION}.jar"
+    exit 1
+  fi
 fi
 
 RAT="java -jar apache-rat-${RAT_VERSION}.jar -x "
@@ -30,22 +35,24 @@ RAT="java -jar apache-rat-${RAT_VERSION}.jar -x "
 RELEASE_DIR=$(cd "$(dirname "$BASH_SOURCE")"; pwd)
 
 # generate the rat report
-$RAT $1 > rat.txt
-python3 $RELEASE_DIR/check-rat-report.py $RELEASE_DIR/rat_exclude_files.txt rat.txt > filtered_rat.txt
-CHECK_STATUS=$?
-
-# 0 = approved, 1 = unapproved files (reported below), anything else = did not run.
-if [ "${CHECK_STATUS}" -ne 0 ] && [ "${CHECK_STATUS}" -ne 1 ]; then
-  echo "check-rat-report.py did not run (exit ${CHECK_STATUS}); see rat.txt"
+if ! $RAT $1 > rat.txt; then
+  echo "Apache RAT failed; see the error above"
   exit 1
 fi
 
+python3 $RELEASE_DIR/check-rat-report.py $RELEASE_DIR/rat_exclude_files.txt rat.txt > filtered_rat.txt
+CHECK_STATUS=$?
 cat filtered_rat.txt
-UNAPPROVED=`cat filtered_rat.txt  | grep "NOT APPROVED" | wc -l`
+UNAPPROVED=`grep -c "NOT APPROVED" filtered_rat.txt`
 
-if [ "0" -eq "${UNAPPROVED}" ]; then
+# A nonzero exit with no NOT APPROVED lines means the checker itself failed,
+# e.g. python3 missing or rat.txt not being a valid report.
+if [ "${CHECK_STATUS}" -eq 0 ]; then
   echo "No unapproved licenses"
-else
+elif [ "${UNAPPROVED}" -gt 0 ]; then
   echo "${UNAPPROVED} unapproved licences. Check rat report: rat.txt"
+  exit 1
+else
+  echo "check-rat-report.py failed (exit ${CHECK_STATUS}); see rat.txt"
   exit 1
 fi
