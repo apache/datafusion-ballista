@@ -1153,6 +1153,7 @@ name = "ballista-examples"
 version = "54.0.0"
 dependencies = [
  "arrow-flight",
+ "async-trait",
  "ballista",
  "ballista-core",
  "ballista-executor",
