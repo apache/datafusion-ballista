@@ -259,11 +259,11 @@ shuffle stage completes, the planner re-optimizes the remaining plan and emits
 the next set of runnable stages. The following adaptive optimizations are
 currently implemented:
 
-- **Join reordering.** Uses runtime row counts from completed stages so the
-  smaller side drives the join.
-- **Broadcast join selection.** When a join input's runtime size falls under
-  `ballista.optimizer.broadcast_join_threshold_bytes` (or the row-count
-  fallback), the smaller side is broadcast (`CollectLeft`) instead of shuffled.
+- **Join selection.** Each join is resolved from the runtime statistics of its
+  completed input stages. The smaller side, compared by byte size and falling
+  back to row count when sizes are unavailable, becomes the build side. When it
+  falls under `ballista.optimizer.broadcast_join_threshold_bytes` (or the
+  row-count fallback), it is broadcast (`CollectLeft`) instead of shuffled.
   Null-aware anti joins use `CollectLeft` with a single probe task because their
   state cannot be coordinated across executors. A known oversized build side is
   rejected instead of producing an incorrect distributed result. In practice

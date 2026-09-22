@@ -73,6 +73,8 @@ ctx = BallistaSessionContext(
 
 Known limitations and inefficiencies of the current approach:
 
+- A `SessionConfig` passed as `config` is used locally only. Use `cluster_config` for settings that
+  should reach the cluster.
 - Anything requiring custom `datafusion_proto::logical_plan::LogicalExtensionCodec`.
 - No support for `UDF` as DataFusion Python does not serialise them.
 - A Ballista connection will be created for each request.
