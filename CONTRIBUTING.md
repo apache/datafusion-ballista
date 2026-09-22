@@ -115,15 +115,15 @@ iterations per query; override with `SCALE_FACTOR`, `PARTITIONS`, and
 
 We are using `prettier` to format `.md` files.
 
-You can either use `npm i -g prettier` to install it globally or use `npx` to run it as a standalone binary. Using `npx` required a working node environment. Upgrading to the latest prettier is recommended (by adding `--upgrade` to the `npm` command).
+CI runs a pinned version through `npx`, so run the same command locally rather than a globally
+installed `prettier`, which may format differently:
 
 ```bash
-$ prettier --version
-2.3.0
+npx prettier@2.7.1 --write \
+  '{ballista,docs}/**/*.md' \
+  README.md \
+  CONTRIBUTING.md
 ```
 
-After you've confirmed your prettier version, you can format all the `.md` files:
-
-```bash
-prettier -w README.md {ballista,ballista-cli,benchmarks,dev,docs,examples,python}/**/*.md
-```
+This is exactly what the `prettier` job in `.github/workflows/dev.yml` checks, so keep the two in
+sync if the set of formatted files changes.
