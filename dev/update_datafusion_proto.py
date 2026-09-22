@@ -64,11 +64,7 @@ FILES = {
 }
 
 # Every crate that might be referenced in FILES must be looked up.
-_ALL_CRATES = {
-    crate
-    for crate_list, _ in FILES.values()
-    for crate in crate_list
-}
+_ALL_CRATES = {crate for crate_list, _ in FILES.values() for crate in crate_list}
 
 
 def crate_source_dirs():
