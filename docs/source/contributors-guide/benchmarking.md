@@ -74,7 +74,7 @@ Spark on the same cluster has always used this pattern via
 
 | Flag / config key                                             | Value                                                                   |
 | ------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `--concurrent-tasks`                                          | `8`                                                                     |
+| `--vcores`                                                    | `8`                                                                     |
 | `--memory-pool-size` (bytes; ≈70 % of the 64 GiB container)   | `48103633715`                                                           |
 | `--work-dir`                                                  | `/data` (dedicated gp3 PVC — see [Executor storage](#executor-storage)) |
 | `--grpc-server-max-decoding-message-size`                     | `134217728`                                                             |
@@ -120,7 +120,7 @@ Note that `spark.executor.cores=16` is Spark's **task parallelism** setting,
 not a CPU allocation — each executor pod is given only **8 physical vCPU**
 via `spark.kubernetes.executor.limit.cores` / `.request.cores`, so Spark
 schedules 16 concurrent tasks onto 8 physical cores (2× oversubscription).
-The matching Ballista executor runs `--concurrent-tasks=8` on the same
+The matching Ballista executor runs `--vcores=8` on the same
 8 physical vCPU (1:1).
 
 ## Queries
@@ -172,7 +172,7 @@ client. Executor sizing on each node:
 ballista-executor \
   --bind-host 0.0.0.0 --bind-port 50051 \
   --scheduler-host <scheduler> --scheduler-port 50050 \
-  --concurrent-tasks 8 \
+  --vcores 8 \
   --memory-pool-size 48103633715 \
   --work-dir /data \
   --grpc-server-max-decoding-message-size 134217728 \
