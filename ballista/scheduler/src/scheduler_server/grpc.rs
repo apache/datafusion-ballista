@@ -82,6 +82,19 @@ fn check_protocol_version(metadata: &ExecutorRegistration) -> Result<(), Status>
     )))
 }
 
+fn executor_registration_error(e: BallistaError) -> Status {
+    let msg = format!("Fail to do executor registration due to: {e}");
+    error!("{msg}");
+    match e {
+        BallistaError::Configuration(message)
+            if message.contains("already registered") =>
+        {
+            Status::already_exists(msg)
+        }
+        _ => Status::internal(msg),
+    }
+}
+
 #[tonic::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
     for SchedulerServer<T, U>
@@ -123,14 +136,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     specification: metadata.specification.unwrap().into(),
                     os_info: metadata.os_info.unwrap().into(),
                 };
-                if let Err(e) = self
-                    .state
+                self.state
                     .executor_manager
                     .save_executor_metadata(metadata)
                     .await
-                {
-                    warn!("Could not save executor metadata: {e:?}");
-                }
+                    .map_err(executor_registration_error)?;
             }
 
             self.update_task_status(&executor_id, task_status)
@@ -219,11 +229,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 os_info: metadata.os_info.unwrap().into(),
             };
 
-            self.do_register_executor(metadata).await.map_err(|e| {
-                let msg = format!("Fail to do executor registration due to: {e}");
-                error!("{msg}");
-                Status::internal(msg)
-            })?;
+            self.do_register_executor(metadata)
+                .await
+                .map_err(executor_registration_error)?;
 
             Ok(Response::new(RegisterExecutorResult { success: true }))
         } else {
@@ -278,11 +286,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     os_info: metadata.os_info.unwrap().into(),
                 };
 
-                self.do_register_executor(metadata).await.map_err(|e| {
-                    let msg = format!("Fail to do executor registration due to: {e}");
-                    error!("{msg}");
-                    Status::internal(msg)
-                })?;
+                self.do_register_executor(metadata)
+                    .await
+                    .map_err(executor_registration_error)?;
             } else {
                 return Err(Status::invalid_argument(format!(
                     "The registration spec for executor {executor_id} is not included"
@@ -902,7 +908,7 @@ mod test {
 
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
-    use tonic::Request;
+    use tonic::{Code, Request};
 
     #[cfg(feature = "substrait")]
     use {
@@ -929,7 +935,16 @@ mod test {
     use crate::test_utils::await_condition;
     use crate::test_utils::test_cluster_context;
 
-    use super::{SchedulerGrpc, SchedulerServer};
+    use super::{SchedulerGrpc, SchedulerServer, executor_registration_error};
+
+    #[test]
+    fn duplicate_executor_registration_maps_to_already_exists() {
+        let status = executor_registration_error(BallistaError::Configuration(
+            "executor_id id123 is already registered".to_string(),
+        ));
+
+        assert_eq!(status.code(), Code::AlreadyExists);
+    }
 
     #[tokio::test]
     async fn test_pull_work() -> Result<(), BallistaError> {
@@ -969,7 +984,7 @@ mod test {
         // no response task since we told the scheduler we didn't want to accept one
         assert!(response.tasks.is_empty());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new_with_default_scheduler_name(
+            SchedulerState::new_with_default_scheduler_endpoint(
                 cluster.clone(),
                 BallistaCodec::default(),
             );
@@ -1001,7 +1016,7 @@ mod test {
         // still no response task since there are no tasks in the scheduler
         assert!(response.tasks.is_empty());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new_with_default_scheduler_name(
+            SchedulerState::new_with_default_scheduler_endpoint(
                 cluster.clone(),
                 BallistaCodec::default(),
             );
@@ -1017,6 +1032,26 @@ mod test {
         assert_eq!(stored_executor.grpc_port, 0);
         assert_eq!(stored_executor.port, 0);
         assert_eq!(stored_executor.specification.vcores, 2);
+        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+
+        let mut conflicting_exec_meta = exec_meta.clone();
+        conflicting_exec_meta.host = Some("http://localhost:8081".to_owned());
+        let request: Request<PollWorkParams> = Request::new(PollWorkParams {
+            metadata: Some(conflicting_exec_meta),
+            num_free_vcores: 1,
+            task_status: vec![],
+        });
+        let err = match scheduler.poll_work(request).await {
+            Ok(_) => panic!("duplicate executor id should fail poll_work"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code(), Code::AlreadyExists);
+        let stored_executor = state
+            .executor_manager
+            .get_executor_metadata("abc")
+            .await
+            .expect("getting executor");
         assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
         Ok(())
