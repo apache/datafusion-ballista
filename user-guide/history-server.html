@@ -410,6 +410,17 @@ to:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>ballista-scheduler<span class="w"> </span>--event-log-dir<span class="w"> </span>/var/lib/ballista/history
 </pre></div>
 </div>
+<p>Each <code class="docutils literal notranslate"><span class="pre">JobStart</span></code> event records the unique scheduler id for the scheduler that
+created it. If you do not set an id, the scheduler generates the same
+UUID-backed instance identity used for executor ids at startup; set <code class="docutils literal notranslate"><span class="pre">--id</span></code> when
+you want a stable value for a deployment, test, or local debugging session:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>ballista-scheduler<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--event-log-dir<span class="w"> </span>/var/lib/ballista/history<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--id<span class="w"> </span>scheduler-a
+</pre></div>
+</div>
+<p>Use unique scheduler ids when collecting event logs from multiple schedulers so
+history records can be attributed to the scheduler that produced them.</p>
 <p>The scheduler writes one file per job, in
 <a class="reference external" href="https://jsonlines.org/">JSON Lines</a> format. While the job runs, records are
 appended to <code class="docutils literal notranslate"><span class="pre">&lt;job_id&gt;.eventlog.running</span></code>; when it reaches a terminal state

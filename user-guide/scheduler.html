@@ -394,6 +394,21 @@
 -->
 <section id="ballista-scheduler">
 <h1>Ballista Scheduler<a class="headerlink" href="#ballista-scheduler" title="Link to this heading">#</a></h1>
+<section id="scheduler-identity">
+<h2>Scheduler Identity<a class="headerlink" href="#scheduler-identity" title="Link to this heading">#</a></h2>
+<p>Each scheduler has a unique identifier used in cluster state, <code class="docutils literal notranslate"><span class="pre">/api/state</span></code>, and
+history event logs. Set it explicitly with <code class="docutils literal notranslate"><span class="pre">--id</span></code> when you want a stable value;
+otherwise the scheduler generates the same UUID-backed instance identity used
+for executor ids at startup. Use unique scheduler ids when multiple schedulers
+write to shared history or cluster state.</p>
+<p>Executor ids follow the same model: each active executor registered with the
+same scheduler needs a unique id. Set it explicitly with <code class="docutils literal notranslate"><span class="pre">--id</span></code> when you want a
+stable value; otherwise the executor generates one at startup. A second active
+executor using an id that is already registered is rejected; the id can be
+reused after the previous executor is removed from scheduler state.</p>
+<p>Executors report task status to the scheduler callback endpoint, which is built
+from <code class="docutils literal notranslate"><span class="pre">--external-host</span></code> and <code class="docutils literal notranslate"><span class="pre">--bind-port</span></code>.</p>
+</section>
 <section id="fetching-query-results">
 <h2>Fetching Query Results<a class="headerlink" href="#fetching-query-results" title="Link to this heading">#</a></h2>
 <p>By default a client fetches the result partitions of a query directly from the executors that
@@ -578,6 +593,7 @@ that is deprecated too and logs a warning — use <code class="docutils literal 
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scheduler-identity">Scheduler Identity</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fetching-query-results">Fetching Query Results</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rest-api">REST API</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#web-tui-configuration">Web TUI Configuration</a></li>

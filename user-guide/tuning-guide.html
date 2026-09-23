@@ -470,8 +470,8 @@ them would produce partial results that downstream stages cannot merge.</p>
 <p>Each task’s plan is rewritten before dispatch so that its scan sees only the file groups belonging to its own slice.</p>
 </section>
 </section>
-<section id="configuring-executor-concurrency-levels">
-<h2>Configuring Executor Concurrency Levels<a class="headerlink" href="#configuring-executor-concurrency-levels" title="Link to this heading">#</a></h2>
+<section id="configuring-executor-vcores">
+<h2>Configuring Executor vcores<a class="headerlink" href="#configuring-executor-vcores" title="Link to this heading">#</a></h2>
 <p>Each executor instance advertises a fixed number of virtual cores (vcores) to the scheduler. This is specified by
 passing a <code class="docutils literal notranslate"><span class="pre">--vcores</span></code> command-line parameter. The default setting is to use all available CPU cores.</p>
 <p>Increasing this configuration setting will increase the number of tasks that each executor can run concurrently but
@@ -768,7 +768,7 @@ processes. The default is <code class="docutils literal notranslate"><span class
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#partitions-and-tasks">Partitions and Tasks</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-concurrency-levels">Configuring Executor Concurrency Levels</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-vcores">Configuring Executor vcores</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-memory-pool">Configuring Executor Memory Pool</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#join-strategy">Join Strategy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-implementation">Shuffle Implementation</a><ul class="nav section-nav flex-column">

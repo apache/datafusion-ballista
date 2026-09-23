@@ -465,7 +465,7 @@ number.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--concurrent-tasks</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--vcores</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">8</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code> (bytes; ≈70 % of the 64 GiB container)</p></td>
@@ -561,7 +561,7 @@ per-executor volume (<code class="docutils literal notranslate"><span class="pre
 not a CPU allocation — each executor pod is given only <strong>8 physical vCPU</strong>
 via <code class="docutils literal notranslate"><span class="pre">spark.kubernetes.executor.limit.cores</span></code> / <code class="docutils literal notranslate"><span class="pre">.request.cores</span></code>, so Spark
 schedules 16 concurrent tasks onto 8 physical cores (2× oversubscription).
-The matching Ballista executor runs <code class="docutils literal notranslate"><span class="pre">--concurrent-tasks=8</span></code> on the same
+The matching Ballista executor runs <code class="docutils literal notranslate"><span class="pre">--vcores=8</span></code> on the same
 8 physical vCPU (1:1).</p>
 </section>
 <section id="queries">
@@ -687,7 +687,7 @@ client. Executor sizing on each node:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>ballista-executor<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--bind-host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--bind-port<span class="w"> </span><span class="m">50051</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--scheduler-host<span class="w"> </span>&lt;scheduler&gt;<span class="w"> </span>--scheduler-port<span class="w"> </span><span class="m">50050</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--concurrent-tasks<span class="w"> </span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vcores<span class="w"> </span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--memory-pool-size<span class="w"> </span><span class="m">48103633715</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--work-dir<span class="w"> </span>/data<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--grpc-server-max-decoding-message-size<span class="w"> </span><span class="m">134217728</span><span class="w"> </span><span class="se">\</span>

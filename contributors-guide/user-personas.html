@@ -413,7 +413,7 @@ persona lists concrete “red flags” — the kinds of change that would quietl
 functionality away from that audience. A red flag does not mean a change is
 forbidden, but it does mean the change needs explicit discussion and maintainer
 sign-off, and usually a migration path (for example an entry in the
-<a class="reference internal" href="../upgrading/index.html"><span class="doc std std-doc">upgrade guide</span></a>), rather than landing silently.</p>
+<a class="reference internal" href="../upgrading/index.html"><span class="std std-doc">upgrade guide</span></a>), rather than landing silently.</p>
 <p>These personas are deliberately in tension with one another. One audience wants
 distributed execution to be a transparent implementation detail; another wants
 the execution model exposed and tunable; another wants Ballista’s internals to
@@ -464,9 +464,11 @@ wants a lighter, Rust-native alternative without relearning a new execution
 paradigm.</p></li>
 <li><p><strong>Coming from</strong>: Apache Spark.</p></li>
 <li><p><strong>Why Ballista</strong>: Keep the Spark mental model — plans split into <strong>stages</strong> at
-shuffle boundaries, one <strong>task</strong> per partition, shuffle files, executors with
-task slots, and adaptive query execution (<strong>AQE</strong>) for runtime adaptivity — on
-top of DataFusion and Arrow.</p></li>
+shuffle boundaries, <strong>tasks</strong> over partitions, shuffle files, executors with
+vcores, and adaptive query execution (<strong>AQE</strong>) for runtime adaptivity — on
+top of DataFusion and Arrow. Ballista packs several partitions into one task
+by default rather than Spark’s strict one-task-per-partition dispatch; set
+<code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code> to <code class="docutils literal notranslate"><span class="pre">1</span></code> for the Spark model.</p></li>
 <li><p><strong>Depends on</strong> (must not regress):</p>
 <ul>
 <li><p>The stage/task execution model at shuffle boundaries.</p></li>
@@ -475,7 +477,7 @@ selection, runtime broadcast), available and gated behind configuration.</p></li
 <li><p>Broadcast joins for small build sides, to avoid shuffles and skew (the
 equivalent of Spark’s broadcast hash join).</p></li>
 <li><p>The operational surface Spark users expect: a scheduler plus executors,
-task-slot concurrency, a tunable <code class="docutils literal notranslate"><span class="pre">target_partitions</span></code>, and stage/task
+vcore-bounded concurrency, a tunable <code class="docutils literal notranslate"><span class="pre">target_partitions</span></code>, and stage/task
 observability (task timings, a history server / UI) for debugging skew.</p></li>
 <li><p>Behavior driven by configuration and <code class="docutils literal notranslate"><span class="pre">SET</span></code>, not hard-coded planner choices.</p></li>
 </ul>
@@ -516,7 +518,7 @@ planner.</p></li>
 <li><p>Behavior that stays <em>configurable rather than hard-coded</em>, so an embedder can
 swap the planner, join strategy, partitioning, or runtime environment.</p></li>
 <li><p>Backward-compatible public APIs, with breaking changes signaled in the
-<a class="reference internal" href="../upgrading/index.html"><span class="doc std std-doc">upgrade guide</span></a>.</p></li>
+<a class="reference internal" href="../upgrading/index.html"><span class="std std-doc">upgrade guide</span></a>.</p></li>
 <li><p>No assumptions baked into the core that only fit the built-in clients or the
 TPC-H benchmark.</p></li>
 </ul>
