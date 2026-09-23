@@ -27,13 +27,13 @@ The standalone example is the easiest to get started with. Ballista supports a s
 and executor are started in-process.
 
 ```bash
-cargo run --example standalone_sql --features="ballista/standalone"
+cargo run --example standalone_sql
 ```
 
 Source: [`examples/examples/standalone-sql.rs`](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/standalone-sql.rs)
 
 ```bash
-cargo run --example standalone-substrait --features="ballista/standalone,ballista-scheduler/substrait"
+cargo run --example standalone-substrait --features="ballista-scheduler/substrait"
 ```
 
 Source: [`examples/examples/standalone-substrait.rs`](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/standalone-substrait.rs)
@@ -89,18 +89,18 @@ Source: [`examples/examples/remote-spark-functions.rs`](https://github.com/apach
 Every example in [`examples/examples/`](https://github.com/apache/datafusion-ballista/tree/main/examples/examples),
 including those not walked through above. Run each from this directory.
 
-| Example                        | Cluster     | Command                                                                              |
-| ------------------------------ | ----------- | ------------------------------------------------------------------------------------ |
-| `standalone-sql.rs`            | in-process  | `cargo run --example standalone_sql`                                                 |
-| `standalone-broadcast-join.rs` | in-process  | `cargo run --example standalone_broadcast_join`                                      |
-| `standalone-substrait.rs`      | in-process  | `cargo run --example standalone-substrait --features="ballista-scheduler/substrait"` |
-| `remote-sql.rs`                | distributed | `cargo run --example remote-sql`                                                     |
-| `remote-dataframe.rs`          | distributed | `cargo run --example remote-dataframe`                                               |
-| `remote-spark-functions.rs`    | distributed | `cargo run --example remote-spark-functions --features="ballista-core/spark-compat"` |
-| `custom-client.rs`             | distributed | `cargo run --example custom-client`                                                  |
-| `custom-scheduler.rs`          | n/a         | `cargo run --example custom-scheduler`                                               |
-| `custom-executor.rs`           | n/a         | `cargo run --example custom-executor`                                                |
-| `mtls-cluster.rs`              | in-process  | `cargo run --example mtls-cluster --features=tls`                                    |
+| Example                        | Needs                                                                              | Command                                                                              |
+| ------------------------------ | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `standalone-sql.rs`            | nothing, runs in-process                                                           | `cargo run --example standalone_sql`                                                 |
+| `standalone-broadcast-join.rs` | nothing, runs in-process                                                           | `cargo run --example standalone_broadcast_join`                                      |
+| `standalone-substrait.rs`      | nothing, runs in-process                                                           | `cargo run --example standalone-substrait --features="ballista-scheduler/substrait"` |
+| `remote-sql.rs`                | a running cluster                                                                  | `cargo run --example remote-sql`                                                     |
+| `remote-dataframe.rs`          | a running cluster                                                                  | `cargo run --example remote-dataframe`                                               |
+| `remote-spark-functions.rs`    | a cluster built with `spark-compat`                                                | `cargo run --example remote-spark-functions --features="ballista-core/spark-compat"` |
+| `custom-scheduler.rs`          | nothing                                                                            | `cargo run --example custom-scheduler`                                               |
+| `custom-executor.rs`           | `custom-scheduler`                                                                 | `cargo run --example custom-executor`                                                |
+| `custom-client.rs`             | `custom-scheduler`, `custom-executor`, and MinIO (see the file)                    | `cargo run --example custom-client`                                                  |
+| `mtls-cluster.rs`              | nothing; run `certs`, then `scheduler`, `executor`, `client` in separate terminals | `cargo run --example mtls-cluster --features=tls -- <step>`                          |
 
 The `ballista/standalone` feature the in-process examples need is on by default, so it only has to be
 named explicitly when building with `--no-default-features`.

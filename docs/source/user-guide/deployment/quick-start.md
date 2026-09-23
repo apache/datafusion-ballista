@@ -64,7 +64,7 @@ cargo run --release --example remote-sql
 
 ```{literalinclude} ../../../../examples/examples/remote-sql.rs
 :language: rust
-:lines: 18-
+:start-after: under the License.
 ```
 
 ### Distributed DataFrame Example
@@ -78,5 +78,5 @@ cargo run --release --example remote-dataframe
 
 ```{literalinclude} ../../../../examples/examples/remote-dataframe.rs
 :language: rust
-:lines: 18-
+:start-after: under the License.
 ```

@@ -68,7 +68,7 @@ Full example using the DataFrame API, from
 
 ```{literalinclude} ../../../examples/examples/remote-dataframe.rs
 :language: rust
-:lines: 18-
+:start-after: under the License.
 ```
 
 A full example demonstrating SQL usage with a user-specified `SessionConfig`, from
@@ -76,5 +76,5 @@ A full example demonstrating SQL usage with a user-specified `SessionConfig`, fr
 
 ```{literalinclude} ../../../examples/examples/remote-sql.rs
 :language: rust
-:lines: 18-
+:start-after: under the License.
 ```
