@@ -24,23 +24,25 @@ use ballista_scheduler::SessionBuilder;
 use datafusion::execution::SessionState;
 use datafusion::prelude::SessionConfig;
 use object_store::aws::AmazonS3Builder;
-use testcontainers_modules::minio::MinIO;
-use testcontainers_modules::testcontainers::ContainerRequest;
-use testcontainers_modules::testcontainers::core::{CmdWaitFor, ExecCommand};
-use testcontainers_modules::{minio, testcontainers::ImageExt};
+use testcontainers::core::wait::HttpWaitStrategy;
+use testcontainers::core::{CmdWaitFor, ContainerPort, ExecCommand, WaitFor};
+use testcontainers::{ContainerRequest, GenericImage, ImageExt};
 
 pub const REGION: &str = "eu-west-1";
 pub const BUCKET: &str = "ballista";
-pub const ACCESS_KEY_ID: &str = "MINIO";
-pub const SECRET_KEY: &str = "MINIOMINIO";
+pub const ACCESS_KEY_ID: &str = "BALLISTA";
+pub const SECRET_KEY: &str = "BALLISTASECRET";
 
-/// Registry override for the image pinned by `testcontainers-modules`.
+/// S3-compatible server the integration tests run against.
 ///
-/// MinIO withdrew `minio/minio` from Docker Hub on 2026-09-11, so the image the
-/// crate pins no longer resolves and every test that starts a container panics.
-/// quay.io still serves the same tag, so only the registry changes here.
-/// See <https://github.com/apache/datafusion/issues/25215>.
-const MINIO_IMAGE_NAME: &str = "quay.io/minio/minio";
+/// These tests used MinIO until it withdrew its `minio/minio` image from Docker Hub
+/// (2026-09-11) and then quay.io (2026-09-24). RustFS is an S3-compatible server
+/// published on Docker Hub; see <https://github.com/rustfs/rustfs>.
+const RUSTFS_IMAGE: &str = "rustfs/rustfs";
+const RUSTFS_TAG: &str = "1.0.0";
+
+/// Port the S3 API listens on inside the container.
+pub const S3_PORT: u16 = 9000;
 
 #[allow(dead_code)]
 pub fn create_s3_store(
@@ -59,26 +61,29 @@ pub fn create_s3_store(
 }
 
 #[allow(dead_code)]
-pub fn create_minio_container() -> ContainerRequest<minio::MinIO> {
-    MinIO::default()
-        .with_name(MINIO_IMAGE_NAME)
-        .with_env_var("MINIO_ACCESS_KEY", ACCESS_KEY_ID)
-        .with_env_var("MINIO_SECRET_KEY", SECRET_KEY)
+pub fn create_s3_container() -> ContainerRequest<GenericImage> {
+    // RustFS logs only warnings by default, so wait on its health endpoint
+    // rather than a startup message.
+    let ready = HttpWaitStrategy::new("/health")
+        .with_port(ContainerPort::Tcp(S3_PORT))
+        .with_expected_status_code(200u16);
+
+    GenericImage::new(RUSTFS_IMAGE, RUSTFS_TAG)
+        .with_exposed_port(ContainerPort::Tcp(S3_PORT))
+        .with_wait_for(WaitFor::http(ready))
+        .with_env_var("RUSTFS_ACCESS_KEY", ACCESS_KEY_ID)
+        .with_env_var("RUSTFS_SECRET_KEY", SECRET_KEY)
 }
 
 #[allow(dead_code)]
 pub fn create_bucket_command() -> ExecCommand {
-    // this is hack to create a bucket without creating s3 client.
-    // this works with current testcontainer (and image) version 'RELEASE.2022-02-07T08-17-33Z'.
-    // (testcontainer  does not await properly on latest image version)
-    //
-    // if testcontainer image version change to something newer we should use "mc mb /data/ballista"
-    // to crate a bucket.
+    // A top-level directory under the data volume is a bucket, which avoids
+    // pulling an S3 client in just to create one.
     ExecCommand::new(vec![
         "mkdir".to_string(),
         format!("/data/{}", crate::common::BUCKET),
     ])
-    .with_cmd_ready_condition(CmdWaitFor::seconds(1))
+    .with_cmd_ready_condition(CmdWaitFor::exit_code(0))
 }
 
 /// starts a ballista cluster for integration tests
