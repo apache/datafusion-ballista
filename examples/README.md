@@ -102,5 +102,7 @@ including those not walked through above. Run each from this directory.
 | `custom-client.rs`             | `custom-scheduler`, `custom-executor`, and MinIO (see the file)                    | `cargo run --example custom-client`                                                  |
 | `mtls-cluster.rs`              | nothing; run `certs`, then `scheduler`, `executor`, `client` in separate terminals | `cargo run --example mtls-cluster --features=tls -- <step>`                          |
 
-The `ballista/standalone` feature the in-process examples need is on by default, so it only has to be
-named explicitly when building with `--no-default-features`.
+The `--features` flags are needed: an example's `required-features` in `Cargo.toml` stops it from
+building without those features, but does not turn them on. The in-process examples need
+`ballista/standalone`, which is on by default, so it only has to be named when building with
+`--no-default-features`.
