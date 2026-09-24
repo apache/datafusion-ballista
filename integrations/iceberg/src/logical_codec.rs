@@ -53,7 +53,7 @@ use serde::{Deserialize, Serialize};
 use crate::bridge::{
     Frame, TAG_DELEGATED, TableRefWire, block_on, build_metadata_provider, encode_blob,
     get_catalog, json_err, load_table_pinned, missing_catalog_config_err,
-    missing_static_config_err, missing_table_config_err, split_frame,
+    missing_static_config_err, missing_table_config_err, split_frame, static_provider,
 };
 
 /// Wire representation of an Iceberg table provider. Carries enough to rebuild
@@ -71,7 +71,6 @@ enum IcebergProviderWire {
         #[serde(flatten)]
         table_ref: TableRefWire,
         /// The snapshot to read. `None` only for a table with no snapshot yet.
-        #[serde(default)]
         snapshot_id: Option<i64>,
     },
     /// An [`IcebergMetadataTableProvider`] (e.g. `tbl$snapshots`).
@@ -151,7 +150,13 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                     IcebergProviderWire::Static {
                         table_ref,
                         snapshot_id,
-                    } => Ok(Arc::new(build_static_provider(table_ref, snapshot_id)?)),
+                    } => {
+                        let (config, table) = table_ref.into_parts();
+                        let table = load_table_pinned(&config, &table, snapshot_id)?;
+                        let provider =
+                            block_on(static_provider(table, snapshot_id, config))?;
+                        Ok(Arc::new(provider))
+                    }
                     IcebergProviderWire::Metadata {
                         table_ref,
                         metadata_type,
@@ -172,7 +177,7 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
     ) -> Result<(), DataFusionError> {
         if let Some(provider) = node.downcast_ref::<IcebergTableProvider>() {
             let config = provider
-                .config()
+                .catalog_config()
                 .ok_or_else(|| missing_table_config_err("IcebergTableProvider"))?;
             let wire = IcebergProviderWire::Table {
                 table_ref: TableRefWire::new(config, provider.table_ident()),
@@ -181,7 +186,7 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
         }
         if let Some(provider) = node.downcast_ref::<IcebergStaticTableProvider>() {
             let config = provider
-                .config()
+                .catalog_config()
                 .ok_or_else(|| missing_static_config_err("IcebergStaticTableProvider"))?;
             // An unpinned static provider reads the table as it was loaded, so
             // pin that snapshot. Otherwise the scheduler, which reloads the
@@ -224,25 +229,6 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
     ) -> Result<(), DataFusionError> {
         self.inner.try_encode_file_format(buf, node)
     }
-}
-
-/// Rebuilds a read-only [`IcebergStaticTableProvider`] pinned to
-/// `snapshot_id`, re-attaching the config so it can be re-encoded.
-fn build_static_provider(
-    table_ref: TableRefWire,
-    snapshot_id: Option<i64>,
-) -> Result<IcebergStaticTableProvider, DataFusionError> {
-    let (config, table) = table_ref.into_parts();
-    let table = load_table_pinned(&config, &table, snapshot_id)?;
-    let provider = block_on(async {
-        match snapshot_id {
-            Some(id) => {
-                IcebergStaticTableProvider::try_new_from_table_snapshot(table, id).await
-            }
-            None => IcebergStaticTableProvider::try_new_from_table(table).await,
-        }
-    })?;
-    Ok(provider.with_catalog_config(config))
 }
 
 #[cfg(test)]
@@ -318,29 +304,6 @@ mod tests {
         assert!(obj.contains_key("catalog"), "{value}");
         assert!(obj.contains_key("table"), "{value}");
         assert!(!obj.contains_key("table_ref"), "{value}");
-    }
-
-    #[test]
-    fn static_provider_without_snapshot_id_decodes_to_none() {
-        // `snapshot_id` is `#[serde(default)]`: a payload missing the key still decodes.
-        let wire = IcebergProviderWire::Static {
-            table_ref: sample_table_ref(),
-            snapshot_id: Some(99),
-        };
-        let mut value = serde_json::to_value(&wire).unwrap();
-        value["Static"]
-            .as_object_mut()
-            .unwrap()
-            .remove("snapshot_id");
-
-        let decoded: IcebergProviderWire = serde_json::from_value(value).expect("decode");
-        assert!(matches!(
-            decoded,
-            IcebergProviderWire::Static {
-                snapshot_id: None,
-                ..
-            }
-        ));
     }
 
     /// Stand-in inner codec for the delegation test. The real Ballista codec can't

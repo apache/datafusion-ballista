@@ -69,7 +69,7 @@ use ballista_core::extension::SessionConfigExt;
 use datafusion::common::DataFusionError;
 use datafusion::prelude::{SessionConfig, SessionContext};
 pub use datafusion_iceberg::IcebergCatalogConfig;
-use datafusion_iceberg::{IcebergStaticTableProvider, to_datafusion_error};
+use datafusion_iceberg::to_datafusion_error;
 use iceberg::{NamespaceIdent, TableIdent};
 
 pub use crate::logical_codec::IcebergLogicalCodec;
@@ -121,10 +121,11 @@ pub async fn register_iceberg_table(
 /// `register_name`, pinned to `snapshot_id` (time travel), or to the table's
 /// current snapshot when `None`.
 ///
-/// The view is an [`IcebergStaticTableProvider`]: it always reads the same
-/// snapshot, with the schema that snapshot was written under, and rejects
-/// writes. Use [`register_iceberg_table`] to write to the table or to read its
-/// latest state.
+/// The view is an
+/// [`IcebergStaticTableProvider`](datafusion_iceberg::IcebergStaticTableProvider):
+/// it always reads the same snapshot, with the schema that snapshot was written
+/// under, and rejects writes. Use [`register_iceberg_table`] to write to the
+/// table or to read its latest state.
 pub async fn register_iceberg_table_at_snapshot(
     ctx: &SessionContext,
     register_name: &str,
@@ -138,16 +139,8 @@ pub async fn register_iceberg_table_at_snapshot(
         .load_table(&TableIdent::new(namespace, table.into()))
         .await
         .map_err(to_datafusion_error)?;
-    let provider = match snapshot_id {
-        Some(id) => {
-            IcebergStaticTableProvider::try_new_from_table_snapshot(table, id).await?
-        }
-        None => IcebergStaticTableProvider::try_new_from_table(table).await?,
-    };
-    ctx.register_table(
-        register_name,
-        Arc::new(provider.with_catalog_config(config)),
-    )?;
+    let provider = bridge::static_provider(table, snapshot_id, config).await?;
+    ctx.register_table(register_name, Arc::new(provider))?;
     Ok(())
 }
 

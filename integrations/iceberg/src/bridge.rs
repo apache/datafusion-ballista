@@ -38,7 +38,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use datafusion::common::DataFusionError;
 use datafusion_iceberg::{
-    IcebergCatalogConfig, IcebergMetadataTableProvider, to_datafusion_error,
+    IcebergCatalogConfig, IcebergMetadataTableProvider, IcebergStaticTableProvider,
+    to_datafusion_error,
 };
 use iceberg::inspect::MetadataTableType;
 use iceberg::table::Table;
@@ -286,6 +287,23 @@ pub(crate) fn load_table_pinned(
             .insert(key, (pin, table.clone()));
     }
     Ok(table)
+}
+
+/// Builds a read-only [`IcebergStaticTableProvider`] over `table`, pinned to
+/// `snapshot_id` (or to the table's current snapshot when `None`), recording
+/// `config` so the provider and the scans it plans can be re-encoded.
+pub(crate) async fn static_provider(
+    table: Table,
+    snapshot_id: Option<i64>,
+    config: IcebergCatalogConfig,
+) -> Result<IcebergStaticTableProvider, DataFusionError> {
+    let provider = match snapshot_id {
+        Some(id) => {
+            IcebergStaticTableProvider::try_new_from_table_snapshot(table, id).await?
+        }
+        None => IcebergStaticTableProvider::try_new_from_table(table).await?,
+    };
+    Ok(provider.with_catalog_config(config))
 }
 
 /// Rebuilds an [`IcebergMetadataTableProvider`] (e.g. `tbl$snapshots`) from its
