@@ -15,11 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Logical extension codec that serializes the catalog-backed
-//! [`IcebergTableProvider`] (its [`IcebergCatalogConfig`](crate::IcebergCatalogConfig)
-//! + table identifier) so
-//! that the Ballista scheduler can rebuild the provider from a logical plan and
-//! perform physical planning (including `insert_into`) for Iceberg tables.
+//! Logical extension codec that serializes Iceberg table providers (their
+//! [`IcebergCatalogConfig`](crate::IcebergCatalogConfig) + table identifier) so
+//! that the Ballista scheduler can rebuild them from a logical plan and perform
+//! physical planning for Iceberg tables.
+//!
+//! Each provider decodes back to its own type:
+//!
+//! - [`IcebergTableProvider`] is catalog-backed: it reads the table's current
+//!   state and supports `INSERT`.
+//! - [`IcebergStaticTableProvider`] is read-only and pinned to a snapshot, which
+//!   is fixed at encode time so the scheduler reads exactly what the client
+//!   planned against. Use it for time travel.
+//! - [`IcebergMetadataTableProvider`] serves metadata tables such as
+//!   `tbl$snapshots`.
 //!
 //! All other logical-plan serialization (extension nodes, file formats, other
 //! table providers) is delegated to an inner codec (by default Ballista's
@@ -30,22 +39,21 @@ use std::sync::Arc;
 use ballista_core::serde::BallistaLogicalExtensionCodec;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
-use datafusion::common::DataFusionError;
+use datafusion::common::{DataFusionError, TableReference};
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Extension, LogicalPlan};
-use datafusion::sql::TableReference;
+use datafusion_iceberg::{
+    IcebergMetadataTableProvider, IcebergStaticTableProvider, IcebergTableProvider,
+};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use iceberg::TableIdent;
-use iceberg_datafusion::{
-    IcebergMetadataTableProvider, IcebergTableProvider, to_datafusion_error,
-};
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{
     Frame, TAG_DELEGATED, TableRefWire, block_on, build_metadata_provider, encode_blob,
-    get_catalog, json_err, missing_catalog_config_err, missing_table_config_err,
-    split_frame,
+    get_catalog, json_err, load_table_pinned, missing_catalog_config_err,
+    missing_static_config_err, missing_table_config_err, split_frame,
 };
 
 /// Wire representation of an Iceberg table provider. Carries enough to rebuild
@@ -57,7 +65,12 @@ enum IcebergProviderWire {
     Table {
         #[serde(flatten)]
         table_ref: TableRefWire,
-        /// Pinned snapshot for time-travel reads, if any.
+    },
+    /// A read-only [`IcebergStaticTableProvider`].
+    Static {
+        #[serde(flatten)]
+        table_ref: TableRefWire,
+        /// The snapshot to read. `None` only for a table with no snapshot yet.
         #[serde(default)]
         snapshot_id: Option<i64>,
     },
@@ -70,8 +83,8 @@ enum IcebergProviderWire {
     },
 }
 
-/// A [`LogicalExtensionCodec`] that understands the catalog-backed
-/// [`IcebergTableProvider`] and delegates everything else to an inner codec.
+/// A [`LogicalExtensionCodec`] that understands the Iceberg table providers and
+/// delegates everything else to an inner codec.
 #[derive(Debug)]
 pub struct IcebergLogicalCodec {
     inner: Arc<dyn LogicalExtensionCodec>,
@@ -125,32 +138,20 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                 let wire: IcebergProviderWire =
                     serde_json::from_slice(rest).map_err(json_err)?;
                 match wire {
-                    IcebergProviderWire::Table {
-                        table_ref,
-                        snapshot_id,
-                    } => {
+                    IcebergProviderWire::Table { table_ref } => {
                         let (config, table) = table_ref.into_parts();
                         let cat = get_catalog(&config)?;
                         let TableIdent { namespace, name } = table;
-                        // Both steps run on the catalog runtime: `with_snapshot_id`
-                        // reloads metadata to validate the pin, so it is async
-                        // too. It reloads even for `None`, so only call it when
-                        // there is a pin — the provider was just built from a
-                        // fresh load, and skipping it saves a catalog round-trip
-                        // on every unpinned decode.
-                        let provider = block_on(async {
-                            let unpinned = IcebergTableProvider::try_new_with_config(
+                        let provider =
+                            block_on(IcebergTableProvider::try_new_with_config(
                                 cat, config, namespace, name,
-                            )
-                            .await?;
-                            match snapshot_id {
-                                Some(id) => unpinned.with_snapshot_id(Some(id)).await,
-                                None => Ok(unpinned),
-                            }
-                        })
-                        .map_err(to_datafusion_error)?;
+                            ))?;
                         Ok(Arc::new(provider))
                     }
+                    IcebergProviderWire::Static {
+                        table_ref,
+                        snapshot_id,
+                    } => Ok(Arc::new(build_static_provider(table_ref, snapshot_id)?)),
                     IcebergProviderWire::Metadata {
                         table_ref,
                         metadata_type,
@@ -175,7 +176,22 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                 .ok_or_else(|| missing_table_config_err("IcebergTableProvider"))?;
             let wire = IcebergProviderWire::Table {
                 table_ref: TableRefWire::new(config, provider.table_ident()),
-                snapshot_id: provider.snapshot_id(),
+            };
+            return encode_blob(buf, &wire);
+        }
+        if let Some(provider) = node.downcast_ref::<IcebergStaticTableProvider>() {
+            let config = provider
+                .config()
+                .ok_or_else(|| missing_static_config_err("IcebergStaticTableProvider"))?;
+            // An unpinned static provider reads the table as it was loaded, so
+            // pin that snapshot. Otherwise the scheduler, which reloads the
+            // table, could read a newer one.
+            let snapshot_id = provider
+                .snapshot_id()
+                .or_else(|| provider.table().metadata().current_snapshot_id());
+            let wire = IcebergProviderWire::Static {
+                table_ref: TableRefWire::new(config, provider.table_ident()),
+                snapshot_id,
             };
             return encode_blob(buf, &wire);
         }
@@ -208,6 +224,25 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
     ) -> Result<(), DataFusionError> {
         self.inner.try_encode_file_format(buf, node)
     }
+}
+
+/// Rebuilds a read-only [`IcebergStaticTableProvider`] pinned to
+/// `snapshot_id`, re-attaching the config so it can be re-encoded.
+fn build_static_provider(
+    table_ref: TableRefWire,
+    snapshot_id: Option<i64>,
+) -> Result<IcebergStaticTableProvider, DataFusionError> {
+    let (config, table) = table_ref.into_parts();
+    let table = load_table_pinned(&config, &table, snapshot_id)?;
+    let provider = block_on(async {
+        match snapshot_id {
+            Some(id) => {
+                IcebergStaticTableProvider::try_new_from_table_snapshot(table, id).await
+            }
+            None => IcebergStaticTableProvider::try_new_from_table(table).await,
+        }
+    })?;
+    Ok(provider.with_catalog_config(config))
 }
 
 #[cfg(test)]
@@ -247,6 +282,14 @@ mod tests {
     fn table_provider_wire_roundtrips() {
         let wire = IcebergProviderWire::Table {
             table_ref: sample_table_ref(),
+        };
+        assert_eq!(wire, roundtrip(&wire));
+    }
+
+    #[test]
+    fn static_provider_wire_roundtrips() {
+        let wire = IcebergProviderWire::Static {
+            table_ref: sample_table_ref(),
             snapshot_id: Some(42),
         };
         assert_eq!(wire, roundtrip(&wire));
@@ -266,26 +309,26 @@ mod tests {
         // Wire compat: `TableRefWire` must serialize as inline `catalog` and
         // `table` keys, exactly as when the variants spelled the two fields
         // out — never nested under a `table_ref` object.
-        let wire = IcebergProviderWire::Table {
+        let wire = IcebergProviderWire::Static {
             table_ref: sample_table_ref(),
             snapshot_id: Some(42),
         };
         let value = serde_json::to_value(&wire).unwrap();
-        let obj = value["Table"].as_object().unwrap();
+        let obj = value["Static"].as_object().unwrap();
         assert!(obj.contains_key("catalog"), "{value}");
         assert!(obj.contains_key("table"), "{value}");
         assert!(!obj.contains_key("table_ref"), "{value}");
     }
 
     #[test]
-    fn table_provider_without_snapshot_id_decodes_to_none() {
+    fn static_provider_without_snapshot_id_decodes_to_none() {
         // `snapshot_id` is `#[serde(default)]`: a payload missing the key still decodes.
-        let wire = IcebergProviderWire::Table {
+        let wire = IcebergProviderWire::Static {
             table_ref: sample_table_ref(),
             snapshot_id: Some(99),
         };
         let mut value = serde_json::to_value(&wire).unwrap();
-        value["Table"]
+        value["Static"]
             .as_object_mut()
             .unwrap()
             .remove("snapshot_id");
@@ -293,7 +336,7 @@ mod tests {
         let decoded: IcebergProviderWire = serde_json::from_value(value).expect("decode");
         assert!(matches!(
             decoded,
-            IcebergProviderWire::Table {
+            IcebergProviderWire::Static {
                 snapshot_id: None,
                 ..
             }

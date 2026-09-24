@@ -30,23 +30,31 @@
 //! ```ignore
 //! use std::collections::HashMap;
 //!
-//! use iceberg_ballista::{register_iceberg_codecs, register_iceberg_table, IcebergCatalogConfig};
+//! use iceberg_ballista::{
+//!     IcebergCatalogConfig, register_iceberg_codecs, register_iceberg_table,
+//!     register_iceberg_table_at_snapshot,
+//! };
 //! use ballista_core::extension::SessionConfigExt;
 //! use datafusion::prelude::{SessionConfig, SessionContext};
 //! use iceberg::NamespaceIdent;
 //!
-//! # async fn run() -> datafusion::error::Result<()> {
+//! # async fn run(snapshot_id: i64) -> datafusion::error::Result<()> {
 //! // 1. Register the Iceberg codecs on the session config, then start standalone Ballista.
 //! let config = register_iceberg_codecs(SessionConfig::new_with_ballista());
 //! let ctx = SessionContext::standalone_with_config(config).await?;
 //!
 //! // 2. Register a catalog-backed Iceberg table for reads and writes.
 //! let props = HashMap::from([("uri".to_string(), "http://localhost:8181".to_string())]);
-//! let cfg = IcebergCatalogConfig::new("rest", "rest", props);
+//! let cfg = IcebergCatalogConfig::new("rest", "rest", props.clone());
 //! register_iceberg_table(&ctx, "t", cfg, NamespaceIdent::new("ns".into()), "tbl").await?;
 //!
 //! // 3. INSERT runs distributed across the cluster.
 //! ctx.sql("INSERT INTO t SELECT * FROM source").await?.collect().await?;
+//!
+//! // 4. Time travel: a read-only view pinned to a snapshot.
+//! let cfg = IcebergCatalogConfig::new("rest", "rest", props);
+//! let ns = NamespaceIdent::new("ns".into());
+//! register_iceberg_table_at_snapshot(&ctx, "t_v1", cfg, ns, "tbl", Some(snapshot_id)).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -60,9 +68,9 @@ use std::sync::Arc;
 use ballista_core::extension::SessionConfigExt;
 use datafusion::common::DataFusionError;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use iceberg::NamespaceIdent;
-pub use iceberg_datafusion::IcebergCatalogConfig;
-use iceberg_datafusion::to_datafusion_error;
+pub use datafusion_iceberg::IcebergCatalogConfig;
+use datafusion_iceberg::{IcebergStaticTableProvider, to_datafusion_error};
+use iceberg::{NamespaceIdent, TableIdent};
 
 pub use crate::logical_codec::IcebergLogicalCodec;
 pub use crate::physical_codec::IcebergPhysicalCodec;
@@ -88,7 +96,7 @@ pub fn register_iceberg_codecs(config: SessionConfig) -> SessionConfig {
         )))
 }
 
-/// Builds a catalog-backed [`IcebergTableProvider`](iceberg_datafusion::IcebergTableProvider)
+/// Builds a catalog-backed [`IcebergTableProvider`](datafusion_iceberg::IcebergTableProvider)
 /// from `config` and registers it on `ctx` under `register_name`.
 ///
 /// The provider carries `config` so its plan nodes can be reconstructed on
@@ -101,16 +109,49 @@ pub async fn register_iceberg_table(
     table: impl Into<String>,
 ) -> Result<(), DataFusionError> {
     let catalog = bridge::build_catalog(&config).await?;
-    let provider = iceberg_datafusion::IcebergTableProvider::try_new_with_config(
+    let provider = datafusion_iceberg::IcebergTableProvider::try_new_with_config(
         catalog, config, namespace, table,
     )
-    .await
-    .map_err(to_datafusion_error)?;
+    .await?;
     ctx.register_table(register_name, Arc::new(provider))?;
     Ok(())
 }
 
-/// Builds an [`IcebergCatalogProvider`](iceberg_datafusion::IcebergCatalogProvider)
+/// Registers a read-only view of an Iceberg table on `ctx` under
+/// `register_name`, pinned to `snapshot_id` (time travel), or to the table's
+/// current snapshot when `None`.
+///
+/// The view is an [`IcebergStaticTableProvider`]: it always reads the same
+/// snapshot, with the schema that snapshot was written under, and rejects
+/// writes. Use [`register_iceberg_table`] to write to the table or to read its
+/// latest state.
+pub async fn register_iceberg_table_at_snapshot(
+    ctx: &SessionContext,
+    register_name: &str,
+    config: IcebergCatalogConfig,
+    namespace: NamespaceIdent,
+    table: impl Into<String>,
+    snapshot_id: Option<i64>,
+) -> Result<(), DataFusionError> {
+    let catalog = bridge::build_catalog(&config).await?;
+    let table = catalog
+        .load_table(&TableIdent::new(namespace, table.into()))
+        .await
+        .map_err(to_datafusion_error)?;
+    let provider = match snapshot_id {
+        Some(id) => {
+            IcebergStaticTableProvider::try_new_from_table_snapshot(table, id).await?
+        }
+        None => IcebergStaticTableProvider::try_new_from_table(table).await?,
+    };
+    ctx.register_table(
+        register_name,
+        Arc::new(provider.with_catalog_config(config)),
+    )?;
+    Ok(())
+}
+
+/// Builds an [`IcebergCatalogProvider`](datafusion_iceberg::IcebergCatalogProvider)
 /// from `config` and registers it on `ctx` under `register_name`, mounting the
 /// whole Iceberg catalog at once.
 ///
@@ -124,9 +165,8 @@ pub async fn register_iceberg_catalog(
 ) -> Result<(), DataFusionError> {
     let catalog = bridge::build_catalog(&config).await?;
     let provider =
-        iceberg_datafusion::IcebergCatalogProvider::try_new_with_config(catalog, config)
-            .await
-            .map_err(to_datafusion_error)?;
+        datafusion_iceberg::IcebergCatalogProvider::try_new_with_config(catalog, config)
+            .await?;
     ctx.register_catalog(register_name, Arc::new(provider));
     Ok(())
 }

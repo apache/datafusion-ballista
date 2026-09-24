@@ -51,6 +51,7 @@ use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::SchedulerConfig;
 use ballista_scheduler::metrics::default_metrics_collector;
 use ballista_scheduler::scheduler_server::{SchedulerServer, SessionBuilder};
+use datafusion_iceberg::IcebergTableProvider;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use iceberg::spec::{
     NestedField, PrimitiveType, Schema, Transform, Type, UnboundPartitionField,
@@ -60,9 +61,8 @@ use iceberg::transaction::{AddColumn, ApplyTransactionAction, Transaction};
 use iceberg::{Catalog, NamespaceIdent, TableCreation, TableIdent};
 use iceberg_ballista::{
     IcebergCatalogConfig, register_iceberg_catalog, register_iceberg_codecs,
-    register_iceberg_table,
+    register_iceberg_table, register_iceberg_table_at_snapshot,
 };
-use iceberg_datafusion::IcebergTableProvider;
 
 use crate::fixture::IcebergFixture;
 
@@ -160,8 +160,9 @@ async fn create_partitioned_table(
     props: &HashMap<String, String>,
     table_name: &str,
 ) -> NamespaceIdent {
-    // Optional (nullable) fields so the schema matches the nullable columns a
-    // `VALUES` source produces; the partitioned-write path checks nullability.
+    // Optional fields, fed from a `VALUES` source whose columns decode as
+    // non-nullable on the scheduler: covers writing non-null input into
+    // optional columns on the partitioned-write path.
     let schema = Schema::builder()
         .with_schema_id(0)
         .with_fields(vec![
@@ -526,8 +527,9 @@ async fn parallel_multi_executor_insert_commits_all_rows() {
         .await
         .expect("load manifest list");
     for entry in manifest_list.entries() {
-        let manifest = entry
-            .load_manifest(table.file_io())
+        let manifest = table
+            .manifest_reader()
+            .read(entry)
             .await
             .expect("load manifest");
         data_files += manifest.entries().len();
@@ -764,19 +766,16 @@ async fn distributed_time_travel_pins_snapshot_schema() {
     // Phase 3 — pin to snapshot 1, which has no `email` while the table does.
     // Must run before the drop below, or the two schemas match again and the
     // assertion would pass even for a scan that ignored the pin.
-    let pinned_v1 = IcebergTableProvider::try_new_with_config(
-        catalog.clone(),
+    register_iceberg_table_at_snapshot(
+        &ctx,
+        "events_v1",
         catalog_config.clone(),
         namespace.clone(),
         table_name.clone(),
+        Some(snapshot_1),
     )
     .await
-    .expect("build provider pinned to snapshot 1")
-    .with_snapshot_id(Some(snapshot_1))
-    .await
-    .expect("pin snapshot 1");
-    ctx.register_table("events_v1", Arc::new(pinned_v1))
-        .expect("register provider pinned to snapshot 1");
+    .expect("register view pinned to snapshot 1");
 
     // The pinned read returns that snapshot's exact historical rows under the
     // schema in effect at that snapshot — no `email` column.
@@ -791,6 +790,21 @@ async fn distributed_time_travel_pins_snapshot_schema() {
             "+----+-------+",
         ],
         &run_sql(&ctx, "SELECT * FROM events_v1 ORDER BY id").await
+    );
+
+    // The pinned view is read-only: the scheduler rebuilds it as a static
+    // provider, which rejects writes instead of appending to the current state.
+    let err = ctx
+        .sql("INSERT INTO events_v1 VALUES (7, 'grace')")
+        .await
+        .expect("plan insert")
+        .collect()
+        .await
+        .expect_err("insert into a pinned view must fail");
+    assert!(
+        err.to_string()
+            .contains("not supported on IcebergStaticTableProvider"),
+        "{err}"
     );
 
     // Phase 4 — drop `name`, leaving {id, email}. Snapshot 2 keeps referencing
@@ -851,19 +865,16 @@ async fn distributed_time_travel_pins_snapshot_schema() {
     // Phase 5 — pin to snapshot 2, which still has the `name` the table just
     // lost. An executor using the current schema has no `name` to project, so
     // the query fails outright even though those rows carry the values.
-    let pinned_v2 = IcebergTableProvider::try_new_with_config(
-        catalog,
+    register_iceberg_table_at_snapshot(
+        &ctx,
+        "events_v2_pinned",
         catalog_config,
         namespace,
         table_name,
+        Some(snapshot_2),
     )
     .await
-    .expect("build provider pinned to snapshot 2")
-    .with_snapshot_id(Some(snapshot_2))
-    .await
-    .expect("pin snapshot 2");
-    ctx.register_table("events_v2_pinned", Arc::new(pinned_v2))
-        .expect("register provider pinned to snapshot 2");
+    .expect("register view pinned to snapshot 2");
 
     // The pinned read exposes the `name` column that existed at that snapshot,
     // with the dropped column's values still reading back — and rows written

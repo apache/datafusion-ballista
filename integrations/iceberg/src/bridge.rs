@@ -37,12 +37,12 @@ use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use datafusion::common::DataFusionError;
+use datafusion_iceberg::{
+    IcebergCatalogConfig, IcebergMetadataTableProvider, to_datafusion_error,
+};
 use iceberg::inspect::MetadataTableType;
 use iceberg::table::Table;
 use iceberg::{Catalog, Error, ErrorKind, TableIdent};
-use iceberg_datafusion::{
-    IcebergCatalogConfig, IcebergMetadataTableProvider, to_datafusion_error,
-};
 use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +66,16 @@ pub(crate) fn missing_table_config_err(node: &str) -> DataFusionError {
         node,
         "register the table with IcebergTableProvider::try_new_with_config (see \
          iceberg_ballista::register_iceberg_table)",
+    )
+}
+
+/// [`missing_table_config_err`], but for a read-only static provider.
+pub(crate) fn missing_static_config_err(node: &str) -> DataFusionError {
+    missing_config(
+        node,
+        "record where the table was loaded from with \
+         IcebergStaticTableProvider::with_catalog_config (see \
+         iceberg_ballista::register_iceberg_table_at_snapshot)",
     )
 }
 

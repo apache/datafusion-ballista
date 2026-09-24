@@ -30,16 +30,22 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr_common::physical_expr::proto_decode::PhysicalExprDecodeCtx;
+use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-use iceberg::TableIdent;
-use iceberg::expr::Predicate;
-use iceberg::spec::{PartitionSpec, Schema};
-use iceberg_datafusion::physical_plan::{
+use datafusion_iceberg::physical_plan::{
     IcebergCommitExec, IcebergMetadataScan, IcebergTableScan, IcebergWriteExec,
     PartitionExpr,
 };
-use iceberg_datafusion::{snapshot_arrow_schema, to_datafusion_error};
+use datafusion_iceberg::to_datafusion_error;
+use datafusion_proto::physical_plan::{
+    PhysicalExtensionCodec, PhysicalProtoConverterExtension,
+};
+use iceberg::TableIdent;
+use iceberg::arrow::schema_to_arrow_schema;
+use iceberg::expr::Predicate;
+use iceberg::spec::{PartitionSpec, Schema};
+use iceberg::table::Table;
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{
@@ -80,7 +86,7 @@ enum IcebergPhysicalNode {
     },
 }
 
-/// Wire representation of an [`IcebergDataFusion`](iceberg_datafusion) partition
+/// Wire representation of an [`IcebergDataFusion`](datafusion_iceberg) partition
 /// expression. The live `PartitionValueCalculator` it wraps is not serializable,
 /// but it can be rebuilt on the far node from the (self-contained) partition spec
 /// and table schema, so those are all that travels on the wire.
@@ -118,9 +124,12 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
         ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let rest = match split_frame(buf, "iceberg physical codec")? {
-            Frame::Delegated(rest) => return self.inner.try_decode(rest, inputs, ctx),
+            Frame::Delegated(rest) => {
+                return self.inner.try_decode(rest, inputs, ctx, proto_converter);
+            }
             Frame::Iceberg(rest) => rest,
         };
 
@@ -141,8 +150,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 // A pinned scan must use the schema that snapshot was written
                 // under — the table's schema may have changed since, and the
                 // current one would describe historical rows incorrectly.
-                let arrow_schema = snapshot_arrow_schema(&table_obj, snapshot_id)
-                    .map_err(to_datafusion_error)?;
+                let arrow_schema = snapshot_arrow_schema(&table_obj, snapshot_id)?;
                 let proj_indices = project_indices(
                     &arrow_schema,
                     projection.as_ref(),
@@ -172,8 +180,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             IcebergPhysicalNode::Commit { table_ref } => {
                 let (config, table) = table_ref.into_parts();
                 let (cat, table_obj) = load_table_with_catalog(&config, &table)?;
-                let arrow_schema = snapshot_arrow_schema(&table_obj, None)
-                    .map_err(to_datafusion_error)?;
+                let arrow_schema = snapshot_arrow_schema(&table_obj, None)?;
                 let input = single_input(inputs, "IcebergCommitExec")?;
                 let commit = IcebergCommitExec::new(table_obj, cat, input, arrow_schema)
                     .with_catalog_config(Some(config));
@@ -193,6 +200,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         &self,
         node: Arc<dyn ExecutionPlan>,
         buf: &mut Vec<u8>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<(), DataFusionError> {
         if let Some(scan) = node.downcast_ref::<IcebergTableScan>() {
             let config = scan
@@ -250,13 +258,14 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         }
 
         buf.push(TAG_DELEGATED);
-        self.inner.try_encode(node, buf)
+        self.inner.try_encode(node, buf, proto_converter)
     }
 
     fn try_encode_expr(
         &self,
         node: &Arc<dyn PhysicalExpr>,
         buf: &mut Vec<u8>,
+        ctx: &PhysicalExprEncodeCtx<'_>,
     ) -> Result<(), DataFusionError> {
         // The partition-value expression a partitioned write injects holds a
         // live calculator; serialize the spec + schema it can be rebuilt from.
@@ -268,16 +277,17 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             return encode_blob(buf, &wire);
         }
         buf.push(TAG_DELEGATED);
-        self.inner.try_encode_expr(node, buf)
+        self.inner.try_encode_expr(node, buf, ctx)
     }
 
     fn try_decode_expr(
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn PhysicalExpr>],
+        ctx: &PhysicalExprDecodeCtx<'_>,
     ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
         match split_frame(buf, "iceberg physical expr")? {
-            Frame::Delegated(rest) => self.inner.try_decode_expr(rest, inputs),
+            Frame::Delegated(rest) => self.inner.try_decode_expr(rest, inputs, ctx),
             Frame::Iceberg(rest) => {
                 let wire: PartitionExprWire =
                     serde_json::from_slice(rest).map_err(json_err)?;
@@ -289,6 +299,34 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             }
         }
     }
+}
+
+/// The Arrow schema of `table` at `snapshot_id`, or its current schema when
+/// `snapshot_id` is `None`.
+///
+/// A snapshot keeps the schema it was written under, which can differ from the
+/// table's current one after a schema change.
+fn snapshot_arrow_schema(
+    table: &Table,
+    snapshot_id: Option<i64>,
+) -> Result<SchemaRef, DataFusionError> {
+    let metadata = table.metadata();
+    let schema = match snapshot_id {
+        None => metadata.current_schema().clone(),
+        Some(id) => metadata
+            .snapshot_by_id(id)
+            .ok_or_else(|| {
+                DataFusionError::Internal(format!(
+                    "snapshot {id} not found in table {}",
+                    table.identifier()
+                ))
+            })?
+            .schema(metadata)
+            .map_err(to_datafusion_error)?,
+    };
+    Ok(Arc::new(
+        schema_to_arrow_schema(&schema).map_err(to_datafusion_error)?,
+    ))
 }
 
 /// Maps projected column names back to their indices in `arrow_schema`, the
@@ -350,6 +388,8 @@ fn single_input(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+
+    use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
 
     use crate::bridge::{CatalogConfigWire, TAG_ICEBERG};
 
@@ -563,13 +603,22 @@ mod tests {
         let codec = IcebergPhysicalCodec::default();
         let mut buf = Vec::new();
         codec
-            .try_encode(Arc::new(shuffle), &mut buf)
+            .try_encode(
+                Arc::new(shuffle),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
             .expect("encode delegated node");
         assert_eq!(buf[0], TAG_DELEGATED, "non-Iceberg node must be delegated");
 
         let ctx = SessionContext::new();
         let decoded = codec
-            .try_decode(&buf, &[input], &ctx.task_ctx())
+            .try_decode(
+                &buf,
+                &[input],
+                &ctx.task_ctx(),
+                &DefaultPhysicalProtoConverter {},
+            )
             .expect("decode delegated node");
         let decoded = decoded
             .downcast_ref::<ShuffleWriterExec>()
@@ -637,10 +686,17 @@ mod tests {
         let ctx = SessionContext::new();
         let codec = IcebergPhysicalCodec::default();
 
-        let err = codec.try_decode(&[], &[], &ctx.task_ctx()).unwrap_err();
+        let converter = DefaultPhysicalProtoConverter {};
+        let decode = |buf: &[u8]| {
+            codec
+                .try_decode(buf, &[], &ctx.task_ctx(), &converter)
+                .unwrap_err()
+        };
+
+        let err = decode(&[]);
         assert!(err.to_string().contains("empty"), "{err}");
 
-        let err = codec.try_decode(&[99], &[], &ctx.task_ctx()).unwrap_err();
+        let err = decode(&[99]);
         assert!(
             err.to_string()
                 .contains("unknown iceberg physical codec tag 99"),
@@ -650,13 +706,32 @@ mod tests {
 
     #[test]
     fn try_decode_expr_rejects_unframed_buffers() {
+        use datafusion::arrow::datatypes::Schema as ArrowSchema;
+        use datafusion::physical_expr_common::physical_expr::proto_decode::PhysicalExprDecode;
+        use datafusion_proto::protobuf::PhysicalExprNode;
+
+        /// Framing is rejected before any nested expression is decoded.
+        struct UnusedDecoder;
+
+        impl PhysicalExprDecode for UnusedDecoder {
+            fn decode(
+                &self,
+                _node: &PhysicalExprNode,
+                _schema: &ArrowSchema,
+            ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
+                unreachable!()
+            }
+        }
+
         // The expr path has its own tag dispatch, so it needs its own check.
         let codec = IcebergPhysicalCodec::default();
+        let schema = ArrowSchema::empty();
+        let ctx = PhysicalExprDecodeCtx::new(&schema, &UnusedDecoder);
 
-        let err = codec.try_decode_expr(&[], &[]).unwrap_err();
+        let err = codec.try_decode_expr(&[], &[], &ctx).unwrap_err();
         assert!(err.to_string().contains("empty"), "{err}");
 
-        let err = codec.try_decode_expr(&[99], &[]).unwrap_err();
+        let err = codec.try_decode_expr(&[99], &[], &ctx).unwrap_err();
         assert!(
             err.to_string()
                 .contains("unknown iceberg physical expr tag 99"),

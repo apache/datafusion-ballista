@@ -64,17 +64,18 @@ datafusion-proto-common = "55"
 datafusion-spark = "55"
 datafusion-substrait = "55"
 
-# iceberg-ballista (integrations/iceberg) needs iceberg-rust changes that are not
-# on crates.io yet: the catalog-config plumbing in `iceberg-datafusion` that lets
-# scan/write plan nodes be rebuilt on a remote executor. Until those land
-# upstream and are released, all five crates are pinned to the branch that
-# carries them — keep the git/branch identical across every entry so cargo
-# resolves them to a single checkout.
-iceberg = { git = "https://github.com/NoahKusaba/iceberg-rust.git", branch = "feature/datafusion-ballista" }
-iceberg-catalog-loader = { git = "https://github.com/NoahKusaba/iceberg-rust.git", branch = "feature/datafusion-ballista" }
-iceberg-catalog-rest = { git = "https://github.com/NoahKusaba/iceberg-rust.git", branch = "feature/datafusion-ballista" }
-iceberg-datafusion = { git = "https://github.com/NoahKusaba/iceberg-rust.git", branch = "feature/datafusion-ballista" }
-iceberg-storage-opendal = { git = "https://github.com/NoahKusaba/iceberg-rust.git", branch = "feature/datafusion-ballista" }
+# iceberg-ballista (integrations/iceberg) needs datafusion-iceberg changes that
+# are not released yet: the catalog-config plumbing that lets scan/write plan
+# nodes be rebuilt on a remote executor. Until they are released,
+# datafusion-iceberg is pinned to the branch that carries them, and the iceberg
+# crates to the iceberg-rust revision that branch builds against. Keep the
+# iceberg `rev` identical across every entry, and equal to the one in
+# datafusion-iceberg's workspace, so cargo resolves a single checkout.
+datafusion-iceberg = { git = "https://github.com/NoahKusaba/datafusion-iceberg.git", branch = "feat/ballista-distributed-support" }
+iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "665c64e48e8d33797ecb1a421f327edd9b024879" }
+iceberg-catalog-loader = { git = "https://github.com/apache/iceberg-rust.git", rev = "665c64e48e8d33797ecb1a421f327edd9b024879" }
+iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust.git", rev = "665c64e48e8d33797ecb1a421f327edd9b024879" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", rev = "665c64e48e8d33797ecb1a421f327edd9b024879" }
 
 ctor = { version = "1.0" }
 insta = "1.47"
