@@ -33,6 +33,7 @@
 //! runtime.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -252,22 +253,17 @@ static PINNED_TABLES: LazyLock<
     Mutex<HashMap<(CatalogConfigWire, TableIdent), (i64, Table)>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Loads the [`Table`] for a snapshot-pinned scan, served from
+/// Loads the [`Table`] for a read pinned to snapshot `pin`, served from
 /// [`PINNED_TABLES`] when the pin matches the cached entry.
 ///
-/// Only scans may use this. An unpinned scan (`snapshot_id` = `None`, a table
-/// with no snapshot yet) means "current state" and falls through to a fresh
-/// load — as must writes, commits, and metadata tables, which have to observe
-/// current metadata and use [`load_table`] / [`load_table_with_catalog`]
-/// directly.
+/// Only pinned reads may use this. Writes, commits, and metadata tables have to
+/// observe current metadata and use [`load_table`] /
+/// [`load_table_with_catalog`] directly.
 pub(crate) fn load_table_pinned(
     config: &IcebergCatalogConfig,
     ident: &TableIdent,
-    snapshot_id: Option<i64>,
+    pin: i64,
 ) -> Result<Table, DataFusionError> {
-    let Some(pin) = snapshot_id else {
-        return load_table(config, ident);
-    };
     let key = (CatalogConfigWire::from(config), ident.clone());
     if let Some((cached_pin, table)) = PINNED_TABLES.lock().unwrap().get(&key)
         && *cached_pin == pin
@@ -374,13 +370,35 @@ pub(crate) fn split_frame<'a>(
 
 /// Serializable mirror of [`IcebergCatalogConfig`] (which is intentionally not
 /// serde-aware in the iceberg crate to avoid a serde dependency there).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub(crate) struct CatalogConfigWire {
     pub r#type: String,
     pub name: String,
     // BTreeMap (not HashMap) so the struct can derive Hash for the catalog
     // cache, and so encode→decode→encode round-trips to identical bytes.
     pub props: BTreeMap<String, String>,
+}
+
+/// Shows the property keys but not their values, which often hold credentials,
+/// like [`IcebergCatalogConfig`]'s `Debug`.
+impl fmt::Debug for CatalogConfigWire {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CatalogConfigWire")
+            .field("type", &self.r#type)
+            .field("name", &self.name)
+            .field("props", &RedactedProps(&self.props))
+            .finish()
+    }
+}
+
+struct RedactedProps<'a>(&'a BTreeMap<String, String>);
+
+impl fmt::Debug for RedactedProps<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map()
+            .entries(self.0.keys().map(|key| (key, format_args!("<redacted>"))))
+            .finish()
+    }
 }
 
 impl From<&IcebergCatalogConfig> for CatalogConfigWire {
@@ -473,6 +491,22 @@ mod tests {
         );
         evict_catalog(&config);
         evict_catalog(&config);
+    }
+
+    #[test]
+    fn catalog_config_wire_debug_hides_property_values() {
+        let config = IcebergCatalogConfig::new(
+            "rest",
+            "rest",
+            HashMap::from([
+                ("uri".to_string(), "http://localhost:8181".to_string()),
+                ("s3.secret-access-key".to_string(), "hunter2".to_string()),
+            ]),
+        );
+        assert_eq!(
+            format!("{:?}", CatalogConfigWire::from(&config)),
+            r#"CatalogConfigWire { type: "rest", name: "rest", props: {"s3.secret-access-key": <redacted>, "uri": <redacted>} }"#
+        );
     }
 
     #[test]

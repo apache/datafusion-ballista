@@ -33,6 +33,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::physical_expr::proto_decode::PhysicalExprDecodeCtx;
 use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion_iceberg::physical_plan::{
     IcebergCommitExec, IcebergMetadataScan, IcebergTableScan, IcebergWriteExec,
     PartitionExpr,
@@ -62,7 +63,7 @@ enum IcebergPhysicalNode {
     Scan {
         #[serde(flatten)]
         table_ref: TableRefWire,
-        snapshot_id: Option<i64>,
+        snapshot: ScanSnapshot,
         projection: Option<Vec<String>>,
         limit: Option<usize>,
         /// Pushed-down filter, restored on the remote node so Iceberg file
@@ -83,6 +84,18 @@ enum IcebergPhysicalNode {
         table_ref: TableRefWire,
         /// The metadata table kind, as its lowercase string name.
         metadata_type: String,
+    },
+}
+
+/// What a scan reads, fixed when the scan is encoded so every task of the query
+/// reads the same state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+enum ScanSnapshot {
+    Snapshot(i64),
+    /// The table had no snapshot, so the scan is empty. Carries the table schema
+    /// the scan was planned against, since there is no snapshot to take it from.
+    Empty {
+        schema: Box<Schema>,
     },
 }
 
@@ -138,7 +151,27 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         match node {
             IcebergPhysicalNode::Scan {
                 table_ref,
-                snapshot_id,
+                snapshot: ScanSnapshot::Empty { schema },
+                projection,
+                ..
+            } => {
+                let arrow_schema: SchemaRef = Arc::new(
+                    schema_to_arrow_schema(&schema).map_err(to_datafusion_error)?,
+                );
+                let output_schema = match project_indices(
+                    &arrow_schema,
+                    projection.as_ref(),
+                    &table_ref.table,
+                    None,
+                )? {
+                    Some(indices) => Arc::new(arrow_schema.project(&indices)?),
+                    None => arrow_schema,
+                };
+                Ok(Arc::new(EmptyExec::new(output_schema)))
+            }
+            IcebergPhysicalNode::Scan {
+                table_ref,
+                snapshot: ScanSnapshot::Snapshot(snapshot_id),
                 projection,
                 limit,
                 predicates,
@@ -150,16 +183,16 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 // A pinned scan must use the schema that snapshot was written
                 // under — the table's schema may have changed since, and the
                 // current one would describe historical rows incorrectly.
-                let arrow_schema = snapshot_arrow_schema(&table_obj, snapshot_id)?;
+                let arrow_schema = snapshot_arrow_schema(&table_obj, Some(snapshot_id))?;
                 let proj_indices = project_indices(
                     &arrow_schema,
                     projection.as_ref(),
                     &table,
-                    snapshot_id,
+                    Some(snapshot_id),
                 )?;
                 let scan = IcebergTableScan::new(
                     table_obj,
-                    snapshot_id,
+                    Some(snapshot_id),
                     arrow_schema,
                     proj_indices.as_ref(),
                     &[],
@@ -212,12 +245,16 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             // commits could then give two tasks of one query different
             // snapshots. `scan.table()` is the table as loaded at planning, so
             // its current snapshot is the consistent choice for every task.
-            let snapshot_id = scan
-                .snapshot_id()
-                .or_else(|| scan.table().metadata().current_snapshot_id());
+            let metadata = scan.table().metadata();
+            let snapshot = match scan.snapshot_id().or(metadata.current_snapshot_id()) {
+                Some(id) => ScanSnapshot::Snapshot(id),
+                None => ScanSnapshot::Empty {
+                    schema: Box::new(metadata.current_schema().as_ref().clone()),
+                },
+            };
             let node = IcebergPhysicalNode::Scan {
                 table_ref: TableRefWire::new(config, scan.table().identifier()),
-                snapshot_id,
+                snapshot,
                 projection: scan.projection().map(|s| s.to_vec()),
                 limit: scan.limit(),
                 predicates: scan.predicates().cloned(),
@@ -392,6 +429,7 @@ mod tests {
     use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
 
     use crate::bridge::{CatalogConfigWire, TAG_ICEBERG};
+    use crate::test_util;
 
     use super::*;
 
@@ -420,7 +458,7 @@ mod tests {
     fn scan_node_roundtrips() {
         let node = IcebergPhysicalNode::Scan {
             table_ref: sample_table_ref(),
-            snapshot_id: Some(42),
+            snapshot: ScanSnapshot::Snapshot(42),
             projection: Some(vec!["a".to_string(), "b".to_string()]),
             limit: Some(10),
             predicates: None,
@@ -435,7 +473,7 @@ mod tests {
 
         let node = IcebergPhysicalNode::Scan {
             table_ref: sample_table_ref(),
-            snapshot_id: None,
+            snapshot: ScanSnapshot::Snapshot(1),
             projection: None,
             limit: None,
             predicates: Some(Reference::new("a").less_than(Datum::long(5))),
@@ -455,7 +493,7 @@ mod tests {
             .or(Reference::new("c").is_in([Datum::string("x"), Datum::string("y")]));
         let node = IcebergPhysicalNode::Scan {
             table_ref: sample_table_ref(),
-            snapshot_id: None,
+            snapshot: ScanSnapshot::Snapshot(1),
             projection: None,
             limit: None,
             predicates: Some(predicate),
@@ -471,7 +509,7 @@ mod tests {
         // `predicates` is `#[serde(default)]`: a payload missing the key still decodes.
         let node = IcebergPhysicalNode::Scan {
             table_ref: sample_table_ref(),
-            snapshot_id: Some(7),
+            snapshot: ScanSnapshot::Snapshot(7),
             projection: None,
             limit: None,
             predicates: Some(Reference::new("a").less_than(Datum::long(5))),
@@ -484,7 +522,7 @@ mod tests {
             decoded,
             IcebergPhysicalNode::Scan {
                 predicates: None,
-                snapshot_id: Some(7),
+                snapshot: ScanSnapshot::Snapshot(7),
                 ..
             }
         ));
@@ -675,6 +713,77 @@ mod tests {
             project_indices(&arrow_schema(), Some(&names), &tbl(), None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("out of sync"), "explains the cause: {msg}");
+    }
+
+    /// A scan of `table` pinned to `snapshot_id`, projecting column `name` only.
+    fn name_scan(table: Table, snapshot_id: Option<i64>) -> IcebergTableScan {
+        let schema = snapshot_arrow_schema(&table, None).unwrap();
+        IcebergTableScan::new(table, snapshot_id, schema, Some(&vec![1]), &[], None)
+            .with_catalog_config(Some(test_util::catalog_config()))
+    }
+
+    fn encode_scan(scan: IcebergTableScan) -> Vec<u8> {
+        let mut buf = Vec::new();
+        IcebergPhysicalCodec::default()
+            .try_encode(Arc::new(scan), &mut buf, &DefaultPhysicalProtoConverter {})
+            .expect("encode");
+        buf
+    }
+
+    fn encoded_snapshot(scan: IcebergTableScan) -> ScanSnapshot {
+        match serde_json::from_slice(&encode_scan(scan)[1..]).expect("decode wire") {
+            IcebergPhysicalNode::Scan { snapshot, .. } => snapshot,
+            other => panic!("expected a scan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scan_is_pinned_when_encoded() {
+        // Unpinned: pinned to the snapshot current at planning, so every task
+        // reads the same state.
+        assert_eq!(
+            encoded_snapshot(name_scan(test_util::table(&[1, 2]), None)),
+            ScanSnapshot::Snapshot(2)
+        );
+        assert_eq!(
+            encoded_snapshot(name_scan(test_util::table(&[1, 2]), Some(1))),
+            ScanSnapshot::Snapshot(1)
+        );
+
+        // No snapshot to pin: the scan is empty, and carries the schema it was
+        // planned against.
+        let table = test_util::table(&[]);
+        let schema = Box::new(table.metadata().current_schema().as_ref().clone());
+        assert_eq!(
+            encoded_snapshot(name_scan(table, None)),
+            ScanSnapshot::Empty { schema }
+        );
+    }
+
+    #[test]
+    fn empty_scan_decodes_to_empty_exec() {
+        use datafusion::prelude::SessionContext;
+
+        let buf = encode_scan(name_scan(test_util::table(&[]), None));
+        // Decoding needs no catalog: the scan is known to be empty.
+        let ctx = SessionContext::new();
+        let decoded = IcebergPhysicalCodec::default()
+            .try_decode(
+                &buf,
+                &[],
+                &ctx.task_ctx(),
+                &DefaultPhysicalProtoConverter {},
+            )
+            .expect("decode");
+
+        assert!(decoded.downcast_ref::<EmptyExec>().is_some());
+        let fields: Vec<_> = decoded
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(fields, ["name"], "keeps the scan's projection");
     }
 
     #[test]

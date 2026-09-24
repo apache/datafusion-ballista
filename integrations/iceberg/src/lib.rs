@@ -62,6 +62,8 @@
 mod bridge;
 mod logical_codec;
 mod physical_codec;
+#[cfg(test)]
+mod test_util;
 
 use std::sync::Arc;
 

@@ -40,6 +40,7 @@ use ballista_core::serde::BallistaLogicalExtensionCodec;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
 use datafusion::common::{DataFusionError, TableReference};
+use datafusion::datasource::empty::EmptyTable;
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Extension, LogicalPlan};
@@ -70,8 +71,7 @@ enum IcebergProviderWire {
     Static {
         #[serde(flatten)]
         table_ref: TableRefWire,
-        /// The snapshot to read. `None` only for a table with no snapshot yet.
-        snapshot_id: Option<i64>,
+        snapshot: ViewSnapshot,
     },
     /// An [`IcebergMetadataTableProvider`] (e.g. `tbl$snapshots`).
     Metadata {
@@ -80,6 +80,15 @@ enum IcebergProviderWire {
         /// The metadata table kind, as its lowercase string name.
         metadata_type: String,
     },
+}
+
+/// What a read-only view reads, fixed when the view is encoded.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+enum ViewSnapshot {
+    Snapshot(i64),
+    /// The table had no snapshot, so the view is empty. Reloading the table
+    /// instead could read rows committed after the view was planned.
+    Empty,
 }
 
 /// A [`LogicalExtensionCodec`] that understands the Iceberg table providers and
@@ -148,13 +157,17 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                         Ok(Arc::new(provider))
                     }
                     IcebergProviderWire::Static {
+                        snapshot: ViewSnapshot::Empty,
+                        ..
+                    } => Ok(Arc::new(EmptyTable::new(schema))),
+                    IcebergProviderWire::Static {
                         table_ref,
-                        snapshot_id,
+                        snapshot: ViewSnapshot::Snapshot(id),
                     } => {
                         let (config, table) = table_ref.into_parts();
-                        let table = load_table_pinned(&config, &table, snapshot_id)?;
+                        let table = load_table_pinned(&config, &table, id)?;
                         let provider =
-                            block_on(static_provider(table, snapshot_id, config))?;
+                            block_on(static_provider(table, Some(id), config))?;
                         Ok(Arc::new(provider))
                     }
                     IcebergProviderWire::Metadata {
@@ -191,12 +204,16 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
             // An unpinned static provider reads the table as it was loaded, so
             // pin that snapshot. Otherwise the scheduler, which reloads the
             // table, could read a newer one.
-            let snapshot_id = provider
+            let snapshot = match provider
                 .snapshot_id()
-                .or_else(|| provider.table().metadata().current_snapshot_id());
+                .or_else(|| provider.table().metadata().current_snapshot_id())
+            {
+                Some(id) => ViewSnapshot::Snapshot(id),
+                None => ViewSnapshot::Empty,
+            };
             let wire = IcebergProviderWire::Static {
                 table_ref: TableRefWire::new(config, provider.table_ident()),
-                snapshot_id,
+                snapshot,
             };
             return encode_blob(buf, &wire);
         }
@@ -236,10 +253,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
-    use datafusion::datasource::empty::EmptyTable;
     use datafusion::prelude::SessionContext;
 
     use crate::bridge::{CatalogConfigWire, TAG_ICEBERG};
+    use crate::test_util;
 
     use super::*;
 
@@ -276,7 +293,7 @@ mod tests {
     fn static_provider_wire_roundtrips() {
         let wire = IcebergProviderWire::Static {
             table_ref: sample_table_ref(),
-            snapshot_id: Some(42),
+            snapshot: ViewSnapshot::Snapshot(42),
         };
         assert_eq!(wire, roundtrip(&wire));
     }
@@ -297,13 +314,90 @@ mod tests {
         // out — never nested under a `table_ref` object.
         let wire = IcebergProviderWire::Static {
             table_ref: sample_table_ref(),
-            snapshot_id: Some(42),
+            snapshot: ViewSnapshot::Snapshot(42),
         };
         let value = serde_json::to_value(&wire).unwrap();
         let obj = value["Static"].as_object().unwrap();
         assert!(obj.contains_key("catalog"), "{value}");
         assert!(obj.contains_key("table"), "{value}");
         assert!(!obj.contains_key("table_ref"), "{value}");
+    }
+
+    /// Encodes `provider` with the Iceberg codec and returns its wire form.
+    fn encode_static(provider: IcebergStaticTableProvider) -> IcebergProviderWire {
+        let mut buf = Vec::new();
+        IcebergLogicalCodec::default()
+            .try_encode_table_provider(
+                &TableReference::bare("t"),
+                Arc::new(provider),
+                &mut buf,
+            )
+            .expect("encode");
+        assert_eq!(buf[0], TAG_ICEBERG);
+        serde_json::from_slice(&buf[1..]).expect("decode wire")
+    }
+
+    fn encoded_snapshot(provider: IcebergStaticTableProvider) -> ViewSnapshot {
+        match encode_static(provider) {
+            IcebergProviderWire::Static { snapshot, .. } => snapshot,
+            other => panic!("expected a static provider, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn static_provider_is_pinned_when_encoded() {
+        let config = test_util::catalog_config();
+
+        // Unpinned: pinned to the snapshot current when it was loaded, since
+        // the scheduler reloads the table and could otherwise see a newer one.
+        let unpinned =
+            IcebergStaticTableProvider::try_new_from_table(test_util::table(&[1, 2]))
+                .await
+                .unwrap()
+                .with_catalog_config(config.clone());
+        assert_eq!(encoded_snapshot(unpinned), ViewSnapshot::Snapshot(2));
+
+        // Pinned: keeps its own snapshot, not the current one.
+        let pinned = IcebergStaticTableProvider::try_new_from_table_snapshot(
+            test_util::table(&[1, 2]),
+            1,
+        )
+        .await
+        .unwrap()
+        .with_catalog_config(config.clone());
+        assert_eq!(encoded_snapshot(pinned), ViewSnapshot::Snapshot(1));
+
+        // No snapshot to pin: the view is empty.
+        let empty = IcebergStaticTableProvider::try_new_from_table(test_util::table(&[]))
+            .await
+            .unwrap()
+            .with_catalog_config(config);
+        assert_eq!(encoded_snapshot(empty), ViewSnapshot::Empty);
+    }
+
+    #[tokio::test]
+    async fn empty_static_provider_decodes_to_an_empty_table() {
+        let provider =
+            IcebergStaticTableProvider::try_new_from_table(test_util::table(&[]))
+                .await
+                .unwrap()
+                .with_catalog_config(test_util::catalog_config());
+        let schema = provider.schema();
+        let codec = IcebergLogicalCodec::default();
+        let table_ref = TableReference::bare("t");
+
+        let mut buf = Vec::new();
+        codec
+            .try_encode_table_provider(&table_ref, Arc::new(provider), &mut buf)
+            .expect("encode");
+        // Decoding needs no catalog: the view is known to be empty.
+        let ctx = SessionContext::new();
+        let decoded = codec
+            .try_decode_table_provider(&buf, &table_ref, schema.clone(), &ctx.task_ctx())
+            .expect("decode");
+
+        assert!(decoded.downcast_ref::<EmptyTable>().is_some());
+        assert_eq!(decoded.schema(), schema);
     }
 
     /// Stand-in inner codec for the delegation test. The real Ballista codec can't

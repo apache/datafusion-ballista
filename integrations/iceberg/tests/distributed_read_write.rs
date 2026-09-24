@@ -895,3 +895,51 @@ async fn distributed_time_travel_pins_snapshot_schema() {
         &run_sql(&ctx, "SELECT * FROM events_v2_pinned ORDER BY id").await
     );
 }
+
+/// A read-only view registered while the table has no snapshot stays empty:
+/// rows committed afterwards must not appear in it, just as they don't for the
+/// same view in plain DataFusion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn distributed_view_of_empty_table_stays_empty() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let fixture = IcebergFixture::start().await;
+    let props = fixture.props();
+    let table_name = "later".to_string();
+    let namespace = create_table(&props, &table_name).await;
+
+    let state = iceberg_session_state(
+        SessionConfig::new_with_ballista()
+            .with_target_partitions(2)
+            .with_ballista_standalone_parallelism(2),
+    );
+    let ctx = SessionContext::standalone_with_state(state)
+        .await
+        .expect("start standalone ballista");
+
+    let catalog_config = IcebergCatalogConfig::new("rest", "rest", props.clone());
+    register_iceberg_table_at_snapshot(
+        &ctx,
+        "before_insert",
+        catalog_config.clone(),
+        namespace.clone(),
+        table_name.clone(),
+        None,
+    )
+    .await
+    .expect("register view of the empty table");
+    register_iceberg_table(&ctx, "later", catalog_config, namespace, table_name)
+        .await
+        .expect("register iceberg table");
+
+    run_sql(&ctx, "INSERT INTO later VALUES (1, 'alice'), (2, 'bob')").await;
+
+    assert_batches_eq!(
+        ["+---+", "| n |", "+---+", "| 2 |", "+---+"],
+        &run_sql(&ctx, "SELECT count(*) AS n FROM later").await
+    );
+    assert_batches_eq!(
+        ["+---+", "| n |", "+---+", "| 0 |", "+---+"],
+        &run_sql(&ctx, "SELECT count(*) AS n FROM before_insert").await
+    );
+}
