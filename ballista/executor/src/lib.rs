@@ -146,7 +146,7 @@ pub fn as_task_status(
                 runtime_stats.len(),
                 window_state.len(),
             );
-            let partition = shuffle_write_result.partitions;
+            let partitions = shuffle_write_result.partitions;
             let col_stats = shuffle_write_result.column_stats;
             TaskStatus {
                 task_id: task_id as u32,
@@ -159,7 +159,7 @@ pub fn as_task_status(
                 metrics,
                 status: Some(task_status::Status::Successful(SuccessfulTask {
                     executor_id,
-                    partitions: partition,
+                    partitions,
                     runtime_stats,
                     task_column_stats: col_stats,
                     window_state,

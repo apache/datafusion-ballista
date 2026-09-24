@@ -1162,19 +1162,6 @@ async fn run_coordinator(
         (0..k).map(|_| Vec::new()).collect();
     let mut outputs: Vec<InputPartitionOutput> = Vec::with_capacity(num_input_partitions);
     let mut first_error: Option<DataFusionError> = None;
-    let mut column_null_counts: Vec<u64> = Vec::new();
-    for output in outputs.iter() {
-        if column_null_counts.len() < output.null_counts.len() {
-            column_null_counts.resize(output.null_counts.len(), 0);
-        }
-        for (slot, n) in column_null_counts.iter_mut().zip(&output.null_counts) {
-            *slot += n;
-        }
-    }
-
-    if let Ok(mut state) = writer.state.lock() {
-        state.column_null_counts = column_null_counts;
-    }
     while let Some(joined) = writes.join_next().await {
         match joined {
             Ok(Ok(output)) => outputs.push(output),
@@ -1191,6 +1178,21 @@ async fn run_coordinator(
         }
     }
     writes.abort_all();
+
+    // Fold each input partition's per-column null counts into the task-level
+    // total and publish it on the shared state for `execute_query_stage`.
+    let mut column_null_counts: Vec<u64> = Vec::new();
+    for output in outputs.iter() {
+        if column_null_counts.len() < output.null_counts.len() {
+            column_null_counts.resize(output.null_counts.len(), 0);
+        }
+        for (slot, n) in column_null_counts.iter_mut().zip(&output.null_counts) {
+            *slot += n;
+        }
+    }
+    if let Ok(mut state) = writer.state.lock() {
+        state.column_null_counts = column_null_counts;
+    }
 
     // Every input partition has finished bucketing; emit the task's single
     // data file from all of them, then describe each output partition once.
@@ -2071,6 +2073,102 @@ mod tests {
             assert!(seen.contains(&k), "key {k} missing from round-trip");
         }
 
+        Ok(())
+    }
+
+    /// Build a sort-shuffle writer over `partitions`, drive every output
+    /// partition to completion (which is what publishes the task-level column
+    /// stats onto the shared state), and return the per-column null counts.
+    async fn collect_null_counts(
+        schema: SchemaRef,
+        partitions: Vec<Vec<RecordBatch>>,
+        hash_col: &str,
+        num_output_partitions: usize,
+    ) -> Result<Vec<u64>> {
+        let source =
+            Arc::new(MemorySourceConfig::try_new(&partitions, schema.clone(), None)?);
+        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(source));
+        let task_ctx = SessionContext::new().task_ctx();
+        let work_dir = TempDir::new()?;
+        let col_idx = schema.index_of(hash_col)?;
+
+        let writer = Arc::new(SortShuffleWriterExec::try_new(
+            "null_count_job".into(),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_string(),
+            Partitioning::Hash(
+                vec![Arc::new(Column::new(hash_col, col_idx))],
+                num_output_partitions,
+            ),
+            SortShuffleConfig::default(),
+        )?);
+
+        for r in drive_partition_results(writer.clone(), task_ctx).await {
+            r.expect("partition drive should succeed");
+        }
+        Ok(writer.column_null_counts())
+    }
+
+    #[tokio::test]
+    async fn column_null_counts_fold_across_inputs() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, true),
+            Field::new("b", DataType::Utf8, true),
+        ]));
+        // Per batch: "a" has 1 null, "b" has 2.
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(vec![Some(1), None, Some(3)])),
+                Arc::new(StringArray::from(vec![None, None, Some("x")])),
+            ],
+        )?;
+        // Two input partitions of the same batch -> the coordinator must SUM
+        // them: "a" = 1x2 = 2, "b" = 2x2 = 4. Also proves the shared-state
+        // read-back (we assert on the original Arc, not the driven clone) and
+        // that nulls are counted over the whole batch despite hashing on "a".
+        let partitions = vec![vec![batch.clone()], vec![batch]];
+        let counts = collect_null_counts(schema, partitions, "a", 2).await?;
+        assert_eq!(counts, vec![2, 4]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn column_null_counts_zero_for_fully_populated_column() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, false),
+            Field::new("b", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(vec![Some(1), Some(2), Some(3)])),
+                Arc::new(StringArray::from(vec![Some("p"), None, Some("q")])),
+            ],
+        )?;
+        let counts = collect_null_counts(schema, vec![vec![batch]], "a", 2).await?;
+        assert_eq!(counts, vec![0, 1]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn column_null_counts_empty_input_is_schema_width_zeros() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, true),
+            Field::new("b", DataType::Utf8, true),
+        ]));
+        // A zero-row batch: the accumulator is still schema-width and the
+        // coordinator's fold still runs, yielding zeros rather than an empty vec.
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(Vec::<Option<u32>>::new())),
+                Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            ],
+        )?;
+        let counts = collect_null_counts(schema, vec![vec![batch]], "a", 2).await?;
+        assert_eq!(counts, vec![0, 0]);
         Ok(())
     }
 
