@@ -23,23 +23,24 @@ use datafusion::{assert_batches_eq, prelude::SessionContext};
 /// bucket name to be used for this example
 const S3_BUCKET: &str = "ballista";
 /// S3 access key
-const S3_ACCESS_KEY_ID: &str = "MINIO";
+const S3_ACCESS_KEY_ID: &str = "BALLISTA";
 /// S3 secret key
-const S3_SECRET_KEY: &str = "MINIOSECRET";
+const S3_SECRET_KEY: &str = "BALLISTASECRET";
 ///
 /// # Extending Ballista
 ///
 /// This example demonstrates how to extend ballista scheduler and executor registering new object store registry.
-/// It uses local [minio](https://min.io) to act as S3 object store.
+/// It uses a local [RustFS](https://github.com/rustfs/rustfs) server to act as S3 object store.
 ///
 /// Ballista will be extended providing custom session configuration, runtime environment and session state.
 ///
-/// Minio can be started:
+/// RustFS can be started, along with the bucket this example writes to:
 ///
 /// ```bash
-/// docker run --rm -p 9000:9000  -p 9001:9001 -e "MINIO_ACCESS_KEY=MINIO"  -e "MINIO_SECRET_KEY=MINIOSECRET"   quay.io/minio/minio server /data --console-address ":9001"
+/// docker run --rm -d --name rustfs -p 9000:9000 -e RUSTFS_ACCESS_KEY=BALLISTA -e RUSTFS_SECRET_KEY=BALLISTASECRET rustfs/rustfs:1.0.0
+/// docker exec rustfs mkdir /data/ballista
 /// ```
-/// After minio, we need to start `custom-scheduler`
+/// After RustFS, we need to start `custom-scheduler`
 ///
 /// ```bash
 /// cargo run --example custom-scheduler

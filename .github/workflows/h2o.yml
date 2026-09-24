@@ -78,7 +78,7 @@ jobs:
           shared-key: h2o-window-small
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Generate h2o SMALL data (join dataset — window reuses it)
         env:
@@ -141,7 +141,7 @@ jobs:
         with:
           name: h2o-window-small-cluster-logs
           retention-days: 14
-          path: |
-            ${{ runner.temp }}/scheduler.log
-            ${{ runner.temp }}/executor.log
+          # Glob, not two file lines: in a container job the runner only
+          # rewrites the first line's host path (actions/runner#1174).
+          path: ${{ runner.temp }}/*.log
           if-no-files-found: ignore

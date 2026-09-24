@@ -49,6 +49,7 @@ pub(crate) fn job_start_event(
         job_name: graph.job_name().to_string(),
         queued_at,
         submitted_at,
+        scheduler_id: graph.scheduler_id().map(str::to_owned),
         logical_plan: graph.logical_plan().map(|p| p.to_string()),
         // Same rendering the `get_job` handler uses for `PlanFormat::Default`.
         physical_plan: Some(
@@ -373,6 +374,7 @@ mod tests {
         assert!(json.contains("\"job_name\":\"job_name\""));
         assert!(json.contains("\"queued_at\":5"));
         assert!(json.contains("\"submitted_at\":10"));
+        assert!(json.contains("\"scheduler_id\":\"scheduler_id\""));
         // `job_start_event` renders the graph's pre-staging physical plan
         // (`graph.physical_plan()`), unlike `job_end_event`'s embedded job
         // DTO which shows the plan reconstructed from stages.

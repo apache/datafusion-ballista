@@ -1254,13 +1254,15 @@ message CleanJobDataResult {
 message LaunchTaskParams {
   // Allow to launch a task set to an executor at once
   repeated TaskDefinition tasks = 1;
-  string scheduler_id = 2;
+  // Scheduler callback endpoint in host:port format.
+  string scheduler_endpoint = 2;
 }
 
 message LaunchMultiTaskParams {
   // Allow to launch a task set to an executor at once
   repeated MultiTaskDefinition multi_tasks = 1;
-  string scheduler_id = 2;
+  // Scheduler callback endpoint in host:port format.
+  string scheduler_endpoint = 2;
 }
 
 message LaunchTaskResult {

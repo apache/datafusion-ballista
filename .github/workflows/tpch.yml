@@ -89,7 +89,7 @@ jobs:
           shared-key: tpch-sf10
 
       - name: Install tpchgen-cli
-        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: tpchgen-cli@2.0.2
 
@@ -151,7 +151,7 @@ jobs:
         with:
           name: tpch-sf10-cluster-logs-${{ matrix.slug }}
           retention-days: 14
-          path: |
-            ${{ runner.temp }}/scheduler.log
-            ${{ runner.temp }}/executor.log
+          # Glob, not two file lines: in a container job the runner only
+          # rewrites the first line's host path (actions/runner#1174).
+          path: ${{ runner.temp }}/*.log
           if-no-files-found: ignore

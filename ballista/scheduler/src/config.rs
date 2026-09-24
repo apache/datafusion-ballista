@@ -29,7 +29,9 @@ use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
 use crate::scheduler_server::JobIdGenerator;
 use ballista_core::extension::EndpointOverrideFn;
-use ballista_core::{ConfigProducer, JobId, config::TaskSchedulingPolicy};
+use ballista_core::{
+    ConfigProducer, JobId, config::TaskSchedulingPolicy, ids::new_instance_id,
+};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use log::{info, warn};
@@ -101,6 +103,10 @@ pub struct Config {
         help = "Namespace for the ballista cluster that this executor will join."
     )]
     pub namespace: String,
+    /// Identifier for this scheduler. If unset, a UUID-backed instance identity
+    /// is generated at startup.
+    #[arg(long = "id", help = "Identifier for this scheduler.")]
+    pub scheduler_id: Option<String>,
     /// Local host name or IP address to bind to.
     #[arg(
         long,
@@ -313,6 +319,8 @@ pub struct SchedulerConfig {
     /// Namespace of this scheduler. Schedulers using the same cluster storage and namespace
     /// will share global cluster state.
     pub namespace: String,
+    /// Identifier for this scheduler instance.
+    pub scheduler_id: String,
     /// The external hostname of the scheduler
     pub external_host: String,
     /// The bind host for the scheduler's gRPC service
@@ -422,6 +430,7 @@ impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
             namespace: String::default(),
+            scheduler_id: new_instance_id(),
             external_host: "localhost".into(),
             bind_port: 50050,
             bind_host: "127.0.0.1".into(),
@@ -473,6 +482,12 @@ impl SchedulerConfig {
     /// Suspicious combinations are logged as warnings rather than rejected,
     /// since small values are legitimate for fail-fast setups and tests.
     pub fn validate(&self) -> ballista_core::error::Result<()> {
+        if self.scheduler_id.trim().is_empty() {
+            return Err(ballista_core::error::BallistaError::Configuration(
+                "scheduler_id must not be empty".to_string(),
+            ));
+        }
+
         if self.no_executors_grace_period_seconds != 0
             && self.no_executors_grace_period_seconds < self.executor_timeout_seconds
         {
@@ -522,8 +537,8 @@ impl SchedulerConfig {
         Ok(())
     }
 
-    /// Returns the scheduler name in host:port format.
-    pub fn scheduler_name(&self) -> String {
+    /// Returns the scheduler callback endpoint in host:port format.
+    pub fn scheduler_endpoint(&self) -> String {
         format!("{}:{}", self.external_host, self.bind_port)
     }
 
@@ -535,6 +550,12 @@ impl SchedulerConfig {
     /// Sets the namespace for this scheduler.
     pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = namespace.into();
+        self
+    }
+
+    /// Sets the unique identifier for this scheduler instance.
+    pub fn with_scheduler_id(mut self, scheduler_id: impl Into<String>) -> Self {
+        self.scheduler_id = scheduler_id.into();
         self
     }
 
@@ -785,6 +806,7 @@ impl TryFrom<Config> for SchedulerConfig {
 
         let config = SchedulerConfig {
             namespace: opt.namespace,
+            scheduler_id: opt.scheduler_id.unwrap_or_else(new_instance_id),
             external_host: opt.external_host,
             bind_port: opt.bind_port,
             bind_host: opt.bind_host,
@@ -863,6 +885,24 @@ mod tests {
 
     #[cfg(feature = "build-binary")]
     #[test]
+    fn cli_scheduler_id_explicit_value_is_respected() {
+        use clap::Parser;
+        let opt = Config::parse_from(["scheduler", "--id", "scheduler-a"]);
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert_eq!(cfg.scheduler_id, "scheduler-a");
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_scheduler_id_defaults_to_uuid_when_unset() {
+        use clap::Parser;
+        let opt = Config::parse_from(["scheduler"]);
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        uuid::Uuid::parse_str(&cfg.scheduler_id).unwrap();
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
     fn cli_grace_period_defaults_to_executor_timeout_when_unset() {
         use clap::Parser;
         let opt = Config::parse_from(["scheduler", "--executor-timeout-seconds", "90"]);
@@ -890,6 +930,21 @@ mod tests {
     #[test]
     fn validate_accepts_default_config() {
         SchedulerConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn default_scheduler_id_is_uuid() {
+        let cfg = SchedulerConfig::default();
+
+        uuid::Uuid::parse_str(&cfg.scheduler_id).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_empty_scheduler_id() {
+        let cfg = SchedulerConfig::default().with_scheduler_id(" ");
+        let err = cfg.validate().unwrap_err();
+
+        assert!(err.to_string().contains("scheduler_id"));
     }
 
     #[cfg(feature = "build-binary")]
