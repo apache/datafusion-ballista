@@ -108,7 +108,7 @@ impl BallistaCluster {
 
     /// Creates a new `BallistaCluster` from scheduler configuration.
     pub async fn new_from_config(config: &SchedulerConfig) -> Result<Self> {
-        let scheduler = config.scheduler_name();
+        let scheduler = config.scheduler_id.clone();
 
         let session_builder = config
             .override_session_builder

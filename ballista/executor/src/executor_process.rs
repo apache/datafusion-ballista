@@ -39,7 +39,6 @@ use tokio::signal;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::{fs, time};
-use uuid::Uuid;
 
 use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool};
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
@@ -63,6 +62,7 @@ use ballista_core::utils::{
 };
 use ballista_core::{
     BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer,
+    ids::new_instance_id,
 };
 
 use crate::client_pool::DefaultBallistaClientPool;
@@ -259,6 +259,8 @@ fn identity_pool_policy() -> MemoryPoolPolicy {
 /// network configuration, scheduler connection details, resource limits,
 /// and optional overrides for customizing executor behavior.
 pub struct ExecutorProcessConfig {
+    /// Identifier for this executor instance.
+    pub executor_id: String,
     /// Local IP address for binding executor services.
     pub bind_host: String,
     /// External hostname/IP advertised to other components for connectivity.
@@ -344,6 +346,17 @@ pub struct ExecutorProcessConfig {
 }
 
 impl ExecutorProcessConfig {
+    /// Validates executor process configuration.
+    pub fn validate(&self) -> ballista_core::error::Result<()> {
+        if self.executor_id.trim().is_empty() {
+            return Err(BallistaError::Configuration(
+                "executor_id must not be empty".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Generates a prefix for log file names based on executor host and port.
     pub fn log_file_name_prefix(&self) -> String {
         format!(
@@ -359,6 +372,7 @@ impl ExecutorProcessConfig {
 impl Default for ExecutorProcessConfig {
     fn default() -> Self {
         Self {
+            executor_id: new_instance_id(),
             bind_host: "127.0.0.1".into(),
             external_host: None,
             port: 50051,
@@ -410,6 +424,8 @@ impl Default for ExecutorProcessConfig {
 pub async fn start_executor_process(
     opt: Arc<ExecutorProcessConfig>,
 ) -> ballista_core::error::Result<()> {
+    opt.validate()?;
+
     let addr = format!("{}:{}", opt.bind_host, opt.port);
     let address = addr.parse().map_err(|e: std::net::AddrParseError| {
         BallistaError::Configuration(e.to_string())
@@ -437,8 +453,7 @@ pub async fn start_executor_process(
         opt.vcores
     };
     let task_scheduling_policy = opt.task_scheduling_policy;
-    // assign this executor an unique ID
-    let executor_id = Uuid::new_v4().to_string();
+    let executor_id = opt.executor_id.clone();
     info!(
         "Ballista Executor v{BALLISTA_VERSION} (DataFusion v{DATAFUSION_VERSION}) starting ..."
     );
@@ -447,7 +462,7 @@ pub async fn start_executor_process(
     info!("Executor vcores (default: available CPU cores): {vcores}");
     info!("Executor scheduling policy: {task_scheduling_policy:?}");
 
-    let executor_meta = structure_executor_metadata(&executor_id, &opt, vcores as u32);
+    let executor_meta = structure_executor_metadata(&opt, vcores as u32);
 
     // put them to session config
     let metrics_collector = Arc::new(LoggingMetricsCollector::default());
@@ -1083,7 +1098,6 @@ pub async fn satisfy_dir_ttl(
 
 /// Structuring executor's metadata to start the main process
 pub fn structure_executor_metadata(
-    executor_id: &str,
     options: &Arc<ExecutorProcessConfig>,
     vcores: u32,
 ) -> ExecutorRegistration {
@@ -1108,7 +1122,7 @@ pub fn structure_executor_metadata(
     }
 
     ExecutorRegistration {
-        id: executor_id.to_string().clone(),
+        id: options.executor_id.clone(),
         host: options.external_host.clone(),
         port: options.port as u32,
         grpc_port: options.grpc_port as u32,
@@ -1136,15 +1150,72 @@ pub fn structure_executor_metadata(
 mod tests {
     use crate::executor_process::is_subdirectory;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
+    use super::ExecutorProcessConfig;
     use super::clean_shuffle_data_loop;
     use super::remove_job_data;
+    use super::structure_executor_metadata;
+    use ballista_core::BALLISTA_PROTOCOL_VERSION;
     use ballista_core::JobId;
+    use ballista_core::ids::new_instance_id;
+    use ballista_core::serde::protobuf::executor_resource::Resource;
     use std::fs;
     use std::fs::File;
     use std::io::Write;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    #[test]
+    fn executor_metadata_reflects_process_configuration() {
+        let executor_id = new_instance_id();
+        let config = Arc::new(ExecutorProcessConfig {
+            executor_id: executor_id.clone(),
+            external_host: Some("executor.example.com".to_string()),
+            port: 10051,
+            grpc_port: 10052,
+            ..ExecutorProcessConfig::default()
+        });
+
+        let metadata = structure_executor_metadata(&config, 4);
+
+        assert_eq!(metadata.id, executor_id);
+        uuid::Uuid::parse_str(&metadata.id).unwrap();
+        assert_eq!(metadata.host.as_deref(), Some("executor.example.com"));
+        assert_eq!(metadata.port, 10051);
+        assert_eq!(metadata.grpc_port, 10052);
+        assert_eq!(
+            metadata
+                .specification
+                .as_ref()
+                .and_then(|spec| spec.resources.first())
+                .and_then(|resource| resource.resource.as_ref()),
+            Some(&Resource::Vcores(4))
+        );
+        assert!(metadata.os_info.is_some());
+        assert_eq!(
+            metadata.ballista_protocol_version,
+            BALLISTA_PROTOCOL_VERSION
+        );
+    }
+
+    #[test]
+    fn default_executor_id_is_uuid() {
+        let config = ExecutorProcessConfig::default();
+
+        uuid::Uuid::parse_str(&config.executor_id).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_empty_executor_id() {
+        let config = ExecutorProcessConfig {
+            executor_id: " ".to_string(),
+            ..ExecutorProcessConfig::default()
+        };
+        let err = config.validate().unwrap_err();
+
+        assert!(err.to_string().contains("executor_id"));
+    }
 
     #[tokio::test]
     async fn test_executor_clean_up() {

@@ -96,7 +96,7 @@ them would produce partial results that downstream stages cannot merge.
 
 Each task's plan is rewritten before dispatch so that its scan sees only the file groups belonging to its own slice.
 
-## Configuring Executor Concurrency Levels
+## Configuring Executor vcores
 
 Each executor instance advertises a fixed number of virtual cores (vcores) to the scheduler. This is specified by
 passing a `--vcores` command-line parameter. The default setting is to use all available CPU cores.
