@@ -74,12 +74,12 @@ pub trait TaskLauncher: Send + Sync + 'static {
 }
 
 struct DefaultTaskLauncher {
-    scheduler_id: String,
+    scheduler_endpoint: String,
 }
 
 impl DefaultTaskLauncher {
-    pub fn new(scheduler_id: String) -> Self {
-        Self { scheduler_id }
+    pub fn new(scheduler_endpoint: String) -> Self {
+        Self { scheduler_endpoint }
     }
 }
 
@@ -109,7 +109,7 @@ impl TaskLauncher for DefaultTaskLauncher {
             );
         }
         let res = executor_manager
-            .launch_multi_task(&executor.id, tasks, self.scheduler_id.clone())
+            .launch_multi_task(&executor.id, tasks, self.scheduler_endpoint.clone())
             .await?;
         Ok(res)
     }
@@ -187,6 +187,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         state: Arc<dyn JobState>,
         codec: BallistaCodec<T, U>,
         scheduler_id: String,
+        scheduler_endpoint: String,
         config: Arc<SchedulerConfig>,
     ) -> Self {
         Self {
@@ -194,7 +195,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             codec,
             scheduler_id: scheduler_id.clone(),
             active_job_cache: Arc::new(DashMap::new()),
-            launcher: Arc::new(DefaultTaskLauncher::new(scheduler_id)),
+            launcher: Arc::new(DefaultTaskLauncher::new(scheduler_endpoint)),
             task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
         }
@@ -1238,6 +1239,7 @@ mod tests {
             job_state,
             BallistaCodec::default(),
             "test-scheduler".to_string(),
+            "localhost:50050".to_string(),
             Arc::new(SchedulerConfig::default()),
         );
 

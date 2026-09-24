@@ -97,8 +97,7 @@ mod test;
 /// when they are returned from [AdaptivePlanner].
 #[derive(Debug, Clone)]
 pub(crate) struct AdaptiveExecutionGraph {
-    /// Curator scheduler name. Can be `None` is `ExecutionGraph` is not currently curated by any scheduler
-    #[allow(dead_code)] // not used at the moment, will be used later
+    /// Scheduler currently curating this job, if known.
     scheduler_id: Option<String>,
     /// Adaptive Planner to be used with this execution graph
     planner: AdaptivePlanner,
@@ -697,6 +696,10 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     fn session_id(&self) -> &str {
         self.session_id.as_str()
+    }
+
+    fn scheduler_id(&self) -> Option<&str> {
+        self.scheduler_id.as_deref()
     }
 
     fn session_config(&self) -> Arc<SessionConfig> {
