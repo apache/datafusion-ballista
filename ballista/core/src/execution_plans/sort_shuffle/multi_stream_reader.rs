@@ -99,7 +99,13 @@ impl MultiStreamPartitionStream {
                     }
                     let mut file = File::open(&self.data_path)?;
                     file.seek(SeekFrom::Start(next))?;
-                    self.state = State::Reading(StreamReader::try_new(file, None)?);
+                    // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
+                    let reader = unsafe {
+                        StreamReader::try_new(file, None)?.with_skip_validation(cfg!(
+                            feature = "arrow-ipc-optimizations"
+                        ))
+                    };
+                    self.state = State::Reading(reader);
                 }
             }
         }

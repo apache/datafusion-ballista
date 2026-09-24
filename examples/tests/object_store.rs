@@ -19,7 +19,7 @@
 //!
 //! Tests demonstrate how to setup object stores with ballista.
 //!
-//! Test depend on Minio testcontainer acting as S3 object
+//! Test depend on a RustFS testcontainer acting as S3 object
 //! store.
 //!
 //! Tesctoncainers require docker to run.
@@ -36,11 +36,11 @@ mod standalone {
     use datafusion::{assert_batches_eq, prelude::SessionContext};
     use datafusion::{error::DataFusionError, execution::SessionStateBuilder};
     use std::sync::Arc;
-    use testcontainers_modules::testcontainers::runners::AsyncRunner;
+    use testcontainers::runners::AsyncRunner;
 
     #[tokio::test]
     async fn should_execute_sql_write() -> datafusion::error::Result<()> {
-        let container = crate::common::create_minio_container();
+        let container = crate::common::create_s3_container();
         let node = container.start().await.unwrap();
 
         node.exec(crate::common::create_bucket_command())
@@ -48,7 +48,10 @@ mod standalone {
             .unwrap();
 
         let host = node.get_host().await.unwrap();
-        let port = node.get_host_port_ipv4(9000).await.unwrap();
+        let port = node
+            .get_host_port_ipv4(crate::common::S3_PORT)
+            .await
+            .unwrap();
 
         let object_store = crate::common::create_s3_store(&host.to_string(), port)
             .map_err(|e| DataFusionError::External(e.into()))?;
@@ -133,13 +136,13 @@ mod remote {
     use datafusion::{assert_batches_eq, prelude::SessionContext};
     use datafusion::{error::DataFusionError, execution::SessionStateBuilder};
     use std::sync::Arc;
-    use testcontainers_modules::testcontainers::runners::AsyncRunner;
+    use testcontainers::runners::AsyncRunner;
 
     #[tokio::test]
     async fn should_execute_sql_write() -> datafusion::error::Result<()> {
         let test_data = examples_test_data();
 
-        let container = crate::common::create_minio_container();
+        let container = crate::common::create_s3_container();
         let node = container.start().await.unwrap();
 
         node.exec(crate::common::create_bucket_command())
@@ -147,7 +150,10 @@ mod remote {
             .unwrap();
 
         let host = node.get_host().await.unwrap();
-        let port = node.get_host_port_ipv4(9000).await.unwrap();
+        let port = node
+            .get_host_port_ipv4(crate::common::S3_PORT)
+            .await
+            .unwrap();
 
         let object_store = crate::common::create_s3_store(&host.to_string(), port)
             .map_err(|e| DataFusionError::External(e.into()))?;
@@ -230,7 +236,7 @@ mod custom_s3_config {
     use datafusion::{assert_batches_eq, prelude::SessionContext};
     use datafusion::{error::DataFusionError, execution::SessionStateBuilder};
     use std::sync::Arc;
-    use testcontainers_modules::testcontainers::runners::AsyncRunner;
+    use testcontainers::runners::AsyncRunner;
 
     #[tokio::test]
     async fn should_configure_s3_execute_sql_write_remote()
@@ -238,9 +244,9 @@ mod custom_s3_config {
         let test_data = examples_test_data();
 
         //
-        // Minio cluster setup
+        // S3 (RustFS) container setup
         //
-        let container = crate::common::create_minio_container();
+        let container = crate::common::create_s3_container();
         let node = container.start().await.unwrap();
 
         node.exec(crate::common::create_bucket_command())
@@ -248,10 +254,13 @@ mod custom_s3_config {
             .unwrap();
 
         let endpoint_host = node.get_host().await.unwrap();
-        let endpoint_port = node.get_host_port_ipv4(9000).await.unwrap();
+        let endpoint_port = node
+            .get_host_port_ipv4(crate::common::S3_PORT)
+            .await
+            .unwrap();
 
         log::info!(
-            "MINIO testcontainers host: {}, port: {}",
+            "S3 testcontainers host: {}, port: {}",
             endpoint_host,
             endpoint_port
         );
@@ -377,9 +386,9 @@ mod custom_s3_config {
         let test_data = examples_test_data();
 
         //
-        // Minio cluster setup
+        // S3 (RustFS) container setup
         //
-        let container = crate::common::create_minio_container();
+        let container = crate::common::create_s3_container();
         let node = container.start().await.unwrap();
 
         node.exec(crate::common::create_bucket_command())
@@ -387,10 +396,13 @@ mod custom_s3_config {
             .unwrap();
 
         let endpoint_host = node.get_host().await.unwrap();
-        let endpoint_port = node.get_host_port_ipv4(9000).await.unwrap();
+        let endpoint_port = node
+            .get_host_port_ipv4(crate::common::S3_PORT)
+            .await
+            .unwrap();
 
         log::info!(
-            "MINIO testcontainers host: {}, port: {}",
+            "S3 testcontainers host: {}, port: {}",
             endpoint_host,
             endpoint_port
         );
@@ -526,9 +538,9 @@ mod custom_s3_config {
         let test_data = examples_test_data();
 
         //
-        // Minio cluster setup
+        // S3 (RustFS) container setup
         //
-        let container = crate::common::create_minio_container();
+        let container = crate::common::create_s3_container();
         let node = container.start().await.unwrap();
 
         node.exec(crate::common::create_bucket_command())
@@ -536,7 +548,10 @@ mod custom_s3_config {
             .unwrap();
 
         let endpoint_host = node.get_host().await.unwrap();
-        let endpoint_port = node.get_host_port_ipv4(9000).await.unwrap();
+        let endpoint_port = node
+            .get_host_port_ipv4(crate::common::S3_PORT)
+            .await
+            .unwrap();
 
         //
         // Session Context and Ballista cluster setup

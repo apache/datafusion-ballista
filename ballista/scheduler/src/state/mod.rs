@@ -18,6 +18,7 @@
 use crate::cluster::{BallistaCluster, BoundTask, ExecutorSlot};
 use crate::config::SchedulerConfig;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
+use crate::scheduler_server::timestamp_millis;
 use crate::state::execution_graph::TaskDescription;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
@@ -33,7 +34,7 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, warn};
 use prost::Message;
 use std::any::type_name;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -113,7 +114,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub fn new(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
-        scheduler_name: String,
+        scheduler_id: String,
+        scheduler_endpoint: String,
         config: Arc<SchedulerConfig>,
     ) -> Self {
         Self {
@@ -124,7 +126,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             task_manager: TaskManager::new(
                 cluster.job_state(),
                 codec.clone(),
-                scheduler_name,
+                scheduler_id,
+                scheduler_endpoint,
                 config.clone(),
             ),
             session_manager: SessionManager::new(cluster.job_state()),
@@ -133,21 +136,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
-    /// Creates a new `SchedulerState` with default scheduler name (for testing only).
+    /// Creates a new `SchedulerState` with the default scheduler endpoint (for testing only).
     #[cfg(test)]
-    pub fn new_with_default_scheduler_name(
+    pub fn new_with_default_scheduler_endpoint(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
     ) -> Self {
         let config = Arc::new(SchedulerConfig::default());
-        SchedulerState::new(cluster, codec, "localhost:50050".to_owned(), config)
+        SchedulerState::new(
+            cluster,
+            codec,
+            config.scheduler_id.clone(),
+            "localhost:50050".to_owned(),
+            config,
+        )
     }
 
     #[allow(dead_code)]
     pub(crate) fn new_with_task_launcher(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
-        scheduler_name: String,
+        scheduler_id: String,
         config: Arc<SchedulerConfig>,
         dispatcher: Arc<dyn TaskLauncher>,
     ) -> Self {
@@ -159,7 +168,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             task_manager: TaskManager::with_launcher(
                 cluster.job_state(),
                 codec.clone(),
-                scheduler_name,
+                scheduler_id,
                 dispatcher,
                 config.clone(),
             ),
@@ -190,8 +199,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         let state = self.clone();
         tokio::spawn(async move {
             let mut if_revive = false;
-            match state.launch_tasks(schedulable_tasks).await {
-                Ok(unassigned_executor_slots) => {
+            match state.launch_tasks(schedulable_tasks, &sender).await {
+                Ok((unassigned_executor_slots, failed_jobs)) => {
                     if !unassigned_executor_slots.is_empty() {
                         if let Err(e) = state
                             .executor_manager
@@ -201,6 +210,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                             error!("Fail to unbind tasks: {e}");
                         }
                         if_revive = true;
+                    }
+                    for job in failed_jobs {
+                        if let Err(e) = sender
+                            .post_event(QueryStageSchedulerEvent::JobRunningFailed {
+                                job_id: job,
+                                fail_message: "task serialization failed by executor"
+                                    .to_string(),
+                                queued_at: timestamp_millis(),
+                                failed_at: timestamp_millis(),
+                            })
+                            .await
+                        {
+                            error!("Fail to post JobRunningFailed: {e:?}");
+                        }
                     }
                 }
                 Err(e) => {
@@ -222,33 +245,37 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
     /// Remove an executor.
     /// 1. The executor related info will be removed from [`ExecutorManager`]
-    /// 2. All of affected running execution graph will be rolled backed
-    /// 3. All of the running tasks of the affected running stages will be cancelled
+    /// 2. A [`QueryStageSchedulerEvent::ExecutorLost`] is posted, which rolls
+    ///    back the affected running execution graphs, cancels their running
+    ///    tasks, and — when this was the last executor — arms the grace timer
+    ///    that fails the jobs left behind on an empty cluster.
+    ///
+    /// Every removal path must go through here, because step 1 also drops the
+    /// executor's heartbeat: once it is gone, nothing else can notice the
+    /// executor is missing and post the event later.
+    /// See <https://github.com/apache/datafusion-ballista/issues/2226>
     pub(crate) async fn remove_executor(
         &self,
         executor_id: &str,
         reason: Option<String>,
+        sender: &EventSender<QueryStageSchedulerEvent>,
     ) {
         if let Err(e) = self
             .executor_manager
-            .remove_executor(executor_id, reason)
+            .remove_executor(executor_id, reason.clone())
             .await
         {
             warn!("Fail to remove executor {executor_id}: {e}");
         }
 
-        match self.task_manager.executor_lost(executor_id).await {
-            Ok(tasks) => {
-                if !tasks.is_empty()
-                    && let Err(e) =
-                        self.executor_manager.cancel_running_tasks(tasks).await
-                {
-                    warn!("Fail to cancel running tasks due to {e:?}");
-                }
-            }
-            Err(e) => {
-                error!("TaskManager error to handle Executor {executor_id} lost: {e}");
-            }
+        if let Err(e) = sender
+            .post_event(QueryStageSchedulerEvent::ExecutorLost(
+                executor_id.to_owned(),
+                reason,
+            ))
+            .await
+        {
+            error!("Fail to post ExecutorLost for executor {executor_id}: {e:?}");
         }
     }
 
@@ -257,10 +284,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     /// 2. Then launch the task set vector to each executor one by one.
     ///
     /// If it fails to launch a task set, the related [`ExecutorSlot`] will be returned.
+    ///
+    /// Returns the freed executor slots and the set of job IDs the executors
+    /// rejected (failed individually while the rest of the batch ran).
     async fn launch_tasks(
         &self,
         bound_tasks: Vec<BoundTask>,
-    ) -> Result<Vec<ExecutorSlot>> {
+        sender: &EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<(Vec<ExecutorSlot>, HashSet<JobId>)> {
         // Put tasks to the same executor together
         // And put tasks belonging to the same stage together for creating MultiTaskDefinition
         let mut executor_stage_assignments: HashMap<
@@ -284,67 +315,82 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 executor_stage_assignments.insert(executor_id, executor_stage_tasks);
             }
         }
-
         let mut join_handles = vec![];
         for (executor_id, tasks) in executor_stage_assignments.into_iter() {
             let tasks: Vec<Vec<TaskDescription>> = tasks.into_values().collect();
             // Total number of tasks to be launched for one executor
             let n_tasks: usize = tasks.iter().map(|stage_tasks| stage_tasks.len()).sum();
-
             let state = self.clone();
+            let sender = sender.clone();
             let join_handle = tokio::spawn(async move {
-                let success = match state
+                let job_ids: Vec<JobId> = tasks
+                    .iter()
+                    .flatten()
+                    .map(|t| t.key.job_id.clone())
+                    .collect();
+                match state
                     .executor_manager
                     .get_executor_metadata(&executor_id)
                     .await
                 {
                     Ok(executor) => {
-                        if let Err(e) = state
+                        match state
                             .task_manager
                             .launch_multi_task(&executor, tasks, &state.executor_manager)
                             .await
                         {
-                            let err_msg = format!("Failed to launch new task: {e}");
-                            error!("{}", err_msg.clone());
+                            Ok(rejected) => {
+                                let freed = job_ids
+                                    .iter()
+                                    .filter(|j| rejected.contains(*j))
+                                    .count()
+                                    as u32;
+                                (vec![(executor_id.clone(), freed)], rejected)
+                            }
+                            Err(e) => {
+                                let err_msg = format!("Failed to launch new task: {e}");
+                                error!("{}", err_msg.clone());
 
-                            // It's OK to remove executor aggressively,
-                            // since if the executor is in healthy state, it will be registered again.
-                            state.remove_executor(&executor_id, Some(err_msg)).await;
+                                // It's OK to remove executor aggressively,
+                                // since if the executor is in healthy state, it will be registered again.
+                                state
+                                    .remove_executor(&executor_id, Some(err_msg), &sender)
+                                    .await;
 
-                            false
-                        } else {
-                            true
+                                (
+                                    vec![(executor_id.clone(), n_tasks as u32)],
+                                    HashSet::new(),
+                                )
+                            }
                         }
                     }
                     Err(e) => {
                         error!(
                             "Failed to launch new task, could not get executor metadata: {e}"
                         );
-                        false
+                        (vec![(executor_id.clone(), n_tasks as u32)], HashSet::new())
                     }
-                };
-                if success {
-                    vec![]
-                } else {
-                    vec![(executor_id.clone(), n_tasks as u32)]
                 }
             });
             join_handles.push(join_handle);
         }
 
-        let unassigned_executor_slots =
-            futures::future::join_all(join_handles)
-                .await
-                .into_iter()
-                .collect::<std::result::Result<
-                    Vec<Vec<ExecutorSlot>>,
-                    tokio::task::JoinError,
-                >>()?;
-
-        Ok(unassigned_executor_slots
+        let results = futures::future::join_all(join_handles)
+            .await
             .into_iter()
-            .flatten()
-            .collect::<Vec<ExecutorSlot>>())
+            .collect::<std::result::Result<
+            Vec<(Vec<ExecutorSlot>, HashSet<JobId>)>,
+            tokio::task::JoinError,
+        >>()?;
+
+        let mut unassigned_executor_slots = Vec::new();
+        let mut failed_jobs = HashSet::new();
+        for (slots, jobs) in results {
+            unassigned_executor_slots.extend(slots);
+            failed_jobs.extend(jobs);
+        }
+
+        Ok((unassigned_executor_slots, failed_jobs))
     }
 
     pub(crate) async fn update_task_statuses(
@@ -411,5 +457,155 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             job_id,
             self.config.finished_job_state_clean_up_interval_seconds,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::SchedulerConfig;
+    use crate::scheduler_server::timestamp_millis;
+    use crate::state::executor_manager::ExecutorManager;
+    use crate::state::task_manager::TaskLauncher;
+    use crate::test_utils::test_cluster_context;
+    use ballista_core::extension::SessionConfigExt;
+    use ballista_core::serde::BallistaCodec;
+    use ballista_core::serde::protobuf::MultiTaskDefinition;
+    use ballista_core::serde::scheduler::{
+        ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
+        ExecutorSpecification,
+    };
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::context::SessionConfig;
+    use datafusion::functions_aggregate::sum::sum;
+    use datafusion::logical_expr::{LogicalPlan, col};
+    use datafusion::test_util::scan_empty_with_partitions;
+    use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+
+    struct RejectOne {
+        reject: JobId,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskLauncher for RejectOne {
+        async fn launch_tasks(
+            &self,
+            _executor: &ExecutorMetadata,
+            tasks: Vec<MultiTaskDefinition>,
+            _executor_manager: &ExecutorManager,
+        ) -> Result<HashSet<JobId>> {
+            Ok(tasks
+                .iter()
+                .map(|t| JobId::from(t.job_id.clone()))
+                .filter(|j| j == &self.reject)
+                .take(1)
+                .collect())
+        }
+    }
+
+    fn agg_plan() -> LogicalPlan {
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("gmv", DataType::UInt64, false),
+        ]);
+        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
+            .unwrap()
+            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+            .unwrap()
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_isolates_single_rejected_job() -> Result<()> {
+        let bad_job = JobId::from("job-bad");
+        let good_job = JobId::from("job-good");
+
+        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerState::new_with_task_launcher(
+                test_cluster_context(),
+                BallistaCodec::default(),
+                "localhost:50050".to_owned(),
+                Arc::new(SchedulerConfig::default()),
+                Arc::new(RejectOne {
+                    reject: bad_job.clone(),
+                }),
+            );
+
+        let vcores = 8;
+        state
+            .executor_manager
+            .register_executor(
+                ExecutorMetadata {
+                    id: "executor-1".to_string(),
+                    host: String::default(),
+                    port: 0,
+                    grpc_port: 0,
+                    specification: ExecutorSpecification::default().with_vcores(vcores),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
+                },
+                ExecutorData {
+                    executor_id: "executor-1".to_string(),
+                    total_vcores: vcores,
+                    available_vcores: vcores,
+                },
+            )
+            .await?;
+
+        let ctx = state
+            .session_manager
+            .create_or_update_session("session", &SessionConfig::new_with_ballista())
+            .await?;
+
+        for job_id in [&good_job, &bad_job] {
+            state
+                .task_manager
+                .queue_job(job_id, "", timestamp_millis())?;
+            state
+                .task_manager
+                .submit_job(
+                    job_id,
+                    "",
+                    ctx.clone(),
+                    &agg_plan(),
+                    timestamp_millis(),
+                    None,
+                )
+                .await?;
+        }
+
+        let bound = state
+            .executor_manager
+            .bind_schedulable_tasks(state.task_manager.get_running_job_cache())
+            .await?;
+
+        let bad_task_count = bound
+            .iter()
+            .filter(|(_, t)| t.key.job_id == bad_job)
+            .count() as u32;
+        let good_task_count = bound
+            .iter()
+            .filter(|(_, t)| t.key.job_id == good_job)
+            .count() as u32;
+        assert!(bad_task_count > 0 && good_task_count > 0);
+
+        let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
+        let sender = EventSender::new(tx_event);
+        let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
+
+        assert_eq!(failed_jobs, HashSet::from([bad_job.clone()]));
+
+        let freed: u32 = unassigned_slots.iter().map(|(_, n)| *n).sum();
+        assert_eq!(freed, bad_task_count);
+
+        assert!(
+            state
+                .executor_manager
+                .get_executor_metadata("executor-1")
+                .await
+                .is_ok()
+        );
+
+        Ok(())
     }
 }

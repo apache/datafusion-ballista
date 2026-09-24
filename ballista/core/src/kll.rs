@@ -82,11 +82,8 @@
 //! Callers hand fully-owned items to `KllSketch::insert`. For the Arrow
 //! use case this means materializing each input `Row<'_>` into an
 //! `OwnedRow` up front — one small heap allocation per input row, most of
-//! which are eventually discarded by cascading compactions. A future
-//! optimization can defer materialization: hold borrowed `Row<'_>` in
-//! level 0 within a single batch, compact intra-batch, and only own the
-//! survivors that promote to level 1. That would trade the current
-//! per-item API for a batch-oriented one (e.g. `absorb_rows(&Rows)`).
+//! which are eventually discarded by cascading compactions. See
+//! **Deferred optimizations** below.
 //!
 //! # Level order
 //!
@@ -94,11 +91,53 @@
 //! `quantile` collects-then-sorts, and every compaction sorts before
 //! halving — so `merge` can simply extend same-height compactors without
 //! order concerns. That trades ~`log(k)` extra comparisons per amortized
-//! insert for a simpler shape. Apache DataSketches maintains per-level
-//! sortedness (with an `is_level_zero_sorted_` flag) to skip re-sorting at
-//! compact time and to merge two sketches via linear-time merge-sort
-//! rather than concatenate-and-resort — a legitimate follow-up if
-//! benchmarks demand it.
+//! insert for a simpler shape. See **Deferred optimizations** below for
+//! the per-level-sortedness follow-up that DataSketches implements.
+//!
+//! # Deferred optimizations
+//!
+//! Ingest measured on uniform 1M-row streams (see
+//! `benchmarks/benches/quantile_sketch.rs`):
+//!
+//! - `T = OrderedFloat<f64>` via `absorb_slice`: **1.8× TDigest** (down
+//!   from 3.7× on per-row `insert` with no batch API).
+//! - `T = OwnedRow` via `absorb`: **5.7× TDigest** (down from 6.8× on
+//!   per-row `insert`).
+//!
+//! Items (1) and (3) below have landed. One deferred win remains, and
+//! it's the one that matters for the OwnedRow path:
+//!
+//! 1. ~~**Amortize `compact_all` across a batch.**~~ **Landed.** `absorb`
+//!    caches level 0's capacity and skips the `compact_all` O(L) scan
+//!    when no level is full. `absorb_slice` stacks a batch min/max and
+//!    `extend_from_slice` on top for `T: Copy`.
+//!
+//! 2. **Defer ownership at level 0.** For `T = OwnedRow` the caller pays
+//!    one heap allocation per input row via `row.owned()`, even though
+//!    ~half of level-0 items are coin-flipped out at the first compaction
+//!    and never promoted. Holding borrowed `Row<'_>` at level 0 within a
+//!    batch and materializing `OwnedRow` only on promotion to level 1
+//!    saves the alloc/free on the discarded half. The batch-oriented
+//!    `absorb` API is what makes the borrow lifetime work out — level 0
+//!    lives for the duration of `absorb`, compacts before the caller's
+//!    `Rows` buffer goes out of scope. Only helps `T = OwnedRow`.
+//!
+//! 3. ~~**Per-level sortedness invariant.**~~ **Landed.** `KllSketch`
+//!    carries a `sorted: Vec<bool>` parallel to `levels`. `compact_level`
+//!    skips the sort when the level is already ordered, and promoted
+//!    items merge-extend the next level in linear time when it too was
+//!    sorted. `KllSketch::merge` (across sketches) does not yet fold the
+//!    two sortedness flags — cross-sketch merge-extend is a further
+//!    deferred win.
+//!
+//! 4. **Sorted-input ingest via a caller-side plan-shape change.** The
+//!    `absorb_sorted_slice` API exists but is not yet called from
+//!    production. When wired into an ORRE plan shape where a `SortExec`
+//!    is placed upstream of `RuntimeStatsExec` (with a `DamExec` between
+//!    stats and the router), level 0 stays permanently sorted and
+//!    compaction skips *every* sort — not just those at levels 1+. That
+//!    kills the largest remaining ingest cost on the `T: Copy` path.
+//!    The sketch side is free; the win requires the planner-side move.
 //!
 //! # Reference
 //!
@@ -122,6 +161,14 @@ const MIN_LEVEL_WIDTH: usize = 8;
 pub struct KllSketch<T: Ord + Clone> {
     /// One buffer per level; `levels[h]` is the level-`h` compactor.
     levels: Vec<Vec<T>>,
+    /// `sorted[h] == true` iff `levels[h]` is in ascending order. Same
+    /// length as `levels`, kept in lockstep with every mutation.
+    /// Compaction reads this to skip the re-sort when a level was left
+    /// sorted by an earlier promotion; promotions extend the destination
+    /// level via linear-time merge instead of concatenate-then-sort when
+    /// the destination is already sorted. Matches DataSketches'
+    /// `is_level_zero_sorted_` bookkeeping, generalized per-level.
+    sorted: Vec<bool>,
     /// Nominal compactor capacity — the top level's capacity. Lower
     /// levels shrink geometrically toward `MIN_LEVEL_WIDTH`.
     k: usize,
@@ -155,6 +202,39 @@ fn level_capacity(k: usize, num_levels: usize, height: usize) -> usize {
     raw.max(MIN_LEVEL_WIDTH)
 }
 
+/// Summarizes rather than dumping the compactor stack, which holds on the
+/// order of `3k` items and would bury whatever else a caller was printing.
+impl<T: Ord + Clone> std::fmt::Debug for KllSketch<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KllSketch")
+            .field("k", &self.k)
+            .field("count", &self.count())
+            .field("levels", &self.levels.len())
+            .field("retained", &self.levels.iter().map(Vec::len).sum::<usize>())
+            .finish()
+    }
+}
+
+/// Clone copies the compactor stack and the tracked extremes, and gives
+/// the copy a fresh PRNG rather than duplicating the original's position.
+///
+/// Written by hand because `StdRng` is not `Clone`. Reseeding is the
+/// correct behaviour anyway: two sketches sharing a coin-flip sequence
+/// would correlate their compaction decisions, and every quantile the
+/// clone can answer is already determined by the state that was copied.
+impl<T: Ord + Clone> Clone for KllSketch<T> {
+    fn clone(&self) -> Self {
+        Self {
+            levels: self.levels.clone(),
+            sorted: self.sorted.clone(),
+            k: self.k,
+            rng: StdRng::seed_from_u64(rand::random::<u64>()),
+            min: self.min.clone(),
+            max: self.max.clone(),
+        }
+    }
+}
+
 impl<T: Ord + Clone> KllSketch<T> {
     /// Construct an empty sketch with top-level compactor capacity `k`,
     /// seeded from OS entropy.
@@ -164,14 +244,77 @@ impl<T: Ord + Clone> KllSketch<T> {
 
     /// Construct an empty sketch with top-level compactor capacity `k`
     /// and a fixed PRNG seed. Intended for deterministic tests.
+    ///
+    /// The seed does not survive [`Clone`], which reseeds from OS entropy
+    /// to keep two sketches from correlating their compaction decisions. A
+    /// test that needs two reproducible sketches builds both with
+    /// `with_seed` rather than cloning one.
     pub fn with_seed(k: usize, seed: u64) -> Self {
         Self {
             levels: vec![Vec::new()],
+            // An empty level is trivially sorted.
+            sorted: vec![true],
             k,
             rng: StdRng::seed_from_u64(seed),
             min: None,
             max: None,
         }
+    }
+
+    /// Nominal top-level compactor capacity
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    /// The compactor stack, level 0 first. `levels()[h]` holds the items
+    /// retained at height `h`, each standing for `2^h` of the stream, so the
+    /// stack plus `k` is the whole sketch apart from its extremes.
+    ///
+    /// Order within a level is not guaranteed. A caller that needs one
+    /// sorts, which is what [`Self::from_parts`] assumes on the way back in.
+    pub fn levels(&self) -> &[Vec<T>] {
+        &self.levels
+    }
+
+    /// Rebuild from what [`Self::levels`], [`Self::k`], [`Self::min`] and
+    /// [`Self::max`] expose. Levels are sorted here, so a caller that
+    /// serialized them in any order still gets a sketch whose per-level
+    /// ordering invariant holds.
+    ///
+    /// `None` when `levels` describes a stack this sketch could not have
+    /// produced — no levels at all, or a level holding more than its
+    /// capacity — rather than building something whose next compaction would
+    /// misbehave.
+    ///
+    /// The PRNG is reseeded from OS entropy, matching [`Clone`]: compaction
+    /// decisions after a rebuild are deliberately uncorrelated with the ones
+    /// the original made.
+    pub fn from_parts(
+        k: usize,
+        mut levels: Vec<Vec<T>>,
+        min: Option<T>,
+        max: Option<T>,
+    ) -> Option<Self> {
+        if levels.is_empty() || k < MIN_LEVEL_WIDTH {
+            return None;
+        }
+        let num_levels = levels.len();
+        for (height, level) in levels.iter().enumerate() {
+            if level.len() > level_capacity(k, num_levels, height) {
+                return None;
+            }
+        }
+        for level in &mut levels {
+            level.sort_unstable();
+        }
+        Some(Self {
+            levels,
+            sorted: vec![true; num_levels],
+            k,
+            rng: StdRng::seed_from_u64(rand::random::<u64>()),
+            min,
+            max,
+        })
     }
 
     /// Consume `other` and fold its content into `self`.
@@ -200,11 +343,19 @@ impl<T: Ord + Clone> KllSketch<T> {
             (None, b) => b,
         };
         // Extend same-height compactors, growing the stack as needed.
+        // Cross-sketch extend does not preserve any per-level sortedness
+        // — the concatenation of two sorted runs is not sorted, and we
+        // don't yet fold the sortedness flags of two sketches into a
+        // merge-extend. `compact_all` will sort on demand.
         for (h, level) in other.levels.into_iter().enumerate() {
             if h == self.levels.len() {
                 self.levels.push(Vec::new());
+                self.sorted.push(true);
             }
-            self.levels[h].extend(level);
+            if !level.is_empty() {
+                self.levels[h].extend(level);
+                self.sorted[h] = false;
+            }
         }
         self.compact_all();
     }
@@ -220,7 +371,199 @@ impl<T: Ord + Clone> KllSketch<T> {
             self.max = Some(x.clone());
         }
         self.levels[0].push(x);
+        // Arbitrary insertion breaks any existing sort order at level 0.
+        self.sorted[0] = false;
         self.compact_all();
+    }
+
+    /// Add many items in one call, amortizing the per-item overhead of
+    /// `insert`.
+    ///
+    /// `insert` invokes `compact_all` after every row, and each call scans
+    /// every level asking "is anyone full?" That's an `O(L)` scan per row
+    /// even when the answer is universally "no." `absorb` caches level 0's
+    /// capacity once, checks a single length per row, and only fires
+    /// `compact_all` when level 0 actually reaches capacity.
+    ///
+    /// Owned-value ingest — takes items by value, no `T: Clone` needed on
+    /// the incoming stream. Prefer this for heap-heavy `T` (e.g.
+    /// `OwnedRow`) where cloning would double the allocation cost. For
+    /// `T: Copy` prefer `absorb_slice` — it uses `extend_from_slice` +
+    /// batch min/max for a memcpy-friendly hot loop.
+    ///
+    /// Output is bit-identical to `for x in xs { self.insert(x) }`: the
+    /// compaction trigger points, coin flips, and min/max tracking are all
+    /// preserved.
+    ///
+    /// TODO: retire once **Deferred optimizations** item (2) lands. The
+    /// borrowed-row ingest path there takes an arrow `Rows` directly and
+    /// holds `Row<'_>` at level 0 — a specialized API, not a generalization
+    /// of this one. This function exists as a modest speedup for the
+    /// interim OwnedRow path (~14% over `insert`-in-loop on 1M rows) and
+    /// has no other production caller.
+    pub fn absorb<I: IntoIterator<Item = T>>(&mut self, xs: I) {
+        // Cache level 0's capacity; recompute whenever compaction may have
+        // grown the stack (which shrinks per-level capacities).
+        let mut level_0_cap = level_capacity(self.k, self.levels.len(), 0);
+        for x in xs {
+            if self.min.as_ref().is_none_or(|m| x < *m) {
+                self.min = Some(x.clone());
+            }
+            if self.max.as_ref().is_none_or(|m| x > *m) {
+                self.max = Some(x.clone());
+            }
+            self.levels[0].push(x);
+            self.sorted[0] = false;
+            if self.levels[0].len() >= level_0_cap {
+                self.compact_all();
+                level_0_cap = level_capacity(self.k, self.levels.len(), 0);
+            }
+        }
+    }
+
+    /// Slice-ingest variant that trades one clone per item for two extra
+    /// wins on top of `absorb`'s compact_all amortization:
+    ///
+    /// 1. Batch min/max in a single tight scan of `xs`, updating `self.min`
+    ///    / `self.max` at most once per call instead of at most once per
+    ///    row.
+    /// 2. `Vec::extend_from_slice` for chunk-fills of level 0 — one memcpy
+    ///    per chunk for `T: Copy`, potentially SIMD-vectorized by LLVM.
+    ///
+    /// Prefer this for `T: Copy` (e.g. `OrderedFloat<f64>`, `i64`) where
+    /// the clone is free. Avoid for heap-heavy `T` (e.g. `OwnedRow`) —
+    /// there the extend_from_slice clone allocates on top of whatever the
+    /// caller already paid to construct the value; `absorb` moves instead.
+    ///
+    /// Output is bit-identical to `for x in xs { self.insert(x.clone()) }`.
+    pub fn absorb_slice(&mut self, xs: &[T]) {
+        if xs.is_empty() {
+            return;
+        }
+        // One scan across xs for min/max; a single Option update per batch
+        // regardless of how many progressive extremes appear in xs.
+        let (batch_min, batch_max) = {
+            let mut min = &xs[0];
+            let mut max = &xs[0];
+            for x in &xs[1..] {
+                if x < min {
+                    min = x;
+                }
+                if x > max {
+                    max = x;
+                }
+            }
+            (min, max)
+        };
+        if self.min.as_ref().is_none_or(|m| batch_min < m) {
+            self.min = Some(batch_min.clone());
+        }
+        if self.max.as_ref().is_none_or(|m| batch_max > m) {
+            self.max = Some(batch_max.clone());
+        }
+        // Chunk-fill level 0 via memcpy-style extend; compact when it fills.
+        let mut i = 0;
+        while i < xs.len() {
+            let cap = level_capacity(self.k, self.levels.len(), 0);
+            let room = cap.saturating_sub(self.levels[0].len());
+            let take = (xs.len() - i).min(room);
+            self.levels[0].extend_from_slice(&xs[i..i + take]);
+            self.sorted[0] = false;
+            i += take;
+            if self.levels[0].len() >= cap {
+                self.compact_all();
+            }
+        }
+    }
+
+    /// Slice-ingest variant that expects the input to already be sorted
+    /// ascending — the caller is downstream of a `SortExec` or otherwise
+    /// producing sorted output. Keeps level 0 permanently sorted by
+    /// merge-extending each chunk into it, so `compact_level(0)` never
+    /// pays a `sort_unstable`. That's the largest remaining cost on the
+    /// `T: Copy` ingest path once the per-level sortedness invariant is
+    /// in place.
+    ///
+    /// The min/max scan is also skipped — for sorted input the extremes
+    /// are `xs[0]` and `xs[last]`.
+    ///
+    /// Sortedness is verified unconditionally (O(n) comparisons against
+    /// the O(n log n) sort skipped when it holds). Unsorted input falls
+    /// through to `absorb_slice`, which sorts at compaction time. The
+    /// motivating plan shape is `Scan -> Sort -> RuntimeStats -> DamExec
+    /// -> ORRE`, but a future optimizer change that moves or drops the
+    /// upstream `SortExec` must not silently corrupt quantiles — the
+    /// fallback keeps this method safe under any caller.
+    pub fn absorb_sorted_slice(&mut self, xs: &[T]) {
+        if xs.is_empty() {
+            return;
+        }
+        if !xs.is_sorted() {
+            self.absorb_slice(xs);
+            return;
+        }
+        // Sorted input: extremes are the first and last elements. No scan.
+        let batch_min = &xs[0];
+        let batch_max = &xs[xs.len() - 1];
+        if self.min.as_ref().is_none_or(|m| batch_min < m) {
+            self.min = Some(batch_min.clone());
+        }
+        if self.max.as_ref().is_none_or(|m| batch_max > m) {
+            self.max = Some(batch_max.clone());
+        }
+        // If a prior `insert` or `absorb_slice` left level 0 unsorted,
+        // `merge_sorted` below would interleave sorted `xs` into
+        // unsorted state and the result wouldn't be sorted. Pay the sort
+        // once here so the loop's merge-extends stay honest and the doc's
+        // "level 0 stays sorted" claim actually holds.
+        if !self.sorted[0] {
+            self.levels[0].sort_unstable();
+            self.sorted[0] = true;
+        }
+        // Chunk-merge sorted `xs` into (sorted) level 0. Level 0 stays
+        // sorted through the whole ingest — `sorted[0]` never flips false.
+        let mut i = 0;
+        while i < xs.len() {
+            let cap = level_capacity(self.k, self.levels.len(), 0);
+            let room = cap.saturating_sub(self.levels[0].len());
+            let take = (xs.len() - i).min(room);
+            let incoming = xs[i..i + take].to_vec();
+            let existing = std::mem::take(&mut self.levels[0]);
+            self.levels[0] = merge_sorted(existing, incoming);
+            i += take;
+            if self.levels[0].len() >= cap {
+                self.compact_all();
+            }
+        }
+    }
+
+    /// The stream's true minimum, or `None` if nothing has been ingested.
+    ///
+    /// Tracked outside the compactor stack, so this is exact rather than
+    /// estimated — a coin flip can evict the smallest retained item but
+    /// cannot move this.
+    pub fn min(&self) -> Option<&T> {
+        self.min.as_ref()
+    }
+
+    /// The stream's true maximum, or `None` if nothing has been ingested.
+    /// Exact for the same reason as [`Self::min`].
+    pub fn max(&self) -> Option<&T> {
+        self.max.as_ref()
+    }
+
+    /// Number of items ingested so far.
+    ///
+    /// Exact, not estimated. Compaction halves an even buffer while
+    /// doubling the survivors' weight, and leaves the odd item behind at
+    /// its original weight, so the weighted sum over levels is invariant
+    /// under compaction and equals the ingested count.
+    pub fn count(&self) -> u64 {
+        self.levels
+            .iter()
+            .enumerate()
+            .map(|(h, level)| (1u64 << h) * level.len() as u64)
+            .sum()
     }
 
     /// Return the estimated number of items strictly less than `x`.
@@ -257,15 +600,50 @@ impl<T: Ord + Clone> KllSketch<T> {
         if q == 1.0 {
             return self.max.as_ref();
         }
-        let total_weight: u64 = self
-            .levels
-            .iter()
-            .enumerate()
-            .map(|(h, level)| (1u64 << h) * level.len() as u64)
-            .sum();
+        let total_weight = self.count();
         if total_weight == 0 {
             return None;
         }
+        self.at_rank((q * total_weight as f64) as u64)
+    }
+
+    /// Return the item at `rank`, counting cumulative weight from the
+    /// smallest item up. `None` if the sketch is empty.
+    ///
+    /// Semantics: the smallest retained item whose cumulative weight is at
+    /// least `rank`. Ranks at or beyond the ends give the tracked extremes,
+    /// which bypass the compactor so coin-flip history can't move them.
+    ///
+    /// This is the primitive [`Self::quantile`] is expressed in, and the
+    /// one to prefer whenever the caller already knows the rank it wants.
+    /// Converting a known rank into a fraction and back loses it: for 99
+    /// items, rank 59 becomes `59/99`, and multiplying that back by 99
+    /// yields `58.999…`, which truncates to 58. Callers that adjust a rank
+    /// — stepping over a run of NULLs, say — must stay in integers.
+    pub fn at_rank(&self, rank: u64) -> Option<&T> {
+        self.at_ranks(&[rank]).into_iter().next().flatten()
+    }
+
+    /// Answer several ranks against one pass over the retained items,
+    /// returning one answer per entry of `ranks`, positionally.
+    ///
+    /// Semantics per rank are [`Self::at_rank`]'s exactly. The difference is
+    /// cost: resolving a rank means materializing every retained item with
+    /// its level weight and sorting them, and that work does not depend on
+    /// the rank. Asking one at a time repeats it per rank, which makes
+    /// `cuts` over P partitions P-1 sorts of the whole retained set. Here it
+    /// happens once.
+    ///
+    /// `ranks` may be in any order; the answers come back in the order
+    /// asked. Internally they are walked smallest-first so a single
+    /// cumulative sweep serves all of them.
+    pub fn at_ranks(&self, ranks: &[u64]) -> Vec<Option<&T>> {
+        let mut answers: Vec<Option<&T>> = vec![None; ranks.len()];
+        let total_weight = self.count();
+        if total_weight == 0 {
+            return answers;
+        }
+
         let mut pairs: Vec<(&T, u64)> = self
             .levels
             .iter()
@@ -277,17 +655,38 @@ impl<T: Ord + Clone> KllSketch<T> {
             .collect();
         pairs.sort_by_key(|(item, _)| *item);
 
-        let target = (q * total_weight as f64) as u64;
+        let mut slots: Vec<usize> = (0..ranks.len()).collect();
+        slots.sort_by_key(|&slot| ranks[slot]);
+
+        // Resumed across ranks rather than restarted: `cumulative` is
+        // monotone and so are the ranks in `slots` order, so a rank already
+        // covered by the current item answers with that same item.
+        let mut consumed = 0usize;
         let mut cumulative = 0u64;
-        for (item, weight) in &pairs {
-            cumulative += weight;
-            if cumulative >= target {
-                return Some(*item);
+        let mut current: Option<&T> = None;
+        for slot in slots {
+            let rank = ranks[slot];
+            // The extremes are tracked outside the compactor, so no
+            // coin-flip history can move them.
+            if rank == 0 {
+                answers[slot] = self.min.as_ref();
+                continue;
             }
+            if rank >= total_weight {
+                answers[slot] = self.max.as_ref();
+                continue;
+            }
+            while cumulative < rank {
+                let (item, weight) = pairs[consumed];
+                cumulative += weight;
+                current = Some(item);
+                consumed += 1;
+            }
+            // `rank < total_weight`, which is the sum of every pair's
+            // weight, so the sweep above always consumed at least one item.
+            answers[slot] = current;
         }
-        // total_weight > 0 and q ≤ 1 ⇒ cumulative reaches total_weight ≥ target
-        // on the final iteration, so the loop always returns.
-        unreachable!("quantile: threshold not reached despite non-empty sketch")
+        answers
     }
 
     /// Compact until every level fits within its (dynamically shrinking)
@@ -306,7 +705,8 @@ impl<T: Ord + Clone> KllSketch<T> {
         }
     }
 
-    /// Sort level `h`, coin-flip, promote every other item to level `h+1`.
+    /// Sort level `h` (or reuse an existing sort), coin-flip, promote every
+    /// other item to level `h+1`.
     ///
     /// On odd-length levels the smallest item stays behind at level `h`
     /// with its original weight — the algorithm requires an even-length
@@ -314,13 +714,25 @@ impl<T: Ord + Clone> KllSketch<T> {
     /// current weight is what preserves the total-weight invariant across
     /// compaction. Matches Apache DataSketches' `general_compress`
     /// odd-pop handling.
+    ///
+    /// Sortedness bookkeeping: promoted items form a sorted subsequence
+    /// (every other element of a sorted array). If the destination level
+    /// was already sorted (which it is by default when previously touched
+    /// only by this function), we merge-extend in linear time instead of
+    /// concatenate-then-sort. The saving compounds up the stack — for
+    /// large streams, levels 1+ are always sorted going into compaction,
+    /// so the `sort_unstable` at level 0 is the only one paid.
     fn compact_level(&mut self, h: usize) {
         let level_len = self.levels[h].len();
         if level_len < 2 {
             return;
         }
         let mut buf = std::mem::take(&mut self.levels[h]);
-        buf.sort_unstable();
+        if !self.sorted[h] {
+            buf.sort_unstable();
+        }
+        // levels[h] is now empty and thus trivially sorted.
+        self.sorted[h] = true;
         let leftover = if level_len % 2 == 1 {
             Some(buf.remove(0))
         } else {
@@ -335,12 +747,53 @@ impl<T: Ord + Clone> KllSketch<T> {
             .collect();
         if h + 1 == self.levels.len() {
             self.levels.push(Vec::new());
+            self.sorted.push(true);
         }
-        self.levels[h + 1].extend(promoted);
+        // If the destination is already sorted, linear-time merge preserves
+        // its sortedness. Otherwise fall back to append; the next compaction
+        // at h+1 will pay the sort.
+        if self.sorted[h + 1] {
+            let existing = std::mem::take(&mut self.levels[h + 1]);
+            self.levels[h + 1] = merge_sorted(existing, promoted);
+        } else {
+            self.levels[h + 1].extend(promoted);
+        }
         if let Some(x) = leftover {
+            // Single-item level is trivially sorted.
             self.levels[h].push(x);
         }
     }
+}
+
+/// Merge two sorted vectors into one sorted vector in linear time.
+/// Preserves ties in source order (`a` before `b`) — matters only for
+/// non-unique `T`, where downstream halving still picks half the items
+/// but may pick different specific copies than `sort_unstable(a ++ b)`.
+fn merge_sorted<T: Ord>(a: Vec<T>, b: Vec<T>) -> Vec<T> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let mut ai = a.into_iter().peekable();
+    let mut bi = b.into_iter().peekable();
+    loop {
+        match (ai.peek(), bi.peek()) {
+            (Some(av), Some(bv)) => {
+                if av <= bv {
+                    out.push(ai.next().unwrap());
+                } else {
+                    out.push(bi.next().unwrap());
+                }
+            }
+            (Some(_), None) => {
+                out.extend(ai);
+                break;
+            }
+            (None, Some(_)) => {
+                out.extend(bi);
+                break;
+            }
+            (None, None) => break,
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -624,6 +1077,128 @@ mod tests {
         }
     }
 
+    /// `n < k` leaves every item at level 0 with weight 1, so rank `r`
+    /// names the `r`-th smallest exactly and the expected answers can be
+    /// written down rather than derived.
+    fn exact_sketch_of_1_to_10() -> KllSketch<u32> {
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(1024, 42);
+        for x in 1u32..=10 {
+            sketch.insert(x);
+        }
+        sketch
+    }
+
+    /// Nothing observed is distinct from a rank that finds nothing: the
+    /// caller still gets one answer per rank it asked for, so it can zip
+    /// the answers back against its own inputs.
+    #[test]
+    fn at_ranks_on_an_empty_sketch_answers_none_for_every_rank() {
+        let sketch: KllSketch<u32> = KllSketch::with_seed(1024, 42);
+        assert_eq!(sketch.at_ranks(&[0, 1, 99]), vec![None, None, None]);
+        assert!(sketch.at_ranks(&[]).is_empty(), "no ranks, no answers");
+    }
+
+    /// Answers are positional. The sweep visits ranks smallest-first for
+    /// its own benefit, and that reordering must not reach the caller.
+    #[test]
+    fn at_ranks_answers_in_the_order_asked_not_in_rank_order() {
+        let sketch = exact_sketch_of_1_to_10();
+        assert_eq!(
+            sketch.at_ranks(&[7, 2, 5]),
+            vec![Some(&7), Some(&2), Some(&5)]
+        );
+    }
+
+    /// A repeated rank is answered afresh each time it appears.
+    ///
+    /// This is the case the cumulative sweep can get wrong. It advances
+    /// only while `cumulative < rank`, so a rank already covered by the
+    /// current item has to consume nothing and reuse it. Advancing
+    /// unconditionally would hand the second `5` the item after the first.
+    #[test]
+    fn at_ranks_repeats_the_answer_for_a_repeated_rank() {
+        let sketch = exact_sketch_of_1_to_10();
+        assert_eq!(
+            sketch.at_ranks(&[5, 5, 5]),
+            vec![Some(&5), Some(&5), Some(&5)]
+        );
+        assert_eq!(
+            sketch.at_ranks(&[5, 3, 5]),
+            vec![Some(&5), Some(&3), Some(&5)],
+            "a lower rank between two copies must not disturb either"
+        );
+    }
+
+    /// Rank 0 and ranks at or past the total skip the sweep entirely.
+    /// Mixed into a batch with interior ranks so that skipping cannot
+    /// desynchronize the sweep's position from the answers it still owes.
+    #[test]
+    fn at_ranks_mixes_extreme_ranks_with_interior_ones() {
+        let sketch = exact_sketch_of_1_to_10();
+        let total = sketch.count();
+        assert_eq!(total, 10, "no compaction below capacity");
+        assert_eq!(
+            sketch.at_ranks(&[0, 5, total, total + 5, 3]),
+            vec![Some(&1), Some(&5), Some(&10), Some(&10), Some(&3)]
+        );
+    }
+
+    /// The extremes come from the tracked pair rather than from the sweep.
+    ///
+    /// Below capacity the two agree, so nothing there can tell them apart:
+    /// the largest retained item *is* the stream max. `k = 8` over 10K
+    /// items with this seed flips both extremes out of the levels, leaving
+    /// 1187..=9999 retained, so the sweep on its own cannot reach either
+    /// end and the assertions below discriminate.
+    #[test]
+    fn at_ranks_reads_extremes_the_compactor_no_longer_holds() {
+        let n = 10_000u32;
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(8, 2);
+        for x in 1..=n {
+            sketch.insert(x);
+        }
+        let total = sketch.count();
+        let answers = sketch.at_ranks(&[0, 1, total - 1, total, total + 5]);
+
+        assert_eq!(answers[0], Some(&1), "rank 0 is the stream min");
+        assert_eq!(answers[3], Some(&n), "rank == total is the stream max");
+        assert_eq!(answers[4], Some(&n), "past the total is still the max");
+        assert!(
+            answers[1] > Some(&1),
+            "premise: compaction dropped the min, so the sweep cannot reach it"
+        );
+        assert!(
+            answers[2] < Some(&n),
+            "premise: compaction dropped the max, so the sweep cannot reach it"
+        );
+    }
+
+    /// Past capacity, items carry their level weight and one retained item
+    /// answers a whole run of ranks. Ranks ascend, so answers must too, and
+    /// some adjacent pair must repeat — with every weight 1 each rank would
+    /// name a distinct item, so a repeat is what shows the weights are
+    /// actually being accumulated.
+    #[test]
+    fn at_ranks_accumulates_level_weights_after_compaction() {
+        let n = 10_000u32;
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(64, 42);
+        for x in 1..=n {
+            sketch.insert(x);
+        }
+        let total = sketch.count();
+        let ranks: Vec<u64> = (1..total).collect();
+        let answers = sketch.at_ranks(&ranks);
+
+        assert!(
+            answers.windows(2).all(|pair| pair[0] <= pair[1]),
+            "ascending ranks must give non-decreasing items"
+        );
+        assert!(
+            answers.windows(2).any(|pair| pair[0] == pair[1]),
+            "a retained item weighing more than 1 must answer several ranks"
+        );
+    }
+
     #[test]
     fn quantile_is_exact_below_capacity() {
         let mut sketch: KllSketch<u32> = KllSketch::with_seed(1024, 42);
@@ -666,5 +1241,326 @@ mod tests {
         // Mass invariants still hold across all the cascades.
         assert_eq!(sketch.rank(&10_001), 10_000);
         assert_eq!(sketch.rank(&1), 0);
+    }
+
+    /// Apache DataSketches' single-sided normalized rank error, fit to the
+    /// P99 max error across thousands of empirical trials. Source:
+    /// `datasketches-cpp/kll/include/kll_sketch_impl.hpp:619`.
+    fn normalized_rank_error_ss(k: usize) -> f64 {
+        2.296 / (k as f64).powf(0.9723)
+    }
+
+    /// Insert `stream` into a KLL sketch at capacity `k`, probe rank at 9
+    /// interior quantiles picked from a sorted copy of the stream, and
+    /// return the worst normalized rank error observed.
+    fn worst_rank_error(stream: &[u32], k: usize, sketch_seed: u64) -> f64 {
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(k, sketch_seed);
+        for x in stream {
+            sketch.insert(*x);
+        }
+        let mut sorted = stream.to_vec();
+        sorted.sort_unstable();
+        let n = stream.len();
+        (1..10)
+            .map(|i| {
+                let idx = (i as f64 / 10.0 * n as f64) as usize;
+                let probe = sorted[idx.min(n - 1)];
+                // True rank: count of items strictly less than probe.
+                // partition_point on the sorted stream gives it in O(log n).
+                let true_rank_frac =
+                    sorted.partition_point(|x| *x < probe) as f64 / n as f64;
+                let est_rank_frac = sketch.rank(&probe) as f64 / n as f64;
+                (est_rank_frac - true_rank_frac).abs()
+            })
+            .fold(0.0_f64, f64::max)
+    }
+
+    /// Shuffled `1..=n` — every distinct value appears exactly once.
+    fn uniform_stream(n: u32, rng: &mut StdRng) -> Vec<u32> {
+        use rand::seq::SliceRandom;
+        let mut v: Vec<u32> = (1..=n).collect();
+        v.shuffle(rng);
+        v
+    }
+
+    /// 90% of items in the bottom 1% of the value range, remainder spread
+    /// over the rest. Cuts near the low quantiles land inside the dense
+    /// cluster; cuts near the high quantiles land in the sparse tail.
+    fn clustered_stream(n: u32, rng: &mut StdRng) -> Vec<u32> {
+        use rand::seq::SliceRandom;
+        let hot_max = (n / 100).max(2);
+        let hot = n * 9 / 10;
+        let cold = n - hot;
+        let mut v = Vec::with_capacity(n as usize);
+        for _ in 0..hot {
+            v.push(rng.random_range(1u32..=hot_max));
+        }
+        for _ in 0..cold {
+            v.push(rng.random_range(hot_max + 1..=n));
+        }
+        v.shuffle(rng);
+        v
+    }
+
+    /// Only 100 distinct values, each ~n/100 times. Exercises the sort +
+    /// coin-flip halving under degenerate orderings and confirms that
+    /// ties don't shift rank estimates.
+    fn tied_stream(n: u32, rng: &mut StdRng) -> Vec<u32> {
+        (0..n).map(|_| rng.random_range(1u32..=100)).collect()
+    }
+
+    /// Sweep `trials` seeds building a fresh stream per trial and assert
+    /// the DataSketches bound holds in ≥95% of them.
+    fn assert_ds_bound_holds(
+        distribution: &str,
+        stream_fn: impl Fn(u32, &mut StdRng) -> Vec<u32>,
+    ) {
+        let k = 200;
+        let n = 10_000u32;
+        let bound = normalized_rank_error_ss(k);
+        let trials = 100u64;
+        let failures = (0..trials)
+            .filter(|&seed| {
+                let mut shuffle_rng = StdRng::seed_from_u64(seed);
+                let stream = stream_fn(n, &mut shuffle_rng);
+                // Sketch RNG derived from a different sub-seed so the
+                // stream construction and the compaction coin flips aren't
+                // drawn from correlated streams.
+                let sketch_seed = seed.wrapping_add(0x9E37_79B9);
+                worst_rank_error(&stream, k, sketch_seed) > bound
+            })
+            .count();
+        let fail_rate = failures as f64 / trials as f64;
+        // The DataSketches eps is a P99 empirical fit, so ≤1% of trials
+        // should exceed it in a correct implementation. 5% slack absorbs
+        // tail luck without letting a real distribution shift slip
+        // through — an optimization bug that biases the error
+        // distribution up by a few percent pushes the fail rate well
+        // past 5%.
+        assert!(
+            fail_rate <= 0.05,
+            "{distribution}: rank error exceeded DataSketches bound \
+             {bound:.4} in {failures}/{trials} trials ({:.1}%); expected ≤ 5%",
+            fail_rate * 100.0
+        );
+    }
+
+    #[test]
+    fn absorb_apis_match_per_row_insert() {
+        // Both `absorb` and `absorb_slice` only skip work that per-row
+        // `insert` provably would have skipped too — the compaction
+        // trigger points, coin flips, and final min/max are all preserved.
+        // Three sketches seeded identically and fed the same stream via
+        // the three APIs must agree on every rank probe.
+        use rand::seq::SliceRandom;
+        let seed = 12345u64;
+        let mut shuffle_rng = StdRng::seed_from_u64(seed);
+        let n = 10_000u32;
+        let mut stream: Vec<u32> = (1..=n).collect();
+        stream.shuffle(&mut shuffle_rng);
+
+        let mut via_insert: KllSketch<u32> = KllSketch::with_seed(200, seed);
+        for x in &stream {
+            via_insert.insert(*x);
+        }
+
+        let mut via_absorb: KllSketch<u32> = KllSketch::with_seed(200, seed);
+        via_absorb.absorb(stream.iter().copied());
+
+        let mut via_absorb_slice: KllSketch<u32> = KllSketch::with_seed(200, seed);
+        via_absorb_slice.absorb_slice(&stream);
+
+        // Probe every 100 to keep the test cheap; the space is dense
+        // enough that any drift would surface within these probes.
+        for probe in (1..=n).step_by(100) {
+            let r_insert = via_insert.rank(&probe);
+            let r_absorb = via_absorb.rank(&probe);
+            let r_absorb_slice = via_absorb_slice.rank(&probe);
+            assert_eq!(
+                r_insert, r_absorb,
+                "rank({probe}) diverged: insert={r_insert} absorb={r_absorb}"
+            );
+            assert_eq!(
+                r_insert, r_absorb_slice,
+                "rank({probe}) diverged: insert={r_insert} absorb_slice={r_absorb_slice}"
+            );
+        }
+        assert_eq!(via_insert.quantile(0.0), via_absorb.quantile(0.0));
+        assert_eq!(via_insert.quantile(0.0), via_absorb_slice.quantile(0.0));
+        assert_eq!(via_insert.quantile(0.5), via_absorb.quantile(0.5));
+        assert_eq!(via_insert.quantile(0.5), via_absorb_slice.quantile(0.5));
+        assert_eq!(via_insert.quantile(1.0), via_absorb.quantile(1.0));
+        assert_eq!(via_insert.quantile(1.0), via_absorb_slice.quantile(1.0));
+    }
+
+    #[test]
+    fn absorb_sorted_slice_matches_absorb_slice_on_sorted_input() {
+        // absorb_sorted_slice's trick is to skip the compact-time sort by
+        // keeping level 0 sorted via merge-extend. On sorted input its
+        // output is bit-identical to absorb_slice because sort_unstable on
+        // an already-sorted array of distinct items is the identity, so
+        // both paths produce the same halved subsequence at each
+        // compaction.
+        let seed = 42u64;
+        let n = 10_000u32;
+        let sorted_stream: Vec<u32> = (1..=n).collect();
+
+        let mut via_absorb_slice: KllSketch<u32> = KllSketch::with_seed(200, seed);
+        via_absorb_slice.absorb_slice(&sorted_stream);
+
+        let mut via_sorted: KllSketch<u32> = KllSketch::with_seed(200, seed);
+        via_sorted.absorb_sorted_slice(&sorted_stream);
+
+        for probe in (1..=n).step_by(100) {
+            assert_eq!(
+                via_absorb_slice.rank(&probe),
+                via_sorted.rank(&probe),
+                "rank({probe}) diverged"
+            );
+        }
+        assert_eq!(via_absorb_slice.quantile(0.0), via_sorted.quantile(0.0));
+        assert_eq!(via_absorb_slice.quantile(0.5), via_sorted.quantile(0.5));
+        assert_eq!(via_absorb_slice.quantile(1.0), via_sorted.quantile(1.0));
+    }
+
+    #[test]
+    fn absorb_sorted_slice_restores_level_0_sortedness_after_prior_insert() {
+        // Prior `insert` calls leave sorted[0] = false. absorb_sorted_slice
+        // must sort level 0 before merge-extending, otherwise it would
+        // interleave sorted input into an unsorted buffer and the doc's
+        // "level 0 stays sorted" claim would be a lie.
+        //
+        // Small enough n to avoid tripping level-0 compaction, so we can
+        // inspect the sorted[] flag and level 0 directly.
+        let mut sketch: KllSketch<u32> = KllSketch::with_seed(1024, 42);
+        for x in [7u32, 3, 10, 1, 5] {
+            sketch.insert(x);
+        }
+        assert!(
+            !sketch.sorted[0],
+            "test setup: insert should leave sorted[0] = false"
+        );
+        sketch.absorb_sorted_slice(&[2u32, 4, 6, 8, 9]);
+        assert!(
+            sketch.sorted[0],
+            "absorb_sorted_slice should sort-and-set level 0 before merge-extending"
+        );
+        assert!(
+            sketch.levels[0].is_sorted(),
+            "level 0 contents must actually be sorted: {:?}",
+            sketch.levels[0]
+        );
+        // Sanity on the final counts and extremes across the mixed ingest.
+        assert_eq!(sketch.rank(&11), 10);
+        assert_eq!(sketch.quantile(0.0), Some(&1));
+        assert_eq!(sketch.quantile(1.0), Some(&10));
+    }
+
+    #[test]
+    fn absorb_sorted_slice_falls_back_on_unsorted_input() {
+        // Fed unsorted data, absorb_sorted_slice must not silently corrupt
+        // the sketch — it verifies sortedness and falls through to
+        // absorb_slice. Guards against a future plan-shape change dropping
+        // the upstream SortExec: the sketch would still answer correctly,
+        // just without the sort-skip speedup.
+        use rand::seq::SliceRandom;
+        let seed = 12345u64;
+        let mut shuffle_rng = StdRng::seed_from_u64(seed);
+        let n = 10_000u32;
+        let mut stream: Vec<u32> = (1..=n).collect();
+        stream.shuffle(&mut shuffle_rng);
+
+        let mut via_absorb_slice: KllSketch<u32> = KllSketch::with_seed(200, seed);
+        via_absorb_slice.absorb_slice(&stream);
+
+        let mut via_sorted: KllSketch<u32> = KllSketch::with_seed(200, seed);
+        via_sorted.absorb_sorted_slice(&stream);
+
+        for probe in (1..=n).step_by(100) {
+            assert_eq!(
+                via_absorb_slice.rank(&probe),
+                via_sorted.rank(&probe),
+                "rank({probe}) diverged"
+            );
+        }
+        assert_eq!(via_absorb_slice.quantile(0.0), via_sorted.quantile(0.0));
+        assert_eq!(via_absorb_slice.quantile(0.5), via_sorted.quantile(0.5));
+        assert_eq!(via_absorb_slice.quantile(1.0), via_sorted.quantile(1.0));
+    }
+
+    #[test]
+    fn rank_error_bound_uniform_distribution() {
+        assert_ds_bound_holds("uniform", uniform_stream);
+    }
+
+    #[test]
+    fn rank_error_bound_clustered_distribution() {
+        assert_ds_bound_holds("clustered", clustered_stream);
+    }
+
+    #[test]
+    fn rank_error_bound_heavy_ties() {
+        assert_ds_bound_holds("heavy-ties", tied_stream);
+    }
+
+    #[test]
+    fn merge_matches_single_sketch_within_bound() {
+        // Insert the same shuffled `1..=n` stream two ways:
+        //   Path A: straight into one sketch.
+        //   Path B: split into 4 shards, one sketch each, merged pairwise.
+        // Both carry O(ε) rank error individually, so any single quantile
+        // probe differs by at most ~2ε in expectation. Bounds any merge
+        // bug that would shift ranks by more than the sum of the two
+        // sketches' inherent errors.
+        use rand::seq::SliceRandom;
+        let k = 200;
+        let n = 10_000u32;
+        let bound = 2.0 * normalized_rank_error_ss(k);
+        let trials = 100u64;
+        let mut failures = 0;
+        for seed in 0..trials {
+            let mut shuffle_rng = StdRng::seed_from_u64(seed);
+            let mut stream: Vec<u32> = (1..=n).collect();
+            stream.shuffle(&mut shuffle_rng);
+
+            let mut single: KllSketch<u32> =
+                KllSketch::with_seed(k, seed.wrapping_add(0x9E37_79B9));
+            for x in &stream {
+                single.insert(*x);
+            }
+
+            let shard_size = n as usize / 4;
+            let mut shards: Vec<KllSketch<u32>> = (0..4u64)
+                .map(|i| KllSketch::with_seed(k, seed.wrapping_add(0xB504_F334 + i)))
+                .collect();
+            for (i, x) in stream.iter().enumerate() {
+                shards[(i / shard_size).min(3)].insert(*x);
+            }
+            let mut merged = shards.remove(0);
+            for s in shards {
+                merged.merge(s);
+            }
+
+            let worst_diff = (1..10)
+                .map(|i| {
+                    let q = i as f64 / 10.0;
+                    let probe = ((q * n as f64) as u32).max(1);
+                    let ra = single.rank(&probe) as f64 / n as f64;
+                    let rb = merged.rank(&probe) as f64 / n as f64;
+                    (ra - rb).abs()
+                })
+                .fold(0.0_f64, f64::max);
+
+            if worst_diff > bound {
+                failures += 1;
+            }
+        }
+        let fail_rate = failures as f64 / trials as f64;
+        assert!(
+            fail_rate <= 0.05,
+            "merge vs single quantile diff exceeded {bound:.4} in \
+             {failures}/{trials} trials ({:.1}%); expected ≤ 5%",
+            fail_rate * 100.0
+        );
     }
 }

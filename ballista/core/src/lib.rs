@@ -39,11 +39,27 @@ pub const BALLISTA_VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// Zero is reserved as the proto-default "unset" value, produced by executors
 /// that predate this field — it never matches a real scheduler version.
-pub const BALLISTA_PROTOCOL_VERSION: u32 = 1;
+pub const BALLISTA_PROTOCOL_VERSION: u32 = 3;
 
 /// Prints the current Ballista version to stdout.
 pub fn print_version() {
     println!("Ballista version: {BALLISTA_VERSION}")
+}
+
+/// Asserts an indented physical plan against an inline snapshot.
+///
+/// Keeping plan assertions behind one macro makes plan changes easier to
+/// review and update consistently across Ballista crates.
+#[macro_export]
+macro_rules! assert_plan {
+    ($plan:expr, @ $expected_lines:literal $(,)?) => {{
+        let plan = datafusion::physical_plan::displayable($plan)
+            .indent(true)
+            .to_string();
+        let actual_lines = plan.trim();
+
+        insta::assert_snapshot!(actual_lines, @ $expected_lines);
+    }};
 }
 
 /// Client utilities for connecting to Ballista schedulers.
@@ -52,8 +68,6 @@ pub mod client;
 pub mod client_pool;
 /// Configuration options and settings for Ballista components.
 pub mod config;
-/// Utilities for generating execution plan diagrams.
-pub mod diagram;
 /// Error types and result definitions for Ballista operations.
 pub mod error;
 /// Event loop infrastructure for asynchronous message processing.
@@ -77,6 +91,8 @@ pub mod planner;
 pub mod registry;
 /// Serialization and deserialization for Ballista messages and plans.
 pub mod serde;
+/// Quantile sketching of a fixed-width `ORDER BY` key, NULLs included.
+pub mod sort_key;
 /// General utility functions for Ballista operations.
 pub mod utils;
 

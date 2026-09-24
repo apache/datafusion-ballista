@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{
-    assert_plan,
-    state::aqe::{planner::AdaptivePlanner, test::mock_partitions_with_statistics},
+use crate::state::aqe::{
+    planner::AdaptivePlanner, test::mock_partitions_with_statistics,
 };
+use ballista_core::assert_plan;
 use ballista_core::extension::SessionConfigExt;
 use datafusion::{
     arrow::{
@@ -154,7 +154,7 @@ async fn test_hash_join_two_tables_coalesce() -> datafusion::common::Result<()> 
         .into_optimized_plan()
         .unwrap();
 
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
+    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into()).await?;
     let plan = planner.current_plan();
     // TODO: we could probably push datasource to read single partition
     assert_plan!(plan, @ r"
@@ -185,7 +185,7 @@ async fn test_left_join_not_collected_left() -> datafusion::common::Result<()> {
         .into_optimized_plan()
         .unwrap();
 
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
+    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into()).await?;
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
@@ -211,7 +211,7 @@ async fn test_hash_join_two_tables_repartition() -> datafusion::common::Result<(
         .into_optimized_plan()
         .unwrap();
 
-    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
+    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into()).await?;
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
@@ -272,7 +272,7 @@ async fn test_sort_merge_join_two_tables_repartition() -> datafusion::common::Re
         .into_optimized_plan()
         .unwrap();
 
-    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
+    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into()).await?;
 
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
@@ -338,7 +338,7 @@ async fn test_hash_join_three_tables_collect_left() -> datafusion::common::Resul
         .unwrap()
         .into_optimized_plan()
         .unwrap();
-    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
+    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into()).await?;
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"
@@ -373,7 +373,7 @@ async fn test_hash_join_three_tables_collect_left() -> datafusion::common::Resul
 
     // plan for first stage
     assert_plan!(stage.plan.as_ref(), @ r"
-    ShuffleWriterExec: partitioning: None
+    ShuffleWriterExec: partitioning: UnknownPartitioning(4)
       DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
 
@@ -409,7 +409,7 @@ async fn test_hash_join_three_tables_repartition() -> datafusion::common::Result
         .unwrap()
         .into_optimized_plan()
         .unwrap();
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
+    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into()).await?;
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"
@@ -440,7 +440,7 @@ async fn test_sort_merge_join_three_tables_repartition() -> datafusion::common::
         .unwrap()
         .into_optimized_plan()
         .unwrap();
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".to_owned()).await?;
+    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into()).await?;
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"

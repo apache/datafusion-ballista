@@ -32,6 +32,18 @@ You can find a curated
 [good-first-issue](https://github.com/apache/datafusion-ballista/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 list to help you get started.
 
+## Claiming an issue
+
+If you want to work on an issue, comment `take` on it and the
+[`take` workflow](.github/workflows/take.yml) will assign it to you. Comment
+`untake` to unassign yourself again if you no longer plan to work on it. The
+comment has to be exactly `take` or `untake` with nothing else in it.
+
+Assigning an issue to yourself is not required to open a PR, but it lets others
+know that the issue is being worked on. If an issue is already assigned and has
+seen no activity for a while, feel free to ask on the issue whether it is still
+being worked on before picking it up.
+
 # Developer's Guide
 
 This section describes how you can get started with Ballista development.

@@ -62,7 +62,7 @@ SortShuffleWriterExec: partitioning=Hash([r_regionkey@0], 16)
 
 === Stage 11 ===
 SortShuffleWriterExec: partitioning=Hash([n_name@0], 16)
-  AggregateExec: mode=Partial, gby=[n_name@2 as n_name], aggr=[sum(lineitem.l_extendedprice * Some(1),20,0 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+  AggregateExec: mode=Partial, gby=[n_name@2 as n_name], aggr=[sum(lineitem.l_extendedprice * 1 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
     ProjectionExec: expr=[l_extendedprice@0 as l_extendedprice, l_discount@1 as l_discount, n_name@2 as n_name]
       SortMergeJoinExec: join_type=Inner, on=[(n_regionkey@3, r_regionkey@0)]
         SortExec: expr=[n_regionkey@3 ASC], preserve_partitioning=[true]
@@ -71,13 +71,13 @@ SortShuffleWriterExec: partitioning=Hash([n_name@0], 16)
           UnresolvedShuffleExec: stage=10, partitioning: Hash([r_regionkey@0], 16)
 
 === Stage 12 ===
-ShuffleWriterExec: partitioning: None
-  SortExec: expr=[revenue@1 DESC], preserve_partitioning=[true]
-    ProjectionExec: expr=[n_name@0 as n_name, sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 as revenue]
-      AggregateExec: mode=FinalPartitioned, gby=[n_name@0 as n_name], aggr=[sum(lineitem.l_extendedprice * Some(1),20,0 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+ShuffleWriterExec: partitioning: Hash([n_name@0], 16)
+  ProjectionExec: expr=[n_name@0 as n_name, sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 as revenue]
+    SortExec: expr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 DESC], preserve_partitioning=[true]
+      AggregateExec: mode=FinalPartitioned, gby=[n_name@0 as n_name], aggr=[sum(lineitem.l_extendedprice * 1 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
         UnresolvedShuffleExec: stage=11, partitioning: Hash([n_name@0], 16)
 
 === Stage 13 ===
-ShuffleWriterExec: partitioning: None
+ShuffleWriterExec: partitioning: UnknownPartitioning(1)
   SortPreservingMergeExec: [revenue@1 DESC]
     UnresolvedShuffleExec: stage=12, partitioning: Hash([n_name@0], 16)

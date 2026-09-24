@@ -25,7 +25,7 @@ use ballista_core::serde::protobuf::ExecutorMetric;
 use ballista_core::serde::protobuf::executor_metric::Metric;
 use log::trace;
 
-use crate::cluster::{BoundTask, ClusterState, ExecutorSlot};
+use crate::cluster::{BoundTask, ClusterState, ClusterStateEventStream, ExecutorSlot};
 use crate::config::SchedulerConfig;
 
 use crate::state::execution_graph::RunningTaskInfo;
@@ -79,13 +79,22 @@ impl ExecutorManager {
         cluster_state: Arc<dyn ClusterState>,
         config: Arc<SchedulerConfig>,
     ) -> Self {
+        // Prefer an explicit override_config_producer if the embedder wired one,
+        // so a full BallistaConfig (with all its grpc-client knobs) still takes
+        // precedence. Otherwise, use `default()` but override
+        // `max_message_size` from the scheduler's `grpc_client_max_message_size`
+        // CLI flag so users can raise the ceiling for outbound task-assignment
+        // RPCs without having to write a config-producer in Rust.
         let grpc_client_config =
             if let Some(config_producer) = &config.override_config_producer {
                 let session_config = config_producer();
                 let ballista_config = session_config.ballista_config();
                 GrpcClientConfig::from(&ballista_config)
             } else {
-                GrpcClientConfig::default()
+                GrpcClientConfig {
+                    max_message_size: config.grpc_client_max_message_size as usize,
+                    ..GrpcClientConfig::default()
+                }
             };
         Self {
             cluster_state,
@@ -101,6 +110,11 @@ impl ExecutorManager {
         self.cluster_state.init().await?;
 
         Ok(())
+    }
+
+    /// Returns a stream of cluster state events from the configured state backend.
+    pub async fn cluster_state_events(&self) -> Result<ClusterStateEventStream> {
+        self.cluster_state.cluster_state_events().await
     }
 
     /// Binds ready-to-run tasks from active jobs to available executor slots.
@@ -367,6 +381,8 @@ impl ExecutorManager {
         reason: Option<String>,
     ) -> Result<()> {
         info!("Removing executor {executor_id}: {reason:?}");
+        // Drop the cached client
+        self.clients.remove(executor_id);
         self.cluster_state.remove_executor(executor_id).await
     }
 
@@ -403,28 +419,28 @@ impl ExecutorManager {
     }
 
     /// Launches multiple tasks on the specified executor.
+    ///
+    /// `Ok` means the RPC was dispatched; the returned set holds job IDs the
+    /// executor rejected (could not decode) and failed individually. `Err` is
+    /// only returned for a transport-level failure of the whole RPC.
     pub async fn launch_multi_task(
         &self,
         executor_id: &str,
         multi_tasks: Vec<MultiTaskDefinition>,
-        scheduler_id: String,
-    ) -> Result<()> {
+        scheduler_endpoint: String,
+    ) -> Result<HashSet<JobId>> {
         let mut client = self
             .get_client(executor_id, &self.grpc_client_config)
             .await?;
-        client
+        let res = client
             .launch_multi_task(protobuf::LaunchMultiTaskParams {
                 multi_tasks,
-                scheduler_id,
+                scheduler_endpoint,
             })
-            .await
-            .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Failed to connect to executor {executor_id}: {e:?}"
-                ))
-            })?;
+            .await?
+            .into_inner();
 
-        Ok(())
+        Ok(res.failed_jobs.into_iter().map(JobId::from).collect())
     }
 
     pub(crate) fn drain_pending_cleanup_jobs(
@@ -552,7 +568,13 @@ impl ExecutorManager {
             }
 
             let connection = endpoint.connect().await?;
-            let client = ExecutorGrpcClient::new(connection);
+            // Message-size limits are tonic codec settings, not `Endpoint`
+            // settings, so `create_grpc_client_endpoint` cannot apply them.
+            // Without this the configured `max_message_size` is silently
+            // ignored and task assignment falls back to tonic's own defaults.
+            let client = ExecutorGrpcClient::new(connection)
+                .max_encoding_message_size(grpc_client_config.max_message_size)
+                .max_decoding_message_size(grpc_client_config.max_message_size);
 
             {
                 self.clients.insert(executor_id.to_owned(), client.clone());
@@ -579,5 +601,76 @@ impl ExecutorManager {
     #[cfg(test)]
     async fn test_connectivity(_metadata: &ExecutorMetadata) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::test_cluster_context;
+    use ballista_core::extension::SessionConfigExt;
+    use datafusion::prelude::SessionConfig;
+    use tonic::transport::Endpoint;
+
+    #[test]
+    fn grpc_client_max_message_size_flag_reaches_client_config() {
+        let config = Arc::new(
+            SchedulerConfig::default()
+                .with_grpc_client_max_message_size(64 * 1024 * 1024),
+        );
+        let manager =
+            ExecutorManager::new(test_cluster_context().cluster_state(), config);
+
+        assert_eq!(
+            manager.grpc_client_config.max_message_size,
+            64 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn config_producer_still_wins_over_the_flag() {
+        let config = Arc::new(
+            SchedulerConfig::default()
+                .with_grpc_client_max_message_size(64 * 1024 * 1024)
+                .with_override_config_producer(Arc::new(|| {
+                    let mut session_config = SessionConfig::new_with_ballista();
+                    session_config
+                        .options_mut()
+                        .set("ballista.client.grpc_max_message_size", "33554432")
+                        .expect("valid setting");
+                    session_config
+                })),
+        );
+        let manager =
+            ExecutorManager::new(test_cluster_context().cluster_state(), config);
+
+        assert_eq!(
+            manager.grpc_client_config.max_message_size,
+            32 * 1024 * 1024
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_an_executor_drops_its_cached_client() {
+        let manager = ExecutorManager::new(
+            test_cluster_context().cluster_state(),
+            Arc::new(SchedulerConfig::default()),
+        );
+
+        // `get_client` needs an executor to connect to, so cache a client
+        // directly. `connect_lazy` gives a `Channel` without a server behind it.
+        let channel = Endpoint::from_static("http://localhost:1").connect_lazy();
+        manager
+            .clients
+            .insert("executor-1".to_owned(), ExecutorGrpcClient::new(channel));
+
+        manager
+            .remove_executor("executor-1", None)
+            .await
+            .expect("executor removed");
+
+        // An executor id is a fresh uuid per executor process, so a client left
+        // behind here would never be reused, and never dropped either.
+        assert!(manager.clients.is_empty());
     }
 }

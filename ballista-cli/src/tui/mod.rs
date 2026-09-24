@@ -297,9 +297,9 @@ pub(crate) mod web {
                     .await
                 {
                     Ok(mut stages) => {
-                        stages
-                            .stages
-                            .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
+                        stages.stages.sort_by_key(|s| {
+                            s.stage_id.parse::<u64>().unwrap_or(u64::MAX)
+                        });
                         send_data(UiData::JobStagesData(id, stages), tx).await;
                     }
                     Err(e) => {
@@ -383,9 +383,9 @@ pub(crate) mod web {
             WebKeyAsyncAction::LoadStagePlan(job_id, tab) => {
                 match http_client.get_job_stages(&job_id, &tab).await {
                     Ok(mut stages) => {
-                        stages
-                            .stages
-                            .sort_by_key(|s| s.id.parse::<u64>().unwrap_or(u64::MAX));
+                        stages.stages.sort_by_key(|s| {
+                            s.stage_id.parse::<u64>().unwrap_or(u64::MAX)
+                        });
                         send_data(UiData::JobStagesPlanData(tab, stages), tx).await;
                     }
                     Err(e) => {

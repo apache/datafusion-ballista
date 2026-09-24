@@ -55,11 +55,34 @@ pub(crate) fn health_routes<
         .with_state(scheduler_server)
 }
 
-async fn healthz() -> Response {
+#[cfg_attr(
+    feature = "rest-api",
+    utoipa::path(
+        get,
+        path = "/healthz",
+        tag = "health",
+        responses(
+            (status = 200, description = "Scheduler liveness probe", content_type = "text/plain", body = String)
+        )
+    )
+)]
+pub(crate) async fn healthz() -> Response {
     (StatusCode::OK, "ok").into_response()
 }
 
-async fn readyz<
+#[cfg_attr(
+    feature = "rest-api",
+    utoipa::path(
+        get,
+        path = "/readyz",
+        tag = "health",
+        responses(
+            (status = 200, description = "Scheduler is ready to accept queries", content_type = "text/plain", body = String),
+            (status = 503, description = "Scheduler is not ready (insufficient executors)", content_type = "text/plain", body = String)
+        )
+    )
+)]
+pub(crate) async fn readyz<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,
 >(

@@ -29,6 +29,7 @@ use ballista_core::utils::{GrpcServerConfig, default_config_producer};
 use ballista_core::{
     BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION,
     error::Result,
+    ids::new_instance_id,
     serde::BallistaCodec,
     serde::protobuf::{ExecutorRegistration, scheduler_grpc_client::SchedulerGrpcClient},
     serde::scheduler::{ExecutorOperatingSystemSpecification, ExecutorSpecification},
@@ -41,7 +42,6 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tonic::transport::Channel;
-use uuid::Uuid;
 
 /// Creates new standalone executor based on
 /// session_state provided.
@@ -99,7 +99,7 @@ pub async fn new_standalone_executor_from_builder(
     info!("Ballista v{BALLISTA_VERSION} Rust Executor listening on {address:?}");
 
     let executor_meta = ExecutorRegistration {
-        id: Uuid::new_v4().to_string(), // assign this executor a unique ID
+        id: new_instance_id(), // assign this executor a unique ID
         host: Some("localhost".to_string()),
         port: address.port() as u32,
         // TODO Make it configurable
@@ -147,6 +147,7 @@ pub async fn new_standalone_executor_from_builder(
         scheduler,
         executor,
         codec,
+        None,
         None,
         crate::health::ExecutorHealth::new(),
     ));

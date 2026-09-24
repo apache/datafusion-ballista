@@ -19,7 +19,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::catalog::Session;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,7 +53,7 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
-use crate::cluster::BallistaCluster;
+use crate::cluster::{BallistaCluster, JobStateEventStream};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{
@@ -69,7 +69,7 @@ pub const TPCH_TABLES: &[&str] = &[
     "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
 ];
 
-const TEST_SCHEDULER_NAME: &str = "localhost:50050";
+const TEST_SCHEDULER_ENDPOINT: &str = "localhost:50050";
 
 /// Sometimes we need to construct logical plans that will produce errors
 /// when we try and create physical plan. A scan using `ExplodingTableProvider`
@@ -126,7 +126,7 @@ pub async fn await_condition<Fut: Future<Output = Result<bool>>, F: Fn() -> Fut>
 /// Creates a test cluster context with in-memory state.
 pub fn test_cluster_context() -> BallistaCluster {
     BallistaCluster::new_memory(
-        TEST_SCHEDULER_NAME,
+        TEST_SCHEDULER_ENDPOINT,
         Arc::new(default_session_builder),
         Arc::new(default_config_producer),
     )
@@ -309,6 +309,7 @@ pub fn default_task_runner() -> impl TaskRunner {
                     executor_id: executor_id.clone(),
                     partitions: partitions.clone(),
                     runtime_stats: vec![],
+                    window_state: vec![],
                 })),
             });
         }
@@ -341,8 +342,8 @@ impl TaskLauncher for BlackholeTaskLauncher {
         _executor: &ExecutorMetadata,
         _tasks: Vec<MultiTaskDefinition>,
         _executor_manager: &ExecutorManager,
-    ) -> Result<()> {
-        Ok(())
+    ) -> Result<HashSet<JobId>> {
+        Ok(HashSet::new())
     }
 }
 
@@ -350,6 +351,10 @@ impl TaskLauncher for BlackholeTaskLauncher {
 pub struct VirtualTaskLauncher {
     sender: Sender<(String, Vec<TaskStatus>)>,
     executors: HashMap<String, VirtualExecutor>,
+    /// Executors whose launches must fail, as if the process had died between
+    /// binding and launch. Shared with the owning [`SchedulerTest`], which adds
+    /// to it through [`SchedulerTest::make_launches_fail`].
+    unreachable: Arc<Mutex<HashSet<String>>>,
 }
 
 #[async_trait::async_trait]
@@ -359,7 +364,14 @@ impl TaskLauncher for VirtualTaskLauncher {
         executor: &ExecutorMetadata,
         tasks: Vec<MultiTaskDefinition>,
         _executor_manager: &ExecutorManager,
-    ) -> Result<()> {
+    ) -> Result<HashSet<JobId>> {
+        if self.unreachable.lock().contains(&executor.id) {
+            return Err(BallistaError::Internal(format!(
+                "test: executor {} is unreachable",
+                executor.id
+            )));
+        }
+
         let virtual_executor = self.executors.get(&executor.id).ok_or_else(|| {
             BallistaError::Internal(format!(
                 "No virtual executor with ID {} found",
@@ -377,7 +389,30 @@ impl TaskLauncher for VirtualTaskLauncher {
             .await
             .map_err(|e| {
                 BallistaError::Internal(format!("Error sending task status: {e:?}"))
-            })
+            })?;
+        Ok(HashSet::new())
+    }
+}
+
+/// Launcher that reports every job in the batch as rejected via the
+/// `failed_jobs` channel, simulating an executor that cannot decode/validate
+/// the task (see issue #1908). The RPC itself succeeds; the jobs are failed
+/// individually rather than the whole batch.
+#[derive(Default)]
+pub struct RejectingTaskLauncher {}
+
+#[async_trait::async_trait]
+impl TaskLauncher for RejectingTaskLauncher {
+    async fn launch_tasks(
+        &self,
+        _executor: &ExecutorMetadata,
+        tasks: Vec<MultiTaskDefinition>,
+        _executor_manager: &ExecutorManager,
+    ) -> Result<HashSet<JobId>> {
+        Ok(tasks
+            .iter()
+            .map(|t| JobId::from(t.job_id.clone()))
+            .collect())
     }
 }
 
@@ -386,6 +421,7 @@ pub struct SchedulerTest {
     scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
     session_config: SessionConfig,
     status_receiver: Option<Receiver<(String, Vec<TaskStatus>)>>,
+    unreachable_executors: Arc<Mutex<HashSet<String>>>,
 }
 
 impl SchedulerTest {
@@ -399,11 +435,15 @@ impl SchedulerTest {
     ) -> Result<Self> {
         let cluster = BallistaCluster::new_from_config(&config).await?;
 
+        // These tests assert the static planner's stage and partition layout,
+        // so pin it rather than follow the (now adaptive) default. AQE has its
+        // own coverage in the TPC-DS suite.
         let session_config = if num_executors > 0 && vcores_per_executor > 0 {
             SessionConfig::new_with_ballista()
                 .with_target_partitions(num_executors * vcores_per_executor)
+                .with_ballista_adaptive_query_planner(false)
         } else {
-            SessionConfig::new_with_ballista()
+            SessionConfig::new_with_ballista().with_ballista_adaptive_query_planner(false)
         };
 
         let runner = runner.unwrap_or_else(|| Arc::new(default_task_runner()));
@@ -422,9 +462,12 @@ impl SchedulerTest {
 
         let (status_sender, status_receiver) = channel(1000);
 
+        let unreachable_executors: Arc<Mutex<HashSet<String>>> = Arc::default();
+
         let launcher = VirtualTaskLauncher {
             sender: status_sender,
             executors: executors.clone(),
+            unreachable: unreachable_executors.clone(),
         };
 
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
@@ -466,6 +509,85 @@ impl SchedulerTest {
             scheduler,
             session_config,
             status_receiver: Some(status_receiver),
+            unreachable_executors,
+        })
+    }
+
+    /// Like [`SchedulerTest::new`] but injects a custom [`TaskLauncher`].
+    pub async fn new_with_launcher(
+        config: SchedulerConfig,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+        num_executors: usize,
+        task_slots_per_executor: usize,
+        runner: Option<Arc<dyn TaskRunner>>,
+        launcher: Arc<dyn TaskLauncher>,
+    ) -> Result<Self> {
+        let cluster = BallistaCluster::new_from_config(&config).await?;
+
+        let session_config = if num_executors > 0 && task_slots_per_executor > 0 {
+            SessionConfig::new_with_ballista()
+                .with_target_partitions(num_executors * task_slots_per_executor)
+        } else {
+            SessionConfig::new_with_ballista()
+        };
+
+        let runner = runner.unwrap_or_else(|| Arc::new(default_task_runner()));
+
+        let executors: HashMap<String, VirtualExecutor> = (0..num_executors)
+            .map(|i| {
+                let id = format!("virtual-executor-{i}");
+                let executor = VirtualExecutor {
+                    executor_id: id.clone(),
+                    vcores: task_slots_per_executor,
+                    runner: runner.clone(),
+                };
+                (id, executor)
+            })
+            .collect();
+
+        // This launcher does not report task statuses back, so no receiver is needed.
+        let (_status_sender, status_receiver) = channel(1000);
+
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new_with_task_launcher(
+                "localhost:50050".to_owned(),
+                cluster,
+                BallistaCodec::default(),
+                Arc::new(config),
+                metrics_collector,
+                launcher,
+            );
+        scheduler.init().await?;
+
+        for (executor_id, VirtualExecutor { vcores, .. }) in executors {
+            let metadata = ExecutorMetadata {
+                id: executor_id.clone(),
+                host: String::default(),
+                port: 0,
+                grpc_port: 0,
+                specification: ExecutorSpecification::default()
+                    .with_vcores(vcores as u32),
+                os_info: ExecutorOperatingSystemSpecification::default(),
+            };
+
+            let executor_data = ExecutorData {
+                executor_id,
+                total_vcores: vcores as u32,
+                available_vcores: vcores as u32,
+            };
+
+            scheduler
+                .state
+                .executor_manager
+                .register_executor(metadata, executor_data)
+                .await?;
+        }
+
+        Ok(Self {
+            scheduler,
+            session_config,
+            status_receiver: Some(status_receiver),
+            unreachable_executors: Arc::default(),
         })
     }
 
@@ -477,6 +599,11 @@ impl SchedulerTest {
     /// Returns the number of running jobs.
     pub fn running_job_number(&self) -> usize {
         self.scheduler.running_job_number()
+    }
+
+    /// Returns job state events from the underlying scheduler.
+    pub async fn job_state_events(&self) -> Result<JobStateEventStream> {
+        self.scheduler.job_state_events().await
     }
 
     /// Returns the session context for tests.
@@ -543,21 +670,28 @@ impl SchedulerTest {
             .await
     }
 
-    /// Simulates the loss of an executor: deregisters it from the executor
-    /// manager and posts the `ExecutorLost` event. This mirrors the reaper's
+    /// Simulates the loss of an executor. This mirrors the reaper's
     /// `remove_executor` path without waiting out the heartbeat timeout.
     pub async fn lose_executor(&self, executor_id: &str) -> Result<()> {
-        let reason = Some("test: executor lost".to_owned());
         self.scheduler
             .state
-            .executor_manager
-            .remove_executor(executor_id, reason.clone())
-            .await?;
-        self.post_scheduler_event(QueryStageSchedulerEvent::ExecutorLost(
-            executor_id.to_owned(),
-            reason,
-        ))
-        .await
+            .remove_executor(
+                executor_id,
+                Some("test: executor lost".to_owned()),
+                &self.scheduler.query_stage_event_loop.get_sender()?,
+            )
+            .await;
+        Ok(())
+    }
+
+    /// Makes every subsequent task launch onto `executor_id` fail, as if the
+    /// process had died after its tasks were bound to it. The scheduler then
+    /// discovers the loss through the failing launch rather than through
+    /// heartbeat expiry.
+    pub fn make_launches_fail(&self, executor_id: &str) {
+        self.unreachable_executors
+            .lock()
+            .insert(executor_id.to_owned());
     }
 
     /// Returns the current status of a job, if known.
@@ -567,76 +701,6 @@ impl SchedulerTest {
             .task_manager
             .get_job_status(job_id)
             .await
-    }
-
-    /// Waits for job completion with a timeout in milliseconds.
-    pub async fn await_completion_timeout(
-        &self,
-        job_id: &JobId,
-        timeout_ms: u64,
-    ) -> Result<JobStatus> {
-        let mut time = 0;
-        let final_status: Result<JobStatus> = loop {
-            let status = self
-                .scheduler
-                .state
-                .task_manager
-                .get_job_status(job_id)
-                .await?;
-
-            if let Some(JobStatus {
-                status: Some(inner),
-                ..
-            }) = status.as_ref()
-            {
-                match inner {
-                    Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap());
-                    }
-                    _ => {
-                        if time >= timeout_ms {
-                            break Ok(status.unwrap());
-                        } else {
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            time += 100;
-        };
-
-        final_status
-    }
-
-    /// Waits for job completion indefinitely.
-    pub async fn await_completion(&self, job_id: &JobId) -> Result<JobStatus> {
-        let final_status: Result<JobStatus> = loop {
-            let status = self
-                .scheduler
-                .state
-                .task_manager
-                .get_job_status(job_id)
-                .await?;
-
-            if let Some(JobStatus {
-                status: Some(inner),
-                ..
-            }) = status.as_ref()
-            {
-                match inner {
-                    Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap());
-                    }
-                    _ => continue,
-                }
-            }
-
-            tokio::time::sleep(Duration::from_millis(100)).await
-        };
-
-        final_status
     }
 
     /// Returns job status and job_id
@@ -687,16 +751,11 @@ impl SchedulerTest {
                 .await?;
 
             if let Some(JobStatus {
-                status: Some(inner),
+                status: Some(Status::Failed(_) | Status::Successful(_)),
                 ..
             }) = status.as_ref()
             {
-                match inner {
-                    Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap());
-                    }
-                    _ => continue,
-                }
+                break Ok(status.unwrap());
             }
 
             tokio::time::sleep(Duration::from_millis(100)).await
@@ -1237,6 +1296,7 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
             executor_id: executor_id.to_owned(),
             partitions,
             runtime_stats: vec![],
+            window_state: vec![],
         })),
     }
 }

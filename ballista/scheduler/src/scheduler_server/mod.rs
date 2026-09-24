@@ -30,17 +30,20 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
+use ferroid::base32::Base32SnowExt;
+use ferroid::futures::SnowflakeGeneratorAsyncTokioExt;
+use ferroid::generator::AtomicSnowflakeGenerator;
+use ferroid::id::SnowflakeMastodonId;
+use ferroid::time::MonotonicClock;
 
-use crate::cluster::BallistaCluster;
+use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use log::{debug, error, warn};
+use log::{debug, info, warn};
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
-
-use crate::state::executor_manager::ExecutorManager;
 
 use crate::state::SchedulerState;
 use crate::state::task_manager::TaskLauncher;
@@ -55,6 +58,13 @@ pub mod externalscaler {
 
 /// Events for the scheduler event loop.
 pub mod event;
+/// Builds `HistoryEvent`s emitted from the event loop into the event log.
+///
+/// Depends on `crate::api::dto_build`, which is only compiled with the
+/// `rest-api` feature (the default), so this module and the event-log wiring
+/// into `QueryStageScheduler` are gated the same way.
+#[cfg(feature = "rest-api")]
+mod event_log;
 #[cfg(feature = "keda-scaler")]
 mod external_scaler;
 mod grpc;
@@ -63,6 +73,50 @@ pub(crate) mod query_stage_scheduler;
 /// Function type for building DataFusion session states from configuration.
 pub type SessionBuilder =
     Arc<dyn Fn(SessionConfig) -> datafusion::common::Result<SessionState> + Send + Sync>;
+
+/// Generates unique identifiers for submitted jobs.
+///
+/// Schedulers use one `JobIdGenerator` instance for their lifetime, calling
+/// [`next_id`](JobIdGenerator::next_id) once per job submission.
+/// Implementations must be safe to call concurrently from multiple tasks and
+/// must never return the same id twice, since job ids are used to key
+/// scheduler-wide state.
+///
+/// A default snowflake-based generator is used unless a
+/// custom implementation is supplied via
+/// [`SchedulerConfig::job_id_generator`](crate::config::SchedulerConfig::job_id_generator).
+#[async_trait::async_trait]
+pub trait JobIdGenerator: Sync + Send {
+    /// Returns a new, globally unique job id.
+    async fn next_id(&self) -> String;
+}
+
+/// A monotonically increasing sortable snowflake job id generator
+/// which does not capture machine id as part result.
+struct DefaultJobGenerator {
+    generator: AtomicSnowflakeGenerator<SnowflakeMastodonId, MonotonicClock>,
+}
+
+impl Default for DefaultJobGenerator {
+    fn default() -> Self {
+        // default implementation does not support multi machine
+        // setups
+        let generator = AtomicSnowflakeGenerator::new(
+            0, // machine id is hard-coded to 0
+            MonotonicClock::<1>::default(),
+        );
+
+        Self { generator }
+    }
+}
+
+#[async_trait::async_trait]
+impl JobIdGenerator for DefaultJobGenerator {
+    async fn next_id(&self) -> String {
+        let id = self.generator.next_id_async().await;
+        id.encode().to_string()
+    }
+}
 
 /// The main scheduler server that coordinates distributed query execution.
 ///
@@ -73,8 +127,10 @@ pub type SessionBuilder =
 /// - Tracking job progress and handling failures
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
-    /// Unique name identifying this scheduler instance.
-    pub scheduler_name: String,
+    /// Unique identifier for this scheduler instance.
+    pub scheduler_id: String,
+    /// Scheduler callback endpoint in host:port format.
+    pub scheduler_endpoint: String,
     /// Timestamp when this scheduler was started.
     pub start_time: u128,
     /// Shared scheduler state for job and executor management.
@@ -86,66 +142,85 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     query_stage_scheduler: Arc<QueryStageScheduler<T, U>>,
     /// Scheduler configuration.
     config: Arc<SchedulerConfig>,
+    /// generates job ids
+    generator: Arc<dyn JobIdGenerator>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
     /// Creates a new `SchedulerServer` with the given configuration.
     pub fn new(
-        scheduler_name: String,
+        scheduler_endpoint: String,
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         config: Arc<SchedulerConfig>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     ) -> Self {
+        let scheduler_id = config.scheduler_id.clone();
         let state = Arc::new(SchedulerState::new(
             cluster,
             codec,
-            scheduler_name.clone(),
+            scheduler_id.clone(),
+            scheduler_endpoint.clone(),
             config.clone(),
         ));
-        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
-            state.clone(),
-            metrics_collector,
-            config.clone(),
-        ));
-        let query_stage_event_loop = EventLoop::new(
-            "query_stage".to_owned(),
-            config.event_loop_buffer_size as usize,
-            query_stage_scheduler.clone(),
-        );
 
-        Self {
-            scheduler_name,
-            start_time: timestamp_millis() as u128,
+        Self::from_state(
+            scheduler_id,
+            scheduler_endpoint,
             state,
-            query_stage_event_loop,
-            #[cfg(feature = "rest-api")]
-            query_stage_scheduler,
             config,
-        }
+            metrics_collector,
+        )
     }
 
     /// Creates a new `SchedulerServer` with a custom task launcher.
     #[allow(dead_code)]
     pub fn new_with_task_launcher(
-        scheduler_name: String,
+        scheduler_endpoint: String,
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         config: Arc<SchedulerConfig>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
         task_launcher: Arc<dyn TaskLauncher>,
     ) -> Self {
+        let scheduler_id = config.scheduler_id.clone();
         let state = Arc::new(SchedulerState::new_with_task_launcher(
             cluster,
             codec,
-            scheduler_name.clone(),
+            scheduler_id.clone(),
             config.clone(),
             task_launcher,
         ));
+
+        Self::from_state(
+            scheduler_id,
+            scheduler_endpoint,
+            state,
+            config,
+            metrics_collector,
+        )
+    }
+
+    fn from_state(
+        scheduler_id: String,
+        scheduler_endpoint: String,
+        state: Arc<SchedulerState<T, U>>,
+        config: Arc<SchedulerConfig>,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+    ) -> Self {
+        #[cfg(feature = "rest-api")]
+        let event_log = config.event_log_dir.as_ref().map(|dir| {
+            ballista_history::writer::EventLogWriter::new(
+                std::path::PathBuf::from(dir),
+                config.event_loop_buffer_size as usize,
+            )
+        });
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
             config.clone(),
+            #[cfg(feature = "rest-api")]
+            event_log,
         ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
@@ -153,14 +228,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             query_stage_scheduler.clone(),
         );
 
+        let generator = config
+            .job_id_generator
+            .clone()
+            .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
+
+        info!("Scheduler id: {scheduler_id}");
+        info!("Scheduler callback endpoint: {scheduler_endpoint}");
+
         Self {
-            scheduler_name,
+            scheduler_id,
+            scheduler_endpoint,
             start_time: timestamp_millis() as u128,
             state,
             query_stage_event_loop,
             #[cfg(feature = "rest-api")]
             query_stage_scheduler,
             config,
+            generator,
         }
     }
 
@@ -181,6 +266,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// Returns the number of currently running jobs.
     pub fn running_job_number(&self) -> usize {
         self.state.task_manager.running_job_number()
+    }
+
+    /// Returns a stream of job state events from the configured state backend.
+    pub async fn job_state_events(&self) -> Result<JobStateEventStream> {
+        self.state.task_manager.job_state_events().await
+    }
+
+    /// Returns a stream of cluster state events from the configured state backend.
+    pub async fn cluster_state_events(&self) -> Result<ClusterStateEventStream> {
+        self.state.executor_manager.cluster_state_events().await
     }
 
     /// True when at least `min_ready_executors` executors currently have
@@ -236,7 +331,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<JobId> {
         log::debug!("Received submit request for job {job_name}");
-        let job_id = self.state.task_manager.generate_job_id();
+        let job_id: JobId = self.generator.next_id().await.into();
         self.query_stage_event_loop
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
@@ -354,7 +449,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
                     // If executor is expired, remove it immediately
                     Self::remove_executor(
-                        state.executor_manager.clone(),
+                        state.clone(),
                         sender_clone,
                         &executor_id,
                         Some(stop_reason.clone()),
@@ -379,8 +474,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         Ok(())
     }
 
+    /// Removes an executor after `wait_secs`, in the background. The removal
+    /// itself is [`SchedulerState::remove_executor`], so this path and the one
+    /// taken when a task launch fails cannot drift apart.
     pub(crate) fn remove_executor(
-        executor_manager: ExecutorManager,
+        state: Arc<SchedulerState<T, U>>,
         event_sender: EventSender<QueryStageSchedulerEvent>,
         executor_id: &str,
         reason: Option<String>,
@@ -392,20 +490,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             // Wait for `wait_secs` before removing executor
             tokio::time::sleep(Duration::from_secs(wait_secs)).await;
 
-            // Update the executor manager immediately here
-            if let Err(e) = executor_manager
-                .remove_executor(&executor_id, reason.clone())
-                .await
-            {
-                error!("error removing executor {executor_id}: {e:?}");
-            }
-
-            if let Err(e) = event_sender
-                .post_event(QueryStageSchedulerEvent::ExecutorLost(executor_id, reason))
-                .await
-            {
-                error!("error sending ExecutorLost event: {e:?}");
-            }
+            state
+                .remove_executor(&executor_id, reason, &event_sender)
+                .await;
         });
     }
 
@@ -451,6 +538,7 @@ pub fn timestamp_millis() -> u64 {
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use ballista_core::JobId;
     use ballista_core::extension::SessionConfigExt;
@@ -463,7 +551,9 @@ mod test {
     use datafusion::test_util::scan_empty_with_partitions;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
+    use futures::StreamExt;
 
+    use crate::cluster::ClusterStateEvent;
     use crate::config::SchedulerConfig;
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
@@ -482,10 +572,35 @@ mod test {
     use crate::scheduler_server::{SchedulerServer, timestamp_millis};
 
     use crate::test_utils::{
-        ExplodingTableProvider, SchedulerTest, TaskRunnerFn, TestMetricsCollector,
-        assert_completed_event, assert_failed_event, assert_no_submitted_event,
-        assert_submitted_event, test_cluster_context,
+        ExplodingTableProvider, RejectingTaskLauncher, SchedulerTest, TaskRunnerFn,
+        TestMetricsCollector, assert_completed_event, assert_failed_event,
+        assert_no_submitted_event, assert_submitted_event, test_cluster_context,
     };
+
+    #[tokio::test]
+    async fn test_scheduler_exposes_cluster_state_events() -> Result<()> {
+        let scheduler = test_scheduler(TaskSchedulingPolicy::PushStaged).await?;
+        let mut events = scheduler.cluster_state_events().await?;
+        let (executor_metadata, executor_data) =
+            test_executors(2).into_iter().next().unwrap();
+        let executor_id = executor_metadata.id.clone();
+
+        scheduler
+            .state
+            .executor_manager
+            .register_executor(executor_metadata, executor_data)
+            .await?;
+
+        let event = tokio::time::timeout(Duration::from_secs(5), events.next())
+            .await
+            .expect("cluster state event should arrive");
+        assert_eq!(
+            event,
+            Some(ClusterStateEvent::RegisteredExecutor { executor_id })
+        );
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_pull_scheduling() -> Result<()> {
@@ -505,8 +620,10 @@ mod test {
                 .await?;
         }
 
-        let config =
-            SessionConfig::new_with_ballista().with_target_partitions(total_vcores);
+        let config = SessionConfig::new_with_ballista()
+            .with_target_partitions(total_vcores)
+            // Asserts the static planner's stage/partition layout.
+            .with_ballista_adaptive_query_planner(false);
 
         let ctx = scheduler
             .state
@@ -570,6 +687,7 @@ mod test {
                         executor_id: "executor-1".to_owned(),
                         partitions,
                         runtime_stats: vec![],
+                        window_state: vec![],
                     })),
                 };
 
@@ -616,8 +734,10 @@ mod test {
                 .await?;
         }
 
-        let config =
-            SessionConfig::new_with_ballista().with_target_partitions(total_vcores);
+        let config = SessionConfig::new_with_ballista()
+            .with_target_partitions(total_vcores)
+            // Asserts the static planner's stage/partition layout.
+            .with_ballista_adaptive_query_planner(false);
 
         let ctx = scheduler
             .state
@@ -1010,6 +1130,49 @@ mod test {
             .find(|s| matches!(s.status, Some(Status::Successful(_))));
 
         assert!(successful_job.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deterministic_launch_rejection_fails_job() -> Result<()> {
+        // A launcher that always rejects with gRPC InvalidArgument (an executor that
+        // cannot decode the task). The job must fail fast instead of hanging (#1908).
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let mut test = SchedulerTest::new_with_launcher(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector,
+            1,
+            1,
+            None,
+            Arc::new(RejectingTaskLauncher::default()),
+        )
+        .await?;
+
+        let plan = test_plan();
+
+        // `run` submits the job and polls until it reaches a terminal state.
+        // Hard wall-clock bound so a stuck job fails the test instead of hanging.
+        let (status, _job_id) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            test.run("", &plan),
+        )
+        .await
+        .expect(
+            "job did not reach a terminal state within 10s — likely not being failed",
+        )?;
+
+        assert!(
+            matches!(
+                status,
+                JobStatus {
+                    status: Some(job_status::Status::Failed(_)),
+                    ..
+                }
+            ),
+            "expected job to fail on task rejection, got {status:?}"
+        );
 
         Ok(())
     }

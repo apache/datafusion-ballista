@@ -16,18 +16,25 @@
 // under the License.
 
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::{
-    OrderedRangeRepartitionExec, UnorderedRangeRepartitionExec, preserves_partitioning,
+    OrderedRangeRepartitionExec, RangeFilterExec, UnorderedRangeRepartitionExec,
+    preserves_partitioning,
 };
 use datafusion::common::plan_err;
+use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
-use datafusion::physical_plan::{ExecutionPlan, execution_plan};
+use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions, execution_plan,
+};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -50,6 +57,7 @@ impl DistributedExchangeRule {
     pub(crate) fn transform(
         &self,
         execution_plan: Arc<dyn ExecutionPlan>,
+        config: &datafusion::config::ConfigOptions,
     ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
         // DataFusion's null-aware hash join coordinates visited rows and
         // probe-side NULL state with in-process atomics. A CollectLeft join
@@ -80,15 +88,17 @@ impl DistributedExchangeRule {
                 right
             };
             let right = Arc::new(CoalescePartitionsExec::new(right));
-            return Ok(Transformed::yes(
-                execution_plan.with_new_children(vec![left, right])?,
-            ));
+            return Ok(Transformed::yes(execution_plan.replace_children(
+                vec![left, right],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?));
         }
 
         if let Some(coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = coalesce.input();
             if input.downcast_ref::<ExchangeExec>().is_none()
                 && !matches!(nearest_exchange_status(input), ExchangeStatus::Unresolved)
+                && !is_inlinable_scan_pipeline(input, broadcast_threshold_bytes(config))?
             {
                 let exchange_exec = ExchangeExec::new(
                     input.clone(),
@@ -96,15 +106,16 @@ impl DistributedExchangeRule {
                     self.plan_id_generator
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 );
-                return Ok(Transformed::yes(
-                    execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
-                ));
+                return Ok(Transformed::yes(execution_plan.replace_children(
+                    vec![Arc::new(exchange_exec)],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?));
             }
         } else if let Some(sort_preserving_merge) =
             execution_plan.downcast_ref::<SortPreservingMergeExec>()
         {
             let input = sort_preserving_merge.input();
-            if input.downcast_ref::<ExchangeExec>().is_none()
+            if !is_stage_boundary(input)
                 && !matches!(nearest_exchange_status(input), ExchangeStatus::Unresolved)
             {
                 let exchange_exec = ExchangeExec::new(
@@ -113,9 +124,10 @@ impl DistributedExchangeRule {
                     self.plan_id_generator
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 );
-                return Ok(Transformed::yes(
-                    execution_plan.with_new_children(vec![Arc::new(exchange_exec)])?,
-                ));
+                return Ok(Transformed::yes(execution_plan.replace_children(
+                    vec![Arc::new(exchange_exec)],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?));
             }
         } else if let Some(repartition) = execution_plan.downcast_ref::<RepartitionExec>()
             && let execution_plan::Partitioning::Hash(_, _) = repartition.partitioning()
@@ -142,10 +154,12 @@ impl DistributedExchangeRule {
                             self.plan_id_generator
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                         );
-                        return Ok(Transformed::yes(
-                            execution_plan
-                                .with_new_children(vec![Arc::new(exchange_exec)])?,
-                        ));
+                        return Ok(Transformed::yes(execution_plan.replace_children(
+                            vec![Arc::new(exchange_exec)],
+                            ReplaceChildrenOptions::new(
+                                ChildrenPropertiesMode::Recompute,
+                            ),
+                        )?));
                     }
                 }
                 many => {
@@ -165,6 +179,67 @@ impl DistributedExchangeRule {
         }
         Ok(Transformed::no(execution_plan))
     }
+}
+
+/// Reuses the broadcast budget: a scan cheap enough to sit in every probe task
+/// is cheap enough to re-read there. `0` disables inlining.
+fn broadcast_threshold_bytes(config: &datafusion::config::ConfigOptions) -> usize {
+    config
+        .extensions
+        .get::<BallistaConfig>()
+        .cloned()
+        .unwrap_or_default()
+        .broadcast_join_threshold_bytes()
+}
+
+/// True when every task of the consuming stage can read `plan` directly, making
+/// a stage boundary under it pure cost: the `CoalescePartitionsExec` DataFusion
+/// plants over a `CollectLeft` build side gathers inside one task either way.
+///
+/// Filtered scans are excluded — the staged copy is then much smaller than the
+/// scan, so rebuilding it per task costs more than reading it back (inlining
+/// q19's filtered `part` cost 14%). `Precision::Exact` is the test, since the
+/// predicate is often pushed into the scan with no `FilterExec` to look for.
+fn is_inlinable_scan_pipeline(
+    plan: &Arc<dyn ExecutionPlan>,
+    max_bytes: usize,
+) -> datafusion::error::Result<bool> {
+    if max_bytes == 0 {
+        return Ok(false);
+    }
+    let mut scan_bytes = 0usize;
+    let mut leaves = 0usize;
+    if !collect_scan_bytes(plan, &mut scan_bytes, &mut leaves)? {
+        return Ok(false);
+    }
+    Ok(leaves > 0 && scan_bytes <= max_bytes)
+}
+
+/// Sums the leaf scans' bytes; `false` on any other operator or inexact leaf.
+fn collect_scan_bytes(
+    plan: &Arc<dyn ExecutionPlan>,
+    total_bytes: &mut usize,
+    leaves: &mut usize,
+) -> datafusion::error::Result<bool> {
+    if plan.is::<DataSourceExec>() {
+        let stats =
+            StatisticsContext::new().compute(plan.as_ref(), &StatisticsArgs::new())?;
+        let Precision::Exact(bytes) = stats.total_byte_size else {
+            return Ok(false);
+        };
+        *total_bytes = total_bytes.saturating_add(bytes);
+        *leaves += 1;
+        return Ok(true);
+    }
+    if !plan.is::<ProjectionExec>() {
+        return Ok(false);
+    }
+    for child in plan.children() {
+        if !collect_scan_bytes(child, total_bytes, leaves)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Returns whether a plan should have distributed range-repartitioning added:
@@ -211,11 +286,11 @@ impl PhysicalOptimizerRule for DistributedExchangeRule {
     fn optimize(
         &self,
         execution_plan: std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
-        _config: &datafusion::config::ConfigOptions,
+        config: &datafusion::config::ConfigOptions,
     ) -> datafusion::error::Result<
         std::sync::Arc<dyn datafusion::physical_plan::ExecutionPlan>,
     > {
-        let result = execution_plan.transform_up(|p| self.transform(p))?;
+        let result = execution_plan.transform_up(|p| self.transform(p, config))?;
 
         if result
             .data
@@ -261,6 +336,22 @@ impl PhysicalOptimizerRule for DistributedExchangeRule {
     }
 }
 
+/// True when `node` is (or transparently sits on) a stage boundary.
+/// `RangeFilterExec` counts because we chose not to fold range-filtering
+/// into `ShuffleReader`/`ExchangeExec` — the operator is part of the
+/// boundary shape by design.
+fn is_stage_boundary(node: &Arc<dyn ExecutionPlan>) -> bool {
+    if node.is::<ExchangeExec>() {
+        return true;
+    }
+    if node.is::<RangeFilterExec>()
+        && let [child] = node.children().as_slice()
+    {
+        return child.is::<ExchangeExec>();
+    }
+    false
+}
+
 /// Scans the subtree for the nearest `ExchangeExec` in each path and returns the
 /// aggregate status. Stops recursing at `ExchangeExec` boundaries so that only the
 /// shallowest exchange in each branch is considered.
@@ -295,20 +386,28 @@ fn nearest_exchange_status(plan: &Arc<dyn ExecutionPlan>) -> ExchangeStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assert_plan;
     use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+    use ballista_core::assert_plan;
     use ballista_core::execution_plans::{
         RuntimeStatsExec, UnorderedRangeRepartitionExec,
     };
+    use datafusion::arrow::array::{Int32Array, RecordBatch};
     use datafusion::arrow::compute::SortOptions;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::ScalarValue;
     use datafusion::common::{ColumnStatistics, Statistics};
     use datafusion::config::ConfigOptions;
-    use datafusion::physical_expr::expressions::Column;
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
     use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::physical_plan::aggregates::{
+        AggregateExec, AggregateMode, PhysicalGroupBy,
+    };
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::execution_plan::Partitioning;
+    use datafusion::physical_plan::filter::FilterExec;
     use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
     use datafusion::physical_plan::test::exec::StatisticsExec;
@@ -374,7 +473,7 @@ mod tests {
 
         assert_plan!(result.as_ref(), @ r"
         AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
-          HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(a@0, a@0)]
+          HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(a@0, a@0)], null_aware
             StatisticsExec: col_count=1, row_count=Absent
             CoalescePartitionsExec
               ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
@@ -398,6 +497,167 @@ mod tests {
             ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
               StatisticsExec: col_count=1, row_count=Absent
         ");
+    }
+
+    /// Scan with exact bytes, like a parquet scan with collected statistics.
+    fn scan_exec() -> Arc<dyn ExecutionPlan> {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap()
+    }
+
+    fn config_with_broadcast_threshold(bytes: usize) -> ConfigOptions {
+        let mut config = ConfigOptions::new();
+        config.extensions.insert(BallistaConfig::default());
+        config
+            .set(
+                "ballista.optimizer.broadcast_join_threshold_bytes",
+                &bytes.to_string(),
+            )
+            .unwrap();
+        config
+    }
+
+    #[test]
+    fn coalesce_reads_small_scan_inline_instead_of_staging_it() {
+        let rule = DistributedExchangeRule::default();
+        let input =
+            Arc::new(CoalescePartitionsExec::new(scan_exec())) as Arc<dyn ExecutionPlan>;
+
+        let result = rule
+            .optimize(input, &config_with_broadcast_threshold(64 * 1024 * 1024))
+            .unwrap();
+
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
+        let coalesce = adaptive
+            .input()
+            .downcast_ref::<CoalescePartitionsExec>()
+            .unwrap();
+        assert!(
+            coalesce.children()[0].is::<DataSourceExec>(),
+            "small scan should stay inline, got {}",
+            coalesce.children()[0].name()
+        );
+    }
+
+    #[test]
+    fn coalesce_stages_scan_larger_than_the_broadcast_threshold() {
+        let rule = DistributedExchangeRule::default();
+        let input =
+            Arc::new(CoalescePartitionsExec::new(scan_exec())) as Arc<dyn ExecutionPlan>;
+
+        let result = rule
+            .optimize(input, &config_with_broadcast_threshold(1))
+            .unwrap();
+
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
+        let coalesce = adaptive
+            .input()
+            .downcast_ref::<CoalescePartitionsExec>()
+            .unwrap();
+        assert!(
+            coalesce.children()[0].is::<ExchangeExec>(),
+            "oversized scan should keep its stage boundary, got {}",
+            coalesce.children()[0].name()
+        );
+    }
+
+    #[test]
+    fn coalesce_stages_scan_when_broadcast_promotion_is_disabled() {
+        let rule = DistributedExchangeRule::default();
+        let input =
+            Arc::new(CoalescePartitionsExec::new(scan_exec())) as Arc<dyn ExecutionPlan>;
+
+        let result = rule
+            .optimize(input, &config_with_broadcast_threshold(0))
+            .unwrap();
+
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
+        let coalesce = adaptive
+            .input()
+            .downcast_ref::<CoalescePartitionsExec>()
+            .unwrap();
+        assert!(
+            coalesce.children()[0].is::<ExchangeExec>(),
+            "threshold 0 disables inlining, got {}",
+            coalesce.children()[0].name()
+        );
+    }
+
+    #[test]
+    fn coalesce_stages_scan_behind_a_selective_filter() {
+        // Filtering marks the estimate inexact (TPC-H q19's build side).
+        let rule = DistributedExchangeRule::default();
+        let scan = scan_exec();
+        let filter = Arc::new(
+            FilterExec::try_new(
+                Arc::new(BinaryExpr::new(
+                    Arc::new(Column::new("a", 0)),
+                    Operator::Eq,
+                    Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+                )),
+                scan,
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let input =
+            Arc::new(CoalescePartitionsExec::new(filter)) as Arc<dyn ExecutionPlan>;
+
+        let result = rule
+            .optimize(input, &config_with_broadcast_threshold(64 * 1024 * 1024))
+            .unwrap();
+
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
+        let coalesce = adaptive
+            .input()
+            .downcast_ref::<CoalescePartitionsExec>()
+            .unwrap();
+        assert!(
+            coalesce.children()[0].is::<ExchangeExec>(),
+            "selective filter should keep its stage boundary, got {}",
+            coalesce.children()[0].name()
+        );
+    }
+
+    #[test]
+    fn coalesce_stages_pipeline_that_is_not_a_plain_scan() {
+        let rule = DistributedExchangeRule::default();
+        let scan = scan_exec();
+        let aggregate = Arc::new(
+            AggregateExec::try_new(
+                AggregateMode::Partial,
+                PhysicalGroupBy::new_single(vec![(
+                    Arc::new(Column::new("a", 0)) as _,
+                    "a".to_string(),
+                )]),
+                vec![],
+                vec![],
+                scan.clone(),
+                scan.schema(),
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let input =
+            Arc::new(CoalescePartitionsExec::new(aggregate)) as Arc<dyn ExecutionPlan>;
+
+        let result = rule
+            .optimize(input, &config_with_broadcast_threshold(64 * 1024 * 1024))
+            .unwrap();
+
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
+        let coalesce = adaptive
+            .input()
+            .downcast_ref::<CoalescePartitionsExec>()
+            .unwrap();
+        assert!(
+            coalesce.children()[0].is::<ExchangeExec>(),
+            "aggregate pipeline should keep its stage boundary, got {}",
+            coalesce.children()[0].name()
+        );
     }
 
     #[test]
@@ -531,6 +791,53 @@ mod tests {
         assert!(
             spm.children()[0].downcast_ref::<ExchangeExec>().is_none(),
             "should not inject ExchangeExec when unresolved exchange is in subtree"
+        );
+    }
+
+    #[test]
+    fn spm_skips_when_range_filter_covers_exchange() {
+        // ParallelWindowRule plants a RangeFilterExec directly on the
+        // resolved range-repartition ExchangeExec with SPM above. The
+        // filter must count as part of the boundary — otherwise DE
+        // inserts another ExchangeExec between SPM and the filter,
+        // collapsing K partitions into a single outer-stage task.
+        use ballista_core::execution_plans::RangeFilterExec;
+        use datafusion::scalar::ScalarValue;
+
+        let rule = DistributedExchangeRule::default();
+        let exchange = resolved_exchange(float_leaf_exec());
+        let filter: Arc<dyn ExecutionPlan> = Arc::new(
+            RangeFilterExec::try_new_pending(
+                exchange,
+                Arc::new(Column::new("v", 0)),
+                ScalarValue::Float64(Some(0.0)),
+                ScalarValue::Float64(Some(0.0)),
+                None,
+            )
+            .unwrap(),
+        );
+        let sort_expr = PhysicalSortExpr::new_default(Arc::new(Column::new("v", 0)));
+        let ordering = LexOrdering::new(vec![sort_expr]).unwrap();
+        let spm: Arc<dyn ExecutionPlan> =
+            Arc::new(SortPreservingMergeExec::new(ordering, filter));
+
+        let result = rule.optimize(spm, &config()).unwrap();
+
+        let adaptive = result.downcast_ref::<AdaptiveDatafusionExec>().unwrap();
+        let spm_out = adaptive
+            .input()
+            .downcast_ref::<SortPreservingMergeExec>()
+            .unwrap();
+        let below_spm = spm_out.children()[0];
+        assert!(
+            below_spm.downcast_ref::<RangeFilterExec>().is_some(),
+            "SPM's direct child should remain RangeFilterExec, not a new ExchangeExec"
+        );
+        assert!(
+            below_spm.children()[0]
+                .downcast_ref::<ExchangeExec>()
+                .is_some(),
+            "resolved ExchangeExec should remain under the RangeFilterExec"
         );
     }
 
@@ -830,7 +1137,7 @@ mod tests {
     /// range-repartition-inserting rule emits, with nothing above it —
     /// must still get an `ExchangeExec` wrapped above it. Without it,
     /// `set_repartition_routing` has no parking slot for the recovered
-    /// cuts and downstream never gets a `PerPartitionFilterExec` to
+    /// cuts and downstream never gets a `RangeFilterExec` to
     /// trim straddler duplication.
     #[test]
     fn range_repartition_at_plan_root_gets_exchange_inserted() {
@@ -920,7 +1227,7 @@ mod tests {
 
     /// A `ProjectionExec` between (O/U)RRE and the boundary could
     /// reindex, drop, or shadow the routing expression's referenced
-    /// columns — the read-side `PerPartitionFilterExec` would evaluate
+    /// columns — the read-side `RangeFilterExec` would evaluate
     /// against the wrong column and silently misroute. DER rejects the
     /// shape at plan time; the fix will be revisited when arbitrary
     /// routing expressions replace the current single-column form.
@@ -971,5 +1278,48 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(err.contains("ProjectionExec"), "unexpected error: {err}");
+    }
+}
+
+#[cfg(test)]
+mod debug_stats {
+    use super::*;
+    use datafusion::arrow::array::{Int32Array, RecordBatch};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::ScalarValue;
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+    use datafusion::physical_plan::filter::FilterExec;
+
+    #[test]
+    fn print_stats() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let scan =
+            MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap();
+        let s = StatisticsContext::new()
+            .compute(scan.as_ref(), &StatisticsArgs::new())
+            .unwrap();
+        println!("SCAN rows={:?} bytes={:?}", s.num_rows, s.total_byte_size);
+        let filter = Arc::new(
+            FilterExec::try_new(
+                Arc::new(BinaryExpr::new(
+                    Arc::new(Column::new("a", 0)),
+                    Operator::Eq,
+                    Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+                )),
+                scan,
+            )
+            .unwrap(),
+        ) as Arc<dyn ExecutionPlan>;
+        let f = StatisticsContext::new()
+            .compute(filter.as_ref(), &StatisticsArgs::new())
+            .unwrap();
+        println!("FILTER rows={:?} bytes={:?}", f.num_rows, f.total_byte_size);
     }
 }

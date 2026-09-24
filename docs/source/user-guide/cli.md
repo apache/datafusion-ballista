@@ -328,3 +328,48 @@ BALLISTA__SCHEDULER__URL=http://localhost:50051 ballista-cli --tui
 Double underscores (`__`) are used to denote nesting in the configuration structure. In the above example, `BALLISTA__SCHEDULER__URL` overrides the `scheduler.url` setting in the YAML configuration.
 
 The TUI connects to the scheduler via HTTP and refreshes the data automatically every `data_reload_interval_ms` milliseconds.
+
+## Web Terminal User Interface (Web TUI)
+
+Ballista also provides a browser-based version of the TUI, compiled to WebAssembly, that allows cluster monitoring directly from a web browser.
+
+### Using the hosted Web TUI
+
+When the scheduler HTTP endpoint is available, open its root URL in a browser. For a scheduler using the default port:
+
+```text
+http://localhost:50050
+```
+
+The scheduler redirects the browser to the hosted Web TUI and passes the scheduler URL so that the Web TUI can connect to it.
+
+The Scheduler provides additional configuration options for the Web TUI redirect and CORS settings. See the [Scheduler documentation](./scheduler.md#web-tui-configuration) for details.
+
+### Running the Web TUI locally
+
+For local development, install the WebAssembly target and [Trunk](https://trunk-rs.github.io/trunk/), then start the application from the `ballista-cli` directory:
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install trunk
+cd ballista-cli
+trunk serve --no-default-features --features web
+```
+
+Then open `http://localhost:8080` in a browser.
+
+### Web TUI Screenshots
+
+The following screenshots show the Web TUI running in a browser.
+
+#### Main View
+
+![Web TUI main view](./screenshots/tui-web-main.png)
+
+#### Help
+
+![Web TUI help view](./screenshots/tui-web-help.png)
+
+#### Search
+
+![Web TUI search view](./screenshots/tui-web-search.png)

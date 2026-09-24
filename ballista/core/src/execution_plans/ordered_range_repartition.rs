@@ -64,11 +64,9 @@
 //!
 //! # Ordering claim
 //!
-//! Constructor requires `input.output_ordering()` to lead with the routing
-//! expression — otherwise the merger would produce garbled output.
-//! [`PlanProperties::eq_properties`] declares each output partition sorted
-//! on `order_by`, letting downstream operators (BWAG, HaloDrop) rely on the
-//! claim without inserting a redundant `SortExec`.
+//! [`PlanProperties::eq_properties`] declares each output partition sorted on
+//! `order_by`, letting downstream operators (BWAG, HaloDrop) rely on the claim
+//! without inserting a redundant `SortExec`.
 //!
 //! [`StreamingMerge`]: datafusion::physical_plan::sorts::streaming_merge::StreamingMergeBuilder
 
@@ -76,9 +74,12 @@ use std::fmt::{self, Debug, Formatter};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::runtime::SpawnedTask;
-use datafusion::common::{Result, Statistics, internal_datafusion_err, internal_err};
+use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::{
+    Result, ScalarValue, Statistics, internal_datafusion_err, internal_err,
+};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
     Distribution, EquivalenceProperties, LexOrdering, OrderingRequirements, Partitioning,
@@ -87,12 +88,14 @@ use datafusion::physical_expr::{
 use datafusion::physical_plan::execution_plan::{
     CardinalityEffect, EvaluationType, SchedulingType,
 };
-use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
+};
 use datafusion::physical_plan::sorts::streaming_merge::StreamingMergeBuilder;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-    SendableRecordBatchStream,
+    SendableRecordBatchStream, apply_expression_roots,
 };
 use futures::stream::StreamExt;
 use tokio::sync::mpsc;
@@ -101,6 +104,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::execution_plans::range_repartition_common::{
     discover_cuts, guarded_scatter, split_batch_by_range,
 };
+use crate::sort_key::SortKeyCodec;
 
 /// Per-output-partition channel capacity, per input source. Matches the
 /// unordered variant's default; see the discussion there. Total buffered
@@ -111,8 +115,7 @@ const CHANNEL_CAPACITY: usize = 2;
 /// module-level docs.
 pub struct OrderedRangeRepartitionExec {
     input: Arc<dyn ExecutionPlan>,
-    /// Lexicographic ORDER BY. `try_new` guarantees the first entry evaluates
-    /// to `Float64` and matches the input's declared output ordering.
+    /// Lexicographic ORDER BY
     order_by: Vec<PhysicalSortExpr>,
     /// K — number of output partitions.
     output_partitions: usize,
@@ -144,14 +147,13 @@ struct DispatchState {
 }
 
 impl OrderedRangeRepartitionExec {
-    /// Wrap `input`. `order_by` must be non-empty, the first entry must
-    /// evaluate to `Float64`, and `input.output_ordering()` must lead with
-    /// the same expression (otherwise the merger produces garbled output).
+    /// Creates a new `OrderedRangeRepartitionExec`
+    /// `order_by` must be non-empty, the first entry must evaluate to a type the sort-key codec
+    /// encodes, and `order_by` must be a prefix of `input.output_ordering()`
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         order_by: Vec<PhysicalSortExpr>,
         output_partitions: usize,
-        // TODO: support RANGE & ROW halos
     ) -> Result<Self> {
         let [routing, ..] = order_by.as_slice() else {
             return internal_err!(
@@ -160,52 +162,32 @@ impl OrderedRangeRepartitionExec {
         };
         let schema = input.schema();
         let routing_type = routing.expr.data_type(&schema)?;
-        if !matches!(routing_type, DataType::Float64) {
-            // TODO: support all continuous primitives
+        if SortKeyCodec::try_new(&routing_type, routing.options).is_none() {
             return internal_err!(
-                "OrderedRangeRepartitionExec routing expression `{}` must be Float64, got {:?}",
+                "OrderedRangeRepartitionExec routing expression `{}` has no sort-key encoding for {:?}",
                 routing.expr,
                 routing_type
             );
         }
-        // TODO: fixed by KLL — a NULL-aware sketch lifts this restriction and
-        // lets `split_batch_by_range` honor SortOptions::nulls_first properly.
-        if routing.expr.nullable(&schema)? {
-            return internal_err!(
-                "OrderedRangeRepartitionExec: routing expression `{}` must be non-nullable",
-                routing.expr
-            );
-        }
-        // Input MUST claim to be sorted on our routing expression — otherwise
-        // the k-way merge produces garbled output. Sortedness of individual
-        // input partitions is enforced by the operator upstream (`SortExec`
-        // with `preserve_partitioning=true`); this check verifies the plan
-        // node declares that property.
-        let input_first_sort = input.output_ordering().map(|ordering| ordering.first());
-        let Some(input_first) = input_first_sort else {
+        let lex_ordering = LexOrdering::new(order_by.clone()).ok_or_else(|| {
+            internal_datafusion_err!("order_by is non-empty but LexOrdering rejected it")
+        })?;
+        let Some(input_ordering) = input.output_ordering() else {
             return internal_err!(
                 "OrderedRangeRepartitionExec requires sorted input — child plan claims no ordering"
             );
         };
-        if input_first.expr.as_ref() != routing.expr.as_ref() {
+        if !input_ordering.starts_with(&lex_ordering) {
             return internal_err!(
-                "OrderedRangeRepartitionExec: input's first sort key `{}` does not match \
-                 routing expression `{}`",
-                input_first.expr,
-                routing.expr
+                "OrderedRangeRepartitionExec: ORDER BY [{lex_ordering}] is not a prefix of \
+                 the child's declared ordering [{input_ordering}]"
             );
         }
         // Advertise each output partition as sorted on `order_by`. Downstream
         // operators (BWAG, HaloDrop) rely on this claim to skip redundant
         // Sort insertions.
-        let eq_properties = EquivalenceProperties::new_with_orderings(
-            schema,
-            vec![LexOrdering::new(order_by.clone()).ok_or_else(|| {
-                internal_datafusion_err!(
-                    "order_by is non-empty but LexOrdering rejected it"
-                )
-            })?],
-        );
+        let eq_properties =
+            EquivalenceProperties::new_with_orderings(schema, vec![lex_ordering]);
         let properties = Arc::new(
             PlanProperties::new(
                 eq_properties,
@@ -290,6 +272,15 @@ impl ExecutionPlan for OrderedRangeRepartitionExec {
         vec![&self.input]
     }
 
+    /// The ORDER BY expressions are evaluated on the scatter side to route rows
+    /// by value range, and again by the per-output `StreamingMerge`.
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_expression_roots(self.order_by.iter().map(|sort_expr| &sort_expr.expr), f)
+    }
+
     /// Input distribution is irrelevant — the operator re-routes every row
     /// by value range regardless of how the child organized them.
     fn required_input_distribution(&self) -> Vec<Distribution> {
@@ -330,6 +321,10 @@ impl ExecutionPlan for OrderedRangeRepartitionExec {
     }
 
     /// Every input row is emitted exactly once. Overrides default `Unknown`.
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
     fn cardinality_effect(&self) -> CardinalityEffect {
         CardinalityEffect::Equal
     }
@@ -413,16 +408,17 @@ impl OrderedRangeRepartitionExec {
             senders_per_input.push(senders);
         }
 
-        // Empty `Vec<f64>` = discovery failed = single-bucket fallback.
+        // `Ok(vec![])` = no sketch to read = single-bucket fallback.
         // Populated once, on the first batch, by whichever scatter task
         // wins the `OnceLock::get_or_init` race.
-        let cuts_cell: Arc<OnceLock<Vec<f64>>> = Arc::new(OnceLock::new());
-        let routing_expr = self.order_by[0].expr.clone();
+        let cuts_cell: Arc<OnceLock<Result<Vec<ScalarValue>>>> =
+            Arc::new(OnceLock::new());
+        let routing_sort = self.order_by[0].clone();
         let mut drop_helper = Vec::with_capacity(input_partitions);
         for (input_partition, senders) in senders_per_input.into_iter().enumerate() {
             let child = self.input.clone();
             let cuts_cell = cuts_cell.clone();
-            let routing_expr = routing_expr.clone();
+            let routing_sort = routing_sort.clone();
             let ctx = ctx.clone();
             let output_partitions = self.output_partitions;
             // Move senders into an `Arc<[_]>` so scatter and guard can share
@@ -431,6 +427,22 @@ impl OrderedRangeRepartitionExec {
             let scatter_senders: Arc<[mpsc::Sender<Result<RecordBatch>>]> =
                 senders.into();
             let guard_senders = scatter_senders.clone();
+            let scatter_metrics = ScatterMetrics {
+                elapsed_compute: MetricBuilder::new(&self.metrics)
+                    .subset_time("scatter_elapsed_compute", input_partition),
+                split_time: MetricBuilder::new(&self.metrics)
+                    .subset_time("scatter_split_time", input_partition),
+                send_time: MetricBuilder::new(&self.metrics)
+                    .subset_time("scatter_send_time", input_partition),
+                discover_cuts_time: MetricBuilder::new(&self.metrics)
+                    .subset_time("scatter_discover_cuts_time", input_partition),
+                input_batches: MetricBuilder::new(&self.metrics)
+                    .counter("scatter_input_batches", input_partition),
+                input_rows: MetricBuilder::new(&self.metrics)
+                    .counter("scatter_input_rows", input_partition),
+                scattered_batches: MetricBuilder::new(&self.metrics)
+                    .counter("scatter_output_sub_batches", input_partition),
+            };
             // `guarded_scatter` wraps the body in `catch_unwind`: a panic
             // inside `scatter_input_partition` (or anything it calls) becomes
             // a broadcast error rather than a silent sender-drop that
@@ -440,10 +452,11 @@ impl OrderedRangeRepartitionExec {
                     child,
                     input_partition,
                     ctx,
-                    routing_expr,
+                    routing_sort,
                     scatter_senders,
                     cuts_cell,
                     output_partitions,
+                    scatter_metrics,
                 ),
                 guard_senders,
             )));
@@ -488,6 +501,37 @@ impl OrderedRangeRepartitionExec {
     }
 }
 
+/// Per-input-partition scatter counters. Labeled with `input_partition`;
+/// `aggregate_by_name` in the display collapses across all input
+/// partitions for a task-wide total.
+///
+/// Merge-side metrics (per output partition) are recorded separately
+/// by `StreamingMerge` via `BaselineMetrics` in `initialize_state`.
+struct ScatterMetrics {
+    /// Total scatter compute — timer scoped post child-poll so upstream
+    /// stream time (sort, parquet scan) isn't billed here.
+    elapsed_compute: Time,
+    /// `split_batch_by_range` cost isolated from the surrounding
+    /// send/backpressure work. Growing much faster than input_rows
+    /// suggests routing-expression evaluation is the hot loop.
+    split_time: Time,
+    /// `senders[output].send().await` cost. Includes backpressure
+    /// waits — high values mean downstream merge is slow to drain,
+    /// which starves the scatter path.
+    send_time: Time,
+    /// One-shot cost of the first-batch cut discovery walk. Reads the
+    /// upstream `RuntimeStatsExec` and computes K-1 quantiles.
+    discover_cuts_time: Time,
+    /// Batches read from the child. Zero-row batches short-circuit
+    /// so this counts only work-carrying batches.
+    input_batches: Count,
+    /// Rows read from the child.
+    input_rows: Count,
+    /// Sub-batches sent downstream. Under skew this can be much larger
+    /// than input_batches (each input batch splits into up to K subs).
+    scattered_batches: Count,
+}
+
 /// One background task per input partition. Reads the sorted input; on the
 /// first batch, the shared `OnceLock` learns the value cuts. Each batch is
 /// then dispatched via `split_batch_by_range` to K per-input senders (one
@@ -501,14 +545,16 @@ impl OrderedRangeRepartitionExec {
 ///   2. **Send zero-copy Arrow slices** (`batch.slice(start, len)`) instead
 ///      of materialising via `take_arrays`. Turns per-batch scatter into a
 ///      few Arc bumps rather than N × K allocations under skew.
+#[allow(clippy::too_many_arguments)]
 async fn scatter_input_partition(
     child: Arc<dyn ExecutionPlan>,
     input_partition: usize,
     ctx: Arc<TaskContext>,
-    routing_expr: Arc<dyn PhysicalExpr>,
+    routing_sort: PhysicalSortExpr,
     senders: Arc<[mpsc::Sender<Result<RecordBatch>>]>,
-    cuts_cell: Arc<OnceLock<Vec<f64>>>,
+    cuts_cell: Arc<OnceLock<Result<Vec<ScalarValue>>>>,
     output_partitions: usize,
+    metrics: ScatterMetrics,
 ) -> Result<()> {
     let mut stream = child.execute(input_partition, ctx)?;
     while let Some(batch_result) = stream.next().await {
@@ -517,10 +563,20 @@ async fn scatter_input_partition(
         if senders.iter().all(|s| s.is_closed()) {
             return Ok(());
         }
+        let compute_timer = metrics.elapsed_compute.timer();
         let batch = batch_result?;
-        let cuts = cuts_cell.get_or_init(|| {
-            discover_cuts(&child, routing_expr.as_ref(), output_partitions)
-        });
+        metrics.input_batches.add(1);
+        metrics.input_rows.add(batch.num_rows());
+        let cuts = cuts_cell
+            .get_or_init(|| {
+                let discover_timer = metrics.discover_cuts_time.timer();
+                let cuts =
+                    discover_cuts(&child, routing_sort.expr.as_ref(), output_partitions);
+                discover_timer.done();
+                cuts
+            })
+            .as_ref()
+            .map_err(|e| internal_datafusion_err!("OrderedRangeRepartitionExec: {e}"))?;
         // TODO(perf): input is sorted — this per-row `split_batch_by_range`
         // is legal but wasteful. Two follow-ups worth measuring:
         //   1. Binary-search batch head/tail against cuts to find slice
@@ -528,16 +584,25 @@ async fn scatter_input_partition(
         //   2. Send zero-copy `batch.slice(start, len)` instead of
         //      `take_arrays`-materialised sub-batches. Arc bumps replace
         //      allocations under skew.
-        let splits = split_batch_by_range(&batch, &routing_expr, cuts)?;
+        let split_timer = metrics.split_time.timer();
+        let splits =
+            split_batch_by_range(&batch, &routing_sort.expr, cuts, routing_sort.options)?;
+        split_timer.done();
+        // Stop the compute timer around the send.await so backpressure
+        // waits get billed to `send_time` alone, not double-counted.
+        compute_timer.done();
         for (output, sub) in splits.into_iter().enumerate() {
             if sub.num_rows() == 0 {
                 continue;
             }
+            let send_timer = metrics.send_time.timer();
             // `send().await` provides backpressure: full channel suspends
             // this task → suspends input read → propagates upstream. Error
             // on send means downstream dropped its receiver; keep forwarding
             // to other outputs.
             let _ = senders[output].send(Ok(sub)).await;
+            send_timer.done();
+            metrics.scattered_batches.add(1);
         }
     }
     // Senders drop with this task → each output's merger sees EOF on that
@@ -551,6 +616,7 @@ mod tests {
     use super::*;
     use crate::execution_plans::RuntimeStatsExec;
     use datafusion::arrow::array::{Float64Array, Int64Array};
+    use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::datatypes::{Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::execution::SessionStateBuilder;
@@ -701,22 +767,23 @@ mod tests {
         );
     }
 
+    /// A nullable routing key is routable now: the run is counted beside the
+    /// values, sized into the cuts, and scattered to the end `nulls_first`
+    /// names, which is where the read-side filter looks for it.
     #[test]
-    fn try_new_rejects_nullable_routing_key() {
+    fn try_new_accepts_a_nullable_routing_key() {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("v2", DataType::Float64, true), // nullable
+            Field::new("v2", DataType::Float64, true),
             Field::new("id", DataType::Int64, false),
         ]));
-        let err = OrderedRangeRepartitionExec::try_new(
-            empty_input(&schema),
-            vec![asc(&schema, "v2")],
-            3,
-        )
-        .expect_err("nullable routing key must be rejected");
-        assert!(
-            err.to_string().contains("must be non-nullable"),
-            "error should name the nullability constraint, got: {err}"
-        );
+        let sort = asc(&schema, "v2");
+        let ordering = LexOrdering::new(vec![sort.clone()]).unwrap();
+        let sorted = Arc::new(
+            SortExec::new(ordering, empty_input(&schema))
+                .with_preserve_partitioning(true),
+        ) as Arc<dyn ExecutionPlan>;
+        OrderedRangeRepartitionExec::try_new(sorted, vec![sort], 3)
+            .expect("a nullable key must be routable");
     }
 
     #[test]
@@ -734,10 +801,7 @@ mod tests {
             4,
         )
         .expect_err("mismatched sort key must be rejected");
-        assert!(
-            err.to_string().contains("does not match routing"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("is not a prefix of"), "got: {err}");
     }
 
     // ---------- End-to-end -----------------------------------------------

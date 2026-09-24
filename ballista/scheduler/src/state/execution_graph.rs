@@ -30,7 +30,8 @@ use log::{debug, error, info, warn};
 use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
-    ShuffleWriter, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
+    RangeShuffleWriterExec, ShuffleWriter, ShuffleWriterExec, SortShuffleWriterExec,
+    UnresolvedShuffleExec,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
@@ -112,6 +113,9 @@ pub trait ExecutionGraph: Debug {
 
     /// Returns the session ID associated with this job.
     fn session_id(&self) -> &str;
+
+    /// Returns the scheduler that accepted and planned this job, if known.
+    fn scheduler_id(&self) -> Option<&str>;
 
     /// Returns the session config associated with this job.
     fn session_config(&self) -> Arc<SessionConfig>;
@@ -282,8 +286,7 @@ pub trait ExecutionGraph: Debug {
 /// all stages on job submission time
 #[derive(Clone)]
 pub struct StaticExecutionGraph {
-    /// Curator scheduler name. Can be `None` is `ExecutionGraph` is not currently curated by any scheduler
-    #[allow(dead_code)] // not used at the moment, will be used later
+    /// Scheduler currently curating this job, if known.
     scheduler_id: Option<String>,
     /// ID for this job
     job_id: JobId,
@@ -674,6 +677,10 @@ impl ExecutionGraph for StaticExecutionGraph {
         self.session_id.as_str()
     }
 
+    fn scheduler_id(&self) -> Option<&str> {
+        self.scheduler_id.as_deref()
+    }
+
     fn session_config(&self) -> Arc<SessionConfig> {
         self.session_config.clone()
     }
@@ -956,10 +963,13 @@ impl ExecutionGraph for StaticExecutionGraph {
                             let SuccessfulTask {
                                 partitions,
                                 runtime_stats,
+                                window_state,
                                 ..
                             } = successful_task;
                             running_stage
                                 .append_runtime_stats_reports(task_id, runtime_stats);
+                            running_stage
+                                .append_window_state_reports(task_id, window_state);
 
                             locations.append(&mut partition_to_location(
                                 &job_id, task_id, stage_id, executor, partitions,
@@ -1687,6 +1697,9 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
         // Handle both ShuffleWriterExec and SortShuffleWriterExec
         if let Some(shuffle_write) = plan.downcast_ref::<ShuffleWriterExec>() {
             self.current_stage_id = shuffle_write.stage_id();
+        } else if let Some(shuffle_write) = plan.downcast_ref::<RangeShuffleWriterExec>()
+        {
+            self.current_stage_id = shuffle_write.stage_id();
         } else if let Some(shuffle_write) = plan.downcast_ref::<SortShuffleWriterExec>() {
             self.current_stage_id = shuffle_write.stage_id();
         } else if let Some(unresolved_shuffle) =
@@ -1819,13 +1832,15 @@ mod test {
     use std::sync::Arc;
 
     use crate::scheduler_server::event::QueryStageSchedulerEvent;
-    use ballista_core::error::Result;
+    use ballista_core::error::{BallistaError, Result};
     use ballista_core::serde::protobuf::{
         self, ExecutionError, FailedTask, FetchPartitionError, IoError, JobStatus,
         TaskKilled, failed_task, job_status, task_status,
     };
+    use datafusion::common::tree_node::TreeNodeRecursion;
     use datafusion::common::{DataFusionError, Result as DataFusionResult};
     use datafusion::execution::TaskContext;
+    use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
         SendableRecordBatchStream,
@@ -1867,6 +1882,15 @@ mod test {
 
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
             vec![&self.input]
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(
+                &Arc<dyn PhysicalExpr>,
+            ) -> DataFusionResult<TreeNodeRecursion>,
+        ) -> DataFusionResult<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
         }
 
         fn with_new_children(
@@ -2572,23 +2596,13 @@ mod test {
         let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
         let task_status1 = mock_completed_task(task1, &executor2.id);
 
-        // 2nd task in the Stage 2, failed due to FetchPartitionError
         let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
-        let task_status2 = mock_failed_task(
-            task2,
-            FailedTask {
-                error: "FetchPartitionError".to_string(),
-                retryable: false,
-                count_to_failures: false,
-                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
-                    FetchPartitionError {
-                        executor_id: executor1.id.clone(),
-                        map_stage_id: 1,
-                        map_partition_id: 0,
-                    },
-                )),
-            },
-        );
+        let failed_task = wrapped_fetch_failed_task(&executor1.id, 1, 0);
+        assert!(matches!(
+            failed_task.failed_reason,
+            Some(failed_task::FailedReason::FetchPartitionError(_))
+        ));
+        let task_status2 = mock_failed_task(task2, failed_task);
 
         let mut running_task_count = 0;
         while let Some(_task) = agg_graph.pop_next_task(&executor2.id)? {
@@ -3226,6 +3240,23 @@ mod test {
     // async fn test_shuffle_files_should_cleaned_after_fetch_failure() -> Result<()> {
     //     todo!()
     // }
+
+    fn wrapped_fetch_failed_task(
+        executor_id: &str,
+        map_stage_id: usize,
+        map_partition_id: usize,
+    ) -> FailedTask {
+        let err = BallistaError::DataFusionError(Box::new(
+            BallistaError::FetchFailed(
+                executor_id.to_owned(),
+                map_stage_id,
+                map_partition_id,
+                "FetchPartitionError".to_owned(),
+            )
+            .into_datafusion(),
+        ));
+        FailedTask::from(err)
+    }
 
     fn drain_tasks(graph: &mut dyn ExecutionGraph) -> Result<()> {
         let executor = mock_executor("executor-id1".to_string());

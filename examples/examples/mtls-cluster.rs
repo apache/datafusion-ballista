@@ -321,7 +321,7 @@ async fn run_scheduler() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
-            config.scheduler_name(),
+            config.scheduler_endpoint(),
             cluster,
             codec,
             Arc::new(config),
@@ -433,7 +433,7 @@ async fn run_executor() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting execution poll loop...");
     let health = ballista_executor::health::ExecutorHealth::new();
     let poll_handle = tokio::spawn(async move {
-        execution_loop::poll_loop(scheduler, executor, codec, None, health).await
+        execution_loop::poll_loop(scheduler, executor, codec, None, None, health).await
     });
 
     tokio::select! {

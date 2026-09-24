@@ -23,7 +23,7 @@
 
 use ballista_core::BALLISTA_VERSION;
 use memory_stats::memory_stats;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,7 +53,9 @@ use ballista_core::serde::scheduler::TaskKey;
 use ballista_core::serde::scheduler::from_proto::{
     get_task_definition, get_task_definition_vec,
 };
-use ballista_core::utils::{create_grpc_client_endpoint, create_grpc_server};
+use ballista_core::utils::{
+    create_grpc_client_endpoint, create_grpc_server, create_grpc_server_incoming,
+};
 
 use dashmap::DashMap;
 use datafusion::execution::TaskContext;
@@ -79,17 +81,19 @@ const HEARTBEAT_FAILURE_TERMINATION_THRESHOLD: u32 = 5;
 type ServerHandle = JoinHandle<Result<(), BallistaError>>;
 type SchedulerClients = Arc<DashMap<String, SchedulerGrpcClient<Channel>>>;
 
-/// Wrap TaskDefinition with its curator scheduler id for task update to its specific curator scheduler later
+/// Wrap TaskDefinition with its scheduler callback endpoint so task updates
+/// return to the scheduler that launched the task.
 #[derive(Debug)]
 struct CuratorTaskDefinition {
-    scheduler_id: String,
+    scheduler_endpoint: String,
     task: TaskDefinition,
 }
 
-/// Wrap TaskStatus with its curator scheduler id for task update to its specific curator scheduler later
+/// Wrap TaskStatus with its scheduler callback endpoint so task updates return
+/// to the scheduler that launched the task.
 #[derive(Debug)]
 struct CuratorTaskStatus {
-    scheduler_id: String,
+    scheduler_endpoint: String,
     task_status: TaskStatus,
 }
 
@@ -133,12 +137,19 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     );
 
     // 1. Start executor grpc service
+    //
+    // The listening socket is bound here rather than inside the spawned task,
+    // because step 2 registers with the scheduler and the scheduler dials this
+    // port back to check connectivity. Binding lazily inside the server future
+    // let that callback lose the race and get ECONNREFUSED, which fails
+    // registration and takes the executor down with it.
     let server = {
         let executor_meta = executor.metadata.clone();
         let addr = format!("{}:{}", config.bind_host, executor_meta.grpc_port);
         let addr = addr.parse().unwrap();
         let grpc_server_config = config.grpc_server_config.clone();
 
+        let incoming = create_grpc_server_incoming(addr, &grpc_server_config)?;
         info!(
             "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {addr:?}"
         );
@@ -150,7 +161,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
             let shutdown_signal = grpc_shutdown.recv();
             let grpc_server_future = create_grpc_server(&grpc_server_config)
                 .add_service(server)
-                .serve_with_shutdown(addr, shutdown_signal);
+                .serve_with_incoming_shutdown(incoming, shutdown_signal);
             grpc_server_future.await.map_err(|e| {
                 error!("Tonic error, Could not start Executor Grpc Server.");
                 BallistaError::TonicError(e)
@@ -159,7 +170,6 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     };
 
     // 2. Do executor registration
-    // TODO the executor registration should happen only after the executor grpc server started.
     let executor_server = Arc::new(executor_server);
     match register_executor(&mut scheduler, executor.clone()).await {
         Ok(_) => {
@@ -285,20 +295,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
     async fn get_scheduler_client(
         &self,
-        scheduler_id: &str,
+        scheduler_endpoint: &str,
     ) -> Result<SchedulerGrpcClient<Channel>, BallistaError> {
-        let scheduler = self.schedulers.get(scheduler_id).map(|value| value.clone());
+        let scheduler = self
+            .schedulers
+            .get(scheduler_endpoint)
+            .map(|value| value.clone());
         // If channel does not exist, create a new one
         if let Some(scheduler) = scheduler {
             Ok(scheduler)
         } else {
-            let scheduler_url = format!("http://{scheduler_id}");
+            let scheduler_url = format!("http://{scheduler_endpoint}");
             let mut endpoint = create_grpc_client_endpoint(scheduler_url, None)?;
 
             if let Some(ref override_fn) = self.override_create_grpc_client_endpoint {
                 endpoint = override_fn(endpoint).map_err(|e| {
                     BallistaError::GrpcConnectionError(format!(
-                        "Failed to customize endpoint for scheduler {scheduler_id}: {e}"
+                        "Failed to customize endpoint for scheduler {scheduler_endpoint}: {e}"
                     ))
                 })?;
             }
@@ -310,7 +323,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
             {
                 self.schedulers
-                    .insert(scheduler_id.to_owned(), scheduler.clone());
+                    .insert(scheduler_endpoint.to_owned(), scheduler.clone());
             }
 
             Ok(scheduler)
@@ -353,7 +366,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         };
 
         for mut item in self.schedulers.iter_mut() {
-            let scheduler_id = item.key().clone();
+            let scheduler_endpoint = item.key().clone();
             let scheduler = item.value_mut();
 
             match scheduler
@@ -366,7 +379,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 }
                 Err(e) => {
                     warn!(
-                        "Fail to update heartbeat to scheduler {scheduler_id} due to {e:?}"
+                        "Fail to update heartbeat to scheduler {scheduler_endpoint} due to {e:?}"
                     );
                 }
             }
@@ -452,6 +465,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .collect::<Result<Vec<_>, BallistaError>>()
                     .ok();
                 let runtime_stats = exec.collect_runtime_stats_reports();
+                // Collect only when the task otherwise succeeded: a failed task's
+                // partial state is meaningless, and its own error is the useful one.
+                // A collection failure fails the task — these are load-bearing for the
+                // downstream stage's prefix merge, so continuing without them would
+                // ship a wrong answer that nothing later detects.
+                let (execution_result, window_state) = match execution_result {
+                    Ok(partitions) => match exec.collect_window_state_reports() {
+                        Ok(reports) => (Ok(partitions), reports),
+                        Err(e) => (Err(e.into()), Vec::new()),
+                    },
+                    Err(e) => (Err(e), Vec::new()),
+                };
                 let executor_id = &self.executor.metadata.id;
 
                 let end_exec_time = SystemTime::now()
@@ -473,6 +498,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     TaskCompletionExtras {
                         operator_metrics,
                         runtime_stats,
+                        window_state,
                     },
                 );
 
@@ -480,7 +506,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .executor_env
                     .tx_task_status
                     .send(CuratorTaskStatus {
-                        scheduler_id: curator_task.scheduler_id,
+                        scheduler_endpoint: curator_task.scheduler_endpoint,
                         task_status,
                     })
                     .await;
@@ -507,7 +533,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .executor_env
                     .tx_task_status
                     .send(CuratorTaskStatus {
-                        scheduler_id: curator_task.scheduler_id,
+                        scheduler_endpoint: curator_task.scheduler_endpoint,
                         task_status,
                     })
                     .await;
@@ -730,7 +756,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 let mut fetched_task_num = 0usize;
                 if let Some(task_status) = maybe_task_status {
                     let task_status_vec = curator_task_status_map
-                        .entry(task_status.scheduler_id)
+                        .entry(task_status.scheduler_endpoint)
                         .or_default();
                     task_status_vec.push(task_status.task_status);
                     fetched_task_num += 1;
@@ -745,7 +771,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     match rx_task_status.try_recv() {
                         Ok(task_status) => {
                             let task_status_vec = curator_task_status_map
-                                .entry(task_status.scheduler_id)
+                                .entry(task_status.scheduler_endpoint)
                                 .or_default();
                             task_status_vec.push(task_status.task_status);
                             fetched_task_num += 1;
@@ -764,8 +790,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     }
                 }
 
-                for (scheduler_id, tasks_status) in curator_task_status_map.into_iter() {
-                    match executor_server.get_scheduler_client(&scheduler_id).await {
+                for (scheduler_endpoint, tasks_status) in
+                    curator_task_status_map.into_iter()
+                {
+                    match executor_server
+                        .get_scheduler_client(&scheduler_endpoint)
+                        .await
+                    {
                         Ok(mut scheduler) => {
                             if let Err(e) = scheduler
                                 .update_task_status(UpdateTaskStatusParams {
@@ -785,7 +816,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                         }
                         Err(e) => {
                             error!(
-                                "Fail to connect to scheduler {scheduler_id} due to {e:?}"
+                                "Fail to connect to scheduler {scheduler_endpoint} due to {e:?}"
                             );
                         }
                     }
@@ -850,13 +881,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
     ) -> Result<Response<LaunchTaskResult>, Status> {
         let LaunchTaskParams {
             tasks,
-            scheduler_id,
+            scheduler_endpoint,
         } = request.into_inner();
         let task_sender = self.executor_env.tx_task.clone();
         for task in tasks {
             task_sender
                 .send(CuratorTaskDefinition {
-                    scheduler_id: scheduler_id.clone(),
+                    scheduler_endpoint: scheduler_endpoint.clone(),
                     task: get_task_definition(
                         task,
                         self.executor.runtime_producer.clone(),
@@ -886,11 +917,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
     ) -> Result<Response<LaunchMultiTaskResult>, Status> {
         let LaunchMultiTaskParams {
             multi_tasks,
-            scheduler_id,
+            scheduler_endpoint,
         } = request.into_inner();
         let task_sender = self.executor_env.tx_task.clone();
+        let mut failed_jobs: HashSet<String> = HashSet::new();
         for multi_task in multi_tasks {
-            let multi_task: Vec<TaskDefinition> = get_task_definition_vec(
+            let job_id = multi_task.job_id.clone();
+            let multi_task: Vec<TaskDefinition> = match get_task_definition_vec(
                 multi_task,
                 self.executor.runtime_producer.clone(),
                 self.executor.produce_config(),
@@ -902,19 +935,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                     .higher_order_functions
                     .clone(),
                 self.codec.clone(),
-            )
-            .map_err(|e| Status::invalid_argument(format!("{e}")))?;
+            ) {
+                Ok(tasks) => tasks,
+                Err(e) => {
+                    error!("failed to decode tasks for {job_id} : {e}");
+                    failed_jobs.insert(job_id);
+                    continue;
+                }
+            };
+
             for task in multi_task {
                 task_sender
                     .send(CuratorTaskDefinition {
-                        scheduler_id: scheduler_id.clone(),
+                        scheduler_endpoint: scheduler_endpoint.clone(),
                         task,
                     })
                     .await
                     .unwrap();
             }
         }
-        Ok(Response::new(LaunchMultiTaskResult { success: true }))
+        Ok(Response::new(LaunchMultiTaskResult {
+            failed_jobs: failed_jobs.into_iter().collect(),
+        }))
     }
 
     async fn stop_executor(

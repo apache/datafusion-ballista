@@ -1,0 +1,147 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Runs the h2o `window.sql` suite against a Ballista cluster with AQE + MPT on.
+# groupby/join are already exercised by the TPC-H job; window is where h2o adds
+# incremental coverage.
+
+name: h2o
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "ballista/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/h2o.yml"
+      - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-benchmark-builder/**"
+      - "ci/scripts/ballista_cluster.sh"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
+  pull_request:
+    paths:
+      - "ballista/**"
+      - "benchmarks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/h2o.yml"
+      - ".github/actions/setup-builder/**"
+      - ".github/actions/setup-benchmark-builder/**"
+      - "ci/scripts/ballista_cluster.sh"
+      # docs-only changes cannot affect this job; exclusions are applied last
+      - "!**/*.md"
+  workflow_dispatch:
+
+jobs:
+  h2o-window-small:
+    name: window SMALL
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    # A passing run takes ~21-23 minutes, mostly the cold-cache build. Cap it
+    # well under the 6-hour default so a hang frees the runner instead.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Setup toolchain and build Ballista binaries
+        uses: ./.github/actions/setup-benchmark-builder
+        with:
+          shared-key: h2o-window-small
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Generate h2o SMALL data (join dataset — window reuses it)
+        env:
+          H2O_DIR: ${{ runner.temp }}/h2o-data
+        run: |
+          mkdir -p "$H2O_DIR"
+          # `falsa join` produces J1_1e7_{NA_0,1e1_0,1e4_0,1e7_NA}.parquet.
+          # The window suite only needs the `large` file (J1_1e7_1e7_NA.parquet),
+          # but the h2o binary's --join-paths CLI expects all four, so we
+          # generate the full set here.
+          cd benchmarks
+          uv run falsa join --path-prefix "$H2O_DIR" --size SMALL --data-format PARQUET
+
+      - name: Start Ballista cluster
+        # Same expression the log-upload step globs, so the two cannot drift.
+        env:
+          CLUSTER_DIR: ${{ runner.temp }}
+        run: ci/scripts/ballista_cluster.sh start
+
+      - name: Run h2o window suite against Ballista cluster
+        # On the step rather than the job so a hang still runs teardown and
+        # the log upload. The suite itself runs ~5 minutes.
+        timeout-minutes: 30
+        env:
+          H2O_DIR: ${{ runner.temp }}/h2o-data
+        run: |
+          set -euo pipefail
+
+          JOIN_PATHS="$H2O_DIR/J1_1e7_NA_0.parquet,$H2O_DIR/J1_1e7_1e1_0.parquet,$H2O_DIR/J1_1e7_1e4_0.parquet,$H2O_DIR/J1_1e7_1e7_NA.parquet"
+
+          for q in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17; do
+            echo "::group::window Q$q"
+            ./target/tpch-ci/h2o ballista \
+              --host 127.0.0.1 --port 50050 \
+              --queries-path benchmarks/queries/h2o/window.sql \
+              --join-paths "$JOIN_PATHS" \
+              --query "$q" \
+              --iterations 1 \
+              --partitions 4 \
+              --verify \
+              -c ballista.planner.adaptive.enabled=true \
+              -c ballista.planner.parallel_window.enabled=true \
+              -c ballista.scheduler.max_partitions_per_task=0
+            echo "::endgroup::"
+          done
+
+      - name: Stop Ballista cluster
+        # `always()`: still reap the processes and print the log tails when the
+        # suite times out or the run is cancelled.
+        if: always()
+        env:
+          CLUSTER_DIR: ${{ runner.temp }}
+        run: ci/scripts/ballista_cluster.sh stop
+
+      - name: Upload cluster logs on failure
+        # `!success()` rather than `failure()` so timed-out and cancelled runs
+        # still surface their logs.
+        if: ${{ !success() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: h2o-window-small-cluster-logs
+          retention-days: 14
+          # Glob, not two file lines: in a container job the runner only
+          # rewrites the first line's host path (actions/runner#1174).
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: ignore

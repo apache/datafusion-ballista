@@ -22,9 +22,9 @@
 //! statistics, so a re-run map stage can come back with a different plan than the
 //! one whose output was lost.
 //!
-//! Every test in this file spawns a whole multi-process cluster, so this file
-//! must always be run with `--test-threads=1` or ports and CPU will be
-//! exhausted by concurrent clusters.
+//! Every test in this file spawns a whole multi-process cluster. `TestCluster`
+//! serializes those clusters, so `--test-threads=1` is useful for readable
+//! local output but is not required for correctness.
 
 mod common;
 
@@ -66,37 +66,12 @@ use chaos_testing::fixture::Fixture;
 /// result still equals the baseline: a retried stage is exactly where duplicated
 /// or dropped partitions would show up.
 ///
-/// This scenario is split into one test per AQE setting rather than being an
-/// `rstest` over both, because historically only the AQE-on case failed and
-/// `rstest` cannot ignore an individual case.
-///
-/// Both cases originally passed or reproduced #2028 (the AQE-on case:
-/// `Shared(IoError)` misses the classifier's shallow match). #2028 was fixed
-/// by classifying on `find_root()` (#2119), but the sort-shuffle writer
-/// refactor (#2038/#2106) then made both cases fail the same way: the shuffle
-/// write coordinator flattens any task error into
-/// `DataFusionError::Execution(format!("{e:?}"))`
-/// (`ballista/core/src/execution_plans/shuffle_writer.rs`, error arm of the
-/// coordinator fan-out), so the injected `IoError` reaches the classifier as
-/// inert text inside an `Execution` string, `find_root()` has nothing to see
-/// through, and the task is marked non-retryable. That is the same
-/// type-erasing mechanism tracked for fetch failures by #2027.
-///
-/// Ignored, not deleted or weakened. Un-ignore both as the regression tests
-/// when #2027's error-flattening is fixed; see chaos-testing/README.md,
-/// Finding 2.
 #[tokio::test]
-#[ignore = "reproduces #2027's error flattening: the shuffle writer Debug-formats the IoError into an opaque Execution string, so it is misclassified as non-retryable"]
 async fn retryable_fault_is_retried_and_result_is_correct_aqe_off() {
     retryable_fault_is_retried_and_result_is_correct(false).await;
 }
 
-/// See `retryable_fault_is_retried_and_result_is_correct_aqe_off` above; the
-/// AQE-on case fails identically (the error arrives as
-/// `Execution("Shared(IoError(..))")` — stringified before the classifier,
-/// which is what distinguishes this from the fixed #2028).
 #[tokio::test]
-#[ignore = "reproduces #2027's error flattening: the shuffle writer Debug-formats the IoError into an opaque Execution string, so it is misclassified as non-retryable"]
 async fn retryable_fault_is_retried_and_result_is_correct_aqe_on() {
     retryable_fault_is_retried_and_result_is_correct(true).await;
 }
@@ -210,23 +185,15 @@ use std::time::Duration;
 
 /// Scenario D: SIGKILL an executor while it is running tasks.
 ///
-/// `chaos_delay` holds stage 1 open so the kill lands while tasks are genuinely
-/// in flight. The scheduler must detect the loss, reschedule the dead executor's
-/// tasks onto the survivor, and still return the correct result.
+/// `chaos_delay` holds the delayed scan stage open so the kill lands while
+/// tasks are genuinely in flight. The scheduler must detect the loss,
+/// reschedule the dead executor's tasks onto the survivor, and still return the
+/// correct result.
 ///
-/// Both cases reproduce #2027: the shuffle reader's typed
-/// `BallistaError::FetchFailed` is flattened into an opaque
-/// `DataFusionError::Execution` before the executor reports its `TaskStatus`,
-/// so the scheduler never sees the `FetchPartitionError` that would make it
-/// resubmit the lost map stage, and fails the query instead of recovering it.
-///
-/// Ignored, not deleted or weakened. Un-ignore it as the regression test when
-/// #2027 is fixed; see chaos-testing/README.md, Finding 1.
 #[rstest]
 #[case::aqe_off(false)]
 #[case::aqe_on(true)]
 #[tokio::test]
-#[ignore = "reproduces #2027: FetchFailed loses its type, so the map stage is never resubmitted"]
 async fn executor_killed_mid_stage_is_recovered(#[case] aqe: bool) {
     let mut run = ChaosRun::start(aqe, 2).await;
     let expected = run.local_baseline().await;
@@ -235,18 +202,21 @@ async fn executor_killed_mid_stage_is_recovered(#[case] aqe: bool) {
     // enough to kill an executor inside it.
     let sql = Fixture::chaos_query("chaos_delay(f.key >= 0, 300)");
 
-    // Submit the query concurrently, then kill executor 0 once stage 1 is running.
+    // Submit the query concurrently, then kill executor 0 once the delayed
+    // stage is running. AQE and non-AQE planning assign different stage ids
+    // to that work.
     let query = tokio::spawn({
         let ctx = run.clone_ctx();
         let sql = sql.clone();
         async move { ctx.sql(&sql).await?.collect().await }
     });
 
+    let delayed_stage_id = if aqe { 0 } else { 1 };
     let job_id = run.cluster.running_job_id().await.expect("job must appear");
     run.cluster
-        .await_stage_running(&job_id, 1)
+        .await_stage_running(&job_id, delayed_stage_id)
         .await
-        .expect("stage 1 must start running");
+        .expect("delayed stage must start running");
     run.cluster.kill_executor(0).expect("kill executor 0");
 
     let batches = tokio::time::timeout(Duration::from_secs(120), query)
@@ -273,27 +243,22 @@ async fn executor_killed_mid_stage_is_recovered(#[case] aqe: bool) {
 /// recoveries, so the assertion is on correctness, and the path that actually
 /// fired is only recorded.
 ///
-/// Reproduces #2027: whenever the reduce stage genuinely has to fetch from the
-/// dead executor, the typed `FetchFailed` arrives flattened inside
-/// `DataFusionError::Shared`, the scheduler never resubmits the map stage, and
-/// the job fails. The scenario only passes when the kill happens to land after
-/// the reduce tasks have already fetched their partitions, which makes it
-/// timing-dependent (it failed in CI, aqe_off case).
-///
-/// Ignored, not deleted or weakened. Un-ignore it as the regression test when
-/// #2027 is fixed; see chaos-testing/README.md, Finding 1.
 #[rstest]
 #[case::aqe_off(false)]
 #[case::aqe_on(true)]
 #[tokio::test]
-#[ignore = "reproduces #2027: FetchFailed loses its type, so the map stage is never resubmitted"]
 async fn executor_killed_after_shuffle_write_is_recovered(#[case] aqe: bool) {
-    let mut run = ChaosRun::start_with(aqe, 2, 60).await;
-    let expected = run.local_baseline().await;
+    let mut run = ChaosRun::start_with_concurrent_tasks(aqe, 2, 60, 1).await;
+    let expected = run.local_sql(Fixture::shuffle_loss_query()).await;
 
-    // Delay the *aggregate* side so the reduce stage is slow, giving us a window
-    // between "stage 1 succeeded" and "stage 2 has finished fetching".
-    let sql = Fixture::chaos_query("chaos_delay(f.key >= 0, 50)");
+    run.sql("SET ballista.shuffle.force_remote_read = true")
+        .await
+        .expect("force remote shuffle reads");
+    run.sql("SET ballista.shuffle.max_concurrent_read_requests = 1")
+        .await
+        .expect("serialize shuffle reads");
+
+    let sql = Fixture::shuffle_loss_chaos_query("chaos_delay(d.name IS NOT NULL, 300)");
 
     let query = tokio::spawn({
         let ctx = run.clone_ctx();
@@ -302,17 +267,54 @@ async fn executor_killed_after_shuffle_write_is_recovered(#[case] aqe: bool) {
     });
 
     let job_id = run.cluster.running_job_id().await.expect("job must appear");
+    let (executor_index, shuffle_stage_id) = run
+        .cluster
+        .await_successful_shuffle_output(&job_id)
+        .await
+        .expect("a shuffle-writing stage must complete before we kill its executor");
+    if run
+        .cluster
+        .job_status(&job_id)
+        .await
+        .expect("job status must be readable")
+        == "Completed"
+    {
+        panic!(
+            "job completed before executor {executor_index} could be killed after stage {shuffle_stage_id} wrote shuffle output\n{}",
+            run.cluster.diagnostics(&job_id).await
+        );
+    }
+    if query.is_finished() {
+        panic!(
+            "query completed before executor {executor_index} could be killed after stage {shuffle_stage_id} wrote shuffle output\n{}",
+            run.cluster.diagnostics(&job_id).await
+        );
+    }
     run.cluster
-        .await_stage_successful(&job_id, 1)
-        .await
-        .expect("stage 1 must complete before we kill its executor");
-    run.cluster.kill_executor(0).expect("kill executor 0");
+        .kill_executor(executor_index)
+        .unwrap_or_else(|e| {
+            panic!(
+                "kill executor {executor_index} with stage {shuffle_stage_id} shuffle output: {e}"
+            )
+        });
 
-    let batches = tokio::time::timeout(Duration::from_secs(180), query)
-        .await
-        .expect("query must not hang after shuffle output is lost")
-        .expect("query task must not panic")
-        .expect("query must recover by re-running the map stage");
+    let batches = match tokio::time::timeout(Duration::from_secs(180), query).await {
+        Ok(result) => match result.expect("query task must not panic") {
+            Ok(batches) => batches,
+            Err(e) => {
+                panic!(
+                    "query must recover by re-running the map stage: {e}\n{}",
+                    run.cluster.diagnostics(&job_id).await
+                )
+            }
+        },
+        Err(e) => {
+            panic!(
+                "query must not hang after shuffle output is lost: {e}\n{}",
+                run.cluster.diagnostics(&job_id).await
+            )
+        }
+    };
 
     let actual = datafusion::arrow::util::pretty::pretty_format_batches(&batches)
         .unwrap()

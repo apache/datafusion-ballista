@@ -169,7 +169,9 @@ impl PyExecutor {
         }
 
         if let Some(vcores) = vcores {
-            config.vcores = vcores as usize
+            // TODO: this is temporary hack until we update to latest version
+            // config.vcores = vcores as usize
+            config.concurrent_tasks = vcores as usize;
         }
 
         let config = Arc::new(config);
@@ -253,7 +255,9 @@ impl PyExecutor {
             self.config.port,
             self.config.scheduler_host,
             self.config.scheduler_port,
-            self.config.vcores,
+            // TODO: this is temporary hack until we update to latest version
+            // self.config.vcores,
+            self.config.concurrent_tasks,
             self.handle.is_some()
         )
     }

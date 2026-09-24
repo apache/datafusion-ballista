@@ -44,11 +44,22 @@ impl ChaosRun {
         executors: usize,
         executor_timeout_seconds: u64,
     ) -> Self {
+        Self::start_with_concurrent_tasks(aqe, executors, executor_timeout_seconds, 4)
+            .await
+    }
+
+    pub async fn start_with_concurrent_tasks(
+        aqe: bool,
+        executors: usize,
+        executor_timeout_seconds: u64,
+        concurrent_tasks: usize,
+    ) -> Self {
         let _ = env_logger::builder().is_test(true).try_init();
 
         let cluster = TestCluster::builder()
             .executors(executors)
             .executor_timeout_seconds(executor_timeout_seconds)
+            .concurrent_tasks(concurrent_tasks)
             .start()
             .await
             .expect("cluster must start");
@@ -105,17 +116,15 @@ impl ChaosRun {
 
     /// The expected answer, computed by plain local DataFusion.
     pub async fn local_baseline(&self) -> String {
+        self.local_sql(Fixture::baseline_query()).await
+    }
+
+    pub async fn local_sql(&self, sql: &str) -> String {
         let ctx = SessionContext::new();
         for stmt in self.fixture.register_sql() {
             ctx.sql(&stmt).await.unwrap().collect().await.unwrap();
         }
-        let batches = ctx
-            .sql(Fixture::baseline_query())
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
+        let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
         pretty_format_batches(&batches).unwrap().to_string()
     }
 

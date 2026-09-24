@@ -18,6 +18,7 @@
 use crate::JobId;
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
+use crate::error::BallistaError;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
@@ -26,14 +27,15 @@ use crate::serde::protobuf::{
     scheduler_grpc_client::SchedulerGrpcClient,
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
+use crate::serde::scheduler::ShuffleLayout;
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::metrics::{
     ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
@@ -47,8 +49,8 @@ use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
-use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
-use log::{debug, error, info};
+use futures::{Stream, StreamExt, TryStreamExt};
+use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -141,6 +143,45 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         self.job_id.lock().clone()
     }
 
+    /// Fetch and render the physical plan that executed on the cluster for this
+    /// query, one section per query stage.
+    ///
+    /// This must be called after the query has run (i.e. after
+    /// [`ExecutionPlan::execute`]/`collect`), because it relies on the
+    /// scheduler-assigned job id and the plan is only available once the stages
+    /// have completed. Returns an error if the query has not been executed yet.
+    ///
+    /// Only stages that completed successfully are included, inherited from the
+    /// scheduler's `get_job_metrics`.
+    ///
+    /// When `with_metrics` is true the output matches `EXPLAIN ANALYZE`; when
+    /// false the `metrics=[...]` suffixes are omitted.
+    pub async fn explain_executed_plan(
+        &self,
+        session_config: &SessionConfig,
+        with_metrics: bool,
+    ) -> Result<String> {
+        let job_id = self.job_id().ok_or_else(|| {
+            DataFusionError::Execution(
+                "Cannot explain executed plan: query has not been executed yet"
+                    .to_string(),
+            )
+        })?;
+
+        let job_metrics =
+            crate::execution_plans::distributed_explain_analyze::fetch_job_metrics(
+                &self.scheduler_url,
+                &job_id,
+                session_config.clone(),
+            )
+            .await?;
+
+        crate::execution_plans::distributed_explain_analyze::format_job_plan(
+            &job_metrics,
+            with_metrics,
+        )
+    }
+
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
         PlanProperties::new(
             EquivalenceProperties::new(schema),
@@ -159,11 +200,12 @@ impl<T: 'static + AsLogicalPlan> DisplayAs for DistributedQueryExec<T> {
     ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(
+                writeln!(
                     f,
                     "DistributedQueryExec: scheduler_url={}",
                     self.scheduler_url
-                )
+                )?;
+                write!(f, "logical_plan:\n{}", self.plan.display_indent())
             }
             DisplayFormatType::TreeRender => {
                 writeln!(f, "scheduler_url={}", self.scheduler_url)
@@ -187,6 +229,15 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
+    }
+
+    /// Owns no physical expressions — it ships a `LogicalPlan` to the
+    /// scheduler, which plans and executes it on the cluster.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -258,20 +309,17 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         let session_config = context.session_config().clone();
 
         if session_config.ballista_config().client_pull() {
-            let stream = futures::stream::once(
-                execute_query_pull(
-                    self.scheduler_url.clone(),
-                    self.session_id.clone(),
-                    query,
-                    self.config.grpc_client_max_message_size(),
-                    GrpcClientConfig::from(&self.config),
-                    Arc::new(self.metrics.clone()),
-                    Arc::clone(&self.job_id),
-                    partition,
-                    session_config,
-                )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
-            )
+            let stream = futures::stream::once(execute_query_pull(
+                self.scheduler_url.clone(),
+                self.session_id.clone(),
+                query,
+                self.config.grpc_client_max_message_size(),
+                GrpcClientConfig::from(&self.config),
+                Arc::new(self.metrics.clone()),
+                Arc::clone(&self.job_id),
+                partition,
+                session_config,
+            ))
             .try_flatten()
             .inspect(move |batch| {
                 metric_total_bytes.add(
@@ -287,19 +335,16 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             let schema = self.schema();
             Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
         } else {
-            let stream = futures::stream::once(
-                execute_query_push(
-                    self.scheduler_url.clone(),
-                    query,
-                    self.config.grpc_client_max_message_size(),
-                    GrpcClientConfig::from(&self.config),
-                    Arc::new(self.metrics.clone()),
-                    Arc::clone(&self.job_id),
-                    partition,
-                    session_config,
-                )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
-            )
+            let stream = futures::stream::once(execute_query_push(
+                self.scheduler_url.clone(),
+                query,
+                self.config.grpc_client_max_message_size(),
+                GrpcClientConfig::from(&self.config),
+                Arc::new(self.metrics.clone()),
+                Arc::clone(&self.job_id),
+                partition,
+                session_config,
+            ))
             .try_flatten()
             .inspect(move |batch| {
                 metric_total_bytes.add(
@@ -407,6 +452,22 @@ pub async fn execute_physical_plan<U: 'static + AsExecutionPlan>(
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
 }
 
+/// Logs a warning if the scheduler's advertised version (from the `server`
+/// response header, e.g. `ballista/1.2.3`) doesn't match this client's.
+fn check_scheduler_version<T>(response: &tonic::Response<T>) {
+    let expected = format!("ballista/{}", crate::BALLISTA_VERSION);
+    if let Some(server) = response
+        .metadata()
+        .get("server")
+        .and_then(|v| v.to_str().ok())
+        && server != expected
+    {
+        warn!(
+            "Scheduler version mismatch: scheduler reports '{server}', client is '{expected}'"
+        );
+    }
+}
+
 /// Client will periodically invoke scheduler to check
 /// job status. There is preconfigured wait period between
 /// pulls, which increases query latency.
@@ -456,11 +517,12 @@ async fn execute_query_pull(
     .max_encoding_message_size(max_message_size)
     .max_decoding_message_size(max_message_size);
 
-    let query_result = scheduler
+    let query_response = scheduler
         .execute_query(query)
         .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-        .into_inner();
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+    check_scheduler_version(&query_response);
+    let query_result = query_response.into_inner();
 
     let query_result = match query_result.result.unwrap() {
         execute_query_result::Result::Success(success_result) => success_result,
@@ -570,8 +632,7 @@ async fn execute_query_pull(
                         use_tls,
                         io_retries_times,
                         io_retry_wait_time_ms,
-                    )
-                    .map_err(|e| ArrowError::ExternalError(Box::new(e)));
+                    );
 
                     futures::stream::once(f).try_flatten()
                 });
@@ -629,11 +690,12 @@ async fn execute_query_push(
     .max_encoding_message_size(max_message_size)
     .max_decoding_message_size(max_message_size);
 
-    let mut query_status_stream = scheduler
+    let query_push_response = scheduler
         .execute_query_push(query)
         .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-        .into_inner();
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+    check_scheduler_version(&query_push_response);
+    let mut query_status_stream = query_push_response.into_inner();
 
     let mut prev_status: Option<job_status::Status> = None;
 
@@ -736,8 +798,7 @@ async fn execute_query_push(
                         use_tls,
                         io_retries_times,
                         io_retry_wait_time_ms,
-                    )
-                    .map_err(|e| ArrowError::ExternalError(Box::new(e)));
+                    );
 
                     futures::stream::once(f).try_flatten()
                 });
@@ -835,13 +896,17 @@ async fn fetch_partition(
             &metadata.id,
             &partition_id.into(),
             location.file_id,
-            location.is_sort_shuffle,
+            if location.is_sort_shuffle {
+                ShuffleLayout::Sort
+            } else {
+                ShuffleLayout::Passthrough
+            },
             host,
             port,
             flight_transport,
         )
         .await
-        .map_err(|e| DataFusionError::External(Box::new(e)))
+        .map_err(BallistaError::into_datafusion)
 }
 
 #[cfg(test)]
@@ -855,6 +920,9 @@ mod test {
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
     use datafusion::logical_expr::LogicalPlan;
     use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::physical_plan::displayable;
+    use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
+    use datafusion::prelude::SessionConfig;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use std::sync::Arc;
 
@@ -923,11 +991,62 @@ mod test {
         ));
         *exec.job_id.lock() = Some("job-123".into());
 
-        let new_exec = exec.clone().with_new_children(vec![]).unwrap();
+        let new_exec = exec
+            .clone()
+            .replace_children(
+                vec![],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .unwrap();
         let new_exec = new_exec
             .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
             .unwrap();
 
         assert_eq!(new_exec.job_id(), Some(JobId::new("job-123")));
+    }
+
+    #[test]
+    fn test_display_includes_logical_plan() {
+        let exec = Arc::new(DistributedQueryExec::<LogicalPlanNode>::new(
+            "http://scheduler:50050".to_string(),
+            BallistaConfig::default(),
+            LogicalPlan::default(),
+            "session".to_string(),
+        ));
+
+        let rendered = displayable(exec.as_ref()).indent(false).to_string();
+
+        assert!(
+            rendered.contains("scheduler_url=http://scheduler:50050"),
+            "missing scheduler_url line: {rendered}"
+        );
+        assert!(
+            rendered.contains("logical_plan:"),
+            "missing logical_plan section: {rendered}"
+        );
+        // LogicalPlan::default() renders as EmptyRelation
+        assert!(
+            rendered.contains("EmptyRelation"),
+            "missing rendered logical plan: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explain_executed_plan_errors_before_execution() {
+        let exec = DistributedQueryExec::<LogicalPlanNode>::new(
+            "http://scheduler:50050".to_string(),
+            BallistaConfig::default(),
+            LogicalPlan::default(),
+            "session".to_string(),
+        );
+        // job_id is None because the query has not been executed
+        let err = exec
+            .explain_executed_plan(&SessionConfig::new(), false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("has not been executed"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -24,11 +24,10 @@ Ballista is a distributed compute platform primarily implemented in Rust, and po
 Ballista has both scheduler and an executor component processes that are standard Rust executables.
 
 Dockerfiles are also provided to build images for use in containerized environments, such as Docker, Docker Compose,
-and Kubernetes. See the [deployment guide](deployment.md) for more information.
+and Kubernetes. See the [deployment guide](deployment/) for more information.
 
-SQL and DataFrame queries can be submitted from Python and Rust, and SQL queries can be submitted via the Arrow
-Flight SQL JDBC driver, supporting your favorite JDBC compliant tools such as [DataGrip](datagrip)
-or [tableau](tableau). For setup instructions, please see the [FlightSQL guide](flightsql.md).
+SQL and DataFrame queries can be submitted from Python and Rust, and SQL queries can also be submitted using the
+Ballista CLI.
 
 ## How does this compare to Apache Spark?
 
@@ -44,7 +43,3 @@ Although Ballista is largely inspired by Apache Spark, there are some key differ
   distributed compute.
 - The use of Apache Arrow as the memory model and network protocol means that data can be exchanged between executors
   in any programming language with minimal serialization overhead.
-
-[deployment](./deployment)
-[datagrip](https://www.jetbrains.com/datagrip/)
-[tableau](https://help.tableau.com/current/pro/desktop/en-us/examples_otherdatabases_jdbc.htm)

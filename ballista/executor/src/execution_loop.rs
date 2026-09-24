@@ -46,8 +46,15 @@ use std::error::Error;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tonic::codegen::{Body, Bytes, StdError};
+
+/// Idle sleep between polls when polling is the only way to learn of new work.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Idle sleep when a `poll_now_notify` wake-up is wired and the timer is only
+/// a fallback.
+const NOTIFIED_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Maximum time the poll loop waits for a free vcore before polling the
 /// scheduler anyway. `poll_work` doubles as the executor's heartbeat under
@@ -67,6 +74,12 @@ const HEARTBEAT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// multiple poll loops or for observing executor load from outside.
 /// Pass `None` to have the loop create a semaphore sized to the executor's
 /// configured vcore count.
+///
+/// `poll_now_notify`, when provided, wakes an idle poll loop immediately
+/// (typically wired to the scheduler's `on_work_available` callback) instead
+/// of waiting out the idle interval. A notification sent mid-poll is not
+/// lost: `Notify` stores the permit and the next `notified().await` returns
+/// immediately.
 ///
 /// **Shared semaphores**: when one semaphore is shared across loops that
 /// connect to different schedulers, each scheduler independently sees the
@@ -89,6 +102,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan,
     mut scheduler: SchedulerGrpcClient<C>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
+    poll_now_notify: Option<Arc<Notify>>,
     free_vcores: Option<Arc<Semaphore>>,
     health: crate::health::ExecutorHealth,
 ) -> Result<(), BallistaError>
@@ -263,7 +277,19 @@ where
         }
 
         if !active_job {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            match &poll_now_notify {
+                Some(notify) => {
+                    tokio::select! {
+                        () = tokio::time::sleep(NOTIFIED_IDLE_POLL_INTERVAL) => {}
+                        () = notify.notified() => {
+                            debug!("Received poll_now notification, polling immediately");
+                        }
+                    }
+                }
+                None => {
+                    tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+                }
+            }
         }
     }
 }
@@ -393,6 +419,18 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             .collect::<Result<Vec<_>, BallistaError>>()
             .ok();
         let runtime_stats = query_stage_exec.collect_runtime_stats_reports();
+        // Collect only when the task otherwise succeeded: a failed task's
+        // partial state is meaningless, and its own error is the useful one.
+        // A collection failure fails the task — these are load-bearing for the
+        // downstream stage's prefix merge, so continuing without them would
+        // ship a wrong answer that nothing later detects.
+        let (execution_result, window_state) = match execution_result {
+            Ok(partitions) => match query_stage_exec.collect_window_state_reports() {
+                Ok(reports) => (Ok(partitions), reports),
+                Err(e) => (Err(e.into()), Vec::new()),
+            },
+            Err(e) => (Err(e), Vec::new()),
+        };
 
         let end_exec_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -414,6 +452,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             TaskCompletionExtras {
                 operator_metrics,
                 runtime_stats,
+                window_state,
             },
         ));
 

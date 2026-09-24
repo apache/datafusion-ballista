@@ -82,6 +82,19 @@ fn check_protocol_version(metadata: &ExecutorRegistration) -> Result<(), Status>
     )))
 }
 
+fn executor_registration_error(e: BallistaError) -> Status {
+    let msg = format!("Fail to do executor registration due to: {e}");
+    error!("{msg}");
+    match e {
+        BallistaError::Configuration(message)
+            if message.contains("already registered") =>
+        {
+            Status::already_exists(msg)
+        }
+        _ => Status::internal(msg),
+    }
+}
+
 #[tonic::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
     for SchedulerServer<T, U>
@@ -123,14 +136,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     specification: metadata.specification.unwrap().into(),
                     os_info: metadata.os_info.unwrap().into(),
                 };
-                if let Err(e) = self
-                    .state
+                self.state
                     .executor_manager
                     .save_executor_metadata(metadata)
                     .await
-                {
-                    warn!("Could not save executor metadata: {e:?}");
-                }
+                    .map_err(executor_registration_error)?;
             }
 
             self.update_task_status(&executor_id, task_status)
@@ -219,11 +229,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 os_info: metadata.os_info.unwrap().into(),
             };
 
-            self.do_register_executor(metadata).await.map_err(|e| {
-                let msg = format!("Fail to do executor registration due to: {e}");
-                error!("{msg}");
-                Status::internal(msg)
-            })?;
+            self.do_register_executor(metadata)
+                .await
+                .map_err(executor_registration_error)?;
 
             Ok(Response::new(RegisterExecutorResult { success: true }))
         } else {
@@ -278,11 +286,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     os_info: metadata.os_info.unwrap().into(),
                 };
 
-                self.do_register_executor(metadata).await.map_err(|e| {
-                    let msg = format!("Fail to do executor registration due to: {e}");
-                    error!("{msg}");
-                    Status::internal(msg)
-                })?;
+                self.do_register_executor(metadata)
+                    .await
+                    .map_err(executor_registration_error)?;
             } else {
                 return Err(Status::invalid_argument(format!(
                     "The registration spec for executor {executor_id} is not included"
@@ -737,7 +743,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             executor_id, reason
         );
 
-        let executor_manager = self.state.executor_manager.clone();
         let event_sender = self.query_stage_event_loop.get_sender().map_err(|e| {
             let msg = format!("Get query stage event loop error due to {e:?}");
             error!("{msg}");
@@ -745,7 +750,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         })?;
 
         Self::remove_executor(
-            executor_manager,
+            self.state.clone(),
             event_sender,
             &executor_id,
             Some(reason),
@@ -856,7 +861,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             }
             #[cfg(feature = "substrait")]
             Query::SubstraitPlan(bytes) => {
-                let plan = deserialize_bytes(bytes).await.map_err(|e| BallistaError::DataFusionError(e.into()))?;
+                let plan = deserialize_bytes(&bytes).map_err(|e| BallistaError::DataFusionError(e.into()))?;
 
                 let ctx = session_ctx.clone();
                 from_substrait_plan(&ctx.state(), &plan)
@@ -879,15 +884,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         }
     }
 
+    /// Where clients should fetch result partitions from over Arrow Flight,
+    /// advertised in job-status responses. An explicitly advertised endpoint
+    /// wins over the embedded proxy, so a load balancer can front it.
     fn flight_proxy_config(&self) -> Option<FlightProxy> {
-        self.state
-            .config
-            .advertise_flight_sql_endpoint
-            .clone()
-            .map(|s| match s {
-                s if s.is_empty() => FlightProxy::Local(true),
-                s => FlightProxy::External(s),
-            })
+        let config = &self.state.config;
+        match config
+            .advertise_flight_endpoint
+            .as_deref()
+            .filter(|s| !s.is_empty())
+        {
+            Some(endpoint) => Some(FlightProxy::External(endpoint.to_string())),
+            None if config.enable_embedded_flight_proxy => Some(FlightProxy::Local(true)),
+            None => None,
+        }
     }
 }
 
@@ -898,7 +908,7 @@ mod test {
 
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
-    use tonic::Request;
+    use tonic::{Code, Request};
 
     #[cfg(feature = "substrait")]
     use {
@@ -925,7 +935,16 @@ mod test {
     use crate::test_utils::await_condition;
     use crate::test_utils::test_cluster_context;
 
-    use super::{SchedulerGrpc, SchedulerServer};
+    use super::{SchedulerGrpc, SchedulerServer, executor_registration_error};
+
+    #[test]
+    fn duplicate_executor_registration_maps_to_already_exists() {
+        let status = executor_registration_error(BallistaError::Configuration(
+            "executor_id id123 is already registered".to_string(),
+        ));
+
+        assert_eq!(status.code(), Code::AlreadyExists);
+    }
 
     #[tokio::test]
     async fn test_pull_work() -> Result<(), BallistaError> {
@@ -965,7 +984,7 @@ mod test {
         // no response task since we told the scheduler we didn't want to accept one
         assert!(response.tasks.is_empty());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new_with_default_scheduler_name(
+            SchedulerState::new_with_default_scheduler_endpoint(
                 cluster.clone(),
                 BallistaCodec::default(),
             );
@@ -997,7 +1016,7 @@ mod test {
         // still no response task since there are no tasks in the scheduler
         assert!(response.tasks.is_empty());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new_with_default_scheduler_name(
+            SchedulerState::new_with_default_scheduler_endpoint(
                 cluster.clone(),
                 BallistaCodec::default(),
             );
@@ -1013,6 +1032,26 @@ mod test {
         assert_eq!(stored_executor.grpc_port, 0);
         assert_eq!(stored_executor.port, 0);
         assert_eq!(stored_executor.specification.vcores, 2);
+        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+
+        let mut conflicting_exec_meta = exec_meta.clone();
+        conflicting_exec_meta.host = Some("http://localhost:8081".to_owned());
+        let request: Request<PollWorkParams> = Request::new(PollWorkParams {
+            metadata: Some(conflicting_exec_meta),
+            num_free_vcores: 1,
+            task_status: vec![],
+        });
+        let err = match scheduler.poll_work(request).await {
+            Ok(_) => panic!("duplicate executor id should fail poll_work"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code(), Code::AlreadyExists);
+        let stored_executor = state
+            .executor_manager
+            .get_executor_metadata("abc")
+            .await
+            .expect("getting executor");
         assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
         Ok(())
@@ -1367,6 +1406,64 @@ mod test {
         assert!(active_executors.is_empty());
         Ok(())
     }
+
+    #[tokio::test]
+    async fn flight_proxy_config_reflects_explicit_flag_and_endpoint() {
+        use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
+
+        let server = |config: SchedulerConfig| {
+            SchedulerServer::<LogicalPlanNode, PhysicalPlanNode>::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(config),
+                default_metrics_collector().unwrap(),
+            )
+        };
+
+        // Neither set: nothing advertised.
+        assert_eq!(
+            server(SchedulerConfig::default()).flight_proxy_config(),
+            None
+        );
+
+        // Embedded proxy: advertise the scheduler itself.
+        let cfg = SchedulerConfig::default().with_enable_embedded_flight_proxy(true);
+        assert_eq!(
+            server(cfg).flight_proxy_config(),
+            Some(FlightProxy::Local(true))
+        );
+
+        // An advertised endpoint alone points clients elsewhere without starting
+        // anything locally.
+        let cfg = SchedulerConfig::default()
+            .with_advertise_flight_endpoint(Some("lb.example.com:50055".into()));
+        assert_eq!(
+            server(cfg).flight_proxy_config(),
+            Some(FlightProxy::External("lb.example.com:50055".into()))
+        );
+
+        // External endpoint wins, even alongside the embedded proxy.
+        let cfg = SchedulerConfig::default()
+            .with_enable_embedded_flight_proxy(true)
+            .with_advertise_flight_endpoint(Some("lb.example.com:50055".into()));
+        assert_eq!(
+            server(cfg).flight_proxy_config(),
+            Some(FlightProxy::External("lb.example.com:50055".into()))
+        );
+
+        // An empty endpoint is not advertised, and does not suppress the proxy.
+        let cfg = SchedulerConfig {
+            advertise_flight_endpoint: Some(String::new()),
+            enable_embedded_flight_proxy: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            server(cfg).flight_proxy_config(),
+            Some(FlightProxy::Local(true))
+        );
+    }
+
     #[tokio::test]
     #[cfg(feature = "substrait")]
     async fn test_substrait_compatibility() -> Result<(), BallistaError> {
