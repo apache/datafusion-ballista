@@ -201,15 +201,6 @@ but still there is a gap between DataFusion and Ballista which we want to bridge
 Refer to the [DataFusion SQL Reference](https://datafusion.apache.org/user-guide/sql/index.html) for more
 information on supported SQL.
 
-## Who uses Ballista
-
-The following organizations use Ballista. To add yours, open a pull request.
-
-| Organization                       | Reference                                                                        |
-| ---------------------------------- | -------------------------------------------------------------------------------- |
-| [Spice AI](https://spice.ai)       | [Apache Ballista at Spice AI](https://spice.ai/blog/apache-ballista-at-spice-ai) |
-| [Coralogix](https://coralogix.com) | —                                                                                |
-
 ## Contribution Guide
 
 Please see the [Contribution Guide](CONTRIBUTING.md) for information about contributing to Ballista.

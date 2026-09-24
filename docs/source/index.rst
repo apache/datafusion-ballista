@@ -92,6 +92,7 @@ Table of content
    :caption: Community
 
    community/communication
+   community/adopters
 
    Issue tracker <https://github.com/apache/datafusion-ballista/issues>
    Code of conduct <https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md>
