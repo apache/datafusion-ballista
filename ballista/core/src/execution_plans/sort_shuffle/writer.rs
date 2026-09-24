@@ -2085,8 +2085,11 @@ mod tests {
         hash_col: &str,
         num_output_partitions: usize,
     ) -> Result<Vec<u64>> {
-        let source =
-            Arc::new(MemorySourceConfig::try_new(&partitions, schema.clone(), None)?);
+        let source = Arc::new(MemorySourceConfig::try_new(
+            &partitions,
+            schema.clone(),
+            None,
+        )?);
         let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(source));
         let task_ctx = SessionContext::new().task_ctx();
         let work_dir = TempDir::new()?;
