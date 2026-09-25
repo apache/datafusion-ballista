@@ -447,6 +447,8 @@ vcore count: a 16-partition stage runs as one task on an idle 16-vcore executor,
 across four 4-vcore executors. This reduces task count and scheduling overhead and allows operators such as sort
 and hash join to work across partitions within a task.</p>
 <p>Set it to <code class="docutils literal notranslate"><span class="pre">1</span></code> to get one task per partition, or to any positive value to cap the slice size.</p>
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.scheduler.max_partitions_per_task -->
+<!-- prettier-ignore -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>key</p></th>
@@ -459,11 +461,12 @@ and hash join to work across partitions within a task.</p>
 <tr class="row-even"><td><p>ballista.scheduler.max_partitions_per_task</p></td>
 <td><p>UInt64</p></td>
 <td><p>0</p></td>
-<td><p>Upper bound on the number of input partitions packed into a single task. <code class="docutils literal notranslate"><span class="pre">0</span></code> means unbounded, filling each task up to the executor’s free vcores. <code class="docutils literal notranslate"><span class="pre">1</span></code> means one task per partition.</p></td>
+<td><p>Upper bound on the number of input partitions packed into a single task’s <code class="docutils literal notranslate"><span class="pre">partition_slice</span></code>. <code class="docutils literal notranslate"><span class="pre">0</span></code> (default) means unbounded — the scheduler fills each task up to the executor’s free vcore count. <code class="docutils literal notranslate"><span class="pre">1</span></code> means one task per input partition. Does not apply to collapse stages, which must pack their full pending queue into a single task for correctness.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<!-- END GENERATED CONFIG REFERENCE -->
 <p>Stages whose plan collapses all input into a single partition (for example under a <code class="docutils literal notranslate"><span class="pre">CoalescePartitionsExec</span></code> or
 <code class="docutils literal notranslate"><span class="pre">SortPreservingMergeExec</span></code>) ignore this cap and always pack their full pending queue into one task, since splitting
 them would produce partial results that downstream stages cannot merge.</p>
@@ -584,6 +587,8 @@ sooner, or raise it to keep more data in memory and reduce spill I/O. Setting it
 to <code class="docutils literal notranslate"><span class="pre">0</span></code> removes the budget entirely and is safe only with a bounded memory pool
 (see the warning above).</p>
 <p>The following session-level keys tune its behavior:</p>
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.shuffle.sort_based. -->
+<!-- prettier-ignore -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>key</p></th>
@@ -596,16 +601,17 @@ to <code class="docutils literal notranslate"><span class="pre">0</span></code> 
 <tr class="row-even"><td><p>ballista.shuffle.sort_based.batch_size</p></td>
 <td><p>UInt64</p></td>
 <td><p>8192</p></td>
-<td><p>Target row count when coalescing buffered batches before they are written or spilled.</p></td>
+<td><p>Target batch size in rows for coalescing small batches in sort shuffle</p></td>
 </tr>
 <tr class="row-odd"><td><p>ballista.shuffle.sort_based.memory_limit_per_task_bytes</p></td>
 <td><p>UInt64</p></td>
 <td><p>268435456</p></td>
-<td><p>Per-task buffered-bytes budget at which the writer spills to disk (256 MiB default). Counted independently of the runtime memory pool. Set to <code class="docutils literal notranslate"><span class="pre">0</span></code> to spill only under memory pressure — safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory.</p></td>
+<td><p>Per-task buffered-bytes budget at which the sort shuffle writer spills its in-memory batches to disk. Counted independently of the runtime memory pool, so spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle memory per executor is approximately vcores * this value. Set to 0 to disable the per-task budget and rely solely on runtime memory-pool pressure to trigger spilling; this is safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<!-- END GENERATED CONFIG REFERENCE -->
 </section>
 </section>
 <section id="adaptive-query-execution-experimental">
@@ -622,6 +628,8 @@ stages rather than relying solely on pre-execution estimates.</p>
 </div>
 <section id="configuration">
 <h3>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h3>
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.planner.adaptive.enabled,ballista.optimizer.broadcast_join_threshold_ -->
+<!-- prettier-ignore -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>key</p></th>
@@ -631,24 +639,25 @@ stages rather than relying solely on pre-execution estimates.</p>
 </tr>
 </thead>
 <tbody>
+<tr class="row-even"><td><p>ballista.optimizer.broadcast_join_threshold_bytes</p></td>
+<td><p>UInt64</p></td>
+<td><p>134217728</p></td>
+<td><p>Byte-size threshold below which a hash join’s smaller side is promoted to CollectLeft and lowered via the broadcast pattern. Governs broadcast selection under both the static distributed planner and adaptive query planning (AQE). It also caps null-aware anti joins with a known build size because they require single-task CollectLeft execution. Set to 0 to disable promotion and reject null-aware anti joins.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.optimizer.broadcast_join_threshold_rows</p></td>
+<td><p>UInt64</p></td>
+<td><p>1000000</p></td>
+<td><p>Row-count threshold below which a hash join’s smaller side is promoted to CollectLeft and lowered via the broadcast pattern, used as a fallback when byte-size statistics are unavailable. Applies to adaptive query planning (AQE). Set to 0 to disable promotion via the row-count path.</p></td>
+</tr>
 <tr class="row-even"><td><p>ballista.planner.adaptive.enabled</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
-<td><p>Enables the adaptive planner. Set to <code class="docutils literal notranslate"><span class="pre">false</span></code> to use the static distributed planner.</p></td>
-</tr>
-<tr class="row-odd"><td><p>ballista.optimizer.broadcast_join_threshold_bytes</p></td>
-<td><p>UInt64</p></td>
-<td><p>134217728</p></td>
-<td><p>Byte-size threshold below which a hash join’s smaller side is broadcast (<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>). Also caps null-aware anti joins with known build sizes because they run in one task. Set to 0 to disable broadcasts and reject null-aware anti joins.</p></td>
-</tr>
-<tr class="row-even"><td><p>ballista.optimizer.broadcast_join_threshold_rows</p></td>
-<td><p>UInt64</p></td>
-<td><p>1000000</p></td>
-<td><p>Row-count fallback threshold used when byte-size statistics are unavailable. Applies to AQE. Set to 0 to disable promotion via the row-count path.</p></td>
+<td><p>Enables Adaptive Query Planning: joins and partition counts are chosen from measured runtime statistics instead of planning-time estimates. Set to false to use the static distributed planner.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<!-- END GENERATED CONFIG REFERENCE -->
 </section>
 <section id="what-aqe-does-today">
 <h3>What AQE does today<a class="headerlink" href="#what-aqe-does-today" title="Link to this heading">#</a></h3>

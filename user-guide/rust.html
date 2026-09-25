@@ -431,20 +431,29 @@
 <span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">standalone_with_state</span><span class="p">(</span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 </pre></div>
 </div>
-<p>Following examples require running remove scheduler and executor nodes.</p>
-<p>Full example using the DataFrame API.</p>
+<p>The following examples require running remote scheduler and executor nodes.</p>
+<p>Full example using the DataFrame API, from
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/examples/examples/remote-dataframe.rs"><code class="docutils literal notranslate"><span class="pre">examples/examples/remote-dataframe.rs</span></code></a>:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">ballista</span><span class="p">::</span><span class="n">prelude</span><span class="p">::</span><span class="o">*</span><span class="p">;</span>
 <span class="k">use</span><span class="w"> </span><span class="n">ballista_examples</span><span class="p">::</span><span class="n">test_util</span><span class="p">;</span>
 <span class="k">use</span><span class="w"> </span><span class="n">datafusion</span><span class="p">::{</span>
-<span class="w">    </span><span class="n">prelude</span><span class="p">::{</span><span class="n">col</span><span class="p">,</span><span class="w"> </span><span class="n">lit</span><span class="p">,</span><span class="w"> </span><span class="n">ParquetReadOptions</span><span class="p">,</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">},</span>
+<span class="w">    </span><span class="n">common</span><span class="p">::</span><span class="nb">Result</span><span class="p">,</span>
+<span class="w">    </span><span class="n">execution</span><span class="p">::</span><span class="n">SessionStateBuilder</span><span class="p">,</span>
+<span class="w">    </span><span class="n">prelude</span><span class="p">::{</span><span class="n">ParquetReadOptions</span><span class="p">,</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">,</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">,</span><span class="w"> </span><span class="n">col</span><span class="p">,</span><span class="w"> </span><span class="n">lit</span><span class="p">},</span>
 <span class="p">};</span>
 
 <span class="sd">/// This example demonstrates executing a simple query against an Arrow data source (Parquet) and</span>
 <span class="sd">/// fetching results, using the DataFrame trait</span>
 <span class="cp">#[tokio::main]</span>
 <span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="c1">// creating SessionContext with default settings</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote</span><span class="p">(</span><span class="s">"df://localhost:50050"</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">().</span><span class="n">with_target_partitions</span><span class="p">(</span><span class="mi">4</span><span class="p">);</span>
+
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionStateBuilder</span><span class="p">::</span><span class="n">new</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="n">with_config</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+<span class="w">        </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="n">build</span><span class="p">();</span>
+
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">"df://localhost:50050"</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">test_data</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">test_util</span><span class="p">::</span><span class="n">examples_test_data</span><span class="p">();</span>
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">filename</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">format!</span><span class="p">(</span><span class="s">"{test_data}/alltypes_plain.parquet"</span><span class="p">);</span>
@@ -461,13 +470,15 @@
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>Here is a full example demonstrating SQL usage, with user specific <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code>:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">ballista</span><span class="p">::</span><span class="n">prelude</span><span class="p">::</span><span class="o">*</span><span class="p">;</span>
-<span class="k">use</span><span class="w"> </span><span class="n">ballista_examples</span><span class="p">::</span><span class="n">test_util</span><span class="p">;</span>
-<span class="k">use</span><span class="w"> </span><span class="n">datafusion</span><span class="p">::{</span>
+<p>A full example demonstrating SQL usage with a user-specified <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code>, from
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/examples/examples/remote-sql.rs"><code class="docutils literal notranslate"><span class="pre">examples/examples/remote-sql.rs</span></code></a>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">ballista</span><span class="p">::</span><span class="n">datafusion</span><span class="p">::{</span>
+<span class="w">    </span><span class="n">common</span><span class="p">::</span><span class="nb">Result</span><span class="p">,</span>
 <span class="w">    </span><span class="n">execution</span><span class="p">::</span><span class="n">SessionStateBuilder</span><span class="p">,</span>
 <span class="w">    </span><span class="n">prelude</span><span class="p">::{</span><span class="n">CsvReadOptions</span><span class="p">,</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">,</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">},</span>
 <span class="p">};</span>
+<span class="k">use</span><span class="w"> </span><span class="n">ballista</span><span class="p">::</span><span class="n">prelude</span><span class="p">::</span><span class="o">*</span><span class="p">;</span>
+<span class="k">use</span><span class="w"> </span><span class="n">ballista_examples</span><span class="p">::</span><span class="n">test_util</span><span class="p">;</span>
 
 <span class="sd">/// This example demonstrates executing a simple query against an Arrow data source (CSV) and</span>
 <span class="sd">/// fetching results, using SQL</span>
