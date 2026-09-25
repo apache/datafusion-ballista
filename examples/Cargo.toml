@@ -58,7 +58,10 @@ rustls = { version = "0.23", features = ["ring"], optional = true }
 [dev-dependencies]
 arrow-flight = { workspace = true }
 ballista = { workspace = true }
-ballista-core = { path = "../ballista/core", version = "54.0.0", default-features = false, features = ["build-binary"] }
+ballista-core = { path = "../ballista/core", version = "54.0.0", default-features = false, features = [
+    "build-binary",
+    "arrow-ipc-optimizations",
+] }
 ballista-executor = { path = "../ballista/executor", version = "54.0.0", default-features = false }
 ballista-scheduler = { path = "../ballista/scheduler", version = "54.0.0", default-features = false }
 ctor = { workspace = true }
