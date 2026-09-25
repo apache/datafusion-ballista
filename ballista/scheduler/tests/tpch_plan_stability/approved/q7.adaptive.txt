@@ -1,0 +1,29 @@
+AdaptiveDatafusionExec: is_final=true, plan_id=7, stage_id=8, stage_resolved=true
+  SortPreservingMergeExec: [supp_nation@0 ASC NULLS LAST, cust_nation@1 ASC NULLS LAST, l_year@2 ASC NULLS LAST]
+    ExchangeExec: partitioning=None, plan_id=13, stage_id=7, stage_resolved=true
+      ProjectionExec: expr=[supp_nation@0 as supp_nation, cust_nation@1 as cust_nation, l_year@2 as l_year, sum(shipping.volume)@3 as revenue]
+        SortExec: expr=[supp_nation@0 ASC NULLS LAST, cust_nation@1 ASC NULLS LAST, l_year@2 ASC NULLS LAST], preserve_partitioning=[true]
+          AggregateExec: mode=FinalPartitioned, gby=[supp_nation@0 as supp_nation, cust_nation@1 as cust_nation, l_year@2 as l_year], aggr=[sum(shipping.volume)]
+            ExchangeExec: partitioning=Hash([supp_nation@0, cust_nation@1, l_year@2], 16), plan_id=12, stage_id=6, stage_resolved=true
+              AggregateExec: mode=Partial, gby=[supp_nation@0 as supp_nation, cust_nation@1 as cust_nation, l_year@2 as l_year], aggr=[sum(shipping.volume)]
+                ProjectionExec: expr=[n_name@0 as supp_nation, n_name@1 as cust_nation, date_part(YEAR, l_shipdate@2) as l_year, l_extendedprice@3 * (1 - l_discount@4) as volume]
+                  HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(n_nationkey@0, c_nationkey@3)], filter=n_name@0 = FRANCE AND n_name@1 = GERMANY OR n_name@0 = GERMANY AND n_name@1 = FRANCE, projection=[n_name@6, n_name@1, l_shipdate@4, l_extendedprice@2, l_discount@3]
+                    FilterExec: n_name@1 = GERMANY OR n_name@1 = FRANCE
+                      StatsExec: rows=25
+                    ExchangeExec: partitioning=None, plan_id=11, stage_id=5, stage_resolved=true, broadcast=true
+                      HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(n_nationkey@0, s_nationkey@0)], projection=[l_extendedprice@3, l_discount@4, l_shipdate@5, c_nationkey@6, n_name@1]
+                        FilterExec: n_name@1 = FRANCE OR n_name@1 = GERMANY
+                          StatsExec: rows=25
+                        HashJoinExec: mode=Partitioned, join_type=Inner, on=[(o_custkey@4, c_custkey@0)], projection=[s_nationkey@0, l_extendedprice@1, l_discount@2, l_shipdate@3, c_nationkey@6]
+                          ExchangeExec: partitioning=Hash([o_custkey@4], 16), plan_id=9, stage_id=3, stage_resolved=true
+                            HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(l_orderkey@1, o_orderkey@0)], projection=[s_nationkey@0, l_extendedprice@2, l_discount@3, l_shipdate@4, o_custkey@6]
+                              ExchangeExec: partitioning=None, plan_id=8, stage_id=2, stage_resolved=true, broadcast=true
+                                HashJoinExec: mode=Partitioned, join_type=Inner, on=[(s_suppkey@0, l_suppkey@1)], projection=[s_nationkey@1, l_orderkey@2, l_extendedprice@4, l_discount@5, l_shipdate@6]
+                                  ExchangeExec: partitioning=Hash([s_suppkey@0], 16), plan_id=5, stage_id=0, stage_resolved=true
+                                    StatsExec: rows=1000000
+                                  ExchangeExec: partitioning=Hash([l_suppkey@1], 16), plan_id=6, stage_id=1, stage_resolved=true
+                                    FilterExec: l_shipdate@4 >= 1995-01-01 AND l_shipdate@4 <= 1996-12-31
+                                      StatsExec: rows=600037902
+                              StatsExec: rows=150000000
+                          ExchangeExec: partitioning=Hash([c_custkey@0], 16), plan_id=10, stage_id=4, stage_resolved=true
+                            StatsExec: rows=15000000

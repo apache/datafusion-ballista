@@ -17,7 +17,7 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-# Regenerate the approved TPC-H distributed plans for the plan-stability suite.
+# Regenerate the approved TPC-H plans (static and adaptive) for the plan-stability suite.
 # Run after an intended planner/plan-shape change, then review the diff.
 set -euo pipefail
 cd "$(dirname "$0")/.."

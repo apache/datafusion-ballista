@@ -19,17 +19,30 @@
 
 # TPC-H plan-stability suite
 
-Freezes each TPC-H query's **distributed staged plan** (static planner, SF100
-table statistics, `target_partitions=16`) as an approved text file under
-`approved/`. The suite fails if a code change alters plan shape — join strategy,
-shuffle/stage boundaries, or broadcast decisions.
+Freezes each TPC-H query's plan under **both planners** (SF100 table statistics,
+`target_partitions=16`) as approved text files under `approved/`. The suite fails
+if a code change alters plan shape — join strategy, shuffle/stage boundaries, or
+broadcast decisions.
+
+| file | planner | what it holds |
+| ---- | ------- | ------------- |
+| `approved/qN.txt` | `DefaultDistributedPlanner` | the staged plan, stage by stage |
+| `approved/qN.adaptive.txt` | `AdaptivePlanner` | the plan the job **ends** on |
+
+The adaptive golden is the plan after the job has run: every stage is resolved,
+so `DynamicJoinSelectionExec` nodes have become concrete joins and coalesce
+decisions are settled. `planner::adaptive_final_plan` drives the replan loop
+without executing anything, reporting each stage's own estimated output as that
+stage's result. A cluster measures real statistics, so it can resolve
+differently — what this pins is that a code change did not move the plan.
 
 - Run: `cargo test -p ballista-scheduler --test tpch_plan_stability`
 - Regenerate after an intended change: `dev/update-tpch-plan-stability.sh`
   (or `BALLISTA_GENERATE_GOLDEN=1 cargo test -p ballista-scheduler --test tpch_plan_stability`),
   then review the diff under `approved/`.
 
-Scope: TPC-H only, static planner, Ballista default config (SortMergeJoin).
+Scope: TPC-H only, Ballista default config (SortMergeJoin under the static
+planner).
 Tables are dataless providers with injected SF100 cardinalities (`fixtures.rs`).
 
 Query SQL is read directly from the canonical `benchmarks/queries/` at test time

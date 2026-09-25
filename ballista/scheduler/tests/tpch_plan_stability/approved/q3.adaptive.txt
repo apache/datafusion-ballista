@@ -1,0 +1,16 @@
+AdaptiveDatafusionExec: is_final=true, plan_id=3, stage_id=2, stage_resolved=true
+  SortPreservingMergeExec: [revenue@1 DESC, o_orderdate@2 ASC NULLS LAST], fetch=10
+    ExchangeExec: partitioning=None, plan_id=4, stage_id=1, stage_resolved=true
+      ProjectionExec: expr=[l_orderkey@0 as l_orderkey, sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@3 as revenue, o_orderdate@1 as o_orderdate, o_shippriority@2 as o_shippriority]
+        SortExec: TopK(fetch=10), expr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@3 DESC, o_orderdate@1 ASC NULLS LAST], preserve_partitioning=[true]
+          AggregateExec: mode=FinalPartitioned, gby=[l_orderkey@0 as l_orderkey, o_orderdate@1 as o_orderdate, o_shippriority@2 as o_shippriority], aggr=[sum(lineitem.l_extendedprice * 1 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+            ExchangeExec: partitioning=Hash([l_orderkey@0, o_orderdate@1, o_shippriority@2], 16), plan_id=2, stage_id=0, stage_resolved=true
+              AggregateExec: mode=Partial, gby=[l_orderkey@2 as l_orderkey, o_orderdate@0 as o_orderdate, o_shippriority@1 as o_shippriority], aggr=[sum(lineitem.l_extendedprice * 1 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+                HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(o_orderkey@0, l_orderkey@0)], projection=[o_orderdate@1, o_shippriority@2, l_orderkey@3, l_extendedprice@4, l_discount@5]
+                  HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(c_custkey@0, o_custkey@1)], projection=[o_orderkey@1, o_orderdate@3, o_shippriority@4]
+                    FilterExec: c_mktsegment@1 = BUILDING, projection=[c_custkey@0]
+                      StatsExec: rows=15000000
+                    FilterExec: o_orderdate@2 < 1995-03-15
+                      StatsExec: rows=150000000
+                  FilterExec: l_shipdate@3 > 1995-03-15, projection=[l_orderkey@0, l_extendedprice@1, l_discount@2]
+                    StatsExec: rows=600037902
