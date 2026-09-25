@@ -94,9 +94,10 @@ jobs:
       # Update output format to enable automatic inline annotations.
       - name: Run Ruff
         run: |
+          # Lint the whole repo; ruff uses the nearest pyproject.toml or ruff.toml per file.
           cd python
-          uv run --no-project ruff check --output-format=github .
-          uv run --no-project ruff format --check .
+          uv run --no-project ruff check --output-format=github ..
+          uv run --no-project ruff format --check ..
 
   generate-license:
     if: github.event_name != 'pull_request'
