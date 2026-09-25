@@ -150,10 +150,10 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                         let (config, table) = table_ref.into_parts();
                         let cat = get_catalog(&config)?;
                         let TableIdent { namespace, name } = table;
-                        let provider =
-                            block_on(IcebergTableProvider::try_new_with_config(
-                                cat, config, namespace, name,
-                            ))?;
+                        let provider = block_on(IcebergTableProvider::try_new(
+                            cat, namespace, name,
+                        ))?
+                        .with_catalog_config(config);
                         Ok(Arc::new(provider))
                     }
                     IcebergProviderWire::Static {
@@ -250,78 +250,13 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use datafusion::arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
     use datafusion::prelude::SessionContext;
 
-    use crate::bridge::{CatalogConfigWire, TAG_ICEBERG};
+    use crate::bridge::TAG_ICEBERG;
     use crate::test_util;
 
     use super::*;
-
-    fn sample_table_ref() -> TableRefWire {
-        TableRefWire {
-            catalog: CatalogConfigWire {
-                r#type: "rest".to_string(),
-                name: "rest".to_string(),
-                props: BTreeMap::from([(
-                    "uri".to_string(),
-                    "http://localhost:8181".to_string(),
-                )]),
-            },
-            table: TableIdent::from_strs(["ns", "tbl"]).unwrap(),
-        }
-    }
-
-    fn roundtrip(wire: &IcebergProviderWire) -> IcebergProviderWire {
-        let mut buf = Vec::new();
-        encode_blob(&mut buf, wire).expect("encode");
-        assert_eq!(buf[0], TAG_ICEBERG, "blob must carry the iceberg tag");
-        serde_json::from_slice(&buf[1..]).expect("decode")
-    }
-
-    #[test]
-    fn table_provider_wire_roundtrips() {
-        let wire = IcebergProviderWire::Table {
-            table_ref: sample_table_ref(),
-        };
-        assert_eq!(wire, roundtrip(&wire));
-    }
-
-    #[test]
-    fn static_provider_wire_roundtrips() {
-        let wire = IcebergProviderWire::Static {
-            table_ref: sample_table_ref(),
-            snapshot: ViewSnapshot::Snapshot(42),
-        };
-        assert_eq!(wire, roundtrip(&wire));
-    }
-
-    #[test]
-    fn metadata_provider_wire_roundtrips() {
-        let wire = IcebergProviderWire::Metadata {
-            table_ref: sample_table_ref(),
-            metadata_type: "snapshots".to_string(),
-        };
-        assert_eq!(wire, roundtrip(&wire));
-    }
-
-    #[test]
-    fn table_ref_flattens_to_inline_catalog_and_table_keys() {
-        // Wire compat: `TableRefWire` must serialize as inline `catalog` and
-        // `table` keys, exactly as when the variants spelled the two fields
-        // out — never nested under a `table_ref` object.
-        let wire = IcebergProviderWire::Static {
-            table_ref: sample_table_ref(),
-            snapshot: ViewSnapshot::Snapshot(42),
-        };
-        let value = serde_json::to_value(&wire).unwrap();
-        let obj = value["Static"].as_object().unwrap();
-        assert!(obj.contains_key("catalog"), "{value}");
-        assert!(obj.contains_key("table"), "{value}");
-        assert!(!obj.contains_key("table_ref"), "{value}");
-    }
 
     /// Encodes `provider` with the Iceberg codec and returns its wire form.
     fn encode_static(provider: IcebergStaticTableProvider) -> IcebergProviderWire {

@@ -43,8 +43,9 @@ use datafusion_iceberg::{
     to_datafusion_error,
 };
 use iceberg::inspect::MetadataTableType;
+use iceberg::spec::TableMetadata;
 use iceberg::table::Table;
-use iceberg::{Catalog, Error, ErrorKind, TableIdent};
+use iceberg::{Catalog, Error, ErrorKind, Runtime, TableIdent};
 use iceberg_storage_opendal::OpenDalResolvingStorageFactory;
 use serde::{Deserialize, Serialize};
 
@@ -66,7 +67,7 @@ fn missing_config(node: &str, remedy: &str) -> DataFusionError {
 pub(crate) fn missing_table_config_err(node: &str) -> DataFusionError {
     missing_config(
         node,
-        "register the table with IcebergTableProvider::try_new_with_config (see \
+        "register the table with IcebergTableProvider::with_catalog_config (see \
          iceberg_ballista::register_iceberg_table)",
     )
 }
@@ -160,7 +161,7 @@ static CATALOGS: LazyLock<Mutex<HashMap<CatalogConfigWire, Arc<dyn Catalog>>>> =
 pub(crate) async fn build_catalog(
     config: &IcebergCatalogConfig,
 ) -> Result<Arc<dyn Catalog>, DataFusionError> {
-    iceberg_catalog_loader::load(&config.r#type)
+    iceberg_catalog_loader::load(&config.catalog_type)
         .map_err(to_datafusion_error)?
         .with_storage_factory(Arc::new(OpenDalResolvingStorageFactory::new()))
         .load(config.name.clone(), config.props.clone())
@@ -236,6 +237,48 @@ pub(crate) fn load_table(
     ident: &TableIdent,
 ) -> Result<Table, DataFusionError> {
     Ok(load_table_with_catalog(config, ident)?.1)
+}
+
+/// Loads `ident` as described by the metadata file at `metadata_location`,
+/// returning the catalog alongside it like [`load_table_with_catalog`].
+///
+/// A write is planned against one version of the table: its input is checked
+/// against that schema, and its partition values are computed with that
+/// partition spec. The nodes that execute it must see the same version, not
+/// whatever the catalog serves when each task decodes, or a concurrent schema
+/// or spec change would be written into files the plan was never checked
+/// against.
+///
+/// The table is still loaded from the catalog first, for its `FileIO`: the
+/// catalog may vend storage credentials the config alone does not carry. When
+/// the catalog has moved on, the planned metadata file is read through that
+/// `FileIO`. Metadata files are immutable, so this is exactly the planned
+/// version. An encrypted table cannot be rebuilt this way (there is no KMS
+/// client to pass on) and fails instead.
+pub(crate) fn load_table_at(
+    config: &IcebergCatalogConfig,
+    ident: &TableIdent,
+    metadata_location: &str,
+) -> Result<(Arc<dyn Catalog>, Table), DataFusionError> {
+    let (catalog, current) = load_table_with_catalog(config, ident)?;
+    if current.metadata_location() == Some(metadata_location) {
+        return Ok((catalog, current));
+    }
+    // Built on the catalog runtime, like the tables the catalog loads.
+    let planned = block_on(async {
+        let metadata =
+            TableMetadata::read_from(current.file_io(), metadata_location).await?;
+        Table::builder()
+            .metadata(metadata)
+            .metadata_location(metadata_location)
+            .identifier(ident.clone())
+            .file_io(current.file_io().clone())
+            .readonly(current.readonly())
+            .runtime(Runtime::current())
+            .build()
+    })
+    .map_err(to_datafusion_error)?;
+    Ok((catalog, planned))
 }
 
 /// Most recent snapshot-pinned [`Table`] per (catalog, table), serving scan
@@ -314,8 +357,7 @@ pub(crate) fn build_metadata_provider(
     let table_obj = load_table(&config, &table)?;
     let kind =
         MetadataTableType::try_from(metadata_type).map_err(DataFusionError::Internal)?;
-    Ok(IcebergMetadataTableProvider::new(table_obj, kind)
-        .with_catalog_config(Some(config)))
+    Ok(IcebergMetadataTableProvider::new(table_obj, kind).with_catalog_config(config))
 }
 
 // ---------------------------------------------------------------------------
@@ -372,39 +414,25 @@ pub(crate) fn split_frame<'a>(
 /// serde-aware in the iceberg crate to avoid a serde dependency there).
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub(crate) struct CatalogConfigWire {
-    pub r#type: String,
+    pub catalog_type: String,
     pub name: String,
     // BTreeMap (not HashMap) so the struct can derive Hash for the catalog
     // cache, and so encode→decode→encode round-trips to identical bytes.
     pub props: BTreeMap<String, String>,
 }
 
-/// Shows the property keys but not their values, which often hold credentials,
-/// like [`IcebergCatalogConfig`]'s `Debug`.
+/// Redacted like [`IcebergCatalogConfig`]'s `Debug`, which it defers to: the
+/// property values often hold credentials.
 impl fmt::Debug for CatalogConfigWire {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CatalogConfigWire")
-            .field("type", &self.r#type)
-            .field("name", &self.name)
-            .field("props", &RedactedProps(&self.props))
-            .finish()
-    }
-}
-
-struct RedactedProps<'a>(&'a BTreeMap<String, String>);
-
-impl fmt::Debug for RedactedProps<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_map()
-            .entries(self.0.keys().map(|key| (key, format_args!("<redacted>"))))
-            .finish()
+        fmt::Debug::fmt(&IcebergCatalogConfig::from(self.clone()), f)
     }
 }
 
 impl From<&IcebergCatalogConfig> for CatalogConfigWire {
     fn from(c: &IcebergCatalogConfig) -> Self {
         Self {
-            r#type: c.r#type.clone(),
+            catalog_type: c.catalog_type.clone(),
             name: c.name.clone(),
             props: c
                 .props
@@ -417,7 +445,7 @@ impl From<&IcebergCatalogConfig> for CatalogConfigWire {
 
 impl From<CatalogConfigWire> for IcebergCatalogConfig {
     fn from(p: CatalogConfigWire) -> Self {
-        IcebergCatalogConfig::new(p.r#type, p.name, p.props.into_iter().collect())
+        IcebergCatalogConfig::new(p.catalog_type, p.name, p.props.into_iter().collect())
     }
 }
 
@@ -505,7 +533,7 @@ mod tests {
         );
         assert_eq!(
             format!("{:?}", CatalogConfigWire::from(&config)),
-            r#"CatalogConfigWire { type: "rest", name: "rest", props: {"s3.secret-access-key": <redacted>, "uri": <redacted>} }"#
+            r#"IcebergCatalogConfig { catalog_type: "rest", name: "rest", props: {"s3.secret-access-key": <redacted>, "uri": <redacted>} }"#
         );
     }
 

@@ -725,14 +725,14 @@ async fn distributed_time_travel_pins_snapshot_schema() {
 
     // A provider registered before the change still exposes the schema it was
     // built with, so writing the new column needs a freshly built provider.
-    let evolved = IcebergTableProvider::try_new_with_config(
+    let evolved = IcebergTableProvider::try_new(
         catalog.clone(),
-        catalog_config.clone(),
         namespace.clone(),
         table_name.clone(),
     )
     .await
-    .expect("build evolved provider");
+    .expect("build evolved provider")
+    .with_catalog_config(catalog_config.clone());
     ctx.register_table("events_v2", Arc::new(evolved))
         .expect("register evolved provider");
 
@@ -834,14 +834,14 @@ async fn distributed_time_travel_pins_snapshot_schema() {
         .await
         .expect("commit delete column");
 
-    let dropped = IcebergTableProvider::try_new_with_config(
+    let dropped = IcebergTableProvider::try_new(
         catalog.clone(),
-        catalog_config.clone(),
         namespace.clone(),
         table_name.clone(),
     )
     .await
-    .expect("build provider after drop");
+    .expect("build provider after drop")
+    .with_catalog_config(catalog_config.clone());
     ctx.register_table("events_v3", Arc::new(dropped))
         .expect("register provider after drop");
 
@@ -942,4 +942,109 @@ async fn distributed_view_of_empty_table_stays_empty() {
         ["+---+", "| n |", "+---+", "| 0 |", "+---+"],
         &run_sql(&ctx, "SELECT count(*) AS n FROM before_insert").await
     );
+}
+
+/// A write runs against the table version it was planned against, even when
+/// the table changes between scheduler planning and executor decode.
+///
+/// The scheduler checks the INSERT's input against the table's schema and
+/// computes partition values with its partition spec. If executors rebuilt the
+/// write from whatever the catalog serves when they decode, a concurrent schema
+/// or spec change would be written into files the plan was never checked
+/// against (and a spec change would stamp the new spec id onto old-spec
+/// partition values, which the commit cannot detect). With the planned version,
+/// the write behaves as in plain DataFusion.
+///
+/// Drives the codec directly: the window between planning and decode is too
+/// narrow to hit reliably through a cluster.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn write_decodes_against_the_planned_table_version() {
+    use ballista::datafusion::physical_plan::{ExecutionPlan, collect};
+    use datafusion_iceberg::physical_plan::{IcebergCommitExec, IcebergWriteExec};
+    use datafusion_proto::bytes::{
+        physical_plan_from_bytes_with_extension_codec,
+        physical_plan_to_bytes_with_extension_codec,
+    };
+    use iceberg_ballista::IcebergPhysicalCodec;
+
+    /// Schema ids of the tables every write and commit node holds.
+    fn schema_ids(plan: &Arc<dyn ExecutionPlan>, out: &mut Vec<i32>) {
+        if let Some(write) = plan.downcast_ref::<IcebergWriteExec>() {
+            out.push(write.table().metadata().current_schema_id());
+        }
+        if let Some(commit) = plan.downcast_ref::<IcebergCommitExec>() {
+            out.push(commit.table().metadata().current_schema_id());
+        }
+        for child in plan.children() {
+            schema_ids(child, out);
+        }
+    }
+
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let fixture = IcebergFixture::start().await;
+    let props = fixture.props();
+    let table_name = "planned".to_string();
+    let namespace = create_table(&props, &table_name).await;
+    let table_ident = TableIdent::new(namespace.clone(), table_name.clone());
+    let catalog: Arc<dyn Catalog> = Arc::new(fixture::rest_catalog(&props).await);
+
+    let ctx = SessionContext::new();
+    let provider = IcebergTableProvider::try_new(catalog.clone(), namespace, table_name)
+        .await
+        .expect("build provider")
+        .with_catalog_config(IcebergCatalogConfig::new("rest", "rest", props));
+    ctx.register_table("t", Arc::new(provider))
+        .expect("register provider");
+
+    // Scheduler: plan and encode the INSERT against schema 0, {id, name}.
+    let plan = ctx
+        .sql("INSERT INTO t VALUES (1, 'alice')")
+        .await
+        .expect("plan insert")
+        .create_physical_plan()
+        .await
+        .expect("physical plan");
+    let mut planned = vec![];
+    schema_ids(&plan, &mut planned);
+    assert_eq!(
+        planned,
+        [0, 0],
+        "one write and one commit, planned at schema 0"
+    );
+
+    let codec = IcebergPhysicalCodec::default();
+    let bytes =
+        physical_plan_to_bytes_with_extension_codec(plan, &codec).expect("encode plan");
+
+    // A concurrent schema change lands before the executors decode.
+    let table = catalog.load_table(&table_ident).await.expect("load table");
+    let tx = Transaction::new(&table);
+    let tx = tx
+        .update_schema()
+        .add_column(AddColumn::optional(
+            "email",
+            Type::Primitive(PrimitiveType::String),
+        ))
+        .apply(tx)
+        .expect("apply schema update");
+    tx.commit(catalog.as_ref()).await.expect("commit schema");
+
+    // Executor: decode. Every node must hold the planned version, not the
+    // catalog's current one.
+    let decoded =
+        physical_plan_from_bytes_with_extension_codec(&bytes, &ctx.task_ctx(), &codec)
+            .expect("decode plan");
+    let mut executed = vec![];
+    schema_ids(&decoded, &mut executed);
+    assert_eq!(executed, planned);
+
+    // And the write still commits on top of the evolved table.
+    collect(decoded, ctx.task_ctx()).await.expect("run write");
+    let table = catalog
+        .load_table(&table_ident)
+        .await
+        .expect("reload table");
+    assert_eq!(table.metadata().snapshots().count(), 1);
+    assert_eq!(table.metadata().current_schema_id(), 1);
 }

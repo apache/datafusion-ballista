@@ -111,10 +111,10 @@ pub async fn register_iceberg_table(
     table: impl Into<String>,
 ) -> Result<(), DataFusionError> {
     let catalog = bridge::build_catalog(&config).await?;
-    let provider = datafusion_iceberg::IcebergTableProvider::try_new_with_config(
-        catalog, config, namespace, table,
-    )
-    .await?;
+    let provider =
+        datafusion_iceberg::IcebergTableProvider::try_new(catalog, namespace, table)
+            .await?
+            .with_catalog_config(config);
     ctx.register_table(register_name, Arc::new(provider))?;
     Ok(())
 }

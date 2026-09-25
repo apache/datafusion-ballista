@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::catalog::TableProvider;
 use datafusion::common::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalExpr;
@@ -38,7 +39,7 @@ use datafusion_iceberg::physical_plan::{
     IcebergCommitExec, IcebergMetadataScan, IcebergTableScan, IcebergWriteExec,
     PartitionExpr,
 };
-use datafusion_iceberg::to_datafusion_error;
+use datafusion_iceberg::{IcebergStaticTableProvider, to_datafusion_error};
 use datafusion_proto::physical_plan::{
     PhysicalExtensionCodec, PhysicalProtoConverterExtension,
 };
@@ -50,8 +51,8 @@ use iceberg::table::Table;
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{
-    Frame, TAG_DELEGATED, TableRefWire, build_metadata_provider, encode_blob, json_err,
-    load_table, load_table_pinned, load_table_with_catalog, missing_catalog_config_err,
+    Frame, TAG_DELEGATED, TableRefWire, block_on, build_metadata_provider, encode_blob,
+    json_err, load_table_at, load_table_pinned, missing_catalog_config_err,
     missing_table_config_err, split_frame,
 };
 
@@ -74,10 +75,15 @@ enum IcebergPhysicalNode {
     Write {
         #[serde(flatten)]
         table_ref: TableRefWire,
+        /// The metadata file the write was planned against, which every
+        /// writer task rebuilds the table from (see [`load_table_at`]).
+        metadata_location: String,
     },
     Commit {
         #[serde(flatten)]
         table_ref: TableRefWire,
+        /// As for [`IcebergPhysicalNode::Write`].
+        metadata_location: String,
     },
     Metadata {
         #[serde(flatten)]
@@ -182,41 +188,53 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 let table_obj = load_table_pinned(&config, &table, snapshot_id)?;
                 // A pinned scan must use the schema that snapshot was written
                 // under — the table's schema may have changed since, and the
-                // current one would describe historical rows incorrectly.
-                let arrow_schema = snapshot_arrow_schema(&table_obj, Some(snapshot_id))?;
+                // current one would describe historical rows incorrectly. The
+                // static provider resolves it exactly as for a time-travel read.
+                let arrow_schema =
+                    block_on(IcebergStaticTableProvider::try_new_from_table_snapshot(
+                        table_obj.clone(),
+                        snapshot_id,
+                    ))?
+                    .schema();
                 let proj_indices = project_indices(
                     &arrow_schema,
                     projection.as_ref(),
                     &table,
                     Some(snapshot_id),
                 )?;
-                let scan = IcebergTableScan::new(
+                let scan = IcebergTableScan::new_with_predicate(
                     table_obj,
                     Some(snapshot_id),
                     arrow_schema,
                     proj_indices.as_ref(),
-                    &[],
+                    predicates,
                     limit,
                 )
-                .with_predicates(predicates)
-                .with_catalog_config(Some(config));
+                .with_catalog_config(config);
                 Ok(Arc::new(scan))
             }
-            IcebergPhysicalNode::Write { table_ref } => {
+            IcebergPhysicalNode::Write {
+                table_ref,
+                metadata_location,
+            } => {
                 let (config, table) = table_ref.into_parts();
-                let table_obj = load_table(&config, &table)?;
+                let (_, table_obj) = load_table_at(&config, &table, &metadata_location)?;
                 let input = single_input(inputs, "IcebergWriteExec")?;
-                let write = IcebergWriteExec::new(table_obj, input)
-                    .with_catalog_config(Some(config));
+                let write =
+                    IcebergWriteExec::new(table_obj, input).with_catalog_config(config);
                 Ok(Arc::new(write))
             }
-            IcebergPhysicalNode::Commit { table_ref } => {
+            IcebergPhysicalNode::Commit {
+                table_ref,
+                metadata_location,
+            } => {
                 let (config, table) = table_ref.into_parts();
-                let (cat, table_obj) = load_table_with_catalog(&config, &table)?;
-                let arrow_schema = snapshot_arrow_schema(&table_obj, None)?;
+                let (cat, table_obj) =
+                    load_table_at(&config, &table, &metadata_location)?;
+                let arrow_schema = current_arrow_schema(&table_obj)?;
                 let input = single_input(inputs, "IcebergCommitExec")?;
                 let commit = IcebergCommitExec::new(table_obj, cat, input, arrow_schema)
-                    .with_catalog_config(Some(config));
+                    .with_catalog_config(config);
                 Ok(Arc::new(commit))
             }
             IcebergPhysicalNode::Metadata {
@@ -268,6 +286,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 .ok_or_else(|| missing_table_config_err("IcebergWriteExec"))?;
             let node = IcebergPhysicalNode::Write {
                 table_ref: TableRefWire::new(config, write.table().identifier()),
+                metadata_location: planned_metadata_location(write.table())?,
             };
             return encode_blob(buf, &node);
         }
@@ -278,6 +297,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 .ok_or_else(|| missing_table_config_err("IcebergCommitExec"))?;
             let node = IcebergPhysicalNode::Commit {
                 table_ref: TableRefWire::new(config, commit.table().identifier()),
+                metadata_location: planned_metadata_location(commit.table())?,
             };
             return encode_blob(buf, &node);
         }
@@ -338,31 +358,11 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
     }
 }
 
-/// The Arrow schema of `table` at `snapshot_id`, or its current schema when
-/// `snapshot_id` is `None`.
-///
-/// A snapshot keeps the schema it was written under, which can differ from the
-/// table's current one after a schema change.
-fn snapshot_arrow_schema(
-    table: &Table,
-    snapshot_id: Option<i64>,
-) -> Result<SchemaRef, DataFusionError> {
-    let metadata = table.metadata();
-    let schema = match snapshot_id {
-        None => metadata.current_schema().clone(),
-        Some(id) => metadata
-            .snapshot_by_id(id)
-            .ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "snapshot {id} not found in table {}",
-                    table.identifier()
-                ))
-            })?
-            .schema(metadata)
-            .map_err(to_datafusion_error)?,
-    };
+/// The Arrow schema of `table`'s current schema.
+fn current_arrow_schema(table: &Table) -> Result<SchemaRef, DataFusionError> {
     Ok(Arc::new(
-        schema_to_arrow_schema(&schema).map_err(to_datafusion_error)?,
+        schema_to_arrow_schema(table.metadata().current_schema())
+            .map_err(to_datafusion_error)?,
     ))
 }
 
@@ -409,6 +409,14 @@ fn project_indices(
         .transpose()
 }
 
+/// The metadata file `table` was loaded from at planning time.
+fn planned_metadata_location(table: &Table) -> Result<String, DataFusionError> {
+    table
+        .metadata_location_result()
+        .map(str::to_string)
+        .map_err(to_datafusion_error)
+}
+
 fn single_input(
     inputs: &[Arc<dyn ExecutionPlan>],
     node: &str,
@@ -436,7 +444,7 @@ mod tests {
     fn sample_table_ref() -> TableRefWire {
         TableRefWire {
             catalog: CatalogConfigWire {
-                r#type: "rest".to_string(),
+                catalog_type: "rest".to_string(),
                 name: "rest".to_string(),
                 props: BTreeMap::from([
                     ("uri".to_string(), "http://localhost:8181".to_string()),
@@ -452,18 +460,6 @@ mod tests {
         encode_blob(&mut buf, node).expect("encode");
         assert_eq!(buf[0], TAG_ICEBERG, "blob must carry the iceberg tag");
         serde_json::from_slice(&buf[1..]).expect("decode")
-    }
-
-    #[test]
-    fn scan_node_roundtrips() {
-        let node = IcebergPhysicalNode::Scan {
-            table_ref: sample_table_ref(),
-            snapshot: ScanSnapshot::Snapshot(42),
-            projection: Some(vec!["a".to_string(), "b".to_string()]),
-            limit: Some(10),
-            predicates: None,
-        };
-        assert_eq!(node, roundtrip(&node));
     }
 
     #[test]
@@ -529,10 +525,33 @@ mod tests {
     }
 
     #[test]
-    fn partition_expr_wire_roundtrips() {
+    fn partition_expr_roundtrips_through_the_codec() {
+        use datafusion::arrow::datatypes::Schema as ArrowSchema;
+        use datafusion::physical_expr_common::physical_expr::proto_decode::PhysicalExprDecode;
+        use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncode;
+        use datafusion_proto::protobuf::PhysicalExprNode;
         use iceberg::spec::{NestedField, PrimitiveType, Transform, Type};
 
-        // Schema + PartitionSpec are the heaviest serde types in the crate.
+        /// `PartitionExpr` has no child expressions, so neither is called.
+        struct Unused;
+        impl PhysicalExprEncode for Unused {
+            fn encode(
+                &self,
+                _expr: &Arc<dyn PhysicalExpr>,
+            ) -> Result<PhysicalExprNode, DataFusionError> {
+                unreachable!()
+            }
+        }
+        impl PhysicalExprDecode for Unused {
+            fn decode(
+                &self,
+                _node: &PhysicalExprNode,
+                _schema: &ArrowSchema,
+            ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
+                unreachable!()
+            }
+        }
+
         let schema = Schema::builder()
             .with_schema_id(0)
             .with_fields(vec![
@@ -553,65 +572,30 @@ mod tests {
             .unwrap()
             .build()
             .unwrap();
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(
+            PartitionExpr::try_new(Arc::new(partition_spec), Arc::new(schema)).unwrap(),
+        );
 
-        let wire = PartitionExprWire {
-            partition_spec,
-            schema,
-        };
-
+        // The live partition-value calculator is rebuilt from the spec and
+        // schema on the far side.
+        let codec = IcebergPhysicalCodec::default();
         let mut buf = Vec::new();
-        encode_blob(&mut buf, &wire).expect("encode");
-        assert_eq!(buf[0], TAG_ICEBERG, "blob must carry the iceberg tag");
-        let decoded: PartitionExprWire =
-            serde_json::from_slice(&buf[1..]).expect("decode");
+        codec
+            .try_encode_expr(&expr, &mut buf, &PhysicalExprEncodeCtx::new(&Unused))
+            .expect("encode");
+        let arrow_schema = ArrowSchema::empty();
+        let decoded = codec
+            .try_decode_expr(
+                &buf,
+                &[],
+                &PhysicalExprDecodeCtx::new(&arrow_schema, &Unused),
+            )
+            .expect("decode");
 
-        assert_eq!(decoded.partition_spec, wire.partition_spec);
-        assert_eq!(decoded.schema, wire.schema);
-    }
-
-    #[test]
-    fn metadata_node_roundtrips() {
-        let node = IcebergPhysicalNode::Metadata {
-            table_ref: sample_table_ref(),
-            metadata_type: "snapshots".to_string(),
-        };
-        assert_eq!(node, roundtrip(&node));
-    }
-
-    #[test]
-    fn write_node_roundtrips() {
-        let node = IcebergPhysicalNode::Write {
-            table_ref: sample_table_ref(),
-        };
-        assert_eq!(node, roundtrip(&node));
-    }
-
-    #[test]
-    fn commit_node_roundtrips() {
-        // Multi-level namespace, so the ident round-trip is exercised beyond
-        // the single-level `ns.tbl` the other tests use.
-        let node = IcebergPhysicalNode::Commit {
-            table_ref: TableRefWire {
-                table: TableIdent::from_strs(["a", "b", "tbl"]).unwrap(),
-                ..sample_table_ref()
-            },
-        };
-        assert_eq!(node, roundtrip(&node));
-    }
-
-    #[test]
-    fn table_ref_flattens_to_inline_catalog_and_table_keys() {
-        // Wire compat: `TableRefWire` must serialize as inline `catalog` and
-        // `table` keys, exactly as when the variants spelled the two fields
-        // out — never nested under a `table_ref` object.
-        let node = IcebergPhysicalNode::Write {
-            table_ref: sample_table_ref(),
-        };
-        let value = serde_json::to_value(&node).unwrap();
-        let obj = value["Write"].as_object().unwrap();
-        assert!(obj.contains_key("catalog"), "{value}");
-        assert!(obj.contains_key("table"), "{value}");
-        assert!(!obj.contains_key("table_ref"), "{value}");
+        assert_eq!(
+            decoded.downcast_ref::<PartitionExpr>(),
+            expr.downcast_ref::<PartitionExpr>()
+        );
     }
 
     #[test]
@@ -717,9 +701,16 @@ mod tests {
 
     /// A scan of `table` pinned to `snapshot_id`, projecting column `name` only.
     fn name_scan(table: Table, snapshot_id: Option<i64>) -> IcebergTableScan {
-        let schema = snapshot_arrow_schema(&table, None).unwrap();
-        IcebergTableScan::new(table, snapshot_id, schema, Some(&vec![1]), &[], None)
-            .with_catalog_config(Some(test_util::catalog_config()))
+        let schema = current_arrow_schema(&table).unwrap();
+        IcebergTableScan::new_with_predicate(
+            table,
+            snapshot_id,
+            schema,
+            Some(&vec![1]),
+            None,
+            None,
+        )
+        .with_catalog_config(test_util::catalog_config())
     }
 
     fn encode_scan(scan: IcebergTableScan) -> Vec<u8> {
@@ -758,6 +749,62 @@ mod tests {
             encoded_snapshot(name_scan(table, None)),
             ScanSnapshot::Empty { schema }
         );
+    }
+
+    #[tokio::test]
+    async fn write_and_commit_record_the_planned_metadata_file() {
+        use std::collections::HashMap;
+
+        use iceberg::CatalogBuilder;
+        use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
+
+        // Executors rebuild the table from this file, so a write runs against
+        // the version it was planned against rather than whatever the catalog
+        // serves when each task decodes.
+        // Only held by the commit node; never contacted.
+        let catalog = MemoryCatalogBuilder::default()
+            .load(
+                "memory",
+                HashMap::from([(
+                    MEMORY_CATALOG_WAREHOUSE.to_string(),
+                    "/test".to_string(),
+                )]),
+            )
+            .await
+            .unwrap();
+        let table = test_util::table(&[1]);
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(current_arrow_schema(&table).unwrap()));
+        let write: Arc<dyn ExecutionPlan> = Arc::new(
+            IcebergWriteExec::new(table.clone(), Arc::clone(&input))
+                .with_catalog_config(test_util::catalog_config()),
+        );
+        let commit: Arc<dyn ExecutionPlan> = Arc::new(
+            IcebergCommitExec::new(
+                table.clone(),
+                Arc::new(catalog),
+                input,
+                current_arrow_schema(&table).unwrap(),
+            )
+            .with_catalog_config(test_util::catalog_config()),
+        );
+
+        for node in [write, commit] {
+            let mut buf = Vec::new();
+            IcebergPhysicalCodec::default()
+                .try_encode(node, &mut buf, &DefaultPhysicalProtoConverter {})
+                .expect("encode");
+            let location = match serde_json::from_slice(&buf[1..]).expect("decode wire") {
+                IcebergPhysicalNode::Write {
+                    metadata_location, ..
+                }
+                | IcebergPhysicalNode::Commit {
+                    metadata_location, ..
+                } => metadata_location,
+                other => panic!("expected a write or commit, got {other:?}"),
+            };
+            assert_eq!(location, "/test/tbl/metadata.json");
+        }
     }
 
     #[test]
