@@ -515,20 +515,39 @@ impl DynamicJoinSelectionExec {
         // a fixed width, so one `Utf8` column loses it for good.
         //
         // A row count on its own says nothing about how much data a broadcast
-        // would replicate to every probe task, so estimate the size and hold it
-        // to the same byte threshold. The row threshold is kept as an additional
-        // ceiling, so this can only ever reject a broadcast the row rule would
-        // have allowed, never introduce a new one.
+        // would replicate to every probe task, so estimate the size from the
+        // schema and hold that to the same byte threshold.
+        //
+        // `threshold_num_rows` is the fallback for when even the estimate
+        // cannot be formed, which is what `broadcast_join_threshold_rows`
+        // documents itself as. It is deliberately *not* an additional ceiling
+        // over the estimate: a row count is a poor proxy for broadcast cost
+        // once the width is known, and applying both vetoed narrow build sides
+        // that the byte budget comfortably allows — a 1M-row `i64` key column
+        // is 8 MB against a 128 MiB default budget. `0` still disables this
+        // whole row-count path, matching the config's documented behaviour.
+        if threshold_num_rows == 0 {
+            return false;
+        }
+
         let Some(num_rows) = stats.num_rows.get_value().copied() else {
             return false;
         };
 
-        if num_rows == 0 || num_rows >= threshold_num_rows {
+        if num_rows == 0 {
             return false;
         }
 
-        estimate_output_byte_size(&plan.schema(), num_rows, &stats.column_statistics)
-            .is_some_and(|estimated| estimated < threshold_byte_size)
+        match estimate_output_byte_size(
+            &plan.schema(),
+            num_rows,
+            &stats.column_statistics,
+        ) {
+            Some(estimated) => estimated < threshold_byte_size,
+            // The estimate only fails by overflowing, so the build side is far
+            // past any sane budget. The row rule then rejects it.
+            None => num_rows < threshold_num_rows,
+        }
     }
 
     /// Whether both inputs already satisfy the distribution this join needs.
@@ -949,16 +968,58 @@ mod tests {
         assert!(supports_collect(&under));
     }
 
-    // The row threshold is retained as a ceiling, so a row count at or above it
-    // is rejected without regard to how narrow the rows are.
+    // The row threshold is a fallback, not a ceiling over the byte estimate: a
+    // row count at or above it is fine when the rows are narrow enough that the
+    // estimate stays inside the byte budget. 1M `Int8` rows is 1 MB against a
+    // 10 MB budget, and rejecting that replicates nothing a probe task cannot
+    // hold.
     #[test]
-    fn row_threshold_remains_a_ceiling() {
+    fn row_threshold_does_not_veto_an_in_budget_estimate() {
         let plan = sizeless_stats_exec(
             ROW_THRESHOLD,
             vec![Field::new("a", DataType::Int8, false)],
         );
 
+        assert!(supports_collect(&plan));
+    }
+
+    // The byte estimate stays authoritative in the other direction too: the same
+    // row count over wide rows is rejected even though the row threshold alone
+    // would have been the only guard consulted.
+    #[test]
+    fn byte_estimate_still_rejects_wide_rows_at_the_row_threshold() {
+        let plan = sizeless_stats_exec(
+            ROW_THRESHOLD,
+            vec![Field::new("name", DataType::Utf8, false)],
+        );
+
         assert!(!supports_collect(&plan));
+    }
+
+    // The row threshold decides when no estimate can be formed at all, which
+    // happens only when the row count is large enough to overflow the width
+    // multiplication. Such a side is far past any budget and must be rejected.
+    #[test]
+    fn row_threshold_decides_when_the_estimate_overflows() {
+        let plan = sizeless_stats_exec(
+            usize::MAX,
+            vec![Field::new("x", DataType::Int32, false)],
+        );
+
+        assert!(!supports_collect(&plan));
+    }
+
+    // A row threshold of 0 still disables the whole row-count path, which is
+    // what the config documents it as doing.
+    #[test]
+    fn zero_row_threshold_disables_the_rows_only_path() {
+        let plan = sizeless_stats_exec(10, vec![Field::new("x", DataType::Int32, false)]);
+
+        assert!(!DynamicJoinSelectionExec::supports_collect_by_thresholds(
+            plan.as_ref(),
+            BYTE_THRESHOLD,
+            0,
+        ));
     }
 
     // Statistics with neither a size nor a row count carry no evidence that the
@@ -1195,9 +1256,9 @@ mod tests {
     // DataFusion's `hash_join_single_partition_threshold_rows`.
     #[test]
     fn broadcast_threshold_rows_drives_fallback_decision() {
-        // Byte-size is Absent on both sides, so only the row threshold applies.
-        // Smaller side = 100 rows. A generous byte threshold keeps the byte
-        // guard open so the row fallback is what decides.
+        // Byte-size is Absent on both sides, so the schema-derived estimate is
+        // what decides and the row threshold only has to be non-zero to keep
+        // that path open. Smaller side = 100 rows of `Int32`, ~400 bytes.
         assert!(
             is_collected(&run_to_actual_join(
                 stats_exec_rows_only(100),
@@ -1208,10 +1269,12 @@ mod tests {
                 200,
                 true,
             )),
-            "smaller side (100 rows) is under a 200-row threshold and must collect"
+            "smaller side estimates ~400 bytes, well under the byte threshold"
         );
+        // The row threshold is no longer an independent ceiling: 100 rows at or
+        // above a 50-row threshold still collects, because the estimate fits.
         assert!(
-            !is_collected(&run_to_actual_join(
+            is_collected(&run_to_actual_join(
                 stats_exec_rows_only(100),
                 stats_exec_rows_only(1000),
                 JoinType::Inner,
@@ -1220,7 +1283,19 @@ mod tests {
                 50,
                 true,
             )),
-            "neither side is under a 50-row threshold, so the join must repartition"
+            "a row count over the threshold must not veto an in-budget estimate"
+        );
+        // Zero disables the rows-only path entirely, so nothing collects.
+        assert!(
+            !is_collected(&run_to_actual_join(
+                stats_exec_rows_only(100),
+                stats_exec_rows_only(1000),
+                JoinType::Inner,
+                true,
+                10 * 1024 * 1024,
+                0,
+            )),
+            "broadcast_join_threshold_rows=0 must disable the rows-only path"
         );
     }
 
