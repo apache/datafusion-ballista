@@ -364,7 +364,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
                 .map(|(column, null_count)| TaskColumnStats {
                     column: column as u32,
                     null_count,
-                    hll_sketch: vec![],
+                    sketches: vec![],
                 })
                 .collect(),
             _ => vec![],

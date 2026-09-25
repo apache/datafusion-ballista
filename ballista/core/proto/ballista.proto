@@ -832,7 +832,17 @@ message FailedTask {
 message TaskColumnStats {
   uint32 column      = 1;
   uint64 null_count  = 2;
-  bytes  hll_sketch  = 3;
+  repeated ColumnSketch sketches = 3;
+}
+
+message ColumnSketch {
+  SketchType type = 1;
+  bytes data = 2;
+}
+
+enum SketchType {
+  SKETCH_TYPE_UNSPECIFIED = 0;
+  SKETCH_TYPE_HLL = 1;
 }
 
 message SuccessfulTask {

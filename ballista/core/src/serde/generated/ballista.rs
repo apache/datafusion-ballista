@@ -1149,14 +1149,21 @@ pub mod failed_task {
         TaskKilled(super::TaskKilled),
     }
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskColumnStats {
     #[prost(uint32, tag = "1")]
     pub column: u32,
     #[prost(uint64, tag = "2")]
     pub null_count: u64,
-    #[prost(bytes = "vec", tag = "3")]
-    pub hll_sketch: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "3")]
+    pub sketches: ::prost::alloc::vec::Vec<ColumnSketch>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ColumnSketch {
+    #[prost(enumeration = "SketchType", tag = "1")]
+    pub r#type: i32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuccessfulTask {
@@ -1914,6 +1921,32 @@ impl ShuffleFileKind {
         match value {
             "SHUFFLE_FILE_KIND_DATA" => Some(Self::Data),
             "SHUFFLE_FILE_KIND_INDEX" => Some(Self::Index),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SketchType {
+    Unspecified = 0,
+    Hll = 1,
+}
+impl SketchType {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SKETCH_TYPE_UNSPECIFIED",
+            Self::Hll => "SKETCH_TYPE_HLL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SKETCH_TYPE_UNSPECIFIED" => Some(Self::Unspecified),
+            "SKETCH_TYPE_HLL" => Some(Self::Hll),
             _ => None,
         }
     }
