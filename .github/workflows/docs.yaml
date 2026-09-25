@@ -21,10 +21,13 @@ on:
   workflow_dispatch:
   push:
     branches: [ "main" ]
-    paths:
+    paths: &docs-paths
       - .asf.yaml
       - .github/workflows/docs.yaml
       - docs/**
+  # Build pull requests too, so a docs warning fails the PR instead of reaching main.
+  pull_request:
+    paths: *docs-paths
 
 name: Deploy DataFusion Ballista site
 
@@ -37,6 +40,7 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: Checkout asf-site branch
+        if: github.event_name != 'pull_request'
         uses: actions/checkout@v7.0.1
         with:
           ref: asf-site
@@ -55,6 +59,11 @@ jobs:
           pip install -r docs/requirements.txt
 
       - name: Build docs
+        env:
+          # Pull requests fail on warnings; main publishes regardless, so one that
+          # slips through (e.g. two PRs that are only broken together) can't block
+          # the site from updating.
+          SPHINXOPTS: ${{ github.event_name == 'pull_request' && '-W --keep-going' || '' }}
         run: |
           set -x
           source venv/bin/activate
@@ -62,6 +71,7 @@ jobs:
           ./build.sh
 
       - name: Copy & push the generated HTML
+        if: github.event_name != 'pull_request'
         run: |
           set -x
           cd asf-site/

@@ -48,6 +48,9 @@ inside a Python virtualenv.
 ./build.sh
 ```
 
+The build fails on any Sphinx warning, such as a broken cross-reference, and CI runs the same
+check on pull requests that touch the docs.
+
 ## Release
 
 The documentation is published from the `asf-site` branch of this repository.
