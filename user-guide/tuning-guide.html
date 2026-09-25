@@ -519,7 +519,36 @@ the auto-sized pool uses; it accepts a value in <code class="docutils literal no
 </section>
 <section id="join-strategy">
 <h2>Join Strategy<a class="headerlink" href="#join-strategy" title="Link to this heading">#</a></h2>
-<p>Ballista defaults to <strong>sort-merge join</strong> rather than hash join. This is the
+<p>How Ballista picks a join depends on whether adaptive query execution is on.</p>
+<section id="with-aqe-the-default">
+<h3>With AQE (the default)<a class="headerlink" href="#with-aqe-the-default" title="Link to this heading">#</a></h3>
+<p>AQE chooses each join at runtime, from measured sizes, after the join’s inputs
+have run. It turns both hash joins and sort-merge joins into a single runtime
+node and decides from that evidence, so <code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.prefer_hash_join</span></code>
+has no effect here.</p>
+<ul class="simple">
+<li><p><strong>Broadcast.</strong> If the smaller side is under
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span></code> (128 MiB by default) and
+the join type allows it, that side is broadcast and the join runs as a
+<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code> hash join, without shuffling the larger side.</p></li>
+<li><p><strong>Partitioned hash join.</strong> Otherwise both sides are shuffled on the join key,
+and the join runs as a hash join when every build partition is under
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.hash_join_max_build_partition_bytes</span></code> (64 MiB by default).</p></li>
+<li><p><strong>Sort-merge join.</strong> A build partition over that limit falls back to
+sort-merge join, which spills to disk under memory pressure.</p></li>
+</ul>
+<p>When a build side’s size is only an estimate, AQE can shuffle that side on its
+own first to measure it, so a join whose build side was over-estimated can still
+be broadcast. See <a class="reference internal" href="#what-aqe-does-today"><span class="xref myst">What AQE does today</span></a>.</p>
+<p>Setting <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.hash_join_max_build_partition_bytes</span></code> to <code class="docutils literal notranslate"><span class="pre">0</span></code> disables
+the per-partition check, so AQE uses a hash join regardless of build size and
+sort-merge join becomes unreachable.</p>
+</section>
+<section id="with-aqe-turned-off">
+<h3>With AQE turned off<a class="headerlink" href="#with-aqe-turned-off" title="Link to this heading">#</a></h3>
+<p>The static planner keeps DataFusion’s physical planning choice.
+<code class="docutils literal notranslate"><span class="pre">SessionConfig::new_with_ballista()</span></code> sets <code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.prefer_hash_join</span></code>
+to <code class="docutils literal notranslate"><span class="pre">false</span></code>, so joins are planned as <strong>sort-merge joins</strong> by default. This is the
 opposite of DataFusion’s standalone default and reflects two facts:</p>
 <ul class="simple">
 <li><p>DataFusion’s hash join implementation does not yet support spilling: the
@@ -527,22 +556,25 @@ full build side must fit in memory per task.</p></li>
 <li><p>Ballista executors run multiple tasks in parallel per host, so per-task
 build sides aggregate quickly under load and can OOM the executor.</p></li>
 </ul>
-<p>Sort-merge join spills under memory pressure (via the executor’s memory
-pool, when configured), making it the safer default for distributed
-execution.</p>
-<p>If you know the build side of a particular query fits comfortably in
-memory and you want hash-join performance, opt back in at the session
-level:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">datafusion</span><span class="p">.</span><span class="n">optimizer</span><span class="p">.</span><span class="n">prefer_hash_join</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">true</span><span class="p">;</span>
+<p>Sort-merge join spills under memory pressure via the executor’s memory pool,
+making it the safer default for distributed execution.</p>
+<p>The static planner only promotes hash joins to broadcast, so with this default
+Ballista does not broadcast joins. If you know the build side of a particular
+query fits comfortably in memory and you want hash-join performance, including
+broadcast promotion, opt back in at the session level:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">ballista</span><span class="p">.</span><span class="n">planner</span><span class="p">.</span><span class="n">adaptive</span><span class="p">.</span><span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">false</span><span class="p">;</span>
+<span class="k">SET</span><span class="w"> </span><span class="n">datafusion</span><span class="p">.</span><span class="n">optimizer</span><span class="p">.</span><span class="n">prefer_hash_join</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">true</span><span class="p">;</span>
 </pre></div>
 </div>
 <p>or in code:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">session_config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">set_bool</span><span class="p">(</span><span class="s">"ballista.planner.adaptive.enabled"</span><span class="p">,</span><span class="w"> </span><span class="kc">false</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="n">set_bool</span><span class="p">(</span><span class="s">"datafusion.optimizer.prefer_hash_join"</span><span class="p">,</span><span class="w"> </span><span class="kc">true</span><span class="p">);</span>
 </pre></div>
 </div>
-<p>This setting applies per session and does not require restarting the
+<p>These settings apply per session and do not require restarting the
 scheduler or executors.</p>
+</section>
 </section>
 <section id="shuffle-implementation">
 <h2>Shuffle Implementation<a class="headerlink" href="#shuffle-implementation" title="Link to this heading">#</a></h2>
@@ -779,7 +811,11 @@ processes. The default is <code class="docutils literal notranslate"><span class
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-vcores">Configuring Executor vcores</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-memory-pool">Configuring Executor Memory Pool</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#join-strategy">Join Strategy</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#join-strategy">Join Strategy</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#with-aqe-the-default">With AQE (the default)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#with-aqe-turned-off">With AQE turned off</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-implementation">Shuffle Implementation</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-based-shuffle">Sort-based shuffle</a></li>
 </ul>
