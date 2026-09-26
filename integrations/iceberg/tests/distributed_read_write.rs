@@ -994,9 +994,11 @@ async fn write_decodes_against_the_planned_table_version() {
             .expect("load catalog");
 
     let ctx = SessionContext::new();
+    // As the scheduler's providers are, decoded by the logical codec.
     let provider = IcebergTableProvider::try_new(catalog.clone(), namespace, table_name)
         .await
-        .expect("build provider");
+        .expect("build provider")
+        .with_idempotent_commits(true);
     ctx.register_table("t", Arc::new(provider))
         .expect("register provider");
 
@@ -1250,9 +1252,11 @@ async fn rerunning_a_committed_insert_does_not_duplicate_rows() {
             .expect("load catalog");
 
     let ctx = SessionContext::new();
+    // As the scheduler's providers are, decoded by the logical codec.
     let provider = IcebergTableProvider::try_new(catalog.clone(), namespace, table_name)
         .await
-        .expect("build provider");
+        .expect("build provider")
+        .with_idempotent_commits(true);
     ctx.register_table("t", Arc::new(provider))
         .expect("register provider");
 

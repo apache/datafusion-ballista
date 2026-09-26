@@ -3150,7 +3150,7 @@ dependencies = [
 [[package]]
 name = "datafusion-iceberg"
 version = "0.10.1"
-source = "git+https://github.com/NoahKusaba/datafusion-iceberg.git?branch=feat%2Fballista-distributed-support#4b19f77049f3913e5cf9a86c20bc276c02b2799e"
+source = "git+https://github.com/NoahKusaba/datafusion-iceberg.git?branch=feat%2Fballista-distributed-support#b5d16451ba29595e7fef4e5c2743d1d979668f7c"
 dependencies = [
  "async-trait",
  "dashmap",

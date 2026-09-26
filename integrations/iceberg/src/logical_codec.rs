@@ -24,7 +24,10 @@
 //! - [`IcebergTableProvider`] is catalog-backed: it reads the table's current
 //!   state and supports `INSERT`. It travels as the
 //!   [`IcebergCatalogConfig`](crate::IcebergCatalogConfig) its catalog was
-//!   built from, and its table identifier.
+//!   built from, and its table identifier. It decodes with
+//!   [idempotent commits](IcebergTableProvider::with_idempotent_commits), so
+//!   an INSERT the scheduler plans commits once even when Ballista reruns its
+//!   commit task.
 //! - [`IcebergStaticTableProvider`] is read-only and fixed to the table version
 //!   the client loaded, optionally at an older snapshot. Use it for time travel.
 //! - [`IcebergMetadataTableProvider`] serves metadata tables such as
@@ -144,12 +147,16 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                         // one: the plan refers to the provider's columns by their
                         // index in that schema. The provider then plans exactly as
                         // the client's does, without loading the table here.
+                        // Ballista reruns failed tasks, so its commits must be
+                        // idempotent: the physical codec refuses a commit
+                        // without a commit id.
                         let (config, table) = table_ref.into_parts();
                         let provider = IcebergTableProvider::new_with_schema(
                             get_catalog(&config)?,
                             table,
                             schema,
-                        );
+                        )
+                        .with_idempotent_commits(true);
                         Ok(Arc::new(provider))
                     }
                     IcebergProviderWire::Static { table, snapshot_id } => Ok(Arc::new(
@@ -299,6 +306,26 @@ mod tests {
         let decoded = decoded.downcast_ref::<IcebergTableProvider>().unwrap();
         assert!(Arc::ptr_eq(decoded.catalog(), &catalog));
         assert_eq!(decoded.schema(), schema);
+    }
+
+    /// The INSERTs the scheduler plans through a decoded provider commit at
+    /// most once, however often Ballista runs the commit task.
+    #[tokio::test]
+    async fn decoded_table_provider_plans_idempotent_commits() {
+        use datafusion::logical_expr::dml::InsertOp;
+        use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion_iceberg::physical_plan::IcebergCommitExec;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (provider, _config) = table_provider(dir.path(), true).await;
+        let decoded = roundtrip(Arc::new(provider));
+        let input = Arc::new(EmptyExec::new(decoded.schema()));
+        let insert = decoded
+            .insert_into(&SessionContext::new().state(), input, InsertOp::Append)
+            .await
+            .unwrap();
+        let commit = insert.downcast_ref::<IcebergCommitExec>().unwrap();
+        assert!(commit.commit_id().is_some());
     }
 
     /// A provider on a catalog this crate did not build has no config to

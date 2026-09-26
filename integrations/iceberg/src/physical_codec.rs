@@ -229,7 +229,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                     .metadata_location_result()
                     .map_err(to_datafusion_error)?
                     .to_string(),
-                commit_id: commit.commit_id(),
+                commit_id: commit.commit_id().ok_or_else(missing_commit_id_err)?,
             };
             return encode_blob(buf, &node);
         }
@@ -285,6 +285,17 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             }
         }
     }
+}
+
+/// Error for a commit planned without a commit id. Ballista reruns failed
+/// tasks, so a commit it runs must commit at most once, which needs one.
+fn missing_commit_id_err() -> DataFusionError {
+    DataFusionError::Plan(
+        "IcebergCommitExec has no commit id, so rerunning it would commit its rows \
+         again; plan the INSERT through a provider with idempotent commits, as the \
+         providers IcebergLogicalCodec decodes have"
+            .to_string(),
+    )
 }
 
 /// The Arrow schema of `table`'s current schema.
@@ -684,7 +695,7 @@ mod tests {
         ));
     }
 
-    /// A commit of `table` through `catalog`, over an empty input.
+    /// An idempotent commit of `table` through `catalog`, over an empty input.
     fn commit_through(
         catalog: Arc<dyn iceberg::Catalog>,
         table: &Table,
@@ -693,12 +704,10 @@ mod tests {
         let input = Arc::new(datafusion::physical_plan::empty::EmptyExec::new(
             schema.clone(),
         ));
-        Arc::new(IcebergCommitExec::new(
-            table.clone(),
-            catalog,
-            input,
-            schema,
-        ))
+        Arc::new(
+            IcebergCommitExec::new(table.clone(), catalog, input, schema)
+                .with_commit_id(Uuid::now_v7()),
+        )
     }
 
     fn encode(node: Arc<dyn ExecutionPlan>) -> Result<Vec<u8>, DataFusionError> {
@@ -747,13 +756,34 @@ mod tests {
                 } => {
                     assert_eq!(table_ref.catalog, config);
                     // Every attempt at the commit must share the planned id.
-                    assert_eq!(commit_id, planned_commit_id);
+                    assert_eq!(Some(commit_id), planned_commit_id);
                     metadata_location
                 }
                 other => panic!("expected a write or commit, got {other:?}"),
             };
             assert_eq!(location, "/test/tbl/metadata.json");
         }
+    }
+
+    /// A commit without a commit id would commit again each time Ballista
+    /// reran it, so it cannot be sent to an executor.
+    #[tokio::test]
+    async fn commit_without_a_commit_id_is_rejected() {
+        use crate::catalog::register_for_test;
+
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = register_for_test(
+            &test_util::unique_catalog_config(),
+            test_util::memory_catalog(dir.path()).await,
+        );
+        let table = test_util::table(&[1]);
+        let schema = current_arrow_schema(&table).unwrap();
+        let input = Arc::new(datafusion::physical_plan::empty::EmptyExec::new(
+            schema.clone(),
+        ));
+        let commit = Arc::new(IcebergCommitExec::new(table, catalog, input, schema));
+        let err = encode(commit).unwrap_err().to_string();
+        assert!(err.contains("no commit id"), "{err}");
     }
 
     /// A commit through a catalog this crate did not build has no config to
