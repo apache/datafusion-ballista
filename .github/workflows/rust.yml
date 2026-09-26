@@ -160,7 +160,7 @@ jobs:
   iceberg-test:
     name: test iceberg integration
     # Deliberately not in the amd64/rust container the other linux jobs use:
-    # the tests start an Iceberg REST catalog and MinIO via testcontainers and
+    # the tests start an Iceberg REST catalog and RustFS via testcontainers and
     # talk to them over the ports they publish on the runner. Running in a
     # container would mean docker-in-docker plus a different hostname for those
     # endpoints.
@@ -182,7 +182,7 @@ jobs:
         uses: ./.github/actions/setup-rust-runtime
       - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 #2.9.1
       - name: Run iceberg-ballista tests
-        # Each test brings up its own catalog + MinIO with testcontainers, which
+        # Each test brings up its own catalog + RustFS with testcontainers, which
         # is why the suite is behind `integration-tests`: without the feature
         # this only runs unit tests and needs no docker.
         run: |

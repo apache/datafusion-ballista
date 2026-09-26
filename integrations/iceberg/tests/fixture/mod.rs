@@ -17,7 +17,8 @@
 
 //! Docker fixture for the Iceberg integration tests and the
 //! `standalone-iceberg-write` / `cluster-iceberg-write` examples: an Iceberg
-//! REST catalog backed by MinIO.
+//! REST catalog backed by RustFS, the S3-compatible server the repo's other
+//! S3 integration tests use (see `examples/tests/common`).
 //!
 //! Each [`IcebergFixture`] is a private catalog on its own docker network, so
 //! tests holding one share no namespace, table name, or catalog state. The
@@ -34,19 +35,19 @@ use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation};
 use iceberg_catalog_rest::RestCatalogBuilder;
 use iceberg_storage_opendal::OpenDalStorageFactory;
-use testcontainers_modules::minio::MinIO;
-use testcontainers_modules::testcontainers::core::wait::HttpWaitStrategy;
-use testcontainers_modules::testcontainers::core::{
-    CmdWaitFor, ExecCommand, IntoContainerPort, WaitFor,
-};
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::{ContainerAsync, GenericImage, ImageExt};
+use testcontainers::core::wait::HttpWaitStrategy;
+use testcontainers::core::{CmdWaitFor, ExecCommand, IntoContainerPort, WaitFor};
+use testcontainers::runners::AsyncRunner;
+use testcontainers::{ContainerAsync, GenericImage, Image, ImageExt};
 
-const MINIO_TAG: &str = "RELEASE.2025-05-24T17-08-30Z";
+/// S3-compatible object store. The repo moved its S3 tests from MinIO to
+/// RustFS once MinIO withdrew its images from Docker Hub and quay.io.
+const RUSTFS_IMAGE: &str = "rustfs/rustfs";
+const RUSTFS_TAG: &str = "1.0.0";
 const REST_IMAGE: &str = "apache/iceberg-rest-fixture";
 const REST_TAG: &str = "1.10.1";
 
-const MINIO_PORT: u16 = 9000;
+const S3_PORT: u16 = 9000;
 const REST_PORT: u16 = 8181;
 
 const BUCKET: &str = "icebergdata";
@@ -54,36 +55,43 @@ const ACCESS_KEY: &str = "admin";
 const SECRET_KEY: &str = "password";
 const REGION: &str = "us-east-1";
 
-/// A running Iceberg REST catalog + MinIO pair, removed on drop.
+/// A running Iceberg REST catalog + RustFS pair, removed on drop.
 pub struct IcebergFixture {
     props: HashMap<String, String>,
-    _minio: ContainerAsync<MinIO>,
+    _s3: ContainerAsync<GenericImage>,
     _rest: ContainerAsync<GenericImage>,
 }
 
 impl IcebergFixture {
-    /// Starts MinIO and an Iceberg REST catalog in front of it, panicking on any
-    /// docker failure.
+    /// Starts RustFS and an Iceberg REST catalog in front of it, panicking on
+    /// any docker failure.
     pub async fn start() -> Self {
         // Container and network names are global to the docker daemon, and
         // several fixtures run at once.
         let suffix = unique_suffix();
         let network = format!("iceberg-ballista-{suffix}");
-        // Also the hostname the REST catalog reaches MinIO on.
-        let minio_host = format!("iceberg-ballista-minio-{suffix}");
+        // Also the hostname the REST catalog reaches RustFS on.
+        let s3_host = format!("iceberg-ballista-rustfs-{suffix}");
 
-        let minio = MinIO::default()
-            .with_tag(MINIO_TAG)
-            .with_env_var("MINIO_ROOT_USER", ACCESS_KEY)
-            .with_env_var("MINIO_ROOT_PASSWORD", SECRET_KEY)
+        // RustFS logs only warnings by default, so wait on its health endpoint
+        // rather than a startup message.
+        let s3 = GenericImage::new(RUSTFS_IMAGE, RUSTFS_TAG)
+            .with_exposed_port(S3_PORT.tcp())
+            .with_wait_for(WaitFor::http(
+                HttpWaitStrategy::new("/health")
+                    .with_port(S3_PORT.tcp())
+                    .with_expected_status_code(200u16),
+            ))
+            .with_env_var("RUSTFS_ACCESS_KEY", ACCESS_KEY)
+            .with_env_var("RUSTFS_SECRET_KEY", SECRET_KEY)
             .with_network(&network)
-            .with_container_name(&minio_host)
+            .with_container_name(&s3_host)
             .with_startup_timeout(Duration::from_secs(120))
             .start()
             .await
-            .expect("start minio");
+            .expect("start rustfs");
 
-        create_bucket(&minio).await;
+        create_bucket(&s3).await;
 
         let rest = GenericImage::new(REST_IMAGE, REST_TAG)
             .with_exposed_port(REST_PORT.tcp())
@@ -106,10 +114,7 @@ impl IcebergFixture {
             )
             .with_env_var("CATALOG_WAREHOUSE", format!("s3://{BUCKET}/demo"))
             .with_env_var("CATALOG_IO__IMPL", "org.apache.iceberg.aws.s3.S3FileIO")
-            .with_env_var(
-                "CATALOG_S3_ENDPOINT",
-                format!("http://{minio_host}:{MINIO_PORT}"),
-            )
+            .with_env_var("CATALOG_S3_ENDPOINT", format!("http://{s3_host}:{S3_PORT}"))
             // Virtual-hosted style would need a `<bucket>.<host>` DNS alias,
             // which testcontainers cannot add.
             .with_env_var("CATALOG_S3_PATH__STYLE__ACCESS", "true")
@@ -120,12 +125,12 @@ impl IcebergFixture {
 
         let props = catalog_props(
             endpoint(&rest, REST_PORT).await,
-            endpoint(&minio, MINIO_PORT).await,
+            endpoint(&s3, S3_PORT).await,
         );
 
         Self {
             props,
-            _minio: minio,
+            _s3: s3,
             _rest: rest,
         }
     }
@@ -137,7 +142,7 @@ impl IcebergFixture {
 }
 
 /// A REST catalog client addressing `props`, with its storage wired to the
-/// fixture's MinIO.
+/// fixture's RustFS.
 pub async fn rest_catalog(props: &HashMap<String, String>) -> impl Catalog + use<> {
     RestCatalogBuilder::default()
         .with_storage_factory(Arc::new(OpenDalStorageFactory::S3 {
@@ -186,48 +191,20 @@ pub async fn create_demo_table(
     (namespace, "events".to_string())
 }
 
-/// Creates the warehouse bucket with the `mc` the MinIO image ships.
-async fn create_bucket(minio: &ContainerAsync<MinIO>) {
-    // The image preconfigures a `local` alias without credentials.
-    exec(
-        minio,
-        [
-            "mc",
-            "alias",
-            "set",
-            "local",
-            &format!("http://localhost:{MINIO_PORT}"),
-            ACCESS_KEY,
-            SECRET_KEY,
-        ],
+/// Creates the warehouse bucket. A top-level directory under RustFS's data
+/// volume is a bucket, which avoids pulling an S3 client in just to create one.
+async fn create_bucket(s3: &ContainerAsync<GenericImage>) {
+    s3.exec(
+        ExecCommand::new(["mkdir", &format!("/data/{BUCKET}")])
+            .with_cmd_ready_condition(CmdWaitFor::exit_code(0)),
     )
-    .await;
-    exec(
-        minio,
-        ["mc", "mb", "--ignore-existing", &format!("local/{BUCKET}")],
-    )
-    .await;
-}
-
-/// Runs `cmd` in the container and waits for it to exit successfully.
-async fn exec<'a>(
-    container: &ContainerAsync<MinIO>,
-    cmd: impl IntoIterator<Item = &'a str>,
-) {
-    let cmd: Vec<String> = cmd.into_iter().map(str::to_string).collect();
-    let description = cmd.join(" ");
-    container
-        .exec(ExecCommand::new(cmd).with_cmd_ready_condition(CmdWaitFor::exit_code(0)))
-        .await
-        .unwrap_or_else(|e| panic!("`{description}` in minio container: {e}"));
+    .await
+    .expect("create bucket in rustfs container");
 }
 
 /// `http://<host>:<published port>` for a container port, as seen from this
 /// process.
-async fn endpoint<I: testcontainers_modules::testcontainers::Image>(
-    container: &ContainerAsync<I>,
-    port: u16,
-) -> String {
+async fn endpoint<I: Image>(container: &ContainerAsync<I>, port: u16) -> String {
     let host = container.get_host().await.expect("container host");
     let port = container
         .get_host_port_ipv4(port.tcp())

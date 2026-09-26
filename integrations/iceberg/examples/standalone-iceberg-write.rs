@@ -20,7 +20,7 @@
 //! Demonstrates distributed reads and writes against an Apache Iceberg table
 //! from a standalone Ballista cluster.
 //!
-//! The example starts its own Iceberg REST catalog and MinIO with
+//! The example starts its own Iceberg REST catalog and RustFS with
 //! testcontainers, so all it needs is a running docker daemon:
 //!
 //! ```bash
@@ -47,8 +47,8 @@ async fn main() -> Result<()> {
         .filter_level(log::LevelFilter::Info)
         .try_init();
 
-    // Iceberg REST catalog + MinIO in docker, removed when this drops.
-    println!("== starting Iceberg REST catalog and MinIO ==");
+    // Iceberg REST catalog + RustFS in docker, removed when this drops.
+    println!("== starting Iceberg REST catalog and RustFS ==");
     let catalog_fixture = fixture::IcebergFixture::start().await;
     let props = catalog_fixture.props();
 

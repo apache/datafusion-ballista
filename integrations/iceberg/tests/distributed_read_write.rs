@@ -17,7 +17,7 @@
 
 //! End-to-end distributed Iceberg write/read tests.
 //!
-//! Each test starts its own Iceberg REST catalog + MinIO with testcontainers
+//! Each test starts its own Iceberg REST catalog + RustFS with testcontainers
 //! (see [`fixture`]), so a docker daemon is required — hence the
 //! `integration-tests` feature gate:
 //!

@@ -65,10 +65,10 @@ env_logger = { workspace = true }
 iceberg-catalog-rest = { workspace = true }
 log = { workspace = true }
 tempfile = { workspace = true }
-# Starts the Iceberg REST catalog + MinIO the integration tests and the
-# standalone example run against. Not optional: cargo has no optional
-# dev-dependencies, so this is compiled for any `cargo test` on this crate.
-testcontainers-modules = { version = "0.15", features = ["minio", "http_wait"] }
+# Starts the Iceberg REST catalog + RustFS the integration tests and the
+# examples run against. Not optional: cargo has no optional dev-dependencies,
+# so this is compiled for any `cargo test` on this crate.
+testcontainers = { version = "0.27", features = ["http_wait_plain"] }
 # `process` and `signal` are for the cluster-iceberg-write example, which runs
 # the scheduler and executors as child processes and reaps them on Ctrl-C.
 tokio = { workspace = true, features = [
@@ -83,7 +83,7 @@ tokio-stream = { workspace = true }
 
 [features]
 default = []
-# The end-to-end suite starts an Iceberg REST catalog + MinIO in docker, so it
+# The end-to-end suite starts an Iceberg REST catalog + RustFS in docker, so it
 # is off by default and opted into explicitly:
 #   cargo test -p iceberg-ballista --features integration-tests
 integration-tests = []

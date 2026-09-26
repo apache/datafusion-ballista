@@ -39,7 +39,7 @@
 //!
 //! Everything below the recipe is demo plumbing: this example re-invokes itself
 //! as `scheduler`/`executor` child processes and starts a dockerized Iceberg
-//! REST catalog + MinIO, so one command runs a real one-scheduler, two-executor
+//! REST catalog + RustFS, so one command runs a real one-scheduler, two-executor
 //! cluster through a distributed INSERT and SELECT:
 //!
 //! ```bash
@@ -209,8 +209,8 @@ async fn main() -> ExampleResult<()> {
 }
 
 async fn run_demo() -> ExampleResult<()> {
-    // Iceberg REST catalog + MinIO in docker, removed when this drops.
-    println!("== starting Iceberg REST catalog and MinIO ==");
+    // Iceberg REST catalog + RustFS in docker, removed when this drops.
+    println!("== starting Iceberg REST catalog and RustFS ==");
     let catalog_fixture = fixture::IcebergFixture::start().await;
     let props = catalog_fixture.props();
     let (namespace, table) = fixture::create_demo_table(&props).await;
