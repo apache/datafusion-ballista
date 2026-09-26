@@ -120,8 +120,8 @@ impl FlightService for BallistaFlightProxyService {
     ) -> Result<Response<Self::DoGetStream>, Status> {
         let ticket = request.into_inner();
 
-        let action =
-            decode_protobuf(&ticket.ticket).map_err(|e| from_ballista_err(&e))?;
+        let action = decode_protobuf(&ticket.ticket)
+            .map_err(|e| Status::invalid_argument(format!("invalid ticket: {e}")))?;
 
         match &action {
             BallistaAction::FetchPartition {

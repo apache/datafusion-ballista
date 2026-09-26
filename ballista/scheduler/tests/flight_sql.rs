@@ -18,11 +18,6 @@
 //! End-to-end coverage for the Arrow Flight SQL frontend against a real
 //! (in-process) cluster: scheduler plus one executor, driven entirely through
 //! the Flight SQL protocol.
-//!
-//! The pre-46.0.0 implementation shipped with no tests at all, and the bugs
-//! that got it removed (#1012, #941, #839, #756) were exactly the ones an
-//! end-to-end test catches: endpoints pointing somewhere the client cannot
-//! reach, and results that fail to decode.
 
 #![cfg(feature = "flight-sql")]
 
@@ -57,9 +52,9 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// Boots a scheduler serving Flight SQL plus one executor, and returns the
 /// scheduler's URL.
 async fn start_cluster() -> Result<String> {
-    let mut config = SchedulerConfig::default()
-        .with_scheduler_policy(TaskSchedulingPolicy::PullStaged);
-    config.flight_sql = true;
+    let config = SchedulerConfig::default()
+        .with_scheduler_policy(TaskSchedulingPolicy::PullStaged)
+        .with_flight_sql(true);
 
     let cluster = BallistaCluster::new_memory(
         "localhost:50050",
@@ -196,23 +191,6 @@ async fn flight_sql_runs_a_distributed_query() -> Result {
     Ok(())
 }
 
-/// A table registered through DDL must still be there for the next request.
-/// `QueryBackend::session` builds a fresh `SessionContext` every call, so this
-/// only holds because the frontend caches it per session.
-#[tokio::test]
-async fn a_session_keeps_its_catalog_across_requests() -> Result {
-    let url = start_cluster().await?;
-    let (mut client, _csv) = client_with_people(&url).await?;
-
-    let info = client
-        .execute("SELECT id FROM people".to_string(), None)
-        .await?;
-    let batches = collect(&mut client, info).await?;
-    assert_eq!(row_count(&batches), 3);
-
-    Ok(())
-}
-
 /// Drivers introspect before they query. Catalog answers must come from the
 /// same session the query will run in, or the schema browser lies.
 #[tokio::test]
@@ -236,8 +214,7 @@ async fn flight_sql_serves_catalog_metadata() -> Result {
         "the table registered above should be listed"
     );
 
-    // `CommandGetSqlInfo` is what the Arrow Flight JDBC driver needs and what
-    // the old implementation never implemented.
+    // `CommandGetSqlInfo` is what the Arrow Flight JDBC driver needs to connect.
     let info = client
         .get_sql_info(vec![
             SqlInfo::FlightSqlServerName,

@@ -20,9 +20,7 @@
 //! This exists to invert a dependency, not to abstract over transports: the
 //! frontend crate has to sit *below* `ballista-scheduler` so the scheduler can
 //! mount it, which means it cannot name `SchedulerServer`. The scheduler
-//! implements this trait instead, behind its `flight-sql` feature. Coupling to
-//! scheduler internals is what made the pre-46.0.0 implementation
-//! unmaintainable, so the trait is the boundary that keeps it from coming back.
+//! implements this trait instead, behind its `flight-sql` feature.
 //!
 //! The frontend plans SQL against a [`SessionContext`] the backend hands it,
 //! submits the resulting [`LogicalPlan`], and turns the returned partition
@@ -44,8 +42,7 @@ use datafusion::prelude::SessionContext;
 /// ticket the client redeems with `DoGet`.
 #[derive(Debug)]
 pub struct QueryResult {
-    /// Scheduler-assigned id of the job that produced the result. Used to
-    /// cancel the query and to release its shuffle data afterwards.
+    /// Scheduler-assigned id of the job that produced the result.
     pub job_id: String,
     /// Schema of the result, taken from the submitted plan.
     pub schema: SchemaRef,
@@ -59,8 +56,10 @@ pub struct QueryResult {
 /// to be cheap to clone or to be held behind an `Arc`.
 #[async_trait]
 pub trait QueryBackend: Send + Sync + 'static {
-    /// Returns the session context for `session_id`, creating it if this is
-    /// the first time the frontend has seen that id.
+    /// Builds a session context for `session_id`.
+    ///
+    /// The frontend calls this once per session and caches the result, so
+    /// implementations may build a fresh context on every call.
     ///
     /// The context carries the catalog that SQL is planned against, so
     /// whatever tables an embedder registers through its `SessionBuilder` are
@@ -74,19 +73,15 @@ pub trait QueryBackend: Send + Sync + 'static {
     /// reaches a terminal state.
     ///
     /// Returns `Err` if the job failed or was cancelled.
+    ///
+    /// Shuffle data left behind by a completed job is not the frontend's to
+    /// release: a client may redeem its tickets at any point before they
+    /// expire, so cleanup is left to the backend's own retention policy (in
+    /// Ballista, `finished_job_data_clean_up_interval_seconds`).
     async fn execute(
         &self,
         job_name: &str,
         ctx: Arc<SessionContext>,
         plan: LogicalPlan,
     ) -> Result<QueryResult>;
-
-    /// Requests cancellation of a running job. Cancellation is asynchronous;
-    /// returning `Ok` means the request was accepted, not that the job stopped.
-    ///
-    /// Shuffle data left behind by a completed job is not the frontend's to
-    /// release: a client may redeem its tickets at any point before they
-    /// expire, so cleanup is left to the backend's own retention policy (in
-    /// Ballista, `finished_job_data_clean_up_interval_seconds`).
-    async fn cancel(&self, job_id: &str) -> Result<()>;
 }

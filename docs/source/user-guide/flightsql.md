@@ -190,8 +190,15 @@ let config = SchedulerConfig::default()
 ```
 
 With an authenticator installed, clients must complete the Flight handshake and
-send the returned bearer token on every request; each handshake gets its own
-Ballista session, so catalogs are no longer shared.
+send the returned bearer token on every Flight SQL request; each handshake gets
+its own Ballista session, so catalogs, prepared statements, and result tickets
+are no longer shared.
+
+An authenticator gives each client a session of its own. It is not a security
+boundary for the cluster: the same port also serves the scheduler's gRPC API,
+the REST API (with the `rest-api` feature), and Ballista's own partition-fetch
+tickets, none of which check a token. Keep the port on a trusted network even
+with an authenticator installed.
 
 Alternatively, terminate authentication in a Tonic interceptor or a proxy in
 front of the scheduler and leave the frontend as-is.
@@ -218,11 +225,15 @@ These are known gaps, tracked in [#2298]:
 - **No bound parameters.** Prepared statements are supported, but
   `DoPutPreparedStatementQuery` parameter binding is not, so
   `cur.execute(sql, parameters=...)` will fail.
+- **No query cancellation.** A client only holds a query's `FlightInfo` once
+  `GetFlightInfo` has returned, by which point the query has finished. A client
+  that disconnects early leaves its query running to completion.
 - **No write path.** `INSERT`, `UPDATE`, `DELETE`, and `COPY` are rejected with
-  a clear error rather than silently executing on the scheduler. So is
-  `CREATE TABLE AS SELECT`, which would otherwise run its query on the
-  scheduler rather than the cluster. Other DDL is supported, including
-  `CREATE EXTERNAL TABLE` and `CREATE VIEW`.
+  a clear error rather than silently executing on the scheduler, including
+  when wrapped in `EXPLAIN ANALYZE`. So are `CREATE TABLE AS SELECT` and SQL
+  `EXECUTE`, which would otherwise run their query on the scheduler rather
+  than the cluster; use a Flight SQL prepared statement instead of `EXECUTE`.
+  Other DDL is supported, including `CREATE EXTERNAL TABLE` and `CREATE VIEW`.
 - **No transactions or savepoints.**
 - **No Substrait.** `CommandStatementSubstraitPlan` is not implemented, even
   when the scheduler's `substrait` feature is enabled.

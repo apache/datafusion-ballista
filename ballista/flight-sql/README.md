@@ -50,20 +50,23 @@ See the [Flight SQL user guide] for a Python ADBC walkthrough.
 ## Scope
 
 Implemented: SQL query execution, DDL, catalog and schema introspection,
-`SqlInfo`/`XdbcTypeInfo`, prepared statements without parameter binding, query
-cancellation, and pluggable authentication.
+`SqlInfo`/`XdbcTypeInfo`, prepared statements without parameter binding, and
+pluggable authentication.
 
 Not implemented: bound parameters, `PollFlightInfo` (so `GetFlightInfo` blocks
-until the query finishes), transactions, Substrait, and the distributed write
-path (`INSERT`/`UPDATE`/`DELETE`/`COPY`).
+until the query finishes), query cancellation, transactions, Substrait, and the
+distributed write path (`INSERT`/`UPDATE`/`DELETE`/`COPY`).
 
 ## Security
 
 The default authenticator accepts every handshake, and the scheduler logs a
-warning when it is in use. Separately, the Flight proxy this crate reuses trusts
-the executor address carried in a partition-fetch ticket, so a client that
-forges a ticket can make the scheduler dial an arbitrary host. Treat the port as
-trusted-network-only until both are addressed.
+warning when it is in use. An authenticator isolates clients' sessions from one
+another; it does not secure the cluster. The same port serves the scheduler's
+own gRPC API and, with the `rest-api` feature, its REST API, neither of which is
+authenticated, and it redeems Ballista's own partition-fetch tickets from any
+caller. That proxy also trusts the executor address carried in the ticket, so a
+client that forges one can make the scheduler dial an arbitrary host. Treat the
+port as trusted-network-only.
 
 [arrow flight sql]: https://arrow.apache.org/docs/format/FlightSql.html
 [flight sql user guide]: https://datafusion.apache.org/ballista/user-guide/flightsql.html

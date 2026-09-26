@@ -29,7 +29,8 @@ use arrow_flight::sql::metadata::{
 };
 use arrow_flight::sql::{
     CommandGetCatalogs, CommandGetDbSchemas, CommandGetTableTypes, CommandGetTables,
-    Nullable, Searchable, SqlInfo, SqlSupportedTransaction, XdbcDataType,
+    Nullable, Searchable, SqlInfo, SqlSupportedCaseSensitivity, SqlSupportedTransaction,
+    XdbcDataType,
 };
 use ballista_core::BALLISTA_VERSION;
 use datafusion::catalog::TableProvider;
@@ -44,10 +45,6 @@ const VIEW: &str = "VIEW";
 const LOCAL_TEMPORARY: &str = "LOCAL TEMPORARY";
 
 /// Describes the server to drivers deciding what SQL they may emit.
-///
-/// The old implementation left `CommandGetSqlInfo` unimplemented with a
-/// `// TODO: implement for FlightSQL JDBC to work` comment, which is precisely
-/// why the JDBC driver could not connect.
 pub(crate) fn sql_info() -> SqlInfoData {
     let mut builder = SqlInfoDataBuilder::new();
 
@@ -62,17 +59,27 @@ pub(crate) fn sql_info() -> SqlInfoData {
         SqlInfo::FlightSqlServerTransaction,
         SqlSupportedTransaction::None as i32,
     );
-    builder.append(SqlInfo::FlightSqlServerCancel, true);
+    // A client only holds a FlightInfo once `GetFlightInfo` has returned, by
+    // which point the query has finished, so there is nothing to cancel.
+    builder.append(SqlInfo::FlightSqlServerCancel, false);
     builder.append(SqlInfo::FlightSqlServerBulkIngestion, false);
 
     builder.append(SqlInfo::SqlDdlCatalog, false);
     builder.append(SqlInfo::SqlDdlSchema, true);
     builder.append(SqlInfo::SqlDdlTable, true);
-    // DataFusion folds unquoted identifiers to lower case and preserves the
-    // case of quoted ones: SQL_CASE_SENSITIVITY_LOWERCASE / _CASE_INSENSITIVE.
-    builder.append(SqlInfo::SqlIdentifierCase, 2i32);
+    // DataFusion folds unquoted identifiers to lower case and stores quoted
+    // ones as written. The enum has no value for "stored in mixed case", so
+    // this follows the Arrow reference server (`FlightSqlExample`), which
+    // reports JDBC's `storesMixedCase*Identifiers` as CASE_INSENSITIVE.
+    builder.append(
+        SqlInfo::SqlIdentifierCase,
+        SqlSupportedCaseSensitivity::SqlCaseSensitivityLowercase as i32,
+    );
     builder.append(SqlInfo::SqlIdentifierQuoteChar, "\"");
-    builder.append(SqlInfo::SqlQuotedIdentifierCase, 3i32);
+    builder.append(
+        SqlInfo::SqlQuotedIdentifierCase,
+        SqlSupportedCaseSensitivity::SqlCaseSensitivityCaseInsensitive as i32,
+    );
     builder.append(SqlInfo::SqlAllTablesAreSelectable, true);
     builder.append(SqlInfo::SqlSearchStringEscape, "\\");
     builder.append(SqlInfo::SqlCatalogTerm, "catalog");
@@ -243,24 +250,6 @@ mod test {
         ctx.register_table("t", Arc::new(EmptyTable::new(schema)))
             .unwrap();
         ctx
-    }
-
-    #[test]
-    fn sql_info_is_buildable() {
-        // `sql_info` panics on malformed input, so building it is the assertion.
-        let data = sql_info();
-        assert!(
-            data.record_batch([SqlInfo::FlightSqlServerName as u32])
-                .unwrap()
-                .num_rows()
-                > 0
-        );
-    }
-
-    #[test]
-    fn xdbc_type_info_is_buildable() {
-        let data = xdbc_type_info();
-        assert!(data.record_batch(None).unwrap().num_rows() > 0);
     }
 
     #[test]

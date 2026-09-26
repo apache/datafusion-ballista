@@ -141,7 +141,7 @@ def answer_index(statements):
     """
     for i in reversed(range(len(statements))):
         head = statements[i].lstrip().lower()
-        if head.startswith("select") or head.startswith("with"):
+        if head.startswith(("select", "with")):
             return i
     return len(statements) - 1
 
@@ -204,9 +204,7 @@ def main():
     parser.add_argument(
         "--iterations", type=int, default=1, help="times to run each query"
     )
-    parser.add_argument(
-        "--queries-dir", help="directory holding q1.sql .. q22.sql"
-    )
+    parser.add_argument("--queries-dir", help="directory holding q1.sql .. q22.sql")
     parser.add_argument(
         "--timeout",
         type=float,

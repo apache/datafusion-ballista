@@ -20,8 +20,10 @@
 //! Everything in here is keyed by an opaque handle the client is given and
 //! hands back, and everything expires. A client that disconnects without
 //! closing its prepared statements (or that never redeems a ticket) must not
-//! pin memory forever, which is what the previous Flight SQL implementation
-//! got wrong: its plan cache only shed entries on an explicit close.
+//! pin memory forever.
+//!
+//! Prepared statements and local results belong to the session that created
+//! them, and are only visible to requests from that session.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -42,10 +44,12 @@ pub(crate) struct Prepared {
     pub plan: LogicalPlan,
 }
 
-/// Result of a statement the frontend ran locally rather than distributing
-/// (DDL, and DML whose only output is an affected-row count).
+/// Result of a statement the frontend ran on the scheduler rather than
+/// distributing: DDL, session statements, and catalog queries.
 #[derive(Clone)]
 pub(crate) struct LocalResult {
+    /// Session the statement ran in; only that session may redeem it.
+    pub session_id: String,
     pub schema: SchemaRef,
     pub batches: Vec<RecordBatch>,
 }
@@ -101,16 +105,6 @@ impl SessionStore {
         })
     }
 
-    /// Drops a token and the session it named, returning that session id.
-    ///
-    /// Each token gets its own session, so removing the token always releases
-    /// the session with it.
-    pub(crate) fn remove_session(&self, token: &str) -> Option<String> {
-        let (_, entry) = self.sessions.remove(token)?;
-        self.contexts.remove(&entry.value);
-        Some(entry.value)
-    }
-
     /// Returns the cached context for a session, refreshing its idle timer.
     pub(crate) fn context(&self, session_id: &str) -> Option<Arc<SessionContext>> {
         self.contexts.get_mut(session_id).map(|mut entry| {
@@ -139,24 +133,37 @@ impl SessionStore {
         self.prepared.insert(handle, Tracked::new(prepared));
     }
 
-    pub(crate) fn prepared(&self, handle: &str) -> Option<Prepared> {
-        self.prepared.get_mut(handle).map(|mut entry| {
-            entry.last_used = Instant::now();
-            entry.value.clone()
-        })
+    /// Looks up a prepared statement for `session_id`, refreshing its idle
+    /// timer. A handle from another session is treated as unknown.
+    pub(crate) fn prepared(&self, handle: &str, session_id: &str) -> Option<Prepared> {
+        let mut entry = self.prepared.get_mut(handle)?;
+        if entry.value.session_id != session_id {
+            return None;
+        }
+        entry.last_used = Instant::now();
+        Some(entry.value.clone())
     }
 
-    pub(crate) fn remove_prepared(&self, handle: &str) {
-        self.prepared.remove(handle);
+    pub(crate) fn remove_prepared(&self, handle: &str, session_id: &str) {
+        self.prepared
+            .remove_if(handle, |_, entry| entry.value.session_id == session_id);
     }
 
     pub(crate) fn insert_result(&self, handle: String, result: LocalResult) {
         self.results.insert(handle, Tracked::new(result));
     }
 
-    /// Takes a local result. Results are single-use: a ticket is redeemed once.
-    pub(crate) fn take_result(&self, handle: &str) -> Option<LocalResult> {
-        self.results.remove(handle).map(|(_, entry)| entry.value)
+    /// Takes a local result for `session_id`. Results are single-use: a
+    /// ticket is redeemed once. A handle from another session is treated as
+    /// unknown and left in place.
+    pub(crate) fn take_result(
+        &self,
+        handle: &str,
+        session_id: &str,
+    ) -> Option<LocalResult> {
+        self.results
+            .remove_if(handle, |_, entry| entry.value.session_id == session_id)
+            .map(|(_, entry)| entry.value)
     }
 
     /// Evicts everything idle for longer than the TTL.
@@ -165,20 +172,20 @@ impl SessionStore {
     /// caller can release them in the backend.
     pub(crate) fn sweep(&self) -> Vec<String> {
         let ttl = self.ttl;
-        let expired: Vec<String> = self
-            .sessions
-            .iter()
-            .filter(|entry| entry.value().last_used.elapsed() > ttl)
-            .map(|entry| entry.key().clone())
-            .collect();
-
         let mut released = Vec::new();
-        for token in expired {
-            if let Some(session_id) = self.remove_session(&token) {
-                released.push(session_id);
+        self.sessions.retain(|_, entry| {
+            let live = entry.last_used.elapsed() <= ttl;
+            if !live {
+                released.push(entry.value.clone());
             }
-        }
+            live
+        });
 
+        // Each token gets its own session, so an expired token releases its
+        // context along with it, however recently the context was used.
+        for session_id in &released {
+            self.contexts.remove(session_id);
+        }
         self.contexts
             .retain(|_, entry| entry.last_used.elapsed() <= ttl);
         self.prepared
@@ -220,27 +227,65 @@ impl SessionStore {
 mod test {
     use super::*;
 
+    /// Moves an entry's idle timer back by `age`, so expiry can be tested
+    /// without sleeping.
+    fn backdate<T>(entry: &mut Tracked<T>, age: Duration) {
+        entry.last_used = Instant::now() - age;
+    }
+
     #[test]
     fn session_survives_while_touched_and_expires_when_idle() {
-        let store = SessionStore::new(Duration::from_millis(50));
+        let ttl = Duration::from_secs(60);
+        let store = SessionStore::new(ttl);
         store.insert_session("token".to_string(), "session".to_string());
+        store.insert_context("session".to_string(), Arc::new(SessionContext::new()));
 
         assert_eq!(store.session("token"), Some("session".to_string()));
         assert!(store.sweep().is_empty());
 
-        std::thread::sleep(Duration::from_millis(60));
+        backdate(&mut store.sessions.get_mut("token").unwrap(), ttl * 2);
         assert_eq!(store.sweep(), vec!["session".to_string()]);
         assert_eq!(store.session("token"), None);
+        assert!(
+            store.context("session").is_none(),
+            "an expired token releases its context"
+        );
     }
 
     #[test]
-    fn dropping_a_token_drops_its_cached_context() {
+    fn handles_are_only_visible_to_their_session() {
         let store = SessionStore::new(Duration::from_secs(60));
-        store.insert_session("token".to_string(), "session".to_string());
-        store.insert_context("session".to_string(), Arc::new(SessionContext::new()));
+        store.insert_result(
+            "result".to_string(),
+            LocalResult {
+                session_id: "a".to_string(),
+                schema: Arc::new(arrow::datatypes::Schema::empty()),
+                batches: vec![],
+            },
+        );
+        store.insert_prepared(
+            "prepared".to_string(),
+            Prepared {
+                session_id: "a".to_string(),
+                plan: LogicalPlan::EmptyRelation(
+                    datafusion::logical_expr::EmptyRelation {
+                        produce_one_row: false,
+                        schema: Arc::new(datafusion::common::DFSchema::empty()),
+                    },
+                ),
+            },
+        );
 
-        assert_eq!(store.remove_session("token"), Some("session".to_string()));
-        assert!(store.context("session").is_none());
+        assert!(store.take_result("result", "b").is_none());
+        assert!(store.prepared("prepared", "b").is_none());
+        store.remove_prepared("prepared", "b");
+
+        assert!(store.prepared("prepared", "a").is_some());
+        assert!(store.take_result("result", "a").is_some());
+        assert!(
+            store.take_result("result", "a").is_none(),
+            "results are single-use"
+        );
     }
 
     #[test]
@@ -257,21 +302,5 @@ mod test {
             Arc::ptr_eq(&kept, &first),
             "a later caller must not swap it"
         );
-    }
-
-    #[test]
-    fn local_results_are_single_use() {
-        let store = SessionStore::new(Duration::from_secs(60));
-        let schema = Arc::new(arrow::datatypes::Schema::empty());
-        store.insert_result(
-            "handle".to_string(),
-            LocalResult {
-                schema,
-                batches: vec![],
-            },
-        );
-
-        assert!(store.take_result("handle").is_some());
-        assert!(store.take_result("handle").is_none());
     }
 }

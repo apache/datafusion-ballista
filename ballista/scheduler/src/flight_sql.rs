@@ -18,14 +18,15 @@
 //! Binds the [`ballista_flight_sql`] frontend to this scheduler.
 //!
 //! The frontend does not know about `SchedulerServer`; this is the only place
-//! the two meet, which is what keeps the Flight SQL code from re-acquiring the
-//! coupling that made the pre-46.0.0 implementation unmaintainable.
+//! the two meet.
 
 use std::sync::Arc;
 
+use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::{JobStatus, SuccessfulJob, job_status};
 use ballista_flight_sql::backend::{QueryBackend, QueryResult};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -59,22 +60,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryBackend
         ctx: Arc<SessionContext>,
         plan: LogicalPlan,
     ) -> Result<QueryResult> {
-        // The schema handed to the client has to be the one the shuffle files
-        // actually carry, which is the physical plan's, not the logical plan's:
-        // the two disagree about nullability often enough to matter (`version()`
-        // is nullable logically and not-null in the data; a list literal goes the
-        // other way), and a Flight SQL client that is promised one schema and
-        // handed another -- ADBC among them -- rejects the result outright.
-        // Planning twice costs a few milliseconds against a job that is about to
-        // run on the cluster.
-        let schema = ctx.state().create_physical_plan(&plan).await?.schema();
-
         // Subscribe before submitting so no status can be missed, and follow
         // the status stream rather than polling `get_job_status`.
         let (subscriber, mut statuses) =
             tokio::sync::mpsc::channel::<JobStatus>(STATUS_BUFFER);
         let job_id = self
-            .submit_job(job_name, ctx, &plan, Some(subscriber))
+            .submit_job(job_name, ctx.clone(), &plan, Some(subscriber))
             .await?;
 
         while let Some(status) = statuses.recv().await {
@@ -83,6 +74,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryBackend
                     partition_location,
                     ..
                 })) => {
+                    let schema = self.result_schema(&job_id, &ctx, &plan).await?;
                     return Ok(QueryResult {
                         job_id: job_id.to_string(),
                         schema,
@@ -104,8 +96,43 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryBackend
             "job {job_id} ended without reporting a final status"
         )))
     }
+}
 
-    async fn cancel(&self, job_id: &str) -> Result<()> {
-        SchedulerServer::cancel_job(self, job_id.into()).await
+impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
+    /// The schema of a finished job's result files.
+    ///
+    /// This has to be the schema the shuffle files actually carry, which is
+    /// the physical plan's rather than the logical plan's: the two disagree
+    /// about nullability often enough to matter (`version()` is nullable
+    /// logically and not-null in the data; a list literal goes the other way),
+    /// and a Flight SQL client that is promised one schema and handed another,
+    /// ADBC among them, rejects the result outright.
+    ///
+    /// The job's final stage is the plan that wrote those files, so its schema
+    /// is read from there. Only if the graph is no longer available is the plan
+    /// planned again, which for a listing table means listing its files again.
+    async fn result_schema(
+        &self,
+        job_id: &JobId,
+        ctx: &SessionContext,
+        plan: &LogicalPlan,
+    ) -> Result<SchemaRef> {
+        let graph = self
+            .state
+            .task_manager
+            .get_job_execution_graph(job_id)
+            .await?;
+        let final_stage_schema = graph.and_then(|graph| {
+            graph
+                .stages()
+                .values()
+                .find(|stage| stage.output_links().is_empty())
+                .map(|stage| stage.plan().schema())
+        });
+
+        match final_stage_schema {
+            Some(schema) => Ok(schema),
+            None => Ok(ctx.state().create_physical_plan(plan).await?.schema()),
+        }
     }
 }

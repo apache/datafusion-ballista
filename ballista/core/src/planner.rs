@@ -21,7 +21,7 @@ use crate::serde::BallistaLogicalExtensionCodec;
 
 use datafusion::arrow::datatypes::Schema;
 use datafusion::catalog::Session;
-use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
+use datafusion::common::tree_node::TreeNodeVisitor;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::{LogicalPlan, TableScan};
@@ -171,7 +171,8 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
 /// these locally instead.
 pub fn scans_only_local_tables(plan: &LogicalPlan) -> bool {
     let mut local_run = LocalRun::default();
-    let _ = plan.visit(&mut local_run);
+    // Subqueries scan tables too, and `visit` does not descend into them.
+    let _ = plan.visit_with_subqueries(&mut local_run);
     local_run.can_be_local
 }
 
@@ -299,6 +300,28 @@ mod test {
         lp.visit(&mut local_run).unwrap();
 
         assert!(!local_run.can_be_local);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_not_detect_table_scanned_in_subquery() -> Result<()> {
+        let ctx = context();
+        ctx.sql("CREATE TABLE big (name VARCHAR)")
+            .await?
+            .show()
+            .await?;
+        // Unoptimized, so the subquery is still an expression rather than the
+        // join the optimizer would decorrelate it into.
+        let plan = ctx
+            .state()
+            .create_logical_plan(
+                "SELECT table_name FROM information_schema.tables \
+             WHERE table_name IN (SELECT name FROM big)",
+            )
+            .await?;
+
+        assert!(!super::scans_only_local_tables(&plan));
 
         Ok(())
     }

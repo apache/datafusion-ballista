@@ -95,13 +95,9 @@ jobs:
       - name: Run tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
-          cargo test --profile ci --features=testcontainers
-      - name: Run Arrow Flight SQL tests
-        # The frontend is a non-default feature, so the workspace run above
-        # compiles its integration test away.
-        run: |
-          export PATH=$PATH:$HOME/d/protoc/bin
-          cargo test --profile ci -p ballista-scheduler --features flight-sql --test flight_sql
+          # The Flight SQL frontend is a non-default feature; enable it here so
+          # its end-to-end tests are not compiled away.
+          cargo test --profile ci --features=testcontainers,ballista-scheduler/flight-sql
 
   # Run `cargo doc` to ensure the rustdoc is clean
   rustdoc:

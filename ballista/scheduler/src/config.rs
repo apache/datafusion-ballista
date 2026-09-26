@@ -421,8 +421,12 @@ pub struct SchedulerConfig {
     pub flight_sql: bool,
     /// Authenticates Arrow Flight SQL handshakes.
     ///
-    /// Without one the frontend accepts every client, so this is the only way
-    /// to run it on an untrusted network without fronting it with a proxy.
+    /// Without one the frontend accepts every client and they share one
+    /// session. With one, each authenticated client gets a session of its own.
+    /// This isolates clients from one another; it does not secure the port,
+    /// which also serves the scheduler's gRPC and REST APIs and Ballista's own
+    /// partition fetches without authentication. Keep the scheduler on a
+    /// trusted network either way.
     #[cfg(feature = "flight-sql")]
     pub override_flight_sql_authenticator:
         Option<Arc<dyn ballista_flight_sql::Authenticator>>,
