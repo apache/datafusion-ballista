@@ -88,7 +88,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
@@ -96,8 +95,6 @@ jobs:
       - name: Run tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
-          export ARROW_TEST_DATA=$(pwd)/testing/data
-          export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cargo test --profile ci --features=testcontainers
 
   # Run `cargo doc` to ensure the rustdoc is clean
@@ -121,7 +118,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
@@ -129,8 +125,6 @@ jobs:
       - name: Try to compile when `--no-default-features` is selected
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
-          export ARROW_TEST_DATA=$(pwd)/testing/data
-          export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cargo check --profile ci -p ballista-scheduler -p ballista-executor -p ballista-core -p ballista --no-default-features --locked
 
   ballista-test:
@@ -141,7 +135,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
@@ -149,8 +142,6 @@ jobs:
       - name: Run Ballista tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
-          export ARROW_TEST_DATA=$(pwd)/testing/data
-          export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cd ballista
           # Ensure also compiles in standalone mode
           cargo test --profile ci --no-default-features --features standalone --locked
@@ -161,7 +152,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          submodules: true
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
@@ -170,8 +160,6 @@ jobs:
         shell: bash
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
-          export ARROW_TEST_DATA=$(pwd)/testing/data
-          export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cargo test --profile ci --locked
 
   # verify that the benchmark queries return the correct results
@@ -239,7 +227,7 @@ jobs:
           rustup default stable
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
       - name: Install taplo
-        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12 # v2.87.18
         with:
           tool: taplo-cli@0.10.0
 
@@ -257,7 +245,7 @@ jobs:
         with:
           fetch-depth: 1
       - name: Install cargo-machete
-        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        uses: taiki-e/install-action@dfae9bf3d6f6c6f20ef4ebb3486c01a51341ff12 # v2.87.18
         with:
           tool: cargo-machete@0.9.2
 
