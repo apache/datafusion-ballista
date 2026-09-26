@@ -49,7 +49,6 @@ use datafusion_iceberg::{
     IcebergMetadataTableProvider, IcebergStaticTableProvider, IcebergTableProvider,
 };
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
-use iceberg::TableIdent;
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{
@@ -138,12 +137,17 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                     serde_json::from_slice(rest).map_err(json_err)?;
                 match wire {
                     IcebergProviderWire::Table { table_ref } => {
+                        // Rebuilt with the schema the plan was encoded with, the
+                        // client's provider's, rather than the table's current
+                        // one: the plan refers to the provider's columns by their
+                        // index in that schema. The provider then plans exactly as
+                        // the client's does, without loading the table here.
                         let (config, table) = table_ref.into_parts();
-                        let cat = get_catalog(&config)?;
-                        let TableIdent { namespace, name } = table;
-                        let provider = block_on(IcebergTableProvider::try_new(
-                            cat, namespace, name,
-                        ))?
+                        let provider = IcebergTableProvider::new_with_schema(
+                            get_catalog(&config)?,
+                            table,
+                            schema,
+                        )
                         .with_catalog_config(config);
                         Ok(Arc::new(provider))
                     }

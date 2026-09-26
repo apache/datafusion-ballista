@@ -30,7 +30,7 @@
 use std::sync::Arc;
 
 use ballista_core::serde::BallistaPhysicalExtensionCodec;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::common::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalExpr;
@@ -47,9 +47,10 @@ use datafusion_proto::physical_plan::{
 };
 use iceberg::arrow::schema_to_arrow_schema;
 use iceberg::expr::Predicate;
-use iceberg::spec::{PartitionSpec, Schema};
+use iceberg::spec::{PartitionSpec, Schema as IcebergSchema};
 use iceberg::table::Table;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::bridge::{
     Frame, TAG_DELEGATED, TableRefWire, TableWire, encode_blob, json_err, load_table_at,
@@ -66,7 +67,10 @@ enum IcebergPhysicalNode {
         /// The snapshot a time-travel scan reads; `None` reads the current
         /// snapshot of the planned table version.
         snapshot_id: Option<i64>,
-        projection: Option<Vec<String>>,
+        /// The scan's output schema, as planned. The executor reads these
+        /// columns, by name, and produces exactly this schema, even if the
+        /// table's schema differs from the one the scan was planned with.
+        schema: Schema,
         limit: Option<usize>,
         /// Pushed-down filter, restored on the remote node so Iceberg file
         /// pruning is preserved (DataFusion still re-applies it above the scan).
@@ -82,6 +86,10 @@ enum IcebergPhysicalNode {
         /// The metadata file the write was planned against, which the commit
         /// rebuilds the table from (see [`load_table_at`]).
         metadata_location: String,
+        /// Must be the planned node's, so that every attempt at running the
+        /// commit (Ballista retries failed tasks) commits at most once; see
+        /// [`IcebergCommitExec::commit_id`].
+        commit_id: Uuid,
     },
     Metadata {
         table: TableWire,
@@ -97,7 +105,7 @@ enum IcebergPhysicalNode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PartitionExprWire {
     partition_spec: PartitionSpec,
-    schema: Schema,
+    schema: IcebergSchema,
 }
 
 /// A [`PhysicalExtensionCodec`] that understands the Iceberg plan nodes and
@@ -142,18 +150,17 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             IcebergPhysicalNode::Scan {
                 table,
                 snapshot_id,
-                projection,
+                schema,
                 limit,
                 predicates,
             } => {
-                let table = table.load()?;
-                let schema = scan_schema(&table, snapshot_id)?;
-                let projection = project_indices(&schema, projection.as_ref(), &table)?;
+                // Every column of the planned output schema, in order.
+                let projection = (0..schema.fields().len()).collect();
                 let scan = IcebergTableScan::new_with_predicate(
-                    table,
+                    table.load()?,
                     snapshot_id,
-                    schema,
-                    projection.as_ref(),
+                    Arc::new(schema),
+                    Some(&projection),
                     predicates,
                     limit,
                 )?;
@@ -166,6 +173,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             IcebergPhysicalNode::Commit {
                 table_ref,
                 metadata_location,
+                commit_id,
             } => {
                 let (config, table) = table_ref.into_parts();
                 let (cat, table_obj) =
@@ -173,7 +181,8 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 let arrow_schema = current_arrow_schema(&table_obj)?;
                 let input = single_input(inputs, "IcebergCommitExec")?;
                 let commit = IcebergCommitExec::new(table_obj, cat, input, arrow_schema)
-                    .with_catalog_config(config);
+                    .with_catalog_config(config)
+                    .with_commit_id(commit_id);
                 Ok(Arc::new(commit))
             }
             IcebergPhysicalNode::Metadata {
@@ -196,7 +205,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
             let node = IcebergPhysicalNode::Scan {
                 table: TableWire::new(scan.table())?,
                 snapshot_id: scan.snapshot_id(),
-                projection: scan.projection().map(|s| s.to_vec()),
+                schema: scan.schema().as_ref().clone(),
                 limit: scan.limit(),
                 predicates: scan.predicates().cloned(),
             };
@@ -221,6 +230,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                     .metadata_location_result()
                     .map_err(to_datafusion_error)?
                     .to_string(),
+                commit_id: commit.commit_id(),
             };
             return encode_blob(buf, &node);
         }
@@ -286,62 +296,6 @@ fn current_arrow_schema(table: &Table) -> Result<SchemaRef, DataFusionError> {
     ))
 }
 
-/// The Arrow schema a scan of `table` at `snapshot_id` was planned with, resolved
-/// as the providers resolve it: the snapshot's own schema for a time-travel read,
-/// the table's current schema otherwise.
-fn scan_schema(
-    table: &Table,
-    snapshot_id: Option<i64>,
-) -> Result<SchemaRef, DataFusionError> {
-    let Some(id) = snapshot_id else {
-        return current_arrow_schema(table);
-    };
-    let snapshot = table.metadata().snapshot_by_id(id).ok_or_else(|| {
-        DataFusionError::Internal(format!(
-            "snapshot {id} not found in table {}",
-            table.identifier()
-        ))
-    })?;
-    let schema = snapshot
-        .schema(table.metadata())
-        .map_err(to_datafusion_error)?;
-    Ok(Arc::new(
-        schema_to_arrow_schema(&schema).map_err(to_datafusion_error)?,
-    ))
-}
-
-/// Maps projected column names back to their indices in `schema`, the schema
-/// of `table` the scan reads.
-///
-/// The executor resolves the same table version the scheduler planned against,
-/// so a name that doesn't resolve means the plan was made from an older view of
-/// the table: a catalog-backed provider keeps the schema it was created with,
-/// so a column dropped or renamed since then is still projected. That is a hard
-/// error rather than a scan with fewer columns than the plan expects.
-fn project_indices(
-    schema: &SchemaRef,
-    projection: Option<&Vec<String>>,
-    table: &Table,
-) -> Result<Option<Vec<usize>>, DataFusionError> {
-    projection
-        .map(|names| {
-            names
-                .iter()
-                .map(|name| {
-                    schema.index_of(name).map_err(|_| {
-                        DataFusionError::Plan(format!(
-                            "projected column {name:?} is not in table {}; it may have \
-                             been dropped or renamed after the table provider was \
-                             created",
-                            table.identifier()
-                        ))
-                    })
-                })
-                .collect::<Result<Vec<usize>, _>>()
-        })
-        .transpose()
-}
-
 fn single_input(
     inputs: &[Arc<dyn ExecutionPlan>],
     node: &str,
@@ -384,7 +338,7 @@ mod tests {
         let node = IcebergPhysicalNode::Scan {
             table: sample_table(),
             snapshot_id: Some(1),
-            projection: None,
+            schema: arrow_schema(),
             limit: None,
             predicates: Some(Reference::new("a").less_than(Datum::long(5))),
         };
@@ -404,7 +358,7 @@ mod tests {
         let node = IcebergPhysicalNode::Scan {
             table: sample_table(),
             snapshot_id: Some(1),
-            projection: None,
+            schema: arrow_schema(),
             limit: None,
             predicates: Some(predicate),
         };
@@ -420,7 +374,7 @@ mod tests {
         let node = IcebergPhysicalNode::Scan {
             table: sample_table(),
             snapshot_id: Some(7),
-            projection: None,
+            schema: arrow_schema(),
             limit: None,
             predicates: Some(Reference::new("a").less_than(Datum::long(5))),
         };
@@ -466,7 +420,7 @@ mod tests {
             }
         }
 
-        let schema = Schema::builder()
+        let schema = IcebergSchema::builder()
             .with_schema_id(0)
             .with_fields(vec![
                 NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int))
@@ -563,42 +517,37 @@ mod tests {
         assert_eq!(decoded.stage_id(), 7);
     }
 
-    fn arrow_schema() -> SchemaRef {
-        use datafusion::arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
-        Arc::new(ArrowSchema::new(vec![
+    fn arrow_schema() -> Schema {
+        use datafusion::arrow::datatypes::{DataType, Field};
+        Schema::new(vec![
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),
             Field::new("c", DataType::Int32, false),
-        ]))
+        ])
     }
 
-    #[test]
-    fn project_indices_resolves_names_in_projection_order() {
-        let table = test_util::table(&[]);
-        let names = vec!["c".to_string(), "a".to_string()];
-        let idx = project_indices(&arrow_schema(), Some(&names), &table).unwrap();
-        assert_eq!(idx, Some(vec![2, 0]), "resolved in projection order");
-
-        // No projection means "all columns", not "no columns".
-        assert_eq!(
-            project_indices(&arrow_schema(), None, &table).unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn project_indices_unknown_column_errors() {
-        // A projected name absent from the table must fail loudly, naming the
-        // column and the likely cause.
-        let names = vec!["missing".to_string()];
-        let err = project_indices(&arrow_schema(), Some(&names), &test_util::table(&[]))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("\"missing\""), "names the column: {err}");
-        assert!(
-            err.contains("dropped or renamed"),
-            "the likely cause: {err}"
-        );
+    /// The Arrow schema a scan of `table` at `snapshot_id` was planned with, resolved
+    /// as the providers resolve it: the snapshot's own schema for a time-travel read,
+    /// the table's current schema otherwise.
+    fn scan_schema(
+        table: &Table,
+        snapshot_id: Option<i64>,
+    ) -> Result<SchemaRef, DataFusionError> {
+        let Some(id) = snapshot_id else {
+            return current_arrow_schema(table);
+        };
+        let snapshot = table.metadata().snapshot_by_id(id).ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "snapshot {id} not found in table {}",
+                table.identifier()
+            ))
+        })?;
+        let schema = snapshot
+            .schema(table.metadata())
+            .map_err(to_datafusion_error)?;
+        Ok(Arc::new(
+            schema_to_arrow_schema(&schema).map_err(to_datafusion_error)?,
+        ))
     }
 
     fn roundtrip_plan(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
@@ -664,6 +613,29 @@ mod tests {
         }
     }
 
+    /// The executor produces the schema the scan was planned with, not one
+    /// derived again from the table. A catalog-backed provider plans with the
+    /// schema it was created with, which lags the table's once its schema
+    /// changes: here the table has gained `name` since.
+    #[test]
+    fn scan_decodes_to_the_planned_schema() {
+        use datafusion::arrow::datatypes::{DataType, Field};
+
+        let dir = tempfile::tempdir().unwrap();
+        let table = test_util::stored_table(dir.path(), &[1]);
+        let planned =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let original: Arc<dyn ExecutionPlan> = Arc::new(
+            IcebergTableScan::new_with_predicate(table, None, planned, None, None, None)
+                .unwrap(),
+        );
+
+        let decoded = roundtrip_plan(Arc::clone(&original));
+        assert_eq!(decoded.schema(), original.schema());
+        let decoded = decoded.downcast_ref::<IcebergTableScan>().unwrap();
+        assert_eq!(decoded.projection(), Some(&["id".to_string()][..]));
+    }
+
     #[tokio::test]
     async fn scan_of_an_empty_table_decodes_and_reads_nothing() {
         use datafusion::prelude::SessionContext;
@@ -714,7 +686,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_and_commit_record_the_planned_metadata_file() {
+    async fn write_and_commit_record_the_planned_metadata_file_and_commit_id() {
         use std::collections::HashMap;
 
         use iceberg::CatalogBuilder;
@@ -750,6 +722,10 @@ mod tests {
             )
             .with_catalog_config(test_util::catalog_config()),
         );
+        let planned_commit_id = commit
+            .downcast_ref::<IcebergCommitExec>()
+            .unwrap()
+            .commit_id();
 
         for node in [write, commit] {
             let mut buf = Vec::new();
@@ -759,8 +735,14 @@ mod tests {
             let location = match serde_json::from_slice(&buf[1..]).expect("decode wire") {
                 IcebergPhysicalNode::Write { table } => table.metadata_location,
                 IcebergPhysicalNode::Commit {
-                    metadata_location, ..
-                } => metadata_location,
+                    metadata_location,
+                    commit_id,
+                    ..
+                } => {
+                    // Every attempt at the commit must share the planned id.
+                    assert_eq!(commit_id, planned_commit_id);
+                    metadata_location
+                }
                 other => panic!("expected a write or commit, got {other:?}"),
             };
             assert_eq!(location, "/test/tbl/metadata.json");
@@ -826,6 +808,96 @@ mod tests {
             err.to_string()
                 .contains("unknown iceberg physical expr tag 99"),
             "{err}"
+        );
+    }
+
+    /// A named multi-thread runtime, standing in for an executor's.
+    fn named_runtime(name: &str) -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name(name)
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// A scan of all of `table`'s rows, encoded by the codec.
+    fn encoded_full_scan(table: Table) -> Vec<u8> {
+        let schema = scan_schema(&table, None).unwrap();
+        let scan =
+            IcebergTableScan::new_with_predicate(table, None, schema, None, None, None)
+                .unwrap();
+        let mut buf = Vec::new();
+        IcebergPhysicalCodec::default()
+            .try_encode(Arc::new(scan), &mut buf, &DefaultPhysicalProtoConverter {})
+            .unwrap();
+        buf
+    }
+
+    /// Decodes `buf` on `runtime`, as an executor does, runs it there and
+    /// returns the number of rows.
+    fn decode_and_run(runtime: &tokio::runtime::Runtime, buf: &[u8]) -> usize {
+        use datafusion::prelude::SessionContext;
+
+        runtime.block_on(async {
+            let ctx = SessionContext::new();
+            let plan = IcebergPhysicalCodec::default()
+                .try_decode(buf, &[], &ctx.task_ctx(), &DefaultPhysicalProtoConverter {})
+                .unwrap();
+            datafusion::physical_plan::collect(plan, ctx.task_ctx())
+                .await
+                .unwrap()
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum()
+        })
+    }
+
+    /// A rebuilt table is cached and served to later decodes, so it must not
+    /// be bound to the runtime of the decode that built it: once that runtime
+    /// shuts down, as a finished test or a dropped standalone context does,
+    /// Iceberg's scan planning is spawned onto it and never runs, and the
+    /// scan returns no rows instead of failing.
+    #[test]
+    fn decoded_scan_survives_the_decoding_runtime_shutting_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let table =
+            named_runtime("setup").block_on(test_util::table_with_rows(dir.path(), 3));
+        let buf = encoded_full_scan(table);
+
+        let first = named_runtime("first-executor");
+        assert_eq!(decode_and_run(&first, &buf), 3);
+        drop(first);
+
+        assert_eq!(decode_and_run(&named_runtime("second-executor"), &buf), 3);
+    }
+
+    /// Scan planning (reading and parsing manifests) runs on the table
+    /// runtime, which has a worker per core, not on the single-threaded
+    /// catalog runtime, where every scan in the process would share one thread.
+    #[test]
+    fn decoded_scan_plans_on_the_table_runtime() {
+        use crate::test_util::recording_storage::take_reads;
+
+        let dir = tempfile::tempdir().unwrap();
+        let table =
+            named_runtime("setup").block_on(test_util::table_with_rows(dir.path(), 3));
+        let buf = encoded_full_scan(table);
+        take_reads(dir.path());
+
+        assert_eq!(decode_and_run(&named_runtime("executor"), &buf), 3);
+
+        let manifest_threads: Vec<String> = take_reads(dir.path())
+            .into_iter()
+            .filter(|(path, _)| path.ends_with(".avro") && !path.contains("/snap-"))
+            .map(|(_, thread)| thread)
+            .collect();
+        assert_eq!(manifest_threads.len(), 3, "one manifest per commit");
+        assert!(
+            manifest_threads
+                .iter()
+                .all(|t| t.starts_with("iceberg-table")),
+            "manifests read on {manifest_threads:?}"
         );
     }
 }

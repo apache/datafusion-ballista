@@ -36,7 +36,8 @@
 //! Rebuilding is asynchronous (metadata reads and catalog calls do I/O) but the
 //! codec entry points are synchronous, so [`block_on`] bridges the two by
 //! running every such future on [`CATALOG_RT`], a dedicated process-lived
-//! runtime.
+//! runtime. The tables this crate rebuilds are bound to a second one,
+//! [`TABLE_RT`], where Iceberg runs their scan planning.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
@@ -79,15 +80,15 @@ pub(crate) fn missing_table_config_err(node: &str) -> DataFusionError {
     )
 }
 
-/// Dedicated process-lived runtime that drives all Iceberg catalog and metadata
-/// I/O.
+/// Dedicated process-lived runtime that runs every future [`block_on`] is
+/// given: catalog calls and the metadata-file reads of plan decoding.
 ///
 /// A catalog's HTTP/connection pool is bound to the runtime that drives it, so
 /// running every catalog future here — instead of on whatever runtime the codec
 /// caller happens to be on — means a cached catalog can never reference an
 /// already-dropped runtime, no matter which thread or test asks for it later.
-/// Catalog operations only happen at plan encode/decode time, so one worker is
-/// plenty.
+/// This work happens only while plans are encoded and decoded, so one worker is
+/// plenty; scan planning, which is heavier, runs on [`TABLE_RT`] instead.
 static CATALOG_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
@@ -96,6 +97,36 @@ static CATALOG_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
         .build()
         .expect("failed to build iceberg catalog runtime")
 });
+
+/// Dedicated process-lived runtime that the tables this crate rebuilds are
+/// bound to (see [`table_runtime`]).
+///
+/// Iceberg runs a table's scan planning, reading and parsing its manifests and
+/// delete files, on tasks it spawns onto the table's runtime. So this runtime
+/// has a worker per core, and is separate from [`CATALOG_RT`] so that catalog
+/// calls made while decoding plans don't wait behind that work.
+///
+/// It must outlive every table bound to it, which is why it lives as long as
+/// the process rather than being the runtime of the codec's caller. Rebuilt
+/// tables are cached and handed to later decodes ([`TABLES`]), possibly on
+/// other runtimes. Were a table bound to a runtime that has shut down, such as
+/// a finished test's or a dropped standalone context's, Iceberg would spawn its
+/// scan planning onto that runtime, where it never runs, and the scan would
+/// return no rows instead of failing.
+static TABLE_RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .thread_name("iceberg-table")
+        .enable_all()
+        .build()
+        .expect("failed to build iceberg table runtime")
+});
+
+/// The Iceberg [`Runtime`] every table this crate builds is bound to: [`TABLE_RT`].
+fn table_runtime() -> Runtime {
+    Runtime::new(&TABLE_RT)
+}
 
 /// Runs an async future to completion on [`CATALOG_RT`] from a synchronous
 /// context, whatever runtime (if any) the caller happens to be on.
@@ -135,8 +166,21 @@ where
 /// one catalog, so we cache by config. Every cached catalog lives on
 /// [`CATALOG_RT`], which never shuts down, so entries stay valid for the life
 /// of the process and can be served to any caller.
-static CATALOGS: LazyLock<Mutex<HashMap<CatalogConfigWire, Arc<dyn Catalog>>>> =
+static CATALOGS: LazyLock<Mutex<HashMap<CatalogKey, Arc<dyn Catalog>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// A [`CATALOGS`] key: a config's type, name and properties, the properties
+/// sorted so the key can be hashed.
+type CatalogKey = (String, String, BTreeMap<String, String>);
+
+fn catalog_key(config: &IcebergCatalogConfig) -> CatalogKey {
+    let props = config
+        .props
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    (config.catalog_type.clone(), config.name.clone(), props)
+}
 
 /// Builds a catalog from its config.
 ///
@@ -161,7 +205,7 @@ pub(crate) async fn build_catalog(
 pub(crate) fn get_catalog(
     config: &IcebergCatalogConfig,
 ) -> Result<Arc<dyn Catalog>, DataFusionError> {
-    let key = CatalogConfigWire::from(config);
+    let key = catalog_key(config);
     if let Some(catalog) = CATALOGS.lock().unwrap().get(&key) {
         return Ok(catalog.clone());
     }
@@ -173,10 +217,7 @@ pub(crate) fn get_catalog(
 /// Drops any cached catalog for `config`, so the next [`get_catalog`] rebuilds
 /// it — reopening connections and re-resolving credentials.
 fn evict_catalog(config: &IcebergCatalogConfig) {
-    CATALOGS
-        .lock()
-        .unwrap()
-        .remove(&CatalogConfigWire::from(config));
+    CATALOGS.lock().unwrap().remove(&catalog_key(config));
 }
 
 /// Whether a catalog error is worth one rebuild-and-retry.
@@ -234,6 +275,11 @@ pub(crate) fn load_table_with_catalog(
 /// `FileIO`. Metadata files are immutable, so this is exactly the planned
 /// version. An encrypted table cannot be rebuilt this way (there is no KMS
 /// client to pass on) and fails instead.
+///
+/// The table is returned as the catalog loaded it when it is still at the
+/// planned version, keeping whatever the catalog set up (such as a KMS client),
+/// and is bound to the catalog's runtime. Otherwise it is bound to
+/// [`TABLE_RT`], like every other table this crate builds.
 pub(crate) fn load_table_at(
     config: &IcebergCatalogConfig,
     ident: &TableIdent,
@@ -243,7 +289,6 @@ pub(crate) fn load_table_at(
     if current.metadata_location() == Some(metadata_location) {
         return Ok((catalog, current));
     }
-    // Built on the catalog runtime, like the tables the catalog loads.
     let planned = block_on(async {
         let metadata =
             TableMetadata::read_from(current.file_io(), metadata_location).await?;
@@ -253,7 +298,7 @@ pub(crate) fn load_table_at(
             .identifier(ident.clone())
             .file_io(current.file_io().clone())
             .readonly(current.readonly())
-            .runtime(Runtime::current())
+            .runtime(table_runtime())
             .build()
     })
     .map_err(to_datafusion_error)?;
@@ -296,6 +341,10 @@ const TABLE_CACHE_CAPACITY: usize = 32;
 /// rebuilds, because metadata files never change, so an entry can never go
 /// stale; it can only age out. New credentials make a new wire value, and so a
 /// new entry, rather than reusing a table that holds the old ones.
+///
+/// Sharing the table also shares its manifest cache, so later scans of it skip
+/// reading and parsing its manifests. That is only safe because every cached
+/// table is bound to the process-lived [`TABLE_RT`].
 static TABLES: LazyLock<Mutex<VecDeque<(TableWire, Table)>>> =
     LazyLock::new(|| Mutex::new(VecDeque::new()));
 
@@ -349,45 +398,6 @@ pub(crate) fn split_frame<'a>(
     }
 }
 
-/// Serializable mirror of [`IcebergCatalogConfig`] (which is intentionally not
-/// serde-aware in the iceberg crate to avoid a serde dependency there).
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub(crate) struct CatalogConfigWire {
-    pub catalog_type: String,
-    pub name: String,
-    // BTreeMap (not HashMap) so the struct can derive Hash for the catalog
-    // cache, and so encode→decode→encode round-trips to identical bytes.
-    pub props: BTreeMap<String, String>,
-}
-
-/// Redacted like [`IcebergCatalogConfig`]'s `Debug`, which it defers to: the
-/// property values often hold credentials.
-impl fmt::Debug for CatalogConfigWire {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&IcebergCatalogConfig::from(self.clone()), f)
-    }
-}
-
-impl From<&IcebergCatalogConfig> for CatalogConfigWire {
-    fn from(c: &IcebergCatalogConfig) -> Self {
-        Self {
-            catalog_type: c.catalog_type.clone(),
-            name: c.name.clone(),
-            props: c
-                .props
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        }
-    }
-}
-
-impl From<CatalogConfigWire> for IcebergCatalogConfig {
-    fn from(p: CatalogConfigWire) -> Self {
-        IcebergCatalogConfig::new(p.catalog_type, p.name, p.props.into_iter().collect())
-    }
-}
-
 /// The `(catalog, table)` header every Iceberg wire payload begins with.
 ///
 /// `#[serde(flatten)]`ed into each wire variant, so the JSON is identical to
@@ -395,19 +405,19 @@ impl From<CatalogConfigWire> for IcebergCatalogConfig {
 /// change.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct TableRefWire {
-    pub catalog: CatalogConfigWire,
+    pub catalog: IcebergCatalogConfig,
     pub table: TableIdent,
 }
 
 impl TableRefWire {
     pub(crate) fn new(config: &IcebergCatalogConfig, table: &TableIdent) -> Self {
         Self {
-            catalog: config.into(),
+            catalog: config.clone(),
             table: table.clone(),
         }
     }
     pub(crate) fn into_parts(self) -> (IcebergCatalogConfig, TableIdent) {
-        (self.catalog.into(), self.table)
+        (self.catalog, self.table)
     }
 }
 
@@ -464,14 +474,13 @@ impl TableWire {
         let file_io = FileIO::deserialize_all(&serde_json::to_vec(&self.file_io.0)?)?;
         let metadata =
             TableMetadata::read_from(&file_io, &self.metadata_location).await?;
-        // Built on the catalog runtime, like the tables a catalog loads.
         Table::builder()
             .metadata(metadata)
             .metadata_location(&self.metadata_location)
             .identifier(self.table.clone())
             .file_io(file_io)
             .readonly(self.readonly)
-            .runtime(Runtime::current())
+            .runtime(table_runtime())
             .build()
     }
 }
@@ -538,22 +547,6 @@ mod tests {
     }
 
     #[test]
-    fn catalog_config_wire_debug_hides_property_values() {
-        let config = IcebergCatalogConfig::new(
-            "rest",
-            "rest",
-            HashMap::from([
-                ("uri".to_string(), "http://localhost:8181".to_string()),
-                ("s3.secret-access-key".to_string(), "hunter2".to_string()),
-            ]),
-        );
-        assert_eq!(
-            format!("{:?}", CatalogConfigWire::from(&config)),
-            r#"IcebergCatalogConfig { catalog_type: "rest", name: "rest", props: {"s3.secret-access-key": <redacted>, "uri": <redacted>} }"#
-        );
-    }
-
-    #[test]
     fn table_wire_debug_hides_storage_properties() {
         use iceberg::io::{FileIOBuilder, LocalFsStorageFactory};
 
@@ -571,32 +564,14 @@ mod tests {
     }
 
     #[test]
-    fn catalog_config_wire_roundtrips_to_identical_config() {
-        let config = IcebergCatalogConfig::new(
-            "rest",
-            "rest",
-            sample_props().into_iter().collect(),
+    fn catalog_key_ignores_property_order() {
+        // Equal configs must share a cached catalog, however their
+        // properties happen to be ordered.
+        let forward = sample_props().into_iter().collect();
+        let reversed = sample_props().into_iter().rev().collect();
+        assert_eq!(
+            catalog_key(&IcebergCatalogConfig::new("rest", "rest", forward)),
+            catalog_key(&IcebergCatalogConfig::new("rest", "rest", reversed))
         );
-        let restored: IcebergCatalogConfig = CatalogConfigWire::from(&config).into();
-        assert_eq!(restored, config);
-    }
-
-    #[test]
-    fn catalog_config_wire_serialization_is_deterministic() {
-        // BTreeMap props serialize in key order, so the same entries yield the same
-        // bytes regardless of HashMap ordering — what the cache key relies on.
-        let forward: HashMap<_, _> = sample_props().into_iter().collect();
-        let reversed: HashMap<_, _> = sample_props().into_iter().rev().collect();
-
-        let a =
-            CatalogConfigWire::from(&IcebergCatalogConfig::new("rest", "rest", forward));
-        let b =
-            CatalogConfigWire::from(&IcebergCatalogConfig::new("rest", "rest", reversed));
-        let a_bytes = serde_json::to_vec(&a).unwrap();
-        assert_eq!(a_bytes, serde_json::to_vec(&b).unwrap());
-
-        // encode→decode→encode is a fixed point.
-        let decoded: CatalogConfigWire = serde_json::from_slice(&a_bytes).unwrap();
-        assert_eq!(serde_json::to_vec(&decoded).unwrap(), a_bytes);
     }
 }

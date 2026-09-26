@@ -65,8 +65,9 @@ datafusion-spark = "55"
 datafusion-substrait = "55"
 
 # iceberg-ballista (integrations/iceberg) needs datafusion-iceberg changes that
-# are not released yet: the catalog-config plumbing that lets scan/write plan
-# nodes be rebuilt on a remote executor. Until they are released,
+# are not released yet: public plan nodes and constructors, so the codecs can
+# rebuild them on remote nodes, and the catalog config that commits and
+# catalog-backed tables carry there. Until they are released,
 # datafusion-iceberg is pinned to the branch that carries them, and the iceberg
 # crates to the iceberg-rust revision that branch builds against. Keep the
 # iceberg `rev` identical across every entry, and equal to the one in

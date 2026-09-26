@@ -486,6 +486,7 @@ version = "59.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10fab8d4563491417ba801fab29d205104d20d4bdf37bda6cd1cf425cff598cd"
 dependencies = [
+ "serde",
  "serde_core",
  "serde_json",
 ]
@@ -3150,7 +3151,7 @@ dependencies = [
 [[package]]
 name = "datafusion-iceberg"
 version = "0.10.1"
-source = "git+https://github.com/NoahKusaba/datafusion-iceberg.git?branch=feat%2Fballista-distributed-support#95d5148698f4df0de86c47ba011d34aa02a1fa9d"
+source = "git+https://github.com/NoahKusaba/datafusion-iceberg.git?branch=feat%2Fballista-distributed-support#13de8da87e582e4d070dd251f6ef294baaa00ca0"
 dependencies = [
  "async-trait",
  "dashmap",
@@ -3158,6 +3159,7 @@ dependencies = [
  "futures",
  "iceberg",
  "parquet",
+ "serde",
  "tokio",
  "uuid",
 ]
@@ -4681,14 +4683,18 @@ name = "iceberg-ballista"
 version = "54.0.0"
 dependencies = [
  "arrow",
+ "arrow-schema",
+ "async-trait",
  "ballista",
  "ballista-core",
  "ballista-executor",
  "ballista-scheduler",
+ "bytes",
  "datafusion",
  "datafusion-iceberg",
  "datafusion-proto",
  "env_logger",
+ "futures",
  "iceberg",
  "iceberg-catalog-loader",
  "iceberg-catalog-rest",
@@ -4700,6 +4706,8 @@ dependencies = [
  "testcontainers",
  "tokio",
  "tokio-stream",
+ "typetag",
+ "uuid",
 ]
 
 [[package]]

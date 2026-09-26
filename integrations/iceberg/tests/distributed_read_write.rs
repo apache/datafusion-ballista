@@ -1111,3 +1111,186 @@ async fn scan_decodes_against_the_planned_table_version() {
         &collect(decoded, ctx.task_ctx()).await.expect("run read")
     );
 }
+
+/// A plan decodes against the schema it was planned with, so the scheduler
+/// runs it as the client would, even after the table's schema changed.
+///
+/// The encoded plan refers to the scan's columns by index into the client
+/// provider's schema, which is the schema the table had when it was
+/// registered. Rebuilt with the table's current schema instead, the provider
+/// would resolve those indices to other columns: dropping `a` and adding `c`
+/// moves `c` to the index `b` had, so the scheduler would read `c` for a query
+/// that asked for `b`.
+///
+/// Drives the codec directly, like
+/// `write_decodes_against_the_planned_table_version`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plan_decodes_against_the_schema_it_was_planned_with() {
+    use datafusion_proto::bytes::{
+        logical_plan_from_bytes_with_extension_codec,
+        logical_plan_to_bytes_with_extension_codec,
+    };
+    use iceberg_ballista::IcebergLogicalCodec;
+
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let fixture = IcebergFixture::start().await;
+    let props = fixture.props();
+    let table_name = "evolving".to_string();
+    let string = |id, name: &str| {
+        NestedField::optional(id, name, Type::Primitive(PrimitiveType::String)).into()
+    };
+    let schema = Schema::builder()
+        .with_schema_id(0)
+        .with_fields(vec![
+            NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+            string(2, "a"),
+            string(3, "b"),
+        ])
+        .build()
+        .unwrap();
+    let namespace = create_table_with(&props, &table_name, schema, None).await;
+    let table_ident = TableIdent::new(namespace.clone(), table_name.clone());
+
+    // Client: register the table and plan a read of `b`.
+    let ctx = SessionContext::new();
+    register_iceberg_table(
+        &ctx,
+        "t",
+        IcebergCatalogConfig::new("rest", "rest", props.clone()),
+        namespace,
+        table_name,
+    )
+    .await
+    .expect("register iceberg table");
+    run_sql(&ctx, "INSERT INTO t VALUES (1, 'A', 'B')").await;
+    let plan = ctx
+        .sql("SELECT b FROM t")
+        .await
+        .expect("plan read")
+        .into_optimized_plan()
+        .expect("optimize read");
+    let codec = IcebergLogicalCodec::default();
+    let bytes =
+        logical_plan_to_bytes_with_extension_codec(&plan, &codec).expect("encode plan");
+
+    // The schema changes before the scheduler decodes: drop `a`, add `c`.
+    let catalog = fixture::rest_catalog(&props).await;
+    let table = catalog.load_table(&table_ident).await.expect("load table");
+    let tx = Transaction::new(&table);
+    let tx = tx
+        .update_schema()
+        .delete_column("a")
+        .add_column(AddColumn::optional(
+            "c",
+            Type::Primitive(PrimitiveType::String),
+        ))
+        .apply(tx)
+        .expect("apply schema update");
+    tx.commit(&catalog).await.expect("commit schema");
+
+    // Scheduler: the decoded plan still reads `b`, and returns what running
+    // the same query on the client does.
+    let scheduler = SessionContext::new();
+    let decoded = logical_plan_from_bytes_with_extension_codec(
+        &bytes,
+        &scheduler.task_ctx(),
+        &codec,
+    )
+    .expect("decode plan");
+    let expected = ["+---+", "| b |", "+---+", "| B |", "+---+"];
+    assert_batches_eq!(
+        expected,
+        &scheduler
+            .execute_logical_plan(decoded)
+            .await
+            .expect("plan decoded query")
+            .collect()
+            .await
+            .expect("run decoded query")
+    );
+    assert_batches_eq!(expected, &run_sql(&ctx, "SELECT b FROM t").await);
+}
+
+/// Running a commit task again commits its rows once.
+///
+/// Ballista reruns tasks when an executor is lost, including ones that had
+/// already succeeded, whose output was lost with it. If the executor dies after
+/// the commit went through, the writer tasks rerun and write the same rows to
+/// new data files, then the commit reruns. Committing again would append every
+/// row twice: the new files pass `fast_append`'s duplicate-file check, which
+/// only compares paths.
+///
+/// Drives the codec directly: two decodes of one encoded plan stand in for two
+/// attempts at the same tasks, each writing its own files.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rerunning_a_committed_insert_does_not_duplicate_rows() {
+    use ballista::datafusion::physical_plan::collect;
+    use datafusion_proto::bytes::{
+        physical_plan_from_bytes_with_extension_codec,
+        physical_plan_to_bytes_with_extension_codec,
+    };
+    use iceberg_ballista::IcebergPhysicalCodec;
+
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let fixture = IcebergFixture::start().await;
+    let props = fixture.props();
+    let table_name = "retried".to_string();
+    let namespace = create_table(&props, &table_name).await;
+    let table_ident = TableIdent::new(namespace.clone(), table_name.clone());
+    let catalog: Arc<dyn Catalog> = Arc::new(fixture::rest_catalog(&props).await);
+
+    let ctx = SessionContext::new();
+    let provider = IcebergTableProvider::try_new(catalog.clone(), namespace, table_name)
+        .await
+        .expect("build provider")
+        .with_catalog_config(IcebergCatalogConfig::new("rest", "rest", props));
+    ctx.register_table("t", Arc::new(provider))
+        .expect("register provider");
+
+    // Scheduler: plan and encode the INSERT once.
+    let plan = ctx
+        .sql("INSERT INTO t VALUES (1, 'alice'), (2, 'bob')")
+        .await
+        .expect("plan insert")
+        .create_physical_plan()
+        .await
+        .expect("physical plan");
+    let codec = IcebergPhysicalCodec::default();
+    let bytes =
+        physical_plan_to_bytes_with_extension_codec(plan, &codec).expect("encode plan");
+
+    // Executors: the first attempt commits; the retry must not commit again,
+    // and reports the rows the first attempt committed.
+    for attempt in ["first attempt", "retry"] {
+        let decoded = physical_plan_from_bytes_with_extension_codec(
+            &bytes,
+            &ctx.task_ctx(),
+            &codec,
+        )
+        .expect("decode plan");
+        assert_batches_eq!(
+            [
+                "+-------+",
+                "| count |",
+                "+-------+",
+                "| 2     |",
+                "+-------+"
+            ],
+            &collect(decoded, ctx.task_ctx())
+                .await
+                .unwrap_or_else(|e| panic!("run {attempt}: {e}"))
+        );
+    }
+
+    assert_batches_eq!(
+        ["+---+", "| n |", "+---+", "| 2 |", "+---+"],
+        &run_sql(&ctx, "SELECT count(*) AS n FROM t").await
+    );
+    let table = catalog
+        .load_table(&table_ident)
+        .await
+        .expect("reload table");
+    assert_eq!(table.metadata().snapshots().count(), 1);
+}

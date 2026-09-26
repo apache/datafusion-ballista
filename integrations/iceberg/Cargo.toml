@@ -37,6 +37,8 @@ rust-version = "1.95"
 publish = false
 
 [dependencies]
+# `serde` so a scan can carry its planned Arrow schema to executors.
+arrow-schema = { version = "59.2.0", features = ["serde"] }
 ballista-core = { path = "../../ballista/core", version = "54.0.0" }
 datafusion = { workspace = true }
 datafusion-iceberg = { workspace = true }
@@ -47,9 +49,13 @@ iceberg-storage-opendal = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
 tokio = { workspace = true }
+uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 arrow = { workspace = true }
+# The recording storage backend the codec unit tests use to see which threads
+# read a table's files.
+async-trait = { workspace = true }
 ballista = { path = "../../ballista/client", version = "54.0.0", features = [
     "standalone",
 ] }
@@ -61,7 +67,9 @@ ballista-executor = { path = "../../ballista/executor", version = "54.0.0", defa
     "arrow-ipc-optimizations",
 ] }
 ballista-scheduler = { path = "../../ballista/scheduler", version = "54.0.0", default-features = false }
+bytes = "1"
 env_logger = { workspace = true }
+futures = { workspace = true }
 iceberg-catalog-rest = { workspace = true }
 log = { workspace = true }
 tempfile = { workspace = true }
@@ -80,6 +88,9 @@ tokio = { workspace = true, features = [
 # Serves the test scheduler's gRPC service on a pre-bound listener, so the
 # multi-executor test can keep a handle on the scheduler's cluster state.
 tokio-stream = { workspace = true }
+# Registers the recording storage backend with iceberg's `FileIO`
+# serialization; must be the typetag iceberg uses.
+typetag = "0.2"
 
 [features]
 default = []

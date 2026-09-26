@@ -118,3 +118,168 @@ pub(crate) fn stored_table(dir: &Path, snapshot_ids: &[i64]) -> Table {
     std::fs::write(&location, serde_json::to_vec(&metadata).unwrap()).unwrap();
     table_at(metadata, FileIO::new_with_fs(), location.to_str().unwrap())
 }
+
+/// A local-filesystem storage backend that records which thread reads each
+/// file, so tests can check where a table's work runs.
+pub(crate) mod recording_storage {
+    use std::ops::Range;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use futures::stream::BoxStream;
+    use iceberg::Result;
+    use iceberg::io::{
+        FileMetadata, FileRead, FileWrite, InputFile, LocalFsStorage, OutputFile,
+        Storage, StorageConfig, StorageFactory,
+    };
+    use serde::{Deserialize, Serialize};
+
+    /// `(path, reading thread's name)` of every read, across all tests;
+    /// [`take_reads`] picks out one test's by directory.
+    static READS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+    fn record(path: &str) {
+        let thread = std::thread::current().name().unwrap_or("").to_string();
+        READS.lock().unwrap().push((path.to_string(), thread));
+    }
+
+    /// Removes and returns the reads of files under `dir`.
+    pub(crate) fn take_reads(dir: &Path) -> Vec<(String, String)> {
+        let dir = dir.to_str().unwrap();
+        let mut reads = READS.lock().unwrap();
+        let (taken, kept) = reads.drain(..).partition(|(path, _)| path.contains(dir));
+        *reads = kept;
+        taken
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct RecordingStorageFactory;
+
+    #[typetag::serde]
+    impl StorageFactory for RecordingStorageFactory {
+        fn build(&self, _config: &StorageConfig) -> Result<Arc<dyn Storage>> {
+            Ok(Arc::new(RecordingStorage))
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct RecordingStorage;
+
+    /// Records each read when it happens, not when the reader is opened.
+    struct RecordingRead(Box<dyn FileRead>, String);
+
+    #[async_trait]
+    impl FileRead for RecordingRead {
+        async fn read(&self, range: Range<u64>) -> Result<Bytes> {
+            record(&self.1);
+            self.0.read(range).await
+        }
+    }
+
+    #[async_trait]
+    #[typetag::serde]
+    impl Storage for RecordingStorage {
+        async fn exists(&self, path: &str) -> Result<bool> {
+            LocalFsStorage.exists(path).await
+        }
+        async fn metadata(&self, path: &str) -> Result<FileMetadata> {
+            LocalFsStorage.metadata(path).await
+        }
+        async fn read(&self, path: &str) -> Result<Bytes> {
+            record(path);
+            LocalFsStorage.read(path).await
+        }
+        async fn reader(&self, path: &str) -> Result<Box<dyn FileRead>> {
+            let reader = LocalFsStorage.reader(path).await?;
+            Ok(Box::new(RecordingRead(reader, path.to_string())))
+        }
+        async fn write(&self, path: &str, bs: Bytes) -> Result<()> {
+            LocalFsStorage.write(path, bs).await
+        }
+        async fn writer(&self, path: &str) -> Result<Box<dyn FileWrite>> {
+            LocalFsStorage.writer(path).await
+        }
+        async fn delete(&self, path: &str) -> Result<()> {
+            LocalFsStorage.delete(path).await
+        }
+        async fn delete_prefix(&self, path: &str) -> Result<()> {
+            LocalFsStorage.delete_prefix(path).await
+        }
+        async fn delete_stream(&self, paths: BoxStream<'static, String>) -> Result<()> {
+            LocalFsStorage.delete_stream(paths).await
+        }
+        fn new_input(&self, path: &str) -> Result<InputFile> {
+            Ok(InputFile::new(Arc::new(self.clone()), path.to_string()))
+        }
+        fn new_output(&self, path: &str) -> Result<OutputFile> {
+            Ok(OutputFile::new(Arc::new(self.clone()), path.to_string()))
+        }
+    }
+}
+
+/// Table `ns.t` with an `id` column under `dir`, stored through
+/// [`recording_storage`], after `commits` single-row INSERTs, so a scan has
+/// real data files and one manifest per commit to read.
+pub(crate) async fn table_with_rows(dir: &Path, commits: usize) -> Table {
+    use std::sync::Arc;
+
+    use datafusion::prelude::SessionContext;
+    use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
+    use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation};
+
+    let warehouse = dir.to_str().unwrap().to_string();
+    let catalog: Arc<dyn Catalog> = Arc::new(
+        MemoryCatalogBuilder::default()
+            .with_storage_factory(Arc::new(recording_storage::RecordingStorageFactory))
+            .load(
+                "memory",
+                HashMap::from([(
+                    MEMORY_CATALOG_WAREHOUSE.to_string(),
+                    warehouse.clone(),
+                )]),
+            )
+            .await
+            .unwrap(),
+    );
+    let namespace = NamespaceIdent::new("ns".to_string());
+    catalog
+        .create_namespace(&namespace, HashMap::new())
+        .await
+        .unwrap();
+    let schema = Schema::builder()
+        .with_fields(vec![
+            NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+        ])
+        .build()
+        .unwrap();
+    let creation = TableCreation::builder()
+        .name("t".to_string())
+        .location(format!("{warehouse}/t"))
+        .schema(schema)
+        .build();
+    catalog.create_table(&namespace, creation).await.unwrap();
+
+    let provider = datafusion_iceberg::IcebergTableProvider::try_new(
+        catalog.clone(),
+        namespace.clone(),
+        "t",
+    )
+    .await
+    .unwrap();
+    let ctx = SessionContext::new();
+    ctx.register_table("t", Arc::new(provider)).unwrap();
+    for id in 0..commits {
+        ctx.sql(&format!("INSERT INTO t VALUES ({id})"))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+    }
+    catalog
+        .load_table(&TableIdent::new(namespace, "t".to_string()))
+        .await
+        .unwrap()
+}
