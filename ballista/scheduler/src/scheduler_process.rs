@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::api::SchedulerErrorResponse;
-use crate::flight_proxy_service::BallistaFlightProxyService;
+use ballista_core::flight_proxy_service::BallistaFlightProxyService;
 
 #[cfg(feature = "rest-api")]
 use crate::api::get_routes;

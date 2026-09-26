@@ -27,7 +27,6 @@ use crate::serde::protobuf::{
     scheduler_grpc_client::SchedulerGrpcClient,
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
-use crate::serde::scheduler::ShuffleLayout;
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -865,6 +864,7 @@ async fn fetch_partition(
     io_retries_times: u8,
     io_retry_wait_time_ms: u64,
 ) -> Result<SendableRecordBatchStream> {
+    let layout = location.layout();
     let metadata = location.executor_meta.ok_or_else(|| {
         DataFusionError::Internal("Received empty executor metadata".to_owned())
     })?;
@@ -896,11 +896,7 @@ async fn fetch_partition(
             &metadata.id,
             &partition_id.into(),
             location.file_id,
-            if location.is_sort_shuffle {
-                ShuffleLayout::Sort
-            } else {
-                ShuffleLayout::Passthrough
-            },
+            layout,
             host,
             port,
             flight_transport,
