@@ -17,7 +17,12 @@
   under the License.
 -->
 
-This directory contains a tool that ensures the MSRV is consistent with upstream
-datafusion dependencies.
+# Who Uses Ballista
 
-[issue 1271]: https://github.com/apache/datafusion-ballista/issues/1271#issuecomment-3094456313
+The following organizations use Ballista. To add yours, open a pull request that adds a row to
+`docs/source/community/adopters.md`.
+
+| Organization                       | Reference                                                                        |
+| ---------------------------------- | -------------------------------------------------------------------------------- |
+| [Spice AI](https://spice.ai)       | [Apache Ballista at Spice AI](https://spice.ai/blog/apache-ballista-at-spice-ai) |
+| [Coralogix](https://coralogix.com) | —                                                                                |
