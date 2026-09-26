@@ -15,20 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Logical extension codec that serializes Iceberg table providers (their
-//! [`IcebergCatalogConfig`](crate::IcebergCatalogConfig) + table identifier) so
-//! that the Ballista scheduler can rebuild them from a logical plan and perform
-//! physical planning for Iceberg tables.
+//! Logical extension codec that serializes Iceberg table providers so that the
+//! Ballista scheduler can rebuild them from a logical plan and perform physical
+//! planning for Iceberg tables.
 //!
 //! Each provider decodes back to its own type:
 //!
 //! - [`IcebergTableProvider`] is catalog-backed: it reads the table's current
-//!   state and supports `INSERT`.
-//! - [`IcebergStaticTableProvider`] is read-only and pinned to a snapshot, which
-//!   is fixed at encode time so the scheduler reads exactly what the client
-//!   planned against. Use it for time travel.
+//!   state and supports `INSERT`. It travels as its
+//!   [`IcebergCatalogConfig`](crate::IcebergCatalogConfig) and table identifier.
+//! - [`IcebergStaticTableProvider`] is read-only and fixed to the table version
+//!   the client loaded, optionally at an older snapshot. Use it for time travel.
 //! - [`IcebergMetadataTableProvider`] serves metadata tables such as
 //!   `tbl$snapshots`.
+//!
+//! The last two travel as a [`TableWire`], so the scheduler reads exactly what
+//! the client planned against and needs no catalog to rebuild them.
 //!
 //! All other logical-plan serialization (extension nodes, file formats, other
 //! table providers) is delegated to an inner codec (by default Ballista's
@@ -40,7 +42,6 @@ use ballista_core::serde::BallistaLogicalExtensionCodec;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
 use datafusion::common::{DataFusionError, TableReference};
-use datafusion::datasource::empty::EmptyTable;
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Extension, LogicalPlan};
@@ -52,9 +53,8 @@ use iceberg::TableIdent;
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::{
-    Frame, TAG_DELEGATED, TableRefWire, block_on, build_metadata_provider, encode_blob,
-    get_catalog, json_err, load_table_pinned, missing_catalog_config_err,
-    missing_static_config_err, missing_table_config_err, split_frame, static_provider,
+    Frame, TAG_DELEGATED, TableRefWire, TableWire, block_on, encode_blob, get_catalog,
+    json_err, metadata_provider, missing_table_config_err, split_frame, static_provider,
 };
 
 /// Wire representation of an Iceberg table provider. Carries enough to rebuild
@@ -69,26 +69,17 @@ enum IcebergProviderWire {
     },
     /// A read-only [`IcebergStaticTableProvider`].
     Static {
-        #[serde(flatten)]
-        table_ref: TableRefWire,
-        snapshot: ViewSnapshot,
+        table: TableWire,
+        /// The snapshot a time-travel view reads; `None` reads the current
+        /// snapshot of `table`.
+        snapshot_id: Option<i64>,
     },
     /// An [`IcebergMetadataTableProvider`] (e.g. `tbl$snapshots`).
     Metadata {
-        #[serde(flatten)]
-        table_ref: TableRefWire,
+        table: TableWire,
         /// The metadata table kind, as its lowercase string name.
         metadata_type: String,
     },
-}
-
-/// What a read-only view reads, fixed when the view is encoded.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-enum ViewSnapshot {
-    Snapshot(i64),
-    /// The table had no snapshot, so the view is empty. Reloading the table
-    /// instead could read rows committed after the view was planned.
-    Empty,
 }
 
 /// A [`LogicalExtensionCodec`] that understands the Iceberg table providers and
@@ -156,27 +147,13 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                         .with_catalog_config(config);
                         Ok(Arc::new(provider))
                     }
-                    IcebergProviderWire::Static {
-                        snapshot: ViewSnapshot::Empty,
-                        ..
-                    } => Ok(Arc::new(EmptyTable::new(schema))),
-                    IcebergProviderWire::Static {
-                        table_ref,
-                        snapshot: ViewSnapshot::Snapshot(id),
-                    } => {
-                        let (config, table) = table_ref.into_parts();
-                        let table = load_table_pinned(&config, &table, id)?;
-                        let provider =
-                            block_on(static_provider(table, Some(id), config))?;
-                        Ok(Arc::new(provider))
-                    }
+                    IcebergProviderWire::Static { table, snapshot_id } => Ok(Arc::new(
+                        block_on(static_provider(table.load()?, snapshot_id))?,
+                    )),
                     IcebergProviderWire::Metadata {
-                        table_ref,
+                        table,
                         metadata_type,
-                    } => Ok(Arc::new(build_metadata_provider(
-                        table_ref,
-                        &metadata_type,
-                    )?)),
+                    } => Ok(Arc::new(metadata_provider(table.load()?, &metadata_type)?)),
                 }
             }
         }
@@ -198,31 +175,15 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
             return encode_blob(buf, &wire);
         }
         if let Some(provider) = node.downcast_ref::<IcebergStaticTableProvider>() {
-            let config = provider
-                .catalog_config()
-                .ok_or_else(|| missing_static_config_err("IcebergStaticTableProvider"))?;
-            // An unpinned static provider reads the table as it was loaded, so
-            // pin that snapshot. Otherwise the scheduler, which reloads the
-            // table, could read a newer one.
-            let snapshot = match provider
-                .snapshot_id()
-                .or_else(|| provider.table().metadata().current_snapshot_id())
-            {
-                Some(id) => ViewSnapshot::Snapshot(id),
-                None => ViewSnapshot::Empty,
-            };
             let wire = IcebergProviderWire::Static {
-                table_ref: TableRefWire::new(config, provider.table_ident()),
-                snapshot,
+                table: TableWire::new(provider.table())?,
+                snapshot_id: provider.snapshot_id(),
             };
             return encode_blob(buf, &wire);
         }
         if let Some(provider) = node.downcast_ref::<IcebergMetadataTableProvider>() {
-            let config = provider.catalog_config().ok_or_else(|| {
-                missing_catalog_config_err("IcebergMetadataTableProvider")
-            })?;
             let wire = IcebergProviderWire::Metadata {
-                table_ref: TableRefWire::new(config, provider.table().identifier()),
+                table: TableWire::new(provider.table())?,
                 metadata_type: provider.metadata_type().as_str().to_string(),
             };
             return encode_blob(buf, &wire);
@@ -251,6 +212,7 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
 #[cfg(test)]
 mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+    use datafusion::datasource::empty::EmptyTable;
     use datafusion::prelude::SessionContext;
 
     use crate::bridge::TAG_ICEBERG;
@@ -258,81 +220,59 @@ mod tests {
 
     use super::*;
 
-    /// Encodes `provider` with the Iceberg codec and returns its wire form.
-    fn encode_static(provider: IcebergStaticTableProvider) -> IcebergProviderWire {
+    fn roundtrip(provider: Arc<dyn TableProvider>) -> Arc<dyn TableProvider> {
+        let codec = IcebergLogicalCodec::default();
+        let table_ref = TableReference::bare("t");
+        let schema = provider.schema();
         let mut buf = Vec::new();
-        IcebergLogicalCodec::default()
-            .try_encode_table_provider(
-                &TableReference::bare("t"),
-                Arc::new(provider),
-                &mut buf,
-            )
+        codec
+            .try_encode_table_provider(&table_ref, provider, &mut buf)
             .expect("encode");
         assert_eq!(buf[0], TAG_ICEBERG);
-        serde_json::from_slice(&buf[1..]).expect("decode wire")
+        let ctx = SessionContext::new();
+        codec
+            .try_decode_table_provider(&buf, &table_ref, schema, &ctx.task_ctx())
+            .expect("decode")
     }
 
-    fn encoded_snapshot(provider: IcebergStaticTableProvider) -> ViewSnapshot {
-        match encode_static(provider) {
-            IcebergProviderWire::Static { snapshot, .. } => snapshot,
-            other => panic!("expected a static provider, got {other:?}"),
+    #[tokio::test]
+    async fn static_provider_decodes_to_the_planned_table_version() {
+        // The scheduler rebuilds the view from the planned metadata file and
+        // FileIO alone: there is no catalog here to ask.
+        let dir = tempfile::tempdir().unwrap();
+        let table = test_util::stored_table(dir.path(), &[1, 2]);
+
+        for snapshot_id in [None, Some(1)] {
+            let provider = static_provider(table.clone(), snapshot_id).await.unwrap();
+            let schema = provider.schema();
+            let decoded = roundtrip(Arc::new(provider));
+            let decoded = decoded
+                .downcast_ref::<IcebergStaticTableProvider>()
+                .unwrap();
+            assert_eq!(
+                decoded.table().metadata_location(),
+                table.metadata_location()
+            );
+            assert_eq!(decoded.snapshot_id(), snapshot_id);
+            assert_eq!(decoded.schema(), schema);
         }
     }
 
-    #[tokio::test]
-    async fn static_provider_is_pinned_when_encoded() {
-        let config = test_util::catalog_config();
+    #[test]
+    fn metadata_provider_decodes_to_the_planned_table_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let table = test_util::stored_table(dir.path(), &[1]);
+        let provider = metadata_provider(table.clone(), "snapshots").unwrap();
 
-        // Unpinned: pinned to the snapshot current when it was loaded, since
-        // the scheduler reloads the table and could otherwise see a newer one.
-        let unpinned =
-            IcebergStaticTableProvider::try_new_from_table(test_util::table(&[1, 2]))
-                .await
-                .unwrap()
-                .with_catalog_config(config.clone());
-        assert_eq!(encoded_snapshot(unpinned), ViewSnapshot::Snapshot(2));
-
-        // Pinned: keeps its own snapshot, not the current one.
-        let pinned = IcebergStaticTableProvider::try_new_from_table_snapshot(
-            test_util::table(&[1, 2]),
-            1,
-        )
-        .await
-        .unwrap()
-        .with_catalog_config(config.clone());
-        assert_eq!(encoded_snapshot(pinned), ViewSnapshot::Snapshot(1));
-
-        // No snapshot to pin: the view is empty.
-        let empty = IcebergStaticTableProvider::try_new_from_table(test_util::table(&[]))
-            .await
-            .unwrap()
-            .with_catalog_config(config);
-        assert_eq!(encoded_snapshot(empty), ViewSnapshot::Empty);
-    }
-
-    #[tokio::test]
-    async fn empty_static_provider_decodes_to_an_empty_table() {
-        let provider =
-            IcebergStaticTableProvider::try_new_from_table(test_util::table(&[]))
-                .await
-                .unwrap()
-                .with_catalog_config(test_util::catalog_config());
-        let schema = provider.schema();
-        let codec = IcebergLogicalCodec::default();
-        let table_ref = TableReference::bare("t");
-
-        let mut buf = Vec::new();
-        codec
-            .try_encode_table_provider(&table_ref, Arc::new(provider), &mut buf)
-            .expect("encode");
-        // Decoding needs no catalog: the view is known to be empty.
-        let ctx = SessionContext::new();
-        let decoded = codec
-            .try_decode_table_provider(&buf, &table_ref, schema.clone(), &ctx.task_ctx())
-            .expect("decode");
-
-        assert!(decoded.downcast_ref::<EmptyTable>().is_some());
-        assert_eq!(decoded.schema(), schema);
+        let decoded = roundtrip(Arc::new(provider));
+        let decoded = decoded
+            .downcast_ref::<IcebergMetadataTableProvider>()
+            .unwrap();
+        assert_eq!(
+            decoded.table().metadata_location(),
+            table.metadata_location()
+        );
+        assert_eq!(decoded.metadata_type().as_str(), "snapshots");
     }
 
     /// Stand-in inner codec for the delegation test. The real Ballista codec can't

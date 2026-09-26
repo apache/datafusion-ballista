@@ -1048,3 +1048,66 @@ async fn write_decodes_against_the_planned_table_version() {
     assert_eq!(table.metadata().snapshots().count(), 1);
     assert_eq!(table.metadata().current_schema_id(), 1);
 }
+
+/// A scan reads the table version it was planned against, even when a commit
+/// lands between scheduler planning and executor decode: the executor rebuilds
+/// the table from the planned metadata file rather than asking the catalog.
+///
+/// Drives the codec directly, like
+/// `write_decodes_against_the_planned_table_version`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scan_decodes_against_the_planned_table_version() {
+    use ballista::datafusion::physical_plan::collect;
+    use datafusion_proto::bytes::{
+        physical_plan_from_bytes_with_extension_codec,
+        physical_plan_to_bytes_with_extension_codec,
+    };
+    use iceberg_ballista::IcebergPhysicalCodec;
+
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let fixture = IcebergFixture::start().await;
+    let props = fixture.props();
+    let table_name = "planned_read".to_string();
+    let namespace = create_table(&props, &table_name).await;
+    let catalog: Arc<dyn Catalog> = Arc::new(fixture::rest_catalog(&props).await);
+
+    let ctx = SessionContext::new();
+    let provider = IcebergTableProvider::try_new(catalog, namespace, table_name)
+        .await
+        .expect("build provider")
+        .with_catalog_config(IcebergCatalogConfig::new("rest", "rest", props));
+    ctx.register_table("t", Arc::new(provider))
+        .expect("register provider");
+    run_sql(&ctx, "INSERT INTO t VALUES (1, 'alice')").await;
+
+    // Scheduler: plan and encode the read.
+    let plan = ctx
+        .sql("SELECT id, name FROM t ORDER BY id")
+        .await
+        .expect("plan read")
+        .create_physical_plan()
+        .await
+        .expect("physical plan");
+    let codec = IcebergPhysicalCodec::default();
+    let bytes =
+        physical_plan_to_bytes_with_extension_codec(plan, &codec).expect("encode plan");
+
+    // A concurrent commit lands before the executors decode.
+    run_sql(&ctx, "INSERT INTO t VALUES (2, 'bob')").await;
+
+    // Executor: decode and run. Only the planned version's rows appear.
+    let decoded =
+        physical_plan_from_bytes_with_extension_codec(&bytes, &ctx.task_ctx(), &codec)
+            .expect("decode plan");
+    assert_batches_eq!(
+        [
+            "+----+-------+",
+            "| id | name  |",
+            "+----+-------+",
+            "| 1  | alice |",
+            "+----+-------+",
+        ],
+        &collect(decoded, ctx.task_ctx()).await.expect("run read")
+    );
+}

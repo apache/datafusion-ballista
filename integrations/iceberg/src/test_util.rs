@@ -18,13 +18,14 @@
 //! Fixtures for the codec unit tests.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use datafusion_iceberg::IcebergCatalogConfig;
 use iceberg::TableIdent;
 use iceberg::io::FileIO;
 use iceberg::spec::{
     FormatVersion, MAIN_BRANCH, NestedField, Operation, PartitionSpec, PrimitiveType,
-    Schema, Snapshot, SortOrder, Summary, TableMetadataBuilder, Type,
+    Schema, Snapshot, SortOrder, Summary, TableMetadata, TableMetadataBuilder, Type,
 };
 use iceberg::table::Table;
 use iceberg::test_utils::test_runtime;
@@ -37,10 +38,10 @@ pub(crate) fn catalog_config() -> IcebergCatalogConfig {
     )
 }
 
-/// Table `ns.tbl` with columns `{id, name}` and the given snapshots, committed
-/// in order to the main branch, so the last one is current. No data files
-/// exist: only the metadata is real.
-pub(crate) fn table(snapshot_ids: &[i64]) -> Table {
+/// Metadata of table `ns.tbl` with columns `{id, name}` and the given
+/// snapshots, committed in order to the main branch, so the last one is current.
+/// No data files exist: only the metadata is real.
+fn metadata(snapshot_ids: &[i64]) -> TableMetadata {
     let schema = Schema::builder()
         .with_fields(vec![
             NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
@@ -84,13 +85,36 @@ pub(crate) fn table(snapshot_ids: &[i64]) -> Table {
             .metadata;
         parent = Some(id);
     }
+    metadata
+}
 
+fn table_at(metadata: TableMetadata, file_io: FileIO, location: &str) -> Table {
     Table::builder()
         .metadata(metadata)
         .identifier(TableIdent::from_strs(["ns", "tbl"]).unwrap())
-        .file_io(FileIO::new_with_fs())
-        .metadata_location("/test/tbl/metadata.json")
+        .file_io(file_io)
+        .metadata_location(location)
         .runtime(test_runtime())
         .build()
         .unwrap()
+}
+
+/// [`metadata`] as a table whose metadata file, `/test/tbl/metadata.json`, does
+/// not exist: enough to encode nodes, not to decode them.
+pub(crate) fn table(snapshot_ids: &[i64]) -> Table {
+    table_with_file_io(snapshot_ids, FileIO::new_with_fs())
+}
+
+/// [`table`] with a given `FileIO`.
+pub(crate) fn table_with_file_io(snapshot_ids: &[i64], file_io: FileIO) -> Table {
+    table_at(metadata(snapshot_ids), file_io, "/test/tbl/metadata.json")
+}
+
+/// [`metadata`] written to a metadata file under `dir`, so the table can be
+/// rebuilt from it.
+pub(crate) fn stored_table(dir: &Path, snapshot_ids: &[i64]) -> Table {
+    let location = dir.join("metadata.json");
+    let metadata = metadata(snapshot_ids);
+    std::fs::write(&location, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    table_at(metadata, FileIO::new_with_fs(), location.to_str().unwrap())
 }

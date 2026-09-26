@@ -23,7 +23,16 @@
 //! the only thing missing for Ballista is serialization. Ballista ships plans to
 //! remote nodes, but the Iceberg plan nodes hold live catalog/storage handles
 //! that can't be serialized. This crate's logical and physical extension codecs
-//! serialize the minimal config needed to rebuild those handles per node.
+//! send what each node needs to rebuild them:
+//!
+//! - Scans, writes and metadata-table scans send their table's metadata file
+//!   and its serialized storage access (`FileIO`). An executor rebuilds exactly
+//!   the table version the plan was made against, without a catalog.
+//! - Commits, and catalog-backed tables, send the [`IcebergCatalogConfig`] so
+//!   the catalog can be rebuilt where it is needed.
+//!
+//! Both carry credentials in plain text, so the links between client, scheduler
+//! and executors must be trusted or encrypted.
 //!
 //! ## Usage (standalone)
 //!
@@ -58,6 +67,13 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! Prefer these `register_*` helpers to building providers and calling
+//! `with_catalog_config` yourself. Each helper builds the catalog from the
+//! config it records, so the scheduler and the executors always use the same
+//! catalog. A hand-built provider whose catalog differs from its config raises
+//! no error: the plan is made against one catalog while the executors commit
+//! through the other.
 
 mod bridge;
 mod logical_codec;
@@ -101,8 +117,8 @@ pub fn register_iceberg_codecs(config: SessionConfig) -> SessionConfig {
 /// Builds a catalog-backed [`IcebergTableProvider`](datafusion_iceberg::IcebergTableProvider)
 /// from `config` and registers it on `ctx` under `register_name`.
 ///
-/// The provider carries `config` so its plan nodes can be reconstructed on
-/// remote Ballista nodes.
+/// The provider carries `config`, so the scheduler can rebuild it and executors
+/// can commit writes through the same catalog.
 pub async fn register_iceberg_table(
     ctx: &SessionContext,
     register_name: &str,
@@ -128,6 +144,9 @@ pub async fn register_iceberg_table(
 /// it always reads the same snapshot, with the schema that snapshot was written
 /// under, and rejects writes. Use [`register_iceberg_table`] to write to the
 /// table or to read its latest state.
+///
+/// `config` is only used here, to load the table. The view keeps the table as
+/// loaded, so remote nodes read that same version without a catalog.
 pub async fn register_iceberg_table_at_snapshot(
     ctx: &SessionContext,
     register_name: &str,
@@ -141,7 +160,7 @@ pub async fn register_iceberg_table_at_snapshot(
         .load_table(&TableIdent::new(namespace, table.into()))
         .await
         .map_err(to_datafusion_error)?;
-    let provider = bridge::static_provider(table, snapshot_id, config).await?;
+    let provider = bridge::static_provider(table, snapshot_id).await?;
     ctx.register_table(register_name, Arc::new(provider))?;
     Ok(())
 }
@@ -151,8 +170,8 @@ pub async fn register_iceberg_table_at_snapshot(
 /// whole Iceberg catalog at once.
 ///
 /// Every table then resolves as `<register_name>.<namespace>.<table>` in SQL,
-/// and each provider carries `config` so its plan nodes can be reconstructed on
-/// remote nodes — including metadata tables such as `<table>$snapshots`.
+/// including metadata tables such as `<table>$snapshots`, and each table
+/// provider carries `config` as [`register_iceberg_table`] describes.
 pub async fn register_iceberg_catalog(
     ctx: &SessionContext,
     register_name: &str,

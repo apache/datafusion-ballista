@@ -3150,7 +3150,7 @@ dependencies = [
 [[package]]
 name = "datafusion-iceberg"
 version = "0.10.1"
-source = "git+https://github.com/NoahKusaba/datafusion-iceberg.git?branch=feat%2Fballista-distributed-support#0f391951c936c41e40b0fbd7f7c73bd315cbf9ba"
+source = "git+https://github.com/NoahKusaba/datafusion-iceberg.git?branch=feat%2Fballista-distributed-support#95d5148698f4df0de86c47ba011d34aa02a1fa9d"
 dependencies = [
  "async-trait",
  "dashmap",
@@ -4696,6 +4696,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "tempfile",
  "testcontainers-modules",
  "tokio",
  "tokio-stream",

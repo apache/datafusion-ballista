@@ -19,20 +19,26 @@
 //! Iceberg's asynchronous, live-handle world, shared by the logical and
 //! physical extension codecs.
 //!
-//! The central problem this module solves is that Ballista serializes physical
-//! and logical plans to ship them to remote nodes, but the Iceberg plan nodes
-//! hold live, non-serializable state (an `Arc<dyn Catalog>` and a `Table` with
-//! an open `FileIO`). We side-step this by serializing only the minimal,
-//! self-contained [`IcebergCatalogConfig`] plus the [`TableIdent`], and then
-//! *reconstructing* the catalog and table on the receiving node by building the
-//! catalog from the config and loading the table from it.
+//! Ballista serializes physical and logical plans to ship them to remote nodes,
+//! but the Iceberg plan nodes hold live state: a [`Table`] with an open
+//! `FileIO`, and for commits an `Arc<dyn Catalog>`. Each is sent as the smallest
+//! description it can be rebuilt from:
 //!
-//! Reconstruction is asynchronous (catalog clients and table loads do I/O) but
-//! the codec entry points are synchronous, so [`block_on`] bridges the two by
-//! running every catalog future on [`CATALOG_RT`], a dedicated process-lived
+//! - A [`Table`] travels as a [`TableWire`]: its metadata file, which never
+//!   changes and so pins the exact version planned against, and its serialized
+//!   `FileIO`, which carries the storage access the planner had. The receiving
+//!   node reads the metadata file and needs no catalog.
+//! - A catalog travels as its [`IcebergCatalogConfig`], inside a
+//!   [`TableRefWire`]. Only the nodes that talk to the catalog need one: a
+//!   commit, and the catalog-backed table provider that reloads its table on
+//!   every scan.
+//!
+//! Rebuilding is asynchronous (metadata reads and catalog calls do I/O) but the
+//! codec entry points are synchronous, so [`block_on`] bridges the two by
+//! running every such future on [`CATALOG_RT`], a dedicated process-lived
 //! runtime.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -43,6 +49,7 @@ use datafusion_iceberg::{
     to_datafusion_error,
 };
 use iceberg::inspect::MetadataTableType;
+use iceberg::io::FileIO;
 use iceberg::spec::TableMetadata;
 use iceberg::table::Table;
 use iceberg::{Catalog, Error, ErrorKind, Runtime, TableIdent};
@@ -72,27 +79,8 @@ pub(crate) fn missing_table_config_err(node: &str) -> DataFusionError {
     )
 }
 
-/// [`missing_table_config_err`], but for a read-only static provider.
-pub(crate) fn missing_static_config_err(node: &str) -> DataFusionError {
-    missing_config(
-        node,
-        "record where the table was loaded from with \
-         IcebergStaticTableProvider::with_catalog_config (see \
-         iceberg_ballista::register_iceberg_table_at_snapshot)",
-    )
-}
-
-/// [`missing_table_config_err`], but for metadata-table nodes/providers, whose
-/// config normally arrives via catalog registration.
-pub(crate) fn missing_catalog_config_err(node: &str) -> DataFusionError {
-    missing_config(
-        node,
-        "register the catalog with IcebergCatalogProvider::try_new_with_config so \
-         its tables carry it (see iceberg_ballista::register_iceberg_catalog)",
-    )
-}
-
-/// Dedicated process-lived runtime that drives all Iceberg catalog I/O.
+/// Dedicated process-lived runtime that drives all Iceberg catalog and metadata
+/// I/O.
 ///
 /// A catalog's HTTP/connection pool is bound to the runtime that drives it, so
 /// running every catalog future here — instead of on whatever runtime the codec
@@ -213,7 +201,7 @@ fn is_retryable(err: &Error) -> bool {
 /// Returning the catalog matters for that retry: a caller that needs both (the
 /// commit node holds a catalog handle) must get the *rebuilt* catalog, not the
 /// stale one a separate [`get_catalog`] call before the eviction would have
-/// returned. Callers that only want the table use [`load_table`].
+/// returned.
 pub(crate) fn load_table_with_catalog(
     config: &IcebergCatalogConfig,
     ident: &TableIdent,
@@ -231,26 +219,17 @@ pub(crate) fn load_table_with_catalog(
     }
 }
 
-/// [`load_table_with_catalog`] for the callers that only want the table.
-pub(crate) fn load_table(
-    config: &IcebergCatalogConfig,
-    ident: &TableIdent,
-) -> Result<Table, DataFusionError> {
-    Ok(load_table_with_catalog(config, ident)?.1)
-}
-
 /// Loads `ident` as described by the metadata file at `metadata_location`,
 /// returning the catalog alongside it like [`load_table_with_catalog`].
 ///
-/// A write is planned against one version of the table: its input is checked
-/// against that schema, and its partition values are computed with that
-/// partition spec. The nodes that execute it must see the same version, not
-/// whatever the catalog serves when each task decodes, or a concurrent schema
-/// or spec change would be written into files the plan was never checked
-/// against.
+/// Serves the commit, the one node that needs a catalog. A write is planned
+/// against one version of the table, and its writer tasks rebuild exactly that
+/// version from a [`TableWire`]; the commit must see the same version, not
+/// whatever the catalog serves when it decodes.
 ///
-/// The table is still loaded from the catalog first, for its `FileIO`: the
-/// catalog may vend storage credentials the config alone does not carry. When
+/// Loading through the catalog first also rebuilds a stale catalog client (see
+/// [`load_table_with_catalog`]) before the commit relies on it, and yields a
+/// `FileIO` with fresh credentials the catalog may vend. When
 /// the catalog has moved on, the planned metadata file is read through that
 /// `FileIO`. Metadata files are immutable, so this is exactly the planned
 /// version. An encrypted table cannot be rebuilt this way (there is no KMS
@@ -281,84 +260,44 @@ pub(crate) fn load_table_at(
     Ok((catalog, planned))
 }
 
-/// Most recent snapshot-pinned [`Table`] per (catalog, table), serving scan
-/// decodes.
-///
-/// The scheduler pins every scan to a snapshot at encode time and each task of
-/// the stage decodes that same pin, so one query otherwise triggers
-/// tasks-per-stage identical `load_table` round trips. Everything a scan
-/// consumes — schema, manifests, data files — derives from the immutable pinned
-/// snapshot, so serving the table loaded for that pin from a cache cannot go
-/// stale. Keeping only the latest pin per table bounds the cache: a later query
-/// pins a newer snapshot and replaces the entry.
-#[expect(clippy::type_complexity, reason = "local cache type, never escapes")]
-static PINNED_TABLES: LazyLock<
-    Mutex<HashMap<(CatalogConfigWire, TableIdent), (i64, Table)>>,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Loads the [`Table`] for a read pinned to snapshot `pin`, served from
-/// [`PINNED_TABLES`] when the pin matches the cached entry.
-///
-/// Only pinned reads may use this. Writes, commits, and metadata tables have to
-/// observe current metadata and use [`load_table`] /
-/// [`load_table_with_catalog`] directly.
-pub(crate) fn load_table_pinned(
-    config: &IcebergCatalogConfig,
-    ident: &TableIdent,
-    pin: i64,
-) -> Result<Table, DataFusionError> {
-    let key = (CatalogConfigWire::from(config), ident.clone());
-    if let Some((cached_pin, table)) = PINNED_TABLES.lock().unwrap().get(&key)
-        && *cached_pin == pin
-    {
-        return Ok(table.clone());
-    }
-    let table = load_table(config, ident)?;
-    // Cache only when the loaded metadata actually contains the pin. It
-    // normally does — the pin came from a load the scheduler did moments ago —
-    // but a lagging catalog could serve metadata from before the snapshot, and
-    // caching that would pin the staleness for every later task instead of
-    // letting retries see the snapshot appear.
-    if table.metadata().snapshot_by_id(pin).is_some() {
-        PINNED_TABLES
-            .lock()
-            .unwrap()
-            .insert(key, (pin, table.clone()));
-    }
-    Ok(table)
-}
-
 /// Builds a read-only [`IcebergStaticTableProvider`] over `table`, pinned to
-/// `snapshot_id` (or to the table's current snapshot when `None`), recording
-/// `config` so the provider and the scans it plans can be re-encoded.
+/// `snapshot_id` (or to the table's current snapshot when `None`).
 pub(crate) async fn static_provider(
     table: Table,
     snapshot_id: Option<i64>,
-    config: IcebergCatalogConfig,
 ) -> Result<IcebergStaticTableProvider, DataFusionError> {
-    let provider = match snapshot_id {
+    match snapshot_id {
         Some(id) => {
-            IcebergStaticTableProvider::try_new_from_table_snapshot(table, id).await?
+            IcebergStaticTableProvider::try_new_from_table_snapshot(table, id).await
         }
-        None => IcebergStaticTableProvider::try_new_from_table(table).await?,
-    };
-    Ok(provider.with_catalog_config(config))
+        None => IcebergStaticTableProvider::try_new_from_table(table).await,
+    }
 }
 
-/// Rebuilds an [`IcebergMetadataTableProvider`] (e.g. `tbl$snapshots`) from its
-/// wire parts, re-attaching the config so the provider can be re-encoded on the
-/// next hop. Shared by the logical and physical codecs, whose wire formats both
-/// carry exactly these fields.
-pub(crate) fn build_metadata_provider(
-    table_ref: TableRefWire,
+/// Builds an [`IcebergMetadataTableProvider`] (e.g. `tbl$snapshots`) over
+/// `table`, from the metadata table kind's lowercase name. Shared by the logical
+/// and physical codecs, whose wire formats both carry exactly these fields.
+pub(crate) fn metadata_provider(
+    table: Table,
     metadata_type: &str,
 ) -> Result<IcebergMetadataTableProvider, DataFusionError> {
-    let (config, table) = table_ref.into_parts();
-    let table_obj = load_table(&config, &table)?;
     let kind =
         MetadataTableType::try_from(metadata_type).map_err(DataFusionError::Internal)?;
-    Ok(IcebergMetadataTableProvider::new(table_obj, kind).with_catalog_config(config))
+    Ok(IcebergMetadataTableProvider::new(table, kind))
 }
+
+/// How many rebuilt tables [`TableWire::load`] keeps.
+const TABLE_CACHE_CAPACITY: usize = 32;
+
+/// Tables rebuilt by [`TableWire::load`], oldest first.
+///
+/// Every task of a stage decodes the same node, so without this each task would
+/// read the same metadata file. A [`TableWire`] fully determines the table it
+/// rebuilds, because metadata files never change, so an entry can never go
+/// stale; it can only age out. New credentials make a new wire value, and so a
+/// new entry, rather than reusing a table that holds the old ones.
+static TABLES: LazyLock<Mutex<VecDeque<(TableWire, Table)>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::new()));
 
 // ---------------------------------------------------------------------------
 // Wire format
@@ -472,6 +411,83 @@ impl TableRefWire {
     }
 }
 
+/// A [`Table`] as the planner loaded it, rebuildable on any node without a
+/// catalog.
+///
+/// The metadata file at `metadata_location` never changes once written, so it
+/// fixes the exact version planned against: schema, partition spec and
+/// snapshots. `file_io` is the table's `FileIO`, serialized with
+/// [`FileIO::serialize_all`]. It carries the storage access the planner had,
+/// including any credentials the catalog vended for this table, in plain text,
+/// like [`IcebergCatalogConfig`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct TableWire {
+    pub table: TableIdent,
+    pub metadata_location: String,
+    pub file_io: FileIoWire,
+    pub readonly: bool,
+}
+
+impl TableWire {
+    pub(crate) fn new(table: &Table) -> Result<Self, DataFusionError> {
+        let file_io = table
+            .file_io()
+            .serialize_all()
+            .map_err(to_datafusion_error)?;
+        Ok(Self {
+            table: table.identifier().clone(),
+            metadata_location: table
+                .metadata_location_result()
+                .map_err(to_datafusion_error)?
+                .to_string(),
+            file_io: FileIoWire(serde_json::from_slice(&file_io).map_err(json_err)?),
+            readonly: table.readonly(),
+        })
+    }
+
+    /// Rebuilds the table, served from [`TABLES`] when this exact wire value
+    /// was rebuilt before.
+    pub(crate) fn load(&self) -> Result<Table, DataFusionError> {
+        if let Some((_, table)) = TABLES.lock().unwrap().iter().find(|(w, _)| w == self) {
+            return Ok(table.clone());
+        }
+        let table = block_on(self.read()).map_err(to_datafusion_error)?;
+        let mut tables = TABLES.lock().unwrap();
+        if tables.len() == TABLE_CACHE_CAPACITY {
+            tables.pop_front();
+        }
+        tables.push_back((self.clone(), table.clone()));
+        Ok(table)
+    }
+
+    async fn read(&self) -> iceberg::Result<Table> {
+        let file_io = FileIO::deserialize_all(&serde_json::to_vec(&self.file_io.0)?)?;
+        let metadata =
+            TableMetadata::read_from(&file_io, &self.metadata_location).await?;
+        // Built on the catalog runtime, like the tables a catalog loads.
+        Table::builder()
+            .metadata(metadata)
+            .metadata_location(&self.metadata_location)
+            .identifier(self.table.clone())
+            .file_io(file_io)
+            .readonly(self.readonly)
+            .runtime(Runtime::current())
+            .build()
+    }
+}
+
+/// A serialized `FileIO`, kept as JSON so the wire payload stays readable.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub(crate) struct FileIoWire(serde_json::Value);
+
+/// Hides everything: the storage properties often hold credentials.
+impl fmt::Debug for FileIoWire {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("FileIO(<redacted>)")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,6 +551,23 @@ mod tests {
             format!("{:?}", CatalogConfigWire::from(&config)),
             r#"IcebergCatalogConfig { catalog_type: "rest", name: "rest", props: {"s3.secret-access-key": <redacted>, "uri": <redacted>} }"#
         );
+    }
+
+    #[test]
+    fn table_wire_debug_hides_storage_properties() {
+        use iceberg::io::{FileIOBuilder, LocalFsStorageFactory};
+
+        let file_io = FileIOBuilder::new(Arc::new(LocalFsStorageFactory))
+            .with_prop("s3.secret-access-key", "hunter2")
+            .build();
+        let wire =
+            TableWire::new(&crate::test_util::table_with_file_io(&[], file_io)).unwrap();
+
+        // The secret does travel, so it must not leak through Debug.
+        assert!(serde_json::to_string(&wire).unwrap().contains("hunter2"));
+        let debug = format!("{wire:?}");
+        assert!(!debug.contains("hunter2"), "{debug}");
+        assert!(debug.contains("FileIO(<redacted>)"), "{debug}");
     }
 
     #[test]

@@ -31,10 +31,11 @@
 //! for this, so the scheduler and executor are small *custom* binaries.
 //! [`run_scheduler`], [`run_executor`] and [`run_client`] below are the complete
 //! recipe: each is what the corresponding `main.rs` contains. Notice that only
-//! the client is configured with the catalog — the `IcebergCatalogConfig`
-//! travels inside the serialized plans, and scheduler/executors rebuild their
-//! catalog connections from it. (It includes storage credentials, so run the
-//! cluster on a trusted/TLS network.)
+//! the client is configured with the catalog. The serialized plans carry what
+//! each node needs: scans and writes carry the table's metadata file and storage
+//! access, and the commit carries the `IcebergCatalogConfig`, from which the
+//! executor running it rebuilds the catalog connection. (Both include storage
+//! credentials, so run the cluster on a trusted/TLS network.)
 //!
 //! Everything below the recipe is demo plumbing: this example re-invokes itself
 //! as `scheduler`/`executor` child processes and starts a dockerized Iceberg

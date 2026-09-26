@@ -64,6 +64,7 @@ ballista-scheduler = { path = "../../ballista/scheduler", version = "54.0.0", de
 env_logger = { workspace = true }
 iceberg-catalog-rest = { workspace = true }
 log = { workspace = true }
+tempfile = { workspace = true }
 # Starts the Iceberg REST catalog + MinIO the integration tests and the
 # standalone example run against. Not optional: cargo has no optional
 # dev-dependencies, so this is compiled for any `cargo test` on this crate.
