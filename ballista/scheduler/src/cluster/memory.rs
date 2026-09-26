@@ -125,7 +125,28 @@ impl ClusterState for InMemoryClusterState {
         let executor_id = metadata.id.clone();
         log::debug!("registering executor: {}", executor_id);
 
-        self.save_executor_metadata(metadata).await?;
+        if spec.executor_id != executor_id {
+            return Err(BallistaError::Configuration(format!(
+                "executor data id {} does not match metadata id {executor_id}",
+                spec.executor_id
+            )));
+        }
+
+        match self.executors.entry(executor_id.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(_) => {
+                return Err(BallistaError::Configuration(format!(
+                    "executor_id {executor_id} is already registered"
+                )));
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(metadata);
+                self.cluster_event_sender
+                    .send(&ClusterStateEvent::RegisteredExecutor {
+                        executor_id: executor_id.to_string(),
+                    });
+            }
+        };
+
         self.save_executor_heartbeat(ExecutorHeartbeat {
             executor_id: executor_id.clone(),
             timestamp: timestamp_secs(),
@@ -148,15 +169,6 @@ impl ClusterState for InMemoryClusterState {
             },
         );
 
-        // RegisteredExecutor event is not pushed from here,
-        // in order to align between push and pull policy
-        // event is pushed from `save_executor_metadata`
-        //
-        // self.cluster_event_sender
-        //     .send(&ClusterStateEvent::RegisteredExecutor {
-        //         executor_id: executor_id.to_string(),
-        //     });
-
         Ok(())
     }
 
@@ -167,15 +179,21 @@ impl ClusterState for InMemoryClusterState {
         //       insert time. This information may be useful when reporting executor
         //       status and heartbeat is not available (in case of `TaskSchedulingPolicy::PullStaged`)
         let executor_id = metadata.id.clone();
-        if self
-            .executors
-            .insert(executor_id.clone(), metadata)
-            .is_none()
-        {
-            self.cluster_event_sender
-                .send(&ClusterStateEvent::RegisteredExecutor {
-                    executor_id: executor_id.to_string(),
-                });
+        match self.executors.entry(executor_id.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(entry) => {
+                if entry.get() != &metadata {
+                    return Err(BallistaError::Configuration(format!(
+                        "executor_id {executor_id} is already registered"
+                    )));
+                }
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(metadata);
+                self.cluster_event_sender
+                    .send(&ClusterStateEvent::RegisteredExecutor {
+                        executor_id: executor_id.to_string(),
+                    });
+            }
         }
 
         //
@@ -535,7 +553,8 @@ mod test {
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::JobStatus;
     use ballista_core::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+        ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
+        ExecutorSpecification,
     };
     use ballista_core::utils::{default_config_producer, default_session_builder};
     use datafusion::prelude::SessionConfig;
@@ -726,6 +745,79 @@ mod test {
             }) if executor_id == *"id123",
 
         ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn register_executor_rejects_duplicate_id() -> Result<()> {
+        let cluster_state = InMemoryClusterState::default();
+
+        let metadata = ExecutorMetadata {
+            id: "id123".to_string(),
+            host: "executor-a".to_string(),
+            port: 50055,
+            grpc_port: 50050,
+            specification: ExecutorSpecification::default().with_vcores(2),
+            os_info: ExecutorOperatingSystemSpecification::default(),
+        };
+        let executor_data = ExecutorData {
+            executor_id: metadata.id.clone(),
+            total_vcores: 2,
+            available_vcores: 2,
+        };
+
+        cluster_state
+            .register_executor(metadata.clone(), executor_data.clone())
+            .await?;
+
+        let err = cluster_state
+            .register_executor(metadata.clone(), executor_data)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("id123 is already registered"));
+        assert_eq!(
+            cluster_state.get_executor_metadata("id123").await?,
+            metadata
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn save_executor_metadata_rejects_duplicate_id() -> Result<()> {
+        let cluster_state = InMemoryClusterState::default();
+
+        let metadata = ExecutorMetadata {
+            id: "id123".to_string(),
+            host: "executor-a".to_string(),
+            port: 50055,
+            grpc_port: 50050,
+            specification: ExecutorSpecification::default().with_vcores(2),
+            os_info: ExecutorOperatingSystemSpecification::default(),
+        };
+
+        cluster_state
+            .save_executor_metadata(metadata.clone())
+            .await?;
+        cluster_state
+            .save_executor_metadata(metadata.clone())
+            .await?;
+
+        let mut duplicate = metadata.clone();
+        duplicate.host = "executor-b".to_string();
+
+        let err = cluster_state
+            .save_executor_metadata(duplicate)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("id123 is already registered"));
+        assert_eq!(
+            cluster_state.get_executor_metadata("id123").await?,
+            metadata
+        );
 
         Ok(())
     }

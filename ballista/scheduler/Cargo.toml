@@ -27,6 +27,14 @@ authors = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 
+[package.metadata.cargo-machete]
+ignored = [
+    # used via the `ballista_core::assert_plan!` macro, which expands to `insta::assert_snapshot!`
+    "insta",
+    # used by the `keda-scaler` gRPC code generated into OUT_DIR by build.rs
+    "tonic-prost",
+]
+
 [[bin]]
 name = "ballista-scheduler"
 path = "src/bin/main.rs"
@@ -50,7 +58,14 @@ flight-sql = ["dep:ballista-flight-sql"]
 graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
-rest-api = ["dep:ballista-api-types", "dep:ballista-history", "dep:serde_json"]
+rest-api = [
+    "ballista-api-types?/utoipa",
+    "ballista-core/utoipa",
+    "dep:ballista-api-types",
+    "dep:ballista-history",
+    "dep:serde_json",
+    "dep:utoipa",
+]
 spark-compat = ["ballista-core/spark-compat"]
 substrait = ["dep:datafusion-substrait"]
 
@@ -78,7 +93,6 @@ once_cell = { version = "1.21.4", optional = true }
 parking_lot = { workspace = true }
 prometheus = { version = "0.14", features = ["process"], optional = true }
 prost = { workspace = true }
-prost-types = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
@@ -91,6 +105,7 @@ tracing = { workspace = true, optional = true }
 tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 url-escape = { workspace = true }
+utoipa = { workspace = true, optional = true }
 uuid = { workspace = true }
 
 [[test]]

@@ -19,6 +19,23 @@
 
 # Ballista Scheduler
 
+## Scheduler Identity
+
+Each scheduler has a unique identifier used in cluster state, `/api/state`, and
+history event logs. Set it explicitly with `--id` when you want a stable value;
+otherwise the scheduler generates the same UUID-backed instance identity used
+for executor ids at startup. Use unique scheduler ids when multiple schedulers
+write to shared history or cluster state.
+
+Executor ids follow the same model: each active executor registered with the
+same scheduler needs a unique id. Set it explicitly with `--id` when you want a
+stable value; otherwise the executor generates one at startup. A second active
+executor using an id that is already registered is rejected; the id can be
+reused after the previous executor is removed from scheduler state.
+
+Executors report task status to the scheduler callback endpoint, which is built
+from `--external-host` and `--bind-port`.
+
 ## Fetching Query Results
 
 By default a client fetches the result partitions of a query directly from the executors that
@@ -75,6 +92,7 @@ The scheduler also provides a REST API that allows jobs to be monitored.
 
 | API                                    | Method | Description                                                       |
 | -------------------------------------- | ------ | ----------------------------------------------------------------- |
+| /api/openapi.json                      | GET    | Return OpenAPI v3 specification document for the REST API.        |
 | /api/jobs                              | GET    | Get a list of jobs that have been submitted to the cluster.       |
 | /api/job/{job_id}                      | GET    | Get a summary of a submitted job.                                 |
 | /api/job/{job_id}/dot                  | GET    | Produce a query plan in DOT (graphviz) format.                    |

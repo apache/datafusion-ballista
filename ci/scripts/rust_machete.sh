@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+#
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -15,25 +17,10 @@
 # specific language governing permissions and limitations
 # under the License.
 
-[package]
-name = "ballista-api-types"
-description = "Wire types for the Ballista scheduler REST API"
-license = { workspace = true }
-version = { workspace = true }
-homepage = { workspace = true }
-repository = { workspace = true }
-authors = { workspace = true }
-edition = { workspace = true }
-rust-version = { workspace = true }
+# Checks for unused dependencies. Install with `cargo install cargo-machete`.
+# False positives can be added to the `[package.metadata.cargo-machete]`
+# `ignored` list of the crate's Cargo.toml, with a comment explaining why
+# the dependency is needed.
 
-[features]
-default = []
-utoipa = ["dep:utoipa"]
-
-[dependencies]
-serde = { workspace = true, features = ["derive"] }
-utoipa = { workspace = true, optional = true }
-
-[dev-dependencies]
-ballista-api-types = { path = ".", features = ["utoipa"] }
-serde_json = { workspace = true }
+set -ex
+cargo machete

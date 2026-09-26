@@ -109,15 +109,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
 
     async fn abort_job(&self, job_id: &JobId, failure_reason: String) -> Result<()> {
         let executor_manager = self.state.executor_manager.clone();
+        let refund_vcores = self.state.config.is_push_staged_scheduling();
         self.state
             .task_manager
-            .abort_job(job_id, failure_reason, move |running_tasks| async move {
-                if running_tasks.is_empty() {
+            .abort_job(
+                job_id,
+                failure_reason,
+                move |running_tasks, freed_slots| async move {
+                    if !running_tasks.is_empty() {
+                        executor_manager.cancel_running_tasks(running_tasks).await?;
+                    }
+                    if refund_vcores && !freed_slots.is_empty() {
+                        executor_manager.unbind_tasks(freed_slots).await?;
+                    }
                     Ok(())
-                } else {
-                    executor_manager.cancel_running_tasks(running_tasks).await
-                }
-            })
+                },
+            )
             .await?;
         Ok(())
     }
@@ -182,7 +189,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 }
                 QueryStageSchedulerEvent::TaskUpdating(executor_id, statuses) => {
                     for (job_id, group) in group_by_job(statuses) {
-                        for ev in event_log::task_end_events(executor_id, &group) {
+                        // Borrow the live graph read-only just long enough to
+                        // map each task's operator metrics onto its stage
+                        // plan; cloning the graph per status batch (as
+                        // `event_log_graph` does for the rarer job events)
+                        // would be far too costly here.
+                        let graph = self
+                            .state
+                            .task_manager
+                            .get_active_execution_graph(&JobId::new(job_id.as_str()));
+                        let guard = match &graph {
+                            Some(graph) => Some(graph.read().await),
+                            None => None,
+                        };
+                        let stages = guard.as_ref().map(|graph| graph.stages());
+                        for ev in event_log::task_end_events(executor_id, &group, stages)
+                        {
                             log.append(&job_id, ev);
                         }
                     }

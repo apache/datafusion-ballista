@@ -30,78 +30,84 @@ import tomlkit
 
 
 def update_cargo_toml(cargo_toml: str, new_version: str):
-    print(f'updating {cargo_toml}')
+    print(f"updating {cargo_toml}")
     with open(cargo_toml) as f:
         data = f.read()
 
     doc = tomlkit.parse(data)
-    if "ballista/" in cargo_toml or "ballista-cli/" in cargo_toml or "python/Cargo.toml" in cargo_toml:
-        doc.get('package')['version'] = new_version
+    if (
+        "ballista/" in cargo_toml
+        or "ballista-cli/" in cargo_toml
+        or "python/Cargo.toml" in cargo_toml
+    ):
+        doc.get("package")["version"] = new_version
 
     # ballista crates also depend on each other
     ballista_deps = (
-        'ballista',
-        'ballista-core',
-        'ballista-executor',
-        'ballista-api-types',
-        'ballista-history',
-        'ballista-scheduler',
-        'ballista-cli',
+        "ballista",
+        "ballista-core",
+        "ballista-executor",
+        "ballista-api-types",
+        "ballista-history",
+        "ballista-scheduler",
+        "ballista-cli",
     )
     for ballista_dep in ballista_deps:
-        dep = doc.get('dependencies', {}).get(ballista_dep)
+        dep = doc.get("dependencies", {}).get(ballista_dep)
         if dep is not None:
-            dep['version'] = new_version
-        dep = doc.get('dev-dependencies', {}).get(ballista_dep)
+            dep["version"] = new_version
+        dep = doc.get("dev-dependencies", {}).get(ballista_dep)
         if dep is not None:
-            dep['version'] = new_version
+            dep["version"] = new_version
 
-    with open(cargo_toml, 'w') as f:
+    with open(cargo_toml, "w") as f:
         f.write(tomlkit.dumps(doc))
 
 
 def update_docker_compose(docker_compose_path: str, new_version: str):
-    print(f'Updating ballista versions in {docker_compose_path}')
+    print(f"Updating ballista versions in {docker_compose_path}")
     with open(docker_compose_path, "r+") as fd:
         data = fd.read()
-        pattern = re.compile(r'(^\s+image:\sballista:)\d+\.\d+\.\d+(-SNAPSHOT)?', re.MULTILINE)
-        data = pattern.sub(r"\g<1>"+new_version, data)
+        pattern = re.compile(
+            r"(^\s+image:\sballista:)\d+\.\d+\.\d+(-SNAPSHOT)?", re.MULTILINE
+        )
+        data = pattern.sub(r"\g<1>" + new_version, data)
         fd.truncate(0)
         fd.seek(0)
         fd.write(data)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Update ballista crate versions.')
-    parser.add_argument('new_version', type=str, help='new ballista version')
+    parser = argparse.ArgumentParser(description="Update ballista crate versions.")
+    parser.add_argument("new_version", type=str, help="new ballista version")
     args = parser.parse_args()
 
     repo_root = Path(__file__).parent.parent.absolute()
-    ballista_crates = set([
-        os.path.join(repo_root, rel_path, "Cargo.toml")
-        for rel_path in [
-            'ballista-cli',
-            'ballista/core',
-            'ballista/api-types',
-            'ballista/history',
-            'ballista/scheduler',
-            'ballista/executor',
-            'ballista/client',
-            'benchmarks',
-            'examples',
-            'python',
+    ballista_crates = set(
+        [
+            os.path.join(repo_root, rel_path, "Cargo.toml")
+            for rel_path in [
+                "ballista-cli",
+                "ballista/core",
+                "ballista/api-types",
+                "ballista/history",
+                "ballista/scheduler",
+                "ballista/executor",
+                "ballista/client",
+                "benchmarks",
+                "examples",
+                "python",
+            ]
         ]
-    ])
+    )
     new_version = args.new_version
 
-    print(f'Updating ballista versions in {repo_root} to {new_version}')
+    print(f"Updating ballista versions in {repo_root} to {new_version}")
 
     for cargo_toml in ballista_crates:
         update_cargo_toml(cargo_toml, new_version)
 
-    for path in (
-            "docker-compose.yml",
-    ):
+    for path in ("docker-compose.yml",):
         path = os.path.join(repo_root, path)
         update_docker_compose(path, new_version)
 

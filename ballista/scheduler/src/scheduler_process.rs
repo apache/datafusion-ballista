@@ -74,7 +74,7 @@ pub async fn create_scheduler<
     let metrics_collector = default_metrics_collector()?;
 
     let mut scheduler_server = SchedulerServer::new(
-        config.scheduler_name(),
+        config.scheduler_endpoint(),
         cluster,
         codec,
         config,

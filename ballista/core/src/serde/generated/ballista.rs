@@ -1724,16 +1724,18 @@ pub struct LaunchTaskParams {
     /// Allow to launch a task set to an executor at once
     #[prost(message, repeated, tag = "1")]
     pub tasks: ::prost::alloc::vec::Vec<TaskDefinition>,
+    /// Scheduler callback endpoint in host:port format.
     #[prost(string, tag = "2")]
-    pub scheduler_id: ::prost::alloc::string::String,
+    pub scheduler_endpoint: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LaunchMultiTaskParams {
     /// Allow to launch a task set to an executor at once
     #[prost(message, repeated, tag = "1")]
     pub multi_tasks: ::prost::alloc::vec::Vec<MultiTaskDefinition>,
+    /// Scheduler callback endpoint in host:port format.
     #[prost(string, tag = "2")]
-    pub scheduler_id: ::prost::alloc::string::String,
+    pub scheduler_endpoint: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LaunchTaskResult {
@@ -1741,11 +1743,13 @@ pub struct LaunchTaskResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LaunchMultiTaskResult {
-    /// TODO when part of the task set are scheduled successfully
-    #[prost(bool, tag = "1")]
-    pub success: bool,
+    /// Job IDs the executor could not decode/validate. These jobs are failed
+    /// individually while the rest of the batch still runs; an empty list means
+    /// the whole batch was accepted. A successful RPC does not imply every job ran.
+    #[prost(string, repeated, tag = "2")]
+    pub failed_jobs: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelTasksParams {
