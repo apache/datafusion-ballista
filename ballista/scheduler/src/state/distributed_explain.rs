@@ -148,9 +148,14 @@ pub(crate) fn construct_distributed_explain_exec(
             depth: 1,
         },
     ];
+    // Not nullable, to match both DataFusion's own `ExplainExec` and
+    // `DistributedExplainAnalyzeExec`: `EXPLAIN` should describe itself the same
+    // way however it is run, and a client promised one schema and handed
+    // another rejects the result. Every element unnested here is one of the
+    // three plan strings built above, so none of them can be null.
     let out_schema = Arc::new(Schema::new(vec![
-        Field::new("list_type", DataType::Utf8, true),
-        Field::new("list_plan", DataType::Utf8, true),
+        Field::new("list_type", DataType::Utf8, false),
+        Field::new("list_plan", DataType::Utf8, false),
     ]));
     let unnest = Arc::new(UnnestExec::new(
         proj_lists,
@@ -207,5 +212,33 @@ pub(crate) async fn handle_explain_plan(
         construct_distributed_explain_exec(logical_txt, physical_txt, distributed_txt)
     } else {
         Ok(plan)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::physical_plan::collect;
+
+    /// `EXPLAIN` has to describe its output the same way whether DataFusion or
+    /// Ballista answers it, and the rows it produces have to match that
+    /// description, or a client that checks the schema rejects the result.
+    #[tokio::test]
+    async fn distributed_explain_schema_matches_datafusion_explain() -> Result<()> {
+        let plan = construct_distributed_explain_exec(
+            "logical".to_string(),
+            "physical".to_string(),
+            "distributed".to_string(),
+        )?;
+
+        let expected = LogicalPlan::explain_schema();
+        assert_eq!(plan.schema(), expected);
+
+        let batches = collect(plan, SessionContext::new().task_ctx()).await?;
+        assert!(!batches.is_empty());
+        for batch in batches {
+            assert_eq!(batch.schema(), expected);
+        }
+        Ok(())
     }
 }
