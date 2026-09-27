@@ -832,7 +832,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
-    /// Launch the given tasks on the specified executor
+    /// Launch the given tasks on the specified executor.
+    ///
+    /// Returns the jobs that cannot run: those the executor rejected, and
+    /// those whose task definitions could not be prepared here. Tasks of the
+    /// latter were never sent anywhere and will never report a status, so the
+    /// caller has to fail the job and refund the tasks' slots, exactly as for a
+    /// rejection. `Err` is only for the launch RPC itself failing, which says
+    /// the executor is sick, not the plan.
     pub(crate) async fn launch_multi_task(
         &self,
         executor: &ExecutorMetadata,
@@ -840,20 +847,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         executor_manager: &ExecutorManager,
     ) -> Result<HashSet<JobId>> {
         let mut multi_tasks = vec![];
+        let mut failed_jobs = HashSet::new();
         for stage_tasks in tasks {
+            let job_id = stage_tasks.first().map(|task| task.key.job_id.clone());
             match self.prepare_multi_task_definition(stage_tasks) {
                 Ok(stage_tasks) => multi_tasks.extend(stage_tasks),
-                Err(e) => error!("Fail to prepare task definition: {e:?}"),
+                Err(e) => {
+                    error!("Fail to prepare task definition: {e:?}");
+                    failed_jobs.extend(job_id);
+                }
             }
         }
 
         if !multi_tasks.is_empty() {
-            self.launcher
-                .launch_tasks(executor, multi_tasks, executor_manager)
-                .await
-        } else {
-            Ok(HashSet::new())
+            failed_jobs.extend(
+                self.launcher
+                    .launch_tasks(executor, multi_tasks, executor_manager)
+                    .await?,
+            );
         }
+
+        Ok(failed_jobs)
     }
 
     #[allow(dead_code)]
