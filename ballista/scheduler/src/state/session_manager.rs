@@ -17,10 +17,12 @@
 
 use crate::scheduler_server::SessionBuilder;
 use ballista_core::error::Result;
+use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use crate::cluster::JobState;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Manages DataFusion session contexts for the Ballista scheduler.
 ///
@@ -83,4 +85,72 @@ pub fn create_datafusion_context(
     };
 
     Ok(Arc::new(SessionContext::new_with_state(session_state)))
+}
+
+/// Wraps `session_builder` so that every session it builds shares one file
+/// statistics cache.
+///
+/// The scheduler builds a new session, with its own runtime, for every query.
+/// Planning a scan of a listing table collects statistics by reading the
+/// footer of every file in it, so with a cache per session every job pays for
+/// that again, which on large tables takes seconds. Cached statistics are
+/// checked against the size and modification time from each job's own file
+/// listing, so a file that has changed is read again. That check is why the
+/// listing cache must stay per session: sharing it too would serve stale
+/// statistics, and `COUNT(*)` is answered from them.
+///
+/// The shared cache is the one the first session was built with, so the
+/// builder's configured limit applies, and a builder that disables the cache
+/// also disables sharing.
+pub(crate) fn share_file_statistics_cache(
+    session_builder: SessionBuilder,
+) -> SessionBuilder {
+    let shared = OnceLock::new();
+    Arc::new(move |config| {
+        let state = session_builder(config)?;
+        let runtime = state.runtime_env();
+        let Some(cache) = shared
+            .get_or_init(|| runtime.cache_manager.get_file_statistic_cache())
+            .clone()
+        else {
+            return Ok(state);
+        };
+
+        let mut runtime = RuntimeEnvBuilder::from_runtime_env(runtime);
+        // Building the runtime sets the cache's limit to the configured one,
+        // so pass the cache's own limit rather than this session's.
+        runtime.cache_manager = runtime
+            .cache_manager
+            .with_file_statistics_cache_limit(cache.cache_limit())
+            .with_file_statistics_cache(Some(cache));
+
+        // `new_from_existing` would otherwise give the session a new ID.
+        let session_id = state.session_id().to_string();
+        Ok(SessionStateBuilder::new_from_existing(state)
+            .with_session_id(session_id)
+            .with_runtime_env(runtime.build_arc()?)
+            .build())
+    })
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use datafusion::execution::SessionState;
+
+    #[test]
+    fn test_share_file_statistics_cache_keeps_session_id() -> Result<()> {
+        let session_builder: SessionBuilder = Arc::new(|config| {
+            Ok(SessionStateBuilder::new()
+                .with_config(config)
+                .with_session_id("session_0".to_string())
+                .build())
+        });
+        let session_builder = share_file_statistics_cache(session_builder);
+
+        let state: SessionState = session_builder(SessionConfig::new())?;
+        assert_eq!("session_0", state.session_id());
+
+        Ok(())
+    }
 }
