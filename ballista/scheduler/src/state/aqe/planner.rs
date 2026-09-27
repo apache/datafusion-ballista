@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 use crate::physical_optimizer::filter_pushdown::FilterPushdown;
+use crate::planner::DefaultDistributedPlanner;
 use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{
     AdaptiveDatafusionExec, ExchangeExec, RangeRepartitionRouting,
@@ -175,9 +176,15 @@ impl AdaptivePlanner {
             .create_physical_plan(logical_plan)
             .await?;
 
-        let plan = handle_explain_plan(&job_id, ctx, logical_plan, plan, None)
-            .await
-            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+        let plan = handle_explain_plan(
+            &job_id,
+            ctx,
+            logical_plan,
+            plan,
+            DefaultDistributedPlanner::new(),
+        )
+        .await
+        .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
         let state_builder = SessionStateBuilder::from(ctx.state());
         Self::try_new_with_optimizers(

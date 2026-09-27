@@ -29,9 +29,7 @@ use ballista_core::JobId;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaPhysicalExtensionCodec;
-use ballista_scheduler::physical_optimizer::reuse_exchange::{
-    protobuf_canonical_key, reuse_shuffle_stages_if_enabled,
-};
+use ballista_scheduler::physical_optimizer::reuse_exchange::protobuf_canonical_key;
 use ballista_scheduler::planner::{DefaultDistributedPlanner, DistributedPlanner};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::execution::TaskContext;
@@ -41,7 +39,6 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::physical_plan::{
     PhysicalExtensionCodec, PhysicalProtoConverterExtension,
 };
-use datafusion_proto::protobuf::PhysicalPlanNode;
 
 use crate::stats_table::{StatsExec, TpchStatsTable};
 
@@ -171,12 +168,9 @@ fn is_query_stmt(stmt: &str) -> bool {
     u.starts_with("SELECT") || u.starts_with("WITH")
 }
 
-/// Build the pre-reuse distributed stages for a TPC-H query, plus the
-/// `SessionContext` used to build them (its `SessionState` carries the
-/// `ConfigOptions` needed to apply the reuse pass afterward). Shared by
-/// [`staged_plan_text`] and [`staged_stages_len`] so the ctx/plan/stages
-/// construction lives in exactly one place.
-async fn plan_stages(query_name: &str) -> (SessionContext, Vec<Arc<dyn ShuffleWriter>>) {
+/// Build the distributed stages for a TPC-H query, with or without exchange
+/// reuse (the scheduler enables it by default).
+async fn plan_stages(query_name: &str, reuse: bool) -> Vec<Arc<dyn ShuffleWriter>> {
     // Read the query SQL directly from the canonical benchmark location rather
     // than a copy, so a change to a benchmark query surfaces as a golden diff.
     let sql_path = format!(
@@ -219,37 +213,26 @@ async fn plan_stages(query_name: &str) -> (SessionContext, Vec<Arc<dyn ShuffleWr
     let physical = physical.unwrap();
 
     let mut planner = DefaultDistributedPlanner::new();
+    if reuse {
+        let codec = FixtureReuseCodec {
+            inner: BallistaPhysicalExtensionCodec::default(),
+        };
+        planner = planner.with_exchange_reuse(Arc::new(
+            move |plan: &Arc<dyn ExecutionPlan>| protobuf_canonical_key(plan, &codec),
+        ));
+    }
     let state = ctx.state();
     let job_id: JobId = JOB_ID.into();
-    let stages = planner
+    planner
         .plan_query_stages(&job_id, physical, state.config().options())
-        .unwrap();
-
-    (ctx, stages)
+        .unwrap()
 }
 
-/// Extension codec used only by this fixture's exchange-reuse canonicalizer.
-/// Delegates everything to the production `BallistaPhysicalExtensionCodec`
-/// (the same codec `StaticExecutionGraph::new_with_reuse` uses) except the
-/// test-only [`StatsExec`] scan leaf.
-///
-/// `StatsExec` stands in for a real table scan so the fixture can plan at
-/// SF100 without data on disk. In production that scan is a
-/// `DataSourceExec`/`ParquetExec`, a type `datafusion-proto` recognizes
-/// natively — no extension codec involvement at all. `StatsExec` has no such
-/// built-in or Ballista-side support, so without this wrapper *any* stage
-/// whose subtree touches it fails to encode, `protobuf_canonical_key` returns
-/// `None`, and — because the failure sits at the leaves — it cascades upward
-/// through every dependent stage's canonical key and defeats reuse for the
-/// whole query, even though the corresponding production plan (with a real,
-/// encodable scan) would dedup normally. This was confirmed empirically: q11
-/// stayed at 14 stages before *and* after `reuse_shuffle_stages` until this
-/// codec was added.
-///
-/// The key only needs to distinguish or equate scans, never decode them, so
-/// `try_encode` is a cheap schema + row-count fingerprint and `try_decode` is
-/// unreachable for `StatsExec` in this test's usage (delegated to `inner`
-/// unconditionally, which is fine since it is never asked to decode one).
+/// Codec for this fixture's exchange-reuse key. The test-only [`StatsExec`]
+/// scan has no protobuf form, so it is fingerprinted by schema and row count.
+/// Without this every stage would fail to encode and reuse would never fire.
+/// Keys are never decoded. Everything else goes to the production
+/// `BallistaPhysicalExtensionCodec`.
 #[derive(Debug)]
 struct FixtureReuseCodec {
     inner: BallistaPhysicalExtensionCodec,
@@ -284,29 +267,10 @@ impl PhysicalExtensionCodec for FixtureReuseCodec {
     }
 }
 
-/// Apply the same exchange-reuse pass the scheduler applies in
-/// `StaticExecutionGraph::new_with_reuse` (`reuse_shuffle_stages_if_enabled`
-/// keyed by `protobuf_canonical_key` over the Ballista codec), so the fixture
-/// reflects the plan actually executed rather than the pre-reuse planner output.
-fn apply_reuse(
-    ctx: &SessionContext,
-    stages: Vec<Arc<dyn ShuffleWriter>>,
-) -> Vec<Arc<dyn ShuffleWriter>> {
-    let codec = FixtureReuseCodec {
-        inner: BallistaPhysicalExtensionCodec::default(),
-    };
-    let canonical = |plan: &Arc<dyn ExecutionPlan>| {
-        protobuf_canonical_key::<PhysicalPlanNode>(plan, &codec)
-    };
-    reuse_shuffle_stages_if_enabled(stages, ctx.state().config(), Some(&canonical))
-        .unwrap()
-}
-
 /// Produce the normalized distributed staged-plan text for a TPC-H query,
-/// after applying exchange reuse (mirrors what the scheduler actually runs).
+/// with exchange reuse applied as the scheduler does by default.
 pub async fn staged_plan_text(query_name: &str) -> String {
-    let (ctx, stages) = plan_stages(query_name).await;
-    let stages = apply_reuse(&ctx, stages);
+    let stages = plan_stages(query_name, true).await;
 
     let mut out = String::new();
     for stage in &stages {
@@ -318,16 +282,11 @@ pub async fn staged_plan_text(query_name: &str) -> String {
     normalize(&out)
 }
 
-/// Build the distributed stages for a query, optionally applying exchange
-/// reuse, and return the stage count. Used by the liveness test to prove
-/// reuse actually fires in the fixture (before > after for q11).
-pub async fn staged_stages_len(query_name: &str, apply_reuse_pass: bool) -> usize {
-    let (ctx, stages) = plan_stages(query_name).await;
-    if apply_reuse_pass {
-        apply_reuse(&ctx, stages).len()
-    } else {
-        stages.len()
-    }
+/// Stage counts for a query planned without and with exchange reuse.
+pub async fn stage_counts(query_name: &str) -> (usize, usize) {
+    let before = plan_stages(query_name, false).await.len();
+    let after = plan_stages(query_name, true).await.len();
+    (before, after)
 }
 
 fn normalize(plan: &str) -> String {

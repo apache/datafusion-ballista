@@ -22,56 +22,35 @@
 //! rewired to the single surviving `stage_id`.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use ballista_core::error::Result;
 use ballista_core::execution_plans::{ShuffleWriter, UnresolvedShuffleExec};
-use ballista_core::extension::SessionConfigExt;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr_common::physical_expr::is_volatile;
-use datafusion::physical_plan::{ExecutionPlan, replace_children_if_necessary};
-use datafusion::prelude::SessionConfig;
-use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion_proto::bytes::physical_plan_to_bytes_with_extension_codec;
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use log::debug;
 
 use crate::planner::create_shuffle_writer_with_config;
 
 /// Produces a faithful byte key for a physical plan, or `None` if the plan
-/// cannot be canonicalized (in which case it is never reused — conservative).
-pub type Canonicalizer<'a> =
-    dyn Fn(&Arc<dyn ExecutionPlan>) -> Option<Vec<u8>> + Send + Sync + 'a;
+/// cannot be canonicalized, in which case it is never reused. A missing key
+/// only costs a reuse opportunity, never a wrong result.
+pub type Canonicalizer = dyn Fn(&Arc<dyn ExecutionPlan>) -> Option<Vec<u8>> + Send + Sync;
 
-/// Reuse canonical key: serialize a plan to protobuf and use the encoded bytes
-/// as its structural identity key. Returns `None` (meaning "never reuse" —
-/// a performance miss, never a wrong result) if the plan cannot be converted or
-/// encoded by `extension_codec`. This is the single source of truth for the key;
-/// both the scheduler's production canonicalizer and the plan-stability test
-/// fixture call it so their reuse decisions cannot drift.
-pub fn protobuf_canonical_key<U: AsExecutionPlan>(
+/// The production [`Canonicalizer`]: the plan's protobuf encoding under
+/// `extension_codec`, the same encoding that ships stages to executors.
+pub fn protobuf_canonical_key(
     plan: &Arc<dyn ExecutionPlan>,
     extension_codec: &dyn PhysicalExtensionCodec,
 ) -> Option<Vec<u8>> {
-    let node = U::try_from_physical_plan(plan.clone(), extension_codec).ok()?;
-    let mut buf = Vec::new();
-    node.try_encode(&mut buf).ok()?;
-    Some(buf)
-}
-
-/// Runs [`reuse_shuffle_stages`] when a canonicalizer is supplied and
-/// `ballista.optimizer.reuse_exchange_enabled` is set on `session_config`;
-/// otherwise returns `stages` unchanged.
-pub fn reuse_shuffle_stages_if_enabled(
-    stages: Vec<Arc<dyn ShuffleWriter>>,
-    session_config: &SessionConfig,
-    canonical: Option<&Canonicalizer<'_>>,
-) -> Result<Vec<Arc<dyn ShuffleWriter>>> {
-    match canonical {
-        Some(canonical) if session_config.ballista_reuse_exchange_enabled() => {
-            reuse_shuffle_stages(stages, session_config.options(), canonical)
-        }
-        _ => Ok(stages),
-    }
+    physical_plan_to_bytes_with_extension_codec(plan.clone(), extension_codec)
+        .ok()
+        .map(Vec::from)
 }
 
 /// Deduplicate structurally-identical `ShuffleWriter` stages.
@@ -85,108 +64,86 @@ pub fn reuse_shuffle_stages_if_enabled(
 /// The stage with the maximum id is the query root (the planner pushes it last)
 /// and is never dropped; its refs are still rewritten.
 pub fn reuse_shuffle_stages(
-    stages: Vec<Arc<dyn ShuffleWriter>>,
+    mut stages: Vec<Arc<dyn ShuffleWriter>>,
     config: &ConfigOptions,
-    canonical: &Canonicalizer<'_>,
+    canonical: &Canonicalizer,
 ) -> Result<Vec<Arc<dyn ShuffleWriter>>> {
-    if stages.len() < 2 {
+    stages.sort_by_key(|s| s.stage_id());
+    let Some(root_id) = stages.last().map(|s| s.stage_id()) else {
         return Ok(stages);
-    }
-
-    let root_id = stages.iter().map(|s| s.stage_id()).max().unwrap();
-
-    let mut ordered = stages;
-    ordered.sort_by_key(|s| s.stage_id());
+    };
 
     // dropped stage_id -> surviving representative stage_id
     let mut remap: HashMap<usize, usize> = HashMap::new();
     // canonical bytes -> surviving representative stage_id
     let mut seen: HashMap<Vec<u8>, usize> = HashMap::new();
-    let mut kept: Vec<Arc<dyn ShuffleWriter>> = Vec::with_capacity(ordered.len());
+    let mut kept: Vec<Arc<dyn ShuffleWriter>> = Vec::with_capacity(stages.len());
 
-    for stage in ordered {
+    for stage in stages {
         let stage_id = stage.stage_id();
-        let job_id = stage.job_id().clone();
-        let partitioning = stage.shuffle_output_partitioning().cloned();
-
-        // 1. Rewrite nested UnresolvedShuffleExec refs using accumulated remap.
+        // Point this stage's inputs at the survivors of earlier merges.
         let child = stage.children()[0].clone();
-        let rewritten_child = rewrite_shuffle_refs(child, &remap)?;
+        let rewritten_child = rewrite_shuffle_refs(child.clone(), &remap)?;
+        let build = |id| {
+            create_shuffle_writer_with_config(
+                stage.job_id(),
+                id,
+                rewritten_child.clone(),
+                stage.shuffle_output_partitioning().cloned(),
+                config,
+            )
+        };
 
-        // 2. Rebuild this writer with the rewritten child (original stage_id).
-        let rewritten_stage = create_shuffle_writer_with_config(
-            &job_id,
-            stage_id,
-            rewritten_child.clone(),
-            partitioning.clone(),
-            config,
-        )?;
-
-        // The root stage is the query output; never dedup it. A subtree with a
-        // volatile expression such as `random()` serializes like its twin but
-        // must produce its own values, so it is never shared either.
-        if stage_id == root_id || has_volatile_expr(&rewritten_child)? {
-            kept.push(rewritten_stage);
-            continue;
+        // The root stage is the query output, so it is never merged. Neither is
+        // a subtree with a volatile expression such as `random()`: it
+        // serializes like its twin but must produce its own values.
+        if stage_id != root_id && !has_volatile_expr(&rewritten_child)? {
+            // Key on the writer with its id normalized away, so the key covers
+            // input, partitioning and writer kind but not the stage id.
+            let normalized: Arc<dyn ExecutionPlan> = build(0)?;
+            if let Some(key) = canonical(&normalized) {
+                match seen.entry(key) {
+                    Entry::Occupied(rep) => {
+                        let rep = *rep.get();
+                        debug!("exchange reuse: stage {stage_id} reuses stage {rep}");
+                        remap.insert(stage_id, rep);
+                        continue;
+                    }
+                    Entry::Vacant(slot) => {
+                        slot.insert(stage_id);
+                    }
+                }
+            }
         }
 
-        // 3. Key = canonical bytes of a stage-id-normalized writer. Normalizing
-        //    the id to 0 (never a real stage id — the planner starts at 1) means
-        //    the key captures input + partitioning + writer kind but excludes the
-        //    distinguishing stage_id.
-        let normalized: Arc<dyn ExecutionPlan> = create_shuffle_writer_with_config(
-            &job_id,
-            0,
-            rewritten_child,
-            partitioning,
-            config,
-        )?;
-
-        // Protobuf encoding is not guaranteed deterministic, but that's safe here:
-        // a spurious key difference only costs a missed reuse, never a false
-        // merge, since a `seen` hit is only ever used to confirm identity.
-        match canonical(&normalized) {
-            Some(key) => match seen.get(&key) {
-                Some(&rep) => {
-                    debug!("exchange reuse: stage {stage_id} reuses stage {rep}");
-                    remap.insert(stage_id, rep);
-                }
-                None => {
-                    seen.insert(key, stage_id);
-                    kept.push(rewritten_stage);
-                }
-            },
-            None => kept.push(rewritten_stage),
-        }
+        kept.push(if Arc::ptr_eq(&child, &rewritten_child) {
+            stage
+        } else {
+            build(stage_id)?
+        });
     }
 
     Ok(kept)
 }
 
-/// Recursively rewrite every `UnresolvedShuffleExec` whose `stage_id` appears in
-/// `remap`, cloning the node and swapping only its `stage_id` (schema,
-/// partitioning, broadcast and coalesce fields are preserved by the clone).
+/// Rewrite every `UnresolvedShuffleExec` whose `stage_id` appears in `remap`,
+/// swapping only its `stage_id`. Returns `plan` itself when nothing matches.
 fn rewrite_shuffle_refs(
     plan: Arc<dyn ExecutionPlan>,
     remap: &HashMap<usize, usize>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    if let Some(unresolved) = plan.downcast_ref::<UnresolvedShuffleExec>() {
-        if let Some(&new_id) = remap.get(&unresolved.stage_id) {
-            let mut rewritten = unresolved.clone();
-            rewritten.stage_id = new_id;
-            return Ok(Arc::new(rewritten));
-        }
-        return Ok(plan);
-    }
-    let children = plan.children();
-    if children.is_empty() {
-        return Ok(plan);
-    }
-    let new_children = children
-        .into_iter()
-        .map(|c| rewrite_shuffle_refs(c.clone(), remap))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(replace_children_if_necessary(plan, new_children)?)
+    Ok(plan
+        .transform_up(|node| {
+            if let Some(unresolved) = node.downcast_ref::<UnresolvedShuffleExec>()
+                && let Some(&stage_id) = remap.get(&unresolved.stage_id)
+            {
+                let mut rewritten = unresolved.clone();
+                rewritten.stage_id = stage_id;
+                return Ok(Transformed::yes(Arc::new(rewritten)));
+            }
+            Ok(Transformed::no(node))
+        })?
+        .data)
 }
 
 /// Whether any operator in `plan` evaluates a volatile expression.
@@ -208,13 +165,20 @@ fn has_volatile_expr(plan: &Arc<dyn ExecutionPlan>) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::planner::{
+        DefaultDistributedPlanner, DistributedPlanner, find_unresolved_shuffles,
+    };
+    use crate::state::execution_graph::ExecutionStageBuilder;
+    use crate::test_utils::datafusion_test_context;
     use ballista_core::JobId;
+    use ballista_core::serde::BallistaPhysicalExtensionCodec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::union::UnionExec;
     use datafusion::physical_plan::{Partitioning, displayable};
-    use std::sync::Arc;
+    use datafusion::prelude::SessionConfig;
+    use uuid::Uuid;
 
     fn schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]))
@@ -254,25 +218,22 @@ mod tests {
         .unwrap()
     }
 
-    fn collect_unresolved_ids(p: &Arc<dyn ExecutionPlan>, out: &mut Vec<usize>) {
-        if let Some(u) = p.downcast_ref::<UnresolvedShuffleExec>() {
-            out.push(u.stage_id);
-        }
-        for c in p.children() {
-            collect_unresolved_ids(c, out);
-        }
+    /// Stage ids referenced by the `UnresolvedShuffleExec`s in `plan`.
+    fn ref_ids(plan: &Arc<dyn ExecutionPlan>) -> Vec<usize> {
+        find_unresolved_shuffles(plan)
+            .unwrap()
+            .iter()
+            .map(|u| u.stage_id)
+            .collect()
     }
 
-    /// Stub canonicalizer: key by indented Display PLUS the concrete stage ids
-    /// of any referenced `UnresolvedShuffleExec` (whose Display omits stage_id).
-    /// Making the key stage-id-sensitive is what forces the nested-duplicate
-    /// test to actually exercise the rewrite-refs-before-keying step.
+    /// Stub canonicalizer: key by indented Display plus the referenced stage
+    /// ids, which Display omits. Making the key stage-id-sensitive is what
+    /// forces the nested-duplicate test to exercise the rewrite-refs-before-
+    /// keying step.
     fn display_key(p: &Arc<dyn ExecutionPlan>) -> Option<Vec<u8>> {
-        let mut ids = Vec::new();
-        collect_unresolved_ids(p, &mut ids);
-        let mut key = displayable(p.as_ref()).indent(false).to_string();
-        key.push_str(&format!("|refs={ids:?}"));
-        Some(key.into_bytes())
+        let display = displayable(p.as_ref()).indent(false);
+        Some(format!("{display}|refs={:?}", ref_ids(p)).into_bytes())
     }
 
     fn union(children: Vec<Arc<dyn ExecutionPlan>>) -> Arc<dyn ExecutionPlan> {
@@ -283,37 +244,27 @@ mod tests {
         ConfigOptions::default()
     }
 
-    fn child_stage_ids(root: &Arc<dyn ShuffleWriter>) -> Vec<usize> {
-        // root's writer child is the Union; collect its UnresolvedShuffleExec ids
-        let union = root.children()[0].clone();
-        union
-            .children()
-            .into_iter()
-            .map(|c| {
-                c.downcast_ref::<UnresolvedShuffleExec>()
-                    .expect("expected UnresolvedShuffleExec under union")
-                    .stage_id
-            })
-            .collect()
+    /// Refs of the root stage `root_id` in `stages`.
+    fn root_ref_ids(stages: &[Arc<dyn ShuffleWriter>], root_id: usize) -> Vec<usize> {
+        let root: Arc<dyn ExecutionPlan> = stages
+            .iter()
+            .find(|s| s.stage_id() == root_id)
+            .unwrap()
+            .clone();
+        ref_ids(&root)
     }
 
     #[test]
     fn protobuf_canonical_key_encodes_and_distinguishes() {
-        use ballista_core::serde::BallistaPhysicalExtensionCodec;
-        use datafusion_proto::protobuf::PhysicalPlanNode;
         let codec = BallistaPhysicalExtensionCodec::default();
-        // Reuse this module's `writer(...)` test helper (used by the
-        // reuse_shuffle_stages tests, e.g. `identical_pair_collapses`) to build a
-        // ShuffleWriter-rooted stage plan.
-        let a: Arc<dyn ExecutionPlan> = writer(1, leaf(), Some(hash(4)));
-        let b: Arc<dyn ExecutionPlan> = writer(1, leaf(), Some(hash(4)));
-        let ka = protobuf_canonical_key::<PhysicalPlanNode>(&a, &codec);
-        let kb = protobuf_canonical_key::<PhysicalPlanNode>(&b, &codec);
-        assert!(
-            ka.is_some(),
-            "ballista stage plan should encode to Some(key)"
-        );
-        assert_eq!(ka, kb, "structurally identical stages produce equal keys");
+        let key = |stage: Arc<dyn ShuffleWriter>| {
+            let plan: Arc<dyn ExecutionPlan> = stage;
+            protobuf_canonical_key(&plan, &codec)
+        };
+        let a = key(writer(1, leaf(), Some(hash(4))));
+        assert!(a.is_some(), "a Ballista stage plan should encode");
+        assert_eq!(a, key(writer(1, leaf(), Some(hash(4)))));
+        assert_ne!(a, key(writer(1, leaf(), Some(hash(8)))));
     }
 
     #[test]
@@ -325,12 +276,13 @@ mod tests {
         ];
         let out = reuse_shuffle_stages(stages, &config(), &display_key).unwrap();
         assert_eq!(out.len(), 2, "one duplicate exchange should be dropped");
-        let root = out.iter().find(|s| s.stage_id() == 3).unwrap();
-        assert_eq!(
-            child_stage_ids(root),
-            vec![1, 1],
-            "both consumers point at stage 1"
-        );
+        assert_eq!(root_ref_ids(&out, 3), vec![1, 1]);
+
+        // Both consumer edges collapse into a single output link.
+        let built = ExecutionStageBuilder::new(Arc::new(SessionConfig::new()))
+            .build(out)
+            .unwrap();
+        assert_eq!(built[&1].output_links(), [3]);
     }
 
     #[test]
@@ -356,12 +308,7 @@ mod tests {
         ];
         let out = reuse_shuffle_stages(stages, &config(), &display_key).unwrap();
         assert_eq!(out.len(), 3, "both inner and outer duplicates collapse");
-        let root = out.iter().find(|s| s.stage_id() == 5).unwrap();
-        assert_eq!(
-            child_stage_ids(root),
-            vec![2, 2],
-            "both outer consumers point at stage 2"
-        );
+        assert_eq!(root_ref_ids(&out, 5), vec![2, 2]);
     }
 
     #[test]
@@ -421,56 +368,10 @@ mod tests {
     }
 
     #[test]
-    fn reused_stage_fans_out_to_all_consumers() {
-        use crate::state::execution_graph::ExecutionStageBuilder;
-        use datafusion::prelude::SessionConfig;
-
-        let stages = vec![
-            writer(1, leaf(), Some(hash(4))),
-            writer(2, leaf(), Some(hash(4))),
-            writer(3, union(vec![unresolved(1), unresolved(2)]), None),
-        ];
-        let out = reuse_shuffle_stages(stages, &config(), &display_key).unwrap();
-
-        let built = ExecutionStageBuilder::new(Arc::new(SessionConfig::new()))
-            .build(out)
-            .unwrap();
-        // The final (union) stage consumes stage 1 twice → stage 1 has exactly
-        // one output link (deduped) but stage 3 depends only on stage 1 now.
-        // Assert stage 2 no longer exists and stage 1 feeds the root.
-        assert!(!built.contains_key(&2), "duplicate stage 2 was dropped");
-        assert!(built.contains_key(&1) && built.contains_key(&3));
-
-        // Prove the fan-out: stage 1 (a leaf, no unresolved deps of its own) must
-        // be a Resolved stage whose output_links point solely at the root stage 3,
-        // with the two consumer edges deduped into a single link.
-        match built.get(&1).expect("stage 1 present") {
-            crate::state::execution_stage::ExecutionStage::Resolved(s) => {
-                assert_eq!(
-                    s.output_links,
-                    vec![3],
-                    "shared stage 1 must feed only the root stage 3"
-                );
-            }
-            other => panic!("stage 1 should be a Resolved leaf stage, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn reused_stage_fans_out_to_distinct_consumers() {
-        use crate::state::execution_graph::ExecutionStageBuilder;
-        use datafusion::prelude::SessionConfig;
-
-        // stage 1 and stage 2 are byte-identical exchanges; stage 3 and stage 4
-        // are two DISTINCT consumer stages, each reading one of them (not a
-        // single consumer referencing both, as in `..._fans_out_to_all_consumers`).
-        // Their own output partitioning differs (hash(2) vs hash(3)) so they
-        // stay distinct consumers themselves and aren't *also* deduped into
-        // each other — the point being tested is that stage 1 alone (not 3/4)
-        // ends up with two output links. After reuse, stage 2 is dropped and
-        // stage 4 is rewritten to read stage 1, so stage 1 must fan out to two
-        // different downstream stages — the production shape (e.g. TPC-H q15's
-        // `revenue0` read by both the main FROM and a subquery).
+        // Stages 1 and 2 are identical exchanges read by distinct consumers 3
+        // and 4, which differ in their own partitioning. After reuse stage 1
+        // feeds both, the shape of TPC-H q15's `revenue0`.
         let stages = vec![
             writer(1, leaf(), Some(hash(4))),
             writer(2, leaf(), Some(hash(4))),
@@ -483,54 +384,27 @@ mod tests {
         let built = ExecutionStageBuilder::new(Arc::new(SessionConfig::new()))
             .build(out)
             .unwrap();
-
-        assert!(!built.contains_key(&2), "duplicate stage 2 was dropped");
-        assert_eq!(built.len(), 4, "stages 1, 3, 4, 5 remain");
-
-        match built.get(&1).expect("stage 1 present") {
-            crate::state::execution_stage::ExecutionStage::Resolved(s) => {
-                assert!(
-                    s.output_links.len() == 2
-                        && s.output_links.contains(&3)
-                        && s.output_links.contains(&4),
-                    "shared stage 1 must fan out to distinct consumer stages 3 and 4, got {:?}",
-                    s.output_links
-                );
-            }
-            other => panic!("stage 1 should be a Resolved leaf stage, got {other:?}"),
-        }
+        let mut stage_ids: Vec<usize> = built.keys().copied().collect();
+        stage_ids.sort_unstable();
+        assert_eq!(stage_ids, vec![1, 3, 4, 5], "duplicate stage 2 was dropped");
+        let mut links = built[&1].output_links().to_vec();
+        links.sort_unstable();
+        assert_eq!(links, vec![3, 4], "stage 1 feeds both consumers");
     }
 
     // --- TPC-H detection ---------------------------------------------------
 
-    use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
-    use crate::test_utils::datafusion_test_context;
-    use ballista_core::serde::BallistaCodec;
-    use datafusion_proto::protobuf::PhysicalPlanNode;
-    use uuid::Uuid;
-
-    /// Real protobuf canonicalizer, matching the production closure. Delegates
-    /// to the shared `protobuf_canonical_key` so there is a single source of
-    /// truth for the key logic between production and this test module.
-    fn protobuf_key(p: &Arc<dyn ExecutionPlan>) -> Option<Vec<u8>> {
-        let codec = BallistaCodec::<
-            datafusion_proto::protobuf::LogicalPlanNode,
-            PhysicalPlanNode,
-        >::default();
-        protobuf_canonical_key::<PhysicalPlanNode>(p, codec.physical_extension_codec())
-    }
-
-    /// Plan a TPC-H query file and return (stages_before, stages_after_reuse).
+    /// Plan a TPC-H query file and return its stage count before and after
+    /// reuse. Unlike the plan-stability suite, this keys real `DataSourceExec`
+    /// scans with the production codec.
     async fn stage_counts(query_num: usize) -> (usize, usize) {
         let ctx = datafusion_test_context("testdata").await.unwrap();
         let sql =
             std::fs::read_to_string(format!("../../benchmarks/queries/q{query_num}.sql"))
                 .unwrap_or_else(|e| panic!("read q{query_num}.sql: {e}"));
 
-        // A TPC-H file may contain leading DDL (e.g. CREATE VIEW) before the
-        // real query and trailing DDL (e.g. DROP VIEW) after it. Plan the
-        // last SELECT/WITH statement; run everything before it as setup;
-        // ignore anything after it.
+        // Plan the last SELECT/WITH statement. Run any DDL before it as setup
+        // (q15 creates a view) and ignore anything after it.
         let statements: Vec<&str> = sql
             .split(';')
             .map(str::trim)
@@ -539,7 +413,7 @@ mod tests {
         let query_idx = statements
             .iter()
             .rposition(|s| {
-                let l = s.trim_start().to_lowercase();
+                let l = s.to_lowercase();
                 l.starts_with("select") || l.starts_with("with")
             })
             .unwrap_or_else(|| panic!("q{query_num}: no SELECT/WITH statement found"));
@@ -550,30 +424,25 @@ mod tests {
             .sql(statements[query_idx])
             .await
             .unwrap()
-            .into_optimized_plan()
+            .create_physical_plan()
+            .await
             .unwrap();
-        let plan = ctx.state().create_physical_plan(&plan).await.unwrap();
 
-        let mut planner = DefaultDistributedPlanner::new();
         let job: JobId = Uuid::new_v4().to_string().into();
         let options = ctx.state().config().options().clone();
-        let before = planner.plan_query_stages(&job, plan, &options).unwrap();
+        let before = DefaultDistributedPlanner::new()
+            .plan_query_stages(&job, plan, &options)
+            .unwrap();
         let n_before = before.len();
-        let after = reuse_shuffle_stages(before, &options, &protobuf_key).unwrap();
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let key = move |p: &Arc<dyn ExecutionPlan>| protobuf_canonical_key(p, &codec);
+        let after = reuse_shuffle_stages(before, &options, &key).unwrap();
         (n_before, after.len())
     }
 
     #[tokio::test]
     async fn tpch_exchange_reuse_detected() {
-        // `true` = the query contains a structurally-identical exchange that
-        // reuse must collapse.
-        //
-        // q15's file (`benchmarks/queries/q15.sql`) has 3 statements:
-        // `CREATE VIEW revenue0 ...`, the real `SELECT ... FROM supplier,
-        // revenue0 ...`, then `DROP VIEW revenue0;`. `stage_counts` plans the
-        // last SELECT/WITH statement (running the CREATE VIEW as setup and
-        // ignoring the trailing DROP VIEW), and revenue0's two references
-        // make it the flagship reuse case: 6 stages collapse to 5.
+        // (query, whether it has a structurally identical exchange to collapse)
         const EXPECT: &[(usize, bool)] = &[
             (2, true),
             (11, true),
@@ -586,23 +455,7 @@ mod tests {
 
         for &(q, expect_reuse) in EXPECT {
             let (before, after) = stage_counts(q).await;
-            if expect_reuse {
-                assert!(
-                    after < before,
-                    "q{q}: expected exchange reuse but stages stayed {before}",
-                );
-            } else {
-                assert_eq!(
-                    after, before,
-                    "q{q}: expected no reuse but stages changed {before} -> {after}",
-                );
-            }
+            assert_eq!(after < before, expect_reuse, "q{q}: {before} -> {after}");
         }
-        // Guard against a silent no-op regression: at least one TPC-H query must
-        // exercise reuse.
-        assert!(
-            EXPECT.iter().any(|&(_, e)| e),
-            "no TPC-H query exercises exchange reuse",
-        );
     }
 }

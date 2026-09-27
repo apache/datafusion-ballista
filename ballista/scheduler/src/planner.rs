@@ -55,6 +55,7 @@ use log::debug;
 use crate::physical_optimizer::join_selection::{
     collect_left_broadcast_safe, should_swap_join_order,
 };
+use crate::physical_optimizer::reuse_exchange::{Canonicalizer, reuse_shuffle_stages};
 use crate::state::task_builder::restrict_plan_to_partitions;
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<dyn ShuffleWriter>>);
@@ -86,6 +87,8 @@ pub struct DefaultDistributedPlanner {
     /// Optimizer rule for re-enforcing distribution and sort requirements after
     /// stage splitting.
     optimizer_ensure_requirements: EnsureRequirements,
+    /// Keys stages for exchange reuse, see [`Self::with_exchange_reuse`].
+    exchange_reuse: Option<Arc<Canonicalizer>>,
 }
 
 impl DefaultDistributedPlanner {
@@ -97,7 +100,16 @@ impl DefaultDistributedPlanner {
             // thus stage re-optimisation is needed to adjust sort information
             optimizer_ensure_requirements:
                 datafusion::physical_optimizer::ensure_requirements::EnsureRequirements::default(),
+            exchange_reuse: None,
         }
+    }
+
+    /// Merges structurally identical exchanges after planning so a repeated
+    /// subplan is computed once, using `canonical` to key each stage. See
+    /// [`reuse_shuffle_stages`].
+    pub fn with_exchange_reuse(mut self, canonical: Arc<Canonicalizer>) -> Self {
+        self.exchange_reuse = Some(canonical);
+        self
     }
 }
 
@@ -127,7 +139,10 @@ impl DistributedPlanner for DefaultDistributedPlanner {
             None,
             config,
         )?);
-        Ok(stages)
+        match &self.exchange_reuse {
+            Some(canonical) => reuse_shuffle_stages(stages, config, canonical.as_ref()),
+            None => Ok(stages),
+        }
     }
 }
 

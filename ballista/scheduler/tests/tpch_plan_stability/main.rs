@@ -69,13 +69,10 @@ async fn staged_plan_text_is_nonempty_and_shuffled() {
 #[tokio::test]
 async fn exchange_reuse_reduces_stage_count() {
     // q11 has a repeated aggregate subquery; reuse must dedup at least one stage.
-    let before = fixtures::staged_stages_len("q11", false).await;
-    let after = fixtures::staged_stages_len("q11", true).await;
+    let (before, after) = fixtures::stage_counts("q11").await;
     assert!(
         after < before,
-        "expected exchange reuse to reduce q11 stage count, got {before} -> {after} \
-         (if this fails the fixture canonical key likely diverged from production — \
-         check the codec is BallistaPhysicalExtensionCodec)"
+        "expected exchange reuse to reduce q11 stage count, got {before} -> {after}"
     );
 }
 
