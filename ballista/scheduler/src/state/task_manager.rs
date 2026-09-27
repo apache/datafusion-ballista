@@ -17,7 +17,6 @@
 
 use crate::cluster::{ExecutorSlot, JobState, JobStateEventStream};
 use crate::config::SchedulerConfig;
-use crate::physical_optimizer::reuse_exchange::protobuf_canonical_key;
 use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::aqe::AdaptiveExecutionGraph;
@@ -260,13 +259,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         session_config: &SessionConfig,
     ) -> DefaultDistributedPlanner {
         let planner = DefaultDistributedPlanner::new();
-        if !session_config.ballista_reuse_exchange_enabled() {
-            return planner;
+        if session_config.ballista_reuse_exchange_enabled() {
+            planner.with_exchange_reuse(self.codec.physical_extension_codec_arc())
+        } else {
+            planner
         }
-        let codec = self.codec.clone();
-        planner.with_exchange_reuse(Arc::new(move |plan: &Arc<dyn ExecutionPlan>| {
-            protobuf_canonical_key(plan, codec.physical_extension_codec())
-        }))
     }
 
     /// Generate an ExecutionGraph for the job and save it to the persistent state.

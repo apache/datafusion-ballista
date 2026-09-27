@@ -29,7 +29,6 @@ use ballista_core::JobId;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaPhysicalExtensionCodec;
-use ballista_scheduler::physical_optimizer::reuse_exchange::protobuf_canonical_key;
 use ballista_scheduler::planner::{DefaultDistributedPlanner, DistributedPlanner};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::execution::TaskContext;
@@ -214,12 +213,9 @@ async fn plan_stages(query_name: &str, reuse: bool) -> Vec<Arc<dyn ShuffleWriter
 
     let mut planner = DefaultDistributedPlanner::new();
     if reuse {
-        let codec = FixtureReuseCodec {
+        planner = planner.with_exchange_reuse(Arc::new(FixtureReuseCodec {
             inner: BallistaPhysicalExtensionCodec::default(),
-        };
-        planner = planner.with_exchange_reuse(Arc::new(
-            move |plan: &Arc<dyn ExecutionPlan>| protobuf_canonical_key(plan, &codec),
-        ));
+        }));
     }
     let state = ctx.state();
     let job_id: JobId = JOB_ID.into();
