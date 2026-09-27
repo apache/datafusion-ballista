@@ -109,11 +109,11 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
         session_state: &dyn Session,
     ) -> std::result::Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         log::debug!("create_physical_plan - plan: {:?}", logical_plan);
-        // we inspect if plan reads tables located in information_schema,
+        // we inspect if plan scans only tables located in information_schema,
         // which describe the catalog of this context,
         // if that is the case, we run that plan
         // on this same context, not on cluster
-        if reads_information_schema(logical_plan) {
+        if scans_only_information_schema(logical_plan)? {
             log::debug!("create_physical_plan - plan can be executed locally");
 
             self.local_planner
@@ -162,26 +162,42 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
     }
 }
 
-/// Returns `true` if `plan` reads a table in `information_schema`, including
-/// from inside a subquery.
+/// Returns `true` if every table `plan` reads, subqueries included, is in
+/// `information_schema`, and `false` if none is.
 ///
 /// Those tables describe the catalog of the session that planned `plan`, which
-/// no other node shares (the scheduler does not know the tables a client
-/// registered), and their scans cannot be serialized. Such a plan has to run
-/// where it was planned, together with anything else it reads.
-pub fn reads_information_schema(plan: &LogicalPlan) -> bool {
-    let mut found = false;
+/// no other node shares, and their scans cannot be serialized, so a plan
+/// reading only them should run where it was planned. A plan that also reads
+/// other tables would have to run there as well, without the cluster, so it is
+/// refused with an error instead.
+pub fn scans_only_information_schema(
+    plan: &LogicalPlan,
+) -> Result<bool, DataFusionError> {
+    let (mut information_schema, mut other) = (false, false);
     // Subqueries scan tables too, and `apply` does not descend into them.
-    let _ = plan.apply_with_subqueries(|node| {
-        if let LogicalPlan::TableScan(TableScan { table_name, .. }) = node
-            && table_name.schema() == Some("information_schema")
-        {
-            found = true;
-            return Ok(TreeNodeRecursion::Stop);
+    plan.apply_with_subqueries(|node| {
+        if let LogicalPlan::TableScan(TableScan { table_name, .. }) = node {
+            if table_name.schema() == Some("information_schema") {
+                information_schema = true;
+            } else {
+                other = true;
+            }
         }
-        Ok(TreeNodeRecursion::Continue)
-    });
-    found
+        Ok(if information_schema && other {
+            TreeNodeRecursion::Stop
+        } else {
+            TreeNodeRecursion::Continue
+        })
+    })?;
+
+    if information_schema && other {
+        return Err(DataFusionError::NotImplemented(
+            "Ballista cannot run a query that reads information_schema together \
+             with other tables. Query information_schema on its own."
+                .to_string(),
+        ));
+    }
+    Ok(information_schema)
 }
 
 #[cfg(test)]
@@ -197,7 +213,7 @@ mod test {
     };
     use datafusion_proto::protobuf::LogicalPlanNode;
 
-    use super::{BallistaQueryPlanner, reads_information_schema};
+    use super::{BallistaQueryPlanner, scans_only_information_schema};
     use crate::config::BallistaConfig;
     use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec};
 
@@ -220,7 +236,7 @@ mod test {
         let ctx = context();
         let df = ctx.sql("SHOW TABLES").await?;
 
-        assert!(reads_information_schema(df.logical_plan()));
+        assert!(scans_only_information_schema(df.logical_plan())?);
 
         Ok(())
     }
@@ -230,7 +246,7 @@ mod test {
         let ctx = context();
         let df = ctx.sql("SELECT * FROM information_schema.df_settings WHERE NAME LIKE 'ballista%'").await?;
 
-        assert!(reads_information_schema(df.logical_plan()));
+        assert!(scans_only_information_schema(df.logical_plan())?);
 
         Ok(())
     }
@@ -244,7 +260,7 @@ mod test {
             .await?;
         let df = ctx.sql("SELECT * FROM tt").await?;
 
-        assert!(!reads_information_schema(df.logical_plan()));
+        assert!(!scans_only_information_schema(df.logical_plan())?);
 
         Ok(())
     }
@@ -256,14 +272,13 @@ mod test {
             .await?;
         let df = ctx.sql("SELECT * FROM tt").await?;
 
-        assert!(!reads_information_schema(df.logical_plan()));
+        assert!(!scans_only_information_schema(df.logical_plan())?);
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn should_detect_information_schema_with_other_tables_as_local_plan()
-    -> Result<()> {
+    async fn should_reject_information_schema_with_other_tables() -> Result<()> {
         let ctx = context();
         ctx.sql("CREATE TABLE big (name VARCHAR)")
             .await?
@@ -282,7 +297,7 @@ mod test {
             // joins the optimizer would decorrelate them into.
             let plan = ctx.state().create_logical_plan(sql).await?;
 
-            assert!(reads_information_schema(&plan), "{sql}");
+            assert!(scans_only_information_schema(&plan).is_err(), "{sql}");
         }
 
         Ok(())

@@ -374,43 +374,6 @@ mod supported {
         Ok(())
     }
 
-    // information_schema describes the client's catalog, so a query reading
-    // it runs on the client even when it reads other tables as well
-    #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[tokio::test]
-    async fn should_execute_information_schema_query_with_subquery(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
-        test_data: String,
-    ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
-
-        let result = ctx
-            .sql("select table_name, (select count(*) from test) as row_count from information_schema.tables where table_name = 'test'")
-            .await?
-            .collect()
-            .await?;
-        let expected = [
-            "+------------+-----------+",
-            "| table_name | row_count |",
-            "+------------+-----------+",
-            "| test       | 8         |",
-            "+------------+-----------+",
-        ];
-
-        assert_batches_eq!(expected, &result);
-
-        Ok(())
-    }
-
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
