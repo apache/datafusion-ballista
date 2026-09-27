@@ -26,7 +26,7 @@
 // as mentioned in https://github.com/apache/datafusion-ballista/issues/1271
 //
 #![allow(clippy::uninlined_format_args, clippy::unused_unit)]
-use ballista_core::error::BallistaError;
+use ballista_core::{error::BallistaError, ids::new_instance_id};
 
 use crate::executor_process::ExecutorProcessConfig;
 use crate::metrics::ExecutorMetricCollectionPolicy;
@@ -80,6 +80,10 @@ pub struct Config {
         help = "Host name or IP address to register with scheduler so that other executors can connect to this executor. If none is provided, the scheduler will use the connecting IP address to communicate with the executor."
     )]
     pub external_host: Option<String>,
+    /// Identifier for this executor. If unset, a UUID-backed instance identity
+    /// is generated at startup.
+    #[arg(long = "id", help = "Identifier for this executor.")]
+    pub executor_id: Option<String>,
     /// Port for the Arrow Flight service (used for shuffle data transfer).
     #[arg(short = 'p', long, default_value_t = 50051, help = "bind port")]
     pub bind_port: u16,
@@ -250,7 +254,8 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             }
             None => opt.vcores,
         };
-        Ok(ExecutorProcessConfig {
+        let config = ExecutorProcessConfig {
+            executor_id: opt.executor_id.unwrap_or_else(new_instance_id),
             special_mod_log_level: opt.log_level_setting,
             external_host: opt.external_host,
             bind_host: opt.bind_host,
@@ -285,12 +290,18 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             override_create_grpc_client_endpoint: None,
             client_ttl: opt.client_ttl,
             health: crate::health::ExecutorHealth::new(),
-        })
+        };
+
+        config.validate()?;
+
+        Ok(config)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::executor_process::ExecutorProcessConfig;
+
     use super::parse_memory_pool_fraction;
     use super::parse_memory_pool_size;
 
@@ -340,5 +351,23 @@ mod tests {
             "client_ttl must default to a pooling value, got {}",
             opt.client_ttl
         );
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_executor_id_explicit_value_is_respected() {
+        use clap::Parser;
+        let opt = super::Config::parse_from(["ballista-executor", "--id", "executor-a"]);
+        let cfg = ExecutorProcessConfig::try_from(opt).unwrap();
+        assert_eq!(cfg.executor_id, "executor-a");
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_executor_id_defaults_to_uuid_when_unset() {
+        use clap::Parser;
+        let opt = super::Config::parse_from(["ballista-executor"]);
+        let cfg = ExecutorProcessConfig::try_from(opt).unwrap();
+        uuid::Uuid::parse_str(&cfg.executor_id).unwrap();
     }
 }

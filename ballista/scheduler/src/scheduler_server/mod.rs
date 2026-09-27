@@ -40,7 +40,7 @@ use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStre
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use log::{debug, warn};
+use log::{debug, info, warn};
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
@@ -127,8 +127,10 @@ impl JobIdGenerator for DefaultJobGenerator {
 /// - Tracking job progress and handling failures
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
-    /// Unique name identifying this scheduler instance.
-    pub scheduler_name: String,
+    /// Unique identifier for this scheduler instance.
+    pub scheduler_id: String,
+    /// Scheduler callback endpoint in host:port format.
+    pub scheduler_endpoint: String,
     /// Timestamp when this scheduler was started.
     pub start_time: u128,
     /// Shared scheduler state for job and executor management.
@@ -147,72 +149,65 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
     /// Creates a new `SchedulerServer` with the given configuration.
     pub fn new(
-        scheduler_name: String,
+        scheduler_endpoint: String,
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         config: Arc<SchedulerConfig>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     ) -> Self {
+        let scheduler_id = config.scheduler_id.clone();
         let state = Arc::new(SchedulerState::new(
             cluster,
             codec,
-            scheduler_name.clone(),
+            scheduler_id.clone(),
+            scheduler_endpoint.clone(),
             config.clone(),
         ));
-        #[cfg(feature = "rest-api")]
-        let event_log = config.event_log_dir.as_ref().map(|dir| {
-            ballista_history::writer::EventLogWriter::new(
-                std::path::PathBuf::from(dir),
-                config.event_loop_buffer_size as usize,
-            )
-        });
-        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
-            state.clone(),
-            metrics_collector,
-            config.clone(),
-            #[cfg(feature = "rest-api")]
-            event_log,
-        ));
-        let query_stage_event_loop = EventLoop::new(
-            "query_stage".to_owned(),
-            config.event_loop_buffer_size as usize,
-            query_stage_scheduler.clone(),
-        );
 
-        let generator = config
-            .job_id_generator
-            .clone()
-            .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
-
-        Self {
-            scheduler_name,
-            start_time: timestamp_millis() as u128,
+        Self::from_state(
+            scheduler_id,
+            scheduler_endpoint,
             state,
-            query_stage_event_loop,
-            #[cfg(feature = "rest-api")]
-            query_stage_scheduler,
             config,
-            generator,
-        }
+            metrics_collector,
+        )
     }
 
     /// Creates a new `SchedulerServer` with a custom task launcher.
     #[allow(dead_code)]
     pub fn new_with_task_launcher(
-        scheduler_name: String,
+        scheduler_endpoint: String,
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         config: Arc<SchedulerConfig>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
         task_launcher: Arc<dyn TaskLauncher>,
     ) -> Self {
+        let scheduler_id = config.scheduler_id.clone();
         let state = Arc::new(SchedulerState::new_with_task_launcher(
             cluster,
             codec,
-            scheduler_name.clone(),
+            scheduler_id.clone(),
             config.clone(),
             task_launcher,
         ));
+
+        Self::from_state(
+            scheduler_id,
+            scheduler_endpoint,
+            state,
+            config,
+            metrics_collector,
+        )
+    }
+
+    fn from_state(
+        scheduler_id: String,
+        scheduler_endpoint: String,
+        state: Arc<SchedulerState<T, U>>,
+        config: Arc<SchedulerConfig>,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+    ) -> Self {
         #[cfg(feature = "rest-api")]
         let event_log = config.event_log_dir.as_ref().map(|dir| {
             ballista_history::writer::EventLogWriter::new(
@@ -238,8 +233,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .clone()
             .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
 
+        info!("Scheduler id: {scheduler_id}");
+        info!("Scheduler callback endpoint: {scheduler_endpoint}");
+
         Self {
-            scheduler_name,
+            scheduler_id,
+            scheduler_endpoint,
             start_time: timestamp_millis() as u128,
             state,
             query_stage_event_loop,
@@ -573,9 +572,9 @@ mod test {
     use crate::scheduler_server::{SchedulerServer, timestamp_millis};
 
     use crate::test_utils::{
-        ExplodingTableProvider, SchedulerTest, TaskRunnerFn, TestMetricsCollector,
-        assert_completed_event, assert_failed_event, assert_no_submitted_event,
-        assert_submitted_event, test_cluster_context,
+        ExplodingTableProvider, RejectingTaskLauncher, SchedulerTest, TaskRunnerFn,
+        TestMetricsCollector, assert_completed_event, assert_failed_event,
+        assert_no_submitted_event, assert_submitted_event, test_cluster_context,
     };
 
     #[tokio::test]
@@ -1131,6 +1130,49 @@ mod test {
             .find(|s| matches!(s.status, Some(Status::Successful(_))));
 
         assert!(successful_job.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deterministic_launch_rejection_fails_job() -> Result<()> {
+        // A launcher that always rejects with gRPC InvalidArgument (an executor that
+        // cannot decode the task). The job must fail fast instead of hanging (#1908).
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let mut test = SchedulerTest::new_with_launcher(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector,
+            1,
+            1,
+            None,
+            Arc::new(RejectingTaskLauncher::default()),
+        )
+        .await?;
+
+        let plan = test_plan();
+
+        // `run` submits the job and polls until it reaches a terminal state.
+        // Hard wall-clock bound so a stuck job fails the test instead of hanging.
+        let (status, _job_id) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            test.run("", &plan),
+        )
+        .await
+        .expect(
+            "job did not reach a terminal state within 10s — likely not being failed",
+        )?;
+
+        assert!(
+            matches!(
+                status,
+                JobStatus {
+                    status: Some(job_status::Status::Failed(_)),
+                    ..
+                }
+            ),
+            "expected job to fail on task rejection, got {status:?}"
+        );
 
         Ok(())
     }

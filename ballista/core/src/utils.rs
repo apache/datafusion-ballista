@@ -90,7 +90,7 @@ impl From<&BallistaConfig> for GrpcClientConfig {
             http2_keepalive_interval_seconds: config
                 .grpc_client_http2_keepalive_interval_seconds()
                 as u64,
-            use_tls: config.client_use_tls(),
+            use_tls: config.use_tls(),
             max_message_size: config.grpc_client_max_message_size(),
             io_retries_times: config.io_retries_times() as u8,
             io_retry_wait_time_ms: config.io_retry_wait_time_ms() as u64,

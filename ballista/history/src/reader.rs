@@ -25,6 +25,7 @@
 
 use crate::event::{JobEnd, JobIndex, LogRecord, SCHEMA_VERSION, kind};
 use ballista_api_types::dto::JobConfig;
+use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::io::BufRead;
 use std::path::Path;
@@ -91,11 +92,47 @@ impl From<std::io::Error> for ReadError {
 /// means the job is still running or the scheduler died before finishing it.
 /// A `JobEnd` that is present but unusable is an `Err`, so callers can report it
 /// rather than silently dropping the job.
+pub fn read_completed_job(path: &Path) -> Result<Option<ReplayedJob>, ReadError> {
+    Ok(read_job_end::<JobEnd>(path)?.map(|end| ReplayedJob {
+        index: end.index,
+        job: end.job,
+        stages: end.stages,
+        config: end.config,
+        dot: end.dot,
+    }))
+}
+
+/// The `JobEnd` fields needed to list a job, and nothing else.
+///
+/// Deserializing into this rather than [`JobEnd`] steps over the stored
+/// `/api/job/{id}` and `/api/job/{id}/stages` payloads, the session config and
+/// the DOT graph without ever allocating them. That is what lets the history
+/// server index a directory of logs without holding their contents.
+#[derive(Deserialize)]
+struct JobEndIndex {
+    index: JobIndex,
+}
+
+/// Read only the frozen summary out of a completed job's event log.
+///
+/// Same contract as [`read_completed_job`], including how a malformed terminal
+/// record is reported, but it recovers only the fields the job list needs. Use
+/// it to index a log directory, then [`read_completed_job`] to serve one job.
+///
+/// Because the payloads are never parsed, corruption confined to them is not
+/// detected here. It surfaces when the job is actually read.
+pub fn read_job_index(path: &Path) -> Result<Option<JobIndex>, ReadError> {
+    Ok(read_job_end::<JobEndIndex>(path)?.map(|end| end.index))
+}
+
+/// Find a log's terminal record and decode it into `T`.
 ///
 /// Lines that are not `JobEnd` are skipped without inspection, including ones
 /// this build does not recognise: a future schema may add record types, and an
 /// older reader must tolerate them rather than choke on the file.
-pub fn read_completed_job(path: &Path) -> Result<Option<ReplayedJob>, ReadError> {
+fn read_job_end<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+) -> Result<Option<T>, ReadError> {
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
 
@@ -121,14 +158,8 @@ pub fn read_completed_job(path: &Path) -> Result<Option<ReplayedJob>, ReadError>
             });
         }
 
-        return match record.decode::<JobEnd>() {
-            Ok(end) => Ok(Some(ReplayedJob {
-                index: end.index,
-                job: end.job,
-                stages: end.stages,
-                config: end.config,
-                dot: end.dot,
-            })),
+        return match record.decode::<T>() {
+            Ok(end) => Ok(Some(end)),
             Err(e) => Err(ReadError::Malformed(e.to_string())),
         };
     }
@@ -205,6 +236,52 @@ mod tests {
         // The payload is re-served verbatim rather than round-tripped through a
         // typed struct.
         assert!(replayed.job.get().contains("ProjectionExec"));
+    }
+
+    /// The index-only read is what the history server builds its job list
+    /// from, so it has to agree with the full read on every field it carries.
+    /// If the two ever diverge, the list view and the detail view disagree
+    /// about the same job.
+    #[test]
+    fn index_only_read_agrees_with_full_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_log(&dir, "job-1.eventlog", &[&job_end_line()]);
+
+        let index = read_job_index(&path).unwrap().expect("completed");
+        let full = read_completed_job(&path).unwrap().expect("completed");
+
+        assert_eq!(
+            serde_json::to_value(&index).unwrap(),
+            serde_json::to_value(&full.index).unwrap()
+        );
+    }
+
+    #[test]
+    fn index_only_read_returns_none_when_no_job_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_log(
+            &dir,
+            "job-6.eventlog",
+            &[r#"{"ev":"StageStart","version":1,"data":{"stage_id":1,"partitions":4}}"#],
+        );
+        assert!(read_job_index(&path).unwrap().is_none());
+    }
+
+    /// A terminal record too broken to yield a summary must still be an error
+    /// rather than a silently missing job, exactly as for the full read.
+    #[test]
+    fn index_only_read_reports_a_malformed_job_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_log(
+            &dir,
+            "job-7.eventlog",
+            &[r#"{"ev":"JobEnd","version":1,"data":{"status":"Succeeded"}}"#],
+        );
+
+        match read_job_index(&path) {
+            Err(ReadError::Malformed(_)) => {}
+            other => panic!("expected Malformed, got {other:?}"),
+        }
     }
 
     #[test]
@@ -314,6 +391,19 @@ mod compatibility {
             Some(&"4".to_string())
         );
         assert!(replayed.dot.contains("digraph"));
+    }
+
+    /// The history server indexes a directory with the index-only read, so it
+    /// has to work on a log written by an earlier Ballista too.
+    #[test]
+    fn indexes_a_v1_log_written_by_an_earlier_ballista() {
+        let index = read_job_index(&golden_v1())
+            .expect("a v1 log must remain indexable")
+            .expect("the fixture contains a JobEnd record");
+
+        assert_eq!(index.job_id, "golden-v1");
+        assert_eq!(index.job_name, "tpch-q1");
+        assert_eq!(index.status, "Completed");
     }
 
     /// The stored responses must come back byte-for-byte, because that is what

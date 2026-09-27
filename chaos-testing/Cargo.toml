@@ -18,7 +18,7 @@
 [package]
 name = "ballista-chaos"
 description = "Fault-injection harness for testing Ballista high availability"
-license = "Apache-2.0"
+license = { workspace = true }
 version = "0.1.0"
 edition = { workspace = true }
 rust-version = { workspace = true }
@@ -32,16 +32,16 @@ k8s = []
 
 [dependencies]
 arrow = { workspace = true }
-ballista = { path = "../ballista/client" }
-ballista-core = { path = "../ballista/core" }
-ballista-executor = { path = "../ballista/executor" }
-ballista-scheduler = { path = "../ballista/scheduler" }
+ballista = { workspace = true }
+ballista-core = { workspace = true }
+ballista-executor = { workspace = true }
+ballista-scheduler = { workspace = true }
 datafusion = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
 nix = { version = "0.31", features = ["fs", "signal"] }
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
-serde_json = "1.0"
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "sync", "time"] }
 

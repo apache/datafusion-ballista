@@ -71,11 +71,27 @@ impl PartitionLocation {
     /// vocabulary of one writer. The stored field keeps that name until the
     /// construction sites are swept; the wire protocol already speaks layouts.
     pub fn layout(&self) -> ShuffleLayout {
-        if self.is_sort_shuffle {
-            ShuffleLayout::Sort
-        } else {
-            ShuffleLayout::Passthrough
-        }
+        shuffle_layout(self.is_sort_shuffle)
+    }
+}
+
+impl crate::serde::protobuf::PartitionLocation {
+    /// How the writer that produced this partition laid its output out.
+    ///
+    /// The same rule as [`PartitionLocation::layout`], for callers holding the
+    /// protobuf message. They cannot go through `TryInto<PartitionLocation>`
+    /// first, because that conversion also demands `partition_stats`, which a
+    /// partition fetch has no use for.
+    pub fn layout(&self) -> ShuffleLayout {
+        shuffle_layout(self.is_sort_shuffle)
+    }
+}
+
+fn shuffle_layout(is_sort_shuffle: bool) -> ShuffleLayout {
+    if is_sort_shuffle {
+        ShuffleLayout::Sort
+    } else {
+        ShuffleLayout::Passthrough
     }
 }
 
@@ -204,6 +220,7 @@ pub struct ExecutorMetadata {
 
 /// Specification of an executor, indicating its runtime-assigned vcore count.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ExecutorSpecification {
     /// Virtual cores assigned to this executor at runtime — analogous to YARN
     /// vcores (`yarn.nodemanager.resource.cpu-vcores`) or Spark's
@@ -241,6 +258,7 @@ impl ExecutorSpecification {
 
 /// Operating system level specification of an executor
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ExecutorOperatingSystemSpecification {
     /// System name
     pub system_name: String,

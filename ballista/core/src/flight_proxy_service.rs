@@ -15,17 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::error::BallistaError;
+use crate::extension::BallistaConfigGrpcEndpoint;
+use crate::serde::decode_protobuf;
+use crate::serde::scheduler::Action as BallistaAction;
+use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
-use ballista_core::error::BallistaError;
-use ballista_core::extension::BallistaConfigGrpcEndpoint;
-use ballista_core::serde::decode_protobuf;
-use ballista_core::serde::scheduler::Action as BallistaAction;
-use ballista_core::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 
 use futures::{Stream, TryFutureExt};
 use log::debug;
@@ -49,6 +49,9 @@ pub struct BallistaFlightProxyService {
 }
 
 impl BallistaFlightProxyService {
+    /// Creates a proxy which forwards partition fetches to executors, applying
+    /// the given message size limits and TLS/endpoint customization when
+    /// dialling them.
     pub fn new(
         max_decoding_message_size: usize,
         max_encoding_message_size: usize,
@@ -117,8 +120,8 @@ impl FlightService for BallistaFlightProxyService {
     ) -> Result<Response<Self::DoGetStream>, Status> {
         let ticket = request.into_inner();
 
-        let action =
-            decode_protobuf(&ticket.ticket).map_err(|e| from_ballista_err(&e))?;
+        let action = decode_protobuf(&ticket.ticket)
+            .map_err(|e| Status::invalid_argument(format!("invalid ticket: {e}")))?;
 
         match &action {
             BallistaAction::FetchPartition {
@@ -172,7 +175,7 @@ impl FlightService for BallistaFlightProxyService {
     }
 }
 
-fn from_ballista_err(e: &ballista_core::error::BallistaError) -> Status {
+fn from_ballista_err(e: &BallistaError) -> Status {
     Status::internal(format!("Ballista Error: {e:?}"))
 }
 
@@ -215,4 +218,26 @@ async fn get_flight_client(
 
     debug!("FlightProxyService connected: {flight_client:?}");
     Ok(flight_client)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A ticket that is not a Ballista action is the client's mistake, not a
+    /// server failure.
+    #[tokio::test]
+    async fn undecodable_tickets_are_invalid_arguments() {
+        let proxy = BallistaFlightProxyService::new(4_194_304, 4_194_304, false, None);
+        let result = proxy
+            .do_get(Request::new(Ticket {
+                ticket: vec![0xff, 0xff, 0xff].into(),
+            }))
+            .await;
+
+        match result {
+            Ok(_) => panic!("an undecodable ticket must be rejected"),
+            Err(status) => assert_eq!(status.code(), tonic::Code::InvalidArgument),
+        }
+    }
 }

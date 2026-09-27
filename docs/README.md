@@ -26,7 +26,11 @@ content is located [here](source/user-guide/introduction.md).
 
 ## Developer Documentation
 
-Developer documentation can be found [here](developer/README.md).
+Developer documentation lives in the contributors guide, alongside the user guide, so it is
+published with the rest of the site. Start with the
+[architecture overview](source/contributors-guide/architecture.md), then
+[code organization](source/contributors-guide/code-organization.md) and
+[development](source/contributors-guide/development.md).
 
 ## Building the User Guide
 
