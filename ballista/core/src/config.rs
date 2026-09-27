@@ -281,7 +281,8 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::Boolean,
                          Some(true.to_string())),
         ConfigEntry::new(BALLISTA_REUSE_EXCHANGE_ENABLED.to_string(),
-                         "Reuse structurally-identical shuffle exchanges across the stage DAG so a repeated subplan is materialized once (Spark ReuseExchange analog)".to_string(),
+                         "Reuse structurally-identical shuffle exchanges across the stage DAG so a repeated subplan is materialized once (Spark ReuseExchange analog). \
+                         Applies to the static distributed planner only, not to adaptive query planning.".to_string(),
                          DataType::Boolean,
                          Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),

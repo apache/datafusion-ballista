@@ -33,7 +33,6 @@ use ballista_core::execution_plans::{
     RangeShuffleWriterExec, ShuffleWriter, ShuffleWriterExec, SortShuffleWriterExec,
     UnresolvedShuffleExec,
 };
-use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{FailedJob, ShuffleWritePartition, job_status};
@@ -47,7 +46,9 @@ use ballista_core::serde::scheduler::{
 };
 
 use crate::display::print_stage_metrics;
-use crate::physical_optimizer::reuse_exchange::{Canonicalizer, reuse_shuffle_stages};
+use crate::physical_optimizer::reuse_exchange::{
+    Canonicalizer, reuse_shuffle_stages_if_enabled,
+};
 use crate::planner::DistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
@@ -370,7 +371,7 @@ impl StaticExecutionGraph {
     /// Like [`Self::new`], but additionally accepts a `reuse_canonical` closure
     /// used to deduplicate structurally-identical shuffle exchange stages when
     /// `ballista.optimizer.reuse_exchange_enabled` is set on `session_config`.
-    /// Passing `None` (or leaving the config flag unset) preserves the exact
+    /// Passing `None` (or disabling the config flag) preserves the exact
     /// behavior of `new`.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_reuse(
@@ -388,12 +389,11 @@ impl StaticExecutionGraph {
         let shuffle_stages =
             planner.plan_query_stages(job_id, plan.clone(), session_config.options())?;
 
-        let shuffle_stages = match reuse_canonical {
-            Some(canonical) if session_config.ballista_reuse_exchange_enabled() => {
-                reuse_shuffle_stages(shuffle_stages, session_config.options(), canonical)?
-            }
-            _ => shuffle_stages,
-        };
+        let shuffle_stages = reuse_shuffle_stages_if_enabled(
+            shuffle_stages,
+            &session_config,
+            reuse_canonical,
+        )?;
 
         let builder = ExecutionStageBuilder::new(session_config.clone());
         let stages = builder.build(shuffle_stages)?;

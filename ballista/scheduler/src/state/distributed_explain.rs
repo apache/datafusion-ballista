@@ -36,6 +36,9 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
 use datafusion::prelude::SessionContext;
 
+use crate::physical_optimizer::reuse_exchange::{
+    Canonicalizer, reuse_shuffle_stages_if_enabled,
+};
 use crate::state::execution_graph::ExecutionStage;
 use crate::{
     planner::{DefaultDistributedPlanner, DistributedPlanner},
@@ -46,6 +49,7 @@ pub(crate) async fn generate_distributed_explain_plan(
     job_id: &JobId,
     session_ctx: &SessionContext,
     plan: Arc<LogicalPlan>,
+    reuse_canonical: Option<&Canonicalizer<'_>>,
 ) -> Result<String> {
     let session_config = Arc::new(session_ctx.copied_config());
 
@@ -54,6 +58,11 @@ pub(crate) async fn generate_distributed_explain_plan(
     let mut planner = DefaultDistributedPlanner::new();
     let shuffle_stages =
         planner.plan_query_stages(job_id, plan, session_config.options())?;
+    let shuffle_stages = reuse_shuffle_stages_if_enabled(
+        shuffle_stages,
+        &session_config,
+        reuse_canonical,
+    )?;
     let builder = ExecutionStageBuilder::new(session_config.clone());
     let stages = builder.build(shuffle_stages)?;
 
@@ -193,11 +202,15 @@ fn render_stages(stages: HashMap<usize, ExecutionStage>) -> String {
     buf
 }
 
+/// `reuse_canonical` should match what the job itself will be planned with, so
+/// the rendered stages are the ones that run: the static planner passes its
+/// exchange-reuse canonicalizer, AQE passes `None`.
 pub(crate) async fn handle_explain_plan(
     job_id: &JobId,
     ctx: &SessionContext,
     logical_plan: &LogicalPlan,
     plan: Arc<dyn ExecutionPlan>,
+    reuse_canonical: Option<&Canonicalizer<'_>>,
 ) -> ballista_core::error::Result<Arc<dyn ExecutionPlan>> {
     if let LogicalPlan::Explain(explain_plan) = &logical_plan
         && let Some(explain) = plan.downcast_ref::<ExplainExec>()
@@ -206,7 +219,8 @@ pub(crate) async fn handle_explain_plan(
         let plans = explain.stringified_plans();
 
         let distributed_txt =
-            generate_distributed_explain_plan(job_id, ctx, inner_plan).await?;
+            generate_distributed_explain_plan(job_id, ctx, inner_plan, reuse_canonical)
+                .await?;
         let (logical_txt, physical_txt) = extract_logical_and_physical_plans(plans);
 
         construct_distributed_explain_exec(logical_txt, physical_txt, distributed_txt)

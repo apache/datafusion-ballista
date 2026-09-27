@@ -298,9 +298,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
                     let physical_plan =
                         ctx.state().create_physical_plan(logical_plan).await?;
-                    let physical_plan =
-                        handle_explain_plan(job_id, &ctx, logical_plan, physical_plan)
-                            .await?;
+                    let physical_plan = handle_explain_plan(
+                        job_id,
+                        &ctx,
+                        logical_plan,
+                        physical_plan,
+                        Some(&reuse_canonical),
+                    )
+                    .await?;
 
                     Box::new(StaticExecutionGraph::new_with_reuse(
                         &self.scheduler_id,

@@ -175,7 +175,7 @@ impl AdaptivePlanner {
             .create_physical_plan(logical_plan)
             .await?;
 
-        let plan = handle_explain_plan(&job_id, ctx, logical_plan, plan)
+        let plan = handle_explain_plan(&job_id, ctx, logical_plan, plan, None)
             .await
             .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 

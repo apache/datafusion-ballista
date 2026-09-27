@@ -30,7 +30,7 @@ use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use ballista_scheduler::physical_optimizer::reuse_exchange::{
-    protobuf_canonical_key, reuse_shuffle_stages,
+    protobuf_canonical_key, reuse_shuffle_stages_if_enabled,
 };
 use ballista_scheduler::planner::{DefaultDistributedPlanner, DistributedPlanner};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -230,7 +230,7 @@ async fn plan_stages(query_name: &str) -> (SessionContext, Vec<Arc<dyn ShuffleWr
 
 /// Extension codec used only by this fixture's exchange-reuse canonicalizer.
 /// Delegates everything to the production `BallistaPhysicalExtensionCodec`
-/// (the same codec `ExecutionGraph::new_with_reuse` uses) except the
+/// (the same codec `StaticExecutionGraph::new_with_reuse` uses) except the
 /// test-only [`StatsExec`] scan leaf.
 ///
 /// `StatsExec` stands in for a real table scan so the fixture can plan at
@@ -285,9 +285,9 @@ impl PhysicalExtensionCodec for FixtureReuseCodec {
 }
 
 /// Apply the same exchange-reuse pass the scheduler applies in
-/// `ExecutionGraph::new_with_reuse` (`reuse_shuffle_stages` keyed by
-/// `protobuf_canonical_key` over the Ballista codec), so the fixture reflects
-/// the plan actually executed rather than the pre-reuse planner output.
+/// `StaticExecutionGraph::new_with_reuse` (`reuse_shuffle_stages_if_enabled`
+/// keyed by `protobuf_canonical_key` over the Ballista codec), so the fixture
+/// reflects the plan actually executed rather than the pre-reuse planner output.
 fn apply_reuse(
     ctx: &SessionContext,
     stages: Vec<Arc<dyn ShuffleWriter>>,
@@ -298,7 +298,8 @@ fn apply_reuse(
     let canonical = |plan: &Arc<dyn ExecutionPlan>| {
         protobuf_canonical_key::<PhysicalPlanNode>(plan, &codec)
     };
-    reuse_shuffle_stages(stages, ctx.state().config().options(), &canonical).unwrap()
+    reuse_shuffle_stages_if_enabled(stages, ctx.state().config(), Some(&canonical))
+        .unwrap()
 }
 
 /// Produce the normalized distributed staged-plan text for a TPC-H query,
