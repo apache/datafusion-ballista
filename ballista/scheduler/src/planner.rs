@@ -106,7 +106,7 @@ impl DefaultDistributedPlanner {
 
     /// Merges structurally identical exchanges after planning so a repeated
     /// subplan is computed once, using `canonical` to key each stage. See
-    /// [`reuse_shuffle_stages`].
+    /// [`crate::physical_optimizer::reuse_exchange`].
     pub fn with_exchange_reuse(mut self, canonical: Arc<Canonicalizer>) -> Self {
         self.exchange_reuse = Some(canonical);
         self

@@ -63,7 +63,7 @@ pub fn protobuf_canonical_key(
 ///
 /// The stage with the maximum id is the query root (the planner pushes it last)
 /// and is never dropped; its refs are still rewritten.
-pub fn reuse_shuffle_stages(
+pub(crate) fn reuse_shuffle_stages(
     mut stages: Vec<Arc<dyn ShuffleWriter>>,
     config: &ConfigOptions,
     canonical: &Canonicalizer,

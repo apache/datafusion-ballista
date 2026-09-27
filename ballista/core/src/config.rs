@@ -86,8 +86,7 @@ pub const BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS: &str =
 pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
 /// Configuration key for enabling reuse of structurally-identical shuffle
 /// exchanges in the distributed planner (Spark `ReuseExchange` analog).
-pub const BALLISTA_REUSE_EXCHANGE_ENABLED: &str =
-    "ballista.optimizer.reuse_exchange_enabled";
+pub const BALLISTA_REUSE_EXCHANGE: &str = "ballista.optimizer.reuse_exchange";
 /// Configuration key for sort shuffle target batch size in rows.
 pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
@@ -280,7 +279,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          estimates. Set to false to use the static distributed planner.".to_string(),
                          DataType::Boolean,
                          Some(true.to_string())),
-        ConfigEntry::new(BALLISTA_REUSE_EXCHANGE_ENABLED.to_string(),
+        ConfigEntry::new(BALLISTA_REUSE_EXCHANGE.to_string(),
                          "Reuse structurally-identical shuffle exchanges across the stage DAG so a repeated subplan is materialized once (Spark ReuseExchange analog). \
                          Applies to the static distributed planner only, not to adaptive query planning.".to_string(),
                          DataType::Boolean,
@@ -738,7 +737,7 @@ impl BallistaConfig {
 
     /// Returns whether exchange reuse is enabled in the distributed planner.
     pub fn reuse_exchange_enabled(&self) -> bool {
-        self.get_bool_setting(BALLISTA_REUSE_EXCHANGE_ENABLED)
+        self.get_bool_setting(BALLISTA_REUSE_EXCHANGE)
     }
 
     /// Returns the target batch size for sort-based shuffle.
