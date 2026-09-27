@@ -214,3 +214,31 @@ pub(crate) async fn handle_explain_plan(
         Ok(plan)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::physical_plan::collect;
+
+    /// `EXPLAIN` has to describe its output the same way whether DataFusion or
+    /// Ballista answers it, and the rows it produces have to match that
+    /// description, or a client that checks the schema rejects the result.
+    #[tokio::test]
+    async fn distributed_explain_schema_matches_datafusion_explain() -> Result<()> {
+        let plan = construct_distributed_explain_exec(
+            "logical".to_string(),
+            "physical".to_string(),
+            "distributed".to_string(),
+        )?;
+
+        let expected = LogicalPlan::explain_schema();
+        assert_eq!(plan.schema(), expected);
+
+        let batches = collect(plan, SessionContext::new().task_ctx()).await?;
+        assert!(!batches.is_empty());
+        for batch in batches {
+            assert_eq!(batch.schema(), expected);
+        }
+        Ok(())
+    }
+}

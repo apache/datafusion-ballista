@@ -219,3 +219,25 @@ async fn get_flight_client(
     debug!("FlightProxyService connected: {flight_client:?}");
     Ok(flight_client)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A ticket that is not a Ballista action is the client's mistake, not a
+    /// server failure.
+    #[tokio::test]
+    async fn undecodable_tickets_are_invalid_arguments() {
+        let proxy = BallistaFlightProxyService::new(4_194_304, 4_194_304, false, None);
+        let result = proxy
+            .do_get(Request::new(Ticket {
+                ticket: vec![0xff, 0xff, 0xff].into(),
+            }))
+            .await;
+
+        match result {
+            Ok(_) => panic!("an undecodable ticket must be rejected"),
+            Err(status) => assert_eq!(status.code(), tonic::Code::InvalidArgument),
+        }
+    }
+}
