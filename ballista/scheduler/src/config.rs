@@ -284,7 +284,7 @@ pub struct Config {
     #[arg(
         long,
         default_value_t = false,
-        help = "Serve Arrow Flight SQL on the scheduler port, so JDBC/ODBC/ADBC clients can run SQL against the cluster. Note that this performs no authentication unless SchedulerConfig::with_flight_sql_authenticator is set."
+        help = "Serve Arrow Flight SQL on the scheduler port, so JDBC/ODBC/ADBC clients can run SQL against the cluster. Clients are not authenticated unless SchedulerConfig::with_flight_sql_authenticator is set, and even then the port is not secured, so keep it on a trusted network."
     )]
     pub flight_sql: bool,
     #[cfg(feature = "rest-api")]
