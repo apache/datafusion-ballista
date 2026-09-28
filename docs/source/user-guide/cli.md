@@ -31,22 +31,24 @@ cargo install ballista-cli
 ## Usage
 
 ```
-USAGE:
-    ballista-cli [OPTIONS]
+Command Line Client for Ballista distributed query engine.
 
-OPTIONS:
-    -c, --batch-size <BATCH_SIZE>    The batch size of each query, or use Ballista default
-    -f, --file <FILE>...             Execute commands from file(s), then exit
-        --format <FORMAT>            [default: table] [possible values: csv, tsv, table, json,
-                                     nd-json]
-    -h, --help                       Print help information
-        --host <HOST>                Ballista scheduler host
-    -p, --data-path <DATA_PATH>      Path to your data, default to current directory
-        --port <PORT>                Ballista scheduler port
-    -q, --quiet                      Reduce printing other than the results and work quietly
-    -r, --rc <RC>...                 Run the provided files on startup instead of ~/.ballistarc
-        --tui                        Enables terminal user interface (requires `tui` feature)
-    -V, --version                    Print version information
+Usage: ballista-cli [OPTIONS]
+
+Options:
+  -p, --data-path <DATA_PATH>    Path to your data, default to current directory
+  -c, --batch-size <BATCH_SIZE>  The batch size of each query, or use Ballista default
+      --vcores <VCORES>          Virtual cores for the local Ballista executor. Default: all available physical cores.
+  -f, --file [<FILE>...]         Execute commands from file(s), then exit
+  -r, --rc [<RC>...]             Run the provided files on startup instead of ~/.ballistarc
+      --format <FORMAT>          [default: table] [possible values: csv, tsv, table, json, nd-json, automatic]
+      --host <HOST>              Ballista scheduler host
+      --port <PORT>              Ballista scheduler port
+  -q, --quiet                    Reduce printing other than the results and work quietly
+      --color                    Enables console syntax highlighting
+      --tui                      Enables terminal user interface
+  -h, --help                     Print help
+  -V, --version                  Print version
 ```
 
 ## Example
@@ -72,7 +74,7 @@ It is also possible to run the CLI in standalone mode, where it will create a sc
 ```bash
 $ ballista-cli
 
-Ballista CLI v52.0.0
+Ballista CLI v54.0.0
 
 > CREATE EXTERNAL TABLE foo (a INT, b INT) STORED AS CSV LOCATION 'data.csv';
 0 rows in set. Query took 0.001 seconds.
@@ -130,6 +132,18 @@ Available commands inside Ballista CLI are:
 
 ```bash
 > \h function_table
+```
+
+- Set table output format
+
+```bash
+> \pset format json
+```
+
+- Open the terminal user interface
+
+```bash
+> \tui
 ```
 
 ## Terminal User Interface (TUI)

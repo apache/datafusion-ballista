@@ -44,14 +44,14 @@ Start one or more Ballista executor processes in new terminal sessions. When sta
 executor, a unique port number must be specified for each executor.
 
 ```shell
-RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50051 --bind-grpc-port 50052
+RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50051 --bind-grpc-port 50052 --bind-health-port 50053
 
-RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50053 --bind-grpc-port 50054
+RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50054 --bind-grpc-port 50055 --bind-health-port 50056
 ```
 
 ## Running the examples
 
-The examples can be run using the `cargo run --bin` syntax. Open a new terminal session and run the following commands.
+The examples can be run using the `cargo run --example` syntax. Open a new terminal session and run the following commands.
 
 ### Distributed SQL Example
 
