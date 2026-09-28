@@ -22,15 +22,16 @@ use crate::serde::BallistaLogicalExtensionCodec;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::Session;
-use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNodeRecursion};
 use datafusion::common::{Column, DFSchema, DFSchemaRef, ScalarValue};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::{Expr, LogicalPlan, LogicalPlanBuilder, TableScan, lit};
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
+use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion_proto::logical_plan::{AsLogicalPlan, LogicalExtensionCodec};
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -271,6 +272,90 @@ fn constant_relation(
     plan.build()
 }
 
+/// Runs every part of `plan` that reads only `information_schema` in
+/// `session`, and replaces it with the rows it produced.
+///
+/// `information_schema` describes the catalog of the session that planned
+/// `plan`, which no other node shares. Once its parts are replaced, the rows
+/// travel with the plan, and the cluster never resolves `information_schema`
+/// itself. Each part is as large as possible, so its filters and aggregates
+/// run here and only their results travel. Returns `plan` unchanged when it
+/// reads no `information_schema`.
+///
+/// `plan` must be analyzed, as every plan a [QueryPlanner] receives is.
+pub async fn inline_information_schema(
+    plan: LogicalPlan,
+    planner: &dyn PhysicalPlanner,
+    session: &dyn Session,
+) -> Result<LogicalPlan, DataFusionError> {
+    // A part's children run with it, so the walk skips them.
+    let mut parts = HashSet::new();
+    plan.apply_with_subqueries(|node| {
+        Ok(if can_inline(node) {
+            parts.insert(node.clone());
+            TreeNodeRecursion::Jump
+        } else {
+            TreeNodeRecursion::Continue
+        })
+    })?;
+    if parts.is_empty() {
+        return Ok(plan);
+    }
+
+    // Running a part is async and DataFusion's rewrites are not, so every
+    // part runs before the rewrite.
+    let mut replacements = HashMap::with_capacity(parts.len());
+    for part in parts {
+        let physical_plan = planner.create_physical_plan(&part, session).await?;
+        let batches = collect(physical_plan, session.task_ctx()).await?;
+        let replacement = constant_relation(part.schema(), &batches)?;
+        replacements.insert(part, replacement);
+    }
+
+    plan.transform_down_with_subqueries(|node| {
+        Ok(match replacements.get(&node) {
+            Some(replacement) => {
+                Transformed::new(replacement.clone(), true, TreeNodeRecursion::Jump)
+            }
+            None => Transformed::no(node),
+        })
+    })
+    .data()
+}
+
+/// Whether `plan` can run on its own where it was planned: it reads only
+/// `information_schema`, refers to no outer query, and contains nothing that
+/// changes state or needs more than the default planner.
+fn can_inline(plan: &LogicalPlan) -> bool {
+    if !matches!(scans_only_information_schema(plan), Ok(true)) {
+        return false;
+    }
+    let mut inlinable = true;
+    let _ = plan.apply_with_subqueries(|node| {
+        // The walk shows each subquery expression as a `Subquery` node, which
+        // a rewrite has to give back unchanged, and which the physical planner
+        // cannot plan until the optimizer turns it into a join.
+        inlinable = !node.contains_outer_reference()
+            && !matches!(
+                node,
+                LogicalPlan::Extension(_)
+                    | LogicalPlan::Dml(_)
+                    | LogicalPlan::Ddl(_)
+                    | LogicalPlan::Copy(_)
+                    | LogicalPlan::Statement(_)
+                    | LogicalPlan::Explain(_)
+                    | LogicalPlan::Analyze(_)
+                    | LogicalPlan::Subquery(_)
+            );
+        Ok(if inlinable {
+            TreeNodeRecursion::Continue
+        } else {
+            TreeNodeRecursion::Stop
+        })
+    });
+    inlinable
+}
+
 #[cfg(test)]
 mod test {
     use datafusion::{
@@ -280,21 +365,25 @@ mod test {
             record_batch::{RecordBatch, RecordBatchOptions},
             util::pretty::pretty_format_batches,
         },
-        common::{DFSchema, DFSchemaRef, TableReference},
+        common::{DFSchema, DFSchemaRef, TableReference, tree_node::TreeNodeRecursion},
         error::Result,
         execution::{
             SessionStateBuilder, context::QueryPlanner, runtime_env::RuntimeEnvBuilder,
         },
         logical_expr::LogicalPlan,
         physical_plan::ExecutionPlan,
-        prelude::{SessionConfig, SessionContext},
+        physical_planner::DefaultPhysicalPlanner,
+        prelude::{CsvReadOptions, SessionConfig, SessionContext},
     };
     use datafusion_proto::logical_plan::AsLogicalPlan;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use super::{BallistaQueryPlanner, constant_relation, scans_only_information_schema};
+    use super::{
+        BallistaQueryPlanner, constant_relation, inline_information_schema,
+        scans_only_information_schema,
+    };
     use crate::config::BallistaConfig;
     use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec};
     use crate::serde::BallistaLogicalExtensionCodec;
@@ -396,6 +485,85 @@ mod test {
             vec![],
             &RecordBatchOptions::new().with_row_count(Some(3)),
         )?)
+    }
+
+    /// Registers `tests/customer.csv` as `name`: four customers, with a name in
+    /// `column_1` and an amount in `column_2`.
+    async fn register_customers(ctx: &SessionContext, name: &str) -> Result<()> {
+        ctx.register_csv(
+            name,
+            "tests/customer.csv",
+            CsvReadOptions::new().has_header(false),
+        )
+        .await
+    }
+
+    /// Plans `sql` as `BallistaQueryPlanner` receives it, analyzed and
+    /// optimized.
+    async fn optimized(ctx: &SessionContext, sql: &str) -> Result<LogicalPlan> {
+        ctx.sql(sql).await?.into_optimized_plan()
+    }
+
+    /// Plans `sql` analyzed but not optimized, so its subqueries are still
+    /// expressions rather than the joins the optimizer turns them into.
+    async fn analyzed(ctx: &SessionContext, sql: &str) -> Result<LogicalPlan> {
+        let state = ctx.state();
+        let plan = state.create_logical_plan(sql).await?;
+        state
+            .analyzer()
+            .execute_and_check(plan, state.config_options(), |_, _| {})
+    }
+
+    /// Runs [inline_information_schema] the way `BallistaQueryPlanner` does.
+    async fn inline(ctx: &SessionContext, plan: LogicalPlan) -> Result<LogicalPlan> {
+        let state = ctx.state();
+        inline_information_schema(plan, &DefaultPhysicalPlanner::default(), &state).await
+    }
+
+    /// The number of `information_schema` scans and of other scans in `plan`,
+    /// subqueries included.
+    fn scans(plan: &LogicalPlan) -> (usize, usize) {
+        let (mut information_schema, mut other) = (0, 0);
+        plan.apply_with_subqueries(|node| {
+            if let LogicalPlan::TableScan(scan) = node {
+                if scan.table_name.schema() == Some("information_schema") {
+                    information_schema += 1;
+                } else {
+                    other += 1;
+                }
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .unwrap();
+        (information_schema, other)
+    }
+
+    /// The number of rows in each `Values` node in `plan`, subqueries included.
+    fn values_rows(plan: &LogicalPlan) -> Vec<usize> {
+        let mut rows = vec![];
+        plan.apply_with_subqueries(|node| {
+            if let LogicalPlan::Values(values) = node {
+                rows.push(values.values.len());
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .unwrap();
+        rows
+    }
+
+    /// Whether any node in `plan`, subqueries included, satisfies `predicate`.
+    fn any_node(plan: &LogicalPlan, predicate: impl Fn(&LogicalPlan) -> bool) -> bool {
+        let mut found = false;
+        plan.apply_with_subqueries(|node| {
+            found = predicate(node);
+            Ok(if found {
+                TreeNodeRecursion::Stop
+            } else {
+                TreeNodeRecursion::Continue
+            })
+        })
+        .unwrap();
+        found
     }
 
     #[tokio::test]
@@ -560,6 +728,254 @@ mod test {
 
             assert_eq!(row_count(&ctx, decoded.clone()).await?, expected_rows);
             assert_eq!(rows(&ctx, decoded).await?, rows(&ctx, plan).await?);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_leave_a_plan_without_information_schema_unchanged() -> Result<()> {
+        let ctx = context();
+        register_customers(&ctx, "tt").await?;
+        let plan = optimized(&ctx, "SELECT column_1 FROM tt WHERE column_2 > 100").await?;
+
+        assert_eq!(inline(&ctx, plan.clone()).await?, plan);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_inline_the_largest_part_that_reads_only_information_schema()
+    -> Result<()> {
+        let ctx = context();
+        register_customers(&ctx, "tt").await?;
+        let plan = optimized(
+            &ctx,
+            "SELECT table_name, (SELECT count(*) FROM tt) AS row_count \
+             FROM information_schema.tables WHERE table_name = 'tt'",
+        )
+        .await?;
+
+        let inlined = inline(&ctx, plan.clone()).await?;
+
+        assert_eq!(scans(&plan), (1, 1));
+        assert_eq!(scans(&inlined), (0, 1));
+        // The filter ran with the scan, so only the matching row was inlined.
+        assert_eq!(values_rows(&inlined), vec![1]);
+        assert_eq!(rows(&ctx, inlined).await?, rows(&ctx, plan).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_inline_information_schema_inside_a_subquery() -> Result<()> {
+        let ctx = context();
+        register_customers(&ctx, "tt").await?;
+        let plan = analyzed(
+            &ctx,
+            "SELECT column_1 FROM tt WHERE EXISTS \
+             (SELECT 1 FROM information_schema.tables WHERE table_name = 'tt')",
+        )
+        .await?;
+
+        let inlined = inline(&ctx, plan.clone()).await?;
+
+        assert_eq!(scans(&plan), (1, 1));
+        assert_eq!(scans(&inlined), (0, 1));
+        assert_eq!(values_rows(&inlined), vec![1]);
+        assert_eq!(rows(&ctx, inlined).await?, rows(&ctx, plan).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_inline_only_the_scan_under_a_correlated_filter() -> Result<()> {
+        let ctx = context();
+        // Registered under the name of one of its customers, so the correlated
+        // subquery below matches one row.
+        register_customers(&ctx, "andy").await?;
+        let plan = analyzed(
+            &ctx,
+            "SELECT column_1 FROM andy WHERE EXISTS \
+             (SELECT 1 FROM information_schema.tables t \
+              WHERE t.table_name = andy.column_1)",
+        )
+        .await?;
+
+        let inlined = inline(&ctx, plan.clone()).await?;
+
+        assert_eq!(scans(&inlined), (0, 1));
+        // The filter refers to the outer query, so it stays, and every table
+        // was inlined rather than only the matching one.
+        assert!(any_node(&inlined, LogicalPlan::contains_outer_reference));
+        let inlined_rows = values_rows(&inlined);
+        assert_eq!(inlined_rows.len(), 1);
+        assert!(inlined_rows[0] > 1, "{inlined_rows:?}");
+        assert_eq!(rows(&ctx, inlined).await?, rows(&ctx, plan).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_keep_the_qualified_names_of_joined_information_schema_tables()
+    -> Result<()> {
+        let ctx = context();
+        register_customers(&ctx, "tt").await?;
+        let plan = optimized(
+            &ctx,
+            "SELECT t.table_name, c.column_name, max(tt.column_2) AS top \
+             FROM information_schema.tables t \
+             JOIN information_schema.columns c ON t.table_name = c.table_name \
+             CROSS JOIN tt \
+             WHERE t.table_name = 'tt' \
+             GROUP BY t.table_name, c.column_name",
+        )
+        .await?;
+
+        let inlined = inline(&ctx, plan.clone()).await?;
+
+        assert_eq!(scans(&plan), (2, 1));
+        assert_eq!(scans(&inlined), (0, 1));
+        // Both information_schema tables ran together as one part, which
+        // returned one row for each column of `tt`.
+        assert_eq!(values_rows(&inlined), vec![2]);
+        assert_eq!(rows(&ctx, inlined).await?, rows(&ctx, plan).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_inline_an_empty_information_schema_result() -> Result<()> {
+        let ctx = context();
+        register_customers(&ctx, "tt").await?;
+        let plan = optimized(
+            &ctx,
+            "SELECT table_name, (SELECT count(*) FROM tt) AS row_count \
+             FROM information_schema.tables WHERE table_name = 'missing'",
+        )
+        .await?;
+
+        let inlined = inline(&ctx, plan.clone()).await?;
+
+        assert_eq!(scans(&inlined), (0, 1));
+        // One placeholder row, which the limit removes.
+        assert_eq!(values_rows(&inlined), vec![1]);
+        assert!(
+            inlined
+                .display_indent()
+                .to_string()
+                .contains("Limit: skip=0, fetch=0"),
+            "{}",
+            inlined.display_indent()
+        );
+        assert_eq!(rows(&ctx, inlined).await?, rows(&ctx, plan).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_inline_an_information_schema_part_without_columns() -> Result<()> {
+        let ctx = context();
+        register_customers(&ctx, "tt").await?;
+        let plan = optimized(
+            &ctx,
+            "SELECT count(*) AS n FROM information_schema.tables CROSS JOIN tt",
+        )
+        .await?;
+
+        let inlined = inline(&ctx, plan.clone()).await?;
+
+        assert_eq!(scans(&inlined), (0, 1));
+        // count(*) needs no columns, so the scan reads none, and its
+        // replacement keeps only the row count.
+        assert!(
+            any_node(&inlined, |node| matches!(
+                node,
+                LogicalPlan::Projection(projection) if projection.expr.is_empty()
+            )),
+            "{}",
+            inlined.display_indent()
+        );
+        assert_eq!(rows(&ctx, inlined).await?, rows(&ctx, plan).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_inline_repeated_information_schema_subqueries() -> Result<()> {
+        let ctx = context();
+        register_customers(&ctx, "tt").await?;
+        let plan = optimized(
+            &ctx,
+            "SELECT column_1, \
+             (SELECT count(*) FROM information_schema.tables) AS a, \
+             (SELECT count(*) FROM information_schema.tables) AS b \
+             FROM tt",
+        )
+        .await?;
+
+        let inlined = inline(&ctx, plan.clone()).await?;
+
+        assert_eq!(scans(&inlined), (0, 1));
+        assert_eq!(rows(&ctx, inlined).await?, rows(&ctx, plan).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_inline_a_view_over_information_schema() -> Result<()> {
+        let ctx = context();
+        register_customers(&ctx, "tt").await?;
+        ctx.sql(
+            "CREATE VIEW table_names AS \
+             SELECT table_name FROM information_schema.tables",
+        )
+        .await?
+        .collect()
+        .await?;
+        let plan = optimized(
+            &ctx,
+            "SELECT n.table_name, count(*) AS row_count \
+             FROM table_names n CROSS JOIN tt \
+             WHERE n.table_name = 'tt' GROUP BY n.table_name",
+        )
+        .await?;
+
+        let inlined = inline(&ctx, plan.clone()).await?;
+
+        assert_eq!(scans(&inlined), (0, 1));
+        assert_eq!(values_rows(&inlined), vec![1]);
+        assert_eq!(rows(&ctx, inlined).await?, rows(&ctx, plan).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn inlined_plans_survive_serialization() -> Result<()> {
+        let ctx = context();
+        register_customers(&ctx, "tt").await?;
+
+        for sql in [
+            "SELECT table_name, (SELECT count(*) FROM tt) AS row_count \
+             FROM information_schema.tables WHERE table_name = 'tt'",
+            "SELECT table_name, (SELECT count(*) FROM tt) AS row_count \
+             FROM information_schema.tables WHERE table_name = 'missing'",
+            "SELECT count(*) AS n FROM information_schema.tables CROSS JOIN tt",
+            "SELECT t.table_name, c.column_name, max(tt.column_2) AS top \
+             FROM information_schema.tables t \
+             JOIN information_schema.columns c ON t.table_name = c.table_name \
+             CROSS JOIN tt \
+             WHERE t.table_name = 'tt' \
+             GROUP BY t.table_name, c.column_name",
+        ] {
+            let plan = optimized(&ctx, sql).await?;
+            let decoded = round_trip(&ctx, &inline(&ctx, plan.clone()).await?)?;
+
+            assert_eq!(
+                rows(&ctx, decoded).await?,
+                rows(&ctx, plan).await?,
+                "{sql}"
+            );
         }
 
         Ok(())
