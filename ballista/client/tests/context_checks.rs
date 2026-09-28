@@ -429,7 +429,10 @@ mod supported {
             .collect()
             .await?;
 
-        assert_eq!(result.iter().map(|batch| batch.num_rows()).sum::<usize>(), 0);
+        assert_eq!(
+            result.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+            0
+        );
 
         Ok(())
     }

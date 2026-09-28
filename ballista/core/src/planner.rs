@@ -746,7 +746,8 @@ mod test {
     async fn should_leave_a_plan_without_information_schema_unchanged() -> Result<()> {
         let ctx = context();
         register_customers(&ctx, "tt").await?;
-        let plan = optimized(&ctx, "SELECT column_1 FROM tt WHERE column_2 > 100").await?;
+        let plan =
+            optimized(&ctx, "SELECT column_1 FROM tt WHERE column_2 > 100").await?;
 
         assert_eq!(inline(&ctx, plan.clone()).await?, plan);
 
@@ -980,11 +981,7 @@ mod test {
             let plan = optimized(&ctx, sql).await?;
             let decoded = round_trip(&ctx, &inline(&ctx, plan.clone()).await?)?;
 
-            assert_eq!(
-                rows(&ctx, decoded).await?,
-                rows(&ctx, plan).await?,
-                "{sql}"
-            );
+            assert_eq!(rows(&ctx, decoded).await?, rows(&ctx, plan).await?, "{sql}");
         }
 
         Ok(())
