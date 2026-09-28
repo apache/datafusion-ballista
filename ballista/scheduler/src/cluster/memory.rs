@@ -33,9 +33,7 @@ use tokio::sync::mpsc::error::TrySendError;
 
 use crate::cluster::event::ClusterEventSender;
 use crate::scheduler_server::{SessionBuilder, timestamp_millis, timestamp_secs};
-use crate::state::session_manager::{
-    create_datafusion_context, share_file_statistics_cache,
-};
+use crate::state::session_manager::create_datafusion_context;
 use crate::state::task_manager::JobInfoCache;
 use ballista_core::serde::protobuf::job_status::Status;
 use log::{error, warn};
@@ -310,7 +308,7 @@ impl InMemoryJobState {
             queued_jobs: Default::default(),
             running_jobs: Default::default(),
             //sessions: Default::default(),
-            session_builder: share_file_statistics_cache(session_builder),
+            session_builder,
             job_event_sender: ClusterEventSender::new(100),
             config_producer,
         }
@@ -547,7 +545,9 @@ mod test {
 
     use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
     use crate::cluster::test_util::{test_job_lifecycle, test_job_planning_failure};
-    use crate::cluster::{ClusterState, ClusterStateEvent, JobState, JobStateEvent};
+    use crate::cluster::{
+        BallistaCluster, ClusterState, ClusterStateEvent, JobState, JobStateEvent,
+    };
     use crate::test_utils::{
         test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
     };
@@ -559,14 +559,10 @@ mod test {
         ExecutorSpecification,
     };
     use ballista_core::utils::{default_config_producer, default_session_builder};
-    use datafusion::arrow::array::AsArray;
-    use datafusion::arrow::datatypes::{DataType, Field, Int64Type, Schema};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::dataframe::DataFrameWriteOptions;
-    use datafusion::datasource::file_format::parquet::ParquetFormat;
-    use datafusion::datasource::listing::ListingOptions;
-    use datafusion::prelude::{SessionConfig, SessionContext};
+    use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
     use futures::StreamExt;
-    use std::path::Path;
     use tokio::sync::Barrier;
 
     #[tokio::test]
@@ -874,31 +870,30 @@ mod test {
     /// collected them.
     #[tokio::test]
     async fn test_in_memory_sessions_share_file_statistics() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let table = write_parquet_table(dir.path(), 1).await?;
-
-        let state = InMemoryJobState::new(
+        let state = BallistaCluster::new_memory(
             "",
             Arc::new(default_session_builder),
             Arc::new(default_config_producer),
-        );
-        let config = default_config_producer().with_collect_statistics(true);
+        )
+        .job_state();
+        let config = SessionConfig::new();
 
+        let caches = |ctx: &SessionContext| {
+            let cache_manager = &ctx.runtime_env().cache_manager;
+            (
+                cache_manager.get_file_statistic_cache().unwrap(),
+                cache_manager.get_list_files_cache().unwrap(),
+            )
+        };
         let first = state.create_or_update_session("session_0", &config).await?;
-        register_table(&first, &table).await?;
-        first
-            .sql("SELECT a FROM t")
-            .await?
-            .create_physical_plan()
-            .await?;
-
         let second = state.create_or_update_session("session_1", &config).await?;
-        let cache = second
-            .runtime_env()
-            .cache_manager
-            .get_file_statistic_cache()
-            .expect("file statistics cache");
-        assert_eq!(1, cache.len());
+        let (stats_0, list_0) = caches(&first);
+        let (stats_1, list_1) = caches(&second);
+
+        assert!(Arc::ptr_eq(&stats_0, &stats_1));
+        // Each job lists the files itself, so that cached statistics are
+        // checked against the files as they are now.
+        assert!(!Arc::ptr_eq(&list_0, &list_1));
 
         Ok(())
     }
@@ -908,59 +903,38 @@ mod test {
     #[tokio::test]
     async fn test_in_memory_sessions_reread_changed_files() -> Result<()> {
         let dir = tempfile::tempdir()?;
+        let file = dir.path().join("part-0.parquet");
+        // Given up front, as it is in a plan the scheduler decodes, so no file
+        // is read to infer it.
+        let schema = Schema::new(vec![Field::new("a", DataType::Int64, true)]);
 
-        let state = InMemoryJobState::new(
+        let state = BallistaCluster::new_memory(
             "",
             Arc::new(default_session_builder),
             Arc::new(default_config_producer),
-        );
+        )
+        .job_state();
         let config = default_config_producer().with_collect_statistics(true);
 
         for (session_id, rows) in [("session_0", 1), ("session_1", 2)] {
-            let table = write_parquet_table(dir.path(), rows).await?;
+            SessionContext::new()
+                .sql(&format!(
+                    "SELECT value AS a FROM generate_series(1, {rows})"
+                ))
+                .await?
+                .write_parquet(file.to_str().unwrap(), DataFrameWriteOptions::new(), None)
+                .await?;
 
             let ctx = state.create_or_update_session(session_id, &config).await?;
-            register_table(&ctx, &table).await?;
-            let batches = ctx.sql("SELECT COUNT(*) FROM t").await?.collect().await?;
-            let count = batches[0].column(0).as_primitive::<Int64Type>().value(0);
-            assert_eq!(rows, count);
-        }
-
-        Ok(())
-    }
-
-    /// Writes a table directory holding one Parquet file of `rows` rows,
-    /// replacing any earlier one, and returns the table's path.
-    async fn write_parquet_table(dir: &Path, rows: i64) -> Result<String> {
-        let file = dir.join("part-0.parquet");
-        SessionContext::new()
-            .sql(&format!(
-                "SELECT value AS a FROM generate_series(1, {rows})"
-            ))
-            .await?
-            .write_parquet(
-                file.to_str().unwrap(),
-                DataFrameWriteOptions::new().with_single_file_output(true),
-                None,
+            ctx.register_parquet(
+                "t",
+                dir.path().to_str().unwrap(),
+                ParquetReadOptions::default().schema(&schema),
             )
             .await?;
-        // The trailing slash makes this a directory table, which is listed
-        // rather than looked up as a single file.
-        Ok(format!("{}/", dir.display()))
-    }
+            assert_eq!(rows, ctx.table("t").await?.count().await?);
+        }
 
-    /// Registers `table` as `t` with its schema given up front, as it is in
-    /// a plan the scheduler decodes, so no file is read to infer it.
-    async fn register_table(ctx: &SessionContext, table: &str) -> Result<()> {
-        let schema = Schema::new(vec![Field::new("a", DataType::Int64, true)]);
-        ctx.register_listing_table(
-            "t",
-            table,
-            ListingOptions::new(Arc::new(ParquetFormat::default())),
-            Some(Arc::new(schema)),
-            None,
-        )
-        .await?;
         Ok(())
     }
 }

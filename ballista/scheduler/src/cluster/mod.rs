@@ -21,6 +21,7 @@ use crate::scheduler_server::SessionBuilder;
 use crate::state::execution_graph::{
     ExecutionGraphBox, TaskDescription, create_task_info,
 };
+use crate::state::session_manager::share_file_statistics_cache;
 use crate::state::task_manager::JobInfoCache;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::Result;
@@ -91,6 +92,10 @@ impl BallistaCluster {
     }
 
     /// Creates a new `BallistaCluster` with in-memory state backends.
+    ///
+    /// Its job state builds every session around one shared file statistics
+    /// cache, see [`share_file_statistics_cache`]. To keep a cache per session
+    /// instead, pass an [`InMemoryJobState`] to [`BallistaCluster::new`].
     pub fn new_memory(
         scheduler: impl Into<String>,
         session_builder: SessionBuilder,
@@ -100,7 +105,7 @@ impl BallistaCluster {
             cluster_state: Arc::new(InMemoryClusterState::default()),
             job_state: Arc::new(InMemoryJobState::new(
                 scheduler,
-                session_builder,
+                share_file_statistics_cache(session_builder),
                 config_producer,
             )),
         }
