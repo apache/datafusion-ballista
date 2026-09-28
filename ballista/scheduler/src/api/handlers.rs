@@ -45,6 +45,8 @@ use std::sync::Arc;
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct SchedulerStateResponse {
     pub started: u128,
+    /// Scheduler identity exposed in scheduler state.
+    pub scheduler_id: String,
     pub version: &'static str,
     pub datafusion_version: &'static str,
     pub substrait_support: bool,
@@ -184,6 +186,7 @@ pub async fn get_scheduler_state<
 ) -> impl IntoResponse {
     let response = SchedulerStateResponse {
         started: data_server.start_time,
+        scheduler_id: data_server.scheduler_id.clone(),
         version: BALLISTA_VERSION,
         datafusion_version: DATAFUSION_VERSION,
         substrait_support: cfg!(feature = "substrait"),
@@ -684,6 +687,50 @@ pub async fn get_job_config<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn scheduler_state_reflects_server_configuration() {
+        use crate::config::SchedulerConfig;
+        use crate::metrics::default_metrics_collector;
+        use crate::test_utils::test_cluster_context;
+        use axum::response::IntoResponse;
+        use ballista_core::serde::BallistaCodec;
+        use datafusion::DATAFUSION_VERSION;
+        use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+
+        let config = SchedulerConfig::default()
+            .with_scheduler_id("scheduler-a")
+            .with_advertise_flight_endpoint(Some("flight.example.com:50055".into()))
+            .with_enable_embedded_flight_proxy(true);
+        let expected_scheduling_policy = config.scheduling_policy.to_string();
+        let server: Arc<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> =
+            Arc::new(SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(config),
+                default_metrics_collector().unwrap(),
+            ));
+
+        let response = get_scheduler_state(State(server)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert!(body["started"].is_number());
+        assert_eq!(body["scheduler_id"], "scheduler-a");
+        assert_eq!(body["version"], BALLISTA_VERSION);
+        assert_eq!(body["datafusion_version"], DATAFUSION_VERSION);
+        assert_eq!(body["scheduling_policy"], expected_scheduling_policy);
+        assert_eq!(
+            body["advertise_flight_endpoint"],
+            "flight.example.com:50055"
+        );
+        assert_eq!(body["enable_embedded_flight_proxy"], true);
+    }
 
     mod get_webtui {
         use super::*;

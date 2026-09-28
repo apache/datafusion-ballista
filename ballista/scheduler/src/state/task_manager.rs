@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::cluster::{JobState, JobStateEventStream};
+use crate::cluster::{ExecutorSlot, JobState, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
@@ -74,12 +74,12 @@ pub trait TaskLauncher: Send + Sync + 'static {
 }
 
 struct DefaultTaskLauncher {
-    scheduler_id: String,
+    scheduler_endpoint: String,
 }
 
 impl DefaultTaskLauncher {
-    pub fn new(scheduler_id: String) -> Self {
-        Self { scheduler_id }
+    pub fn new(scheduler_endpoint: String) -> Self {
+        Self { scheduler_endpoint }
     }
 }
 
@@ -109,7 +109,7 @@ impl TaskLauncher for DefaultTaskLauncher {
             );
         }
         let res = executor_manager
-            .launch_multi_task(&executor.id, tasks, self.scheduler_id.clone())
+            .launch_multi_task(&executor.id, tasks, self.scheduler_endpoint.clone())
             .await?;
         Ok(res)
     }
@@ -187,6 +187,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         state: Arc<dyn JobState>,
         codec: BallistaCodec<T, U>,
         scheduler_id: String,
+        scheduler_endpoint: String,
         config: Arc<SchedulerConfig>,
     ) -> Self {
         Self {
@@ -194,7 +195,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             codec,
             scheduler_id: scheduler_id.clone(),
             active_job_cache: Arc::new(DashMap::new()),
-            launcher: Arc::new(DefaultTaskLauncher::new(scheduler_id)),
+            launcher: Arc::new(DefaultTaskLauncher::new(scheduler_endpoint)),
             task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
         }
@@ -646,7 +647,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         cancel_tasks: F,
     ) -> Result<usize>
     where
-        F: FnOnce(Vec<RunningTaskInfo>) -> Fut,
+        F: FnOnce(Vec<RunningTaskInfo>, Vec<ExecutorSlot>) -> Fut,
         Fut: Future<Output = Result<()>>,
     {
         let Some(graph) = self.get_active_execution_graph(job_id) else {
@@ -668,13 +669,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             (running_tasks, pending_tasks, snapshot)
         };
 
+        // The vcores those tasks hold on their executors. Their terminal
+        // status arrives after the job has left the active cache, so the
+        // `TaskUpdating` refund never sees them (#2418). They are refunded
+        // as soon as the cancel is sent, so an executor can be briefly
+        // oversubscribed while the cancelled tasks wind down.
+        let mut freed: HashMap<String, u32> = HashMap::new();
+        for task in &running_tasks {
+            if let Some(vcores) = snapshot.task_vcores(task.stage_id, task.task_id) {
+                *freed.entry(task.executor_id.clone()).or_default() += vcores;
+            }
+        }
+        let freed_slots: Vec<ExecutorSlot> = freed.into_iter().collect();
+
         info!(
             "Cancelling {} running tasks for job {}",
             running_tasks.len(),
             job_id
         );
 
-        let cancel_result = cancel_tasks(running_tasks).await;
+        let cancel_result = cancel_tasks(running_tasks, freed_slots).await;
         let persist_result = self.persist_terminal_and_evict(job_id, &snapshot).await;
         match (cancel_result, persist_result) {
             (Ok(()), Ok(())) => Ok(pending_tasks),
@@ -818,7 +832,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
-    /// Launch the given tasks on the specified executor
+    /// Launch the given tasks on the specified executor.
+    ///
+    /// Returns the jobs that cannot run: those the executor rejected, and
+    /// those whose task definitions could not be prepared here. Tasks of the
+    /// latter were never sent anywhere and will never report a status, so the
+    /// caller has to fail the job and refund the tasks' slots, exactly as for a
+    /// rejection. `Err` is only for the launch RPC itself failing, which says
+    /// the executor is sick, not the plan.
     pub(crate) async fn launch_multi_task(
         &self,
         executor: &ExecutorMetadata,
@@ -826,20 +847,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         executor_manager: &ExecutorManager,
     ) -> Result<HashSet<JobId>> {
         let mut multi_tasks = vec![];
+        let mut failed_jobs = HashSet::new();
         for stage_tasks in tasks {
+            let job_id = stage_tasks.first().map(|task| task.key.job_id.clone());
             match self.prepare_multi_task_definition(stage_tasks) {
                 Ok(stage_tasks) => multi_tasks.extend(stage_tasks),
-                Err(e) => error!("Fail to prepare task definition: {e:?}"),
+                Err(e) => {
+                    error!("Fail to prepare task definition: {e:?}");
+                    failed_jobs.extend(job_id);
+                }
             }
         }
 
         if !multi_tasks.is_empty() {
-            self.launcher
-                .launch_tasks(executor, multi_tasks, executor_manager)
-                .await
-        } else {
-            Ok(HashSet::new())
+            failed_jobs.extend(
+                self.launcher
+                    .launch_tasks(executor, multi_tasks, executor_manager)
+                    .await?,
+            );
         }
+
+        Ok(failed_jobs)
     }
 
     #[allow(dead_code)]
@@ -1238,6 +1266,7 @@ mod tests {
             job_state,
             BallistaCodec::default(),
             "test-scheduler".to_string(),
+            "localhost:50050".to_string(),
             Arc::new(SchedulerConfig::default()),
         );
 
@@ -1374,7 +1403,7 @@ mod tests {
                 .abort_job(
                     &job_id_for_abort,
                     "test failure".to_string(),
-                    move |tasks| async move {
+                    move |tasks, slots| async move {
                         let status = manager_for_cancel
                             .get_job_status(&job_id_for_cancel)
                             .await?
@@ -1386,6 +1415,7 @@ mod tests {
                             "job must be terminal before executor tasks are cancelled"
                         );
                         cancelled_tasks_for_abort.store(tasks.len(), Ordering::SeqCst);
+                        assert_eq!(slots, vec![("executor-1".to_string(), 1)]);
                         Ok(())
                     },
                 )
@@ -1435,7 +1465,7 @@ mod tests {
                 .abort_job(
                     &job_id_for_abort,
                     "test failure".to_string(),
-                    move |tasks| async move {
+                    move |tasks, _slots| async move {
                         cancelled_tasks_for_abort.store(tasks.len(), Ordering::SeqCst);
                         Ok(())
                     },

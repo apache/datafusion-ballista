@@ -109,15 +109,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
 
     async fn abort_job(&self, job_id: &JobId, failure_reason: String) -> Result<()> {
         let executor_manager = self.state.executor_manager.clone();
+        let refund_vcores = self.state.config.is_push_staged_scheduling();
         self.state
             .task_manager
-            .abort_job(job_id, failure_reason, move |running_tasks| async move {
-                if running_tasks.is_empty() {
+            .abort_job(
+                job_id,
+                failure_reason,
+                move |running_tasks, freed_slots| async move {
+                    if !running_tasks.is_empty() {
+                        executor_manager.cancel_running_tasks(running_tasks).await?;
+                    }
+                    if refund_vcores && !freed_slots.is_empty() {
+                        executor_manager.unbind_tasks(freed_slots).await?;
+                    }
                     Ok(())
-                } else {
-                    executor_manager.cancel_running_tasks(running_tasks).await
-                }
-            })
+                },
+            )
             .await?;
         Ok(())
     }

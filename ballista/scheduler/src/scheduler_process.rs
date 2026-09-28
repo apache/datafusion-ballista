@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::api::SchedulerErrorResponse;
-use crate::flight_proxy_service::BallistaFlightProxyService;
+use ballista_core::flight_proxy_service::BallistaFlightProxyService;
 
 #[cfg(feature = "rest-api")]
 use crate::api::get_routes;
@@ -74,7 +74,7 @@ pub async fn create_scheduler<
     let metrics_collector = default_metrics_collector()?;
 
     let mut scheduler_server = SchedulerServer::new(
-        config.scheduler_name(),
+        config.scheduler_endpoint(),
         cluster,
         codec,
         config,

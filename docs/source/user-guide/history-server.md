@@ -39,6 +39,20 @@ to:
 ballista-scheduler --event-log-dir /var/lib/ballista/history
 ```
 
+Each `JobStart` event records the unique scheduler id for the scheduler that
+created it. If you do not set an id, the scheduler generates the same
+UUID-backed instance identity used for executor ids at startup; set `--id` when
+you want a stable value for a deployment, test, or local debugging session:
+
+```shell
+ballista-scheduler \
+  --event-log-dir /var/lib/ballista/history \
+  --id scheduler-a
+```
+
+Use unique scheduler ids when collecting event logs from multiple schedulers so
+history records can be attributed to the scheduler that produced them.
+
 The scheduler writes one file per job, in
 [JSON Lines](https://jsonlines.org/) format. While the job runs, records are
 appended to `<job_id>.eventlog.running`; when it reaches a terminal state
