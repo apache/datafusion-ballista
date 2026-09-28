@@ -366,7 +366,7 @@ mod test {
             SessionStateBuilder, context::QueryPlanner, runtime_env::RuntimeEnvBuilder,
         },
         logical_expr::LogicalPlan,
-        physical_plan::ExecutionPlan,
+        physical_plan::{ExecutionPlan, displayable},
         physical_planner::DefaultPhysicalPlanner,
         prelude::{CsvReadOptions, SessionConfig, SessionContext},
     };
@@ -381,12 +381,15 @@ mod test {
     };
     use crate::config::BallistaConfig;
     use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec};
+    use crate::extension::SessionConfigExt;
     use crate::serde::BallistaLogicalExtensionCodec;
 
+    /// A session configured like a Ballista client's, so its plans take the
+    /// shape `BallistaQueryPlanner` receives.
     fn context() -> SessionContext {
         let runtime_environment = RuntimeEnvBuilder::new().build().unwrap();
 
-        let session_config = SessionConfig::new().with_information_schema(true);
+        let session_config = SessionConfig::new_with_ballista();
 
         let state = SessionStateBuilder::new()
             .with_config(session_config)
@@ -403,6 +406,23 @@ mod test {
         schema
             .iter()
             .map(|(qualifier, field)| (qualifier.cloned(), field.as_ref().clone()))
+            .collect()
+    }
+
+    /// The qualifier, name and type of each field of `schema`. Nullability is
+    /// left out, since the scheduler can only narrow it.
+    fn names_and_types(
+        schema: &DFSchema,
+    ) -> Vec<(Option<TableReference>, String, DataType)> {
+        schema
+            .iter()
+            .map(|(qualifier, field)| {
+                (
+                    qualifier.cloned(),
+                    field.name().clone(),
+                    field.data_type().clone(),
+                )
+            })
             .collect()
     }
 
@@ -735,6 +755,8 @@ mod test {
             let plan = constant_relation(schema, &batches)?;
             let decoded = round_trip(&ctx, &plan)?;
 
+            // Printed rows cannot tell a type change apart, so compare types.
+            assert_eq!(names_and_types(decoded.schema()), names_and_types(schema));
             assert_eq!(row_count(&ctx, decoded.clone()).await?, expected_rows);
             assert_eq!(rows(&ctx, decoded).await?, rows(&ctx, plan).await?);
         }
@@ -926,7 +948,35 @@ mod test {
 
         let inlined = inline(&ctx, plan.clone()).await?;
 
+        // A Ballista client plans each scalar subquery as a join with its own
+        // alias, so the two are separate parts.
+        assert!(
+            !any_node(&plan, |node| matches!(node, LogicalPlan::Subquery(_))),
+            "{}",
+            plan.display_indent()
+        );
+        assert_eq!(values_rows(&inlined), vec![1, 1]);
         assert_eq!(scans(&inlined), (0, 1));
+        assert_eq!(rows(&ctx, inlined).await?, rows(&ctx, plan).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_inline_an_information_schema_part_used_twice() -> Result<()> {
+        let ctx = context();
+        register_customers(&ctx, "tt").await?;
+        let branch = "SELECT a.table_name, count(*) AS c \
+                      FROM information_schema.tables a CROSS JOIN tt \
+                      GROUP BY a.table_name";
+        let plan = optimized(&ctx, &format!("{branch} UNION ALL {branch}")).await?;
+
+        let inlined = inline(&ctx, plan.clone()).await?;
+
+        // Both branches read the same part, which is replaced in both.
+        assert_eq!(scans(&plan), (2, 2));
+        assert_eq!(scans(&inlined), (0, 2));
+        assert_eq!(values_rows(&inlined).len(), 2);
         assert_eq!(rows(&ctx, inlined).await?, rows(&ctx, plan).await?);
 
         Ok(())
@@ -981,6 +1031,11 @@ mod test {
             let plan = optimized(&ctx, sql).await?;
             let decoded = round_trip(&ctx, &inline(&ctx, plan.clone()).await?)?;
 
+            assert_eq!(
+                names_and_types(decoded.schema()),
+                names_and_types(plan.schema()),
+                "{sql}"
+            );
             assert_eq!(rows(&ctx, decoded).await?, rows(&ctx, plan).await?, "{sql}");
         }
 
@@ -999,6 +1054,16 @@ mod test {
         let query = "SELECT table_name, (SELECT count(*) FROM tt) AS row_count \
                      FROM information_schema.tables WHERE table_name = 'tt'";
 
+        // The plan sent to the cluster, which `DistributedQueryExec` displays,
+        // must not scan information_schema.
+        let sends_no_information_schema = |physical_plan: &Arc<dyn ExecutionPlan>| {
+            let displayed = displayable(physical_plan.as_ref()).indent(true).to_string();
+            assert!(
+                !displayed.contains("TableScan: information_schema"),
+                "{displayed}"
+            );
+        };
+
         for sql in [query.to_string(), format!("EXPLAIN {query}")] {
             let plan = optimized(&ctx, &sql).await?;
             let physical_plan = planner.create_physical_plan(&plan, &ctx.state()).await?;
@@ -1009,6 +1074,7 @@ mod test {
                     .is_some(),
                 "{sql}"
             );
+            sends_no_information_schema(&physical_plan);
         }
 
         let plan = optimized(&ctx, &format!("EXPLAIN ANALYZE {query}")).await?;
@@ -1018,6 +1084,7 @@ mod test {
                 .downcast_ref::<DistributedExplainAnalyzeExec<LogicalPlanNode>>()
                 .is_some()
         );
+        sends_no_information_schema(&physical_plan);
 
         Ok(())
     }
