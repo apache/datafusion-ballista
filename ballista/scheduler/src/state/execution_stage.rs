@@ -1402,14 +1402,6 @@ impl StageOutput {
 
         partition_locations
     }
-
-    /// returns vector of partition locations
-    /// which is compatible with ShuffleReader vector format
-    /// supporting broadcast shuffle read.
-    /// All partitions are merged into one
-    pub fn partition_locations_broadcast(self) -> Vec<Vec<PartitionLocation>> {
-        self.partition_locations.into_values().collect()
-    }
 }
 
 #[cfg(test)]
