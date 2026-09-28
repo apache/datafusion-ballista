@@ -17,7 +17,7 @@
 
 //! Scheduler REST-API polling shared by both cluster backends.
 //!
-//! [`crate::cluster::TestCluster`] (local processes) and [`crate::k8s`]
+//! [`crate::cluster::TestCluster`] (local processes) and `crate::k8s`
 //! (`kind` pods) both drive scenarios by polling the scheduler's REST API —
 //! the same endpoints (`/api/executors`, `/api/jobs`, `/api/job/{id}/stages`)
 //! and the same JSON shape, differing only in the base URL (loopback vs. the
