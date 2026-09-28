@@ -19,12 +19,14 @@ use crate::config::BallistaConfig;
 use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec};
 use crate::serde::BallistaLogicalExtensionCodec;
 
-use datafusion::arrow::datatypes::Schema;
+use datafusion::arrow::datatypes::{DataType, Field, Schema};
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::Session;
 use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::{Column, DFSchema, DFSchemaRef, ScalarValue};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::QueryPlanner;
-use datafusion::logical_expr::{LogicalPlan, TableScan};
+use datafusion::logical_expr::{Expr, LogicalPlan, LogicalPlanBuilder, TableScan, lit};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
@@ -200,9 +202,85 @@ pub fn scans_only_information_schema(
     Ok(information_schema)
 }
 
+/// Builds a plan that produces `batches` with exactly `schema`, from nodes
+/// that serialize without a custom codec.
+///
+/// The rows become a `Values` node, and a projection gives each column back
+/// the qualifier and name it has in `schema`. The plan can therefore replace
+/// any subtree that produced `batches`, whichever tables its columns came from.
+fn constant_relation(
+    schema: &DFSchemaRef,
+    batches: &[RecordBatch],
+) -> Result<LogicalPlan, DataFusionError> {
+    // `Values` needs at least one column, but rows without columns still
+    // count, so they get a placeholder column that the projection drops.
+    let no_columns = schema.fields().is_empty();
+    let values_schema = if no_columns {
+        Arc::new(DFSchema::try_from(Schema::new(vec![Field::new(
+            "placeholder",
+            DataType::Boolean,
+            false,
+        )]))?)
+    } else {
+        Arc::clone(schema)
+    };
+
+    let mut rows = vec![];
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            rows.push(if no_columns {
+                vec![lit(true)]
+            } else {
+                batch
+                    .columns()
+                    .iter()
+                    .map(|column| ScalarValue::try_from_array(column, row).map(lit))
+                    .collect::<Result<Vec<_>, _>>()?
+            });
+        }
+    }
+
+    // `Values` cannot be empty, and neither an empty `Values` nor an
+    // `EmptyRelation` keeps its schema through serialization. So no rows is
+    // one row of placeholders under `LIMIT 0`. The placeholders are not null,
+    // so they fit columns that are not nullable.
+    let no_rows = rows.is_empty();
+    if no_rows {
+        rows.push(
+            values_schema
+                .fields()
+                .iter()
+                .map(|field| ScalarValue::new_default(field.data_type()).map(lit))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+
+    // `Values` names its columns `column1`, `column2` and so on.
+    let columns = schema.iter().enumerate().map(|(i, (qualifier, field))| {
+        Expr::Column(Column::new_unqualified(format!("column{}", i + 1)))
+            .alias_qualified(qualifier.cloned(), field.name())
+    });
+
+    let plan =
+        LogicalPlanBuilder::values_with_schema(rows, &values_schema)?.project(columns)?;
+    let plan = if no_rows {
+        plan.limit(0, Some(0))?
+    } else {
+        plan
+    };
+    plan.build()
+}
+
 #[cfg(test)]
 mod test {
     use datafusion::{
+        arrow::{
+            array::{StringArray, UInt64Array},
+            datatypes::{DataType, Field, Schema},
+            record_batch::{RecordBatch, RecordBatchOptions},
+            util::pretty::pretty_format_batches,
+        },
+        common::{DFSchema, DFSchemaRef, TableReference},
         error::Result,
         execution::{
             SessionStateBuilder, context::QueryPlanner, runtime_env::RuntimeEnvBuilder,
@@ -211,11 +289,15 @@ mod test {
         physical_plan::ExecutionPlan,
         prelude::{SessionConfig, SessionContext},
     };
+    use datafusion_proto::logical_plan::AsLogicalPlan;
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
-    use super::{BallistaQueryPlanner, scans_only_information_schema};
+    use super::{BallistaQueryPlanner, constant_relation, scans_only_information_schema};
     use crate::config::BallistaConfig;
     use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec};
+    use crate::serde::BallistaLogicalExtensionCodec;
 
     fn context() -> SessionContext {
         let runtime_environment = RuntimeEnvBuilder::new().build().unwrap();
@@ -229,6 +311,91 @@ mod test {
             .build();
 
         SessionContext::new_with_state(state)
+    }
+
+    /// The qualified fields of `schema`, which a replacement has to reproduce
+    /// exactly.
+    fn qualified_fields(schema: &DFSchema) -> Vec<(Option<TableReference>, Field)> {
+        schema
+            .iter()
+            .map(|(qualifier, field)| (qualifier.cloned(), field.as_ref().clone()))
+            .collect()
+    }
+
+    /// Runs `plan` in `ctx` and counts the rows it returns.
+    async fn row_count(ctx: &SessionContext, plan: LogicalPlan) -> Result<usize> {
+        let batches = ctx.execute_logical_plan(plan).await?.collect().await?;
+        Ok(batches.iter().map(|batch| batch.num_rows()).sum())
+    }
+
+    /// Runs `plan` in `ctx` and returns its rows as sorted text, so results
+    /// that differ only in row order or batching compare equal.
+    async fn rows(ctx: &SessionContext, plan: LogicalPlan) -> Result<Vec<String>> {
+        let batches: Vec<RecordBatch> = ctx
+            .execute_logical_plan(plan)
+            .await?
+            .collect()
+            .await?
+            .into_iter()
+            .filter(|batch| batch.num_rows() > 0)
+            .collect();
+        let mut lines: Vec<String> = pretty_format_batches(&batches)?
+            .to_string()
+            .lines()
+            .map(String::from)
+            .collect();
+        lines.sort();
+        Ok(lines)
+    }
+
+    /// Encodes and decodes `plan` the way it travels to the scheduler.
+    fn round_trip(ctx: &SessionContext, plan: &LogicalPlan) -> Result<LogicalPlan> {
+        let codec = BallistaLogicalExtensionCodec::default();
+        let node = LogicalPlanNode::try_from_logical_plan(plan, &codec)?;
+        node.try_into_logical_plan(&ctx.task_ctx(), &codec)
+    }
+
+    /// A schema like a join's output: two tables share a column name, and one
+    /// column is nullable.
+    fn joined_schema() -> Result<DFSchemaRef> {
+        Ok(Arc::new(DFSchema::new_with_metadata(
+            vec![
+                (
+                    Some(TableReference::bare("t")),
+                    Arc::new(Field::new("table_name", DataType::Utf8, false)),
+                ),
+                (
+                    Some(TableReference::bare("c")),
+                    Arc::new(Field::new("table_name", DataType::Utf8, false)),
+                ),
+                (
+                    Some(TableReference::partial("information_schema", "columns")),
+                    Arc::new(Field::new("numeric_precision", DataType::UInt64, true)),
+                ),
+            ],
+            HashMap::new(),
+        )?))
+    }
+
+    /// Two rows for [joined_schema], one of them with a null.
+    fn joined_batch(schema: &DFSchemaRef) -> Result<RecordBatch> {
+        Ok(RecordBatch::try_new(
+            Arc::new(schema.as_arrow().clone()),
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(UInt64Array::from(vec![Some(32), None])),
+            ],
+        )?)
+    }
+
+    /// Three rows without columns, as a scan that reads no columns returns.
+    fn rows_without_columns() -> Result<RecordBatch> {
+        Ok(RecordBatch::try_new_with_options(
+            Arc::new(Schema::empty()),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(3)),
+        )?)
     }
 
     #[tokio::test]
@@ -325,6 +492,76 @@ mod test {
                 .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
                 .is_some()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn constant_relation_reproduces_rows_and_qualified_schema() -> Result<()> {
+        let ctx = context();
+        let schema = joined_schema()?;
+        let batch = joined_batch(&schema)?;
+
+        let plan = constant_relation(&schema, std::slice::from_ref(&batch))?;
+
+        assert_eq!(qualified_fields(plan.schema()), qualified_fields(&schema));
+        let actual = ctx.execute_logical_plan(plan).await?.collect().await?;
+        assert_eq!(
+            pretty_format_batches(&actual)?.to_string(),
+            pretty_format_batches(&[batch])?.to_string()
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn constant_relation_keeps_the_schema_of_an_empty_result() -> Result<()> {
+        let ctx = context();
+        let schema = joined_schema()?;
+
+        let plan = constant_relation(&schema, &[])?;
+
+        assert_eq!(qualified_fields(plan.schema()), qualified_fields(&schema));
+        assert_eq!(row_count(&ctx, plan).await?, 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn constant_relation_keeps_the_row_count_of_a_result_without_columns()
+    -> Result<()> {
+        let ctx = context();
+        let schema = Arc::new(DFSchema::empty());
+
+        let with_rows = constant_relation(&schema, &[rows_without_columns()?])?;
+        let without_rows = constant_relation(&schema, &[])?;
+
+        assert!(with_rows.schema().fields().is_empty());
+        assert_eq!(row_count(&ctx, with_rows).await?, 3);
+        assert!(without_rows.schema().fields().is_empty());
+        assert_eq!(row_count(&ctx, without_rows).await?, 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn constant_relations_survive_serialization() -> Result<()> {
+        let ctx = context();
+        let joined = joined_schema()?;
+        let no_columns = Arc::new(DFSchema::empty());
+
+        for (schema, batches, expected_rows) in [
+            (&joined, vec![joined_batch(&joined)?], 2),
+            (&joined, vec![], 0),
+            (&no_columns, vec![rows_without_columns()?], 3),
+            (&no_columns, vec![], 0),
+        ] {
+            let plan = constant_relation(schema, &batches)?;
+            let decoded = round_trip(&ctx, &plan)?;
+
+            assert_eq!(row_count(&ctx, decoded.clone()).await?, expected_rows);
+            assert_eq!(rows(&ctx, decoded).await?, rows(&ctx, plan).await?);
+        }
+
         Ok(())
     }
 }
