@@ -312,6 +312,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../community/adopters.html">Who Uses Ballista</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
 </ul>
@@ -765,12 +766,12 @@ manage the whole cluster are also needed to be taken care of.</p>
 </tr>
 <tr class="row-odd"><td><p>scheduler-policy</p></td>
 <td><p>Utf8</p></td>
-<td><p>pull-staged</p></td>
+<td><p>push-staged</p></td>
 <td><p>Sets the task scheduling policy for the scheduler, possible values: pull-staged, push-staged.</p></td>
 </tr>
 <tr class="row-even"><td><p>event-loop-buffer-size</p></td>
 <td><p>UInt32</p></td>
-<td><p>10000</p></td>
+<td><p>1000</p></td>
 <td><p>Sets the event loop buffer size. for a system of high throughput, a larger value like 1000000 is recommended.</p></td>
 </tr>
 <tr class="row-odd"><td><p>task-distribution</p></td>

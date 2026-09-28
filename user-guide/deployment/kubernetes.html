@@ -312,6 +312,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../community/adopters.html">Who Uses Ballista</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
 </ul>
@@ -508,8 +509,6 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <span class="w">  </span><span class="nt">ports</span><span class="p">:</span>
 <span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50050</span>
 <span class="w">      </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">scheduler</span>
-<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">80</span>
-<span class="w">      </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">scheduler-ui</span>
 <span class="w">  </span><span class="nt">selector</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-scheduler</span>
 <span class="nn">---</span>
@@ -626,7 +625,8 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 </pre></div>
 </div>
 <p>This should show the following output:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">service</span><span class="o">/</span><span class="n">ballista</span><span class="o">-</span><span class="n">scheduler</span> <span class="n">created</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">service</span><span class="o">/</span><span class="n">ballista</span><span class="o">-</span><span class="n">scheduler</span><span class="o">-</span><span class="n">registration</span> <span class="n">created</span>
+<span class="n">service</span><span class="o">/</span><span class="n">ballista</span><span class="o">-</span><span class="n">scheduler</span> <span class="n">created</span>
 <span class="n">deployment</span><span class="o">.</span><span class="n">apps</span><span class="o">/</span><span class="n">ballista</span><span class="o">-</span><span class="n">scheduler</span> <span class="n">created</span>
 <span class="n">deployment</span><span class="o">.</span><span class="n">apps</span><span class="o">/</span><span class="n">ballista</span><span class="o">-</span><span class="n">executor</span> <span class="n">created</span>
 </pre></div>
@@ -641,9 +641,9 @@ ballista-scheduler-879f874c5-rnbd6<span class="w">   </span><span class="m">0</s
 </div>
 <p>You can view the scheduler logs with <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">logs</span> <span class="pre">ballista-scheduler-&lt;pod-id&gt;</span></code>:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl logs ballista-scheduler-&lt;pod-id&gt;
-INFO ballista_scheduler::scheduler_process: Ballista v52.0.0 Scheduler listening on 0.0.0.0:50050
-INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "b5e81711-1c5c-46ec-8522-d8b359793188", host: "10.1.23.149", port: 50051 }
-INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "816e4502-a876-4ed8-b33f-86d243dcf63f", host: "10.1.23.150", port: 50051 }
+INFO ballista_scheduler::scheduler_process: Ballista Scheduler v54.0.0 (DataFusion v55.1.0) listening on 0.0.0.0:50050
+INFO ballista_scheduler::scheduler_server::grpc: Received register executor request for ExecutorRegistration { id: "b5e81711-1c5c-46ec-8522-d8b359793188", host: None, port: 50051, grpc_port: 50052, ... }
+INFO ballista_scheduler::scheduler_server::grpc: Received register executor request for ExecutorRegistration { id: "816e4502-a876-4ed8-b33f-86d243dcf63f", host: None, port: 50051, grpc_port: 50052, ... }
 </pre></div>
 </div>
 </section>
@@ -769,6 +769,10 @@ ballista-scheduler<span class="w">   </span>ClusterIP<span class="w">   </span><
 <p>Ballista supports autoscaling for executors through <a class="reference external" href="http://keda.sh">Keda</a>. Keda allows for the scaling of a
 deployment through custom metrics which are exposed through the Ballista scheduler, and it
 can even scale the number of executors down to 0 if there is no activity in the cluster.</p>
+<blockquote>
+<div><p>This is an optional scheduler feature. The scheduler must be built with the <code class="docutils literal notranslate"><span class="pre">keda-scaler</span></code> feature
+for the external scaler endpoint to exist, and the published images are built without it.</p>
+</div></blockquote>
 <p>Keda can be installed in your kubernetes cluster through a single command line:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>https://github.com/kedacore/keda/releases/download/v2.7.1/keda-2.7.1.yaml
 </pre></div>

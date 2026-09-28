@@ -312,6 +312,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../community/adopters.html">Who Uses Ballista</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
 </ul>
@@ -401,22 +402,24 @@ process.</p>
 </div>
 <section id="usage">
 <h2>Usage<a class="headerlink" href="#usage" title="Link to this heading">#</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>USAGE:
-    ballista-cli [OPTIONS]
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Command</span> <span class="n">Line</span> <span class="n">Client</span> <span class="k">for</span> <span class="n">Ballista</span> <span class="n">distributed</span> <span class="n">query</span> <span class="n">engine</span><span class="o">.</span>
 
-OPTIONS:
-    -c, --batch-size &lt;BATCH_SIZE&gt;    The batch size of each query, or use Ballista default
-    -f, --file &lt;FILE&gt;...             Execute commands from file(s), then exit
-        --format &lt;FORMAT&gt;            [default: table] [possible values: csv, tsv, table, json,
-                                     nd-json]
-    -h, --help                       Print help information
-        --host &lt;HOST&gt;                Ballista scheduler host
-    -p, --data-path &lt;DATA_PATH&gt;      Path to your data, default to current directory
-        --port &lt;PORT&gt;                Ballista scheduler port
-    -q, --quiet                      Reduce printing other than the results and work quietly
-    -r, --rc &lt;RC&gt;...                 Run the provided files on startup instead of ~/.ballistarc
-        --tui                        Enables terminal user interface (requires `tui` feature)
-    -V, --version                    Print version information
+<span class="n">Usage</span><span class="p">:</span> <span class="n">ballista</span><span class="o">-</span><span class="n">cli</span> <span class="p">[</span><span class="n">OPTIONS</span><span class="p">]</span>
+
+<span class="n">Options</span><span class="p">:</span>
+  <span class="o">-</span><span class="n">p</span><span class="p">,</span> <span class="o">--</span><span class="n">data</span><span class="o">-</span><span class="n">path</span> <span class="o">&lt;</span><span class="n">DATA_PATH</span><span class="o">&gt;</span>    <span class="n">Path</span> <span class="n">to</span> <span class="n">your</span> <span class="n">data</span><span class="p">,</span> <span class="n">default</span> <span class="n">to</span> <span class="n">current</span> <span class="n">directory</span>
+  <span class="o">-</span><span class="n">c</span><span class="p">,</span> <span class="o">--</span><span class="n">batch</span><span class="o">-</span><span class="n">size</span> <span class="o">&lt;</span><span class="n">BATCH_SIZE</span><span class="o">&gt;</span>  <span class="n">The</span> <span class="n">batch</span> <span class="n">size</span> <span class="n">of</span> <span class="n">each</span> <span class="n">query</span><span class="p">,</span> <span class="ow">or</span> <span class="n">use</span> <span class="n">Ballista</span> <span class="n">default</span>
+      <span class="o">--</span><span class="n">vcores</span> <span class="o">&lt;</span><span class="n">VCORES</span><span class="o">&gt;</span>          <span class="n">Virtual</span> <span class="n">cores</span> <span class="k">for</span> <span class="n">the</span> <span class="n">local</span> <span class="n">Ballista</span> <span class="n">executor</span><span class="o">.</span> <span class="n">Default</span><span class="p">:</span> <span class="nb">all</span> <span class="n">available</span> <span class="n">physical</span> <span class="n">cores</span><span class="o">.</span>
+  <span class="o">-</span><span class="n">f</span><span class="p">,</span> <span class="o">--</span><span class="n">file</span> <span class="p">[</span><span class="o">&lt;</span><span class="n">FILE</span><span class="o">&gt;...</span><span class="p">]</span>         <span class="n">Execute</span> <span class="n">commands</span> <span class="kn">from</span><span class="w"> </span><span class="nn">file</span><span class="p">(</span><span class="n">s</span><span class="p">),</span> <span class="n">then</span> <span class="n">exit</span>
+  <span class="o">-</span><span class="n">r</span><span class="p">,</span> <span class="o">--</span><span class="n">rc</span> <span class="p">[</span><span class="o">&lt;</span><span class="n">RC</span><span class="o">&gt;...</span><span class="p">]</span>             <span class="n">Run</span> <span class="n">the</span> <span class="n">provided</span> <span class="n">files</span> <span class="n">on</span> <span class="n">startup</span> <span class="n">instead</span> <span class="n">of</span> <span class="o">~/.</span><span class="n">ballistarc</span>
+      <span class="o">--</span><span class="nb">format</span> <span class="o">&lt;</span><span class="n">FORMAT</span><span class="o">&gt;</span>          <span class="p">[</span><span class="n">default</span><span class="p">:</span> <span class="n">table</span><span class="p">]</span> <span class="p">[</span><span class="n">possible</span> <span class="n">values</span><span class="p">:</span> <span class="n">csv</span><span class="p">,</span> <span class="n">tsv</span><span class="p">,</span> <span class="n">table</span><span class="p">,</span> <span class="n">json</span><span class="p">,</span> <span class="n">nd</span><span class="o">-</span><span class="n">json</span><span class="p">,</span> <span class="n">automatic</span><span class="p">]</span>
+      <span class="o">--</span><span class="n">host</span> <span class="o">&lt;</span><span class="n">HOST</span><span class="o">&gt;</span>              <span class="n">Ballista</span> <span class="n">scheduler</span> <span class="n">host</span>
+      <span class="o">--</span><span class="n">port</span> <span class="o">&lt;</span><span class="n">PORT</span><span class="o">&gt;</span>              <span class="n">Ballista</span> <span class="n">scheduler</span> <span class="n">port</span>
+  <span class="o">-</span><span class="n">q</span><span class="p">,</span> <span class="o">--</span><span class="n">quiet</span>                    <span class="n">Reduce</span> <span class="n">printing</span> <span class="n">other</span> <span class="n">than</span> <span class="n">the</span> <span class="n">results</span> <span class="ow">and</span> <span class="n">work</span> <span class="n">quietly</span>
+      <span class="o">--</span><span class="n">color</span>                    <span class="n">Enables</span> <span class="n">console</span> <span class="n">syntax</span> <span class="n">highlighting</span>
+      <span class="o">--</span><span class="n">tui</span>                      <span class="n">Enables</span> <span class="n">terminal</span> <span class="n">user</span> <span class="n">interface</span>
+  <span class="o">-</span><span class="n">h</span><span class="p">,</span> <span class="o">--</span><span class="n">help</span>                     <span class="n">Print</span> <span class="n">help</span>
+  <span class="o">-</span><span class="n">V</span><span class="p">,</span> <span class="o">--</span><span class="n">version</span>                  <span class="n">Print</span> <span class="n">version</span>
 </pre></div>
 </div>
 </section>
@@ -439,7 +442,7 @@ OPTIONS:
 <p>It is also possible to run the CLI in standalone mode, where it will create a scheduler and executor in-process.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>$<span class="w"> </span>ballista-cli
 
-Ballista<span class="w"> </span>CLI<span class="w"> </span>v52.0.0
+Ballista<span class="w"> </span>CLI<span class="w"> </span>v54.0.0
 
 &gt;<span class="w"> </span>CREATE<span class="w"> </span>EXTERNAL<span class="w"> </span>TABLE<span class="w"> </span>foo<span class="w"> </span><span class="o">(</span>a<span class="w"> </span>INT,<span class="w"> </span>b<span class="w"> </span>INT<span class="o">)</span><span class="w"> </span>STORED<span class="w"> </span>AS<span class="w"> </span>CSV<span class="w"> </span>LOCATION<span class="w"> </span><span class="s1">'data.csv'</span><span class="p">;</span>
 <span class="m">0</span><span class="w"> </span>rows<span class="w"> </span><span class="k">in</span><span class="w"> </span>set.<span class="w"> </span>Query<span class="w"> </span>took<span class="w"> </span><span class="m">0</span>.001<span class="w"> </span>seconds.
@@ -497,6 +500,18 @@ Ballista<span class="w"> </span>CLI<span class="w"> </span>v52.0.0
 <li><p>Search and describe function</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>&gt;<span class="w"> </span><span class="se">\h</span><span class="w"> </span>function_table
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Set table output format</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>&gt;<span class="w"> </span><span class="se">\p</span>set<span class="w"> </span>format<span class="w"> </span>json
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Open the terminal user interface</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>&gt;<span class="w"> </span><span class="se">\t</span>ui
 </pre></div>
 </div>
 </section>

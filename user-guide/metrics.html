@@ -312,6 +312,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../community/adopters.html">Who Uses Ballista</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
 </ul>
@@ -396,14 +397,12 @@
 <section id="prometheus">
 <h2>Prometheus<a class="headerlink" href="#prometheus" title="Link to this heading">#</a></h2>
 <blockquote>
-<div><p>This is optional scheduler feature which should be enabled with <code class="docutils literal notranslate"><span class="pre">prometheus-metrics</span></code> feature</p>
+<div><p>This is an optional scheduler feature, enabled with the <code class="docutils literal notranslate"><span class="pre">prometheus-metrics</span></code> Cargo feature.</p>
 </div></blockquote>
-<p>Built with default features, the ballista scheduler will automatically collect and expose a standard set of prometheus metrics.
-The metrics currently collected automatically include:</p>
+<p>When built with it, the scheduler collects and exposes a standard set of Prometheus metrics:</p>
 <ul class="simple">
 <li><p><em>job_exec_time_seconds</em> - Histogram of successful job execution time in seconds</p></li>
 <li><p><em>planning_time_ms</em> - Histogram of job planning time in milliseconds</p></li>
-<li><p><em>failed</em> - Counter of failed jobs</p></li>
 <li><p><em>job_failed_total</em> - Counter of failed jobs</p></li>
 <li><p><em>job_cancelled_total</em> - Counter of cancelled jobs</p></li>
 <li><p><em>job_completed_total</em> - Counter of completed jobs</p></li>
@@ -411,7 +410,7 @@ The metrics currently collected automatically include:</p>
 <li><p><em>pending_task_queue_size</em> - Number of pending tasks</p></li>
 </ul>
 <p><strong>NOTE</strong> Currently the histogram buckets for the above metrics are set to reasonable defaults. If the defaults are not
-appropriate for a given use case, the only workaround is to implement a customer <code class="docutils literal notranslate"><span class="pre">SchedulerMetricsCollector</span></code>. In the future
+appropriate for a given use case, the only workaround is to implement a custom <code class="docutils literal notranslate"><span class="pre">SchedulerMetricsCollector</span></code>. In the future
 the buckets should be made configurable.</p>
 <p>The metrics are then exported through the scheduler REST API at <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/api/metrics</span></code>. It should be sufficient to ingest metrics
 into an existing metrics system by point your chosen prometheus exporter at that endpoint.</p>

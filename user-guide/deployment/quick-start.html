@@ -312,6 +312,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../community/adopters.html">Who Uses Ballista</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
 </ul>
@@ -414,15 +415,15 @@
 </div>
 <p>Start one or more Ballista executor processes in new terminal sessions. When starting more than one
 executor, a unique port number must be specified for each executor.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">RUST_LOG</span><span class="o">=</span>info<span class="w"> </span>./target/release/ballista-executor<span class="w"> </span>-c<span class="w"> </span><span class="m">2</span><span class="w"> </span>-p<span class="w"> </span><span class="m">50051</span><span class="w"> </span>--bind-grpc-port<span class="w"> </span><span class="m">50052</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">RUST_LOG</span><span class="o">=</span>info<span class="w"> </span>./target/release/ballista-executor<span class="w"> </span>-c<span class="w"> </span><span class="m">2</span><span class="w"> </span>-p<span class="w"> </span><span class="m">50051</span><span class="w"> </span>--bind-grpc-port<span class="w"> </span><span class="m">50052</span><span class="w"> </span>--bind-health-port<span class="w"> </span><span class="m">50053</span>
 
-<span class="nv">RUST_LOG</span><span class="o">=</span>info<span class="w"> </span>./target/release/ballista-executor<span class="w"> </span>-c<span class="w"> </span><span class="m">2</span><span class="w"> </span>-p<span class="w"> </span><span class="m">50053</span><span class="w"> </span>--bind-grpc-port<span class="w"> </span><span class="m">50054</span>
+<span class="nv">RUST_LOG</span><span class="o">=</span>info<span class="w"> </span>./target/release/ballista-executor<span class="w"> </span>-c<span class="w"> </span><span class="m">2</span><span class="w"> </span>-p<span class="w"> </span><span class="m">50054</span><span class="w"> </span>--bind-grpc-port<span class="w"> </span><span class="m">50055</span><span class="w"> </span>--bind-health-port<span class="w"> </span><span class="m">50056</span>
 </pre></div>
 </div>
 </section>
 <section id="running-the-examples">
 <h2>Running the examples<a class="headerlink" href="#running-the-examples" title="Link to this heading">#</a></h2>
-<p>The examples can be run using the <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">run</span> <span class="pre">--bin</span></code> syntax. Open a new terminal session and run the following commands.</p>
+<p>The examples can be run using the <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">run</span> <span class="pre">--example</span></code> syntax. Open a new terminal session and run the following commands.</p>
 <section id="distributed-sql-example">
 <h3>Distributed SQL Example<a class="headerlink" href="#distributed-sql-example" title="Link to this heading">#</a></h3>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>examples

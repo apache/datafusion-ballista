@@ -312,6 +312,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../community/adopters.html">Who Uses Ballista</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
 </ul>
@@ -416,6 +417,10 @@
 <li><p><code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-scheduler:latest</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-standalone:latest</span></code></p></li>
 </ul>
+<p>Only the standalone, scheduler, and executor images are published to
+<code class="docutils literal notranslate"><span class="pre">ghcr.io/apache/</span></code>. The CLI and benchmarks images are built locally only, so the
+<code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-cli:latest</span></code> commands below require a local build
+first.</p>
 </section>
 <section id="start-a-cluster">
 <h2>Start a Cluster<a class="headerlink" href="#start-a-cluster" title="Link to this heading">#</a></h2>
@@ -435,8 +440,8 @@ a756055576f3   apache/datafusion-ballista-scheduler:latest   "/root/scheduler-en
 </div>
 <p>Run <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">logs</span> <span class="pre">CONTAINER_ID</span></code> to check the output from the process:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ docker logs a756055576f3
-INFO ballista_scheduler::scheduler_process: Ballista v52.0.0 Scheduler listening on 0.0.0.0:50050
-INFO ballista_scheduler::scheduler_process: Starting Scheduler grpc server with task scheduling policy of PullStaged
+INFO ballista_scheduler::scheduler_process: Ballista Scheduler v54.0.0 (DataFusion v55.1.0) listening on 0.0.0.0:50050
+INFO ballista_scheduler::scheduler_process: Starting Scheduler grpc server with task scheduling policy of PushStaged
 INFO ballista_scheduler::scheduler_server::query_stage_scheduler: Starting QueryStageScheduler
 INFO ballista_core::event_loop: Starting the event loop query_stage
 </pre></div>
@@ -459,11 +464,13 @@ a756055576f3   apache/datafusion-ballista-scheduler:latest   "/root/scheduler-en
 </div>
 <p>Use <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">logs</span> <span class="pre">CONTAINER_ID</span></code> to check the output from the executor(s):</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ docker logs fb8b530cee6d
-INFO ballista_executor::executor_process: Running with config:
-INFO ballista_executor::executor_process: work_dir: /tmp/.tmpAkP3pZ
+INFO ballista_executor::executor_process: Ballista Executor v54.0.0 (DataFusion v55.1.0) starting ...
+INFO ballista_executor::executor_process: Executor working directory: /tmp/.tmpAkP3pZ
 INFO ballista_executor::executor_process: Executor vcores (default: available CPU cores): 48
-INFO ballista_executor::executor_process: Ballista v52.0.0 Rust Executor Flight Server listening on 0.0.0.0:50051
-INFO ballista_executor::execution_loop: Starting poll work loop with scheduler
+INFO ballista_executor::executor_process: Executor scheduling policy: PushStaged
+INFO ballista_executor::executor_server: Ballista v54.0.0 Rust Executor Grpc Server listening on 0.0.0.0:50052
+INFO ballista_executor::executor_server: Executor registration succeed
+INFO ballista_executor::executor_process: Built-in arrow flight server listening on: 0.0.0.0:50051 max_encoding_size: 16777216 max_decoding_size: 16777216
 </pre></div>
 </div>
 </section>

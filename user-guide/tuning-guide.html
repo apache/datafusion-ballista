@@ -312,6 +312,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../community/adopters.html">Who Uses Ballista</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
 </ul>
@@ -645,13 +646,13 @@ to <code class="docutils literal notranslate"><span class="pre">0</span></code> 
 <!-- END GENERATED CONFIG REFERENCE -->
 </section>
 </section>
-<section id="adaptive-query-execution-experimental">
-<h2>Adaptive Query Execution (Experimental)<a class="headerlink" href="#adaptive-query-execution-experimental" title="Link to this heading">#</a></h2>
-<p>Ballista has experimental support for adaptive query execution (AQE), where the
-scheduler re-runs the DataFusion physical optimizer between query stages. This
-lets the planner make decisions using statistics collected from completed
-stages rather than relying solely on pre-execution estimates.</p>
-<p>AQE is enabled by default. To fall back to the static distributed planner, set
+<section id="adaptive-query-execution">
+<h2>Adaptive Query Execution<a class="headerlink" href="#adaptive-query-execution" title="Link to this heading">#</a></h2>
+<p>Ballista runs adaptive query execution (AQE) by default: the scheduler re-runs
+the DataFusion physical optimizer between query stages. This lets the planner
+make decisions using statistics collected from completed stages rather than
+relying solely on pre-execution estimates.</p>
+<p>To fall back to the static distributed planner, set
 <code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code> on your <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code>:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">session_config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
 <span class="w">    </span><span class="p">.</span><span class="n">set_bool</span><span class="p">(</span><span class="s">"ballista.planner.adaptive.enabled"</span><span class="p">,</span><span class="w"> </span><span class="kc">false</span><span class="p">);</span>
@@ -694,14 +695,14 @@ stages rather than relying solely on pre-execution estimates.</p>
 <h3>What AQE does today<a class="headerlink" href="#what-aqe-does-today" title="Link to this heading">#</a></h3>
 <p>When AQE is enabled, the scheduler builds the stage DAG incrementally. As each
 shuffle stage completes, the planner re-optimizes the remaining plan and emits
-the next set of runnable stages. Two adaptive optimizations are currently
-implemented:</p>
+the next set of runnable stages. The following adaptive optimizations are
+currently implemented:</p>
 <ul class="simple">
-<li><p><strong>Join reordering.</strong> Uses runtime row counts from completed stages so the
-smaller side drives the join.</p></li>
-<li><p><strong>Broadcast join selection.</strong> When a join input’s runtime size falls under
-<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span></code> (or the row-count
-fallback), the smaller side is broadcast (<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>) instead of shuffled.
+<li><p><strong>Join selection.</strong> Each join is resolved from the runtime statistics of its
+completed input stages. The smaller side, compared by byte size and falling
+back to row count when sizes are unavailable, becomes the build side. When it
+falls under <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span></code> (or the
+row-count fallback), it is broadcast (<code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code>) instead of shuffled.
 Null-aware anti joins use <code class="docutils literal notranslate"><span class="pre">CollectLeft</span></code> with a single probe task because their
 state cannot be coordinated across executors. A known oversized build side is
 rejected instead of producing an incorrect distributed result. In practice
@@ -709,9 +710,28 @@ most <code class="docutils literal notranslate"><span class="pre">NOT</span> <sp
 <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.not_in_subquery_rewrite</span></code> (enabled by default) rewrites
 them into a fully distributable anti join plus a one-row count aggregate
 during logical optimization.</p></li>
+<li><p><strong>Build-side staging.</strong> When a join’s build side has only an estimated size,
+the join type can be broadcast, the probe side is at least
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.stage_build_side_min_probe_ratio</span></code> times larger (10 by
+default), and the estimate is no more than
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.stage_build_side_max_estimate_multiple</span></code> times the broadcast
+threshold (32 by default), AQE shuffles the build side on its own first and
+reads back its measured size before choosing the join. A side that turns out
+small enough is broadcast, so the much larger probe side is never shuffled.
+Enabled by default; set <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.stage_build_side</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code> to
+shuffle both sides at once.</p></li>
 <li><p><strong>Empty stage elimination.</strong> When a completed stage produces zero rows, its
 downstream exchange is replaced with an empty execution node, and emptiness
 is propagated up the plan so downstream stages are skipped entirely.</p></li>
+<li><p><strong>Shuffle-partition coalescing.</strong> Adjacent small output partitions of a
+completed stage are merged so the next stage runs fewer, larger tasks.
+Disabled by default; enable with <code class="docutils literal notranslate"><span class="pre">ballista.planner.coalesce.enabled</span></code> and tune
+with the <code class="docutils literal notranslate"><span class="pre">ballista.planner.coalesce.*</span></code> keys documented in
+<a class="reference internal" href="configs.html"><span class="std std-doc">Configuration</span></a>.</p></li>
+<li><p><strong>Parallel windows.</strong> Bounded <code class="docutils literal notranslate"><span class="pre">RANGE</span></code>-frame windows are rewritten into a
+distributed range shuffle so <code class="docutils literal notranslate"><span class="pre">BoundedWindowAggExec</span></code> is not a serial
+bottleneck. Disabled by default; enable with
+<code class="docutils literal notranslate"><span class="pre">ballista.planner.parallel_window.enabled</span></code>.</p></li>
 </ul>
 </section>
 <section id="current-limitations">
@@ -720,13 +740,13 @@ is propagated up the plan so downstream stages are skipped entirely.</p></li>
 missing or incomplete:</p>
 <ul class="simple">
 <li><p>Executor failure handling on the AQE path (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1986">#1986</a>)</p></li>
-<li><p>Dynamic coalescing of shuffle partitions (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1987">#1987</a>)</p></li>
 <li><p>Switching from hash join to sort-merge join based on runtime statistics (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1988">#1988</a>)</p></li>
 <li><p>Switching from streaming aggregation to hash aggregation based on runtime statistics (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1989">#1989</a>)</p></li>
 </ul>
-<p>Until these gaps are closed, AQE should be used for testing and experimentation
-rather than production workloads. See <a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1359">issue #1359</a>
-for the tracking epic and ongoing work.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code> to fall back to the static
+distributed planner if you hit one of these. See
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1359">issue #1359</a> for the
+tracking epic and ongoing work.</p>
 </section>
 </section>
 <section id="push-based-vs-pull-based-task-scheduling">
@@ -735,14 +755,14 @@ for the tracking epic and ongoing work.</p>
 which is the best for your use case.</p>
 <p>Pull-based scheduling works in a similar way to Apache Spark and push-based scheduling can result in lower latency.</p>
 <p>The scheduling policy can be specified in the <code class="docutils literal notranslate"><span class="pre">--scheduler-policy</span></code> parameter when starting the scheduler and executor
-processes. The default is <code class="docutils literal notranslate"><span class="pre">pull-staged</span></code>.</p>
+processes. Both processes must be configured with the same policy. The default is <code class="docutils literal notranslate"><span class="pre">push-staged</span></code>.</p>
 </section>
 <section id="viewing-query-plans-and-metrics">
 <h2>Viewing Query Plans and Metrics<a class="headerlink" href="#viewing-query-plans-and-metrics" title="Link to this heading">#</a></h2>
 <p>The scheduler provides a REST API for monitoring jobs. See the
 <a class="reference internal" href="scheduler.html"><span class="std std-doc">scheduler documentation</span></a> for more information.</p>
 <blockquote>
-<div><p>This is optional scheduler feature which should be enabled with rest-api feature</p>
+<div><p>These endpoints require the scheduler’s <code class="docutils literal notranslate"><span class="pre">rest-api</span></code> feature, which is enabled by default.</p>
 </div></blockquote>
 <p>To download a query plan in dot format from the scheduler, submit a request to the following API endpoint</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">http</span><span class="p">:</span><span class="o">//</span><span class="n">localhost</span><span class="p">:</span><span class="mi">50050</span><span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">job</span><span class="o">/</span><span class="p">{</span><span class="n">job_id</span><span class="p">}</span><span class="o">/</span><span class="n">dot</span>
@@ -819,7 +839,7 @@ processes. The default is <code class="docutils literal notranslate"><span class
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-based-shuffle">Sort-based shuffle</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adaptive-query-execution-experimental">Adaptive Query Execution (Experimental)</a><ul class="nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adaptive-query-execution">Adaptive Query Execution</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-aqe-does-today">What AQE does today</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#current-limitations">Current limitations</a></li>

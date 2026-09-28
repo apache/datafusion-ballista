@@ -52,6 +52,24 @@ times the number of tasks it runs at once.
 Set `ballista.optimizer.broadcast_join_threshold_bytes = 10485760` to restore
 the previous behavior, or `0` to disable broadcast promotion entirely.
 
+#### Joins may shuffle their build side first to measure it
+
+`ballista.optimizer.stage_build_side` is new and defaults to `true`. When a
+join's build side has only an estimated size and the probe side is far larger,
+AQE now shuffles the build side on its own, reads back its measured size, and
+only then chooses between a broadcast and a repartitioned join. A filtered
+dimension scan whose size was over-estimated can now be broadcast instead of
+forcing a shuffle of the fact table it joins against.
+
+Expect an extra stage for such joins, and plans that differ from 54.x. When
+staging fires, the build side's shuffle runs before the probe side's rather than
+alongside it. That is bounded by
+`ballista.optimizer.stage_build_side_min_probe_ratio` (default `10`) and
+`ballista.optimizer.stage_build_side_max_estimate_multiple` (default `32`).
+
+Set `ballista.optimizer.stage_build_side = false` to restore the previous
+behavior.
+
 #### `SortMergeJoinExec` is no longer converted to a broadcast join
 
 `54.0.0` added a static-planner rewrite that converted a `SortMergeJoinExec`

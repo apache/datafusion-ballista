@@ -312,6 +312,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../community/adopters.html">Who Uses Ballista</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
 </ul>
@@ -424,6 +425,22 @@ every concurrent probe task, so peak memory per executor is roughly this value
 times the number of tasks it runs at once.</p>
 <p>Set <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span> <span class="pre">=</span> <span class="pre">10485760</span></code> to restore
 the previous behavior, or <code class="docutils literal notranslate"><span class="pre">0</span></code> to disable broadcast promotion entirely.</p>
+</section>
+<section id="joins-may-shuffle-their-build-side-first-to-measure-it">
+<h4>Joins may shuffle their build side first to measure it<a class="headerlink" href="#joins-may-shuffle-their-build-side-first-to-measure-it" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">ballista.optimizer.stage_build_side</span></code> is new and defaults to <code class="docutils literal notranslate"><span class="pre">true</span></code>. When a
+join’s build side has only an estimated size and the probe side is far larger,
+AQE now shuffles the build side on its own, reads back its measured size, and
+only then chooses between a broadcast and a repartitioned join. A filtered
+dimension scan whose size was over-estimated can now be broadcast instead of
+forcing a shuffle of the fact table it joins against.</p>
+<p>Expect an extra stage for such joins, and plans that differ from 54.x. When
+staging fires, the build side’s shuffle runs before the probe side’s rather than
+alongside it. That is bounded by
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.stage_build_side_min_probe_ratio</span></code> (default <code class="docutils literal notranslate"><span class="pre">10</span></code>) and
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.stage_build_side_max_estimate_multiple</span></code> (default <code class="docutils literal notranslate"><span class="pre">32</span></code>).</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.stage_build_side</span> <span class="pre">=</span> <span class="pre">false</span></code> to restore the previous
+behavior.</p>
 </section>
 <section id="sortmergejoinexec-is-no-longer-converted-to-a-broadcast-join">
 <h4><code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code> is no longer converted to a broadcast join<a class="headerlink" href="#sortmergejoinexec-is-no-longer-converted-to-a-broadcast-join" title="Link to this heading">#</a></h4>
@@ -685,6 +702,7 @@ struct.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#planner-and-execution-behavior-changes">Planner and execution behavior changes</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-scheduler-max-partitions-per-task-now-defaults-to-0-unbounded"><code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code> now defaults to <code class="docutils literal notranslate"><span class="pre">0</span></code> (unbounded)</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-optimizer-broadcast-join-threshold-bytes-now-defaults-to-128-mb"><code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span></code> now defaults to 128 MB</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#joins-may-shuffle-their-build-side-first-to-measure-it">Joins may shuffle their build side first to measure it</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sortmergejoinexec-is-no-longer-converted-to-a-broadcast-join"><code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code> is no longer converted to a broadcast join</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#schedulers-and-executors-must-be-upgraded-together">Schedulers and executors must be upgraded together</a></li>
 </ul>

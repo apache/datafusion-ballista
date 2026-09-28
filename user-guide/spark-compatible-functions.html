@@ -312,6 +312,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../community/adopters.html">Who Uses Ballista</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
 <li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
 </ul>
@@ -408,9 +409,14 @@ cargo<span class="w"> </span>build<span class="w"> </span>-p<span class="w"> </s
 
 <span class="c1"># Build executor only</span>
 cargo<span class="w"> </span>build<span class="w"> </span>-p<span class="w"> </span>ballista-executor<span class="w"> </span>--features<span class="w"> </span>spark-compat<span class="w"> </span>--release
-
-<span class="c1"># Build CLI with spark-compat</span>
-cargo<span class="w"> </span>build<span class="w"> </span>-p<span class="w"> </span>ballista-cli<span class="w"> </span>--features<span class="w"> </span>spark-compat<span class="w"> </span>--release
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">spark-compat</span></code> exists on <code class="docutils literal notranslate"><span class="pre">ballista-core</span></code>, <code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">ballista-executor</span></code> only. SQL is planned in the client, so a client has to be
+built with the functions too. <code class="docutils literal notranslate"><span class="pre">ballista-cli</span></code> has no feature of its own; it gets
+them from <code class="docutils literal notranslate"><span class="pre">ballista-core</span></code> when built together with it, as the workspace-wide
+build above does, or with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>build<span class="w"> </span>-p<span class="w"> </span>ballista-cli<span class="w"> </span>-p<span class="w"> </span>ballista-core<span class="w"> </span>--features<span class="w"> </span>ballista-core/spark-compat<span class="w"> </span>--release
 </pre></div>
 </div>
 <p>For more installation options, see <a class="reference internal" href="deployment/cargo-install.html"><span class="std std-doc">Installing with Cargo</span></a>.</p>
