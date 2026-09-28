@@ -21,7 +21,7 @@ use crate::serde::BallistaLogicalExtensionCodec;
 
 use datafusion::arrow::datatypes::Schema;
 use datafusion::catalog::Session;
-use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::{LogicalPlan, TableScan};
@@ -109,14 +109,11 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
         session_state: &dyn Session,
     ) -> std::result::Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         log::debug!("create_physical_plan - plan: {:?}", logical_plan);
-        // we inspect if plan scans local tables only,
-        // like tables located in information_schema,
+        // we inspect if plan scans only tables located in information_schema,
+        // which describe the catalog of this context,
         // if that is the case, we run that plan
         // on this same context, not on cluster
-        let mut local_run = LocalRun::default();
-        let _ = logical_plan.visit(&mut local_run);
-
-        if local_run.can_be_local {
+        if scans_only_information_schema(logical_plan)? {
             log::debug!("create_physical_plan - plan can be executed locally");
 
             self.local_planner
@@ -165,44 +162,47 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
     }
 }
 
-/// A Visitor which detect if query is using local tables,
-/// such as tables located in `information_schema` and returns true
-/// only if all scans are in from local tables
-#[derive(Debug, Default)]
-struct LocalRun {
-    can_be_local: bool,
-}
-
-impl<'n> TreeNodeVisitor<'n> for LocalRun {
-    type Node = LogicalPlan;
-
-    fn f_down(
-        &mut self,
-        node: &'n Self::Node,
-    ) -> datafusion::error::Result<datafusion::common::tree_node::TreeNodeRecursion> {
-        match node {
-            LogicalPlan::TableScan(TableScan { table_name, .. }) => match table_name {
-                datafusion::common::TableReference::Partial { schema, .. }
-                | datafusion::common::TableReference::Full { schema, .. }
-                    if schema.as_ref() == "information_schema" =>
-                {
-                    self.can_be_local = true;
-                    Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
-                }
-                _ => {
-                    self.can_be_local = false;
-                    Ok(datafusion::common::tree_node::TreeNodeRecursion::Stop)
-                }
-            },
-            _ => Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue),
+/// Returns `true` if every table `plan` reads, subqueries included, is in
+/// `information_schema`, and `false` if none is.
+///
+/// Those tables describe the catalog of the session that planned `plan`, which
+/// no other node shares, and their scans cannot be serialized, so a plan
+/// reading only them should run where it was planned. A plan that also reads
+/// other tables would have to run there as well, without the cluster, so it is
+/// refused with an error instead.
+pub fn scans_only_information_schema(
+    plan: &LogicalPlan,
+) -> Result<bool, DataFusionError> {
+    let (mut information_schema, mut other) = (false, false);
+    // Subqueries scan tables too, and `apply` does not descend into them.
+    plan.apply_with_subqueries(|node| {
+        if let LogicalPlan::TableScan(TableScan { table_name, .. }) = node {
+            if table_name.schema() == Some("information_schema") {
+                information_schema = true;
+            } else {
+                other = true;
+            }
         }
+        Ok(if information_schema && other {
+            TreeNodeRecursion::Stop
+        } else {
+            TreeNodeRecursion::Continue
+        })
+    })?;
+
+    if information_schema && other {
+        return Err(DataFusionError::NotImplemented(
+            "Ballista cannot run a query that reads information_schema together \
+             with other tables. Query information_schema on its own."
+                .to_string(),
+        ));
     }
+    Ok(information_schema)
 }
 
 #[cfg(test)]
 mod test {
     use datafusion::{
-        common::tree_node::TreeNode,
         error::Result,
         execution::{
             SessionStateBuilder, context::QueryPlanner, runtime_env::RuntimeEnvBuilder,
@@ -213,7 +213,7 @@ mod test {
     };
     use datafusion_proto::protobuf::LogicalPlanNode;
 
-    use super::{BallistaQueryPlanner, LocalRun};
+    use super::{BallistaQueryPlanner, scans_only_information_schema};
     use crate::config::BallistaConfig;
     use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec};
 
@@ -235,12 +235,8 @@ mod test {
     async fn should_detect_show_table_as_local_plan() -> Result<()> {
         let ctx = context();
         let df = ctx.sql("SHOW TABLES").await?;
-        let lp = df.logical_plan();
-        let mut local_run = LocalRun::default();
 
-        lp.visit(&mut local_run).unwrap();
-
-        assert!(local_run.can_be_local);
+        assert!(scans_only_information_schema(df.logical_plan())?);
 
         Ok(())
     }
@@ -249,12 +245,8 @@ mod test {
     async fn should_detect_select_from_information_schema_as_local_plan() -> Result<()> {
         let ctx = context();
         let df = ctx.sql("SELECT * FROM information_schema.df_settings WHERE NAME LIKE 'ballista%'").await?;
-        let lp = df.logical_plan();
-        let mut local_run = LocalRun::default();
 
-        lp.visit(&mut local_run).unwrap();
-
-        assert!(local_run.can_be_local);
+        assert!(scans_only_information_schema(df.logical_plan())?);
 
         Ok(())
     }
@@ -267,12 +259,8 @@ mod test {
             .show()
             .await?;
         let df = ctx.sql("SELECT * FROM tt").await?;
-        let lp = df.logical_plan();
-        let mut local_run = LocalRun::default();
 
-        lp.visit(&mut local_run).unwrap();
-
-        assert!(!local_run.can_be_local);
+        assert!(!scans_only_information_schema(df.logical_plan())?);
 
         Ok(())
     }
@@ -283,12 +271,34 @@ mod test {
         ctx.register_csv("tt", "tests/customer.csv", Default::default())
             .await?;
         let df = ctx.sql("SELECT * FROM tt").await?;
-        let lp = df.logical_plan();
-        let mut local_run = LocalRun::default();
 
-        lp.visit(&mut local_run).unwrap();
+        assert!(!scans_only_information_schema(df.logical_plan())?);
 
-        assert!(!local_run.can_be_local);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_reject_information_schema_with_other_tables() -> Result<()> {
+        let ctx = context();
+        ctx.sql("CREATE TABLE big (name VARCHAR)")
+            .await?
+            .show()
+            .await?;
+
+        for sql in [
+            "SELECT table_name FROM information_schema.tables \
+             WHERE table_name IN (SELECT name FROM big)",
+            "SELECT name FROM big \
+             WHERE name IN (SELECT table_name FROM information_schema.tables)",
+            "SELECT t.table_name FROM information_schema.tables t \
+             JOIN big b ON t.table_name = b.name",
+        ] {
+            // Unoptimized, so subqueries are still expressions rather than the
+            // joins the optimizer would decorrelate them into.
+            let plan = ctx.state().create_logical_plan(sql).await?;
+
+            assert!(scans_only_information_schema(&plan).is_err(), "{sql}");
+        }
 
         Ok(())
     }
