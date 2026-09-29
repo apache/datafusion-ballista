@@ -22,7 +22,6 @@ use ballista_core::error::BallistaError;
 use ballista_core::object_store::{
     session_config_with_s3_support, session_state_with_s3_support,
 };
-use ballista_core::utils::shutdown_signal;
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::{Config, SchedulerConfig};
 use ballista_scheduler::scheduler_process::start_server;
@@ -92,11 +91,7 @@ async fn inner() -> ballista_core::error::Result<()> {
         .with_override_session_builder(Arc::new(session_state_with_s3_support));
 
     let cluster = BallistaCluster::new_from_config(&config).await?;
-    // On Ctrl-C or SIGTERM, exit without draining connections.
-    tokio::select! {
-        result = start_server(cluster, addr, Arc::new(config)) => result?,
-        () = shutdown_signal() => {}
-    }
+    start_server(cluster, addr, Arc::new(config)).await?;
 
     Ok(())
 }

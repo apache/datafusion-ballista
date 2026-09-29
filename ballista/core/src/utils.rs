@@ -36,6 +36,7 @@ use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, metrics};
 use futures::StreamExt;
 use log::{error, info};
 use std::borrow::Cow;
+use std::future::Future;
 use std::io::BufWriter;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -508,6 +509,28 @@ pub fn redact_key_value_pairs(pairs: &[KeyValuePair]) -> Vec<KeyValuePair> {
         .collect()
 }
 
+/// Waits for a shutting-down `server` to finish its in-flight work, but no
+/// longer than `bound`, after which the work still running is abandoned. A zero
+/// `bound` waits for as long as it takes.
+pub async fn drain_or_time_out<E>(
+    server: impl Future<Output = std::result::Result<(), E>>,
+    bound: Duration,
+) -> std::result::Result<(), E> {
+    if bound.is_zero() {
+        return server.await;
+    }
+    match tokio::time::timeout(bound, server).await {
+        Ok(result) => result,
+        Err(_) => {
+            log::warn!(
+                "Graceful shutdown timed out after {}s; exiting with work still in flight",
+                bound.as_secs()
+            );
+            Ok(())
+        }
+    }
+}
+
 /// Completes on Ctrl-C, or on SIGTERM where the platform has it.
 ///
 /// If a signal cannot be listened for, that branch never completes, rather than
@@ -744,5 +767,36 @@ mod tests {
 
         let result = create_grpc_server_incoming(addr, &GrpcServerConfig::default());
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_drain_gives_up_once_the_bound_elapses() {
+        let result: std::result::Result<(), String> =
+            drain_or_time_out(std::future::pending(), Duration::from_millis(50)).await;
+        assert!(result.is_ok(), "must give up after the bound, not hang");
+    }
+
+    #[tokio::test]
+    async fn a_zero_bound_waits_for_the_drain_to_finish() {
+        let slow = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Err::<(), _>("finished after the wait".to_string())
+        };
+        let result = drain_or_time_out(slow, Duration::ZERO).await;
+        assert_eq!(result, Err("finished after the wait".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_finished_drain_passes_its_result_through() {
+        let ok: std::result::Result<(), String> =
+            drain_or_time_out(async { Ok(()) }, Duration::from_secs(10)).await;
+        assert!(ok.is_ok());
+
+        let failed = drain_or_time_out(
+            async { Err::<(), _>("server failed".to_string()) },
+            Duration::from_secs(10),
+        )
+        .await;
+        assert_eq!(failed, Err("server failed".to_string()));
     }
 }

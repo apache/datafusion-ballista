@@ -29,6 +29,7 @@
 mod common;
 
 use ballista::prelude::SessionConfigExt;
+use chaos_testing::fetch::ResultFetch;
 use chaos_testing::fixture::{Fixture, LARGE_RESULT_ROWS};
 use common::ChaosRun;
 use futures::TryStreamExt;
@@ -467,6 +468,53 @@ async fn final_results_survive_sigterm() {
         }
         assert_eq!(rows, LARGE_RESULT_ROWS, "result was truncated");
         assert!(run.cluster.await_executor_exit(0).await.unwrap().success());
+    })
+    .await
+    .expect("query and shutdown must not hang");
+}
+
+/// Scenario I: SIGTERM the scheduler while a client is fetching final results
+/// through its embedded Flight proxy.
+///
+/// Receiving the first batch means the client is mid-fetch through the
+/// scheduler's proxy. Graceful scheduler shutdown must let that fetch finish
+/// before the scheduler exits, instead of severing it immediately.
+#[tokio::test]
+async fn scheduler_final_results_survive_sigterm() {
+    let mut run =
+        ChaosRun::start_with_result_fetch(false, 1, ResultFetch::SchedulerProxy).await;
+    let ctx = run.clone_ctx();
+    let config = ctx
+        .copied_config()
+        .with_target_partitions(1)
+        .with_ballista_override_create_grpc_client_endpoint(Arc::new(|endpoint| {
+            Ok(endpoint
+                .initial_stream_window_size(16 * 1024)
+                .http2_adaptive_window(false))
+        }));
+    *ctx.state_ref().write().config_mut() = config;
+
+    timeout(Duration::from_secs(120), async {
+        let df = ctx.sql(Fixture::large_result_query()).await.unwrap();
+        let mut stream = df.execute_stream().await.unwrap();
+        let mut rows = stream.try_next().await.unwrap().unwrap().num_rows();
+        assert!(
+            rows < LARGE_RESULT_ROWS,
+            "result must span multiple batches"
+        );
+
+        run.cluster.terminate_scheduler().unwrap();
+
+        while let Some(batch) = stream.try_next().await.unwrap_or_else(|e| {
+            panic!(
+                "result stream failed after {rows}/{LARGE_RESULT_ROWS} rows: {e}\n{}",
+                run.cluster.log_tails()
+            )
+        }) {
+            rows += batch.num_rows();
+        }
+        assert_eq!(rows, LARGE_RESULT_ROWS, "result was truncated");
+        assert!(run.cluster.await_scheduler_exit().await.unwrap().success());
     })
     .await
     .expect("query and shutdown must not hang");

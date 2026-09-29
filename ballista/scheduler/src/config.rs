@@ -254,6 +254,15 @@ pub struct Config {
         help = "Interval, in seconds, to check expired or dead executors."
     )]
     pub expire_dead_executor_interval_seconds: u64,
+    /// Bound, in seconds, on how long the scheduler waits for in-flight
+    /// requests and embedded Flight-proxy result streams to drain after a
+    /// shutdown signal before exiting anyway (0 = wait as long as it takes).
+    #[arg(
+        long,
+        default_value_t = 10,
+        help = "Time in seconds to wait for in-flight requests and embedded Flight-proxy result streams to drain after a shutdown signal (SIGTERM/Ctrl-C) before exiting anyway; 0 waits as long as it takes. Keep this well below your orchestrator's termination grace period (e.g. Kubernetes' default terminationGracePeriodSeconds=30) so this timeout can fire before a SIGKILL does."
+    )]
+    pub graceful_shutdown_timeout_seconds: u64,
     /// Grace period in seconds to wait for an executor to (re)appear after the
     /// cluster has lost its last executor before failing the running jobs.
     #[arg(
@@ -392,6 +401,10 @@ pub struct SchedulerConfig {
     pub executor_timeout_seconds: u64,
     /// The interval to check expired or dead executors
     pub expire_dead_executor_interval_seconds: u64,
+    /// Bound, in seconds, on how long the scheduler waits for in-flight
+    /// requests and embedded Flight-proxy result streams to drain after a
+    /// shutdown signal before exiting anyway (0 = wait as long as it takes).
+    pub graceful_shutdown_timeout_seconds: u64,
     /// Grace period in seconds to wait for an executor to (re)register after the
     /// cluster has lost its last executor before failing the running jobs. This
     /// bounds the otherwise-unbounded wait so that a total executor loss fails
@@ -484,6 +497,7 @@ impl Default for SchedulerConfig {
             grpc_client_max_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
+            graceful_shutdown_timeout_seconds: 10,
             // Defaults to `executor_timeout_seconds` so the grace is always >=
             // the executor heartbeat interval (see the field doc).
             no_executors_grace_period_seconds: 180,
@@ -645,6 +659,16 @@ impl SchedulerConfig {
         interval_seconds: u64,
     ) -> Self {
         self.finished_job_state_clean_up_interval_seconds = interval_seconds;
+        self
+    }
+
+    /// Sets the bound on how long the scheduler waits for in-flight requests
+    /// and embedded Flight-proxy result streams to drain on shutdown.
+    pub fn with_graceful_shutdown_timeout_seconds(
+        mut self,
+        graceful_shutdown_timeout_seconds: u64,
+    ) -> Self {
+        self.graceful_shutdown_timeout_seconds = graceful_shutdown_timeout_seconds;
         self
     }
 
@@ -919,6 +943,7 @@ impl TryFrom<Config> for SchedulerConfig {
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
                 .expire_dead_executor_interval_seconds,
+            graceful_shutdown_timeout_seconds: opt.graceful_shutdown_timeout_seconds,
             // Default to the executor-liveness timeout when unset, so the grace
             // is always >= the executor heartbeat interval and a transiently
             // removed but healthy executor can re-register before it elapses.

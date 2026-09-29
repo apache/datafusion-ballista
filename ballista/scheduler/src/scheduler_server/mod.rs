@@ -22,6 +22,7 @@ use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::TaskStatus;
+use ballista_core::shutdown::Shutdown;
 use ballista_core::{JobId, JobStatusSubscriber};
 
 use datafusion::execution::context::SessionState;
@@ -35,6 +36,7 @@ use ferroid::futures::SnowflakeGeneratorAsyncTokioExt;
 use ferroid::generator::AtomicSnowflakeGenerator;
 use ferroid::id::SnowflakeMastodonId;
 use ferroid::time::MonotonicClock;
+use tokio::sync::broadcast;
 
 use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStream};
 use crate::config::SchedulerConfig;
@@ -144,6 +146,9 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     config: Arc<SchedulerConfig>,
     /// generates job ids
     generator: Arc<dyn JobIdGenerator>,
+    /// Broadcasts the shutdown signal to background tasks and, via
+    /// [`shutdown_signal`](Self::shutdown_signal), to the serving future.
+    shutdown_tx: broadcast::Sender<()>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
@@ -246,7 +251,31 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             query_stage_scheduler,
             config,
             generator,
+            shutdown_tx: broadcast::channel(1).0,
         }
+    }
+
+    /// Returns a handle that resolves once [`trigger_shutdown`](Self::trigger_shutdown) is called.
+    ///
+    /// Callers that never call `trigger_shutdown` (e.g. tests, the standalone
+    /// scheduler, embedders that manage their own lifecycle) see no behavior
+    /// change: the returned handle simply never resolves.
+    ///
+    /// Must be called *before* `trigger_shutdown`: the underlying broadcast
+    /// isn't latched, so a handle obtained after the signal has already been
+    /// sent waits forever rather than resolving immediately. Every current
+    /// caller subscribes at startup, well before shutdown, so this isn't a
+    /// live bug, but it's a sharp edge for future callers.
+    pub fn shutdown_signal(&self) -> Shutdown {
+        Shutdown::new(self.shutdown_tx.subscribe())
+    }
+
+    /// Signals background tasks and the serving future to shut down gracefully.
+    ///
+    /// Safe to call more than once: later calls broadcast again, which every
+    /// current receiver simply ignores once it has already seen one signal.
+    pub fn trigger_shutdown(&self) {
+        let _ = self.shutdown_tx.send(());
     }
 
     /// Initializes the scheduler and starts background tasks.
@@ -413,10 +442,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
     /// Spawn an async task which periodically check the active executors' status and
     /// expire the dead executors
-    fn expire_dead_executors(&self) -> Result<()> {
+    fn expire_dead_executors(&self) -> Result<tokio::task::JoinHandle<()>> {
         let state = self.state.clone();
         let event_sender = self.query_stage_event_loop.get_sender()?;
-        tokio::task::spawn(async move {
+        let mut shutdown = self.shutdown_signal();
+        let handle = tokio::task::spawn(async move {
             loop {
                 let expired_executors = state.executor_manager.get_expired_executors();
                 debug!("expire_dead_executors: {expired_executors:?}");
@@ -465,13 +495,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                             .await;
                     }
                 }
-                tokio::time::sleep(Duration::from_secs(
-                    state.config.expire_dead_executor_interval_seconds,
-                ))
-                .await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(
+                        state.config.expire_dead_executor_interval_seconds,
+                    )) => {}
+                    _ = shutdown.recv() => {
+                        debug!("expire_dead_executors stopping on shutdown");
+                        return;
+                    }
+                }
             }
         });
-        Ok(())
+        Ok(handle)
     }
 
     /// Removes an executor after `wait_secs`, in the background. The removal
@@ -598,6 +633,34 @@ mod test {
             event,
             Some(ClusterStateEvent::RegisteredExecutor { executor_id })
         );
+
+        Ok(())
+    }
+
+    /// `trigger_shutdown` must both resolve outstanding `shutdown_signal`
+    /// handles and stop the dead-executor reaper loop it starts as part of
+    /// `init`, rather than leaving it looping until process exit.
+    #[tokio::test]
+    async fn trigger_shutdown_stops_the_dead_executor_reaper() -> Result<()> {
+        let scheduler = test_scheduler(TaskSchedulingPolicy::PushStaged).await?;
+
+        let mut shutdown = scheduler.shutdown_signal();
+        assert!(!shutdown.is_shutdown());
+
+        // A second reaper, independent of the one `init` already started, so
+        // this test can observe its task actually finishing.
+        let reaper = scheduler.expire_dead_executors()?;
+
+        scheduler.trigger_shutdown();
+
+        tokio::time::timeout(Duration::from_secs(5), shutdown.recv())
+            .await
+            .expect("shutdown_signal should resolve promptly after trigger_shutdown");
+
+        tokio::time::timeout(Duration::from_secs(5), reaper)
+            .await
+            .expect("expire_dead_executors should stop once shutdown is triggered")
+            .expect("reaper task should not panic");
 
         Ok(())
     }
