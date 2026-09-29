@@ -94,8 +94,10 @@ impl BallistaCluster {
     /// Creates a new `BallistaCluster` with in-memory state backends.
     ///
     /// Its job state builds every session around one shared file statistics
-    /// cache, see [`share_file_statistics_cache`]. To keep a cache per session
-    /// instead, pass an [`InMemoryJobState`] to [`BallistaCluster::new`].
+    /// cache, see [`share_file_statistics_cache`], unless the session sets
+    /// `ballista.scheduler.share_file_statistics_cache` to `false`. To keep a
+    /// cache per session for all sessions, pass an [`InMemoryJobState`] to
+    /// [`BallistaCluster::new`].
     pub fn new_memory(
         scheduler: impl Into<String>,
         session_builder: SessionBuilder,

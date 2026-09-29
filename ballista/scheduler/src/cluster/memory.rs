@@ -552,6 +552,7 @@ mod test {
         test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
     };
     use ballista_core::JobId;
+    use ballista_core::config::BALLISTA_SCHEDULER_SHARE_FILE_STATISTICS_CACHE;
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::JobStatus;
     use ballista_core::serde::scheduler::{
@@ -894,6 +895,39 @@ mod test {
         // Each job lists the files itself, so that cached statistics are
         // checked against the files as they are now.
         assert!(!Arc::ptr_eq(&list_0, &list_1));
+
+        Ok(())
+    }
+
+    /// A session that turns sharing off keeps a statistics cache of its own,
+    /// and the sessions that share do not get it.
+    #[tokio::test]
+    async fn test_in_memory_sessions_opt_out_of_shared_file_statistics() -> Result<()> {
+        let state = BallistaCluster::new_memory(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        )
+        .job_state();
+        let opted_out = default_config_producer()
+            .set_bool(BALLISTA_SCHEDULER_SHARE_FILE_STATISTICS_CACHE, false);
+        let shared = default_config_producer();
+
+        let stats = |ctx: &SessionContext| {
+            ctx.runtime_env()
+                .cache_manager
+                .get_file_statistic_cache()
+                .unwrap()
+        };
+        // Built first, so its cache would become the shared one if it took part.
+        let own = state
+            .create_or_update_session("session_0", &opted_out)
+            .await?;
+        let first = state.create_or_update_session("session_1", &shared).await?;
+        let second = state.create_or_update_session("session_2", &shared).await?;
+
+        assert!(!Arc::ptr_eq(&stats(&own), &stats(&first)));
+        assert!(Arc::ptr_eq(&stats(&first), &stats(&second)));
 
         Ok(())
     }

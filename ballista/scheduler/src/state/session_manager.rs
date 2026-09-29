@@ -17,6 +17,7 @@
 
 use crate::scheduler_server::SessionBuilder;
 use ballista_core::error::Result;
+use ballista_core::extension::SessionConfigExt;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -109,14 +110,21 @@ pub fn create_datafusion_context(
 /// cache, so comparing e-tags and versions has to happen in DataFusion, which
 /// apache/datafusion#25841 tracks.
 ///
-/// The shared cache is the one the first session was built with, so the
-/// builder's configured limit applies, and a builder that disables the cache
-/// also disables sharing.
+/// A session whose config sets `ballista.scheduler.share_file_statistics_cache`
+/// to `false` is returned as `session_builder` built it, and takes no part in
+/// sharing.
+///
+/// The shared cache is the one the first session to share was built with, so
+/// the builder's configured limit applies, and a builder that disables the
+/// cache also disables sharing.
 ///
 /// [`BallistaCluster::new_memory`]: crate::cluster::BallistaCluster::new_memory
 pub fn share_file_statistics_cache(session_builder: SessionBuilder) -> SessionBuilder {
     let shared = OnceLock::new();
     Arc::new(move |config| {
+        if !config.ballista_config().share_file_statistics_cache() {
+            return session_builder(config);
+        }
         let state = session_builder(config)?;
         let runtime = state.runtime_env();
         let own = runtime.cache_manager.get_file_statistic_cache();
