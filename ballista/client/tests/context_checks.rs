@@ -476,6 +476,44 @@ mod supported {
         Ok(())
     }
 
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_execute_information_schema_exists_query_reading_other_tables(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        // EXISTS needs no columns from information_schema, and NOT EXISTS
+        // over a missing table needs no rows either
+        let expected = [
+            "+-----------+",
+            "| row_count |",
+            "+-----------+",
+            "| 8         |",
+            "+-----------+",
+        ];
+        for sql in [
+            "select count(*) as row_count from test where exists (select 1 from information_schema.tables where table_name = 'test')",
+            "select count(*) as row_count from test where not exists (select 1 from information_schema.tables where table_name = 'missing')",
+        ] {
+            let result = ctx.sql(sql).await?.collect().await?;
+
+            assert_batches_eq!(expected, &result);
+        }
+
+        Ok(())
+    }
+
     // select from ballista config
     // check for SET =
     #[rstest]
