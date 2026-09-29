@@ -545,7 +545,9 @@ mod test {
 
     use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
     use crate::cluster::test_util::{test_job_lifecycle, test_job_planning_failure};
-    use crate::cluster::{ClusterState, ClusterStateEvent, JobState, JobStateEvent};
+    use crate::cluster::{
+        BallistaCluster, ClusterState, ClusterStateEvent, JobState, JobStateEvent,
+    };
     use crate::test_utils::{
         test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
     };
@@ -557,7 +559,9 @@ mod test {
         ExecutorSpecification,
     };
     use ballista_core::utils::{default_config_producer, default_session_builder};
-    use datafusion::prelude::SessionConfig;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::dataframe::DataFrameWriteOptions;
+    use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
     use futures::StreamExt;
     use tokio::sync::Barrier;
 
@@ -857,6 +861,79 @@ mod test {
         ];
 
         assert_eq!(expected, result);
+
+        Ok(())
+    }
+
+    /// Every query gets a new session, so planning a scan only avoids
+    /// re-reading file footers if statistics outlive the session that
+    /// collected them.
+    #[tokio::test]
+    async fn test_in_memory_sessions_share_file_statistics() -> Result<()> {
+        let state = BallistaCluster::new_memory(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        )
+        .job_state();
+        let config = SessionConfig::new();
+
+        let caches = |ctx: &SessionContext| {
+            let cache_manager = &ctx.runtime_env().cache_manager;
+            (
+                cache_manager.get_file_statistic_cache().unwrap(),
+                cache_manager.get_list_files_cache().unwrap(),
+            )
+        };
+        let first = state.create_or_update_session("session_0", &config).await?;
+        let second = state.create_or_update_session("session_1", &config).await?;
+        let (stats_0, list_0) = caches(&first);
+        let (stats_1, list_1) = caches(&second);
+
+        assert!(Arc::ptr_eq(&stats_0, &stats_1));
+        // Each job lists the files itself, so that cached statistics are
+        // checked against the files as they are now.
+        assert!(!Arc::ptr_eq(&list_0, &list_1));
+
+        Ok(())
+    }
+
+    /// Shared statistics must not outlive the file they describe: `COUNT(*)`
+    /// is answered from exact statistics, so stale ones give a wrong result.
+    #[tokio::test]
+    async fn test_in_memory_sessions_reread_changed_files() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("part-0.parquet");
+        // Given up front, as it is in a plan the scheduler decodes, so no file
+        // is read to infer it.
+        let schema = Schema::new(vec![Field::new("a", DataType::Int64, true)]);
+
+        let state = BallistaCluster::new_memory(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        )
+        .job_state();
+        let config = default_config_producer().with_collect_statistics(true);
+
+        for (session_id, rows) in [("session_0", 1), ("session_1", 2)] {
+            SessionContext::new()
+                .sql(&format!(
+                    "SELECT value AS a FROM generate_series(1, {rows})"
+                ))
+                .await?
+                .write_parquet(file.to_str().unwrap(), DataFrameWriteOptions::new(), None)
+                .await?;
+
+            let ctx = state.create_or_update_session(session_id, &config).await?;
+            ctx.register_parquet(
+                "t",
+                dir.path().to_str().unwrap(),
+                ParquetReadOptions::default().schema(&schema),
+            )
+            .await?;
+            assert_eq!(rows, ctx.table("t").await?.count().await?);
+        }
 
         Ok(())
     }
