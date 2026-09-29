@@ -97,6 +97,8 @@ pub mod serde;
 pub mod sort_key;
 /// General utility functions for Ballista operations.
 pub mod utils;
+/// Version checks between Ballista clients and schedulers.
+pub mod version;
 
 ///
 /// [RuntimeProducer] is a factory which creates runtime [RuntimeEnv]
