@@ -29,7 +29,10 @@ on:
     paths:
       - "python/**"
   push:
-    tags: [ "*-rc*" ]
+    # Python client release candidates, e.g. python-55.0.0-rc1. The Rust
+    # release tags do not build wheels because the Python client is released
+    # separately, see python/dev/release/README.md
+    tags: [ "python-*-rc*" ]
 
 jobs:
   test-release:

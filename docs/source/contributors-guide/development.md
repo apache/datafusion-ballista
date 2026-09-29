@@ -203,6 +203,12 @@ A release branch therefore only ever depends on published crates. Each `rev` bum
 that ports any DataFusion API changes, refreshes affected golden files, and keeps `cargo test` and
 `cargo clippy --all-targets --workspace -- -D warnings` green.
 
+The Python client in `python/` is a separate Cargo workspace that also depends on
+[datafusion-python](https://github.com/apache/datafusion-python). It can only move to a new
+DataFusion major version once datafusion-python has published one, usually some weeks after
+DataFusion, so it is released separately from the Rust crates. See the
+[Python client release process](https://github.com/apache/datafusion-ballista/blob/main/python/dev/release/README.md).
+
 The remaining release steps are described in the
 [release process](https://github.com/apache/datafusion-ballista/blob/main/dev/release/README.md).
 
