@@ -21,8 +21,8 @@
 # Adapted from dev/release/verify-release-candidate.sh, which does the same
 # for the Rust crates.
 #
-# Requires uv (https://docs.astral.sh/uv/) to build the Python client and run
-# its tests.
+# Requires uv (https://docs.astral.sh/uv/) to check python/Cargo.lock, build
+# the Python client and run its tests.
 
 case $# in
   2) VERSION="$1"
@@ -115,25 +115,23 @@ setup_tempdir() {
 }
 
 test_source_distribution() {
-  # the source release only contains the Python client, so it has to build
-  # against the published ballista crates rather than the Rust workspace
-  if grep -v '^[[:space:]]*#' Cargo.toml | grep -Eq '(^|[{,[:space:]])path[[:space:]]*='; then
-    echo "Cargo.toml must not have path dependencies"
-    exit 1
-  fi
+  # the source release only contains the Python client, so every Rust
+  # dependency has to come from crates.io
+  uv run --no-project --python '>=3.11' python dev/release/check-cargo-lock.py "${VERSION}" Cargo.lock
 
-  # install rust toolchain in a similar fashion like test-miniconda
-  export RUSTUP_HOME=$PWD/test-rustup
-  export CARGO_HOME=$PWD/test-rustup
+  # install rust toolchain in a similar fashion like test-miniconda, outside
+  # the source tree so that pytest does not pick up files from the crates
+  export RUSTUP_HOME=${DATAFUSION_TMPDIR}/test-rustup
+  export CARGO_HOME=${DATAFUSION_TMPDIR}/test-rustup
 
-  curl https://sh.rustup.rs -sSf | sh -s -- -y --no-modify-path
+  curl https://sh.rustup.rs -sSf | sh -s -- -y --no-modify-path --profile minimal
 
   export PATH=$RUSTUP_HOME/bin:$PATH
   source $RUSTUP_HOME/env
 
   # build the Python client and run its tests, the same way CI does
   uv sync --dev --no-install-package ballista
-  uv run pytest
+  uv run pytest python/tests
 }
 
 TEST_SUCCESS=no

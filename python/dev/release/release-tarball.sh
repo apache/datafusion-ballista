@@ -49,32 +49,12 @@ if [ "${answer}" != "y" ]; then
   exit 1
 fi
 
-tmp_dir=tmp-apache-datafusion-ballista-python-dist
+rc_url=https://dist.apache.org/repos/dist/dev/datafusion/apache-datafusion-ballista-python-${version}-rc${rc}
+release_url=https://dist.apache.org/repos/dist/release/datafusion/datafusion-ballista-python-${version}
 
-echo "Recreate temporary directory: ${tmp_dir}"
-rm -rf ${tmp_dir}
-mkdir -p ${tmp_dir}
-
-echo "Clone dev dist repository"
-svn \
-  co \
-  https://dist.apache.org/repos/dist/dev/datafusion/apache-datafusion-ballista-python-${version}-rc${rc} \
-  ${tmp_dir}/dev
-
-echo "Clone release dist repository"
-svn co https://dist.apache.org/repos/dist/release/datafusion ${tmp_dir}/release
-
-echo "Copy ${version}-rc${rc} to release working copy"
-release_version=datafusion-ballista-python-${version}
-mkdir -p ${tmp_dir}/release/${release_version}
-cp -r ${tmp_dir}/dev/* ${tmp_dir}/release/${release_version}/
-svn add ${tmp_dir}/release/${release_version}
-
-echo "Commit release"
-svn ci -m "Apache DataFusion Ballista Python ${version}" ${tmp_dir}/release
-
-echo "Clean up"
-rm -rf ${tmp_dir}
+# a server-side copy, so neither area has to be checked out
+echo "Copy ${rc_url} to ${release_url}"
+svn cp -m "Apache DataFusion Ballista Python ${version}" "${rc_url}" "${release_url}"
 
 echo "Success! The release is available here:"
-echo "  https://dist.apache.org/repos/dist/release/datafusion/${release_version}"
+echo "  ${release_url}"

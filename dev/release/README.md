@@ -293,11 +293,6 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 (cd ballista-cli && cargo publish)
 ```
 
-### Release the Python client
-
-The Python client is released separately, with its own release candidate and vote, once datafusion-python has
-published a matching release. See [python/dev/release/README.md](../../python/dev/release/README.md).
-
 ### Publish Docker Images
 
 Pushing a release tag causes Docker images to be published.

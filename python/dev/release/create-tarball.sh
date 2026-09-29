@@ -28,6 +28,7 @@
 #
 # The tarball only contains the python/ directory, so python/Cargo.toml must
 # depend on the published ballista crates rather than on the Rust workspace.
+# check-cargo-lock.py checks this before anything is built or uploaded.
 #
 # See python/dev/release/README.md for full release instructions
 #
@@ -41,9 +42,12 @@
 #
 # 3. Java, to run the Apache RAT license check
 #
+# 4. Python 3.11 or later, to run check-cargo-lock.py
+#
 
 set -e
 set -u
+set -o pipefail
 
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_TOP_DIR="$(cd "${SOURCE_DIR}/../../../" && pwd)"
@@ -64,24 +68,8 @@ if [ -z "${release_hash}" ]; then
     exit 1
 fi
 
-cargo_toml=$(cd "${SOURCE_TOP_DIR}" && git show "${release_hash}:python/Cargo.toml")
-
-# The tarball does not contain the Rust workspace, so a path dependency on it
-# would leave the source release unbuildable.
-if echo "${cargo_toml}" | grep -v '^[[:space:]]*#' | grep -Eq '(^|[{,[:space:]])path[[:space:]]*='; then
-    echo "Cannot continue: python/Cargo.toml at ${tag} has path dependencies."
-    echo "Depend on the published ballista crates instead, for example:"
-    echo "  ballista = { version = \"=${version}\" }"
-    exit 1
-fi
-
-crate_version=$(echo "${cargo_toml}" | sed -En 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' | head -1)
-if [ "${crate_version}" != "${version}" ]; then
-    echo "Cannot continue: python/Cargo.toml at ${tag} has version ${crate_version}, expected ${version}"
-    exit 1
-fi
-
-ballista_version=$(echo "${cargo_toml}" | sed -En 's/^ballista[[:space:]]*=[[:space:]]*(\{[^"]*)?"=?([^"]+)".*/\2/p' | head -1)
+echo "Checking python/Cargo.lock at ${tag}"
+(cd "${SOURCE_TOP_DIR}" && git show "${release_hash}:python/Cargo.lock") | python3 "${SOURCE_DIR}/check-cargo-lock.py" "${version}"
 
 release=apache-datafusion-ballista-python-${version}
 distdir=${SOURCE_TOP_DIR}/dev/dist/${release}-rc${rc}
@@ -98,7 +86,9 @@ mkdir -p "${distdir}"
 (cd "${SOURCE_TOP_DIR}" && git archive --prefix="${release}/" "${release_hash}:python" | gzip > "${tarball}")
 
 echo "Running rat license checker on ${tarball}"
-"${SOURCE_TOP_DIR}/dev/release/run-rat.sh" "${tarball}"
+# the tarball's files live under python/ in the repository, which is where the
+# exclude list expects them
+"${SOURCE_TOP_DIR}/dev/release/run-rat.sh" "${tarball}" python/
 
 echo "Signing tarball and creating checksums"
 gpg --armor --output "${tarball}.asc" --detach-sig "${tarball}"
@@ -123,7 +113,7 @@ Hi,
 
 I would like to propose a release of the Apache DataFusion Ballista Python
 client version ${version}. It is built against the Apache DataFusion Ballista
-${ballista_version:-<unknown>} crates published to crates.io.
+${version} crates published to crates.io.
 
 This release candidate is based on commit: ${release_hash} [1]
 The proposed release tarball and signatures are hosted at [2].

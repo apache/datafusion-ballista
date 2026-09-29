@@ -68,8 +68,9 @@ Create a PR against `main` that moves `python/` to the new release:
 - Set `version` in `python/Cargo.toml` to the version being released.
 - Depend on the published `ballista`, `ballista-core`, `ballista-executor` and `ballista-scheduler`
   crates, pinned to that version, for example `ballista = { version = "=55.0.0" }`. The source
-  release only contains `python/`, so there must be no `path` dependencies. `create-tarball.sh`
-  checks this.
+  release only contains `python/`, so every dependency has to come from crates.io.
+  `check-cargo-lock.py` checks this against `python/Cargo.lock`, both when the tag is built and in
+  `create-tarball.sh`.
 - Update `datafusion-python` to its new release, and update `datafusion`, `datafusion-proto` and
   `pyo3` to the versions that datafusion-python uses, so that everything links the same DataFusion.
 - Update the `datafusion` requirement in `python/pyproject.toml`.
@@ -96,7 +97,7 @@ git push apache python-55.0.0-rc1
 ```
 
 Pushing the tag starts the `Python Release Build` workflow. Wait for it to succeed before
-continuing.
+continuing. It fails before building any wheels if `python/Cargo.lock` is not ready for the release.
 
 ### Download the wheels
 
@@ -159,13 +160,11 @@ python ../python/dev/release/download-python-wheels.py python-${BALLISTA_VERSION
 ls *.whl *.tar.gz       # confirm filenames carry the right version
 ```
 
-Keep this directory until the release is published, because these are the files that get uploaded
-to PyPI after the vote.
-
-> **Artifact retention warning:** GitHub Actions artifacts default to 90-day retention. If the
-> downloaded files are lost after that window, the voted-on wheels are unrecoverable and you must
-> cut a new RC and revote. Check the run's `expires_at` on
-> `https://github.com/apache/datafusion-ballista/actions` if in doubt.
+> **Keep this directory until the release is published.** These are the files that get uploaded to
+> PyPI after the vote. GitHub Actions artifacts default to 90-day retention, so if the files are
+> lost after that window, the voted-on wheels are unrecoverable and you must cut a new RC and
+> revote. Check the run's `expires_at` on `https://github.com/apache/datafusion-ballista/actions`
+> if in doubt.
 
 > **GPG signing needs an interactive terminal.** The script signs each artifact with
 > `gpg --detach-sig`, which prompts for the key passphrase. From a non-interactive shell the prompt
@@ -229,25 +228,14 @@ immutable: once a version is published it cannot be replaced or re-uploaded, onl
 
 ```bash
 twine upload --repository testpypi *.whl *.tar.gz
-
-# Wheels are cp310-abi3 so the venv needs Python >= 3.10. Using `python -m venv`
-# with macOS's stock /usr/bin/python3 (3.9) silently picks no wheel and pip
-# reports a misleading "No matching distribution found".
-python3.10 -m venv /tmp/ballista-pypi-smoke
-source /tmp/ballista-pypi-smoke/bin/activate
-pip install -i https://test.pypi.org/simple/ \
-    --extra-index-url https://pypi.org/simple/ \
-    ballista==${BALLISTA_VERSION}
-python -c "from ballista import BallistaSessionContext; print('ok')"
-deactivate
 ```
 
-`--extra-index-url` is required because TestPyPI does not mirror dependencies like `pyarrow` and
-`datafusion`.
+Then install them the way voters will, as described in
+[Verify the wheels from TestPyPI](#optional-verify-the-wheels-from-testpypi).
 
-TestPyPI also accepts each filename only once, so the wheels of a second release candidate for the
-same version cannot be uploaded there. In that case skip this step and remove the TestPyPI link from
-the vote email.
+TestPyPI accepts each filename only once, so the wheels of a second release candidate for the same
+version cannot be uploaded there. In that case skip this step and remove the TestPyPI link from the
+vote email.
 
 ### Create, sign, and upload the source tarball
 
@@ -261,7 +249,7 @@ for the Rust release. Then run `create-tarball.sh` with the version and RC numbe
 
 The `create-tarball.sh` script
 
-1. checks that `python/Cargo.toml` at the tag has the expected version and no `path` dependencies,
+1. checks `python/Cargo.lock` at the tag with `check-cargo-lock.py`,
 
 2. creates a tarball of the `python/` directory at the tag, runs the Apache RAT license check, signs
    it, and uploads it to the [datafusion dev](https://dist.apache.org/repos/dist/dev/datafusion)
@@ -278,9 +266,10 @@ vote +1 on it.
 ## Verifying Release Candidates
 
 `python/dev/release/verify-release-candidate.sh` downloads the source tarball from the ASF dev SVN,
-verifies its GPG signature and checksums, builds the Python client and runs the Python tests. It
-needs [uv](https://docs.astral.sh/uv/getting-started/installation/), and it installs a Rust
-toolchain in a temporary directory. Run it like:
+verifies its GPG signature and checksums, checks its `Cargo.lock` with `check-cargo-lock.py`, builds
+the Python client and runs the Python tests. It needs
+[uv](https://docs.astral.sh/uv/getting-started/installation/), and it installs a Rust toolchain in a
+temporary directory. Run it like:
 
 ```shell
 ./python/dev/release/verify-release-candidate.sh 55.0.0 1
@@ -288,12 +277,12 @@ toolchain in a temporary directory. Run it like:
 
 ### (Optional) Verify the wheels from TestPyPI
 
-If the release manager has uploaded the RC's wheels to
-[test.pypi.org](https://test.pypi.org/project/ballista/), verifiers can install them in a throwaway
-virtualenv to sanity-check the artifacts that will ship to real PyPI. The wheels there are
-byte-identical to what would be uploaded to pypi.org if the vote passes.
+If the vote email links to [test.pypi.org](https://test.pypi.org/project/ballista/), the wheels there
+are the exact files that will be uploaded to pypi.org if the vote passes, and verifiers can install
+them in a throwaway virtualenv to sanity-check them.
 
-The wheels are built as `cp310-abi3`, so the venv needs Python ≥ 3.10:
+The wheels are built as `cp310-abi3`, so the venv needs Python ≥ 3.10. With an older Python, such as
+macOS's stock `/usr/bin/python3`, pip reports a misleading "No matching distribution found".
 
 ```bash
 export BALLISTA_VERSION=55.0.0    # version under vote
@@ -306,6 +295,9 @@ pip install -i https://test.pypi.org/simple/ \
 python -c "from ballista import BallistaSessionContext; print('ok')"
 deactivate
 ```
+
+`--extra-index-url` is required because TestPyPI does not mirror dependencies like `pyarrow` and
+`datafusion`.
 
 ### If the release is not approved
 
@@ -330,9 +322,9 @@ with the release verification.
 
 ### Publish the source tarball
 
-Move the artifacts to the release location in SVN, e.g.
+Copy the artifacts to the release location in SVN, e.g.
 https://dist.apache.org/repos/dist/release/datafusion/datafusion-ballista-python-55.0.0/, using the
-`release-tarball.sh` script:
+`release-tarball.sh` script. The copy happens on the SVN server, so nothing is checked out:
 
 ```shell
 ./python/dev/release/release-tarball.sh 55.0.0 1
@@ -357,9 +349,6 @@ downloaded to in [Download the wheels](#download-the-wheels):
 ```bash
 twine upload *.whl *.tar.gz
 ```
-
-If the upload fails partway through, re-run with `--skip-existing` to retry only the files that did
-not get through.
 
 Confirm the new version appears at `https://pypi.org/project/ballista/${BALLISTA_VERSION}/`. Then in
 another fresh virtual environment:
