@@ -105,7 +105,9 @@ pub fn create_datafusion_context(
 /// neither e-tags nor versions. So a file rewritten in place at the same size,
 /// quickly enough that its modification time does not change, can still be
 /// served stale statistics, and so can a file in another store with the same
-/// path, size and modification time.
+/// path, size and modification time. `ListingTable` makes that check, not the
+/// cache, so comparing e-tags and versions has to happen in DataFusion, which
+/// apache/datafusion#25841 tracks.
 ///
 /// The shared cache is the one the first session was built with, so the
 /// builder's configured limit applies, and a builder that disables the cache
