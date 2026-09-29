@@ -173,8 +173,9 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
     }
 }
 
-/// Returns `true` if every table `plan` reads, subqueries included, is in
-/// `information_schema`.
+/// Returns `true` if `plan` reads at least one table and every table it reads,
+/// subqueries included, is in `information_schema`. A plan that reads no
+/// tables, such as `SELECT 1`, returns `false`.
 ///
 /// Those tables describe the catalog of the session that planned `plan`,
 /// which no other node shares, so a plan that reads only them runs where it
@@ -597,6 +598,16 @@ mod test {
         let df = ctx.sql("SELECT * FROM information_schema.df_settings WHERE NAME LIKE 'ballista%'").await?;
 
         assert!(scans_only_information_schema(df.logical_plan()));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_not_detect_plan_without_tables_as_local_plan() -> Result<()> {
+        let ctx = context();
+        let df = ctx.sql("SELECT 1").await?;
+
+        assert!(!scans_only_information_schema(df.logical_plan()));
 
         Ok(())
     }
