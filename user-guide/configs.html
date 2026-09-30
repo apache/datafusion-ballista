@@ -620,7 +620,12 @@ standard DataFusion settings.</p>
 <td><p>0</p></td>
 <td><p>Upper bound on the number of input partitions packed into a single task’s <code class="docutils literal notranslate"><span class="pre">partition_slice</span></code>. <code class="docutils literal notranslate"><span class="pre">0</span></code> (default) means unbounded — the scheduler fills each task up to the executor’s free vcore count. <code class="docutils literal notranslate"><span class="pre">1</span></code> means one task per input partition. Does not apply to collapse stages, which must pack their full pending queue into a single task for correctness.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.standalone.parallelism</p></td>
+<tr class="row-odd"><td><p>ballista.scheduler.share_file_statistics_cache</p></td>
+<td><p>Boolean</p></td>
+<td><p>true</p></td>
+<td><p>Shares one file statistics cache across all jobs the scheduler plans, so a job reuses the statistics earlier jobs read from Parquet footers instead of reading every footer again. A cached entry is only used while the file’s size and modification time still match, which misses a file rewritten in place without changing either. Set to false to keep this session’s jobs off the shared cache.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.standalone.parallelism</p></td>
 <td><p>UInt16</p></td>
 <td><p>number of available CPU cores</p></td>
 <td><p>Number of vcores advertised by the standalone in-process executor.</p></td>
