@@ -201,6 +201,12 @@ pub const BALLISTA_SHUFFLE_COMPRESSION_CODEC: &str = "ballista.shuffle.compressi
 pub const BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK: &str =
     "ballista.scheduler.max_partitions_per_task";
 
+/// Configuration key controlling whether the scheduler plans a session's jobs
+/// with the file statistics cache it shares across sessions. Enabled by
+/// default; set to `false` to keep the session's jobs off the shared cache.
+pub const BALLISTA_SCHEDULER_SHARE_FILE_STATISTICS_CACHE: &str =
+    "ballista.scheduler.share_file_statistics_cache";
+
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -479,6 +485,18 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                 .to_string(),
             DataType::UInt64,
             Some(0.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SCHEDULER_SHARE_FILE_STATISTICS_CACHE.to_string(),
+            "Shares one file statistics cache across all jobs the scheduler \
+             plans, so a job reuses the statistics earlier jobs read from Parquet \
+             footers instead of reading every footer again. A cached entry is \
+             only used while the file's size and modification time still match, \
+             which misses a file rewritten in place without changing either. Set \
+             to false to keep this session's jobs off the shared cache."
+                .to_string(),
+            DataType::Boolean,
+            Some(true.to_string()),
         ),
     ];
     entries
@@ -846,6 +864,12 @@ impl BallistaConfig {
     /// Returns the scheduler's per-task partition-slice cap. `0` means unbounded.
     pub fn max_partitions_per_task(&self) -> usize {
         self.get_usize_setting(BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK)
+    }
+
+    /// Returns whether the scheduler plans this session's jobs with the file
+    /// statistics cache it shares across sessions.
+    pub fn share_file_statistics_cache(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SCHEDULER_SHARE_FILE_STATISTICS_CACHE)
     }
 
     /// Returns whether chaos-monkey execution injection is enabled.
