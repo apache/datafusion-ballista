@@ -567,6 +567,7 @@ impl ShuffleWriterExec {
             let config = context.session_config().ballista_config();
             let compression_type = config.shuffle_compression_codec()?;
             let channel_capacity = config.shuffle_writer_channel_capacity();
+            let batch_size = context.session_config().batch_size();
 
             // Passthrough shuffle: drain each of the child's output
             // partitions into its own file. All K must drain
@@ -609,6 +610,7 @@ impl ShuffleWriterExec {
                         &write_metrics.write_time,
                         channel_capacity,
                         compression_type,
+                        batch_size,
                     )
                     .await
                     .map_err(BallistaError::into_datafusion)?;
