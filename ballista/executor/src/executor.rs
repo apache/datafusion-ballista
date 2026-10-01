@@ -28,9 +28,8 @@ use ballista_core::ConfigProducer;
 use ballista_core::JobId;
 use ballista_core::RuntimeProducer;
 use ballista_core::error::BallistaError;
-use ballista_core::execution_plans::ShuffleWriteResult;
 use ballista_core::registry::BallistaFunctionRegistry;
-use ballista_core::serde::protobuf::ExecutorRegistration;
+use ballista_core::serde::protobuf::{ExecutorRegistration, ShuffleWritePartition};
 use ballista_core::serde::scheduler::TaskKey;
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
@@ -240,7 +239,7 @@ impl Executor {
         key: TaskKey,
         query_stage_exec: Arc<dyn QueryStageExecutor>,
         task_ctx: Arc<TaskContext>,
-    ) -> Result<ShuffleWriteResult, BallistaError> {
+    ) -> Result<Vec<ShuffleWritePartition>, BallistaError> {
         let (task, abort_handle) = futures::future::abortable(
             query_stage_exec.execute_query_stage(key.task_id, task_ctx),
         );
@@ -316,8 +315,8 @@ mod test {
     };
     use ballista_core::RuntimeProducer;
     use ballista_core::error::BallistaError;
-    use ballista_core::execution_plans::{ShuffleWriteResult, ShuffleWriterExec};
-    use ballista_core::serde::protobuf::ExecutorRegistration;
+    use ballista_core::execution_plans::ShuffleWriterExec;
+    use ballista_core::serde::protobuf::{ExecutorRegistration, ShuffleWritePartition};
     use ballista_core::serde::scheduler::TaskKey;
     use ballista_core::utils::default_config_producer;
     use datafusion::arrow::datatypes::{Schema, SchemaRef};
@@ -451,7 +450,7 @@ mod test {
     }
 
     /// The result `execute_query_stage` hands back once a spawned task unwinds.
-    type TaskOutcome = Result<ShuffleWriteResult, BallistaError>;
+    type TaskOutcome = Result<Vec<ShuffleWritePartition>, BallistaError>;
 
     /// Builds an executor over `work_dir`, along with the session context whose
     /// runtime its tasks run on.

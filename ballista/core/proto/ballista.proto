@@ -829,7 +829,10 @@ message FailedTask {
   }
 }
 
+// Per-column statistics for one task's shuffle output. An empty list on
+// SuccessfulTask means stats were not collected for that task.
 message TaskColumnStats {
+  // Index into the output schema's fields.
   uint32 column      = 1;
   uint64 null_count  = 2;
   repeated ColumnSketch sketches = 3;
@@ -875,7 +878,7 @@ message SuccessfulTask {
   // (`sort_shuffle::get_index_path`), and send only a reference here. That
   // keeps the completion message fixed-size regardless of aggregate.
   repeated WindowStateReport window_state = 4;
-  repeated TaskColumnStats taskColumnStats = 5;
+  repeated TaskColumnStats task_column_stats = 5;
 }
 
 // One finalized window-aggregate state from a task's

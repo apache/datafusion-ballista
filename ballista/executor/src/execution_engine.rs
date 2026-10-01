@@ -24,8 +24,7 @@
 use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::execution_plans::{
-    RangeShuffleReaderExec, RangeShuffleWriterExec, ShuffleReaderExec,
-    ShuffleWriteResult, ShuffleWriterExec,
+    RangeShuffleReaderExec, RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriterExec,
 };
 use ballista_core::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
 use ballista_core::serde::scheduler::PartitionStats;
@@ -85,7 +84,7 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
         &self,
         task_id: usize,
         context: Arc<TaskContext>,
-    ) -> Result<ShuffleWriteResult>;
+    ) -> Result<Vec<ShuffleWritePartition>>;
 
     /// Collects execution metrics from all operators in the plan.
     fn collect_plan_metrics(&self) -> Vec<MetricsSet>;
@@ -119,6 +118,15 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
         &self,
     ) -> Result<Vec<ballista_core::serde::protobuf::WindowStateReport>> {
         Ok(Vec::new())
+    }
+
+    /// Collect per-column statistics folded across this task's shuffle output.
+    /// Called at task completion, like [`Self::collect_runtime_stats_reports`],
+    /// and rides the same `SuccessfulTask` message. An empty list means stats
+    /// weren't collected. Default returns empty — implementers override to drain
+    /// counts stashed during execution.
+    fn collect_column_stats(&self) -> Vec<TaskColumnStats> {
+        Vec::new()
     }
 }
 
@@ -329,7 +337,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         &self,
         task_id: usize,
         context: Arc<TaskContext>,
-    ) -> Result<ShuffleWriteResult> {
+    ) -> Result<Vec<ShuffleWritePartition>> {
         let (plan_arc, is_sort_shuffle): (Arc<dyn ExecutionPlan>, bool) =
             match &self.shuffle_writer {
                 ShuffleWriterVariant::Passthrough(writer) => {
@@ -356,24 +364,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
             DisplayableExecutionPlan::with_metrics(plan_arc.as_ref()).indent(true)
         );
 
-        let column_stats = match &self.shuffle_writer {
-            ShuffleWriterVariant::Sort(writer) => writer
-                .column_null_counts()
-                .into_iter()
-                .enumerate()
-                .map(|(column, null_count)| TaskColumnStats {
-                    column: column as u32,
-                    null_count,
-                    sketches: vec![],
-                })
-                .collect(),
-            _ => vec![],
-        };
-
-        result.map(|partitions| ShuffleWriteResult {
-            partitions,
-            column_stats,
-        })
+        result
     }
 
     fn collect_plan_metrics(&self) -> Vec<MetricsSet> {
@@ -432,6 +423,24 @@ impl QueryStageExecutor for DefaultQueryStageExec {
                 )
             })
             .collect()
+    }
+
+    fn collect_column_stats(&self) -> Vec<TaskColumnStats> {
+        // Only the sort writer stashes per-column null counts during its drain
+        // loop; the passthrough/range paths report none for now.
+        match &self.shuffle_writer {
+            ShuffleWriterVariant::Sort(writer) => writer
+                .column_null_counts()
+                .into_iter()
+                .enumerate()
+                .map(|(column, null_count)| TaskColumnStats {
+                    column: column as u32,
+                    null_count,
+                    sketches: vec![],
+                })
+                .collect(),
+            _ => vec![],
+        }
     }
 }
 

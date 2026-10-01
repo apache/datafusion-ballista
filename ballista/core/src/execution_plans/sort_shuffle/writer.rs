@@ -650,7 +650,7 @@ impl SortShuffleWriterExec {
                 let input_batch = result?;
                 metrics.input_rows.add(input_batch.num_rows());
                 for (i, col) in input_batch.columns().iter().enumerate() {
-                    null_counts[i] += col.null_count() as u64;
+                    null_counts[i] += col.logical_null_count() as u64;
                 }
 
                 // Compute partition assignment for every row.

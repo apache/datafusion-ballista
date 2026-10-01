@@ -1149,8 +1149,11 @@ pub mod failed_task {
         TaskKilled(super::TaskKilled),
     }
 }
+/// Per-column statistics for one task's shuffle output. An empty list on
+/// SuccessfulTask means stats were not collected for that task.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskColumnStats {
+    /// Index into the output schema's fields.
     #[prost(uint32, tag = "1")]
     pub column: u32,
     #[prost(uint64, tag = "2")]

@@ -60,10 +60,9 @@ pub use standalone::new_standalone_executor_from_builder;
 pub use standalone::new_standalone_executor_from_state;
 
 use crate::shutdown::Shutdown;
-use ballista_core::execution_plans::ShuffleWriteResult;
 use ballista_core::serde::protobuf::{
-    FailedTask, OperatorMetricsSet, RuntimeStatsReport, SuccessfulTask, TaskStatus,
-    WindowStateReport, task_status,
+    FailedTask, OperatorMetricsSet, RuntimeStatsReport, ShuffleWritePartition,
+    SuccessfulTask, TaskColumnStats, TaskStatus, WindowStateReport, task_status,
 };
 use ballista_core::serde::scheduler::TaskKey;
 use ballista_core::utils::GrpcServerConfig;
@@ -115,6 +114,9 @@ pub struct TaskCompletionExtras {
     /// window, already stamped with the global partition each entry belongs
     /// to by the stage's `ShuffleWriterExec`.
     pub window_state: Vec<WindowStateReport>,
+    /// Per-column statistics folded across this task's shuffle output. Empty
+    /// when the executed plan collects none (e.g. non-sort shuffle paths).
+    pub column_stats: Vec<TaskColumnStats>,
 }
 
 /// Converts a task execution result into a [`TaskStatus`] protobuf message.
@@ -123,7 +125,7 @@ pub struct TaskCompletionExtras {
 /// along with timing and metrics information into a status message that
 /// can be sent back to the scheduler.
 pub fn as_task_status(
-    execution_result: Result<ShuffleWriteResult, BallistaError>,
+    execution_result: Result<Vec<ShuffleWritePartition>, BallistaError>,
     executor_id: String,
     stage_attempt_num: usize,
     key: TaskKey,
@@ -134,11 +136,12 @@ pub fn as_task_status(
         operator_metrics,
         runtime_stats,
         window_state,
+        column_stats,
     } = extras;
     let metrics = operator_metrics.unwrap_or_default();
     let task_id = key.task_id;
     match execution_result {
-        Ok(shuffle_write_result) => {
+        Ok(partitions) => {
             debug!(
                 "Task {task_id} finished with operator_metrics array size {} \
                  and {} runtime-stats report(s), {} window-state report(s)",
@@ -146,8 +149,6 @@ pub fn as_task_status(
                 runtime_stats.len(),
                 window_state.len(),
             );
-            let partitions = shuffle_write_result.partitions;
-            let col_stats = shuffle_write_result.column_stats;
             TaskStatus {
                 task_id: task_id as u32,
                 job_id: key.job_id.clone().into(),
@@ -161,7 +162,7 @@ pub fn as_task_status(
                     executor_id,
                     partitions,
                     runtime_stats,
-                    task_column_stats: col_stats,
+                    task_column_stats: column_stats,
                     window_state,
                 })),
             }
