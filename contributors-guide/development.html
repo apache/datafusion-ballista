@@ -571,6 +571,11 @@ that breaking changes arrive in small increments instead of piling up at release
 <p>A release branch therefore only ever depends on published crates. Each <code class="docutils literal notranslate"><span class="pre">rev</span></code> bump on <code class="docutils literal notranslate"><span class="pre">main</span></code> is a PR
 that ports any DataFusion API changes, refreshes affected golden files, and keeps <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span></code> and
 <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">clippy</span> <span class="pre">--all-targets</span> <span class="pre">--workspace</span> <span class="pre">--</span> <span class="pre">-D</span> <span class="pre">warnings</span></code> green.</p>
+<p>The Python client in <code class="docutils literal notranslate"><span class="pre">python/</span></code> is a separate Cargo workspace that also depends on
+<a class="reference external" href="https://github.com/apache/datafusion-python">datafusion-python</a>. It can only move to a new
+DataFusion major version once datafusion-python has published one, usually some weeks after
+DataFusion, so it is released separately from the Rust crates. See the
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/python/dev/release/README.md">Python client release process</a>.</p>
 <p>The remaining release steps are described in the
 <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/dev/release/README.md">release process</a>.</p>
 </section>
