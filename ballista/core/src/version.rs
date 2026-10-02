@@ -29,6 +29,16 @@
 //! major versions differ, and otherwise sends its own version back in the
 //! response, so the client can also detect a scheduler that is too old to
 //! check.
+//!
+//! The major version is the unit of compatibility. Any client works with any
+//! scheduler of the same major version, whatever their minor and patch
+//! versions, so a change that would break an older client of the same major
+//! version has to wait for the next major release. That covers everything a
+//! client relies on: job submission, job status, and the shuffle fetch it uses
+//! to read results from executors.
+//! [`BALLISTA_PROTOCOL_VERSION`](crate::BALLISTA_PROTOCOL_VERSION) is
+//! different. Schedulers and executors are upgraded together, so it can change
+//! in any release.
 
 use tonic::metadata::{MetadataMap, MetadataValue};
 

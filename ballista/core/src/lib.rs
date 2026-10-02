@@ -39,6 +39,11 @@ pub const BALLISTA_VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// Zero is reserved as the proto-default "unset" value, produced by executors
 /// that predate this field — it never matches a real scheduler version.
+///
+/// Clients are not covered by this check. They are checked by major version
+/// instead (see [`crate::version`]), so a change that also reaches clients,
+/// such as the shuffle fetch they use to read results, must keep working for
+/// older clients of the same major version.
 pub const BALLISTA_PROTOCOL_VERSION: u32 = 3;
 
 /// Prints the current Ballista version to stdout.
