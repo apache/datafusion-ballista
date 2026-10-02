@@ -35,11 +35,7 @@ def update_cargo_toml(cargo_toml: str, new_version: str):
         data = f.read()
 
     doc = tomlkit.parse(data)
-    if (
-        "ballista/" in cargo_toml
-        or "ballista-cli/" in cargo_toml
-        or "python/Cargo.toml" in cargo_toml
-    ):
+    if "ballista/" in cargo_toml or "ballista-cli/" in cargo_toml:
         doc.get("package")["version"] = new_version
 
     # ballista crates also depend on each other
@@ -83,6 +79,8 @@ def main():
     args = parser.parse_args()
 
     repo_root = Path(__file__).parent.parent.absolute()
+    # python/ is not listed because the Python client is versioned and released
+    # separately, see python/dev/release/README.md
     ballista_crates = set(
         [
             os.path.join(repo_root, rel_path, "Cargo.toml")
@@ -96,7 +94,6 @@ def main():
                 "ballista/client",
                 "benchmarks",
                 "examples",
-                "python",
             ]
         ]
     )
