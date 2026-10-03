@@ -86,11 +86,6 @@ SortShuffleWriterExec: partitioning=Hash([n_regionkey@2], 16)
       SortExec: expr=[n_nationkey@0 ASC], preserve_partitioning=[true]
         UnresolvedShuffleExec: stage=13, partitioning: Hash([n_nationkey@0], 16)
 
-=== Stage 15 ===
-SortShuffleWriterExec: partitioning=Hash([r_regionkey@0], 16)
-  FilterExec: r_name@1 = EUROPE, projection=[r_regionkey@0]
-    StatsExec: rows=5
-
 === Stage 16 ===
 SortShuffleWriterExec: partitioning=Hash([ps_partkey@0], 16)
   AggregateExec: mode=Partial, gby=[ps_partkey@0 as ps_partkey], aggr=[min(partsupp.ps_supplycost)]
@@ -99,7 +94,7 @@ SortShuffleWriterExec: partitioning=Hash([ps_partkey@0], 16)
         SortExec: expr=[n_regionkey@2 ASC], preserve_partitioning=[true]
           UnresolvedShuffleExec: stage=14, partitioning: Hash([n_regionkey@2], 16)
         SortExec: expr=[r_regionkey@0 ASC], preserve_partitioning=[true]
-          UnresolvedShuffleExec: stage=15, partitioning: Hash([r_regionkey@0], 16)
+          UnresolvedShuffleExec: stage=8, partitioning: Hash([r_regionkey@0], 16)
 
 === Stage 17 ===
 SortShuffleWriterExec: partitioning=Hash([ps_partkey@1, min(partsupp.ps_supplycost)@0], 16)

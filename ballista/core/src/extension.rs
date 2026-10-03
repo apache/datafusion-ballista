@@ -22,9 +22,9 @@ use crate::config::{
     BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, BALLISTA_COALESCE_SMALL_PARTITION_FACTOR,
     BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
     BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, BALLISTA_JOB_NAME,
-    BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
-    BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
-    BallistaConfig,
+    BALLISTA_REUSE_EXCHANGE, BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ,
+    BALLISTA_SHUFFLE_READER_MAX_REQUESTS, BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
+    BALLISTA_STANDALONE_PARALLELISM, BallistaConfig,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -247,6 +247,12 @@ pub trait SessionConfigExt {
 
     /// Enables or disables adaptive query planning (enabled by default).
     fn with_ballista_adaptive_query_planner(self, enabled: bool) -> Self;
+
+    /// Is exchange reuse enabled in the distributed planner
+    fn ballista_reuse_exchange_enabled(&self) -> bool;
+
+    /// Enables or disables exchange reuse in the distributed planner (enabled by default).
+    fn with_ballista_reuse_exchange_enabled(self, enabled: bool) -> Self;
 
     /// Set user defined metadata keys in Ballista gRPC requests
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self;
@@ -620,6 +626,8 @@ impl SessionConfigExt for SessionConfig {
         adaptive_query_planner_enabled as with_ballista_adaptive_query_planner,
         BALLISTA_ADAPTIVE_PLANNER_ENABLED
     );
+
+    ballista_config_option!(bool, reuse_exchange_enabled, BALLISTA_REUSE_EXCHANGE);
 
     ballista_config_option!(bool, use_tls, BALLISTA_CLIENT_USE_TLS);
 

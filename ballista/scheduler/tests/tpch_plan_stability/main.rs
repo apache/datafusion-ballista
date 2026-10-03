@@ -67,6 +67,16 @@ async fn staged_plan_text_is_nonempty_and_shuffled() {
 }
 
 #[tokio::test]
+async fn exchange_reuse_reduces_stage_count() {
+    // q11 has a repeated aggregate subquery; reuse must dedup at least one stage.
+    let (before, after) = fixtures::stage_counts("q11").await;
+    assert!(
+        after < before,
+        "expected exchange reuse to reduce q11 stage count, got {before} -> {after}"
+    );
+}
+
+#[tokio::test]
 async fn multi_statement_q15_plans() {
     let text = fixtures::staged_plan_text("q15").await;
     assert!(

@@ -251,6 +251,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         self.state.job_state_events().await
     }
 
+    /// The static distributed planner for a job. When the session enables
+    /// exchange reuse, stages are keyed by this scheduler's codec, the same one
+    /// that ships them to executors.
+    fn distributed_planner(
+        &self,
+        session_config: &SessionConfig,
+    ) -> DefaultDistributedPlanner {
+        let planner = DefaultDistributedPlanner::new();
+        if session_config.ballista_reuse_exchange_enabled() {
+            planner.with_exchange_reuse(self.codec.physical_extension_codec_arc())
+        } else {
+            planner
+        }
+    }
+
     /// Generate an ExecutionGraph for the job and save it to the persistent state.
     /// By default, this job will be curated by the scheduler which receives it.
     /// Then we will also save it to the active execution graph
@@ -266,9 +281,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         queued_at: u64,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {
-        let mut planner = DefaultDistributedPlanner::new();
         let session_state = ctx.state();
         let session_config = session_state.config();
+        let mut planner = self.distributed_planner(session_config);
 
         let mut graph = match plan {
             SubmitPlan::Logical(logical_plan) => {
@@ -291,9 +306,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
                     let physical_plan =
                         ctx.state().create_physical_plan(logical_plan).await?;
-                    let physical_plan =
-                        handle_explain_plan(job_id, &ctx, logical_plan, physical_plan)
-                            .await?;
+                    let physical_plan = handle_explain_plan(
+                        job_id,
+                        &ctx,
+                        logical_plan,
+                        physical_plan,
+                        self.distributed_planner(&session_config),
+                    )
+                    .await?;
 
                     Box::new(StaticExecutionGraph::new(
                         &self.scheduler_id,
