@@ -25,9 +25,10 @@ use ballista_core::object_store::{
 use ballista_executor::alloc_accounting::{AccountingAllocator, current_balance};
 use ballista_executor::config::Config;
 use ballista_executor::executor_process::{
-    ExecutorProcessConfig, start_executor_process,
+    ExecutorProcessConfig, start_executor_process_with_memory_metrics,
 };
 use ballista_executor::health::spawn_health_server;
+use ballista_executor::metrics::ExecutorMemoryMetrics;
 use clap::Parser;
 use std::env;
 use std::net::SocketAddr;
@@ -90,15 +91,26 @@ async fn main() -> ballista_core::error::Result<()> {
         tracing.init();
     }
 
-    let memory_logging = tokio::spawn(async {
+    let memory_metrics = ExecutorMemoryMetrics::default();
+    let logging_metrics = memory_metrics.clone();
+    let memory_logging = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            log::info!(
-                "Ballista executor memory usage: allocated {:.1} MiB (Rust allocator)",
-                current_balance() as f64 / (1024.0 * 1024.0)
-            );
+            if let Some(usage) = logging_metrics.snapshot() {
+                let pool_size = usage.pool_size.map_or_else(
+                    || "unbounded".to_string(),
+                    |bytes| format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0)),
+                );
+                log::info!(
+                    "Ballista executor memory usage: allocated {:.1} MiB, \
+                     reserved {:.1} MiB, pool size {pool_size} ({} live pools)",
+                    current_balance() as f64 / (1024.0 * 1024.0),
+                    usage.reserved as f64 / (1024.0 * 1024.0),
+                    usage.pool_count,
+                );
+            }
         }
     });
 
@@ -115,7 +127,9 @@ async fn main() -> ballista_core::error::Result<()> {
     let (health_shutdown_tx, health_shutdown_rx) = tokio::sync::oneshot::channel();
     let health_handle = spawn_health_server(health_addr, health, health_shutdown_rx);
 
-    let result = start_executor_process(Arc::new(config)).await;
+    let result =
+        start_executor_process_with_memory_metrics(Arc::new(config), memory_metrics)
+            .await;
 
     memory_logging.abort();
     let _ = memory_logging.await;
