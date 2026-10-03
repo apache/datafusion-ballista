@@ -22,9 +22,10 @@
 Ballista support for datafusion python.
 
 This project is tracked under its own `Cargo.toml` and is intentionally not part of the default Cargo workspace so
-that it doesn't cause overhead for maintainers of the main Ballista codebase. Its version is bumped in lockstep with
-the workspace crates by `dev/update_ballista_versions.py`, and the wheels are built against the in-repo ballista
-crates via `path` dependencies (not crates.io), so an RC can produce wheels for an unpublished version.
+that it doesn't cause overhead for maintainers of the main Ballista codebase. It is released separately from the Rust
+crates, built against the `ballista` crates published on crates.io, once datafusion-python has published a matching
+release. See the
+[Python client release process](https://github.com/apache/datafusion-ballista/blob/main/python/dev/release/README.md).
 
 ## Creating a SessionContext
 
@@ -62,10 +63,19 @@ df : DataFrame = ctx.sql("select * from t limit 5")
 df.show()
 ```
 
+Session and Ballista settings are set with the `cluster_config` argument:
+
+```python
+ctx = BallistaSessionContext(
+    "df://localhost:50050",
+    cluster_config={"datafusion.execution.target_partitions": "256"},
+)
+```
+
 Known limitations and inefficiencies of the current approach:
 
-- The client's `SessionConfig` is not propagated to Ballista.
-- Ballista-specific configuration cannot be set.
+- A `SessionConfig` passed as `config` is used locally only. Use `cluster_config` for settings that
+  should reach the cluster.
 - Anything requiring custom `datafusion_proto::logical_plan::LogicalExtensionCodec`.
 - No support for `UDF` as DataFusion Python does not serialise them.
 - A Ballista connection will be created for each request.

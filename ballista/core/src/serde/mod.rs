@@ -1416,8 +1416,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             let raw_bounds_proto = raw_bounds
                 .iter()
                 .map(|(lo, hi)| {
-                    let lo = lo.as_ref().map(&scalar_to_proto).transpose()?;
-                    let hi = hi.as_ref().map(&scalar_to_proto).transpose()?;
+                    let lo = lo.as_ref().map(scalar_to_proto).transpose()?;
+                    let hi = hi.as_ref().map(scalar_to_proto).transpose()?;
                     Ok::<_, DataFusionError>(protobuf::RangeBound { lo, hi })
                 })
                 .collect::<Result<Vec<_>, DataFusionError>>()?;

@@ -1196,13 +1196,16 @@ mod tests {
                 self.save_started.notify_one();
                 self.allow_save.notified().await;
             }
-            if self
+            // `fetch_update` is deprecated in favour of `try_update` from Rust
+            // 1.99, which is newer than the workspace MSRV.
+            #[allow(deprecated)]
+            let inject_failure = self
                 .failures_remaining
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
                     remaining.checked_sub(1)
                 })
-                .is_ok()
-            {
+                .is_ok();
+            if inject_failure {
                 return Err(BallistaError::General("injected save failure".to_string()));
             }
             self.inner.save_job(job_id, graph).await

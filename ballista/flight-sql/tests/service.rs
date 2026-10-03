@@ -53,7 +53,7 @@ use dashmap::DashMap;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::datasource::empty::EmptyTable;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use prost::Message;
 use tonic::metadata::MetadataMap;
 use tonic::transport::Channel;
@@ -354,6 +354,40 @@ async fn statements_that_cannot_be_distributed_are_refused() {
         !ctx.table_exist("big").unwrap(),
         "the refused CTAS must not have taken effect"
     );
+}
+
+#[tokio::test]
+async fn queries_mixing_information_schema_with_other_tables_are_refused() {
+    let backend = Arc::new(StubBackend::default());
+    let ctx = Arc::new(SessionContext::new_with_config(
+        SessionConfig::new().with_information_schema(true),
+    ));
+    backend.sessions.insert(ANONYMOUS_SESSION.to_string(), ctx);
+    register_table(&backend, ANONYMOUS_SESSION).await;
+    let service = make_service(backend.clone());
+
+    for query in [
+        "SELECT table_name FROM information_schema.tables \
+         WHERE table_name IN (SELECT name FROM people)",
+        "SELECT name FROM people \
+         WHERE name IN (SELECT table_name FROM information_schema.tables)",
+        "SELECT t.table_name FROM information_schema.tables t \
+         JOIN people p ON t.table_name = p.name",
+    ] {
+        let err = expect_err(
+            service
+                .get_flight_info_statement(statement(query), descriptor())
+                .await,
+            &format!("{query} must be refused"),
+        );
+        assert_eq!(err.code(), Code::Unimplemented, "{query}: {err}");
+        assert!(
+            err.message().contains("information_schema together"),
+            "{err}"
+        );
+    }
+
+    assert!(backend.executed.is_empty());
 }
 
 #[tokio::test]

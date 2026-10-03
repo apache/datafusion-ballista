@@ -465,6 +465,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .collect::<Result<Vec<_>, BallistaError>>()
                     .ok();
                 let runtime_stats = exec.collect_runtime_stats_reports();
+                let column_stats = exec.collect_column_stats();
                 // Collect only when the task otherwise succeeded: a failed task's
                 // partial state is meaningless, and its own error is the useful one.
                 // A collection failure fails the task — these are load-bearing for the
@@ -499,6 +500,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                         operator_metrics,
                         runtime_stats,
                         window_state,
+                        column_stats,
                     },
                 );
 

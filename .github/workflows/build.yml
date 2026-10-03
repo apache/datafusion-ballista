@@ -28,8 +28,13 @@ on:
   pull_request:
     paths:
       - "python/**"
+      # the release tooling is not part of the build
+      - "!python/dev/release/**"
   push:
-    tags: [ "*-rc*" ]
+    # Python client release candidates, e.g. python-55.0.0-rc1. The Rust
+    # release tags do not build wheels because the Python client is released
+    # separately, see python/dev/release/README.md
+    tags: [ "python-*-rc*" ]
 
 jobs:
   test-release:
@@ -79,6 +84,15 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+
+      # A release candidate may only depend on crates from crates.io, see
+      # python/dev/release/README.md. Failing here stops the wheels from being
+      # built, so a bad tag never produces artifacts to download.
+      - name: Check python/Cargo.lock for the release candidate
+        if: startsWith(github.ref, 'refs/tags/python-')
+        run: |
+          version=${GITHUB_REF_NAME#python-}
+          python python/dev/release/check-cargo-lock.py "${version%-rc*}" python/Cargo.lock
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
