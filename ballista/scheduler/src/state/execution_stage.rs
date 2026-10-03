@@ -268,7 +268,8 @@ pub struct SuccessfulStage {
     pub stage_metrics: Vec<MetricsSet>,
     /// [SessionConfig] used for this stage
     pub session_config: Arc<SessionConfig>,
-    /// container to store col stats per stage
+    /// Per-column stats, one entry per output-schema column. `null_count` is
+    /// `Exact` only when every successful task reported that column.
     pub output_column_stats: Vec<ColumnStatistics>,
 }
 
@@ -1619,6 +1620,23 @@ mod tests {
         assert_eq!(
             successful.output_column_stats[0].null_count,
             Precision::Exact(4)
+        );
+        assert_eq!(
+            successful.output_column_stats[1].null_count,
+            Precision::Absent
+        );
+    }
+
+    #[test]
+    fn test_to_successful_skips_column_past_schema_width() {
+        // Column index past the 2-wide output schema must be skipped by
+        // get_mut, not panic (the fold runs on the stage event loop).
+        let stage = stage_with_col_stats(vec![vec![col(0, 1), col(5, 9)]]);
+        let successful = stage.to_successful();
+        assert_eq!(successful.output_column_stats.len(), 2);
+        assert_eq!(
+            successful.output_column_stats[0].null_count,
+            Precision::Exact(1)
         );
         assert_eq!(
             successful.output_column_stats[1].null_count,

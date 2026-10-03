@@ -1419,7 +1419,7 @@ mod tests {
     use super::*;
     use crate::error::BallistaError;
     use crate::execution_plans::ChaosExec;
-    use datafusion::arrow::array::{StringArray, UInt32Array};
+    use datafusion::arrow::array::{NullArray, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::datasource::memory::MemorySourceConfig;
@@ -2172,6 +2172,24 @@ mod tests {
         )?;
         let counts = collect_null_counts(schema, vec![vec![batch]], "a", 2).await?;
         assert_eq!(counts, vec![0, 0]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn column_null_counts_counts_logical_nulls_for_null_type() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, true),
+            Field::new("n", DataType::Null, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(vec![Some(1), Some(2), Some(3)])),
+                Arc::new(NullArray::new(3)),
+            ],
+        )?;
+        let counts = collect_null_counts(schema, vec![vec![batch]], "a", 2).await?;
+        assert_eq!(counts, vec![0, 3]);
         Ok(())
     }
 
