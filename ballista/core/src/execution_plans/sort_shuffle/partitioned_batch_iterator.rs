@@ -18,30 +18,47 @@
 //! Iterator that materializes per-partition rows into well-sized
 //! `RecordBatch`es using `arrow::compute::interleave_record_batch`.
 
-use datafusion::arrow::array::{Array, ArrayRef, BinaryViewArray, StringViewArray};
+use datafusion::arrow::array::{
+    Array, ArrayRef, BinaryViewArray, GenericByteViewArray, StringViewArray,
+};
 use datafusion::arrow::compute::interleave_record_batch;
+use datafusion::arrow::datatypes::ByteViewType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
 use std::sync::Arc;
 
-/// Compacts `Utf8View` / `BinaryView` columns by running `gc()` on them.
+/// Returns true when a view array's data buffers are more than twice the
+/// bytes its views actually reference, the same threshold arrow's
+/// `BatchCoalescer` uses before copying strings. Arrays with no data buffers
+/// (all values inlined) never need compaction.
+fn needs_gc<T: ByteViewType + ?Sized>(array: &GenericByteViewArray<T>) -> bool {
+    let actual: usize = array.data_buffers().iter().map(|b| b.len()).sum();
+    actual > 2 * array.total_buffer_bytes_used()
+}
+
+/// Compacts sparse `Utf8View` / `BinaryView` columns by running `gc()` on them.
 ///
 /// `interleave_record_batch` preserves the original data buffers for view
 /// arrays, so the output references every source data buffer the inputs
 /// touched even if it only emits a few rows. Without compaction, downstream
 /// IPC writes serialize all those source buffers (potentially hundreds of MB)
-/// rather than just the bytes the views point at.
+/// rather than just the bytes the views point at. Columns that are already
+/// dense are left alone, since `gc()` copies every referenced byte.
 fn compact_view_columns(batch: RecordBatch) -> Result<RecordBatch> {
     let mut changed = false;
     let columns: Vec<ArrayRef> = batch
         .columns()
         .iter()
         .map(|c| -> ArrayRef {
-            if let Some(a) = c.as_any().downcast_ref::<StringViewArray>() {
+            if let Some(a) = c.as_any().downcast_ref::<StringViewArray>()
+                && needs_gc(a)
+            {
                 changed = true;
                 Arc::new(a.gc())
-            } else if let Some(a) = c.as_any().downcast_ref::<BinaryViewArray>() {
+            } else if let Some(a) = c.as_any().downcast_ref::<BinaryViewArray>()
+                && needs_gc(a)
+            {
                 changed = true;
                 Arc::new(a.gc())
             } else {
@@ -124,7 +141,7 @@ impl<'a> Iterator for PartitionedBatchIterator<'a> {
 
 #[cfg(test)]
 mod tests {
-    use datafusion::arrow::array::Int64Array;
+    use datafusion::arrow::array::{Int64Array, StringViewArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::arrow::record_batch::RecordBatch;
     use std::sync::Arc;
@@ -198,5 +215,57 @@ mod tests {
             .unwrap();
         assert_eq!(arr.values(), &[10, 40, 20, 50, 30, 60]);
         assert!(iter.next().is_none());
+    }
+
+    fn string_view_batch(values: &[&str]) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Utf8View,
+            false,
+        )]));
+        let array = StringViewArray::from_iter_values(values.iter().copied());
+        RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
+    }
+
+    #[test]
+    fn dense_view_columns_are_not_copied() {
+        use super::compact_view_columns;
+
+        let input = string_view_batch(&[
+            "a string longer than twelve bytes",
+            "another string longer than twelve bytes",
+        ]);
+
+        let output = compact_view_columns(input.clone()).unwrap();
+
+        assert_eq!(output, input);
+        assert!(Arc::ptr_eq(output.column(0), input.column(0)));
+    }
+
+    #[test]
+    fn sparse_view_columns_are_compacted() {
+        use super::PartitionedBatchIterator;
+
+        let long: Vec<String> = (0..100)
+            .map(|i| format!("row {i:03} padded past the inline limit"))
+            .collect();
+        let batches = vec![string_view_batch(
+            &long.iter().map(String::as_str).collect::<Vec<_>>(),
+        )];
+        let indices: Vec<(u32, u32)> = vec![(0, 7)];
+
+        let mut iter = PartitionedBatchIterator::new(&batches, &indices, 8192);
+        let only = iter.next().unwrap().unwrap();
+        assert!(iter.next().is_none());
+
+        assert_eq!(only, string_view_batch(&[long[7].as_str()]));
+        let arr = only
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .unwrap();
+        let buffer_lens: Vec<usize> =
+            arr.data_buffers().iter().map(|b| b.len()).collect();
+        assert_eq!(buffer_lens, vec![long[7].len()]);
     }
 }
