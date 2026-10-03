@@ -896,6 +896,7 @@ mod tests {
                         })
                         .collect(),
                     runtime_stats: vec![],
+                    task_column_stats: vec![],
                     window_state: vec![],
                 })),
             })

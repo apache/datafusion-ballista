@@ -37,7 +37,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Download python binary wheels from release candidate workflow runs."
     )
-    parser.add_argument("tag", type=str, help="datafusion RC release tag")
+    parser.add_argument(
+        "tag", type=str, help="Python client RC tag, e.g. python-55.0.0-rc1"
+    )
     args = parser.parse_args()
 
     tag = args.tag

@@ -154,7 +154,7 @@ pub struct Config {
         help = "Delayed interval for cleaning up finished job state."
     )]
     pub finished_job_state_clean_up_interval_seconds: u64,
-    /// Task distribution policy (bias, round-robin, consistent-hash).
+    /// Task distribution policy (bias, round-robin).
     #[arg(
         long,
         default_value_t = crate::config::TaskDistribution::default(),
@@ -284,7 +284,7 @@ pub struct Config {
     #[arg(
         long,
         default_value_t = false,
-        help = "Serve Arrow Flight SQL on the scheduler port, so JDBC/ODBC/ADBC clients can run SQL against the cluster. Note that this performs no authentication unless SchedulerConfig::with_flight_sql_authenticator is set."
+        help = "Serve Arrow Flight SQL on the scheduler port, so JDBC/ODBC/ADBC clients can run SQL against the cluster. Clients are not authenticated unless SchedulerConfig::with_flight_sql_authenticator is set, and even then the port is not secured, so keep it on a trusted network."
     )]
     pub flight_sql: bool,
     #[cfg(feature = "rest-api")]

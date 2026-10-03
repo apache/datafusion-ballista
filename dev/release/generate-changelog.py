@@ -16,25 +16,62 @@
 # limitations under the License.
 
 import argparse
-import sys
-from github import Github
 import os
 import re
 import subprocess
+import sys
+from collections import Counter
+
+from github import Github
 
 
 def print_pulls(repo_name, title, pulls):
     if len(pulls) > 0:
-        print("**{}:**".format(title))
+        print(f"**{title}:**")
         print()
-        for pull, commit in pulls:
-            url = "https://github.com/{}/pull/{}".format(repo_name, pull.number)
-            print(
-                "- {} [#{}]({}) ({})".format(
-                    pull.title, pull.number, url, commit.author.login
-                )
+        for pull, authors in pulls:
+            url = f"https://github.com/{repo_name}/pull/{pull.number}"
+            print(f"- {pull.title} [#{pull.number}]({url}) ({', '.join(authors)})")
+        print()
+
+
+def pull_authors(repo, pull, commit, participants):
+    """Return the GitHub users who authored commits in a pull request."""
+    commit_name = commit.commit.author.name
+    commit_login = commit.author.login if commit.author is not None else commit_name
+    authors = {commit_login: commit_name}
+
+    # A squash merge has a Co-authored-by trailer for each other author in the
+    # PR, so the PR's commits only need fetching when there is one.
+    if not re.search(
+        r"^co-authored-by:", commit.commit.message, re.IGNORECASE | re.MULTILINE
+    ):
+        return authors
+
+    for pull_commit in pull.get_commits():
+        # Skip merges of the base branch into the PR, and commits whose email
+        # is not linked to a GitHub account.
+        if len(pull_commit.parents) == 1 and pull_commit.author is not None:
+            authors.setdefault(pull_commit.author.login, pull_commit.commit.author.name)
+
+    # GitHub links a commit to whichever account has its email address, so a
+    # placeholder identity or an AI agent can map to an account that has
+    # nothing to do with the project. Only credit accounts that have opened an
+    # issue or PR here.
+    for login in list(authors)[1:]:
+        if login not in participants:
+            # Do not use totalCount, which is 0 when GitHub pages the results
+            # with a cursor.
+            participants[login] = (
+                len(repo.get_issues(creator=login, state="all").get_page(0)) > 0
             )
-        print()
+        if not participants[login]:
+            print(
+                f"Not crediting {login} ({authors.pop(login)}) on #{pull.number}: "
+                f"they have not opened an issue or PR in {repo.full_name}",
+                file=sys.stderr,
+            )
+    return authors
 
 
 def generate_changelog(repo, repo_name, tag1, tag2, version):
@@ -46,14 +83,18 @@ def generate_changelog(repo, repo_name, tag1, tag2, version):
     print("Fetching pull requests", file=sys.stderr)
     unique_pulls = []
     all_pulls = []
+    # The name git shortlog credits each commit author under.
+    names = {}
+    # Whether each co-author has opened an issue or PR in the repository.
+    participants = {}
     for commit in comparison.commits:
+        if commit.author is not None:
+            names.setdefault(commit.author.login, commit.commit.author.name)
         pulls = commit.get_pulls()
         for pull in pulls:
-            # there can be multiple commits per PR if squash merge is not being used and
-            # in this case we should get all the author names, but for now just pick one
             if pull.number not in unique_pulls:
                 unique_pulls.append(pull.number)
-                all_pulls.append((pull, commit))
+                all_pulls.append((pull, pull_authors(repo, pull, commit, participants)))
 
     # we split the pulls into categories
     breaking = []
@@ -65,7 +106,7 @@ def generate_changelog(repo, repo_name, tag1, tag2, version):
 
     # categorize the pull requests based on GitHub labels
     print("Categorizing pull requests", file=sys.stderr)
-    for pull, commit in all_pulls:
+    for pull, authors in all_pulls:
         labels = [label.name for label in pull.labels]
 
         # skip Dependabot dependency-bump PRs (labeled 'auto-dependencies')
@@ -82,17 +123,17 @@ def generate_changelog(repo, repo_name, tag1, tag2, version):
             cc_breaking = parts_tuple[2] == "!"
 
         if "api change" in labels or cc_breaking:
-            breaking.append((pull, commit))
+            breaking.append((pull, authors))
         elif "performance" in labels or cc_type == "perf":
-            performance.append((pull, commit))
+            performance.append((pull, authors))
         elif "bug" in labels or cc_type == "fix":
-            bugs.append((pull, commit))
+            bugs.append((pull, authors))
         elif "enhancement" in labels or cc_type == "feat":
-            enhancements.append((pull, commit))
+            enhancements.append((pull, authors))
         elif "documentation" in labels or cc_type == "docs" or cc_type == "doc":
-            docs.append((pull, commit))
+            docs.append((pull, authors))
         else:
-            other.append((pull, commit))
+            other.append((pull, authors))
 
     # produce the changelog content
     print("Generating changelog content", file=sys.stderr)
@@ -124,14 +165,28 @@ under the License.
         ["git", "rev-list", "--count", f"{tag1}..{tag2}"], text=True
     ).strip()
 
-    # get number of contributors
     shortlog_output = subprocess.check_output(
         ["git", "shortlog", "-sn", f"{tag1}..{tag2}"], text=True
     )
-    contributor_count = len(shortlog_output.strip().splitlines())
+
+    # Credit each person once for every commit they authored, and once for
+    # every PR by someone else that has commits of theirs.
+    credits = Counter()
+    for line in shortlog_output.splitlines():
+        count, name = line.split("\t", 1)
+        credits[name] += int(count)
+    for _pull, authors in all_pulls:
+        # git shortlog has already counted the merge commit's author, who comes
+        # first. Count each name once, as git shortlog does, so that someone
+        # with two accounts is not counted twice.
+        merge_author, *others = [
+            names.get(login, name) for login, name in authors.items()
+        ]
+        for name in set(others) - {merge_author}:
+            credits[name] += 1
 
     print(
-        f"This release consists of {commit_count} commits from {contributor_count} contributors. "
+        f"This release consists of {commit_count} commits from {len(credits)} contributors. "
         f"See credits at the end of this changelog for more information.\n"
     )
 
@@ -142,16 +197,14 @@ under the License.
     print_pulls(repo_name, "Documentation updates", docs)
     print_pulls(repo_name, "Other", other)
 
-    # show code contributions
-    credits = shortlog_output.rstrip()
-
     print("## Credits\n")
     print(
         "Thank you to everyone who contributed to this release. Here is a breakdown of commits (PRs merged) "
-        "per contributor.\n"
+        "per contributor. A PR with commits from more than one person counts for each of them.\n"
     )
     print("```")
-    print(credits)
+    for name, count in sorted(credits.items(), key=lambda item: (-item[1], item[0])):
+        print(f"{count:6d}\t{name}")
     print("```\n")
 
     print(

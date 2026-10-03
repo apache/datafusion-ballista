@@ -18,6 +18,12 @@
 # under the License.
 #
 
+# Adapted from dev/release/verify-release-candidate.sh, which does the same
+# for the Rust crates.
+#
+# Requires uv (https://docs.astral.sh/uv/) to check python/Cargo.lock, build
+# the Python client and run its tests.
+
 case $# in
   2) VERSION="$1"
      RC_NUMBER="$2"
@@ -31,9 +37,12 @@ set -e
 set -x
 set -o pipefail
 
-SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-DATAFUSION_DIR="$(dirname $(dirname ${SOURCE_DIR}))"
 DATAFUSION_DIST_URL='https://dist.apache.org/repos/dist/dev/datafusion'
+
+if ! type uv >/dev/null 2>&1; then
+  echo "uv is required, see https://docs.astral.sh/uv/getting-started/installation/"
+  exit 1
+fi
 
 download_dist_file() {
   curl \
@@ -45,7 +54,7 @@ download_dist_file() {
 }
 
 download_rc_file() {
-  download_dist_file apache-datafusion-ballista-${VERSION}-rc${RC_NUMBER}/$1
+  download_dist_file apache-datafusion-ballista-python-${VERSION}-rc${RC_NUMBER}/$1
 }
 
 import_gpg_keys() {
@@ -78,7 +87,7 @@ verify_dir_artifact_signatures() {
 
     # go into the directory because the checksum files contain only the
     # basename of the artifact
-    pushd $(dirname $artifact)
+    pushd "$(dirname "$artifact")"
     base_artifact=$(basename $artifact)
     ${sha256_verify} $base_artifact.sha256 || exit 1
     ${sha512_verify} $base_artifact.sha512 || exit 1
@@ -106,70 +115,32 @@ setup_tempdir() {
 }
 
 test_source_distribution() {
-  # install rust toolchain in a similar fashion like test-miniconda
-  export RUSTUP_HOME=$PWD/test-rustup
-  export CARGO_HOME=$PWD/test-rustup
+  # the source release only contains the Python client, so every Rust
+  # dependency has to come from crates.io
+  uv run --no-project --python '>=3.11' python dev/release/check-cargo-lock.py "${VERSION}" Cargo.lock
 
-  curl https://sh.rustup.rs -sSf | sh -s -- -y --no-modify-path
+  # install rust toolchain in a similar fashion like test-miniconda, outside
+  # the source tree so that pytest does not pick up files from the crates
+  export RUSTUP_HOME=${DATAFUSION_TMPDIR}/test-rustup
+  export CARGO_HOME=${DATAFUSION_TMPDIR}/test-rustup
+
+  curl https://sh.rustup.rs -sSf | sh -s -- -y --no-modify-path --profile minimal
 
   export PATH=$RUSTUP_HOME/bin:$PATH
   source $RUSTUP_HOME/env
 
-  # build and test rust
-
-  # raises on any formatting errors
-  rustup component add rustfmt --toolchain stable
-  cargo fmt --all -- --check
-
-  # Clone testing repositories if not cloned already
-  git clone https://github.com/apache/arrow-testing.git arrow-testing-data
-  git clone https://github.com/apache/parquet-testing.git parquet-testing-data
-  export DATAFUSION_TEST_DATA=$PWD/arrow-testing-data/data
-  export PARQUET_TEST_DATA=$PWD/parquet-testing-data/data
-
-  # TODO: enable this eventually so that cargo test will check benchmark query results
-#  pushd benchmarks
-#  ./tpch-gen.sh
-#  popd
-#  export TPCH_DATA=`pwd`/benchmarks/data
-
-  cargo build
-  cargo test --all
-
-  if ( find -iname 'Cargo.toml' | xargs grep SNAPSHOT ); then
-    echo "Cargo.toml version should not contain SNAPSHOT for releases"
-    exit 1
-  fi
-
-  # Check that Cargo can determine the package contents for every crate that
-  # will be published. Full dry runs of dependent crates are not possible until
-  # their Ballista dependencies have been published to crates.io.
-  publishable_crates=(
-    ballista-core
-    ballista-api-types
-    ballista-executor
-    ballista-history
-    ballista-scheduler
-    ballista
-    ballista-cli
-  )
-  for crate in "${publishable_crates[@]}"; do
-    cargo package --list --package "${crate}" --locked >/dev/null
-  done
-
-  # These two crates have no unpublished Ballista dependencies, so Cargo can
-  # build and validate their complete publish artifacts before the vote.
-  cargo publish --dry-run --package ballista-core --locked
-  cargo publish --dry-run --package ballista-api-types --locked
+  # build the Python client and run its tests, the same way CI does
+  uv sync --dev --no-install-package ballista
+  uv run pytest python/tests
 }
 
 TEST_SUCCESS=no
 
-setup_tempdir "datafusion-${VERSION}"
+setup_tempdir "datafusion-ballista-python-${VERSION}"
 echo "Working in sandbox ${DATAFUSION_TMPDIR}"
 cd ${DATAFUSION_TMPDIR}
 
-dist_name="apache-datafusion-ballista-${VERSION}"
+dist_name="apache-datafusion-ballista-python-${VERSION}"
 import_gpg_keys
 fetch_archive ${dist_name}
 tar xf ${dist_name}.tar.gz

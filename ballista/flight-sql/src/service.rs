@@ -42,7 +42,7 @@ use arrow_flight::{
 };
 use ballista_core::error::BallistaError;
 use ballista_core::flight_proxy_service::BallistaFlightProxyService;
-use ballista_core::planner::scans_only_local_tables;
+use ballista_core::planner::scans_only_information_schema;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::PartitionLocation;
 use ballista_core::serde::scheduler::{Action as BallistaAction, ShuffleFileKind};
@@ -215,7 +215,7 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
         descriptor: FlightDescriptor,
         job_name: &str,
     ) -> Result<FlightInfo, Status> {
-        match disposition(&plan) {
+        match disposition(&plan)? {
             Disposition::Unsupported(reason) => {
                 return Err(Status::unimplemented(reason));
             }
@@ -307,12 +307,12 @@ enum Disposition {
 /// DDL runs on the scheduler, so a caller that asked "is this DDL?" before
 /// asking "is this supported?" would silently execute its query on one node.
 /// Returning a single verdict makes that ordering impossible to get wrong.
-fn disposition(plan: &LogicalPlan) -> Disposition {
+fn disposition(plan: &LogicalPlan) -> Result<Disposition, Status> {
     if let Some(reason) = refusal(plan) {
-        return Disposition::Unsupported(reason);
+        return Ok(Disposition::Unsupported(reason));
     }
 
-    match plan {
+    Ok(match plan {
         // Other DDL only edits the session catalog, and `SET`-style statements
         // only edit session config; neither has anything to distribute.
         LogicalPlan::Ddl(_) | LogicalPlan::Statement(_) => Disposition::RunOnScheduler,
@@ -320,9 +320,13 @@ fn disposition(plan: &LogicalPlan) -> Disposition {
         // the catalog held here. There is nothing to distribute, and the
         // physical form of those scans cannot be serialized for an executor,
         // so distributing one would hand the client a job that never runs.
-        _ if scans_only_local_tables(plan) => Disposition::RunOnScheduler,
+        _ if scans_only_information_schema(plan)
+            .map_err(|error| Status::unimplemented(error.to_string()))? =>
+        {
+            Disposition::RunOnScheduler
+        }
         _ => Disposition::Distribute,
-    }
+    })
 }
 
 /// Finds a statement the frontend refuses anywhere in `plan`, subqueries
@@ -734,7 +738,7 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
         let ctx = self.context(request.metadata()).await?;
         let plan = Self::plan(&ctx, &ticket.query).await?;
 
-        match disposition(&plan) {
+        match disposition(&plan)? {
             Disposition::RunOnScheduler => {}
             Disposition::Unsupported(reason) => {
                 return Err(Status::unimplemented(reason));

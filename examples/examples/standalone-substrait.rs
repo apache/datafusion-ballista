@@ -26,6 +26,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::ShuffleLayout;
 use ballista_core::utils::{GrpcClientConfig, create_grpc_client_connection};
+use ballista_core::version::insert_version_header;
 use ballista_examples::test_util;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::error::ArrowError;
@@ -228,15 +229,18 @@ impl SubstraitSchedulerClient {
             .max_encoding_message_size(self.max_message_size)
             .max_decoding_message_size(self.max_message_size);
 
-        let execute_query_params = ExecuteQueryParams {
+        let mut request = tonic::Request::new(ExecuteQueryParams {
             session_id: self.session_id.clone(),
             settings: vec![],
             operation_id: uuid::Uuid::now_v7().to_string(),
             query: Some(SubstraitPlan(plan)),
-        };
+        });
+        // The scheduler rejects job submissions from clients that don't send
+        // their Ballista version.
+        insert_version_header(request.metadata_mut());
 
         let response = scheduler
-            .execute_query(execute_query_params)
+            .execute_query(request)
             .await
             .map_err(|e| {
                 DataFusionError::Execution(format!("Failed to execute query: {e:?}"))

@@ -44,7 +44,9 @@ use datafusion::prelude::SessionContext;
 pub struct QueryResult {
     /// Scheduler-assigned id of the job that produced the result.
     pub job_id: String,
-    /// Schema of the result, taken from the submitted plan.
+    /// Schema of the data in `partitions`, nullability included. Clients
+    /// reject a result whose data does not match the schema they were
+    /// promised, so this cannot simply be the logical plan's.
     pub schema: SchemaRef,
     /// One entry per output partition, in the order the scheduler reported.
     pub partitions: Vec<PartitionLocation>,

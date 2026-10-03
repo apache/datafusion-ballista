@@ -83,7 +83,7 @@ $SPARK_HOME/bin/spark-submit --master spark://localhost:7077 \
 
 ```bash
 $SPARK_HOME/sbin/start-master.sh
-$SPARK_HOME/sbin/start-slave.sh spark://localhost:7077
+$SPARK_HOME/sbin/start-worker.sh spark://localhost:7077
 ```
 
 Monitor progress via the Spark UI at <http://localhost:8080>
@@ -91,6 +91,6 @@ Monitor progress via the Spark UI at <http://localhost:8080>
 ## Shut down the cluster
 
 ```bash
-$SPARK_HOME/sbin/stop-slave.sh
+$SPARK_HOME/sbin/stop-worker.sh
 $SPARK_HOME/sbin/stop-master.sh
 ```

@@ -22,10 +22,11 @@
 # dependencies:
 # pip install tomlkit
 
+import argparse
 import os
 import re
-import argparse
 from pathlib import Path
+
 import tomlkit
 
 
@@ -35,13 +36,6 @@ def update_cargo_toml(cargo_toml: str, new_version: str):
         data = f.read()
 
     doc = tomlkit.parse(data)
-    if (
-        "ballista/" in cargo_toml
-        or "ballista-cli/" in cargo_toml
-        or "python/Cargo.toml" in cargo_toml
-    ):
-        doc.get("package")["version"] = new_version
-
     # ballista crates also depend on each other
     ballista_deps = (
         "ballista",
@@ -54,11 +48,35 @@ def update_cargo_toml(cargo_toml: str, new_version: str):
     )
     for ballista_dep in ballista_deps:
         dep = doc.get("dependencies", {}).get(ballista_dep)
-        if dep is not None:
+        if dep is not None and "version" in dep:
             dep["version"] = new_version
         dep = doc.get("dev-dependencies", {}).get(ballista_dep)
-        if dep is not None:
+        if dep is not None and "version" in dep:
             dep["version"] = new_version
+
+    with open(cargo_toml, "w") as f:
+        f.write(tomlkit.dumps(doc))
+
+
+def update_workspace_cargo_toml(cargo_toml: str, new_version: str):
+    print(f"updating {cargo_toml}")
+    with open(cargo_toml) as f:
+        data = f.read()
+
+    doc = tomlkit.parse(data)
+    workspace = doc["workspace"]
+    workspace["package"]["version"] = new_version
+
+    ballista_deps = (
+        "ballista",
+        "ballista-core",
+        "ballista-api-types",
+        "ballista-executor",
+        "ballista-history",
+        "ballista-scheduler",
+    )
+    for ballista_dep in ballista_deps:
+        workspace["dependencies"][ballista_dep]["version"] = new_version
 
     with open(cargo_toml, "w") as f:
         f.write(tomlkit.dumps(doc))
@@ -83,26 +101,27 @@ def main():
     args = parser.parse_args()
 
     repo_root = Path(__file__).parent.parent.absolute()
-    ballista_crates = set(
-        [
-            os.path.join(repo_root, rel_path, "Cargo.toml")
-            for rel_path in [
-                "ballista-cli",
-                "ballista/core",
-                "ballista/api-types",
-                "ballista/history",
-                "ballista/scheduler",
-                "ballista/executor",
-                "ballista/client",
-                "benchmarks",
-                "examples",
-                "python",
-            ]
+    # python/ is not listed because the Python client is versioned and released
+    # separately, see python/dev/release/README.md
+    ballista_crates = {
+        os.path.join(repo_root, rel_path, "Cargo.toml")
+        for rel_path in [
+            "ballista-cli",
+            "ballista/core",
+            "ballista/api-types",
+            "ballista/history",
+            "ballista/scheduler",
+            "ballista/executor",
+            "ballista/client",
+            "benchmarks",
+            "examples",
         ]
-    )
+    }
     new_version = args.new_version
 
     print(f"Updating ballista versions in {repo_root} to {new_version}")
+
+    update_workspace_cargo_toml(repo_root / "Cargo.toml", new_version)
 
     for cargo_toml in ballista_crates:
         update_cargo_toml(cargo_toml, new_version)
