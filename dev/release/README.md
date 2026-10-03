@@ -163,8 +163,8 @@ git push apache <version>
 ### Create, sign, and upload artifacts
 
 - Make sure your signing key is added to the following files in SVN:
-    - https://dist.apache.org/repos/dist/dev/datafusion/KEYS
-    - https://dist.apache.org/repos/dist/release/datafusion/KEYS
+  - https://dist.apache.org/repos/dist/dev/datafusion/KEYS
+  - https://dist.apache.org/repos/dist/release/datafusion/KEYS
 
 See instructions at https://infra.apache.org/release-signing.html#generate for generating keys.
 
@@ -203,8 +203,7 @@ The tarball does not include `python/`, which is released separately.
 
 ### Vote on Release Candidate artifacts
 
-Send the email output from the script to dev@datafusion.apache.org. 
-
+Send the email output from the script to dev@datafusion.apache.org.
 
 For the release to become "official" it needs at least three PMC members to vote +1 on it.
 
@@ -295,7 +294,13 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 
 ### Publish Docker Images
 
-Pushing a release tag causes Docker images to be published.
+Pushing an RC tag such as `55.0.0-rc1` publishes the standalone, executor, and
+scheduler images with that exact tag. It does not update `latest`, because the
+candidate has not passed the ASF vote yet.
+
+After the vote passes, pushing the final tag such as `55.0.0` publishes that
+version and updates `latest`. The separately released `python-*` tags do not
+trigger Docker publishing.
 
 Images can be found at [https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone)
 
