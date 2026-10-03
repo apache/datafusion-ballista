@@ -516,6 +516,36 @@ rejected heartbeat as a heartbeat failure and shuts itself down after five
 consecutive ones, so a stale executor is restarted by its orchestrator until its
 image is bumped to match rather than sitting idle in a ready state.</p>
 </section>
+<section id="clients-and-schedulers-must-have-the-same-major-version">
+<h4>Clients and schedulers must have the same major version<a class="headerlink" href="#clients-and-schedulers-must-have-the-same-major-version" title="Link to this heading">#</a></h4>
+<p>Each Ballista major version moves to a new DataFusion major version, and
+DataFusion’s plan encoding can change between majors in ways that still decode
+but mean something different. A client and a scheduler from different major
+versions could run a query and return wrong results, so from <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code> they
+refuse to work together. This applies to the Python client too: the <code class="docutils literal notranslate"><span class="pre">ballista</span></code>
+package on PyPI must have the same major version as the cluster.</p>
+<p>A <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code> client sends its version in a <code class="docutils literal notranslate"><span class="pre">ballista-version</span></code> gRPC header when it
+submits a job, and the scheduler rejects the job with
+<code class="docutils literal notranslate"><span class="pre">Status::failed_precondition</span></code> if the major versions differ. A <code class="docutils literal notranslate"><span class="pre">54.x</span></code> client
+sends no version, so a <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code> scheduler rejects every job it submits:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Ballista client older than 55.0.0 (no `ballista-version` header) cannot be used
+with scheduler 55.0.0. The client and the scheduler must have the same major
+version.
+</pre></div>
+</div>
+<p>The scheduler sends its own version back in the same header. A <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code> client
+that gets no version back is talking to a <code class="docutils literal notranslate"><span class="pre">54.x</span></code> scheduler, which has already
+queued the job without checking. The client cancels that job and returns an
+error. A different minor or patch version is not an error, and the client only
+logs a warning.</p>
+<p>Ballista keeps clients and schedulers of the same major version compatible. Any
+<code class="docutils literal notranslate"><span class="pre">55.x</span></code> client works with any <code class="docutils literal notranslate"><span class="pre">55.x</span></code> cluster, and a change that would break an
+older client waits for the next major release.</p>
+<p>If you wrote your own client against the scheduler’s gRPC API, it must send the
+header on every <code class="docutils literal notranslate"><span class="pre">ExecuteQuery</span></code> and <code class="docutils literal notranslate"><span class="pre">ExecuteQueryPush</span></code> request, set to the
+Ballista version it was built against. For a <code class="docutils literal notranslate"><span class="pre">tonic</span></code> request,
+<code class="docutils literal notranslate"><span class="pre">ballista_core::version::insert_version_header</span></code> does this.</p>
+</section>
 </section>
 <section id="api-changes">
 <h3>API changes<a class="headerlink" href="#api-changes" title="Link to this heading">#</a></h3>
@@ -705,6 +735,7 @@ struct.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#joins-may-shuffle-their-build-side-first-to-measure-it">Joins may shuffle their build side first to measure it</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sortmergejoinexec-is-no-longer-converted-to-a-broadcast-join"><code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code> is no longer converted to a broadcast join</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#schedulers-and-executors-must-be-upgraded-together">Schedulers and executors must be upgraded together</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#clients-and-schedulers-must-have-the-same-major-version">Clients and schedulers must have the same major version</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
