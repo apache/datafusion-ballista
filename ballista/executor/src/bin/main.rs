@@ -22,6 +22,7 @@ use ballista_core::error::BallistaError;
 use ballista_core::object_store::{
     runtime_env_with_s3_support, session_config_with_s3_support,
 };
+use ballista_executor::alloc_accounting::{AccountingAllocator, current_balance};
 use ballista_executor::config::Config;
 use ballista_executor::executor_process::{
     ExecutorProcessConfig, start_executor_process,
@@ -31,11 +32,19 @@ use clap::Parser;
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::MissedTickBehavior;
 use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: AccountingAllocator<mimalloc::MiMalloc> =
+    AccountingAllocator::new(mimalloc::MiMalloc);
+
+#[cfg(not(feature = "mimalloc"))]
+#[global_allocator]
+static GLOBAL: AccountingAllocator<std::alloc::System> =
+    AccountingAllocator::new(std::alloc::System);
 
 #[tokio::main]
 async fn main() -> ballista_core::error::Result<()> {
@@ -81,6 +90,18 @@ async fn main() -> ballista_core::error::Result<()> {
         tracing.init();
     }
 
+    let memory_logging = tokio::spawn(async {
+        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            log::info!(
+                "Ballista executor memory usage: allocated {:.1} MiB (Rust allocator)",
+                current_balance() as f64 / (1024.0 * 1024.0)
+            );
+        }
+    });
+
     // Kubernetes-style health probes are a concern of the standalone binary,
     // not of the library, so wire them here on top of the config's shared
     // ExecutorHealth handle. `/healthz` is process-liveness, `/readyz`
@@ -95,6 +116,9 @@ async fn main() -> ballista_core::error::Result<()> {
     let health_handle = spawn_health_server(health_addr, health, health_shutdown_rx);
 
     let result = start_executor_process(Arc::new(config)).await;
+
+    memory_logging.abort();
+    let _ = memory_logging.await;
 
     // Ask the health server to shut down so the process can exit cleanly.
     let _ = health_shutdown_tx.send(());

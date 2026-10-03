@@ -38,6 +38,26 @@ means moving all three.
 core count. The memory pool is auto-sized from the detected host or cgroup limit; see the
 [tuning guide](https://datafusion.apache.org/ballista/user-guide/tuning-guide.html).
 
+## Allocation accounting
+
+The standalone executor wraps its global allocator with the same thread-batched allocation
+accounting used by Comet. It logs the approximate outstanding Rust allocations at INFO level on
+startup and every 10 seconds, independently of task execution:
+
+```text
+Ballista executor memory usage: allocated 5412.3 MiB (Rust allocator)
+```
+
+This measures requested allocation sizes, including allocations not tracked by DataFusion's
+memory pools. It is not RSS or reserved pool memory: allocator fragmentation, retained pages,
+memory mappings, and allocations made directly by native libraries are excluded. Each live thread
+can hold less than 64 KiB of unsettled accounting in either direction; thread exit settles the
+remainder. Accounting is observational and does not enforce a memory limit.
+
+The allocator backend remains mimalloc. Library users retain their own global allocator unless
+they explicitly wrap it with `ballista_executor::alloc_accounting::AccountingAllocator`; periodic
+logging is only started by the standalone binary.
+
 ## Using it as a library
 
 `ExecutorProcessConfig` carries the same override hooks as the scheduler, so an embedder can supply
