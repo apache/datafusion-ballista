@@ -1,0 +1,316 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 746 708" width="746" height="708">
+<rect width="746" height="708" fill="#fafafa"/>
+<text x="373" y="20" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#111">h2o Q8 — parallel range-window</text>
+<circle cx="373" cy="-5" r="16" fill="#fff" stroke="#333"/>
+<text x="373" y="-5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">client</text>
+<rect x="20" y="40" width="706" height="204" rx="4" ry="4" fill="#f4f4fb" stroke="#556" stroke-width="1.5"/>
+<text x="373" y="52" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#111">Stage 1  (K=8)</text>
+<text x="382" y="85" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#111">— e1 —</text>
+<text x="596" y="85" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#111">— e2 —</text>
+<text x="42" y="111" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="normal" text-anchor="start" dominant-baseline="middle" fill="#111">Projection</text>
+<rect x="290" y="98" width="42" height="26" rx="4" ry="4" fill="#eeeeee" stroke="#556" stroke-width="0.8"/>
+<text x="311" y="111" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=0</text>
+<rect x="336" y="98" width="42" height="26" rx="4" ry="4" fill="#eeeeee" stroke="#556" stroke-width="0.8"/>
+<text x="357" y="111" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=1</text>
+<rect x="382" y="98" width="42" height="26" rx="4" ry="4" fill="#eeeeee" stroke="#556" stroke-width="0.8"/>
+<text x="403" y="111" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=2</text>
+<rect x="428" y="98" width="42" height="26" rx="4" ry="4" fill="#eeeeee" stroke="#556" stroke-width="0.8"/>
+<text x="449" y="111" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=3</text>
+<rect x="504" y="98" width="42" height="26" rx="4" ry="4" fill="#eeeeee" stroke="#556" stroke-width="0.8"/>
+<text x="525" y="111" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=4</text>
+<rect x="550" y="98" width="42" height="26" rx="4" ry="4" fill="#eeeeee" stroke="#556" stroke-width="0.8"/>
+<text x="571" y="111" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=5</text>
+<rect x="596" y="98" width="42" height="26" rx="4" ry="4" fill="#eeeeee" stroke="#556" stroke-width="0.8"/>
+<text x="617" y="111" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=6</text>
+<rect x="642" y="98" width="42" height="26" rx="4" ry="4" fill="#eeeeee" stroke="#556" stroke-width="0.8"/>
+<text x="663" y="111" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=7</text>
+<text x="42" y="145" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="normal" text-anchor="start" dominant-baseline="middle" fill="#111">RangeFilter (narrow)</text>
+<rect x="290" y="132" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="311" y="145" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=0</text>
+<rect x="336" y="132" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="357" y="145" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=1</text>
+<rect x="382" y="132" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="403" y="145" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=2</text>
+<rect x="428" y="132" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="449" y="145" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=3</text>
+<rect x="504" y="132" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="525" y="145" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=4</text>
+<rect x="550" y="132" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="571" y="145" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=5</text>
+<rect x="596" y="132" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="617" y="145" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=6</text>
+<rect x="642" y="132" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="663" y="145" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=7</text>
+<text x="42" y="179" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="normal" text-anchor="start" dominant-baseline="middle" fill="#111">PartitionedBWAG</text>
+<rect x="290" y="166" width="42" height="26" rx="4" ry="4" fill="#ffe6cc" stroke="#556" stroke-width="0.8"/>
+<text x="311" y="179" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=0</text>
+<rect x="336" y="166" width="42" height="26" rx="4" ry="4" fill="#ffe6cc" stroke="#556" stroke-width="0.8"/>
+<text x="357" y="179" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=1</text>
+<rect x="382" y="166" width="42" height="26" rx="4" ry="4" fill="#ffe6cc" stroke="#556" stroke-width="0.8"/>
+<text x="403" y="179" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=2</text>
+<rect x="428" y="166" width="42" height="26" rx="4" ry="4" fill="#ffe6cc" stroke="#556" stroke-width="0.8"/>
+<text x="449" y="179" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=3</text>
+<rect x="504" y="166" width="42" height="26" rx="4" ry="4" fill="#ffe6cc" stroke="#556" stroke-width="0.8"/>
+<text x="525" y="179" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=4</text>
+<rect x="550" y="166" width="42" height="26" rx="4" ry="4" fill="#ffe6cc" stroke="#556" stroke-width="0.8"/>
+<text x="571" y="179" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=5</text>
+<rect x="596" y="166" width="42" height="26" rx="4" ry="4" fill="#ffe6cc" stroke="#556" stroke-width="0.8"/>
+<text x="617" y="179" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=6</text>
+<rect x="642" y="166" width="42" height="26" rx="4" ry="4" fill="#ffe6cc" stroke="#556" stroke-width="0.8"/>
+<text x="663" y="179" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=7</text>
+<text x="42" y="213" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="normal" text-anchor="start" dominant-baseline="middle" fill="#111">RangeFilter (wide + halo)</text>
+<rect x="290" y="200" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="311" y="213" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=0</text>
+<rect x="336" y="200" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="357" y="213" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=1</text>
+<rect x="382" y="200" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="403" y="213" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=2</text>
+<rect x="428" y="200" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="449" y="213" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=3</text>
+<rect x="504" y="200" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="525" y="213" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=4</text>
+<rect x="550" y="200" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="571" y="213" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=5</text>
+<rect x="596" y="200" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="617" y="213" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=6</text>
+<rect x="642" y="200" width="42" height="26" rx="4" ry="4" fill="#f0e6ff" stroke="#556" stroke-width="0.8"/>
+<text x="663" y="213" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=7</text>
+<text x="42" y="237" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="start" dominant-baseline="middle" fill="#666">input: from rng · kway(v2)</text>
+<line x1="373" y1="40" x2="373" y2="11" stroke="#333" stroke-width="1.2"/>
+<rect x="20" y="334" width="706" height="334" rx="4" ry="4" fill="#f4f4fb" stroke="#556" stroke-width="1.5"/>
+<text x="373" y="346" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#111">Stage 0  (K=8)</text>
+<text x="382" y="379" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#111">— e1 —</text>
+<text x="596" y="379" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#111">— e2 —</text>
+<text x="42" y="422" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="normal" text-anchor="start" dominant-baseline="middle" fill="#111">ShuffleWriter</text>
+<rect x="290" y="392" width="42" height="60" rx="4" ry="4" fill="#e2f0ff" stroke="#556" stroke-width="0.8"/>
+<text x="311" y="402" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=0</text>
+<rect x="293" y="410" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="293" y="416" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="293" y="423" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="293" y="430" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="293" y="436" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="293" y="443" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="291" y="442" width="40" height="8" rx="2" ry="2" fill="none" stroke="#e07a00" stroke-width="2"/>
+<rect x="336" y="392" width="42" height="60" rx="4" ry="4" fill="#e2f0ff" stroke="#556" stroke-width="0.8"/>
+<text x="357" y="402" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=1</text>
+<rect x="339" y="410" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="339" y="416" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="339" y="423" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="339" y="430" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="339" y="436" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="339" y="443" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="337" y="409" width="40" height="42" rx="2" ry="2" fill="none" stroke="#e07a00" stroke-width="2"/>
+<rect x="382" y="392" width="42" height="60" rx="4" ry="4" fill="#e2f0ff" stroke="#556" stroke-width="0.8"/>
+<text x="403" y="402" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=2</text>
+<rect x="385" y="410" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="385" y="416" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="385" y="423" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="385" y="430" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="385" y="436" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="385" y="443" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="383" y="409" width="40" height="8" rx="2" ry="2" fill="none" stroke="#e07a00" stroke-width="2"/>
+<rect x="428" y="392" width="42" height="60" rx="4" ry="4" fill="#e2f0ff" stroke="#556" stroke-width="0.8"/>
+<text x="449" y="402" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=3</text>
+<rect x="431" y="410" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="431" y="416" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="431" y="423" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="431" y="430" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="431" y="436" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="431" y="443" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="504" y="392" width="42" height="60" rx="4" ry="4" fill="#e2f0ff" stroke="#556" stroke-width="0.8"/>
+<text x="525" y="402" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=4</text>
+<rect x="507" y="410" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="507" y="416" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="507" y="423" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="507" y="430" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="507" y="436" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="507" y="443" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="505" y="442" width="40" height="8" rx="2" ry="2" fill="none" stroke="#e07a00" stroke-width="2"/>
+<rect x="550" y="392" width="42" height="60" rx="4" ry="4" fill="#e2f0ff" stroke="#556" stroke-width="0.8"/>
+<text x="571" y="402" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=5</text>
+<rect x="553" y="410" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="553" y="416" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="553" y="423" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="553" y="430" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="553" y="436" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="553" y="443" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="551" y="409" width="40" height="42" rx="2" ry="2" fill="none" stroke="#e07a00" stroke-width="2"/>
+<rect x="596" y="392" width="42" height="60" rx="4" ry="4" fill="#e2f0ff" stroke="#556" stroke-width="0.8"/>
+<text x="617" y="402" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=6</text>
+<rect x="599" y="410" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="599" y="416" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="599" y="423" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="599" y="430" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="599" y="436" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="599" y="443" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="597" y="409" width="40" height="8" rx="2" ry="2" fill="none" stroke="#e07a00" stroke-width="2"/>
+<rect x="642" y="392" width="42" height="60" rx="4" ry="4" fill="#e2f0ff" stroke="#556" stroke-width="0.8"/>
+<text x="663" y="402" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=7</text>
+<rect x="645" y="410" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="645" y="416" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="645" y="423" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="645" y="430" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="645" y="436" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<rect x="645" y="443" width="36" height="5" rx="1" ry="1" fill="#fff" stroke="#889" stroke-width="0.4"/>
+<text x="42" y="473" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="normal" text-anchor="start" dominant-baseline="middle" fill="#111">RuntimeStats (post-ORRE sketch)</text>
+<rect x="290" y="460" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="311" y="473" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=0</text>
+<rect x="336" y="460" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="357" y="473" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=1</text>
+<rect x="382" y="460" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="403" y="473" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=2</text>
+<rect x="428" y="460" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="449" y="473" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=3</text>
+<rect x="504" y="460" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="525" y="473" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=4</text>
+<rect x="550" y="460" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="571" y="473" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=5</text>
+<rect x="596" y="460" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="617" y="473" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=6</text>
+<rect x="642" y="460" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="663" y="473" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=7</text>
+<text x="42" y="521" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" text-anchor="start" dominant-baseline="middle" fill="#111">ORRE<tspan xml:space="preserve" font-style="italic" font-weight="bold" fill="#c00"> · K²/exec</tspan></text>
+<rect x="290" y="494" width="42" height="54" rx="4" ry="4" fill="#ffdede" stroke="#556" stroke-width="0.8"/>
+<text x="311" y="504" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=0</text>
+<rect x="336" y="494" width="42" height="54" rx="4" ry="4" fill="#ffdede" stroke="#556" stroke-width="0.8"/>
+<text x="357" y="504" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=1</text>
+<rect x="382" y="494" width="42" height="54" rx="4" ry="4" fill="#ffdede" stroke="#556" stroke-width="0.8"/>
+<text x="403" y="504" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=2</text>
+<rect x="428" y="494" width="42" height="54" rx="4" ry="4" fill="#ffdede" stroke="#556" stroke-width="0.8"/>
+<text x="449" y="504" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=3</text>
+<rect x="504" y="494" width="42" height="54" rx="4" ry="4" fill="#ffdede" stroke="#556" stroke-width="0.8"/>
+<text x="525" y="504" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=4</text>
+<rect x="550" y="494" width="42" height="54" rx="4" ry="4" fill="#ffdede" stroke="#556" stroke-width="0.8"/>
+<text x="571" y="504" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=5</text>
+<rect x="596" y="494" width="42" height="54" rx="4" ry="4" fill="#ffdede" stroke="#556" stroke-width="0.8"/>
+<text x="617" y="504" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=6</text>
+<rect x="642" y="494" width="42" height="54" rx="4" ry="4" fill="#ffdede" stroke="#556" stroke-width="0.8"/>
+<text x="663" y="504" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=7</text>
+<line x1="311" y1="544" x2="311" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="311" y1="544" x2="357" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="311" y1="544" x2="403" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="311" y1="544" x2="449" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="357" y1="544" x2="311" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="357" y1="544" x2="357" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="357" y1="544" x2="403" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="357" y1="544" x2="449" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="403" y1="544" x2="311" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="403" y1="544" x2="357" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="403" y1="544" x2="403" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="403" y1="544" x2="449" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="449" y1="544" x2="311" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="449" y1="544" x2="357" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="449" y1="544" x2="403" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="449" y1="544" x2="449" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="525" y1="544" x2="525" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="525" y1="544" x2="571" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="525" y1="544" x2="617" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="525" y1="544" x2="663" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="571" y1="544" x2="525" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="571" y1="544" x2="571" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="571" y1="544" x2="617" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="571" y1="544" x2="663" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="617" y1="544" x2="525" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="617" y1="544" x2="571" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="617" y1="544" x2="617" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="617" y1="544" x2="663" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="663" y1="544" x2="525" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="663" y1="544" x2="571" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="663" y1="544" x2="617" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<line x1="663" y1="544" x2="663" y2="508" stroke="#888" stroke-width="0.6" stroke-dasharray="1.5,1.5"/>
+<text x="42" y="569" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="normal" text-anchor="start" dominant-baseline="middle" fill="#111">RuntimeStats (local sketch)</text>
+<rect x="290" y="556" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="311" y="569" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=0</text>
+<rect x="336" y="556" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="357" y="569" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=1</text>
+<rect x="382" y="556" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="403" y="569" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=2</text>
+<rect x="428" y="556" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="449" y="569" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=3</text>
+<rect x="504" y="556" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="525" y="569" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=4</text>
+<rect x="550" y="556" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="571" y="569" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=5</text>
+<rect x="596" y="556" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="617" y="569" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=6</text>
+<rect x="642" y="556" width="42" height="26" rx="4" ry="4" fill="#fff5d6" stroke="#556" stroke-width="0.8"/>
+<text x="663" y="569" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=7</text>
+<text x="42" y="603" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="normal" text-anchor="start" dominant-baseline="middle" fill="#111">SortExec</text>
+<rect x="290" y="590" width="42" height="26" rx="4" ry="4" fill="#efe" stroke="#556" stroke-width="0.8"/>
+<text x="311" y="603" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=0</text>
+<rect x="336" y="590" width="42" height="26" rx="4" ry="4" fill="#efe" stroke="#556" stroke-width="0.8"/>
+<text x="357" y="603" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=1</text>
+<rect x="382" y="590" width="42" height="26" rx="4" ry="4" fill="#efe" stroke="#556" stroke-width="0.8"/>
+<text x="403" y="603" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=2</text>
+<rect x="428" y="590" width="42" height="26" rx="4" ry="4" fill="#efe" stroke="#556" stroke-width="0.8"/>
+<text x="449" y="603" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=3</text>
+<rect x="504" y="590" width="42" height="26" rx="4" ry="4" fill="#efe" stroke="#556" stroke-width="0.8"/>
+<text x="525" y="603" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=4</text>
+<rect x="550" y="590" width="42" height="26" rx="4" ry="4" fill="#efe" stroke="#556" stroke-width="0.8"/>
+<text x="571" y="603" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=5</text>
+<rect x="596" y="590" width="42" height="26" rx="4" ry="4" fill="#efe" stroke="#556" stroke-width="0.8"/>
+<text x="617" y="603" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=6</text>
+<rect x="642" y="590" width="42" height="26" rx="4" ry="4" fill="#efe" stroke="#556" stroke-width="0.8"/>
+<text x="663" y="603" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=7</text>
+<text x="42" y="637" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="normal" text-anchor="start" dominant-baseline="middle" fill="#111">parquet (S3)</text>
+<rect x="290" y="624" width="42" height="26" rx="4" ry="4" fill="#eef" stroke="#556" stroke-width="0.8"/>
+<text x="311" y="637" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=0</text>
+<rect x="336" y="624" width="42" height="26" rx="4" ry="4" fill="#eef" stroke="#556" stroke-width="0.8"/>
+<text x="357" y="637" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=1</text>
+<rect x="382" y="624" width="42" height="26" rx="4" ry="4" fill="#eef" stroke="#556" stroke-width="0.8"/>
+<text x="403" y="637" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=2</text>
+<rect x="428" y="624" width="42" height="26" rx="4" ry="4" fill="#eef" stroke="#556" stroke-width="0.8"/>
+<text x="449" y="637" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=3</text>
+<rect x="504" y="624" width="42" height="26" rx="4" ry="4" fill="#eef" stroke="#556" stroke-width="0.8"/>
+<text x="525" y="637" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=4</text>
+<rect x="550" y="624" width="42" height="26" rx="4" ry="4" fill="#eef" stroke="#556" stroke-width="0.8"/>
+<text x="571" y="637" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=5</text>
+<rect x="596" y="624" width="42" height="26" rx="4" ry="4" fill="#eef" stroke="#556" stroke-width="0.8"/>
+<text x="617" y="637" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=6</text>
+<rect x="642" y="624" width="42" height="26" rx="4" ry="4" fill="#eef" stroke="#556" stroke-width="0.8"/>
+<text x="663" y="637" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="normal" text-anchor="middle" dominant-baseline="middle" fill="#111">k=7</text>
+<line x1="311" y1="390" x2="311" y2="228" stroke="#444" stroke-width="1.2"/>
+<line x1="525" y1="390" x2="311" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="357" y1="390" x2="311" y2="228" stroke="#666" stroke-width="0.7" stroke-dasharray="2,2"/>
+<line x1="571" y1="390" x2="311" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="311" y1="390" x2="357" y2="228" stroke="#666" stroke-width="0.7" stroke-dasharray="2,2"/>
+<line x1="525" y1="390" x2="357" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="357" y1="390" x2="357" y2="228" stroke="#444" stroke-width="1.2"/>
+<line x1="571" y1="390" x2="357" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="403" y1="390" x2="357" y2="228" stroke="#666" stroke-width="0.7" stroke-dasharray="2,2"/>
+<line x1="617" y1="390" x2="357" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="357" y1="390" x2="403" y2="228" stroke="#666" stroke-width="0.7" stroke-dasharray="2,2"/>
+<line x1="571" y1="390" x2="403" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="403" y1="390" x2="403" y2="228" stroke="#444" stroke-width="1.2"/>
+<line x1="617" y1="390" x2="403" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="449" y1="390" x2="403" y2="228" stroke="#666" stroke-width="0.7" stroke-dasharray="2,2"/>
+<line x1="663" y1="390" x2="403" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="403" y1="390" x2="449" y2="228" stroke="#666" stroke-width="0.7" stroke-dasharray="2,2"/>
+<line x1="617" y1="390" x2="449" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="449" y1="390" x2="449" y2="228" stroke="#444" stroke-width="1.2"/>
+<line x1="663" y1="390" x2="449" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="311" y1="390" x2="525" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="525" y1="390" x2="525" y2="228" stroke="#444" stroke-width="1.2"/>
+<line x1="357" y1="390" x2="525" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="571" y1="390" x2="525" y2="228" stroke="#666" stroke-width="0.7" stroke-dasharray="2,2"/>
+<line x1="311" y1="390" x2="571" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="525" y1="390" x2="571" y2="228" stroke="#666" stroke-width="0.7" stroke-dasharray="2,2"/>
+<line x1="357" y1="390" x2="571" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="571" y1="390" x2="571" y2="228" stroke="#444" stroke-width="1.2"/>
+<line x1="403" y1="390" x2="571" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="617" y1="390" x2="571" y2="228" stroke="#666" stroke-width="0.7" stroke-dasharray="2,2"/>
+<line x1="357" y1="390" x2="617" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="571" y1="390" x2="617" y2="228" stroke="#666" stroke-width="0.7" stroke-dasharray="2,2"/>
+<line x1="403" y1="390" x2="617" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="617" y1="390" x2="617" y2="228" stroke="#444" stroke-width="1.2"/>
+<line x1="449" y1="390" x2="617" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="663" y1="390" x2="617" y2="228" stroke="#666" stroke-width="0.7" stroke-dasharray="2,2"/>
+<line x1="403" y1="390" x2="663" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="617" y1="390" x2="663" y2="228" stroke="#666" stroke-width="0.7" stroke-dasharray="2,2"/>
+<line x1="449" y1="390" x2="663" y2="228" stroke="#aaa" stroke-width="0.7" stroke-dasharray="3,3"/>
+<line x1="663" y1="390" x2="663" y2="228" stroke="#444" stroke-width="1.2"/>
+<rect x="410" y="297" width="154" height="24" rx="6" ry="6" fill="#ffffff" stroke="#556" stroke-width="1"/>
+<text x="487" y="309" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#111">rng · <tspan font-style="italic" font-size="15" fill="#c00" text-decoration="underline">not</tspan> K² · O(K)</text>
+<rect x="354" y="323" width="266" height="18" rx="4" ry="4" fill="#ffffff" stroke="#e07a00" stroke-width="1"/>
+<text x="487" y="332" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#e07a00">reader k=1 read windows (via range index)</text>
+</svg>
