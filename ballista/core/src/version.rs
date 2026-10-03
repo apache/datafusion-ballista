@@ -23,7 +23,7 @@
 //! different major versions could run a query and return wrong results, so
 //! they refuse to work together.
 //!
-//! The client sends its [`BALLISTA_VERSION`](crate::BALLISTA_VERSION) in the
+//! The client sends its [`BALLISTA_VERSION`] in the
 //! [`BALLISTA_VERSION_HEADER`](crate::version::BALLISTA_VERSION_HEADER) gRPC
 //! header when it submits a job. The scheduler rejects the submission if the
 //! major versions differ, and otherwise sends its own version back in the
@@ -36,7 +36,7 @@
 //! version has to wait for the next major release. That covers everything a
 //! client relies on: job submission, job status, and the shuffle fetch it uses
 //! to read results from executors.
-//! [`BALLISTA_PROTOCOL_VERSION`](crate::BALLISTA_PROTOCOL_VERSION) is
+//! [`BALLISTA_PROTOCOL_VERSION`] is
 //! different. Schedulers and executors are upgraded together, so it can change
 //! in any release.
 
