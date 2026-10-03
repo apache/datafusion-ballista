@@ -1445,6 +1445,7 @@ mod tests {
     };
     use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
+    use datafusion::arrow::compute::concat_batches;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::arrow::record_batch::RecordBatch;
@@ -1942,11 +1943,14 @@ mod tests {
             .unwrap();
 
         // With single-partition (None) output, executing input partition 0
-        // writes just that partition's 2 batches to a single output file.
-        assert_eq!(result.len(), 2);
-        for b in result {
-            assert_eq!(b, create_test_batch())
-        }
+        // writes just that partition's 2 batches to a single output file,
+        // coalesced by the writer into one batch.
+        let expected = concat_batches(
+            &create_test_schema(),
+            &[create_test_batch(), create_test_batch()],
+        )
+        .unwrap();
+        assert_eq!(result, vec![expected]);
     }
 
     // tests if force remote read configuration option will

@@ -20,6 +20,7 @@ use crate::error::{BallistaError, Result};
 use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::PartitionStats;
 
+use datafusion::arrow::compute::BatchCoalescer;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::ipc::writer::StreamWriter;
@@ -197,12 +198,18 @@ pub fn create_write_options(
 /// Batches are read from the async stream and forwarded through a bounded
 /// channel to a `spawn_blocking` task that performs all synchronous file I/O,
 /// keeping the tokio worker thread unblocked.
+///
+/// Small input batches are coalesced up to `batch_size` rows before being
+/// written, so each IPC message (and its compression frame) is well-sized.
+/// Batches of more than `batch_size / 2` rows are written as-is when nothing
+/// is buffered, matching DataFusion's `CoalesceBatchesExec`.
 pub async fn write_stream_to_disk(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
     path: &Path,
     disk_write_metric: &metrics::Time,
     channel_capacity: usize,
     compression_type: Option<CompressionType>,
+    batch_size: usize,
 ) -> Result<PartitionStats> {
     let schema = stream.schema();
     let path_owned = path.to_owned();
@@ -210,7 +217,7 @@ pub async fn write_stream_to_disk(
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(channel_capacity);
 
-    let handle = tokio::task::spawn_blocking(move || -> Result<u64> {
+    let handle = tokio::task::spawn_blocking(move || -> Result<(u64, u64)> {
         let file = BufWriter::new(File::create(&path_owned).map_err(|e| {
             error!("Failed to create partition file at {:?}: {e:?}", path_owned);
             BallistaError::IoError(e)
@@ -220,25 +227,36 @@ pub async fn write_stream_to_disk(
 
         let mut writer =
             StreamWriter::try_new_with_options(file, schema.as_ref(), options)?;
+        let mut coalescer = BatchCoalescer::new(schema, batch_size)
+            .with_biggest_coalesce_batch_size(Some(batch_size / 2));
+        let mut num_batches = 0;
 
         while let Some(batch) = rx.blocking_recv() {
             let timer = write_metric.timer();
-            writer.write(&batch)?;
+            coalescer.push_batch(batch)?;
+            while let Some(batch) = coalescer.next_completed_batch() {
+                writer.write(&batch)?;
+                num_batches += 1;
+            }
             timer.done();
         }
         let timer = write_metric.timer();
+        coalescer.finish_buffered_batch()?;
+        while let Some(batch) = coalescer.next_completed_batch() {
+            writer.write(&batch)?;
+            num_batches += 1;
+        }
         writer.finish()?;
         timer.done();
-        Ok(std::fs::metadata(&path_owned).map(|m| m.len()).unwrap_or(0))
+        let num_bytes = std::fs::metadata(&path_owned).map(|m| m.len()).unwrap_or(0);
+        Ok((num_batches, num_bytes))
     });
 
     let mut num_rows = 0;
-    let mut num_batches = 0;
 
     let stream_err = loop {
         match stream.next().await {
             Some(Ok(batch)) => {
-                num_batches += 1;
                 num_rows += batch.num_rows();
                 if tx.send(batch).await.is_err() {
                     break None;
@@ -260,7 +278,7 @@ pub async fn write_stream_to_disk(
         }
         return Err(e.into());
     }
-    let num_bytes = write_result?;
+    let (num_batches, num_bytes) = write_result?;
 
     Ok(PartitionStats::new(
         Some(num_rows as u64),
@@ -418,6 +436,82 @@ pub fn get_current_time() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::array::Int32Array;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::ipc::reader::StreamReader;
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+
+    fn int_batch(values: std::ops::Range<i32>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from_iter_values(values))])
+            .unwrap()
+    }
+
+    /// Writes `inputs` through `write_stream_to_disk` and returns the stats
+    /// as `(rows, batches, bytes)`, the file size, and the batches read back.
+    async fn write_and_read_back(
+        inputs: Vec<RecordBatch>,
+        batch_size: usize,
+    ) -> (
+        (Option<u64>, Option<u64>, Option<u64>),
+        u64,
+        Vec<RecordBatch>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.arrow");
+        let schema = inputs[0].schema();
+        let mut stream: Pin<Box<dyn RecordBatchStream + Send>> =
+            Box::pin(RecordBatchStreamAdapter::new(
+                schema,
+                futures::stream::iter(inputs.into_iter().map(Ok)),
+            ));
+        let stats = write_stream_to_disk(
+            &mut stream,
+            &path,
+            &metrics::Time::new(),
+            4,
+            None,
+            batch_size,
+        )
+        .await
+        .unwrap();
+        let file_len = std::fs::metadata(&path).unwrap().len();
+        let reader = StreamReader::try_new(File::open(&path).unwrap(), None).unwrap();
+        let read_back = reader.collect::<std::result::Result<Vec<_>, _>>().unwrap();
+        (
+            (stats.num_rows, stats.num_batches, stats.num_bytes),
+            file_len,
+            read_back,
+        )
+    }
+
+    #[tokio::test]
+    async fn write_stream_to_disk_coalesces_small_batches() {
+        let inputs = (0..10).map(|i| int_batch(i * 3..i * 3 + 3)).collect();
+
+        let (stats, file_len, read_back) = write_and_read_back(inputs, 8).await;
+
+        assert_eq!(stats, (Some(30), Some(4), Some(file_len)));
+        assert_eq!(
+            read_back,
+            vec![
+                int_batch(0..8),
+                int_batch(8..16),
+                int_batch(16..24),
+                int_batch(24..30),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn write_stream_to_disk_passes_large_batches_through() {
+        let inputs = vec![int_batch(0..20), int_batch(20..40)];
+
+        let (stats, file_len, read_back) = write_and_read_back(inputs, 8).await;
+
+        assert_eq!(stats, (Some(40), Some(2), Some(file_len)));
+        assert_eq!(read_back, vec![int_batch(0..20), int_batch(20..40)]);
+    }
 
     #[test]
     fn test_grpc_client_config_from_ballista_config() {

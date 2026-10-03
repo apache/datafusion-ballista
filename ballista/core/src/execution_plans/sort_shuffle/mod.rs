@@ -17,17 +17,21 @@
 
 //! Sort-based shuffle implementation for Ballista.
 //!
-//! This module provides an alternative to the hash-based shuffle. It writes
-//! a single consolidated file per input partition (sorted by output partition ID)
-//! along with an index file mapping partition IDs to byte ranges.
+//! Every hash-repartitioning stage writes its output through this module.
+//! Each task writes a single consolidated `data.arrow` file holding all K
+//! output partitions back-to-back (partition-major, so each partition's rows
+//! from every input partition the task drained are contiguous), along with a
+//! `data.arrow.index` file mapping each output partition ID to its byte range.
 //!
-//! This approach reduces file count from `N × M` (N input partitions × M output partitions)
-//! to `2 × N` files (one data + one index per input partition).
+//! This keeps the file count at `2 × T` (one data + one index per task)
+//! rather than `T × K` (T tasks × K output partitions) for a
+//! one-file-per-partition layout.
 //!
-//! The algorithm follows the approach used by Apache Spark: internally, results from
-//! individual map tasks are kept in memory until they can't fit. Then, these are
-//! sorted based on the target partition and written to a single file. On the reduce
-//! side, tasks read the relevant sorted blocks.
+//! The algorithm follows the approach used by Apache Spark: each task buffers
+//! its rows by target partition in memory, spilling to disk when they don't
+//! fit, and at end of input writes every partition, buffered and spilled, into
+//! the single file in partition order. On the reduce side, the task for output
+//! partition k reads the `index[k]` byte range from each upstream task's file.
 
 mod buffer;
 mod config;
