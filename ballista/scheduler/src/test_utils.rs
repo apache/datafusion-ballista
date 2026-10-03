@@ -69,7 +69,7 @@ pub const TPCH_TABLES: &[&str] = &[
     "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
 ];
 
-const TEST_SCHEDULER_NAME: &str = "localhost:50050";
+const TEST_SCHEDULER_ENDPOINT: &str = "localhost:50050";
 
 /// Sometimes we need to construct logical plans that will produce errors
 /// when we try and create physical plan. A scan using `ExplodingTableProvider`
@@ -126,7 +126,7 @@ pub async fn await_condition<Fut: Future<Output = Result<bool>>, F: Fn() -> Fut>
 /// Creates a test cluster context with in-memory state.
 pub fn test_cluster_context() -> BallistaCluster {
     BallistaCluster::new_memory(
-        TEST_SCHEDULER_NAME,
+        TEST_SCHEDULER_ENDPOINT,
         Arc::new(default_session_builder),
         Arc::new(default_config_producer),
     )
@@ -309,6 +309,7 @@ pub fn default_task_runner() -> impl TaskRunner {
                     executor_id: executor_id.clone(),
                     partitions: partitions.clone(),
                     runtime_stats: vec![],
+                    task_column_stats: vec![],
                     window_state: vec![],
                 })),
             });
@@ -1296,6 +1297,7 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
             executor_id: executor_id.to_owned(),
             partitions,
             runtime_stats: vec![],
+            task_column_stats: vec![],
             window_state: vec![],
         })),
     }

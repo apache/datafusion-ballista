@@ -153,7 +153,7 @@ jobs:
         with:
           name: tpcds-sf1-cluster-logs-${{ matrix.slug }}
           retention-days: 14
-          path: |
-            ${{ runner.temp }}/scheduler.log
-            ${{ runner.temp }}/executor.log
+          # Glob, not two file lines: in a container job the runner only
+          # rewrites the first line's host path (actions/runner#1174).
+          path: ${{ runner.temp }}/*.log
           if-no-files-found: ignore

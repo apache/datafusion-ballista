@@ -69,17 +69,17 @@ that one fact.
 
 ## Why the barrier is there
 
-### Producers and consumers never compete for slots
+### Producers and consumers never compete for vcores
 
-Each executor advertises a fixed number of task slots. Under a blocking
-shuffle, a stage's tasks hold slots only while that stage runs, so a stage with
-1000 tasks executes perfectly well on a cluster with 32 slots — the scheduler
-simply feeds tasks in as slots free up.
+Each executor advertises a fixed number of vcores. Under a blocking
+shuffle, a stage's tasks hold vcores only while that stage runs, so a stage with
+1000 tasks executes perfectly well on a cluster with 32 vcores — the scheduler
+simply feeds tasks in as vcores free up.
 
 Pipelined shuffle removes that freedom. If a consumer task streams from a
 producer task, both must be resident at the same time, which turns stage
 scheduling into a co-scheduling (gang scheduling) problem. Get it wrong and the
-cluster deadlocks: every slot is held by a consumer waiting on a producer that
+cluster deadlocks: every vcore is held by a consumer waiting on a producer that
 cannot be scheduled. Engines that pipeline either require enough capacity for
 the whole pipeline region, provision workers on demand, or fall back to
 materialization under pressure.
@@ -126,12 +126,12 @@ and one that never does.
 ### The filesystem absorbs producer/consumer skew
 
 In a blocking shuffle, the buffer between stages is the disk. A producer never
-waits for a consumer: it writes its output, reports, and releases its slot. That
+waits for a consumer: it writes its output, reports, and releases its vcores. That
 decoupling is what lets the sort-based writer bound its own memory by spilling
 and still guarantee forward progress.
 
 In a pipelined shuffle, the buffer is memory plus network, and backpressure is
-end-to-end. A slow consumer stalls its producer, which holds a slot and its
+end-to-end. A slow consumer stalls its producer, which holds its vcores and its
 working set while stalled. Shuffles far larger than cluster memory — the case
 Ballista is built for — need either a spill path or a remote shuffle service to
 stay safe, which is most of the blocking machinery reintroduced.
@@ -252,7 +252,7 @@ behavior it would be config-gated, leaving today's model as the default:
   today. A consumer task could begin once some producer tasks have finished,
   learning about additional `PartitionLocation`s incrementally. Where the
   cluster has spare capacity this overlaps stages and shortens the straggler
-  stall, and it keeps files, retries, and slot accounting exactly as they are.
+  stall, and it keeps files, retries, and vcore accounting exactly as they are.
   The general form of this — deciding how much of the DAG is in flight at once
   rather than always running exactly one stage — is sometimes called bubble
   execution ([#2320], [#408]).

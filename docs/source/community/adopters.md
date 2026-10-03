@@ -17,9 +17,12 @@
   under the License.
 -->
 
-# Ballista Developer Documentation
+# Who Uses Ballista
 
-- Read the [Architecture Overview](architecture.md) to get an understanding of the scheduler and executor
-  processes and how distributed query execution works.
-- Watch the [Ballista: Distributed Compute with Rust and Apache Arrow](https://www.youtube.com/watch?v=ZZHQaOap9pQ)
-  talk from the New York Open Statistical Programming Meetup (Feb 2021)
+The following organizations use Ballista. To add yours, open a pull request that adds a row to
+`docs/source/community/adopters.md`.
+
+| Organization                       | Reference                                                                        |
+| ---------------------------------- | -------------------------------------------------------------------------------- |
+| [Spice AI](https://spice.ai)       | [Apache Ballista at Spice AI](https://spice.ai/blog/apache-ballista-at-spice-ai) |
+| [Coralogix](https://coralogix.com) | —                                                                                |

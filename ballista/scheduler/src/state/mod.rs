@@ -114,7 +114,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub fn new(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
-        scheduler_name: String,
+        scheduler_id: String,
+        scheduler_endpoint: String,
         config: Arc<SchedulerConfig>,
     ) -> Self {
         Self {
@@ -125,7 +126,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             task_manager: TaskManager::new(
                 cluster.job_state(),
                 codec.clone(),
-                scheduler_name,
+                scheduler_id,
+                scheduler_endpoint,
                 config.clone(),
             ),
             session_manager: SessionManager::new(cluster.job_state()),
@@ -134,21 +136,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
-    /// Creates a new `SchedulerState` with default scheduler name (for testing only).
+    /// Creates a new `SchedulerState` with the default scheduler endpoint (for testing only).
     #[cfg(test)]
-    pub fn new_with_default_scheduler_name(
+    pub fn new_with_default_scheduler_endpoint(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
     ) -> Self {
         let config = Arc::new(SchedulerConfig::default());
-        SchedulerState::new(cluster, codec, "localhost:50050".to_owned(), config)
+        SchedulerState::new(
+            cluster,
+            codec,
+            config.scheduler_id.clone(),
+            "localhost:50050".to_owned(),
+            config,
+        )
     }
 
     #[allow(dead_code)]
     pub(crate) fn new_with_task_launcher(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
-        scheduler_name: String,
+        scheduler_id: String,
         config: Arc<SchedulerConfig>,
         dispatcher: Arc<dyn TaskLauncher>,
     ) -> Self {
@@ -160,7 +168,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             task_manager: TaskManager::with_launcher(
                 cluster.job_state(),
                 codec.clone(),
-                scheduler_name,
+                scheduler_id,
                 dispatcher,
                 config.clone(),
             ),
@@ -188,6 +196,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             return Ok(());
         }
 
+        // Register before yielding to the launch task: an ExecutorLost event
+        // must be able to discard every reservation from this bind batch.
+        self.task_manager
+            .record_task_reservations(&schedulable_tasks);
         let state = self.clone();
         tokio::spawn(async move {
             let mut if_revive = false;
@@ -207,8 +219,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         if let Err(e) = sender
                             .post_event(QueryStageSchedulerEvent::JobRunningFailed {
                                 job_id: job,
-                                fail_message: "task serialization failed by executor"
-                                    .to_string(),
+                                fail_message:
+                                    "task could not be prepared or was rejected by executor"
+                                        .to_string(),
                                 queued_at: timestamp_millis(),
                                 failed_at: timestamp_millis(),
                             })
@@ -310,16 +323,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         let mut join_handles = vec![];
         for (executor_id, tasks) in executor_stage_assignments.into_iter() {
             let tasks: Vec<Vec<TaskDescription>> = tasks.into_values().collect();
-            // Total number of tasks to be launched for one executor
-            let n_tasks: usize = tasks.iter().map(|stage_tasks| stage_tasks.len()).sum();
+
             let state = self.clone();
             let sender = sender.clone();
             let join_handle = tokio::spawn(async move {
-                let job_ids: Vec<JobId> = tasks
-                    .iter()
-                    .flatten()
-                    .map(|t| t.key.job_id.clone())
-                    .collect();
+                let mut reservations: Vec<TaskDescription> =
+                    tasks.iter().flatten().cloned().collect();
                 match state
                     .executor_manager
                     .get_executor_metadata(&executor_id)
@@ -332,11 +341,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                             .await
                         {
                             Ok(rejected) => {
-                                let freed = job_ids
-                                    .iter()
-                                    .filter(|j| rejected.contains(*j))
-                                    .count()
-                                    as u32;
+                                reservations
+                                    .retain(|task| rejected.contains(&task.key.job_id));
+                                let freed = state
+                                    .task_manager
+                                    .take_task_reservations(&executor_id, &reservations);
                                 (vec![(executor_id.clone(), freed)], rejected)
                             }
                             Err(e) => {
@@ -349,10 +358,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                                     .remove_executor(&executor_id, Some(err_msg), &sender)
                                     .await;
 
-                                (
-                                    vec![(executor_id.clone(), n_tasks as u32)],
-                                    HashSet::new(),
-                                )
+                                // Removed executors have no budget to refund.
+                                state
+                                    .task_manager
+                                    .take_task_reservations(&executor_id, &reservations);
+                                (vec![], HashSet::new())
                             }
                         }
                     }
@@ -360,7 +370,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         error!(
                             "Failed to launch new task, could not get executor metadata: {e}"
                         );
-                        (vec![(executor_id.clone(), n_tasks as u32)], HashSet::new())
+                        state
+                            .task_manager
+                            .take_task_reservations(&executor_id, &reservations);
+                        (vec![], HashSet::new())
                     }
                 }
             });
@@ -571,24 +584,26 @@ mod tests {
             .bind_schedulable_tasks(state.task_manager.get_running_job_cache())
             .await?;
 
-        let bad_task_count = bound
+        let bad_vcores: u32 = bound
             .iter()
             .filter(|(_, t)| t.key.job_id == bad_job)
-            .count() as u32;
+            .map(|(_, t)| t.vcores_consumed)
+            .sum();
         let good_task_count = bound
             .iter()
             .filter(|(_, t)| t.key.job_id == good_job)
             .count() as u32;
-        assert!(bad_task_count > 0 && good_task_count > 0);
+        assert!(bad_vcores > 0 && good_task_count > 0);
 
         let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
         let sender = EventSender::new(tx_event);
+        state.task_manager.record_task_reservations(&bound);
         let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
 
         assert_eq!(failed_jobs, HashSet::from([bad_job.clone()]));
 
         let freed: u32 = unassigned_slots.iter().map(|(_, n)| *n).sum();
-        assert_eq!(freed, bad_task_count);
+        assert_eq!(freed, bad_vcores);
 
         assert!(
             state
@@ -597,6 +612,99 @@ mod tests {
                 .await
                 .is_ok()
         );
+
+        Ok(())
+    }
+
+    /// A task whose definition cannot be prepared is never sent to an
+    /// executor, so no status will ever come back for it. Its job has to be
+    /// failed and its slot refunded, or the job stays `Running` for the life of
+    /// the scheduler and the executor permanently loses the vcore.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_fails_jobs_whose_tasks_cannot_be_prepared() -> Result<()> {
+        let good_job = JobId::from("job-good");
+        let doomed_job = JobId::from("job-doomed");
+        let orphan = JobId::from("job-orphan");
+
+        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerState::new_with_task_launcher(
+                test_cluster_context(),
+                BallistaCodec::default(),
+                "localhost:50050".to_owned(),
+                Arc::new(SchedulerConfig::default()),
+                Arc::new(RejectOne {
+                    reject: JobId::from("no-such-job"),
+                }),
+            );
+
+        let vcores = 8;
+        state
+            .executor_manager
+            .register_executor(
+                ExecutorMetadata {
+                    id: "executor-1".to_string(),
+                    host: String::default(),
+                    port: 0,
+                    grpc_port: 0,
+                    specification: ExecutorSpecification::default().with_vcores(vcores),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
+                },
+                ExecutorData {
+                    executor_id: "executor-1".to_string(),
+                    total_vcores: vcores,
+                    available_vcores: vcores,
+                },
+            )
+            .await?;
+
+        let ctx = state
+            .session_manager
+            .create_or_update_session("session", &SessionConfig::new_with_ballista())
+            .await?;
+        for job_id in [&good_job, &doomed_job] {
+            state
+                .task_manager
+                .queue_job(job_id, "", timestamp_millis())?;
+            state
+                .task_manager
+                .submit_job(
+                    job_id,
+                    "",
+                    ctx.clone(),
+                    &agg_plan(),
+                    timestamp_millis(),
+                    None,
+                )
+                .await?;
+        }
+
+        let mut bound = state
+            .executor_manager
+            .bind_schedulable_tasks(state.task_manager.get_running_job_cache())
+            .await?;
+
+        // Point one job's tasks at a job the task manager has never heard of,
+        // which preparation refuses. Any preparation failure, such as a plan
+        // the physical codec cannot encode, lands in the same branch.
+        let mut orphaned = 0;
+        let mut orphaned_vcores = 0;
+        for (_, task) in bound.iter_mut() {
+            if task.key.job_id == doomed_job {
+                task.key.job_id = orphan.clone();
+                orphaned += 1;
+                orphaned_vcores += task.vcores_consumed;
+            }
+        }
+        assert!(orphaned > 0 && bound.len() > orphaned);
+
+        let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
+        let sender = EventSender::new(tx_event);
+        state.task_manager.record_task_reservations(&bound);
+        let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
+
+        assert_eq!(failed_jobs, HashSet::from([orphan]));
+        let freed: u32 = unassigned_slots.iter().map(|(_, n)| *n).sum();
+        assert_eq!(freed, orphaned_vcores);
 
         Ok(())
     }

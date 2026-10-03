@@ -77,6 +77,15 @@ const SCHEDULER_PORT: u16 = 50050;
 const EXECUTOR_HEALTH_PORT: u16 = 50053;
 const EXECUTOR_DEPLOYMENT: &str = "ballista-executor";
 
+/// Default executor pod `terminationGracePeriodSeconds`: a realistic graceful
+/// window so a normally-terminated executor drains its in-flight tasks.
+pub const DEFAULT_EXECUTOR_GRACE_SECONDS: u64 = 30;
+
+/// Short executor grace for the total-executor-loss scenario (#2029): small
+/// enough that the kubelet SIGKILLs the executor mid-query before its graceful
+/// path can drain, so the query genuinely fails rather than completing.
+pub const ABRUPT_EXECUTOR_GRACE_SECONDS: u64 = 1;
+
 /// Marker file dropped in any fixture directory the harness manages, so a later
 /// run can tell a directory it owns (safe to clear) from a foreign one.
 const FIXTURE_MARKER: &str = ".ballista-chaos-fixture";
@@ -96,12 +105,16 @@ static NS_SEQ: AtomicU32 = AtomicU32::new(0);
 /// How an executor pod is removed.
 #[derive(Clone, Copy, Debug)]
 pub enum KillMode {
-    /// `kubectl delete pod` — SIGTERM plus the termination grace period, so the
-    /// executor's graceful-shutdown path runs (the path a raw process `SIGKILL`
-    /// can never reach).
+    /// `kubectl delete pod` — a normal delete: SIGTERM, then SIGKILL after the
+    /// pod's `terminationGracePeriodSeconds`, so the executor's graceful-shutdown
+    /// path runs (the path a raw process `SIGKILL` can never reach).
     Graceful,
-    /// `kubectl delete pod --grace-period=0 --force` — an abrupt loss, the
-    /// closest k8s analogue of the process harness's `SIGKILL`.
+    /// `kubectl delete pod --grace-period=0 --force` — removes the pod from the
+    /// API immediately, but the kubelet still stops the container by SIGTERM then
+    /// SIGKILL after the pod's `terminationGracePeriodSeconds`. So how abrupt it
+    /// is depends on that grace: with the default it is effectively graceful; with
+    /// a short grace ([`ABRUPT_EXECUTOR_GRACE_SECONDS`]) the SIGKILL lands before
+    /// the executor can drain, the closest k8s analogue of a process `SIGKILL`.
     Forced,
 }
 
@@ -111,12 +124,32 @@ pub struct K8sCluster {
     scheduler_local_port: u16,
     port_forward: PortForward,
     shared_dir: PathBuf,
+    /// REST-polling client, owned per cluster so its connection pool lives on
+    /// this test's runtime (see [`crate::rest`]).
+    client: reqwest::Client,
 }
 
 impl K8sCluster {
     /// Deploy a scheduler + `executors` executor pods, wait until all executors
     /// have registered, and open a port-forward to the scheduler.
+    ///
+    /// The executor pods use a realistic graceful-shutdown window
+    /// ([`DEFAULT_EXECUTOR_GRACE_SECONDS`]). A scenario that needs an *abrupt*
+    /// kill — the kubelet SIGKILLing an executor before it can drain in-flight
+    /// tasks — should use [`Self::start_with_executor_grace`] with a short grace.
     pub async fn start(executors: usize) -> Result<Self, String> {
+        Self::start_with_executor_grace(executors, DEFAULT_EXECUTOR_GRACE_SECONDS).await
+    }
+
+    /// Like [`Self::start`], but with an explicit executor pod
+    /// `terminationGracePeriodSeconds`. A short grace makes a pod deletion an
+    /// abrupt loss: the kubelet SIGKILLs the executor before its graceful path
+    /// can drain the in-flight query, which is what the total-executor-loss
+    /// scenario (#2029) needs.
+    pub async fn start_with_executor_grace(
+        executors: usize,
+        executor_grace_seconds: u64,
+    ) -> Result<Self, String> {
         require_kubectl()?;
 
         // One cluster per process; --test-threads=1 keeps it to one at a time.
@@ -145,7 +178,8 @@ impl K8sCluster {
         clear_dir_contents(&shared_dir)?;
         write_marker(&shared_dir)?;
 
-        let manifests = render_manifests(&namespace, executors, &shared_dir);
+        let manifests =
+            render_manifests(&namespace, executors, executor_grace_seconds, &shared_dir);
         kubectl_apply(&manifests).await?;
 
         // Guard so the namespace is torn down even if a later step fails.
@@ -171,6 +205,7 @@ impl K8sCluster {
             scheduler_local_port,
             port_forward,
             shared_dir,
+            client: crate::rest::build_client(),
         };
 
         cluster.await_executors(executors).await?;
@@ -259,36 +294,53 @@ impl K8sCluster {
 
     /// How many executors the scheduler currently considers registered.
     pub async fn registered_executors(&self) -> Result<usize, String> {
-        // A short timeout so a stalled port-forward surfaces as a retryable
-        // error in the polling loop rather than hanging the whole wait.
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let body: serde_json::Value = client
-            .get(format!("{}/api/executors", self.rest_url()))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .json()
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(body.as_array().map(|a| a.len()).unwrap_or(0))
+        crate::rest::registered_executors(&self.client, &self.rest_url()).await
     }
 
-    /// Scale the executor Deployment. `0` is a total loss that stays lost (the
-    /// controller does not recreate the pods); scaling back up recovers.
+    /// The ids of every executor the scheduler currently lists. A killed
+    /// executor's pod is rescheduled with a fresh id, so a scenario can compare
+    /// this before and after a kill to prove the replacement is genuinely new.
+    pub async fn executor_ids(&self) -> Result<Vec<String>, String> {
+        crate::rest::executor_ids(&self.client, &self.rest_url()).await
+    }
+
+    /// The id of the single job the scheduler currently knows about.
+    pub async fn running_job_id(&self) -> Result<String, String> {
+        crate::rest::running_job_id(&self.client, &self.rest_url()).await
+    }
+
+    /// Block until any task in any stage is Running, so a kill lands mid-flight.
+    pub async fn await_any_stage_running(&self, job_id: &str) -> Result<(), String> {
+        crate::rest::await_any_stage_running(&self.client, &self.rest_url(), job_id).await
+    }
+
+    /// Total, sustained executor loss *mid-query* (#2029). Scales the Deployment
+    /// to 0 (dropping the ReplicaSet's desired count so it will not reschedule —
+    /// unlike `--cascade=orphan`, which leaves the RS recreating the pods) then
+    /// force-deletes the pods. Terminal: with the Deployment at 0 the cluster does
+    /// not recover.
     ///
-    /// Not yet exercised by a scenario — this is the k8s primitive the executor
-    /// kill/loss scenarios (the #2029 follow-ups) will drive; the baseline test
-    /// only needs a healthy cluster. Kept here so the backend is complete.
-    pub async fn scale_executors(&self, replicas: usize) -> Result<(), String> {
+    /// k8s always sends SIGTERM before SIGKILL; the abruptness comes from the pods'
+    /// short grace ([`ABRUPT_EXECUTOR_GRACE_SECONDS`]), which lets the kubelet
+    /// SIGKILL the executor before it can drain the in-flight query.
+    pub async fn kill_all_executors_hard(&self) -> Result<(), String> {
         kubectl(&[
             "-n",
             &self.namespace,
             "scale",
             &format!("deploy/{EXECUTOR_DEPLOYMENT}"),
-            &format!("--replicas={replicas}"),
+            "--replicas=0",
+        ])
+        .await?;
+        kubectl(&[
+            "-n",
+            &self.namespace,
+            "delete",
+            "pod",
+            "-l",
+            "app=ballista-executor",
+            "--grace-period=0",
+            "--force",
         ])
         .await
         .map(|_| ())
@@ -693,6 +745,7 @@ async fn kubectl_apply(manifests: &str) -> Result<(), String> {
 fn render_manifests(
     namespace: &str,
     executors: usize,
+    executor_grace_seconds: u64,
     mount: &std::path::Path,
 ) -> String {
     let mount = mount.display();
@@ -794,7 +847,13 @@ spec:
       labels:
         app: ballista-executor
     spec:
-      terminationGracePeriodSeconds: 30
+      # Set per scenario (see `render_manifests`). The default is a realistic
+      # graceful-shutdown window; the total-executor-loss scenario (#2029) turns
+      # it down so the kubelet SIGKILLs the executor before its graceful path can
+      # drain the in-flight query (executor_process.rs, `tasks_drained.await`) —
+      # otherwise the drain finishes and the query *succeeds*. (`--grace-period=0`
+      # on a force-delete does not override this pod-spec value.)
+      terminationGracePeriodSeconds: {executor_grace_seconds}
       containers:
         - name: executor
           image: {CHAOS_IMAGE}

@@ -321,7 +321,7 @@ async fn run_scheduler() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
-            config.scheduler_name(),
+            config.scheduler_endpoint(),
             cluster,
             codec,
             Arc::new(config),

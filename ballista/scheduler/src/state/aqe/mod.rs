@@ -97,8 +97,7 @@ mod test;
 /// when they are returned from [AdaptivePlanner].
 #[derive(Debug, Clone)]
 pub(crate) struct AdaptiveExecutionGraph {
-    /// Curator scheduler name. Can be `None` is `ExecutionGraph` is not currently curated by any scheduler
-    #[allow(dead_code)] // not used at the moment, will be used later
+    /// Scheduler currently curating this job, if known.
     scheduler_id: Option<String>,
     /// Adaptive Planner to be used with this execution graph
     planner: AdaptivePlanner,
@@ -123,9 +122,9 @@ pub(crate) struct AdaptiveExecutionGraph {
     /// stage in the map to be Successful: a cancelled stage left behind in
     /// a non-Successful state would block job completion forever. Late
     /// task statuses for these stage ids are discarded instead of erroring.
-    /// Each value retains the vcores consumed per task (indexed by task_id)
-    /// so late completions can still refund the executor's reservation.
-    retired_stages: HashMap<usize, Vec<u32>>,
+    /// Outstanding vcore reservations are tracked separately by TaskManager,
+    /// so they can outlive the entire execution graph.
+    retired_stages: HashSet<usize>,
 
     /// Locations of this `ExecutionGraph` final output locations
     output_locations: Vec<PartitionLocation>,
@@ -204,7 +203,7 @@ impl AdaptiveExecutionGraph {
             start_time: started_at,
             end_time: 0,
             stages,
-            retired_stages: HashMap::new(),
+            retired_stages: HashSet::new(),
             output_locations: vec![],
             failed_stage_attempts: HashMap::new(),
             session_config,
@@ -539,14 +538,7 @@ impl AdaptiveExecutionGraph {
         match self.stages.remove(&stage_id) {
             Some(ExecutionStage::Running(running)) => {
                 let inflight = running.running_tasks().len();
-                self.retired_stages.insert(
-                    stage_id,
-                    running
-                        .task_infos
-                        .iter()
-                        .map(|task| task.vcores_consumed)
-                        .collect(),
-                );
+                self.retired_stages.insert(stage_id);
                 debug!(
                     "Job {} stage {stage_id} retired after AQE replan ({inflight} task(s) still in flight)",
                     self.job_id(),
@@ -560,7 +552,7 @@ impl AdaptiveExecutionGraph {
                     stage,
                     ExecutionStage::Resolved(_) | ExecutionStage::UnResolved(_)
                 ) {
-                    self.retired_stages.insert(stage_id, vec![]);
+                    self.retired_stages.insert(stage_id);
                     debug!(
                         "Job {} stage {stage_id} dropped after AQE replan",
                         self.job_id(),
@@ -758,6 +750,10 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     fn session_id(&self) -> &str {
         self.session_id.as_str()
+    }
+
+    fn scheduler_id(&self) -> Option<&str> {
+        self.scheduler_id.as_deref()
     }
 
     fn session_config(&self) -> Arc<SessionConfig> {
@@ -1112,7 +1108,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             .collect::<Vec<_>>(),
                     );
                 }
-            } else if self.retired_stages.contains_key(&stage_id) {
+            } else if self.retired_stages.contains(&stage_id) {
                 // The stage was retired after an AQE replan made it
                 // redundant, so a late status from one of its tasks is
                 // stale: discard it instead of failing the whole update
@@ -1493,20 +1489,6 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     fn stages(&self) -> &HashMap<usize, ExecutionStage> {
         &self.stages
-    }
-
-    fn task_vcores(&self, stage_id: usize, task_id: usize) -> Option<u32> {
-        self.stages
-            .get(&stage_id)
-            .and_then(|stage| stage.task_infos())
-            .and_then(|infos| infos.get(task_id))
-            .map(|task| task.vcores_consumed)
-            .or_else(|| {
-                self.retired_stages
-                    .get(&stage_id)
-                    .and_then(|vcores| vcores.get(task_id))
-                    .copied()
-            })
     }
 
     fn stage_count(&self) -> usize {

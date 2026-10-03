@@ -59,15 +59,14 @@ pub use standalone::new_standalone_executor;
 pub use standalone::new_standalone_executor_from_builder;
 pub use standalone::new_standalone_executor_from_state;
 
-use log::info;
-
 use crate::shutdown::Shutdown;
 use ballista_core::serde::protobuf::{
     FailedTask, OperatorMetricsSet, RuntimeStatsReport, ShuffleWritePartition,
-    SuccessfulTask, TaskStatus, WindowStateReport, task_status,
+    SuccessfulTask, TaskColumnStats, TaskStatus, WindowStateReport, task_status,
 };
 use ballista_core::serde::scheduler::TaskKey;
 use ballista_core::utils::GrpcServerConfig;
+use log::info;
 
 /// [ArrowFlightServerProvider] provides a function which creates a new Arrow Flight server.
 ///
@@ -115,6 +114,9 @@ pub struct TaskCompletionExtras {
     /// window, already stamped with the global partition each entry belongs
     /// to by the stage's `ShuffleWriterExec`.
     pub window_state: Vec<WindowStateReport>,
+    /// Per-column statistics folded across this task's shuffle output. Empty
+    /// when the executed plan collects none (e.g. non-sort shuffle paths).
+    pub column_stats: Vec<TaskColumnStats>,
 }
 
 /// Converts a task execution result into a [`TaskStatus`] protobuf message.
@@ -123,7 +125,7 @@ pub struct TaskCompletionExtras {
 /// along with timing and metrics information into a status message that
 /// can be sent back to the scheduler.
 pub fn as_task_status(
-    execution_result: ballista_core::error::Result<Vec<ShuffleWritePartition>>,
+    execution_result: Result<Vec<ShuffleWritePartition>, BallistaError>,
     executor_id: String,
     stage_attempt_num: usize,
     key: TaskKey,
@@ -134,6 +136,7 @@ pub fn as_task_status(
         operator_metrics,
         runtime_stats,
         window_state,
+        column_stats,
     } = extras;
     let metrics = operator_metrics.unwrap_or_default();
     let task_id = key.task_id;
@@ -159,6 +162,7 @@ pub fn as_task_status(
                     executor_id,
                     partitions,
                     runtime_stats,
+                    task_column_stats: column_stats,
                     window_state,
                 })),
             }

@@ -125,7 +125,28 @@ impl ClusterState for InMemoryClusterState {
         let executor_id = metadata.id.clone();
         log::debug!("registering executor: {}", executor_id);
 
-        self.save_executor_metadata(metadata).await?;
+        if spec.executor_id != executor_id {
+            return Err(BallistaError::Configuration(format!(
+                "executor data id {} does not match metadata id {executor_id}",
+                spec.executor_id
+            )));
+        }
+
+        match self.executors.entry(executor_id.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(_) => {
+                return Err(BallistaError::Configuration(format!(
+                    "executor_id {executor_id} is already registered"
+                )));
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(metadata);
+                self.cluster_event_sender
+                    .send(&ClusterStateEvent::RegisteredExecutor {
+                        executor_id: executor_id.to_string(),
+                    });
+            }
+        };
+
         self.save_executor_heartbeat(ExecutorHeartbeat {
             executor_id: executor_id.clone(),
             timestamp: timestamp_secs(),
@@ -148,15 +169,6 @@ impl ClusterState for InMemoryClusterState {
             },
         );
 
-        // RegisteredExecutor event is not pushed from here,
-        // in order to align between push and pull policy
-        // event is pushed from `save_executor_metadata`
-        //
-        // self.cluster_event_sender
-        //     .send(&ClusterStateEvent::RegisteredExecutor {
-        //         executor_id: executor_id.to_string(),
-        //     });
-
         Ok(())
     }
 
@@ -167,15 +179,21 @@ impl ClusterState for InMemoryClusterState {
         //       insert time. This information may be useful when reporting executor
         //       status and heartbeat is not available (in case of `TaskSchedulingPolicy::PullStaged`)
         let executor_id = metadata.id.clone();
-        if self
-            .executors
-            .insert(executor_id.clone(), metadata)
-            .is_none()
-        {
-            self.cluster_event_sender
-                .send(&ClusterStateEvent::RegisteredExecutor {
-                    executor_id: executor_id.to_string(),
-                });
+        match self.executors.entry(executor_id.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(entry) => {
+                if entry.get() != &metadata {
+                    return Err(BallistaError::Configuration(format!(
+                        "executor_id {executor_id} is already registered"
+                    )));
+                }
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(metadata);
+                self.cluster_event_sender
+                    .send(&ClusterStateEvent::RegisteredExecutor {
+                        executor_id: executor_id.to_string(),
+                    });
+            }
         }
 
         //
@@ -527,18 +545,24 @@ mod test {
 
     use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
     use crate::cluster::test_util::{test_job_lifecycle, test_job_planning_failure};
-    use crate::cluster::{ClusterState, ClusterStateEvent, JobState, JobStateEvent};
+    use crate::cluster::{
+        BallistaCluster, ClusterState, ClusterStateEvent, JobState, JobStateEvent,
+    };
     use crate::test_utils::{
         test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
     };
     use ballista_core::JobId;
+    use ballista_core::config::BALLISTA_SCHEDULER_SHARE_FILE_STATISTICS_CACHE;
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::JobStatus;
     use ballista_core::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+        ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
+        ExecutorSpecification,
     };
     use ballista_core::utils::{default_config_producer, default_session_builder};
-    use datafusion::prelude::SessionConfig;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::dataframe::DataFrameWriteOptions;
+    use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
     use futures::StreamExt;
     use tokio::sync::Barrier;
 
@@ -731,6 +755,79 @@ mod test {
     }
 
     #[tokio::test]
+    async fn register_executor_rejects_duplicate_id() -> Result<()> {
+        let cluster_state = InMemoryClusterState::default();
+
+        let metadata = ExecutorMetadata {
+            id: "id123".to_string(),
+            host: "executor-a".to_string(),
+            port: 50055,
+            grpc_port: 50050,
+            specification: ExecutorSpecification::default().with_vcores(2),
+            os_info: ExecutorOperatingSystemSpecification::default(),
+        };
+        let executor_data = ExecutorData {
+            executor_id: metadata.id.clone(),
+            total_vcores: 2,
+            available_vcores: 2,
+        };
+
+        cluster_state
+            .register_executor(metadata.clone(), executor_data.clone())
+            .await?;
+
+        let err = cluster_state
+            .register_executor(metadata.clone(), executor_data)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("id123 is already registered"));
+        assert_eq!(
+            cluster_state.get_executor_metadata("id123").await?,
+            metadata
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn save_executor_metadata_rejects_duplicate_id() -> Result<()> {
+        let cluster_state = InMemoryClusterState::default();
+
+        let metadata = ExecutorMetadata {
+            id: "id123".to_string(),
+            host: "executor-a".to_string(),
+            port: 50055,
+            grpc_port: 50050,
+            specification: ExecutorSpecification::default().with_vcores(2),
+            os_info: ExecutorOperatingSystemSpecification::default(),
+        };
+
+        cluster_state
+            .save_executor_metadata(metadata.clone())
+            .await?;
+        cluster_state
+            .save_executor_metadata(metadata.clone())
+            .await?;
+
+        let mut duplicate = metadata.clone();
+        duplicate.host = "executor-b".to_string();
+
+        let err = cluster_state
+            .save_executor_metadata(duplicate)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("id123 is already registered"));
+        assert_eq!(
+            cluster_state.get_executor_metadata("id123").await?,
+            metadata
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_in_memory_session_notification() -> Result<()> {
         let state = InMemoryJobState::new(
             "",
@@ -765,6 +862,112 @@ mod test {
         ];
 
         assert_eq!(expected, result);
+
+        Ok(())
+    }
+
+    /// Every query gets a new session, so planning a scan only avoids
+    /// re-reading file footers if statistics outlive the session that
+    /// collected them.
+    #[tokio::test]
+    async fn test_in_memory_sessions_share_file_statistics() -> Result<()> {
+        let state = BallistaCluster::new_memory(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        )
+        .job_state();
+        let config = SessionConfig::new();
+
+        let caches = |ctx: &SessionContext| {
+            let cache_manager = &ctx.runtime_env().cache_manager;
+            (
+                cache_manager.get_file_statistic_cache().unwrap(),
+                cache_manager.get_list_files_cache().unwrap(),
+            )
+        };
+        let first = state.create_or_update_session("session_0", &config).await?;
+        let second = state.create_or_update_session("session_1", &config).await?;
+        let (stats_0, list_0) = caches(&first);
+        let (stats_1, list_1) = caches(&second);
+
+        assert!(Arc::ptr_eq(&stats_0, &stats_1));
+        // Each job lists the files itself, so that cached statistics are
+        // checked against the files as they are now.
+        assert!(!Arc::ptr_eq(&list_0, &list_1));
+
+        Ok(())
+    }
+
+    /// A session that turns sharing off keeps a statistics cache of its own,
+    /// and the sessions that share do not get it.
+    #[tokio::test]
+    async fn test_in_memory_sessions_opt_out_of_shared_file_statistics() -> Result<()> {
+        let state = BallistaCluster::new_memory(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        )
+        .job_state();
+        let opted_out = default_config_producer()
+            .set_bool(BALLISTA_SCHEDULER_SHARE_FILE_STATISTICS_CACHE, false);
+        let shared = default_config_producer();
+
+        let stats = |ctx: &SessionContext| {
+            ctx.runtime_env()
+                .cache_manager
+                .get_file_statistic_cache()
+                .unwrap()
+        };
+        // Built first, so its cache would become the shared one if it took part.
+        let own = state
+            .create_or_update_session("session_0", &opted_out)
+            .await?;
+        let first = state.create_or_update_session("session_1", &shared).await?;
+        let second = state.create_or_update_session("session_2", &shared).await?;
+
+        assert!(!Arc::ptr_eq(&stats(&own), &stats(&first)));
+        assert!(Arc::ptr_eq(&stats(&first), &stats(&second)));
+
+        Ok(())
+    }
+
+    /// Shared statistics must not outlive the file they describe: `COUNT(*)`
+    /// is answered from exact statistics, so stale ones give a wrong result.
+    #[tokio::test]
+    async fn test_in_memory_sessions_reread_changed_files() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("part-0.parquet");
+        // Given up front, as it is in a plan the scheduler decodes, so no file
+        // is read to infer it.
+        let schema = Schema::new(vec![Field::new("a", DataType::Int64, true)]);
+
+        let state = BallistaCluster::new_memory(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        )
+        .job_state();
+        let config = default_config_producer().with_collect_statistics(true);
+
+        for (session_id, rows) in [("session_0", 1), ("session_1", 2)] {
+            SessionContext::new()
+                .sql(&format!(
+                    "SELECT value AS a FROM generate_series(1, {rows})"
+                ))
+                .await?
+                .write_parquet(file.to_str().unwrap(), DataFrameWriteOptions::new(), None)
+                .await?;
+
+            let ctx = state.create_or_update_session(session_id, &config).await?;
+            ctx.register_parquet(
+                "t",
+                dir.path().to_str().unwrap(),
+                ParquetReadOptions::default().schema(&schema),
+            )
+            .await?;
+            assert_eq!(rows, ctx.table("t").await?.count().await?);
+        }
 
         Ok(())
     }

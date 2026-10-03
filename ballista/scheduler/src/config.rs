@@ -29,7 +29,9 @@ use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
 use crate::scheduler_server::JobIdGenerator;
 use ballista_core::extension::EndpointOverrideFn;
-use ballista_core::{ConfigProducer, JobId, config::TaskSchedulingPolicy};
+use ballista_core::{
+    ConfigProducer, JobId, config::TaskSchedulingPolicy, ids::new_instance_id,
+};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use log::{info, warn};
@@ -101,6 +103,10 @@ pub struct Config {
         help = "Namespace for the ballista cluster that this executor will join."
     )]
     pub namespace: String,
+    /// Identifier for this scheduler. If unset, a UUID-backed instance identity
+    /// is generated at startup.
+    #[arg(long = "id", help = "Identifier for this scheduler.")]
+    pub scheduler_id: Option<String>,
     /// Local host name or IP address to bind to.
     #[arg(
         long,
@@ -148,7 +154,7 @@ pub struct Config {
         help = "Delayed interval for cleaning up finished job state."
     )]
     pub finished_job_state_clean_up_interval_seconds: u64,
-    /// Task distribution policy (bias, round-robin, consistent-hash).
+    /// Task distribution policy (bias, round-robin).
     #[arg(
         long,
         default_value_t = crate::config::TaskDistribution::default(),
@@ -273,6 +279,14 @@ pub struct Config {
         help = "Number of attempts before stage is considered failed."
     )]
     pub stage_max_failures: usize,
+    #[cfg(feature = "flight-sql")]
+    /// Serve Arrow Flight SQL on the scheduler's gRPC port.
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Serve Arrow Flight SQL on the scheduler port, so JDBC/ODBC/ADBC clients can run SQL against the cluster. Clients are not authenticated unless SchedulerConfig::with_flight_sql_authenticator is set, and even then the port is not secured, so keep it on a trusted network."
+    )]
+    pub flight_sql: bool,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     #[arg(
@@ -313,6 +327,8 @@ pub struct SchedulerConfig {
     /// Namespace of this scheduler. Schedulers using the same cluster storage and namespace
     /// will share global cluster state.
     pub namespace: String,
+    /// Identifier for this scheduler instance.
+    pub scheduler_id: String,
     /// The external hostname of the scheduler
     pub external_host: String,
     /// The bind host for the scheduler's gRPC service
@@ -397,6 +413,23 @@ pub struct SchedulerConfig {
     pub task_max_failures: usize,
     /// Number of failures attempts before stage is considered failed
     pub stage_max_failures: usize,
+    /// Whether to serve Arrow Flight SQL on the scheduler's gRPC port.
+    ///
+    /// The frontend subsumes the plain Flight result proxy when enabled, so
+    /// Ballista's own clients keep working on the same port.
+    #[cfg(feature = "flight-sql")]
+    pub flight_sql: bool,
+    /// Authenticates Arrow Flight SQL handshakes.
+    ///
+    /// Without one the frontend accepts every client and they share one
+    /// session. With one, each authenticated client gets a session of its own.
+    /// This isolates clients from one another; it does not secure the port,
+    /// which also serves the scheduler's gRPC and REST APIs and Ballista's own
+    /// partition fetches without authentication. Keep the scheduler on a
+    /// trusted network either way.
+    #[cfg(feature = "flight-sql")]
+    pub override_flight_sql_authenticator:
+        Option<Arc<dyn ballista_flight_sql::Authenticator>>,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     pub disable_rest_api: bool,
@@ -422,6 +455,7 @@ impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
             namespace: String::default(),
+            scheduler_id: new_instance_id(),
             external_host: "localhost".into(),
             bind_port: 50050,
             bind_host: "127.0.0.1".into(),
@@ -452,6 +486,10 @@ impl Default for SchedulerConfig {
             min_ready_executors: 1,
             task_max_failures: 4,
             stage_max_failures: 4,
+            #[cfg(feature = "flight-sql")]
+            flight_sql: false,
+            #[cfg(feature = "flight-sql")]
+            override_flight_sql_authenticator: None,
             #[cfg(feature = "rest-api")]
             disable_rest_api: false,
             #[cfg(feature = "rest-api")]
@@ -473,6 +511,12 @@ impl SchedulerConfig {
     /// Suspicious combinations are logged as warnings rather than rejected,
     /// since small values are legitimate for fail-fast setups and tests.
     pub fn validate(&self) -> ballista_core::error::Result<()> {
+        if self.scheduler_id.trim().is_empty() {
+            return Err(ballista_core::error::BallistaError::Configuration(
+                "scheduler_id must not be empty".to_string(),
+            ));
+        }
+
         if self.no_executors_grace_period_seconds != 0
             && self.no_executors_grace_period_seconds < self.executor_timeout_seconds
         {
@@ -501,6 +545,13 @@ impl SchedulerConfig {
                  with_enable_embedded_flight_proxy(true)."
             );
         }
+        if self.flight_sql_enabled() && self.enable_embedded_flight_proxy {
+            info!(
+                "Both flight_sql and enable_embedded_flight_proxy are set; the Flight \
+                 SQL frontend serves partition fetches on the scheduler port, so no \
+                 separate proxy is started."
+            );
+        }
         // Not a misconfiguration: running the embedded proxy while advertising a load
         // balancer in front of it is a supported deployment. Spell out which one wins so
         // that operators setting both do not have to guess.
@@ -522,8 +573,8 @@ impl SchedulerConfig {
         Ok(())
     }
 
-    /// Returns the scheduler name in host:port format.
-    pub fn scheduler_name(&self) -> String {
+    /// Returns the scheduler callback endpoint in host:port format.
+    pub fn scheduler_endpoint(&self) -> String {
         format!("{}:{}", self.external_host, self.bind_port)
     }
 
@@ -535,6 +586,12 @@ impl SchedulerConfig {
     /// Sets the namespace for this scheduler.
     pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = namespace.into();
+        self
+    }
+
+    /// Sets the unique identifier for this scheduler instance.
+    pub fn with_scheduler_id(mut self, scheduler_id: impl Into<String>) -> Self {
+        self.scheduler_id = scheduler_id.into();
         self
     }
 
@@ -608,6 +665,38 @@ impl SchedulerConfig {
     pub fn with_enable_embedded_flight_proxy(mut self, enable: bool) -> Self {
         self.enable_embedded_flight_proxy = enable;
         self
+    }
+
+    /// Sets whether to serve Arrow Flight SQL on the scheduler's gRPC port.
+    #[cfg(feature = "flight-sql")]
+    pub fn with_flight_sql(mut self, enable: bool) -> Self {
+        self.flight_sql = enable;
+        self
+    }
+
+    /// Sets the authenticator for Arrow Flight SQL handshakes.
+    #[cfg(feature = "flight-sql")]
+    pub fn with_flight_sql_authenticator(
+        mut self,
+        authenticator: Arc<dyn ballista_flight_sql::Authenticator>,
+    ) -> Self {
+        self.override_flight_sql_authenticator = Some(authenticator);
+        self
+    }
+
+    /// Whether the Arrow Flight SQL frontend should be served.
+    ///
+    /// Always false when the `flight-sql` feature is off, so callers can ask
+    /// without repeating the `cfg` themselves.
+    pub fn flight_sql_enabled(&self) -> bool {
+        #[cfg(feature = "flight-sql")]
+        {
+            self.flight_sql
+        }
+        #[cfg(not(feature = "flight-sql"))]
+        {
+            false
+        }
     }
 
     /// Sets the task distribution policy.
@@ -785,6 +874,7 @@ impl TryFrom<Config> for SchedulerConfig {
 
         let config = SchedulerConfig {
             namespace: opt.namespace,
+            scheduler_id: opt.scheduler_id.unwrap_or_else(new_instance_id),
             external_host: opt.external_host,
             bind_port: opt.bind_port,
             bind_host: opt.bind_host,
@@ -826,6 +916,10 @@ impl TryFrom<Config> for SchedulerConfig {
             min_ready_executors: opt.min_ready_executors,
             task_max_failures: opt.task_max_failures,
             stage_max_failures: opt.stage_max_failures,
+            #[cfg(feature = "flight-sql")]
+            flight_sql: opt.flight_sql,
+            #[cfg(feature = "flight-sql")]
+            override_flight_sql_authenticator: None,
             #[cfg(feature = "rest-api")]
             disable_rest_api: opt.disable_rest_api,
             #[cfg(feature = "rest-api")]
@@ -863,6 +957,24 @@ mod tests {
 
     #[cfg(feature = "build-binary")]
     #[test]
+    fn cli_scheduler_id_explicit_value_is_respected() {
+        use clap::Parser;
+        let opt = Config::parse_from(["scheduler", "--id", "scheduler-a"]);
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        assert_eq!(cfg.scheduler_id, "scheduler-a");
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn cli_scheduler_id_defaults_to_uuid_when_unset() {
+        use clap::Parser;
+        let opt = Config::parse_from(["scheduler"]);
+        let cfg = SchedulerConfig::try_from(opt).unwrap();
+        uuid::Uuid::parse_str(&cfg.scheduler_id).unwrap();
+    }
+
+    #[cfg(feature = "build-binary")]
+    #[test]
     fn cli_grace_period_defaults_to_executor_timeout_when_unset() {
         use clap::Parser;
         let opt = Config::parse_from(["scheduler", "--executor-timeout-seconds", "90"]);
@@ -890,6 +1002,21 @@ mod tests {
     #[test]
     fn validate_accepts_default_config() {
         SchedulerConfig::default().validate().unwrap();
+    }
+
+    #[test]
+    fn default_scheduler_id_is_uuid() {
+        let cfg = SchedulerConfig::default();
+
+        uuid::Uuid::parse_str(&cfg.scheduler_id).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_empty_scheduler_id() {
+        let cfg = SchedulerConfig::default().with_scheduler_id(" ");
+        let err = cfg.validate().unwrap_err();
+
+        assert!(err.to_string().contains("scheduler_id"));
     }
 
     #[cfg(feature = "build-binary")]

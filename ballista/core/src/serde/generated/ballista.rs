@@ -1149,6 +1149,25 @@ pub mod failed_task {
         TaskKilled(super::TaskKilled),
     }
 }
+/// Per-column statistics for one task's shuffle output. An empty list on
+/// SuccessfulTask means stats were not collected for that task.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TaskColumnStats {
+    /// Index into the output schema's fields.
+    #[prost(uint32, tag = "1")]
+    pub column: u32,
+    #[prost(uint64, tag = "2")]
+    pub null_count: u64,
+    #[prost(message, repeated, tag = "3")]
+    pub sketches: ::prost::alloc::vec::Vec<ColumnSketch>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ColumnSketch {
+    #[prost(enumeration = "SketchType", tag = "1")]
+    pub r#type: i32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuccessfulTask {
     #[prost(string, tag = "1")]
@@ -1184,6 +1203,8 @@ pub struct SuccessfulTask {
     /// keeps the completion message fixed-size regardless of aggregate.
     #[prost(message, repeated, tag = "4")]
     pub window_state: ::prost::alloc::vec::Vec<WindowStateReport>,
+    #[prost(message, repeated, tag = "5")]
+    pub task_column_stats: ::prost::alloc::vec::Vec<TaskColumnStats>,
 }
 /// One finalized window-aggregate state from a task's
 /// `BoundedWindowAggExec`.
@@ -1724,16 +1745,18 @@ pub struct LaunchTaskParams {
     /// Allow to launch a task set to an executor at once
     #[prost(message, repeated, tag = "1")]
     pub tasks: ::prost::alloc::vec::Vec<TaskDefinition>,
+    /// Scheduler callback endpoint in host:port format.
     #[prost(string, tag = "2")]
-    pub scheduler_id: ::prost::alloc::string::String,
+    pub scheduler_endpoint: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LaunchMultiTaskParams {
     /// Allow to launch a task set to an executor at once
     #[prost(message, repeated, tag = "1")]
     pub multi_tasks: ::prost::alloc::vec::Vec<MultiTaskDefinition>,
+    /// Scheduler callback endpoint in host:port format.
     #[prost(string, tag = "2")]
-    pub scheduler_id: ::prost::alloc::string::String,
+    pub scheduler_endpoint: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LaunchTaskResult {
@@ -1901,6 +1924,32 @@ impl ShuffleFileKind {
         match value {
             "SHUFFLE_FILE_KIND_DATA" => Some(Self::Data),
             "SHUFFLE_FILE_KIND_INDEX" => Some(Self::Index),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SketchType {
+    Unspecified = 0,
+    Hll = 1,
+}
+impl SketchType {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SKETCH_TYPE_UNSPECIFIED",
+            Self::Hll => "SKETCH_TYPE_HLL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SKETCH_TYPE_UNSPECIFIED" => Some(Self::Unspecified),
+            "SKETCH_TYPE_HLL" => Some(Self::Hll),
             _ => None,
         }
     }

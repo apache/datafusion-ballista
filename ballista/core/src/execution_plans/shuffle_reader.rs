@@ -50,7 +50,6 @@ use datafusion::physical_plan::{
 };
 use datafusion::prelude::SessionConfig;
 use futures::{Stream, StreamExt, TryStreamExt, ready};
-use itertools::Itertools;
 use log::{debug, error, trace};
 use rand::prelude::SliceRandom;
 use rand::rng;
@@ -389,20 +388,8 @@ impl ExecutionPlan for ShuffleReaderExec {
             config.ballista_shuffle_reader_maximum_concurrent_requests(),
             config.ballista_grpc_client_max_message_size()
         );
-        let mut partition_locations = HashMap::new();
-        for p in &self.partition[partition] {
-            partition_locations
-                .entry(p.executor_meta.id.clone())
-                .or_insert_with(Vec::new)
-                .push(p.clone());
-        }
-        // Sort partitions for evenly send fetching partition requests to avoid hot executors within one task
-        let mut partition_locations: Vec<PartitionLocation> = partition_locations
-            .into_values()
-            .flat_map(|ps| ps.into_iter().enumerate())
-            .sorted_by(|(p1_idx, _), (p2_idx, _)| Ord::cmp(p1_idx, p2_idx))
-            .map(|(_, p)| p)
-            .collect();
+        let mut partition_locations: Vec<PartitionLocation> =
+            self.partition[partition].clone();
         // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
         partition_locations.shuffle(&mut rng());
 

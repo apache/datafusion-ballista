@@ -419,6 +419,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             .collect::<Result<Vec<_>, BallistaError>>()
             .ok();
         let runtime_stats = query_stage_exec.collect_runtime_stats_reports();
+        let column_stats = query_stage_exec.collect_column_stats();
         // Collect only when the task otherwise succeeded: a failed task's
         // partial state is meaningless, and its own error is the useful one.
         // A collection failure fails the task — these are load-bearing for the
@@ -453,6 +454,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
                 operator_metrics,
                 runtime_stats,
                 window_state,
+                column_stats,
             },
         ));
 
