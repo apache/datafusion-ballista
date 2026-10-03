@@ -18,4 +18,5 @@
 # under the License.
 
 rm -rf build
-make html
+# Fail on warnings unless the caller sets SPHINXOPTS (an empty value disables it).
+make html SPHINXOPTS="${SPHINXOPTS--W --keep-going}"
