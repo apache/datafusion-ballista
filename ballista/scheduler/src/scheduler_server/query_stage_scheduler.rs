@@ -489,8 +489,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     let vcores_freed = self
                         .state
                         .task_manager
-                        .sum_vcores_for_statuses(&tasks_status)
-                        .await;
+                        .take_vcores_for_statuses(&executor_id, &tasks_status);
                     self.state
                         .executor_manager
                         .unbind_tasks(vec![(executor_id.clone(), vcores_freed)])
