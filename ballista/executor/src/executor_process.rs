@@ -70,8 +70,8 @@ use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
 use crate::executor::{Executor, TasksDrainedFuture};
 use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
-use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::metrics::LoggingMetricsCollector;
+use crate::metrics::{ExecutorMemoryMetrics, ExecutorMetricCollectionPolicy};
 use crate::runtime_cache::{
     DefaultSessionRuntimeCache, MemoryPoolPolicy, SessionRuntimeCache,
 };
@@ -253,6 +253,17 @@ fn identity_pool_policy() -> MemoryPoolPolicy {
     Arc::new(|base, _config, _vcores| Ok(base))
 }
 
+fn observe_memory_pools(
+    policy: MemoryPoolPolicy,
+    metrics: ExecutorMemoryMetrics,
+) -> MemoryPoolPolicy {
+    Arc::new(move |base, config, vcores_consumed| {
+        let runtime = policy(base, config, vcores_consumed)?;
+        metrics.register(&runtime.memory_pool);
+        Ok(runtime)
+    })
+}
+
 /// Configuration for the executor process.
 ///
 /// This struct contains all settings needed to run an executor, including
@@ -424,6 +435,24 @@ impl Default for ExecutorProcessConfig {
 pub async fn start_executor_process(
     opt: Arc<ExecutorProcessConfig>,
 ) -> ballista_core::error::Result<()> {
+    start_executor_process_inner(opt, None).await
+}
+
+/// Starts an executor and exposes its resolved pool budget and live reservations.
+///
+/// Like [`start_executor_process`], this runs until shutdown. Metrics are observational:
+/// they do not wrap memory pools, change their limits, or retain completed task runtimes.
+pub async fn start_executor_process_with_memory_metrics(
+    opt: Arc<ExecutorProcessConfig>,
+    memory_metrics: ExecutorMemoryMetrics,
+) -> ballista_core::error::Result<()> {
+    start_executor_process_inner(opt, Some(memory_metrics)).await
+}
+
+async fn start_executor_process_inner(
+    opt: Arc<ExecutorProcessConfig>,
+    memory_metrics: Option<ExecutorMemoryMetrics>,
+) -> ballista_core::error::Result<()> {
     opt.validate()?;
 
     let addr = format!("{}:{}", opt.bind_host, opt.port);
@@ -486,6 +515,9 @@ pub async fn start_executor_process(
     let pool_policy: MemoryPoolPolicy =
         match detect_pool(memory_budget_from_cli(opt.memory_pool_size, fraction)) {
             ResolvedPool::Bounded { bytes, source } => {
+                if let Some(metrics) = &memory_metrics {
+                    metrics.set_pool_size(Some(bytes));
+                }
                 let per_vcore = bytes / vcores as u64;
                 let source_desc = match source {
                     PoolSource::Configured => {
@@ -507,6 +539,9 @@ pub async fn start_executor_process(
                 memory_pool_policy(bytes, vcores)?
             }
             ResolvedPool::Unbounded(reason) => {
+                if let Some(metrics) = &memory_metrics {
+                    metrics.set_pool_size(None);
+                }
                 match reason {
                     UnboundedReason::Explicit => {
                         info!("Executor memory pool: unbounded (--memory-pool-size 0)")
@@ -519,6 +554,12 @@ pub async fn start_executor_process(
                 identity_pool_policy()
             }
         };
+
+    let pool_policy = if let Some(metrics) = memory_metrics {
+        observe_memory_pools(pool_policy, metrics)
+    } else {
+        pool_policy
+    };
 
     // Combined producer preserving the current per-task behavior: build a fresh
     // base env, then apply the pool policy. Used by `Executor::produce_runtime`
@@ -1358,10 +1399,92 @@ mod tests {
 #[cfg(test)]
 mod memory_pool_tests {
     use super::*;
-    use datafusion::execution::memory_pool::MemoryLimit;
+    use datafusion::execution::memory_pool::{
+        GreedyMemoryPool, MemoryConsumer, MemoryLimit,
+    };
     use datafusion::execution::object_store::DefaultObjectStoreRegistry;
     use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
     use std::sync::Arc;
+
+    #[test]
+    fn observes_per_task_pools_without_changing_their_limits() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(Some(8192));
+        let policy =
+            observe_memory_pools(memory_pool_policy(8192, 8).unwrap(), metrics.clone());
+        let base = Arc::new(RuntimeEnv::default());
+        let first = policy(base.clone(), &SessionConfig::new(), 1).unwrap();
+        let second = policy(base, &SessionConfig::new(), 4).unwrap();
+        assert!(first.memory_pool.is::<FairSpillPool>());
+        assert!(matches!(
+            first.memory_pool.memory_limit(),
+            MemoryLimit::Finite(1024)
+        ));
+        assert!(matches!(
+            second.memory_pool.memory_limit(),
+            MemoryLimit::Finite(4096)
+        ));
+        let first_reservation = MemoryConsumer::new("first").register(&first.memory_pool);
+        let second_reservation =
+            MemoryConsumer::new("second").register(&second.memory_pool);
+        first_reservation.try_grow(128).unwrap();
+        second_reservation.try_grow(256).unwrap();
+        let usage = metrics.snapshot().unwrap();
+        assert_eq!(usage.pool_size, Some(8192));
+        assert_eq!(usage.reserved, 384);
+        assert_eq!(usage.pool_count, 2);
+        drop(first_reservation);
+        drop(second_reservation);
+        drop(first);
+        drop(second);
+        assert_eq!(metrics.snapshot().unwrap().pool_count, 0);
+    }
+
+    #[test]
+    fn observes_custom_shared_pool_without_wrapping_or_double_counting() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(None);
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1024));
+        let base = RuntimeEnvBuilder::new()
+            .with_memory_pool(pool.clone())
+            .build_arc()
+            .unwrap();
+        let policy = observe_memory_pools(identity_pool_policy(), metrics.clone());
+        let first = policy(base.clone(), &SessionConfig::new(), 1).unwrap();
+        let second = policy(base.clone(), &SessionConfig::new(), 4).unwrap();
+        assert!(Arc::ptr_eq(&first, &base));
+        assert!(Arc::ptr_eq(&second, &base));
+        assert!(first.memory_pool.is::<GreedyMemoryPool>());
+        let reservation = MemoryConsumer::new("custom").register(&pool);
+        reservation.try_grow(128).unwrap();
+        assert_eq!(metrics.snapshot().unwrap().reserved, 128);
+        assert_eq!(metrics.snapshot().unwrap().pool_count, 1);
+        assert_eq!(metrics.snapshot().unwrap().pool_size, None);
+    }
+
+    #[test]
+    fn observes_cached_session_task_pools_without_retaining_them() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(Some(8192));
+        let policy =
+            observe_memory_pools(memory_pool_policy(8192, 8).unwrap(), metrics.clone());
+        let cache = DefaultSessionRuntimeCache::new(
+            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default()))),
+            policy,
+            2,
+        );
+        let config = SessionConfig::new();
+        let first = cache.produce_runtime("session", &config, 1).unwrap();
+        let second = cache.produce_runtime("session", &config, 4).unwrap();
+        assert_eq!(metrics.snapshot().unwrap().pool_count, 2);
+        let reservation = MemoryConsumer::new("cached").register(&second.memory_pool);
+        reservation.try_grow(256).unwrap();
+        assert_eq!(metrics.snapshot().unwrap().reserved, 256);
+        drop(reservation);
+        drop(first);
+        drop(second);
+        assert_eq!(metrics.snapshot().unwrap().pool_count, 0);
+    }
 
     #[test]
     fn returns_error_when_total_smaller_than_vcores() {

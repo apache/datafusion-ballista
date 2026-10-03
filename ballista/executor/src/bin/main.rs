@@ -22,20 +22,30 @@ use ballista_core::error::BallistaError;
 use ballista_core::object_store::{
     runtime_env_with_s3_support, session_config_with_s3_support,
 };
+use ballista_executor::alloc_accounting::{AccountingAllocator, current_balance};
 use ballista_executor::config::Config;
 use ballista_executor::executor_process::{
-    ExecutorProcessConfig, start_executor_process,
+    ExecutorProcessConfig, start_executor_process_with_memory_metrics,
 };
 use ballista_executor::health::spawn_health_server;
+use ballista_executor::metrics::ExecutorMemoryMetrics;
 use clap::Parser;
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::MissedTickBehavior;
 use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: AccountingAllocator<mimalloc::MiMalloc> =
+    AccountingAllocator::new(mimalloc::MiMalloc);
+
+#[cfg(not(feature = "mimalloc"))]
+#[global_allocator]
+static GLOBAL: AccountingAllocator<std::alloc::System> =
+    AccountingAllocator::new(std::alloc::System);
 
 #[tokio::main]
 async fn main() -> ballista_core::error::Result<()> {
@@ -81,6 +91,29 @@ async fn main() -> ballista_core::error::Result<()> {
         tracing.init();
     }
 
+    let memory_metrics = ExecutorMemoryMetrics::default();
+    let logging_metrics = memory_metrics.clone();
+    let memory_logging = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if let Some(usage) = logging_metrics.snapshot() {
+                let pool_size = usage.pool_size.map_or_else(
+                    || "unbounded".to_string(),
+                    |bytes| format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0)),
+                );
+                log::info!(
+                    "Ballista executor memory usage: allocated {:.1} MiB, \
+                     reserved {:.1} MiB, pool size {pool_size} ({} live pools)",
+                    current_balance() as f64 / (1024.0 * 1024.0),
+                    usage.reserved as f64 / (1024.0 * 1024.0),
+                    usage.pool_count,
+                );
+            }
+        }
+    });
+
     // Kubernetes-style health probes are a concern of the standalone binary,
     // not of the library, so wire them here on top of the config's shared
     // ExecutorHealth handle. `/healthz` is process-liveness, `/readyz`
@@ -94,7 +127,12 @@ async fn main() -> ballista_core::error::Result<()> {
     let (health_shutdown_tx, health_shutdown_rx) = tokio::sync::oneshot::channel();
     let health_handle = spawn_health_server(health_addr, health, health_shutdown_rx);
 
-    let result = start_executor_process(Arc::new(config)).await;
+    let result =
+        start_executor_process_with_memory_metrics(Arc::new(config), memory_metrics)
+            .await;
+
+    memory_logging.abort();
+    let _ = memory_logging.await;
 
     // Ask the health server to shut down so the process can exit cleanly.
     let _ = health_shutdown_tx.send(());
