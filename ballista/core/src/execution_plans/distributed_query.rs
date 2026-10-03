@@ -19,15 +19,18 @@ use crate::JobId;
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::error::BallistaError;
-use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
+use crate::extension::{
+    BallistaConfigGrpcEndpoint, BallistaGrpcMetadataInterceptor, SessionConfigExt,
+};
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
-    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
-    PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
-    scheduler_grpc_client::SchedulerGrpcClient,
+    CancelJobParams, ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult,
+    KeyValuePair, PartitionLocation, execute_query_params::Query, execute_query_result,
+    job_status, scheduler_grpc_client::SchedulerGrpcClient,
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
+use crate::version;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -55,6 +58,9 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
+use tonic::metadata::MetadataMap;
+use tonic::service::interceptor::InterceptedService;
+use tonic::transport::Channel;
 use url::Url;
 
 /// This operator sends a logical plan to a Ballista scheduler for execution and
@@ -451,19 +457,46 @@ pub async fn execute_physical_plan<U: 'static + AsExecutionPlan>(
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
 }
 
-/// Logs a warning if the scheduler's advertised version (from the `server`
-/// response header, e.g. `ballista/1.2.3`) doesn't match this client's.
-fn check_scheduler_version<T>(response: &tonic::Response<T>) {
-    let expected = format!("ballista/{}", crate::BALLISTA_VERSION);
-    if let Some(server) = response
-        .metadata()
-        .get("server")
-        .and_then(|v| v.to_str().ok())
-        && server != expected
+type SchedulerClient =
+    SchedulerGrpcClient<InterceptedService<Channel, BallistaGrpcMetadataInterceptor>>;
+
+/// Wraps a job submission with this client's version, which schedulers
+/// require from 55.0.0 on. See [`crate::version`].
+fn job_submission_request(
+    query: ExecuteQueryParams,
+) -> tonic::Request<ExecuteQueryParams> {
+    let mut request = tonic::Request::new(query);
+    version::insert_version_header(request.metadata_mut());
+    request
+}
+
+/// Checks the version the scheduler reported in its response to a job
+/// submission. A different major version is an error, and a different minor
+/// or patch version only logs a warning.
+fn check_scheduler_version(client_version: &str, metadata: &MetadataMap) -> Result<()> {
+    let scheduler_version = version::version_from_metadata(metadata);
+    version::check_compatibility(Some(client_version), scheduler_version)
+        .map_err(DataFusionError::Execution)?;
+    if let Some(scheduler_version) = scheduler_version
+        && scheduler_version != client_version
     {
         warn!(
-            "Scheduler version mismatch: scheduler reports '{server}', client is '{expected}'"
+            "Scheduler version {scheduler_version} differs from client version {client_version}"
         );
+    }
+    Ok(())
+}
+
+/// Cancels a job whose results the client won't read. A failure is only
+/// logged, since the caller is already returning an error.
+async fn cancel_job(scheduler: &mut SchedulerClient, job_id: &str) {
+    if let Err(e) = scheduler
+        .cancel_job(CancelJobParams {
+            job_id: job_id.to_owned(),
+        })
+        .await
+    {
+        warn!("Failed to cancel job {job_id}: {e}");
     }
 }
 
@@ -517,20 +550,30 @@ async fn execute_query_pull(
     .max_decoding_message_size(max_message_size);
 
     let query_response = scheduler
-        .execute_query(query)
+        .execute_query(job_submission_request(query))
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-    check_scheduler_version(&query_response);
+    let version_check =
+        check_scheduler_version(crate::BALLISTA_VERSION, query_response.metadata());
     let query_result = query_response.into_inner();
 
     let query_result = match query_result.result.unwrap() {
         execute_query_result::Result::Success(success_result) => success_result,
         execute_query_result::Result::Failure(failure_result) => {
+            // A version mismatch is the likelier cause, so report it first.
+            version_check?;
             return Err(DataFusionError::Execution(format!(
                 "Fail to execute query due to {failure_result:?}"
             )));
         }
     };
+
+    if let Err(e) = version_check {
+        // A scheduler older than 55.0.0 doesn't check versions, so it has
+        // already queued the job.
+        cancel_job(&mut scheduler, &query_result.job_id).await;
+        return Err(e);
+    }
 
     assert_eq!(
         session_id, query_result.session_id,
@@ -690,11 +733,29 @@ async fn execute_query_push(
     .max_decoding_message_size(max_message_size);
 
     let query_push_response = scheduler
-        .execute_query_push(query)
+        .execute_query_push(job_submission_request(query))
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-    check_scheduler_version(&query_push_response);
+    let version_check =
+        check_scheduler_version(crate::BALLISTA_VERSION, query_push_response.metadata());
     let mut query_status_stream = query_push_response.into_inner();
+
+    if let Err(e) = version_check {
+        // A scheduler older than 55.0.0 doesn't check versions, so it has
+        // already queued the job. The job id only arrives with the first
+        // status update, which can take until planning finishes, so cancel
+        // the job in the background rather than hold up the error.
+        tokio::spawn(async move {
+            if let Some(Ok(GetJobStatusResult {
+                status: Some(status),
+                ..
+            })) = query_status_stream.next().await
+            {
+                cancel_job(&mut scheduler, &status.job_id).await;
+            }
+        });
+        return Err(e);
+    }
 
     let mut prev_status: Option<job_status::Status> = None;
 
@@ -907,20 +968,295 @@ async fn fetch_partition(
 
 #[cfg(test)]
 mod test {
-    use crate::JobId;
     use crate::config::BallistaConfig;
     use crate::execution_plans::distributed_query::{
-        DistributedQueryExec, get_client_host_port,
+        DistributedQueryExec, check_scheduler_version, execute_query_pull,
+        execute_query_push, get_client_host_port, job_submission_request,
     };
-    use crate::serde::protobuf::ExecutorMetadata;
+    use crate::extension::SessionConfigExt;
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
+    use crate::serde::protobuf::scheduler_grpc_server::{
+        SchedulerGrpc, SchedulerGrpcServer,
+    };
+    use crate::serde::protobuf::{
+        CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
+        CreateUpdateSessionParams, CreateUpdateSessionResult, ExecuteQueryParams,
+        ExecuteQueryResult, ExecuteQuerySuccessResult, ExecutorMetadata,
+        ExecutorStoppedParams, ExecutorStoppedResult, GetJobMetricsParams,
+        GetJobMetricsResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
+        HeartBeatResult, JobStatus, PollWorkParams, PollWorkResult,
+        RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
+        RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
+        execute_query_result,
+    };
+    use crate::utils::GrpcClientConfig;
+    use crate::{BALLISTA_VERSION, JobId};
     use datafusion::logical_expr::LogicalPlan;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::displayable;
+    use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
     use datafusion::prelude::SessionConfig;
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use futures::Stream;
+    use parking_lot::Mutex;
+    use std::pin::Pin;
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::metadata::MetadataMap;
+    use tonic::{Request, Response, Status};
+
+    #[test]
+    fn job_submission_request_carries_client_version() {
+        let request = job_submission_request(ExecuteQueryParams::default());
+
+        assert_eq!(
+            request
+                .metadata()
+                .get("ballista-version")
+                .and_then(|v| v.to_str().ok()),
+            Some(BALLISTA_VERSION)
+        );
+    }
+
+    #[test]
+    fn scheduler_version_is_read_from_response_header() {
+        let mut metadata = MetadataMap::new();
+        metadata.insert("ballista-version", "55.3.0".parse().unwrap());
+
+        assert!(check_scheduler_version("55.0.0", &metadata).is_ok());
+        assert!(check_scheduler_version("56.0.0", &metadata).is_err());
+    }
+
+    #[test]
+    fn scheduler_without_version_header_is_incompatible() {
+        // Schedulers older than 55.0.0 don't report their version.
+        assert!(check_scheduler_version("55.0.0", &MetadataMap::new()).is_err());
+    }
+
+    /// A scheduler that accepts every job without checking the client's
+    /// version, reports version 1.0.0, and records the jobs it is asked to
+    /// cancel.
+    #[derive(Clone, Default)]
+    struct IncompatibleScheduler {
+        cancelled: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl IncompatibleScheduler {
+        /// Serves the scheduler on a local port and returns its URL.
+        async fn start(&self) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(
+                tonic::transport::Server::builder()
+                    .add_service(SchedulerGrpcServer::new(self.clone()))
+                    .serve_with_incoming(TcpListenerStream::new(listener)),
+            );
+            url
+        }
+
+        fn cancelled(&self) -> Vec<String> {
+            self.cancelled.lock().clone()
+        }
+    }
+
+    fn reporting_version_1<T>(message: T) -> Response<T> {
+        let mut response = Response::new(message);
+        response
+            .metadata_mut()
+            .insert("ballista-version", "1.0.0".parse().unwrap());
+        response
+    }
+
+    type GrpcResult<T> = std::result::Result<Response<T>, Status>;
+
+    fn not_called<T>() -> GrpcResult<T> {
+        Err(Status::unimplemented("not called before the version check"))
+    }
+
+    #[tonic::async_trait]
+    impl SchedulerGrpc for IncompatibleScheduler {
+        type ExecuteQueryPushStream = Pin<
+            Box<
+                dyn Stream<Item = std::result::Result<GetJobStatusResult, Status>> + Send,
+            >,
+        >;
+
+        async fn execute_query(
+            &self,
+            request: Request<ExecuteQueryParams>,
+        ) -> GrpcResult<ExecuteQueryResult> {
+            let session_id = request.into_inner().session_id;
+            Ok(reporting_version_1(ExecuteQueryResult {
+                operation_id: String::new(),
+                result: Some(execute_query_result::Result::Success(
+                    ExecuteQuerySuccessResult {
+                        job_id: "pull-job".to_owned(),
+                        session_id,
+                    },
+                )),
+            }))
+        }
+
+        async fn execute_query_push(
+            &self,
+            _request: Request<ExecuteQueryParams>,
+        ) -> GrpcResult<Self::ExecuteQueryPushStream> {
+            let first_status = GetJobStatusResult {
+                status: Some(JobStatus {
+                    job_id: "push-job".to_owned(),
+                    ..Default::default()
+                }),
+                flight_proxy: None,
+            };
+            Ok(reporting_version_1(Box::pin(futures::stream::iter([Ok(
+                first_status,
+            )]))))
+        }
+
+        async fn cancel_job(
+            &self,
+            request: Request<CancelJobParams>,
+        ) -> GrpcResult<CancelJobResult> {
+            self.cancelled.lock().push(request.into_inner().job_id);
+            Ok(Response::new(CancelJobResult { cancelled: true }))
+        }
+
+        async fn poll_work(
+            &self,
+            _: Request<PollWorkParams>,
+        ) -> GrpcResult<PollWorkResult> {
+            not_called()
+        }
+
+        async fn register_executor(
+            &self,
+            _: Request<RegisterExecutorParams>,
+        ) -> GrpcResult<RegisterExecutorResult> {
+            not_called()
+        }
+
+        async fn heart_beat_from_executor(
+            &self,
+            _: Request<HeartBeatParams>,
+        ) -> GrpcResult<HeartBeatResult> {
+            not_called()
+        }
+
+        async fn update_task_status(
+            &self,
+            _: Request<UpdateTaskStatusParams>,
+        ) -> GrpcResult<UpdateTaskStatusResult> {
+            not_called()
+        }
+
+        async fn create_update_session(
+            &self,
+            _: Request<CreateUpdateSessionParams>,
+        ) -> GrpcResult<CreateUpdateSessionResult> {
+            not_called()
+        }
+
+        async fn remove_session(
+            &self,
+            _: Request<RemoveSessionParams>,
+        ) -> GrpcResult<RemoveSessionResult> {
+            not_called()
+        }
+
+        async fn get_job_status(
+            &self,
+            _: Request<GetJobStatusParams>,
+        ) -> GrpcResult<GetJobStatusResult> {
+            not_called()
+        }
+
+        async fn get_job_metrics(
+            &self,
+            _: Request<GetJobMetricsParams>,
+        ) -> GrpcResult<GetJobMetricsResult> {
+            not_called()
+        }
+
+        async fn executor_stopped(
+            &self,
+            _: Request<ExecutorStoppedParams>,
+        ) -> GrpcResult<ExecutorStoppedResult> {
+            not_called()
+        }
+
+        async fn clean_job_data(
+            &self,
+            _: Request<CleanJobDataParams>,
+        ) -> GrpcResult<CleanJobDataResult> {
+            not_called()
+        }
+    }
+
+    fn job_submission() -> ExecuteQueryParams {
+        ExecuteQueryParams {
+            session_id: "session".to_owned(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn pull_cancels_job_accepted_by_incompatible_scheduler() {
+        let scheduler = IncompatibleScheduler::default();
+        let url = scheduler.start().await;
+        let config = BallistaConfig::default();
+
+        let result = execute_query_pull(
+            url,
+            "session".to_owned(),
+            job_submission(),
+            config.grpc_client_max_message_size(),
+            GrpcClientConfig::from(&config),
+            Arc::new(ExecutionPlanMetricsSet::new()),
+            Arc::new(Mutex::new(None)),
+            0,
+            SessionConfig::new_with_ballista(),
+        )
+        .await;
+
+        let Err(err) = result else {
+            panic!("an incompatible scheduler should be an error");
+        };
+        assert!(err.to_string().contains("scheduler 1.0.0"), "{err}");
+        assert_eq!(scheduler.cancelled(), ["pull-job"]);
+    }
+
+    #[tokio::test]
+    async fn push_cancels_job_accepted_by_incompatible_scheduler() {
+        let scheduler = IncompatibleScheduler::default();
+        let url = scheduler.start().await;
+        let config = BallistaConfig::default();
+
+        let result = execute_query_push(
+            url,
+            job_submission(),
+            config.grpc_client_max_message_size(),
+            GrpcClientConfig::from(&config),
+            Arc::new(ExecutionPlanMetricsSet::new()),
+            Arc::new(Mutex::new(None)),
+            0,
+            SessionConfig::new_with_ballista(),
+        )
+        .await;
+
+        let Err(err) = result else {
+            panic!("an incompatible scheduler should be an error");
+        };
+        assert!(err.to_string().contains("scheduler 1.0.0"), "{err}");
+
+        // The job is cancelled in the background once its id arrives.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while scheduler.cancelled().is_empty() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(scheduler.cancelled(), ["push-job"]);
+    }
 
     #[test]
     fn test_client_host_port() {
