@@ -55,6 +55,9 @@ github:
     branch-54:
       required_pull_request_reviews:
         required_approving_review_count: 1
+    branch-55:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
   # publishes the content of the `asf-site` branch to
   # https://datafusion.apache.org/ballista/
   rulesets:
