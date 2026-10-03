@@ -103,7 +103,7 @@ Here is my vote: +1
 
 [1]: https://github.com/apache/datafusion-ballista/tree/${release_hash}
 [2]: ${url}
-[3]: https://github.com/apache/datafusion-ballista/blob/${release_hash}/CHANGELOG.md
+[3]: https://github.com/apache/datafusion-ballista/blob/${release_hash}/docs/source/changelog/${version}.md
 MAIL
 echo "---------------------------------------------------------"
 

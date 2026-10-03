@@ -87,6 +87,7 @@ Before creating a new release:
 - a PR should be created and merged to update the major version number of the project. There is a script to automate
   updating the version number: `./dev/update_ballista_versions.py 0.11.0`. The script does not change `python/`,
   which is versioned as part of the [Python client release](../../python/dev/release/README.md)
+- Add the new release branch to `github.protected_branches` in `.asf.yaml` so that it requires an approving review
 - A new release branch should be created, such as `branch-0.11`
 
 Once the release branch has been created, the `main` branch can immediately go back to depending on DataFusion with a
@@ -155,9 +156,9 @@ tag the commit it was created for convenience and code archaeology.
 Using a string such as `0.11.0` as the `<version>`, create and push the tag by running these commands:
 
 ```shell
-git tag <version>-<rc>
+git tag <version>-rc<rc>
 # push tag to Github remote
-git push apache <version>
+git push apache <version>-rc<rc>
 ```
 
 ### Create, sign, and upload artifacts

@@ -141,11 +141,26 @@ test_source_distribution() {
     exit 1
   fi
 
-  # Note can't verify other ballista crates as they depend
-  # on ballista-core which isn't published yet
-  pushd ballista/core
-    cargo publish --dry-run
-  popd
+  # Check that Cargo can determine the package contents for every crate that
+  # will be published. Full dry runs of dependent crates are not possible until
+  # their Ballista dependencies have been published to crates.io.
+  publishable_crates=(
+    ballista-core
+    ballista-api-types
+    ballista-executor
+    ballista-history
+    ballista-scheduler
+    ballista
+    ballista-cli
+  )
+  for crate in "${publishable_crates[@]}"; do
+    cargo package --list --package "${crate}" --locked >/dev/null
+  done
+
+  # These two crates have no unpublished Ballista dependencies, so Cargo can
+  # build and validate their complete publish artifacts before the vote.
+  cargo publish --dry-run --package ballista-core --locked
+  cargo publish --dry-run --package ballista-api-types --locked
 }
 
 TEST_SUCCESS=no
