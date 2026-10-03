@@ -58,7 +58,6 @@ import argparse
 import json
 import os
 import statistics
-import sys
 import time
 
 import adbc_driver_flightsql.dbapi as flight_sql
@@ -160,7 +159,7 @@ def run_statement(cursor, sql):
     return executed - started, fetched - executed, table
 
 
-def run_query(conn, query, statements, debug):
+def run_query(conn, statements, debug):
     answer = answer_index(statements)
     exec_secs = 0.0
     fetch_secs = 0.0
@@ -238,10 +237,10 @@ def main():
         # DDL runs on the scheduler and lands in this connection's catalog, so
         # every query below sees these tables. Executors read the files
         # themselves, so the path must be readable from every node.
-        for table in TABLES:
-            location = table_location(args.path, table, args.format)
-            print(f"Registering table {table} at {location}")
-            with conn.cursor() as cursor:
+        with conn.cursor() as cursor:
+            for table in TABLES:
+                location = table_location(args.path, table, args.format)
+                print(f"Registering table {table} at {location}")
                 # Unauthenticated clients share one session, so a scheduler that
                 # has already served this benchmark still has the tables. Drop
                 # them first, or the second run dies on "already exists".
@@ -255,9 +254,7 @@ def main():
             elapsed = []
 
             for iteration in range(args.iterations):
-                exec_secs, fetch_secs, rows = run_query(
-                    conn, query, statements, args.debug
-                )
+                exec_secs, fetch_secs, rows = run_query(conn, statements, args.debug)
                 total = exec_secs + fetch_secs
                 elapsed.append(total)
                 print(
@@ -296,4 +293,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

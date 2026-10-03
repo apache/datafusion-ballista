@@ -44,20 +44,13 @@ docs/source/user-guide/flightsql.md for how to plug in an authenticator.
 """
 
 import argparse
-import os
 import sys
+from pathlib import Path
 
 import adbc_driver_flightsql.dbapi as flight_sql
 
 # The repo's own sample data, so the example runs without any setup.
-DEFAULT_DATA = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "..",
-    "..",
-    "examples",
-    "testdata",
-    "aggregate_test_100.csv",
-)
+DEFAULT_DATA = Path(__file__).resolve().parents[1] / "testdata/aggregate_test_100.csv"
 
 
 def main() -> int:
@@ -69,19 +62,20 @@ def main() -> int:
     )
     parser.add_argument(
         "--data",
-        default=os.path.normpath(DEFAULT_DATA),
+        type=Path,
+        default=DEFAULT_DATA,
         help="CSV file to register as a table",
     )
     args = parser.parse_args()
 
-    if not os.path.exists(args.data):
+    if not args.data.exists():
         print(f"no such file: {args.data}", file=sys.stderr)
         return 1
 
     # Executors read the file themselves, so the path must be readable from
     # every node. That is trivially true for a local single-machine cluster;
     # use object storage for a real one.
-    data = os.path.abspath(args.data)
+    data = args.data.resolve()
 
     with flight_sql.connect(args.scheduler) as conn:
         with conn.cursor() as cur:
