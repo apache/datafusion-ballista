@@ -395,8 +395,9 @@
 -->
 <section id="benchmarking">
 <h1>Benchmarking<a class="headerlink" href="#benchmarking" title="Link to this heading">#</a></h1>
-<p>Current TPC-H <strong>SF1000</strong> results for Ballista, compared against a vanilla
-<strong>Spark 3.4</strong> baseline running on the same cluster shape.</p>
+<p>Current TPC-H <strong>SF1000</strong> results for Ballista, compared against vanilla
+<strong>Spark 4.1.3</strong> and <strong>Spark 4.1.3 with Apache DataFusion Comet 1.1.0-rc2</strong>,
+running on the same cluster shape.</p>
 <section id="versions-under-test">
 <h2>Versions under test<a class="headerlink" href="#versions-under-test" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -410,7 +411,10 @@
 <td><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/commit/d6d8bd91fceaae4fb39624f6f1083a5f0ad78fbd"><code class="docutils literal notranslate"><span class="pre">d6d8bd91</span></code></a> (<code class="docutils literal notranslate"><span class="pre">main</span></code>, 2026-10-03), Cargo pkg <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code>, DataFusion <code class="docutils literal notranslate"><span class="pre">55.1.0</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Spark</p></td>
-<td><p>3.4 (vanilla, no acceleration plugin)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">4.1.3</span></code> (<code class="docutils literal notranslate"><span class="pre">apache/spark:4.1.3</span></code> image, vanilla, no acceleration plugin)</p></td>
+</tr>
+<tr class="row-even"><td><p>Comet</p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-comet">Apache DataFusion Comet</a> <code class="docutils literal notranslate"><span class="pre">1.1.0-rc2</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa"><code class="docutils literal notranslate"><span class="pre">992c806a</span></code></a>) on the same Spark <code class="docutils literal notranslate"><span class="pre">4.1.3</span></code></p></td>
 </tr>
 </tbody>
 </table>
@@ -429,6 +433,12 @@ dedicated 1000 GiB <code class="docutils literal notranslate"><span class="pre">
 shuffle work-dir (see <a class="reference internal" href="#executor-storage"><span class="xref myst">Executor storage</span></a>).</p></li>
 <li><p><strong>Executor pod (Spark):</strong> x86_64, 8 vCPU, 64 GiB + 10 GiB overhead, plus a
 dedicated <code class="docutils literal notranslate"><span class="pre">gp3</span></code> PVC via <code class="docutils literal notranslate"><span class="pre">spark-local-dir-1</span></code>.</p></li>
+<li><p><strong>Executor pod (Spark + Comet):</strong> the same as Spark, plus 32 GiB of
+off-heap memory for Comet’s native execution (about 106 GiB per pod in
+total, compared with 64 GiB for a Ballista executor).</p></li>
+<li><p><strong>Driver (Spark and Spark + Comet):</strong> runs the queries through an internal
+Spark benchmark harness. See <a class="reference internal" href="#spark-and-spark--comet"><span class="xref myst">Spark and Spark + Comet</span></a>
+under Reproducing.</p></li>
 <li><p><strong>Client pod (Ballista):</strong> the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> Rust benchmark runner from
 <a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks"><code class="docutils literal notranslate"><span class="pre">benchmarks/</span></code></a>
 in this repo (<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">run</span> <span class="pre">--release</span> <span class="pre">--bin</span> <span class="pre">tpch</span> <span class="pre">--</span> <span class="pre">benchmark</span> <span class="pre">ballista</span> <span class="pre">...</span></code>),
@@ -439,7 +449,9 @@ results locally.</p></li>
 <code class="docutils literal notranslate"><span class="pre">customer</span></code> and <code class="docutils literal notranslate"><span class="pre">part</span></code> are Hive-style partitioned (e.g.
 <code class="docutils literal notranslate"><span class="pre">lineitem/l_shipdate=YYYY-MM-DD/</span></code>). The <code class="docutils literal notranslate"><span class="pre">tpch</span></code> runner registers tables
 without partition columns, so Ballista prunes these scans only through
-Parquet statistics, while Spark applies partition filters.</p></li>
+Parquet statistics, while Spark and Comet apply partition filters. This
+favours Spark and Comet on date-filtered queries such as Q6, Q12, Q14
+and Q20.</p></li>
 </ul>
 </section>
 <section id="executor-storage">
@@ -511,7 +523,8 @@ some SF1000 physical plans (Q11, Q21, Q22) encode above 16 MiB and hit
 </section>
 <section id="spark-configuration-highlights">
 <h2>Spark configuration (highlights)<a class="headerlink" href="#spark-configuration-highlights" title="Link to this heading">#</a></h2>
-<p>Vanilla Spark 3.4 — no Comet plugin, stock <code class="docutils literal notranslate"><span class="pre">SortShuffleManager</span></code>.</p>
+<p>Both Spark runs use these settings. The vanilla Spark run has no Comet
+plugin and uses the stock <code class="docutils literal notranslate"><span class="pre">SortShuffleManager</span></code>.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Key</p></th>
@@ -555,7 +568,7 @@ some SF1000 physical plans (Q11, Q21, Q22) encode above 16 MiB and hit
 </tbody>
 </table>
 </div>
-<p>Spark AQE is left at its Spark 3.4 defaults. Shuffle spills to a <code class="docutils literal notranslate"><span class="pre">gp3</span></code>-backed
+<p>Spark AQE is left at its Spark 4.1 defaults. Shuffle spills to a <code class="docutils literal notranslate"><span class="pre">gp3</span></code>-backed
 per-executor volume (<code class="docutils literal notranslate"><span class="pre">spark.kubernetes.executor.volumes...spark-local-dir-1</span></code>).</p>
 <p>Note that <code class="docutils literal notranslate"><span class="pre">spark.executor.cores=16</span></code> is Spark’s <strong>task parallelism</strong> setting,
 not a CPU allocation — each executor pod is given only <strong>8 physical vCPU</strong>
@@ -564,115 +577,176 @@ schedules 16 concurrent tasks onto 8 physical cores (2× oversubscription).
 The matching Ballista executor runs <code class="docutils literal notranslate"><span class="pre">--vcores=8</span></code> on the same
 8 physical vCPU (1:1).</p>
 </section>
+<section id="comet-configuration">
+<h2>Comet configuration<a class="headerlink" href="#comet-configuration" title="Link to this heading">#</a></h2>
+<p>The Spark + Comet run adds these settings to the Spark configuration above:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.plugins</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">org.apache.spark.CometPlugin</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">32G</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.8</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The run also enabled Comet’s explain and fallback logging. Everything else is
+left at Comet’s defaults.</p>
+</section>
 <section id="queries">
 <h2>Queries<a class="headerlink" href="#queries" title="Link to this heading">#</a></h2>
 <p>The SQLBench-H phrasing of the 22 TPC-H queries from
 <a class="reference external" href="https://github.com/apache/datafusion-benchmarks">apache/datafusion-benchmarks</a>.</p>
+<p>The Spark harness uses the same queries with the same substitution
+parameters. The only differences are in wording: it writes some dates as
+arithmetic (for example <code class="docutils literal notranslate"><span class="pre">date</span> <span class="pre">'1998-12-01'</span> <span class="pre">-</span> <span class="pre">interval</span> <span class="pre">'90'</span> <span class="pre">day</span></code> instead of
+<code class="docutils literal notranslate"><span class="pre">date</span> <span class="pre">'1998-09-02'</span></code>), and it phrases Q15 as a CTE instead of a view.</p>
 </section>
 <section id="results">
 <h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
-<p><strong>Times in seconds; lower is better.</strong> Ballista: mean of 2 iterations
-(including the cold first iteration). Spark: mean of 3 iterations (cold
-iteration dropped by the harness).</p>
+<p><strong>Times in seconds; lower is better.</strong> Every engine: mean of 2 iterations,
+including the cold first iteration.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head text-right"><p>Query</p></th>
 <th class="head text-right"><p>Ballista (s)</p></th>
-<th class="head text-right"><p>Spark 3.4 (s)</p></th>
+<th class="head text-right"><p>Spark 4.1.3 (s)</p></th>
+<th class="head text-right"><p>Spark 4.1.3 + Comet 1.1.0-rc2 (s)</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td class="text-right"><p>1</p></td>
 <td class="text-right"><p>13.94</p></td>
-<td class="text-right"><p>67.58</p></td>
+<td class="text-right"><p>71.45</p></td>
+<td class="text-right"><p>10.66</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>2</p></td>
 <td class="text-right"><p>28.35</p></td>
-<td class="text-right"><p>29.80</p></td>
+<td class="text-right"><p>37.98</p></td>
+<td class="text-right"><p>21.66</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>3</p></td>
 <td class="text-right"><p>25.29</p></td>
-<td class="text-right"><p>25.13</p></td>
+<td class="text-right"><p>30.61</p></td>
+<td class="text-right"><p>16.05</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>4</p></td>
 <td class="text-right"><p>8.80</p></td>
-<td class="text-right"><p>21.19</p></td>
+<td class="text-right"><p>23.86</p></td>
+<td class="text-right"><p>8.11</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>5</p></td>
 <td class="text-right"><p>63.94</p></td>
-<td class="text-right"><p>54.12</p></td>
+<td class="text-right"><p>57.39</p></td>
+<td class="text-right"><p>38.32</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>6</p></td>
 <td class="text-right"><p>4.68</p></td>
-<td class="text-right"><p>1.23</p></td>
+<td class="text-right"><p>1.73</p></td>
+<td class="text-right"><p>0.99</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>7</p></td>
 <td class="text-right"><p>45.85</p></td>
-<td class="text-right"><p>19.57</p></td>
+<td class="text-right"><p>25.34</p></td>
+<td class="text-right"><p>16.60</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>8</p></td>
 <td class="text-right"><p>28.93</p></td>
-<td class="text-right"><p>48.60</p></td>
+<td class="text-right"><p>58.17</p></td>
+<td class="text-right"><p>46.04</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>9</p></td>
 <td class="text-right"><p>37.64</p></td>
-<td class="text-right"><p>69.38</p></td>
+<td class="text-right"><p>74.90</p></td>
+<td class="text-right"><p>55.78</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>10</p></td>
 <td class="text-right"><p>38.18</p></td>
-<td class="text-right"><p>35.92</p></td>
+<td class="text-right"><p>35.31</p></td>
+<td class="text-right"><p>21.31</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>11</p></td>
 <td class="text-right"><p>15.87</p></td>
-<td class="text-right"><p>30.88</p></td>
+<td class="text-right"><p>31.66</p></td>
+<td class="text-right"><p>14.79</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>12</p></td>
 <td class="text-right"><p>10.18</p></td>
-<td class="text-right"><p>10.78</p></td>
+<td class="text-right"><p>13.24</p></td>
+<td class="text-right"><p>5.33</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>13</p></td>
 <td class="text-right"><p>9.78</p></td>
-<td class="text-right"><p>20.45</p></td>
+<td class="text-right"><p>22.73</p></td>
+<td class="text-right"><p>11.31</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>14</p></td>
 <td class="text-right"><p>8.88</p></td>
-<td class="text-right"><p>7.00</p></td>
+<td class="text-right"><p>7.25</p></td>
+<td class="text-right"><p>2.50</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>15</p></td>
 <td class="text-right"><p>10.61</p></td>
-<td class="text-right"><p>23.75</p></td>
+<td class="text-right"><p>22.45</p></td>
+<td class="text-right"><p>11.85</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>16</p></td>
 <td class="text-right"><p>14.50</p></td>
-<td class="text-right"><p>23.41</p></td>
+<td class="text-right"><p>24.34</p></td>
+<td class="text-right"><p>8.94</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>17</p></td>
 <td class="text-right"><p>19.56</p></td>
-<td class="text-right"><p>82.30</p></td>
+<td class="text-right"><p>81.36</p></td>
+<td class="text-right"><p>25.14</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>18</p></td>
 <td class="text-right"><p>54.43</p></td>
-<td class="text-right"><p>129.40</p></td>
+<td class="text-right"><p>134.11</p></td>
+<td class="text-right"><p>46.42</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>19</p></td>
 <td class="text-right"><p>10.65</p></td>
-<td class="text-right"><p>11.26</p></td>
+<td class="text-right"><p>13.27</p></td>
+<td class="text-right"><p>9.07</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>20</p></td>
 <td class="text-right"><p>20.40</p></td>
-<td class="text-right"><p>19.22</p></td>
+<td class="text-right"><p>16.08</p></td>
+<td class="text-right"><p>6.57</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>21</p></td>
 <td class="text-right"><p>91.31</p></td>
-<td class="text-right"><p>101.53</p></td>
+<td class="text-right"><p>98.04</p></td>
+<td class="text-right"><p>68.43</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>22</p></td>
 <td class="text-right"><p>9.78</p></td>
-<td class="text-right"><p>12.71</p></td>
+<td class="text-right"><p>16.90</p></td>
+<td class="text-right"><p>9.22</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p><strong>Total</strong></p></td>
 <td class="text-right"><p><strong>571.55</strong></p></td>
-<td class="text-right"><p><strong>845.21</strong></p></td>
+<td class="text-right"><p><strong>898.17</strong></p></td>
+<td class="text-right"><p><strong>455.09</strong></p></td>
 </tr>
 </tbody>
 </table>
@@ -707,11 +781,13 @@ suite’s shuffle output — see <a class="reference internal" href="#executor-s
 <p>The runner sets <code class="docutils literal notranslate"><span class="pre">target_partitions</span></code> from <code class="docutils literal notranslate"><span class="pre">--partitions</span></code> and enables
 <code class="docutils literal notranslate"><span class="pre">collect_statistics</span></code>; everything else is left at its default.</p>
 </section>
-<section id="spark">
-<h3>Spark<a class="headerlink" href="#spark" title="Link to this heading">#</a></h3>
-<p>Runs the same queries via <code class="docutils literal notranslate"><span class="pre">tpcbench.py</span></code> from
+<section id="spark-and-spark-comet">
+<h3>Spark and Spark + Comet<a class="headerlink" href="#spark-and-spark-comet" title="Link to this heading">#</a></h3>
+<p>The Spark and Spark + Comet numbers above were collected with an internal
+benchmark harness, which isn’t public. The closest public equivalent is
+<code class="docutils literal notranslate"><span class="pre">tpcbench.py</span></code> from
 <a class="reference external" href="https://github.com/apache/datafusion-benchmarks">apache/datafusion-benchmarks</a>,
-with the highlights above and stock Spark 3.4 defaults for everything else:</p>
+with the settings above and stock Spark 4.1 defaults for everything else:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>spark-submit<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--master<span class="w"> </span>&lt;master&gt;<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.executor.instances<span class="o">=</span><span class="m">32</span><span class="w"> </span><span class="se">\</span>
@@ -723,7 +799,18 @@ with the highlights above and stock Spark 3.4 defaults for everything else:</p>
 <span class="w">    </span>--benchmark<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--data<span class="w"> </span>s3a://&lt;bucket&gt;/tpch/sf1000<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--format<span class="w"> </span>parquet<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--iterations<span class="w"> </span><span class="m">3</span>
+<span class="w">    </span>--iterations<span class="w"> </span><span class="m">2</span>
+</pre></div>
+</div>
+<p>For Spark + Comet, add the Comet JAR to the driver and executor classpath
+(see the
+<a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/installation.html">Comet installation guide</a>)
+and the settings in <a class="reference internal" href="#comet-configuration"><span class="xref myst">Comet configuration</span></a>:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="w">  </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>32G<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.memoryPool.fraction<span class="o">=</span><span class="m">0</span>.8
 </pre></div>
 </div>
 </section>
@@ -797,11 +884,12 @@ open issues found by benchmarking: <a class="reference external" href="https://g
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#executor-storage">Executor storage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-configuration">Ballista configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-configuration-highlights">Spark configuration (highlights)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#comet-configuration">Comet configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#queries">Queries</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reproducing">Reproducing</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista">Ballista</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark">Spark</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-and-spark-comet">Spark and Spark + Comet</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#recording-a-new-result-set">Recording a new result set</a></li>
