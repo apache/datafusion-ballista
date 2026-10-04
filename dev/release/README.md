@@ -210,7 +210,30 @@ For the release to become "official" it needs at least three PMC members to vote
 
 ### Verifying Release Candidates
 
-The `dev/release/verify-release-candidate.sh` is a script in this repository that can assist in the verification process. It downloads the source tarball from the ASF dev SVN, verifies the GPG signature and checksums, and builds the Rust workspace. Run it like:
+The `dev/release/verify-release-candidate.sh` is a script in this repository that can assist in the verification process. It downloads the source tarball from the ASF dev SVN, verifies the GPG signature and checksums, and builds and tests the Rust workspace.
+
+Before running verification on macOS or Linux, check the shell's soft and hard limits for open file descriptors.
+A soft limit of `2048` was reported to allow verification to pass during the 55.0.0 RC1 vote; use this as a
+recommended starting point, not a measured minimum or a guarantee that all tests will pass.
+In Bash or Zsh, raise only a lower soft limit, preserving higher or unlimited limits and the existing hard limit:
+
+```shell
+ulimit -Sn # Current soft limit
+ulimit -Hn # Current hard limit
+if [ "$(ulimit -Hn)" != "unlimited" ] && [ "$(ulimit -Hn)" -lt 2048 ]; then
+  echo "Hard limit is below 2048; use an environment with a sufficient hard limit." >&2
+elif [ "$(ulimit -Sn)" != "unlimited" ] && [ "$(ulimit -Sn)" -lt 2048 ]; then
+  ulimit -Sn 2048
+fi
+ulimit -Sn # Confirm the effective soft limit
+```
+
+The soft limit cannot exceed the hard limit. If the hard limit is below `2048`, or setting the soft limit fails,
+use a verification environment with a sufficient hard limit before continuing.
+Run the verification script (or manual verification tests) from this same shell so its child processes inherit
+the limit. Setting it in a separate terminal or a child shell does not update the shell used for verification.
+
+Then run the script with the candidate's version and RC number, for example:
 
 ```
 ./dev/release/verify-release-candidate.sh 0.11.0 0
