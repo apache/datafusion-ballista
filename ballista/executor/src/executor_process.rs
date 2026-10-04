@@ -555,7 +555,7 @@ async fn start_executor_process_inner(
             }
         };
 
-    let pool_policy = if let Some(metrics) = memory_metrics {
+    let pool_policy = if let Some(metrics) = memory_metrics.clone() {
         observe_memory_pools(pool_policy, metrics)
     } else {
         pool_policy
@@ -620,7 +620,8 @@ async fn start_executor_process_inner(
                 }
             }),
         )
-        .with_session_runtime_cache(Some(session_runtime_cache)),
+        .with_session_runtime_cache(Some(session_runtime_cache))
+        .with_memory_metrics(memory_metrics),
     );
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
