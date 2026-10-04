@@ -23,6 +23,7 @@ members = [
     "ballista/client",
     "ballista/core",
     "ballista/executor",
+    "ballista/flight-sql",
     "ballista/history",
     "ballista/scheduler",
     "benchmarks",
@@ -39,17 +40,18 @@ license = "Apache-2.0"
 repository = "https://github.com/apache/datafusion-ballista"
 # we should try to follow datafusion version 
 rust-version = "1.94.0"
-version = "54.0.0"
+version = "55.0.0"
 
 [workspace.dependencies]
 arrow = { version = "59.2.0", features = ["ipc_compression"] }
 arrow-flight = { version = "59.2.0", features = ["flight-sql-experimental"] }
-ballista = { path = "ballista/client", version = "54.0.0" }
-ballista-api-types = { path = "ballista/api-types", version = "54.0.0" }
-ballista-core = { path = "ballista/core", version = "54.0.0" }
-ballista-executor = { path = "ballista/executor", version = "54.0.0" }
-ballista-history = { path = "ballista/history", version = "54.0.0" }
-ballista-scheduler = { path = "ballista/scheduler", version = "54.0.0" }
+ballista = { path = "ballista/client", version = "55.0.0" }
+ballista-api-types = { path = "ballista/api-types", version = "55.0.0" }
+ballista-core = { path = "ballista/core", version = "55.0.0" }
+ballista-executor = { path = "ballista/executor", version = "55.0.0" }
+ballista-flight-sql = { path = "ballista/flight-sql", version = "55.0.0" }
+ballista-history = { path = "ballista/history", version = "55.0.0" }
+ballista-scheduler = { path = "ballista/scheduler", version = "55.0.0" }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
 # Keep these as minor-version requirements rather than exact patch pins so a

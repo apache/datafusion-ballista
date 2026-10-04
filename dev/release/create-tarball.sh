@@ -83,7 +83,9 @@ I would like to propose a release of Apache DataFusion Ballista version ${versio
 This release candidate is based on commit: ${release_hash} [1]
 The proposed release tarball and signatures are hosted at [2].
 The changelog is located at [3].
-The Python wheels built from this release candidate are published to TestPyPI at [4].
+
+The Python client is not part of this release. It is released separately, with
+its own vote, once datafusion-python has published a matching release.
 
 Please download, verify checksums and signatures, run the unit tests, and vote
 on the release. The vote will be open for at least 72 hours.
@@ -101,16 +103,17 @@ Here is my vote: +1
 
 [1]: https://github.com/apache/datafusion-ballista/tree/${release_hash}
 [2]: ${url}
-[3]: https://github.com/apache/datafusion-ballista/blob/${release_hash}/CHANGELOG.md
-[4]: https://test.pypi.org/project/ballista/${version}/
+[3]: https://github.com/apache/datafusion-ballista/blob/${release_hash}/docs/source/changelog/${version}.md
 MAIL
 echo "---------------------------------------------------------"
 
 
 # create <tarball> containing the files in git at $release_hash
 # the files in the tarball are prefixed with {version} (e.g. 4.0.1)
+# python/ is left out because the Python client is released separately
+# (see python/dev/release/README.md)
 mkdir -p ${distdir}
-(cd "${SOURCE_TOP_DIR}" && git archive ${release_hash} --prefix ${release}/ | gzip > ${tarball})
+(cd "${SOURCE_TOP_DIR}" && git archive ${release_hash} --prefix ${release}/ -- . ':(exclude)python' | gzip > ${tarball})
 
 echo "Running rat license checker on ${tarball}"
 ${SOURCE_DIR}/run-rat.sh ${tarball}

@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "ballista"
-version = "54.0.0"
+version = "55.0.0"
 dependencies = [
  "async-trait",
  "ballista-core",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-api-types"
-version = "54.0.0"
+version = "55.0.0"
 dependencies = [
  "ballista-api-types",
  "serde",
@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-benchmarks"
-version = "54.0.0"
+version = "55.0.0"
 dependencies = [
  "ballista",
  "ballista-core",
@@ -1079,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-cli"
-version = "54.0.0"
+version = "55.0.0"
 dependencies = [
  "ballista",
  "ballista-api-types",
@@ -1117,7 +1117,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-core"
-version = "54.0.0"
+version = "55.0.0"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -1150,7 +1150,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-examples"
-version = "54.0.0"
+version = "55.0.0"
 dependencies = [
  "arrow-flight",
  "ballista",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-executor"
-version = "54.0.0"
+version = "55.0.0"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -1208,8 +1208,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ballista-flight-sql"
+version = "55.0.0"
+dependencies = [
+ "arrow",
+ "arrow-flight",
+ "async-trait",
+ "ballista-core",
+ "dashmap",
+ "datafusion",
+ "futures",
+ "log",
+ "prost",
+ "tokio",
+ "tonic",
+ "uuid",
+]
+
+[[package]]
 name = "ballista-history"
-version = "54.0.0"
+version = "55.0.0"
 dependencies = [
  "ballista-api-types",
  "log",
@@ -1221,13 +1239,15 @@ dependencies = [
 
 [[package]]
 name = "ballista-scheduler"
-version = "54.0.0"
+version = "55.0.0"
 dependencies = [
  "arrow-flight",
  "async-trait",
  "axum",
  "ballista-api-types",
  "ballista-core",
+ "ballista-executor",
+ "ballista-flight-sql",
  "ballista-history",
  "clap 4.6.7",
  "dashmap",

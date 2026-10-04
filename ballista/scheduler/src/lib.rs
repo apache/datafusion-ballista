@@ -25,6 +25,9 @@ pub mod cluster;
 pub mod config;
 /// Display utilities for execution plans and state.
 pub mod display;
+/// Binds the Arrow Flight SQL frontend to this scheduler.
+#[cfg(feature = "flight-sql")]
+mod flight_sql;
 /// Standalone history server: serves `/api/*` from stored event logs.
 #[cfg(feature = "rest-api")]
 pub mod history;
