@@ -18,6 +18,7 @@
 use crate::config::BallistaConfig;
 use crate::error::{BallistaError, Result};
 use crate::extension::SessionConfigExt;
+use crate::serde::protobuf::KeyValuePair;
 use crate::serde::scheduler::PartitionStats;
 
 use datafusion::arrow::ipc::CompressionType;
@@ -32,6 +33,7 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, metrics};
 use futures::StreamExt;
 use log::error;
+use std::borrow::Cow;
 use std::io::BufWriter;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -415,9 +417,109 @@ pub fn get_current_time() -> u128 {
         .as_millis()
 }
 
+/// Base marker used in place of a configuration value that may be a secret.
+///
+/// Logged redactions also include the original value's byte length.
+pub const REDACTED: &str = "<redacted>";
+
+/// Parts of a configuration key that mark its value as a possible secret.
+const SENSITIVE_KEY_PARTS: [&str; 6] = [
+    "secret",
+    "password",
+    "token",
+    "credential",
+    "api_key",
+    "private_key",
+];
+
+/// Returns `value` as it may appear in a log line: unchanged, or a redaction
+/// marker containing its byte length if `key` looks like it names a secret.
+///
+/// Session configuration travels as plain key/value pairs, including config
+/// extensions Ballista knows nothing about, so the key name is all there is to
+/// go on. A key is sensitive if it contains `secret`, `password`, `token`,
+/// `credential`, `api_key` or `private_key`, ignoring case.
+pub fn redact_config_value<'a>(key: &str, value: &'a str) -> Cow<'a, str> {
+    let key = key.to_ascii_lowercase();
+    if SENSITIVE_KEY_PARTS.iter().any(|part| key.contains(part)) {
+        Cow::Owned(format!("<redacted (length: {})>", value.len()))
+    } else {
+        Cow::Borrowed(value)
+    }
+}
+
+/// Copies `pairs` for logging, with the values of sensitive keys replaced as
+/// [`redact_config_value`] describes.
+pub fn redact_key_value_pairs(pairs: &[KeyValuePair]) -> Vec<KeyValuePair> {
+    pairs
+        .iter()
+        .map(|KeyValuePair { key, value }| KeyValuePair {
+            key: key.clone(),
+            value: value
+                .as_deref()
+                .map(|value| redact_config_value(key, value).to_string()),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacts_values_of_sensitive_keys() {
+        for key in [
+            "s3.secret_access_key",
+            "s3.session_token",
+            "secret_access_key",
+            "custom.db_password",
+            "custom.CLIENT_SECRET",
+            "custom.credential.option.jwt",
+            "custom.api_key",
+            "custom.private_key",
+        ] {
+            assert_eq!(
+                redact_config_value(key, "value"),
+                "<redacted (length: 5)>",
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_values_of_other_keys() {
+        for key in [
+            "s3.access_key_id",
+            "s3.region",
+            "ballista.job.name",
+            "datafusion.execution.target_partitions",
+        ] {
+            assert_eq!(redact_config_value(key, "value"), "value", "{key}");
+        }
+    }
+
+    #[test]
+    fn redacts_key_value_pairs_without_changing_keys_or_unset_values() {
+        let pair = |key: &str, value: Option<&str>| KeyValuePair {
+            key: key.to_string(),
+            value: value.map(str::to_string),
+        };
+
+        let redacted = redact_key_value_pairs(&[
+            pair("s3.secret_access_key", Some("SECRET")),
+            pair("s3.session_token", None),
+            pair("s3.region", Some("us-east-1")),
+        ]);
+
+        assert_eq!(
+            redacted,
+            vec![
+                pair("s3.secret_access_key", Some("<redacted (length: 6)>")),
+                pair("s3.session_token", None),
+                pair("s3.region", Some("us-east-1")),
+            ]
+        );
+    }
 
     #[test]
     fn test_grpc_client_config_from_ballista_config() {
