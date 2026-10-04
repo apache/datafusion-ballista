@@ -407,7 +407,7 @@
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Ballista</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/commit/67b3a19bb442db879c7056722d14696cc33341b9"><code class="docutils literal notranslate"><span class="pre">67b3a19b</span></code></a> (<code class="docutils literal notranslate"><span class="pre">main</span></code>, 2026-09-03), Cargo pkg <code class="docutils literal notranslate"><span class="pre">54.0.0</span></code>, DataFusion <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code></p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/commit/d6d8bd91fceaae4fb39624f6f1083a5f0ad78fbd"><code class="docutils literal notranslate"><span class="pre">d6d8bd91</span></code></a> (<code class="docutils literal notranslate"><span class="pre">main</span></code>, 2026-10-03), Cargo pkg <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code>, DataFusion <code class="docutils literal notranslate"><span class="pre">55.1.0</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Spark</p></td>
 <td><p>3.4 (vanilla, no acceleration plugin)</p></td>
@@ -421,8 +421,9 @@
 <ul class="simple">
 <li><p><strong>Cluster:</strong> Kubernetes on AWS (<code class="docutils literal notranslate"><span class="pre">us-west-2</span></code>); one driver/scheduler pod and
 32 executor pods for each engine, launched on the same node pool.</p></li>
-<li><p><strong>K8s worker nodes:</strong> <code class="docutils literal notranslate"><span class="pre">r6i.24xlarge</span></code> (96 vCPU, 768 GiB memory, 40 Gbps EBS
-bandwidth, EBS-only — no local instance-store).</p></li>
+<li><p><strong>K8s worker nodes:</strong> a mix of <code class="docutils literal notranslate"><span class="pre">r6i.24xlarge</span></code> (96 vCPU, 768 GiB memory) and
+<code class="docutils literal notranslate"><span class="pre">r6i.16xlarge</span></code> (64 vCPU, 512 GiB memory), EBS-only — no local
+instance-store. Pods are not pinned to an instance type.</p></li>
 <li><p><strong>Executor pod (Ballista):</strong> x86_64, 8 vCPU, 64 GiB memory, plus a
 dedicated 1000 GiB <code class="docutils literal notranslate"><span class="pre">gp3</span></code> EBS PVC mounted at <code class="docutils literal notranslate"><span class="pre">/data</span></code> for the executor’s
 shuffle work-dir (see <a class="reference internal" href="#executor-storage"><span class="xref myst">Executor storage</span></a>).</p></li>
@@ -434,7 +435,11 @@ in this repo (<code class="docutils literal notranslate"><span class="pre">cargo
 which submits SQL through a Ballista <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code> and collects
 results locally.</p></li>
 <li><p><strong>Data:</strong> TPC-H SF1000 Parquet on S3 (<code class="docutils literal notranslate"><span class="pre">us-west-2</span></code>), ZSTD compression,
-~512 MiB row groups, one directory per table.</p></li>
+~512 MiB row groups, one directory per table. <code class="docutils literal notranslate"><span class="pre">lineitem</span></code>, <code class="docutils literal notranslate"><span class="pre">orders</span></code>,
+<code class="docutils literal notranslate"><span class="pre">customer</span></code> and <code class="docutils literal notranslate"><span class="pre">part</span></code> are Hive-style partitioned (e.g.
+<code class="docutils literal notranslate"><span class="pre">lineitem/l_shipdate=YYYY-MM-DD/</span></code>). The <code class="docutils literal notranslate"><span class="pre">tpch</span></code> runner registers tables
+without partition columns, so Ballista prunes these scans only through
+Parquet statistics, while Spark applies partition filters.</p></li>
 </ul>
 </section>
 <section id="executor-storage">
@@ -487,17 +492,11 @@ number.</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">datafusion.execution.collect_statistics</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">datafusion.execution.listing_table_factory_infer_partitions</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">datafusion.catalog.information_schema</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
-</tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code> (AQE)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code> (AQE; default)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ballista.shuffle.sort_based.memory_limit_per_task_bytes</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">268435456</span></code> (256 MiB; default)</p></td>
 </tr>
 </tbody>
 </table>
@@ -572,8 +571,9 @@ The matching Ballista executor runs <code class="docutils literal notranslate"><
 </section>
 <section id="results">
 <h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
-<p><strong>Times in seconds; lower is better.</strong> Ballista: single iteration. Spark:
-mean of 3 iterations (cold iteration dropped by the harness).</p>
+<p><strong>Times in seconds; lower is better.</strong> Ballista: mean of 2 iterations
+(including the cold first iteration). Spark: mean of 3 iterations (cold
+iteration dropped by the harness).</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head text-right"><p>Query</p></th>
@@ -583,101 +583,100 @@ mean of 3 iterations (cold iteration dropped by the harness).</p>
 </thead>
 <tbody>
 <tr class="row-even"><td class="text-right"><p>1</p></td>
-<td class="text-right"><p>17.56</p></td>
+<td class="text-right"><p>13.94</p></td>
 <td class="text-right"><p>67.58</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>2</p></td>
-<td class="text-right"><p>27.13</p></td>
+<td class="text-right"><p>28.35</p></td>
 <td class="text-right"><p>29.80</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>3</p></td>
-<td class="text-right"><p>33.03</p></td>
+<td class="text-right"><p>25.29</p></td>
 <td class="text-right"><p>25.13</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>4</p></td>
-<td class="text-right"><p>18.34</p></td>
+<td class="text-right"><p>8.80</p></td>
 <td class="text-right"><p>21.19</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>5</p></td>
-<td class="text-right"><p>60.51</p></td>
+<td class="text-right"><p>63.94</p></td>
 <td class="text-right"><p>54.12</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>6</p></td>
-<td class="text-right"><p>14.25</p></td>
+<td class="text-right"><p>4.68</p></td>
 <td class="text-right"><p>1.23</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>7</p></td>
-<td class="text-right"><p>49.28</p></td>
+<td class="text-right"><p>45.85</p></td>
 <td class="text-right"><p>19.57</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>8</p></td>
-<td class="text-right"><p>96.02</p></td>
+<td class="text-right"><p>28.93</p></td>
 <td class="text-right"><p>48.60</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>9</p></td>
-<td class="text-right"><p>107.89</p></td>
+<td class="text-right"><p>37.64</p></td>
 <td class="text-right"><p>69.38</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>10</p></td>
-<td class="text-right"><p>55.78</p></td>
+<td class="text-right"><p>38.18</p></td>
 <td class="text-right"><p>35.92</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>11</p></td>
-<td class="text-right"><p>13.46</p></td>
+<td class="text-right"><p>15.87</p></td>
 <td class="text-right"><p>30.88</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>12</p></td>
-<td class="text-right"><p>16.49</p></td>
+<td class="text-right"><p>10.18</p></td>
 <td class="text-right"><p>10.78</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>13</p></td>
-<td class="text-right"><p>14.58</p></td>
+<td class="text-right"><p>9.78</p></td>
 <td class="text-right"><p>20.45</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>14</p></td>
-<td class="text-right"><p>17.99</p></td>
+<td class="text-right"><p>8.88</p></td>
 <td class="text-right"><p>7.00</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>15</p></td>
-<td class="text-right"><p>18.46</p></td>
+<td class="text-right"><p>10.61</p></td>
 <td class="text-right"><p>23.75</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>16</p></td>
-<td class="text-right"><p>14.29</p></td>
+<td class="text-right"><p>14.50</p></td>
 <td class="text-right"><p>23.41</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>17</p></td>
-<td class="text-right"><p>35.20</p></td>
+<td class="text-right"><p>19.56</p></td>
 <td class="text-right"><p>82.30</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>18</p></td>
-<td class="text-right"><p>53.64</p></td>
+<td class="text-right"><p>54.43</p></td>
 <td class="text-right"><p>129.40</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>19</p></td>
-<td class="text-right"><p>18.87</p></td>
+<td class="text-right"><p>10.65</p></td>
 <td class="text-right"><p>11.26</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>20</p></td>
-<td class="text-right"><p>29.29</p></td>
+<td class="text-right"><p>20.40</p></td>
 <td class="text-right"><p>19.22</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>21</p></td>
-<td class="text-right"><p>95.63</p></td>
+<td class="text-right"><p>91.31</p></td>
 <td class="text-right"><p>101.53</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>22</p></td>
-<td class="text-right"><p>9.37</p></td>
+<td class="text-right"><p>9.78</p></td>
 <td class="text-right"><p>12.71</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p><strong>Total</strong></p></td>
-<td class="text-right"><p><strong>817.07</strong></p></td>
+<td class="text-right"><p><strong>571.55</strong></p></td>
 <td class="text-right"><p><strong>845.21</strong></p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>Row counts agree across engines for every query.</p>
 </section>
 <section id="reproducing">
 <h2>Reproducing<a class="headerlink" href="#reproducing" title="Link to this heading">#</a></h2>
@@ -702,12 +701,11 @@ suite’s shuffle output — see <a class="reference internal" href="#executor-s
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>run<span class="w"> </span>--release<span class="w"> </span>--bin<span class="w"> </span>tpch<span class="w"> </span>--<span class="w"> </span>benchmark<span class="w"> </span>ballista<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--host<span class="w"> </span>&lt;scheduler&gt;<span class="w"> </span>--port<span class="w"> </span><span class="m">50050</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--path<span class="w"> </span>s3://&lt;bucket&gt;/tpch/sf1000<span class="w"> </span>--format<span class="w"> </span>parquet<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--partitions<span class="w"> </span><span class="m">256</span><span class="w"> </span>--iterations<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-c<span class="w"> </span>ballista.planner.adaptive.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-c<span class="w"> </span>datafusion.execution.collect_statistics<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-c<span class="w"> </span>ballista.shuffle.sort_based.memory_limit_per_task_bytes<span class="o">=</span><span class="m">0</span>
+<span class="w">  </span>--partitions<span class="w"> </span><span class="m">256</span><span class="w"> </span>--iterations<span class="w"> </span><span class="m">2</span>
 </pre></div>
 </div>
+<p>The runner sets <code class="docutils literal notranslate"><span class="pre">target_partitions</span></code> from <code class="docutils literal notranslate"><span class="pre">--partitions</span></code> and enables
+<code class="docutils literal notranslate"><span class="pre">collect_statistics</span></code>; everything else is left at its default.</p>
 </section>
 <section id="spark">
 <h3>Spark<a class="headerlink" href="#spark" title="Link to this heading">#</a></h3>

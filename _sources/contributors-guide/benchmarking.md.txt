@@ -26,15 +26,16 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
 
 | Engine   | Version                                                                                                                                                                   |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ballista | [`67b3a19b`](https://github.com/apache/datafusion-ballista/commit/67b3a19bb442db879c7056722d14696cc33341b9) (`main`, 2026-09-03), Cargo pkg `54.0.0`, DataFusion `55.0.0` |
+| Ballista | [`d6d8bd91`](https://github.com/apache/datafusion-ballista/commit/d6d8bd91fceaae4fb39624f6f1083a5f0ad78fbd) (`main`, 2026-10-03), Cargo pkg `55.0.0`, DataFusion `55.1.0` |
 | Spark    | 3.4 (vanilla, no acceleration plugin)                                                                                                                                     |
 
 ## Environment
 
 - **Cluster:** Kubernetes on AWS (`us-west-2`); one driver/scheduler pod and
   32 executor pods for each engine, launched on the same node pool.
-- **K8s worker nodes:** `r6i.24xlarge` (96 vCPU, 768 GiB memory, 40 Gbps EBS
-  bandwidth, EBS-only — no local instance-store).
+- **K8s worker nodes:** a mix of `r6i.24xlarge` (96 vCPU, 768 GiB memory) and
+  `r6i.16xlarge` (64 vCPU, 512 GiB memory), EBS-only — no local
+  instance-store. Pods are not pinned to an instance type.
 - **Executor pod (Ballista):** x86_64, 8 vCPU, 64 GiB memory, plus a
   dedicated 1000 GiB `gp3` EBS PVC mounted at `/data` for the executor's
   shuffle work-dir (see [Executor storage](#executor-storage)).
@@ -46,7 +47,11 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
   which submits SQL through a Ballista `SessionContext` and collects
   results locally.
 - **Data:** TPC-H SF1000 Parquet on S3 (`us-west-2`), ZSTD compression,
-  ~512 MiB row groups, one directory per table.
+  ~512 MiB row groups, one directory per table. `lineitem`, `orders`,
+  `customer` and `part` are Hive-style partitioned (e.g.
+  `lineitem/l_shipdate=YYYY-MM-DD/`). The `tpch` runner registers tables
+  without partition columns, so Ballista prunes these scans only through
+  Parquet statistics, while Spark applies partition filters.
 
 ## Executor storage
 
@@ -72,19 +77,17 @@ Spark on the same cluster has always used this pattern via
 
 ## Ballista configuration
 
-| Flag / config key                                             | Value                                                                   |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `--vcores`                                                    | `8`                                                                     |
-| `--memory-pool-size` (bytes; ≈70 % of the 64 GiB container)   | `48103633715`                                                           |
-| `--work-dir`                                                  | `/data` (dedicated gp3 PVC — see [Executor storage](#executor-storage)) |
-| `--grpc-server-max-decoding-message-size`                     | `134217728`                                                             |
-| `--grpc-server-max-encoding-message-size`                     | `134217728`                                                             |
-| `datafusion.execution.target_partitions`                      | `256`                                                                   |
-| `datafusion.execution.collect_statistics`                     | `true`                                                                  |
-| `datafusion.execution.listing_table_factory_infer_partitions` | `false`                                                                 |
-| `datafusion.catalog.information_schema`                       | `true`                                                                  |
-| `ballista.planner.adaptive.enabled`                           | `true` (AQE)                                                            |
-| `ballista.shuffle.sort_based.memory_limit_per_task_bytes`     | `0`                                                                     |
+| Flag / config key                                           | Value                                                                   |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `--vcores`                                                  | `8`                                                                     |
+| `--memory-pool-size` (bytes; ≈70 % of the 64 GiB container) | `48103633715`                                                           |
+| `--work-dir`                                                | `/data` (dedicated gp3 PVC — see [Executor storage](#executor-storage)) |
+| `--grpc-server-max-decoding-message-size`                   | `134217728`                                                             |
+| `--grpc-server-max-encoding-message-size`                   | `134217728`                                                             |
+| `datafusion.execution.target_partitions`                    | `256`                                                                   |
+| `datafusion.execution.collect_statistics`                   | `true`                                                                  |
+| `ballista.planner.adaptive.enabled`                         | `true` (AQE; default)                                                   |
+| `ballista.shuffle.sort_based.memory_limit_per_task_bytes`   | `268435456` (256 MiB; default)                                          |
 
 `datafusion.optimizer.prefer_hash_join` is left at its default; under AQE the
 join strategy is selected at runtime by `DelayJoinSelectionRule` /
@@ -130,36 +133,35 @@ The SQLBench-H phrasing of the 22 TPC-H queries from
 
 ## Results
 
-**Times in seconds; lower is better.** Ballista: single iteration. Spark:
-mean of 3 iterations (cold iteration dropped by the harness).
+**Times in seconds; lower is better.** Ballista: mean of 2 iterations
+(including the cold first iteration). Spark: mean of 3 iterations (cold
+iteration dropped by the harness).
 
 |     Query | Ballista (s) | Spark 3.4 (s) |
 | --------: | -----------: | ------------: |
-|         1 |        17.56 |         67.58 |
-|         2 |        27.13 |         29.80 |
-|         3 |        33.03 |         25.13 |
-|         4 |        18.34 |         21.19 |
-|         5 |        60.51 |         54.12 |
-|         6 |        14.25 |          1.23 |
-|         7 |        49.28 |         19.57 |
-|         8 |        96.02 |         48.60 |
-|         9 |       107.89 |         69.38 |
-|        10 |        55.78 |         35.92 |
-|        11 |        13.46 |         30.88 |
-|        12 |        16.49 |         10.78 |
-|        13 |        14.58 |         20.45 |
-|        14 |        17.99 |          7.00 |
-|        15 |        18.46 |         23.75 |
-|        16 |        14.29 |         23.41 |
-|        17 |        35.20 |         82.30 |
-|        18 |        53.64 |        129.40 |
-|        19 |        18.87 |         11.26 |
-|        20 |        29.29 |         19.22 |
-|        21 |        95.63 |        101.53 |
-|        22 |         9.37 |         12.71 |
-| **Total** |   **817.07** |    **845.21** |
-
-Row counts agree across engines for every query.
+|         1 |        13.94 |         67.58 |
+|         2 |        28.35 |         29.80 |
+|         3 |        25.29 |         25.13 |
+|         4 |         8.80 |         21.19 |
+|         5 |        63.94 |         54.12 |
+|         6 |         4.68 |          1.23 |
+|         7 |        45.85 |         19.57 |
+|         8 |        28.93 |         48.60 |
+|         9 |        37.64 |         69.38 |
+|        10 |        38.18 |         35.92 |
+|        11 |        15.87 |         30.88 |
+|        12 |        10.18 |         10.78 |
+|        13 |         9.78 |         20.45 |
+|        14 |         8.88 |          7.00 |
+|        15 |        10.61 |         23.75 |
+|        16 |        14.50 |         23.41 |
+|        17 |        19.56 |         82.30 |
+|        18 |        54.43 |        129.40 |
+|        19 |        10.65 |         11.26 |
+|        20 |        20.40 |         19.22 |
+|        21 |        91.31 |        101.53 |
+|        22 |         9.78 |         12.71 |
+| **Total** |   **571.55** |    **845.21** |
 
 ## Reproducing
 
@@ -189,11 +191,11 @@ Run all 22 queries with the `tpch` Rust runner from
 cargo run --release --bin tpch -- benchmark ballista \
   --host <scheduler> --port 50050 \
   --path s3://<bucket>/tpch/sf1000 --format parquet \
-  --partitions 256 --iterations 1 \
-  -c ballista.planner.adaptive.enabled=true \
-  -c datafusion.execution.collect_statistics=true \
-  -c ballista.shuffle.sort_based.memory_limit_per_task_bytes=0
+  --partitions 256 --iterations 2
 ```
+
+The runner sets `target_partitions` from `--partitions` and enables
+`collect_statistics`; everything else is left at its default.
 
 ### Spark
 
