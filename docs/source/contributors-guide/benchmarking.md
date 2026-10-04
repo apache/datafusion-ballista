@@ -19,15 +19,17 @@
 
 # Benchmarking
 
-Current TPC-H **SF1000** results for Ballista, compared against a vanilla
-**Spark 3.4** baseline running on the same cluster shape.
+Current TPC-H **SF1000** results for Ballista, compared against vanilla
+**Spark 4.1.3** and **Spark 4.1.3 with Apache DataFusion Comet 1.1.0-rc2**,
+running on the same cluster shape.
 
 ## Versions under test
 
-| Engine   | Version                                                                                                                                                                   |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ballista | [`d6d8bd91`](https://github.com/apache/datafusion-ballista/commit/d6d8bd91fceaae4fb39624f6f1083a5f0ad78fbd) (`main`, 2026-10-03), Cargo pkg `55.0.0`, DataFusion `55.1.0` |
-| Spark    | 3.4 (vanilla, no acceleration plugin)                                                                                                                                     |
+| Engine   | Version                                                                                                                                                                                                                |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ballista | [`d6d8bd91`](https://github.com/apache/datafusion-ballista/commit/d6d8bd91fceaae4fb39624f6f1083a5f0ad78fbd) (`main`, 2026-10-03), Cargo pkg `55.0.0`, DataFusion `55.1.0`                                              |
+| Spark    | `4.1.3` (`apache/spark:4.1.3` image, vanilla, no acceleration plugin)                                                                                                                                                  |
+| Comet    | [Apache DataFusion Comet](https://github.com/apache/datafusion-comet) `1.1.0-rc2` ([`992c806a`](https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa)) on the same Spark `4.1.3` |
 
 ## Environment
 
@@ -41,6 +43,12 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
   shuffle work-dir (see [Executor storage](#executor-storage)).
 - **Executor pod (Spark):** x86_64, 8 vCPU, 64 GiB + 10 GiB overhead, plus a
   dedicated `gp3` PVC via `spark-local-dir-1`.
+- **Executor pod (Spark + Comet):** the same as Spark, plus 32 GiB of
+  off-heap memory for Comet's native execution (about 106 GiB per pod in
+  total, compared with 64 GiB for a Ballista executor).
+- **Driver (Spark and Spark + Comet):** runs the queries through an internal
+  Spark benchmark harness. See [Spark and Spark + Comet](#spark-and-spark--comet)
+  under Reproducing.
 - **Client pod (Ballista):** the `tpch` Rust benchmark runner from
   [`benchmarks/`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks)
   in this repo (`cargo run --release --bin tpch -- benchmark ballista ...`),
@@ -51,7 +59,9 @@ Current TPC-H **SF1000** results for Ballista, compared against a vanilla
   `customer` and `part` are Hive-style partitioned (e.g.
   `lineitem/l_shipdate=YYYY-MM-DD/`). The `tpch` runner registers tables
   without partition columns, so Ballista prunes these scans only through
-  Parquet statistics, while Spark applies partition filters.
+  Parquet statistics, while Spark and Comet apply partition filters. This
+  favours Spark and Comet on date-filtered queries such as Q6, Q12, Q14
+  and Q20.
 
 ## Executor storage
 
@@ -100,7 +110,8 @@ some SF1000 physical plans (Q11, Q21, Q22) encode above 16 MiB and hit
 
 ## Spark configuration (highlights)
 
-Vanilla Spark 3.4 — no Comet plugin, stock `SortShuffleManager`.
+Both Spark runs use these settings. The vanilla Spark run has no Comet
+plugin and uses the stock `SortShuffleManager`.
 
 | Key                                                        | Value                                |
 | ---------------------------------------------------------- | ------------------------------------ |
@@ -116,7 +127,7 @@ Vanilla Spark 3.4 — no Comet plugin, stock `SortShuffleManager`.
 | `spark.serializer`                                         | `KryoSerializer`                     |
 | `spark.io.compression.codec`                               | `zstd`                               |
 
-Spark AQE is left at its Spark 3.4 defaults. Shuffle spills to a `gp3`-backed
+Spark AQE is left at its Spark 4.1 defaults. Shuffle spills to a `gp3`-backed
 per-executor volume (`spark.kubernetes.executor.volumes...spark-local-dir-1`).
 
 Note that `spark.executor.cores=16` is Spark's **task parallelism** setting,
@@ -126,42 +137,62 @@ schedules 16 concurrent tasks onto 8 physical cores (2× oversubscription).
 The matching Ballista executor runs `--vcores=8` on the same
 8 physical vCPU (1:1).
 
+## Comet configuration
+
+The Spark + Comet run adds these settings to the Spark configuration above:
+
+| Key                                    | Value                                                              |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| `spark.plugins`                        | `org.apache.spark.CometPlugin`                                     |
+| `spark.comet.enabled`                  | `true`                                                             |
+| `spark.shuffle.manager`                | `org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager` |
+| `spark.memory.offHeap.enabled`         | `true`                                                             |
+| `spark.memory.offHeap.size`            | `32G`                                                              |
+| `spark.comet.exec.memoryPool.fraction` | `0.8`                                                              |
+
+The run also enabled Comet's explain and fallback logging. Everything else is
+left at Comet's defaults.
+
 ## Queries
 
 The SQLBench-H phrasing of the 22 TPC-H queries from
 [apache/datafusion-benchmarks](https://github.com/apache/datafusion-benchmarks).
 
+The Spark harness uses the same queries with the same substitution
+parameters. The only differences are in wording: it writes some dates as
+arithmetic (for example `date '1998-12-01' - interval '90' day` instead of
+`date '1998-09-02'`), and it phrases Q15 as a CTE instead of a view.
+
 ## Results
 
-**Times in seconds; lower is better.** Ballista: mean of 2 iterations
-(including the cold first iteration). Spark: mean of 3 iterations (cold
-iteration dropped by the harness).
+**Times in seconds; lower is better.** Every engine: mean of 2 iterations,
+including the cold first iteration.
 
-|     Query | Ballista (s) | Spark 3.4 (s) |
-| --------: | -----------: | ------------: |
-|         1 |        13.94 |         67.58 |
-|         2 |        28.35 |         29.80 |
-|         3 |        25.29 |         25.13 |
-|         4 |         8.80 |         21.19 |
-|         5 |        63.94 |         54.12 |
-|         6 |         4.68 |          1.23 |
-|         7 |        45.85 |         19.57 |
-|         8 |        28.93 |         48.60 |
-|         9 |        37.64 |         69.38 |
-|        10 |        38.18 |         35.92 |
-|        11 |        15.87 |         30.88 |
-|        12 |        10.18 |         10.78 |
-|        13 |         9.78 |         20.45 |
-|        14 |         8.88 |          7.00 |
-|        15 |        10.61 |         23.75 |
-|        16 |        14.50 |         23.41 |
-|        17 |        19.56 |         82.30 |
-|        18 |        54.43 |        129.40 |
-|        19 |        10.65 |         11.26 |
-|        20 |        20.40 |         19.22 |
-|        21 |        91.31 |        101.53 |
-|        22 |         9.78 |         12.71 |
-| **Total** |   **571.55** |    **845.21** |
+|     Query | Ballista (s) | Spark 4.1.3 (s) | Spark 4.1.3 + Comet 1.1.0-rc2 (s) |
+| --------: | -----------: | --------------: | --------------------------------: |
+|         1 |        13.94 |           71.45 |                             10.66 |
+|         2 |        28.35 |           37.98 |                             21.66 |
+|         3 |        25.29 |           30.61 |                             16.05 |
+|         4 |         8.80 |           23.86 |                              8.11 |
+|         5 |        63.94 |           57.39 |                             38.32 |
+|         6 |         4.68 |            1.73 |                              0.99 |
+|         7 |        45.85 |           25.34 |                             16.60 |
+|         8 |        28.93 |           58.17 |                             46.04 |
+|         9 |        37.64 |           74.90 |                             55.78 |
+|        10 |        38.18 |           35.31 |                             21.31 |
+|        11 |        15.87 |           31.66 |                             14.79 |
+|        12 |        10.18 |           13.24 |                              5.33 |
+|        13 |         9.78 |           22.73 |                             11.31 |
+|        14 |         8.88 |            7.25 |                              2.50 |
+|        15 |        10.61 |           22.45 |                             11.85 |
+|        16 |        14.50 |           24.34 |                              8.94 |
+|        17 |        19.56 |           81.36 |                             25.14 |
+|        18 |        54.43 |          134.11 |                             46.42 |
+|        19 |        10.65 |           13.27 |                              9.07 |
+|        20 |        20.40 |           16.08 |                              6.57 |
+|        21 |        91.31 |           98.04 |                             68.43 |
+|        22 |         9.78 |           16.90 |                              9.22 |
+| **Total** |   **571.55** |      **898.17** |                        **455.09** |
 
 ## Reproducing
 
@@ -197,11 +228,13 @@ cargo run --release --bin tpch -- benchmark ballista \
 The runner sets `target_partitions` from `--partitions` and enables
 `collect_statistics`; everything else is left at its default.
 
-### Spark
+### Spark and Spark + Comet
 
-Runs the same queries via `tpcbench.py` from
+The Spark and Spark + Comet numbers above were collected with an internal
+benchmark harness, which isn't public. The closest public equivalent is
+`tpcbench.py` from
 [apache/datafusion-benchmarks](https://github.com/apache/datafusion-benchmarks),
-with the highlights above and stock Spark 3.4 defaults for everything else:
+with the settings above and stock Spark 4.1 defaults for everything else:
 
 ```sh
 spark-submit \
@@ -215,7 +248,20 @@ spark-submit \
     --benchmark tpch \
     --data s3a://<bucket>/tpch/sf1000 \
     --format parquet \
-    --iterations 3
+    --iterations 2
+```
+
+For Spark + Comet, add the Comet JAR to the driver and executor classpath
+(see the
+[Comet installation guide](https://datafusion.apache.org/comet/user-guide/latest/installation.html))
+and the settings in [Comet configuration](#comet-configuration):
+
+```sh
+  --conf spark.plugins=org.apache.spark.CometPlugin \
+  --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
+  --conf spark.memory.offHeap.enabled=true \
+  --conf spark.memory.offHeap.size=32G \
+  --conf spark.comet.exec.memoryPool.fraction=0.8
 ```
 
 ## Recording a new result set
