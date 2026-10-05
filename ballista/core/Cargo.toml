@@ -36,7 +36,7 @@ rustc-args = ["--cfg", "docsrs"]
 
 [features]
 arrow-ipc-optimizations = []
-build-binary = ["clap", "object_store"]
+build-binary = ["clap", "lru", "object_store"]
 default = ["arrow-ipc-optimizations"]
 docsrs = []
 # Used for testing ONLY: causes all values to hash to the same value (test for collisions)
@@ -55,6 +55,7 @@ datafusion-proto-common = { workspace = true }
 datafusion-spark = { workspace = true, optional = true, features = ["datafusion"] }
 futures = { workspace = true }
 log = { workspace = true }
+lru = { version = "0.18", optional = true }
 object_store = { workspace = true, features = ["aws", "http"], optional = true }
 parking_lot = { workspace = true }
 pastey = { workspace = true }

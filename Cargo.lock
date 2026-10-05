@@ -1129,6 +1129,7 @@ dependencies = [
  "datafusion-spark",
  "futures",
  "log",
+ "lru 0.18.5",
  "object_store",
  "parking_lot",
  "pastey",
