@@ -47,6 +47,7 @@ use std::sync::{Arc, LazyLock};
 use url::Url;
 
 use crate::extension::SessionConfigExt;
+use crate::utils::redact_config_value;
 
 /// Custom [SessionConfig] constructor method
 ///
@@ -338,7 +339,8 @@ impl ExtensionOptions for S3Options {
     }
 
     fn set(&mut self, key: &str, value: &str) -> Result<()> {
-        log::debug!("set config, key:{key},  value:{value}");
+        // values are left out: the key may be a secret, or a misspelled one
+        log::debug!("set config, key:{key}");
         match key {
             "access_key_id" => {
                 let mut c = self.config.write();
@@ -365,7 +367,7 @@ impl ExtensionOptions for S3Options {
                 c.allow_http.set(key, value)?;
             }
             _ => {
-                log::warn!("Config value {key} cant be set to {value}");
+                log::warn!("Config value {key} cant be set");
                 return config_err!("Config value \"{}\" not found in S3Options", key);
             }
         }
@@ -417,7 +419,7 @@ impl ExtensionOptions for S3Options {
 impl ConfigExtension for S3Options {
     const PREFIX: &'static str = "s3";
 }
-#[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Default, Clone, PartialEq, Eq, Hash)]
 struct S3RegistryConfiguration {
     /// Access Key ID
     pub access_key_id: Option<String>,
@@ -431,6 +433,32 @@ struct S3RegistryConfiguration {
     pub endpoint: Option<String>,
     /// Allow HTTP (otherwise will always use https)
     pub allow_http: Option<bool>,
+}
+
+/// Leaves the secret key and session token out, as this is what gets logged.
+impl std::fmt::Debug for S3RegistryConfiguration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3RegistryConfiguration")
+            .field("access_key_id", &self.access_key_id)
+            .field(
+                "secret_access_key",
+                &self
+                    .secret_access_key
+                    .as_deref()
+                    .map(|value| redact_config_value("secret_access_key", value)),
+            )
+            .field(
+                "session_token",
+                &self
+                    .session_token
+                    .as_deref()
+                    .map(|value| redact_config_value("session_token", value)),
+            )
+            .field("region", &self.region)
+            .field("endpoint", &self.endpoint)
+            .field("allow_http", &self.allow_http)
+            .finish()
+    }
 }
 
 #[cfg(test)]

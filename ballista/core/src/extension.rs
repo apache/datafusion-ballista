@@ -29,6 +29,7 @@ use crate::config::{
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
+use crate::utils::redact_config_value;
 use datafusion::common::DFSchemaRef;
 use datafusion::execution::context::{QueryPlanner, SessionConfig, SessionState};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -657,7 +658,10 @@ impl SessionConfigHelperExt for SessionConfig {
                 c.key != "datafusion.sql_parser.enable_options_value_normalization"
             })
             .map(|datafusion::config::ConfigEntry { key, value, .. }| {
-                log::trace!("sending configuration key: `{key}`, value`{value:?}`");
+                log::trace!(
+                    "sending configuration key: `{key}`, value`{:?}`",
+                    value.as_deref().map(|v| redact_config_value(key, v))
+                );
                 KeyValuePair {
                     key: key.to_owned(),
                     value: value.clone(),
@@ -677,14 +681,16 @@ impl SessionConfigHelperExt for SessionConfig {
             match value {
                 Some(value) => {
                     log::trace!(
-                        "setting up configuration key: `{key}`, value: `{value:?}`"
+                        "setting up configuration key: `{key}`, value: `{:?}`",
+                        redact_config_value(key, value)
                     );
                     if let Err(e) = self.options_mut().set(key, value) {
                         // there is not much we can do about this error at the moment.
                         // it used to be warning but it gets very verbose
                         // as even datafusion properties can't be parsed
                         log::debug!(
-                            "could not set configuration key: `{key}`, value: `{value:?}`, reason: {e}"
+                            "could not set configuration key: `{key}`, value: `{:?}`, reason: {e}",
+                            redact_config_value(key, value)
                         )
                     }
                 }
