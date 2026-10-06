@@ -51,6 +51,20 @@ Result bytes then flow **client → Result Service → executor**; the scheduler
 result data. Multiple replicas are interchangeable (the service holds no state), so scale
 by running more of them behind a gRPC-aware load balancer.
 
+## Behind a TLS-terminating ingress
+
+Advertise the ingress's public name as an Arrow Flight location URI, and clients connect
+to it with TLS while the replicas behind it keep serving plaintext:
+
+```bash
+ballista-scheduler --advertise-flight-endpoint=grpc+tls://ballista-results.example.com
+```
+
+`grpc+tls://` defaults to port 443; `grpc+tcp://HOST[:PORT]` forces plaintext, and a bare
+`HOST:PORT` leaves TLS to each client's own setting. The ingress must forward HTTP/2
+(gRPC) to the replicas, for example with ingress-nginx's
+`nginx.ingress.kubernetes.io/backend-protocol: "GRPC"`, and allow long-lived streams.
+
 ## Options
 
 | Flag                               | Default    | Meaning                              |

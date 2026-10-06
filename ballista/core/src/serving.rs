@@ -41,6 +41,10 @@
 //! [`ForwardingBackend`]: crate::serving::ForwardingBackend
 //! [`serve_do_get`]: crate::serving::serve_do_get
 //! [`ServingFlightService`]: crate::serving::ServingFlightService
+//!
+//! [`ResultEndpoint`](crate::serving::ResultEndpoint) parses where the
+//! scheduler tells clients to fetch from, so the scheduler and the native
+//! client agree on it.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -317,4 +321,166 @@ async fn get_flight_client(
 
     debug!("ForwardingBackend connected: {flight_client:?}");
     Ok(flight_client)
+}
+
+/// Where clients are told to fetch result partitions from: a Result Service,
+/// or a load balancer or ingress in front of one.
+///
+/// Parsed from the scheduler's advertised endpoint, which is either an Arrow
+/// Flight location URI or a bare `host:port`:
+///
+/// - `grpc+tls://host[:port]` — clients connect with TLS. The port defaults to
+///   443, which suits a TLS-terminating ingress.
+/// - `grpc+tcp://host[:port]` or `grpc://host[:port]` — plaintext. The port
+///   defaults to 80.
+/// - `host:port` — the port is required, and whether to use TLS is left to the
+///   client's own configuration, as it was before URIs were accepted.
+///
+/// The endpoint is a `host:port`, so paths, queries and credentials are
+/// rejected: path-based routing in front of a Result Service is not supported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultEndpoint {
+    host: String,
+    port: u16,
+    tls: Option<bool>,
+}
+
+impl ResultEndpoint {
+    /// The host clients connect to. IPv6 addresses keep their brackets.
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// The port clients connect to.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Whether clients must use TLS: `Some(true)` for `grpc+tls`, `Some(false)`
+    /// for `grpc` and `grpc+tcp`, and `None` for a bare `host:port`, where the
+    /// client decides.
+    pub fn tls(&self) -> Option<bool> {
+        self.tls
+    }
+}
+
+impl std::str::FromStr for ResultEndpoint {
+    type Err = BallistaError;
+
+    fn from_str(endpoint: &str) -> Result<Self, Self::Err> {
+        let invalid = |reason: &str| {
+            BallistaError::Configuration(format!(
+                "invalid result endpoint {endpoint:?}: {reason}"
+            ))
+        };
+
+        let (url, tls, default_port) = match endpoint.split_once("://") {
+            Some((scheme, _)) => {
+                let (tls, default_port) = match scheme {
+                    "grpc+tls" => (Some(true), 443),
+                    "grpc" | "grpc+tcp" => (Some(false), 80),
+                    _ => {
+                        return Err(invalid(
+                            "the scheme must be grpc+tls, grpc+tcp or grpc",
+                        ));
+                    }
+                };
+                let url =
+                    url::Url::parse(endpoint).map_err(|e| invalid(&e.to_string()))?;
+                (url, tls, Some(default_port))
+            }
+            // A bare `host:port`: borrow a scheme so the URL parser can split it.
+            None => {
+                let url = url::Url::parse(&format!("grpc://{endpoint}"))
+                    .map_err(|e| invalid(&e.to_string()))?;
+                (url, None, None)
+            }
+        };
+
+        let host = url
+            .host_str()
+            .filter(|host| !host.is_empty())
+            .ok_or_else(|| invalid("no host"))?;
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(invalid("credentials are not supported"));
+        }
+        if !matches!(url.path(), "" | "/")
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(invalid("paths and queries are not supported"));
+        }
+        let port = url
+            .port()
+            .or(default_port)
+            .ok_or_else(|| invalid("a port is required unless a scheme is given"))?;
+
+        Ok(Self {
+            host: host.to_string(),
+            port,
+            tls,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(endpoint: &str) -> ResultEndpoint {
+        endpoint.parse().unwrap()
+    }
+
+    #[test]
+    fn bare_host_port_leaves_tls_to_the_client() {
+        let endpoint = parse("results.example.com:50055");
+        assert_eq!(endpoint.host(), "results.example.com");
+        assert_eq!(endpoint.port(), 50055);
+        assert_eq!(endpoint.tls(), None);
+    }
+
+    #[test]
+    fn schemes_decide_tls_and_the_default_port() {
+        let endpoint = parse("grpc+tls://results.example.com");
+        assert_eq!(endpoint.port(), 443);
+        assert_eq!(endpoint.tls(), Some(true));
+
+        let endpoint = parse("grpc+tls://results.example.com:8443/");
+        assert_eq!(endpoint.port(), 8443);
+        assert_eq!(endpoint.tls(), Some(true));
+
+        for plaintext in ["grpc+tcp://results:50055", "grpc://results:50055"] {
+            let endpoint = parse(plaintext);
+            assert_eq!(endpoint.tls(), Some(false));
+            assert_eq!(endpoint.port(), 50055);
+        }
+        assert_eq!(parse("grpc://results").port(), 80);
+    }
+
+    #[test]
+    fn ipv6_hosts_keep_their_brackets() {
+        let endpoint = parse("[::1]:50055");
+        assert_eq!(endpoint.host(), "[::1]");
+        assert_eq!(parse("grpc+tcp://[::1]:50055").host(), "[::1]");
+    }
+
+    #[test]
+    fn endpoints_that_are_not_a_host_and_port_are_rejected() {
+        for endpoint in [
+            "",
+            "results.example.com",
+            "https://results.example.com:443",
+            "grpc+unix:///tmp/results.sock",
+            "grpc+tls://results.example.com/ballista",
+            "grpc+tls://results.example.com?x=1",
+            "grpc+tls://user:secret@results.example.com",
+            "results.example.com:50055/ballista",
+            "grpc+tls://:443",
+        ] {
+            assert!(
+                endpoint.parse::<ResultEndpoint>().is_err(),
+                "{endpoint:?} must be rejected"
+            );
+        }
+    }
 }

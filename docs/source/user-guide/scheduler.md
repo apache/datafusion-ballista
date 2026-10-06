@@ -56,6 +56,33 @@ that holds it, so the scheduler serves no result data. The Result Service holds 
 by running more replicas behind a gRPC-aware load balancer and advertising the load balancer's
 address.
 
+### Behind a TLS-terminating ingress
+
+`--advertise-flight-endpoint` takes either a bare `HOST:PORT`, which leaves TLS to each client's own
+configuration, or an Arrow Flight location URI that tells clients how to connect:
+
+| Form                     | Clients connect with | Default port |
+| ------------------------ | -------------------- | ------------ |
+| `grpc+tls://HOST[:PORT]` | TLS                  | 443          |
+| `grpc+tcp://HOST[:PORT]` | plaintext            | 80           |
+| `grpc://HOST[:PORT]`     | plaintext            | 80           |
+| `HOST:PORT`              | the client's setting | required     |
+
+To serve results through an ingress or load balancer that terminates TLS, advertise its public name
+with `grpc+tls://`. The Result Service replicas behind it keep serving plaintext:
+
+```bash
+ballista-result-service --bind-port 50055
+ballista-scheduler --advertise-flight-endpoint grpc+tls://ballista-results.example.com
+```
+
+The ingress must forward HTTP/2 (gRPC) to the replicas, for example with ingress-nginx's
+`nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` annotation, and its read and send timeouts
+must be long enough for the largest result stream. Ballista clients still need TLS roots for the
+ingress's certificate; supply them with a gRPC endpoint override, as the [mTLS cluster example] does.
+
+[mtls cluster example]: https://github.com/apache/datafusion-ballista/blob/main/examples/examples/mtls-cluster.rs
+
 > Note: the advertised endpoint serves plain Arrow Flight `DoGet` for Ballista's own partition-fetch
 > tickets. Generic Flight SQL, JDBC, and ADBC clients connect to the scheduler's
 > [Flight SQL frontend](flightsql.md) instead.
@@ -65,10 +92,10 @@ The Result Service checks no credentials, and it dials whichever executor addres
 names without checking that the address belongs to the cluster. Keep it on a trusted network.
 ```
 
-| Option                           | Description                                                                                                                                                                              |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--advertise-flight-endpoint`    | The `HOST:PORT` address clients are told to fetch results from, instead of the executors: a Result Service, or a load balancer in front of one.                                          |
-| `--enable-embedded-flight-proxy` | **Deprecated, to be removed in 57.0.0.** Runs an Arrow Flight proxy inside the scheduler process, on the scheduler's own host and port, and points clients at the scheduler for results. |
+| Option                           | Description                                                                                                                                                                                    |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--advertise-flight-endpoint`    | Where clients are told to fetch results from, instead of the executors: a Result Service, or a load balancer or ingress in front of one. A `HOST:PORT` or a `grpc+tls://` / `grpc+tcp://` URI. |
+| `--enable-embedded-flight-proxy` | **Deprecated, to be removed in 57.0.0.** Runs an Arrow Flight proxy inside the scheduler process, on the scheduler's own host and port, and points clients at the scheduler for results.       |
 
 ### The embedded proxy (deprecated)
 

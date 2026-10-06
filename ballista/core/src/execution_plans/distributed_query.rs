@@ -29,6 +29,7 @@ use crate::serde::protobuf::{
     job_status, scheduler_grpc_client::SchedulerGrpcClient,
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
+use crate::serving::ResultEndpoint;
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use crate::version;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -869,11 +870,13 @@ async fn execute_query_push(
     }
 }
 
+/// Where to fetch result partitions from: the host, the port, and whether that
+/// endpoint dictates TLS (`None` leaves it to the client's own setting).
 fn get_client_host_port(
     executor_metadata: &ExecutorMetadata,
     scheduler_url: &str,
     flight_proxy: &Option<FlightProxy>,
-) -> Result<(String, u16)> {
+) -> Result<(String, u16, Option<bool>)> {
     fn split_host_port(address: &str) -> Result<(String, u16)> {
         let url: Url = address.parse().map_err(|e| {
             DataFusionError::Execution(format!(
@@ -895,11 +898,15 @@ fn get_client_host_port(
     match flight_proxy {
         Some(FlightProxy::External(address)) => {
             debug!("Fetching results from external flight proxy: {}", address);
-            split_host_port(format!("http://{address}").as_str())
+            // A Flight location URI (`grpc+tls://...`) or a bare `host:port`.
+            let endpoint: ResultEndpoint =
+                address.parse().map_err(BallistaError::into_datafusion)?;
+            Ok((endpoint.host().to_string(), endpoint.port(), endpoint.tls()))
         }
         Some(FlightProxy::Local(true)) => {
             debug!("Fetching results from scheduler: {}", scheduler_url);
-            split_host_port(scheduler_url)
+            let (host, port) = split_host_port(scheduler_url)?;
+            Ok((host, port, None))
         }
         Some(FlightProxy::Local(false)) | None => {
             debug!(
@@ -909,6 +916,7 @@ fn get_client_host_port(
             Ok((
                 executor_metadata.host.clone(),
                 executor_metadata.port as u16,
+                None,
             ))
         }
     }
@@ -936,14 +944,17 @@ async fn fetch_partition(
     let host = metadata.host.as_str();
     let port = metadata.port as u16;
 
-    let (client_host, client_port) =
+    let (client_host, client_port, endpoint_tls) =
         get_client_host_port(&metadata, &scheduler_url, &flight_proxy)?;
 
+    // An advertised `grpc+tls://` endpoint, such as a Result Service behind a
+    // TLS-terminating ingress, needs TLS even when the scheduler connection
+    // does not; `grpc+tcp://` likewise forces plaintext.
     let mut ballista_client = BallistaClient::try_new(
         client_host.as_str(),
         client_port,
         max_message_size,
-        use_tls,
+        endpoint_tls.unwrap_or(use_tls),
         customize_endpoint,
         io_retries_times,
         io_retry_wait_time_ms,
@@ -1276,7 +1287,7 @@ mod test {
         // no flight proxy -> client should fetch results from executor
         assert_eq!(
             get_client_host_port(&executor, &scheduler_url, &None).unwrap(),
-            (executor.host.clone(), executor.port as u16)
+            (executor.host.clone(), executor.port as u16, None)
         );
 
         // same, no flight proxy
@@ -1287,7 +1298,7 @@ mod test {
                 &Some(FlightProxy::Local(false))
             )
             .unwrap(),
-            (executor.host.clone(), executor.port as u16)
+            (executor.host.clone(), executor.port as u16, None)
         );
 
         // embedded flight proxy on scheduler
@@ -1298,10 +1309,10 @@ mod test {
                 &Some(FlightProxy::Local(true))
             )
             .unwrap(),
-            (scheduler_host.to_string(), scheduler_port)
+            (scheduler_host.to_string(), scheduler_port, None)
         );
 
-        // external proxy
+        // external proxy, TLS left to the client
         assert_eq!(
             get_client_host_port(
                 &executor,
@@ -1309,7 +1320,43 @@ mod test {
                 &Some(FlightProxy::External("proxy:1234".to_string()))
             )
             .unwrap(),
-            ("proxy".to_string(), 1234_u16)
+            ("proxy".to_string(), 1234_u16, None)
+        );
+
+        // external proxy behind a TLS-terminating ingress
+        assert_eq!(
+            get_client_host_port(
+                &executor,
+                &scheduler_url,
+                &Some(FlightProxy::External(
+                    "grpc+tls://results.example.com".to_string()
+                ))
+            )
+            .unwrap(),
+            ("results.example.com".to_string(), 443_u16, Some(true))
+        );
+
+        // external proxy that must be reached in plaintext
+        assert_eq!(
+            get_client_host_port(
+                &executor,
+                &scheduler_url,
+                &Some(FlightProxy::External("grpc+tcp://proxy:1234".to_string()))
+            )
+            .unwrap(),
+            ("proxy".to_string(), 1234_u16, Some(false))
+        );
+
+        // an endpoint the scheduler should never have advertised
+        assert!(
+            get_client_host_port(
+                &executor,
+                &scheduler_url,
+                &Some(FlightProxy::External(
+                    "https://results.example.com/ballista".to_string()
+                ))
+            )
+            .is_err()
         );
     }
 
