@@ -397,7 +397,9 @@
 <h1>Benchmarking<a class="headerlink" href="#benchmarking" title="Link to this heading">#</a></h1>
 <p>Current TPC-H <strong>SF1000</strong> results for Ballista, compared against vanilla
 <strong>Spark 4.1.3</strong> and <strong>Spark 4.1.3 with Apache DataFusion Comet 1.1.0-rc2</strong>,
-running on the same cluster shape.</p>
+running on the same cluster shape. A <strong>Trino 483</strong> column is included for
+reference; it is not an apples-to-apples comparison (see
+<a class="reference internal" href="#trino-configuration"><span class="xref myst">Trino configuration</span></a>).</p>
 <section id="versions-under-test">
 <h2>Versions under test<a class="headerlink" href="#versions-under-test" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -415,6 +417,9 @@ running on the same cluster shape.</p>
 </tr>
 <tr class="row-even"><td><p>Comet</p></td>
 <td><p><a class="reference external" href="https://github.com/apache/datafusion-comet">Apache DataFusion Comet</a> <code class="docutils literal notranslate"><span class="pre">1.1.0-rc2</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa"><code class="docutils literal notranslate"><span class="pre">992c806a</span></code></a>) on the same Spark <code class="docutils literal notranslate"><span class="pre">4.1.3</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Trino</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">483</span></code> (<code class="docutils literal notranslate"><span class="pre">trinodb/trino:483</span></code> image, Hive connector)</p></td>
 </tr>
 </tbody>
 </table>
@@ -436,6 +441,9 @@ dedicated <code class="docutils literal notranslate"><span class="pre">gp3</span
 <li><p><strong>Executor pod (Spark + Comet):</strong> the same as Spark, plus 32 GiB of
 off-heap memory for Comet’s native execution (about 106 GiB per pod in
 total, compared with 64 GiB for a Ballista executor).</p></li>
+<li><p><strong>Worker pod (Trino):</strong> x86_64, 8 vCPU, 64 GiB memory (the image’s
+default JVM heap of 80 %, about 51 GiB), no spill volume. A separate
+coordinator pod plans and schedules but does not scan data.</p></li>
 <li><p><strong>Driver (Spark and Spark + Comet):</strong> runs the queries through an internal
 Spark benchmark harness. See <a class="reference internal" href="#spark-and-spark--comet"><span class="xref myst">Spark and Spark + Comet</span></a>
 under Reproducing.</p></li>
@@ -611,6 +619,60 @@ The matching Ballista executor runs <code class="docutils literal notranslate"><
 <p>The run also enabled Comet’s explain and fallback logging. Everything else is
 left at Comet’s defaults.</p>
 </section>
+<section id="trino-configuration">
+<h2>Trino configuration<a class="headerlink" href="#trino-configuration" title="Link to this heading">#</a></h2>
+<p>Trino is a useful reference point, but the setup differs from the other
+engines in ways that matter:</p>
+<ul class="simple">
+<li><p><strong>Warm timings.</strong> Each query runs once untimed, then the reported number
+is the mean of 3 timed iterations. The other engines include the cold
+first iteration in their mean.</p></li>
+<li><p><strong>In-memory exchanges.</strong> Trino streams data between stages over the
+network and never writes shuffle files, while Ballista, Spark, and Comet
+materialize every shuffle on disk. Spilling was disabled, so a query
+that does not fit in memory would fail rather than slow down (none did).</p></li>
+<li><p><strong>Partition pruning.</strong> Tables are external Hive tables over the same
+Parquet files with the partition columns declared, so Trino prunes
+partitions like Spark and Comet do.</p></li>
+<li><p><strong>No table statistics.</strong> <code class="docutils literal notranslate"><span class="pre">ANALYZE</span></code> was not run, so the cost-based
+optimizer had no row counts or column statistics.</p></li>
+<li><p><strong>Queries.</strong> The same SQL text as the Spark harness.</p></li>
+</ul>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Workers</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">32</span></code> (<code class="docutils literal notranslate"><span class="pre">include-coordinator=false</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">query.max-memory-per-node</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">38GB</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">memory.heap-headroom-per-node</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">6GB</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spill-enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">hive.metastore</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">file</span></code> (stored in S3)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hive.metastore-cache-ttl</span></code>, <code class="docutils literal notranslate"><span class="pre">hive.file-status-cache-expire-time</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">24h</span></code> (metadata cached across a run)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">hive.dynamic-filtering.wait-timeout</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1s</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Everything else is left at Trino’s defaults, with no session properties
+set. No tuning was done beyond this, and the configuration has not been
+reviewed by Trino experts.</p>
+</section>
 <section id="queries">
 <h2>Queries<a class="headerlink" href="#queries" title="Link to this heading">#</a></h2>
 <p>The SQLBench-H phrasing of the 22 TPC-H queries from
@@ -622,14 +684,17 @@ arithmetic (for example <code class="docutils literal notranslate"><span class="
 </section>
 <section id="results">
 <h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
-<p><strong>Times in seconds; lower is better.</strong> Every engine: mean of 2 iterations,
-including the cold first iteration.</p>
+<p><strong>Times in seconds; lower is better.</strong> Ballista, Spark, and Spark + Comet:
+mean of 2 iterations, including the cold first iteration. Trino: mean of 3
+iterations after an untimed warm-up run (see
+<a class="reference internal" href="#trino-configuration"><span class="xref myst">Trino configuration</span></a>).</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head text-right"><p>Query</p></th>
 <th class="head text-right"><p>Ballista (s)</p></th>
 <th class="head text-right"><p>Spark 4.1.3 (s)</p></th>
 <th class="head text-right"><p>Spark 4.1.3 + Comet 1.1.0-rc2 (s)</p></th>
+<th class="head text-right"><p>Trino 483 (s)</p></th>
 </tr>
 </thead>
 <tbody>
@@ -637,116 +702,139 @@ including the cold first iteration.</p>
 <td class="text-right"><p>13.94</p></td>
 <td class="text-right"><p>71.45</p></td>
 <td class="text-right"><p>10.66</p></td>
+<td class="text-right"><p>5.32</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>2</p></td>
 <td class="text-right"><p>28.35</p></td>
 <td class="text-right"><p>37.98</p></td>
 <td class="text-right"><p>21.66</p></td>
+<td class="text-right"><p>15.34</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>3</p></td>
 <td class="text-right"><p>25.29</p></td>
 <td class="text-right"><p>30.61</p></td>
 <td class="text-right"><p>16.05</p></td>
+<td class="text-right"><p>13.47</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>4</p></td>
 <td class="text-right"><p>8.80</p></td>
 <td class="text-right"><p>23.86</p></td>
 <td class="text-right"><p>8.11</p></td>
+<td class="text-right"><p>8.01</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>5</p></td>
 <td class="text-right"><p>63.94</p></td>
 <td class="text-right"><p>57.39</p></td>
 <td class="text-right"><p>38.32</p></td>
+<td class="text-right"><p>25.98</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>6</p></td>
 <td class="text-right"><p>4.68</p></td>
 <td class="text-right"><p>1.73</p></td>
 <td class="text-right"><p>0.99</p></td>
+<td class="text-right"><p>0.84</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>7</p></td>
 <td class="text-right"><p>45.85</p></td>
 <td class="text-right"><p>25.34</p></td>
 <td class="text-right"><p>16.60</p></td>
+<td class="text-right"><p>16.19</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>8</p></td>
 <td class="text-right"><p>28.93</p></td>
 <td class="text-right"><p>58.17</p></td>
 <td class="text-right"><p>46.04</p></td>
+<td class="text-right"><p>30.93</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>9</p></td>
 <td class="text-right"><p>37.64</p></td>
 <td class="text-right"><p>74.90</p></td>
 <td class="text-right"><p>55.78</p></td>
+<td class="text-right"><p>41.71</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>10</p></td>
 <td class="text-right"><p>38.18</p></td>
 <td class="text-right"><p>35.31</p></td>
 <td class="text-right"><p>21.31</p></td>
+<td class="text-right"><p>20.41</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>11</p></td>
 <td class="text-right"><p>15.87</p></td>
 <td class="text-right"><p>31.66</p></td>
 <td class="text-right"><p>14.79</p></td>
+<td class="text-right"><p>5.73</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>12</p></td>
 <td class="text-right"><p>10.18</p></td>
 <td class="text-right"><p>13.24</p></td>
 <td class="text-right"><p>5.33</p></td>
+<td class="text-right"><p>4.40</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>13</p></td>
 <td class="text-right"><p>9.78</p></td>
 <td class="text-right"><p>22.73</p></td>
 <td class="text-right"><p>11.31</p></td>
+<td class="text-right"><p>10.56</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>14</p></td>
 <td class="text-right"><p>8.88</p></td>
 <td class="text-right"><p>7.25</p></td>
 <td class="text-right"><p>2.50</p></td>
+<td class="text-right"><p>1.66</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>15</p></td>
 <td class="text-right"><p>10.61</p></td>
 <td class="text-right"><p>22.45</p></td>
 <td class="text-right"><p>11.85</p></td>
+<td class="text-right"><p>8.30</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>16</p></td>
 <td class="text-right"><p>14.50</p></td>
 <td class="text-right"><p>24.34</p></td>
 <td class="text-right"><p>8.94</p></td>
+<td class="text-right"><p>6.98</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>17</p></td>
 <td class="text-right"><p>19.56</p></td>
 <td class="text-right"><p>81.36</p></td>
 <td class="text-right"><p>25.14</p></td>
+<td class="text-right"><p>24.76</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>18</p></td>
 <td class="text-right"><p>54.43</p></td>
 <td class="text-right"><p>134.11</p></td>
 <td class="text-right"><p>46.42</p></td>
+<td class="text-right"><p>66.00</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>19</p></td>
 <td class="text-right"><p>10.65</p></td>
 <td class="text-right"><p>13.27</p></td>
 <td class="text-right"><p>9.07</p></td>
+<td class="text-right"><p>5.93</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>20</p></td>
 <td class="text-right"><p>20.40</p></td>
 <td class="text-right"><p>16.08</p></td>
 <td class="text-right"><p>6.57</p></td>
+<td class="text-right"><p>8.57</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>21</p></td>
 <td class="text-right"><p>91.31</p></td>
 <td class="text-right"><p>98.04</p></td>
 <td class="text-right"><p>68.43</p></td>
+<td class="text-right"><p>83.22</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>22</p></td>
 <td class="text-right"><p>9.78</p></td>
 <td class="text-right"><p>16.90</p></td>
 <td class="text-right"><p>9.22</p></td>
+<td class="text-right"><p>7.29</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p><strong>Total</strong></p></td>
 <td class="text-right"><p><strong>571.55</strong></p></td>
 <td class="text-right"><p><strong>898.17</strong></p></td>
 <td class="text-right"><p><strong>455.09</strong></p></td>
+<td class="text-right"><p><strong>411.62</strong></p></td>
 </tr>
 </tbody>
 </table>
@@ -813,6 +901,13 @@ and the settings in <a class="reference internal" href="#comet-configuration"><s
 <span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.memoryPool.fraction<span class="o">=</span><span class="m">0</span>.8
 </pre></div>
 </div>
+</section>
+<section id="trino">
+<h3>Trino<a class="headerlink" href="#trino" title="Link to this heading">#</a></h3>
+<p>The Trino numbers were also collected with the internal harness. It creates
+external Hive tables over the Parquet files, syncs their partitions, and runs
+each query once untimed and then three times, one query at a time, through the
+Trino client, with the settings in <a class="reference internal" href="#trino-configuration"><span class="xref myst">Trino configuration</span></a>.</p>
 </section>
 </section>
 <section id="recording-a-new-result-set">
@@ -885,11 +980,13 @@ open issues found by benchmarking: <a class="reference external" href="https://g
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-configuration">Ballista configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-configuration-highlights">Spark configuration (highlights)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#comet-configuration">Comet configuration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#trino-configuration">Trino configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#queries">Queries</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reproducing">Reproducing</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista">Ballista</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-and-spark-comet">Spark and Spark + Comet</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#trino">Trino</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#recording-a-new-result-set">Recording a new result set</a></li>

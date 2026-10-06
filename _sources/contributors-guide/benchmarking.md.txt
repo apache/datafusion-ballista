@@ -21,7 +21,9 @@
 
 Current TPC-H **SF1000** results for Ballista, compared against vanilla
 **Spark 4.1.3** and **Spark 4.1.3 with Apache DataFusion Comet 1.1.0-rc2**,
-running on the same cluster shape.
+running on the same cluster shape. A **Trino 483** column is included for
+reference; it is not an apples-to-apples comparison (see
+[Trino configuration](#trino-configuration)).
 
 ## Versions under test
 
@@ -30,6 +32,7 @@ running on the same cluster shape.
 | Ballista | [`d6d8bd91`](https://github.com/apache/datafusion-ballista/commit/d6d8bd91fceaae4fb39624f6f1083a5f0ad78fbd) (`main`, 2026-10-03), Cargo pkg `55.0.0`, DataFusion `55.1.0`                                              |
 | Spark    | `4.1.3` (`apache/spark:4.1.3` image, vanilla, no acceleration plugin)                                                                                                                                                  |
 | Comet    | [Apache DataFusion Comet](https://github.com/apache/datafusion-comet) `1.1.0-rc2` ([`992c806a`](https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa)) on the same Spark `4.1.3` |
+| Trino    | `483` (`trinodb/trino:483` image, Hive connector)                                                                                                                                                                      |
 
 ## Environment
 
@@ -46,6 +49,9 @@ running on the same cluster shape.
 - **Executor pod (Spark + Comet):** the same as Spark, plus 32 GiB of
   off-heap memory for Comet's native execution (about 106 GiB per pod in
   total, compared with 64 GiB for a Ballista executor).
+- **Worker pod (Trino):** x86_64, 8 vCPU, 64 GiB memory (the image's
+  default JVM heap of 80 %, about 51 GiB), no spill volume. A separate
+  coordinator pod plans and schedules but does not scan data.
 - **Driver (Spark and Spark + Comet):** runs the queries through an internal
   Spark benchmark harness. See [Spark and Spark + Comet](#spark-and-spark--comet)
   under Reproducing.
@@ -153,6 +159,39 @@ The Spark + Comet run adds these settings to the Spark configuration above:
 The run also enabled Comet's explain and fallback logging. Everything else is
 left at Comet's defaults.
 
+## Trino configuration
+
+Trino is a useful reference point, but the setup differs from the other
+engines in ways that matter:
+
+- **Warm timings.** Each query runs once untimed, then the reported number
+  is the mean of 3 timed iterations. The other engines include the cold
+  first iteration in their mean.
+- **In-memory exchanges.** Trino streams data between stages over the
+  network and never writes shuffle files, while Ballista, Spark, and Comet
+  materialize every shuffle on disk. Spilling was disabled, so a query
+  that does not fit in memory would fail rather than slow down (none did).
+- **Partition pruning.** Tables are external Hive tables over the same
+  Parquet files with the partition columns declared, so Trino prunes
+  partitions like Spark and Comet do.
+- **No table statistics.** `ANALYZE` was not run, so the cost-based
+  optimizer had no row counts or column statistics.
+- **Queries.** The same SQL text as the Spark harness.
+
+| Key                                                              | Value                                |
+| ---------------------------------------------------------------- | ------------------------------------ |
+| Workers                                                          | `32` (`include-coordinator=false`)   |
+| `query.max-memory-per-node`                                      | `38GB`                               |
+| `memory.heap-headroom-per-node`                                  | `6GB`                                |
+| `spill-enabled`                                                  | `false`                              |
+| `hive.metastore`                                                 | `file` (stored in S3)                |
+| `hive.metastore-cache-ttl`, `hive.file-status-cache-expire-time` | `24h` (metadata cached across a run) |
+| `hive.dynamic-filtering.wait-timeout`                            | `1s`                                 |
+
+Everything else is left at Trino's defaults, with no session properties
+set. No tuning was done beyond this, and the configuration has not been
+reviewed by Trino experts.
+
 ## Queries
 
 The SQLBench-H phrasing of the 22 TPC-H queries from
@@ -165,34 +204,36 @@ arithmetic (for example `date '1998-12-01' - interval '90' day` instead of
 
 ## Results
 
-**Times in seconds; lower is better.** Every engine: mean of 2 iterations,
-including the cold first iteration.
+**Times in seconds; lower is better.** Ballista, Spark, and Spark + Comet:
+mean of 2 iterations, including the cold first iteration. Trino: mean of 3
+iterations after an untimed warm-up run (see
+[Trino configuration](#trino-configuration)).
 
-|     Query | Ballista (s) | Spark 4.1.3 (s) | Spark 4.1.3 + Comet 1.1.0-rc2 (s) |
-| --------: | -----------: | --------------: | --------------------------------: |
-|         1 |        13.94 |           71.45 |                             10.66 |
-|         2 |        28.35 |           37.98 |                             21.66 |
-|         3 |        25.29 |           30.61 |                             16.05 |
-|         4 |         8.80 |           23.86 |                              8.11 |
-|         5 |        63.94 |           57.39 |                             38.32 |
-|         6 |         4.68 |            1.73 |                              0.99 |
-|         7 |        45.85 |           25.34 |                             16.60 |
-|         8 |        28.93 |           58.17 |                             46.04 |
-|         9 |        37.64 |           74.90 |                             55.78 |
-|        10 |        38.18 |           35.31 |                             21.31 |
-|        11 |        15.87 |           31.66 |                             14.79 |
-|        12 |        10.18 |           13.24 |                              5.33 |
-|        13 |         9.78 |           22.73 |                             11.31 |
-|        14 |         8.88 |            7.25 |                              2.50 |
-|        15 |        10.61 |           22.45 |                             11.85 |
-|        16 |        14.50 |           24.34 |                              8.94 |
-|        17 |        19.56 |           81.36 |                             25.14 |
-|        18 |        54.43 |          134.11 |                             46.42 |
-|        19 |        10.65 |           13.27 |                              9.07 |
-|        20 |        20.40 |           16.08 |                              6.57 |
-|        21 |        91.31 |           98.04 |                             68.43 |
-|        22 |         9.78 |           16.90 |                              9.22 |
-| **Total** |   **571.55** |      **898.17** |                        **455.09** |
+|     Query | Ballista (s) | Spark 4.1.3 (s) | Spark 4.1.3 + Comet 1.1.0-rc2 (s) | Trino 483 (s) |
+| --------: | -----------: | --------------: | --------------------------------: | ------------: |
+|         1 |        13.94 |           71.45 |                             10.66 |          5.32 |
+|         2 |        28.35 |           37.98 |                             21.66 |         15.34 |
+|         3 |        25.29 |           30.61 |                             16.05 |         13.47 |
+|         4 |         8.80 |           23.86 |                              8.11 |          8.01 |
+|         5 |        63.94 |           57.39 |                             38.32 |         25.98 |
+|         6 |         4.68 |            1.73 |                              0.99 |          0.84 |
+|         7 |        45.85 |           25.34 |                             16.60 |         16.19 |
+|         8 |        28.93 |           58.17 |                             46.04 |         30.93 |
+|         9 |        37.64 |           74.90 |                             55.78 |         41.71 |
+|        10 |        38.18 |           35.31 |                             21.31 |         20.41 |
+|        11 |        15.87 |           31.66 |                             14.79 |          5.73 |
+|        12 |        10.18 |           13.24 |                              5.33 |          4.40 |
+|        13 |         9.78 |           22.73 |                             11.31 |         10.56 |
+|        14 |         8.88 |            7.25 |                              2.50 |          1.66 |
+|        15 |        10.61 |           22.45 |                             11.85 |          8.30 |
+|        16 |        14.50 |           24.34 |                              8.94 |          6.98 |
+|        17 |        19.56 |           81.36 |                             25.14 |         24.76 |
+|        18 |        54.43 |          134.11 |                             46.42 |         66.00 |
+|        19 |        10.65 |           13.27 |                              9.07 |          5.93 |
+|        20 |        20.40 |           16.08 |                              6.57 |          8.57 |
+|        21 |        91.31 |           98.04 |                             68.43 |         83.22 |
+|        22 |         9.78 |           16.90 |                              9.22 |          7.29 |
+| **Total** |   **571.55** |      **898.17** |                        **455.09** |    **411.62** |
 
 ## Reproducing
 
@@ -263,6 +304,13 @@ and the settings in [Comet configuration](#comet-configuration):
   --conf spark.memory.offHeap.size=32G \
   --conf spark.comet.exec.memoryPool.fraction=0.8
 ```
+
+### Trino
+
+The Trino numbers were also collected with the internal harness. It creates
+external Hive tables over the Parquet files, syncs their partitions, and runs
+each query once untimed and then three times, one query at a time, through the
+Trino client, with the settings in [Trino configuration](#trino-configuration).
 
 ## Recording a new result set
 
