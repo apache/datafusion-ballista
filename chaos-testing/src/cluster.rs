@@ -98,6 +98,7 @@ pub struct TestClusterBuilder {
     stage_max_failures: usize,
     concurrent_tasks: usize,
     no_executors_grace_seconds: u64,
+    result_service: bool,
 }
 
 impl Default for TestClusterBuilder {
@@ -114,6 +115,10 @@ impl Default for TestClusterBuilder {
             // Ballista's default is 30s. A short grace makes the total-loss
             // scenario fail the job a second or so after the reap.
             no_executors_grace_seconds: 1,
+            // Route result fetches through a standalone Result Service by default
+            // (the decoupled data-plane path), so every scenario exercises it.
+            // See `result_service` to opt back into peer-to-peer.
+            result_service: true,
         }
     }
 }
@@ -149,6 +154,15 @@ impl TestClusterBuilder {
         self
     }
 
+    /// Whether result fetches route through a standalone Result Service (the
+    /// decoupled data-plane path, the default) or go peer-to-peer directly to
+    /// executors. When enabled, the harness spawns a `chaos-result-service` and
+    /// points the scheduler's advertised flight endpoint at it.
+    pub fn result_service(mut self, enabled: bool) -> Self {
+        self.result_service = enabled;
+        self
+    }
+
     pub async fn start(self) -> Result<TestCluster, String> {
         // Held for the cluster's whole lifetime, so only one cluster exists in
         // this process at a time. `--test-threads=1` gives the same guarantee,
@@ -174,7 +188,53 @@ impl TestClusterBuilder {
         let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
         let log_dir = temp.path().join("logs");
         std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
-        let [scheduler_port] = free_ports();
+        // Whether result fetches route through a standalone Result Service.
+        // Defaults to the builder setting; `CHAOS_RESULT_SERVICE=0` (or `false`)
+        // forces peer-to-peer for an A/B run without editing the test.
+        let result_service_enabled = self.result_service
+            && !matches!(
+                std::env::var("CHAOS_RESULT_SERVICE").as_deref(),
+                Ok("0") | Ok("false")
+            );
+
+        // Reserve the scheduler port and (when enabled) the result-service port
+        // together so they are distinct — see `free_ports`; separate calls could
+        // hand the same number to both.
+        let (scheduler_port, result_service_port) = if result_service_enabled {
+            let [scheduler_port, rs_port] = free_ports();
+            (scheduler_port, Some(rs_port))
+        } else {
+            let [scheduler_port] = free_ports();
+            (scheduler_port, None)
+        };
+
+        // Start the Result Service before the scheduler so the advertised
+        // endpoint is live by the time a client first fetches results. It holds
+        // no cluster state and forwards each fetch to the executor named in the
+        // request, so it needs neither scheduler nor executor coordination.
+        let result_service = match result_service_port {
+            Some(port) => {
+                let log = log_dir.join("result-service.log");
+                let stdout = open_log(&log).map_err(|e| {
+                    format!("open result-service log {}: {e}", log.display())
+                })?;
+                let stderr = open_log(&log).map_err(|e| {
+                    format!("open result-service log {}: {e}", log.display())
+                })?;
+                let child = Command::new(binary("chaos-result-service"))
+                    .env("CHAOS_RESULT_SERVICE_PORT", port.to_string())
+                    .env(
+                        "RUST_LOG",
+                        std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
+                    )
+                    .stdout(Stdio::from(stdout))
+                    .stderr(Stdio::from(stderr))
+                    .spawn()
+                    .map_err(|e| format!("spawn result service: {e}"))?;
+                Some(child)
+            }
+            None => None,
+        };
 
         let scheduler_log = log_dir.join("scheduler.log");
         let scheduler_stdout = open_log(&scheduler_log).map_err(|e| {
@@ -213,6 +273,13 @@ impl TestClusterBuilder {
             )
             .stdout(Stdio::from(scheduler_stdout))
             .stderr(Stdio::from(scheduler_stderr));
+        // Point clients at the Result Service instead of the executors.
+        if let Some(port) = result_service_port {
+            scheduler.env(
+                "CHAOS_ADVERTISE_FLIGHT_ENDPOINT",
+                format!("127.0.0.1:{port}"),
+            );
+        }
         let scheduler = scheduler
             .spawn()
             .map_err(|e| format!("spawn scheduler: {e}"))?;
@@ -220,6 +287,8 @@ impl TestClusterBuilder {
         let mut cluster = TestCluster {
             scheduler,
             scheduler_port,
+            result_service,
+            result_service_port,
             executors: Vec::new(),
             temp,
             log_dir,
@@ -228,6 +297,12 @@ impl TestClusterBuilder {
             _cluster_lock: cluster_lock,
             _machine_lock: machine_lock,
         };
+
+        // Fail fast if the Result Service crashed on startup, rather than letting
+        // it surface later as an opaque result-fetch error.
+        if cluster.result_service.is_some() {
+            cluster.await_result_service_ready().await?;
+        }
 
         // Executors dial the scheduler over gRPC the moment they start. If they
         // are spawned before the scheduler has bound its port, some of them get
@@ -250,6 +325,11 @@ impl TestClusterBuilder {
 pub struct TestCluster {
     scheduler: Child,
     scheduler_port: u16,
+    /// The standalone Result Service process, when result serving is routed
+    /// through it (the default). `None` means peer-to-peer result fetches.
+    result_service: Option<Child>,
+    /// The port the Result Service listens on, mirrored from `result_service`.
+    result_service_port: Option<u16>,
     pub(crate) executors: Vec<ExecutorHandle>,
     temp: tempfile::TempDir,
     log_dir: PathBuf,
@@ -303,6 +383,12 @@ impl TestCluster {
     /// The scheduler REST base URL. gRPC and REST share one port.
     pub fn rest_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.scheduler_port)
+    }
+
+    /// The Result Service port clients are pointed at, when result serving is
+    /// routed through it (the default). `None` for a peer-to-peer configuration.
+    pub fn result_service_port(&self) -> Option<u16> {
+        self.result_service_port
     }
 
     /// The shared directory for fixtures and fault budgets. Every executor can
@@ -371,6 +457,42 @@ impl TestCluster {
             });
         }
         Ok(())
+    }
+
+    /// Block until the Result Service accepts TCP connections, or fail with its
+    /// log tail if the process has already exited. A plain connect suffices: the
+    /// service binds its gRPC port before it can serve, and clients connect
+    /// lazily at fetch time, so this only guards against a startup crash.
+    async fn await_result_service_ready(&mut self) -> Result<(), String> {
+        let Some(port) = self.result_service_port else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let exited = self
+                .result_service
+                .as_mut()
+                .and_then(|c| c.try_wait().ok().flatten());
+            if let Some(status) = exited {
+                return Err(format!(
+                    "result service exited before becoming ready: {status}\n{}",
+                    self.log_tails()
+                ));
+            }
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "timed out waiting for result service to accept connections\n{}",
+                    self.log_tails()
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// Block until the scheduler is accepting REST/gRPC connections.
@@ -726,6 +848,10 @@ impl Drop for TestCluster {
         }
         let scheduler_log = self.log_dir.join("scheduler.log");
         reap(&mut self.scheduler, &scheduler_log);
+        let result_service_log = self.log_dir.join("result-service.log");
+        if let Some(result_service) = self.result_service.as_mut() {
+            reap(result_service, &result_service_log);
+        }
     }
 }
 

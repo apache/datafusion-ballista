@@ -1062,6 +1062,7 @@ name = "ballista-chaos"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "arrow-flight",
  "ballista",
  "ballista-core",
  "ballista-executor",
@@ -1235,6 +1236,18 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "ballista-result-service"
+version = "55.0.0"
+dependencies = [
+ "arrow-flight",
+ "ballista-core",
+ "clap 4.6.7",
+ "env_logger",
+ "log",
  "tokio",
 ]
 

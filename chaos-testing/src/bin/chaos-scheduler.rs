@@ -73,6 +73,14 @@ async fn main() -> ballista_core::error::Result<()> {
         // clients fetch results through the scheduler instead of directly from
         // executors. Unset in the process harness -> false -> no proxy.
         enable_embedded_flight_proxy: env_parsed("CHAOS_EMBEDDED_FLIGHT_PROXY", false),
+        // Point clients at a standalone Result Service (the process harness sets
+        // this to the address of the `chaos-result-service` it spawns). Clients
+        // then fetch results from that fleet instead of dialing executors — the
+        // decoupled data-plane path. Mutually exclusive with the embedded proxy
+        // above; the harness sets at most one. Empty -> None -> peer-to-peer.
+        advertise_flight_endpoint: std::env::var("CHAOS_ADVERTISE_FLIGHT_ENDPOINT")
+            .ok()
+            .filter(|s| !s.is_empty()),
         override_session_builder: Some(Arc::new(chaos_session_state)),
         ..Default::default()
     };
