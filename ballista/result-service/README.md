@@ -20,13 +20,16 @@
 # Ballista Result Service
 
 A **stateless data plane** for serving query results, decoupled from the scheduler
-(control plane). See the design doc `DECOUPLED_RESULT_SERVICE.md` at the repo root.
+(control plane). See the proposal in [#2484].
 
 In this first increment the service **forwards** each result fetch to the executor named
-in the request — the same behavior as the scheduler's (now consolidated) embedded proxy,
-but as an independently scalable fleet that sits **off the scheduler's data path**. The
-forwarding logic is the shared serving core in `ballista-core` (`serving` module), so the
-executor's own serving path, the embedded proxy, and this service never drift apart.
+in the request, as an independently scalable fleet that sits **off the scheduler's data
+path**. The forwarding logic is the shared serving core in `ballista-core` (`serving`
+module), so the executor's own serving path, the scheduler's embedded proxy, and this
+service never drift apart.
+
+The scheduler's embedded proxy (`--enable-embedded-flight-proxy`) is deprecated in favor
+of this service and will be removed in 57.0.0.
 
 ## Wiring (no client changes)
 
@@ -37,7 +40,7 @@ returns one. Point the scheduler at this service:
 # 1. Start executors as usual.
 ballista-executor
 
-# 2. Start the scheduler, advertising the Result Service address (host:port only).
+# 2. Start the scheduler, advertising the Result Service address.
 ballista-scheduler --advertise-flight-endpoint=localhost:50055
 
 # 3. Start one (or more) Result Service replicas at that address.
@@ -50,21 +53,30 @@ by running more of them behind a gRPC-aware load balancer.
 
 ## Options
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `--bind-host` | `0.0.0.0` | Host/IP the Flight service binds to |
-| `--bind-port` | `50055` | Port the Flight service binds to |
-| `--use-tls` | `false` | Use TLS when connecting to executors |
-| `--grpc-max-decoding-message-size` | `16777216` | Max gRPC message size decoded |
-| `--grpc-max-encoding-message-size` | `16777216` | Max gRPC message size encoded |
+| Flag                               | Default    | Meaning                              |
+| ---------------------------------- | ---------- | ------------------------------------ |
+| `--bind-host`                      | `0.0.0.0`  | Host/IP the Flight service binds to  |
+| `--bind-port`                      | `50055`    | Port the Flight service binds to     |
+| `--use-tls`                        | `false`    | Use TLS when connecting to executors |
+| `--grpc-max-decoding-message-size` | `16777216` | Max gRPC message size decoded        |
+| `--grpc-max-encoding-message-size` | `16777216` | Max gRPC message size encoded        |
 
 Set `RUST_LOG=debug` to log each forwarded `FetchPartition` (useful for confirming the
 data path bypasses the scheduler).
+
+## Security
+
+The service checks no credentials, and it dials whichever executor address a fetch
+ticket names without checking that the address belongs to the cluster. A client that
+forges a ticket can therefore make it open a gRPC connection to an arbitrary host and
+relay the response. The scheduler's embedded proxy behaves the same way. Do not expose
+the service beyond networks you trust until fetch tickets are authenticated.
 
 ## Scope
 
 - **In scope now:** forwarding to executors, off the scheduler's data path, horizontally
   scalable.
-- **Not yet:** result-scoped authorization (required before any "Kubernetes default"
-  claim), object-storage/pre-signed tier, topology-hiding opaque handles. See the design
-  doc's roadmap and open questions.
+- **Not yet:** authenticated fetch tickets, storage tiers (for example object storage with
+  pre-signed URLs), and opaque result handles that hide executor topology. See [#2484].
+
+[#2484]: https://github.com/apache/datafusion-ballista/issues/2484

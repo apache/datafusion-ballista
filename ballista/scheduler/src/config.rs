@@ -85,14 +85,17 @@ pub struct Config {
         alias = "advertise-flight-sql-endpoint",
         num_args = 0..=1,
         default_missing_value = "",
-        help = "Address advertised to clients for fetching result partitions over Arrow Flight. Use 'HOST:PORT' to point clients at that address, e.g. a load balancer or a standalone proxy in front of the executors. Passing the flag with no value is deprecated; use --enable-embedded-flight-proxy to start the embedded proxy instead. The old name --advertise-flight-sql-endpoint is a deprecated alias."
+        help = "Address advertised to clients for fetching result partitions over Arrow Flight. Use 'HOST:PORT' to point clients at a Result Service (ballista-result-service), or a load balancer in front of one, instead of the executors. Passing the flag with no value starts the deprecated embedded proxy, and is itself deprecated. The old name --advertise-flight-sql-endpoint is a deprecated alias."
     )]
     pub advertise_flight_endpoint: Option<String>,
     /// Start an embedded Arrow Flight proxy on the scheduler host/port.
+    ///
+    /// Deprecated, and to be removed in 57.0.0: run a Result Service and point
+    /// `--advertise-flight-endpoint` at it instead.
     #[arg(
         long,
         default_value_t = false,
-        help = "Start an embedded Arrow Flight proxy on the scheduler, so clients can fetch result partitions through the scheduler instead of connecting to executors directly. Independent of --advertise-flight-endpoint: if that is set to a non-empty address, clients are pointed at it rather than at this scheduler."
+        help = "Deprecated, to be removed in 57.0.0: run a Result Service (ballista-result-service) and point --advertise-flight-endpoint at it instead. Starts an embedded Arrow Flight proxy on the scheduler, so clients fetch result partitions through the scheduler instead of connecting to executors directly. Independent of --advertise-flight-endpoint: if that is set to a non-empty address, clients are pointed at it rather than at this scheduler."
     )]
     pub enable_embedded_flight_proxy: bool,
     /// Namespace for the ballista cluster.
@@ -346,14 +349,14 @@ pub struct SchedulerConfig {
     /// The delayed interval for cleaning up finished job state stored in the backend, 0 means the cleaning up is disabled.
     pub finished_job_state_clean_up_interval_seconds: u64,
     /// The address advertised to clients for fetching result partitions over
-    /// Arrow Flight, for example a load balancer or a standalone proxy sitting
-    /// in front of the executors.
+    /// Arrow Flight, for example a Result Service (`ballista-result-service`)
+    /// or a load balancer in front of one.
     ///
     /// This is plain Arrow Flight, not Flight SQL, which was removed in
     /// <https://github.com/apache/datafusion-ballista/pull/1228>.
     ///
-    /// An empty string is treated as unset. Setting this does not start any
-    /// proxy; see [`Self::enable_embedded_flight_proxy`] for that.
+    /// An empty string is treated as unset. Setting this does not start
+    /// anything on the scheduler.
     pub advertise_flight_endpoint: Option<String>,
     /// Whether to start an embedded Arrow Flight proxy on the scheduler's own
     /// host and port, so clients can fetch result partitions through the
@@ -364,6 +367,11 @@ pub struct SchedulerConfig {
     /// *told*. When a non-empty endpoint is also set it takes precedence for
     /// the advertisement, which is how you put a load balancer in front of an
     /// embedded proxy.
+    ///
+    /// Deprecated, and to be removed in 57.0.0: the proxy puts result traffic
+    /// on the scheduler. Run a Result Service and advertise it with
+    /// [`Self::advertise_flight_endpoint`] instead. The scheduler logs a warning
+    /// at startup while this is set.
     pub enable_embedded_flight_proxy: bool,
     /// If provided, submitted jobs which do not have tasks scheduled will be resubmitted after `job_resubmit_interval_ms`
     /// milliseconds
@@ -541,8 +549,8 @@ impl SchedulerConfig {
         if self.advertise_flight_endpoint.as_deref() == Some("") {
             warn!(
                 "advertise_flight_endpoint is set to an empty string, which is treated \
-                 as unset. If you meant to start the embedded flight proxy, use \
-                 with_enable_embedded_flight_proxy(true)."
+                 as unset. To point clients at a Result Service, set it to that \
+                 service's address."
             );
         }
         if self.flight_sql_enabled() && self.enable_embedded_flight_proxy {
@@ -638,11 +646,11 @@ impl SchedulerConfig {
     }
 
     /// Sets the Arrow Flight endpoint advertised to clients for fetching result
-    /// partitions.
+    /// partitions, typically a Result Service or a load balancer in front of
+    /// one.
     ///
     /// An empty string is treated as unset. (Previously an empty value enabled
-    /// the embedded flight proxy; use
-    /// [`Self::with_enable_embedded_flight_proxy`] for that)
+    /// the embedded flight proxy, which is now deprecated.)
     pub fn with_advertise_flight_endpoint(mut self, endpoint: Option<String>) -> Self {
         self.advertise_flight_endpoint = endpoint.filter(|e| !e.is_empty());
         self
@@ -662,6 +670,10 @@ impl SchedulerConfig {
     ///
     /// This is independent of [`Self::with_advertise_flight_endpoint`]: it
     /// controls whether the proxy runs, not what clients are told to connect to.
+    #[deprecated(
+        since = "56.0.0",
+        note = "the embedded proxy puts result traffic on the scheduler and will be removed in 57.0.0; run `ballista-result-service` and use `with_advertise_flight_endpoint` instead"
+    )]
     pub fn with_enable_embedded_flight_proxy(mut self, enable: bool) -> Self {
         self.enable_embedded_flight_proxy = enable;
         self
@@ -863,9 +875,10 @@ impl TryFrom<Config> for SchedulerConfig {
             match opt.advertise_flight_endpoint {
                 Some(ref s) if s.is_empty() => {
                     warn!(
-                        "Passing --advertise-flight-endpoint with an empty value to \
-                        enable the embedded flight proxy is deprecated and will be \
-                        removed in a future release; use --enable-embedded-flight-proxy"
+                        "Passing --advertise-flight-endpoint with an empty value \
+                        starts the embedded flight proxy, which is deprecated and will \
+                        be removed in 57.0.0; run ballista-result-service and pass its \
+                        address to --advertise-flight-endpoint instead"
                     );
                     (None, true)
                 }

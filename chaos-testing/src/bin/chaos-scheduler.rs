@@ -67,17 +67,15 @@ async fn main() -> ballista_core::error::Result<()> {
             "CHAOS_NO_EXECUTORS_GRACE_SECONDS",
             1,
         ),
-        // Under Kubernetes the client is outside the cluster and cannot reach
-        // executor pod IPs to fetch results. Setting this (to "true" in the k8s
-        // manifest) starts an embedded flight proxy on the scheduler and makes
-        // clients fetch results through the scheduler instead of directly from
-        // executors. Unset in the process harness -> false -> no proxy.
+        // Starts the deprecated embedded flight proxy, so clients fetch results
+        // through the scheduler. Neither harness sets it any more (both route
+        // results through a Result Service); it is kept so a run can compare
+        // against the old path. Unset -> false -> no proxy.
         enable_embedded_flight_proxy: env_parsed("CHAOS_EMBEDDED_FLIGHT_PROXY", false),
-        // Point clients at a standalone Result Service (the process harness sets
-        // this to the address of the `chaos-result-service` it spawns). Clients
-        // then fetch results from that fleet instead of dialing executors — the
-        // decoupled data-plane path. Mutually exclusive with the embedded proxy
-        // above; the harness sets at most one. Empty -> None -> peer-to-peer.
+        // Point clients at a standalone Result Service: the process harness sets
+        // this to the `chaos-result-service` it spawns, and the k8s harness to
+        // its port-forward to the Result Service pod. Clients then fetch results
+        // from there instead of dialing executors. Empty -> None -> peer-to-peer.
         advertise_flight_endpoint: std::env::var("CHAOS_ADVERTISE_FLIGHT_ENDPOINT")
             .ok()
             .filter(|s| !s.is_empty()),

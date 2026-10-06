@@ -155,9 +155,16 @@ deadline is now 120s, and on expiry the error message carries the tail of
 every child process log, so a recurrence in CI is diagnosable from the test
 output alone.
 
-The `chaos-scheduler`/`chaos-executor` binaries are spawned as real child
-processes rather than run in-process, but `cargo test` builds this crate's bin
-targets along with its tests, so no separate build step is needed. The
+Result fetches go through a standalone Result Service by default: the harness
+spawns `chaos-result-service` and points the scheduler's
+`advertise_flight_endpoint` at it, so every scenario exercises the decoupled
+result path ([#2484]). Set `CHAOS_RESULT_SERVICE=0` (or call
+`TestClusterBuilder::result_service(false)`) to have clients fetch straight
+from the executors instead.
+
+The `chaos-scheduler`/`chaos-executor`/`chaos-result-service` binaries are
+spawned as real child processes rather than run in-process, but `cargo test`
+builds this crate's bin targets along with its tests, so no separate build step is needed. The
 harness locates them next to the running test executable, which is what makes
 it work under any cargo profile (CI uses `--profile ci`, not `dev` or
 `release`).
@@ -180,7 +187,7 @@ The harness also has an opt-in Kubernetes backend (`K8sCluster`, in
 [kind](https://kind.sigs.k8s.io) cluster rather than as local processes. It is
 gated behind the `k8s` feature _and_ `CHAOS_BACKEND=kind`, so a plain `cargo
 test` never touches a cluster. It runs the scenarios that genuinely need a
-cluster — real pod lifecycle, rescheduling, and the port-forward/flight-proxy
+cluster — real pod lifecycle, rescheduling, and the port-forward/Result Service
 path — while the backend-agnostic fault-injection scenarios stay on the fast
 process harness:
 
@@ -231,7 +238,8 @@ Because the harness runs outside the cluster, a few pieces bridge the gap:
   generates a `$HOME` config for local use).
 - **Reaching the cluster.** The client talks to the scheduler's gRPC + REST
   (both on one port) through a `kubectl port-forward`, and fetches query results
-  through the scheduler's embedded Flight proxy, so it never contacts executor
+  through a Result Service pod over a second port-forward (which the scheduler
+  advertises as its `advertise_flight_endpoint`), so it never contacts executor
   pod IPs directly.
 - **Pods.** Both expose `/healthz` + `/readyz` with liveness/readiness probes
   (the scheduler's readiness uses `/healthz`, not `/readyz`, so its Service
@@ -402,3 +410,5 @@ Killing an executor can be noticed in two ways: heartbeat expiry
 E biases toward the fetch-failure path. Scenario D exercises the broader
 mid-stage executor-loss path, including stale task-attempt cancellation during
 executor-loss recovery. Both paths now recover and return the baseline result.
+
+[#2484]: https://github.com/apache/datafusion-ballista/issues/2484

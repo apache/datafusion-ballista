@@ -1433,6 +1433,8 @@ mod test {
     }
 
     #[tokio::test]
+    // Still covers the deprecated embedded-proxy flag until it is removed.
+    #[allow(deprecated)]
     async fn flight_proxy_config_reflects_explicit_flag_and_endpoint() {
         use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
 

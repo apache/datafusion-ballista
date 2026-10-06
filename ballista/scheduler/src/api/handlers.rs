@@ -689,6 +689,8 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    // Still covers the deprecated embedded-proxy flag until it is removed.
+    #[allow(deprecated)]
     async fn scheduler_state_reflects_server_configuration() {
         use crate::config::SchedulerConfig;
         use crate::metrics::default_metrics_collector;

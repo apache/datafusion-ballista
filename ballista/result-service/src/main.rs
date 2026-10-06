@@ -20,8 +20,8 @@
 //! A stateless data plane that serves query results to clients, decoupled from
 //! the scheduler (control plane). In this first increment it forwards each fetch
 //! to the producing executor named in the request — the same behavior as the
-//! scheduler's embedded proxy, but as an independently scalable fleet that is off
-//! the scheduler's data path. Point the scheduler's `--advertise-flight-endpoint`
+//! scheduler's deprecated embedded proxy, but as an independently scalable fleet
+//! that is off the scheduler's data path. Point the scheduler's `--advertise-flight-endpoint`
 //! at this service and clients fetch results here with no client changes.
 
 use std::net::SocketAddr;
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Forwarding backend: relay every fetch to the executor named in the request.
     // This is the shared serving core, so behavior matches the executor's own
-    // serving path and the scheduler's (now consolidated) embedded proxy.
+    // serving path and the scheduler's embedded proxy.
     let backend = ForwardingBackend::new(
         config.grpc_max_decoding_message_size,
         config.grpc_max_encoding_message_size,

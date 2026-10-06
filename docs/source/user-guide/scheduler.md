@@ -41,48 +41,46 @@ from `--external-host` and `--bind-port`.
 By default a client fetches the result partitions of a query directly from the executors that
 produced them, over Arrow Flight. This keeps the scheduler out of the data path, but it requires
 every client to have network access to every executor — which is not the case in isolated
-environments where only the scheduler is reachable.
+environments such as Kubernetes, where clients can usually reach only a few entry points.
 
-For those deployments the scheduler can advertise a different address for clients to fetch results
-from, and can optionally host an Arrow Flight proxy itself.
-
-> Note: this is plain Arrow Flight, used to move result partitions. It is not Flight SQL, which was
-> removed in Ballista 46.0.0 — the proxy only serves Ballista's `FetchPartition` action, so generic
-> Flight SQL or JDBC clients cannot use this endpoint.
-
-Two independent options control this:
-
-| Option                           | Description                                                                                                                                                           |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--enable-embedded-flight-proxy` | Runs an Arrow Flight proxy inside the scheduler process, on the scheduler's own host and port. The proxy forwards each fetch to the executor that owns the partition. |
-| `--advertise-flight-endpoint`    | The `HOST:PORT` address clients are told to fetch results from, instead of the executors. Use it to point clients at a load balancer or a standalone proxy.           |
-
-The first controls whether a proxy _runs_; the second controls what clients are _told_. Setting
-both is a supported combination: the embedded proxy runs, and clients are pointed at the advertised
-address, which is how you put a load balancer in front of one or more schedulers.
-
-To let clients fetch results through the scheduler itself:
+For those deployments, run a Result Service (`ballista-result-service`) that clients can reach, and
+have the scheduler advertise its address:
 
 ```bash
-ballista-scheduler --enable-embedded-flight-proxy
+ballista-result-service --bind-port 50055
+ballista-scheduler --advertise-flight-endpoint ballista-results.example.com:50055
 ```
 
-To point clients at a load balancer that fronts the schedulers:
+Clients then fetch each partition from the Result Service, which forwards the fetch to the executor
+that holds it, so the scheduler serves no result data. The Result Service holds no state: scale it
+by running more replicas behind a gRPC-aware load balancer and advertising the load balancer's
+address.
 
-```bash
-ballista-scheduler --enable-embedded-flight-proxy \
-                   --advertise-flight-endpoint ballista-flight.example.com:50050
+> Note: the advertised endpoint serves plain Arrow Flight `DoGet` for Ballista's own partition-fetch
+> tickets. Generic Flight SQL, JDBC, and ADBC clients connect to the scheduler's
+> [Flight SQL frontend](flightsql.md) instead.
+
+```{warning}
+The Result Service checks no credentials, and it dials whichever executor address a fetch ticket
+names without checking that the address belongs to the cluster. Keep it on a trusted network.
 ```
 
-Both options are disabled by default, and the embedded proxy should be enabled deliberately: it
-puts result traffic on the scheduler's process and thread pool, competing with query planning and
-task scheduling. Under load this is a known source of scheduler congestion, so prefer a separate
-proxy — advertised with `--advertise-flight-endpoint` — for clusters where result volume is
-significant.
+| Option                           | Description                                                                                                                                                                              |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--advertise-flight-endpoint`    | The `HOST:PORT` address clients are told to fetch results from, instead of the executors: a Result Service, or a load balancer in front of one.                                          |
+| `--enable-embedded-flight-proxy` | **Deprecated, to be removed in 57.0.0.** Runs an Arrow Flight proxy inside the scheduler process, on the scheduler's own host and port, and points clients at the scheduler for results. |
+
+### The embedded proxy (deprecated)
+
+The scheduler can still proxy results itself with `--enable-embedded-flight-proxy`. This puts result
+traffic on the scheduler's process and thread pool, competing with query planning and task
+scheduling, and it scales only with the scheduler. It is deprecated in 56.0.0 and will be removed in
+57.0.0; the scheduler logs a warning at startup while it is enabled. To migrate, deploy a Result
+Service and set `--advertise-flight-endpoint` to its address.
 
 > `--advertise-flight-sql-endpoint` is accepted as a deprecated alias of
-> `--advertise-flight-endpoint`. Passing either flag with no value used to start the embedded proxy;
-> that is deprecated too and logs a warning — use `--enable-embedded-flight-proxy` instead.
+> `--advertise-flight-endpoint`. Passing either flag with no value starts the deprecated embedded
+> proxy, is itself deprecated, and logs a warning.
 
 ## REST API
 
