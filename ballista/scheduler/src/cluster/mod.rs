@@ -15,9 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
+use crate::cluster::memory::{
+    InMemoryCacheState, InMemoryClusterState, InMemoryJobState,
+};
 use crate::config::{SchedulerConfig, TaskDistributionPolicy};
 use crate::scheduler_server::SessionBuilder;
+use crate::state::cache_registry::{BeginOutcome, CacheKey, MaterializedCache};
 use crate::state::execution_graph::{
     ExecutionGraphBox, TaskDescription, create_task_info,
 };
@@ -29,9 +32,11 @@ use ballista_core::execution_plans::{RangeShuffleReaderExec, ShuffleReaderExec};
 use ballista_core::serde::protobuf::{
     AvailableVcores, ExecutorHeartbeat, JobStatus, job_status,
 };
+use ballista_core::serde::scheduler::PartitionLocation;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, TaskKey};
 use ballista_core::utils::{default_config_producer, default_session_builder};
 use ballista_core::{ConfigProducer, JobId, JobStatusSubscriber};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::Stream;
@@ -77,6 +82,8 @@ pub struct BallistaCluster {
     cluster_state: Arc<dyn ClusterState>,
     /// State for tracking jobs and their execution progress.
     job_state: Arc<dyn JobState>,
+    /// State for tracking materialized `DataFrame::cache()` results.
+    cache_state: Arc<dyn CacheState>,
 }
 
 impl BallistaCluster {
@@ -84,10 +91,12 @@ impl BallistaCluster {
     pub fn new(
         cluster_state: Arc<dyn ClusterState>,
         job_state: Arc<dyn JobState>,
+        cache_state: Arc<dyn CacheState>,
     ) -> Self {
         Self {
             cluster_state,
             job_state,
+            cache_state,
         }
     }
 
@@ -110,6 +119,7 @@ impl BallistaCluster {
                 share_file_statistics_cache(session_builder),
                 config_producer,
             )),
+            cache_state: Arc::new(InMemoryCacheState::default()),
         }
     }
 
@@ -142,6 +152,11 @@ impl BallistaCluster {
     /// Returns the job state backend.
     pub fn job_state(&self) -> Arc<dyn JobState> {
         self.job_state.clone()
+    }
+
+    /// Returns the cache state backend.
+    pub fn cache_state(&self) -> Arc<dyn CacheState> {
+        self.cache_state.clone()
     }
 }
 
@@ -361,6 +376,62 @@ pub trait JobState: Send + Sync {
 
     /// Produces a session configuration for new sessions.
     fn produce_config(&self) -> SessionConfig;
+}
+
+/// Scheduler-side metadata store for materialized `DataFrame::cache()` results —
+/// the mapping from a cache key to the shuffle partition locations of its output.
+///
+/// This is the third piece of scheduler state alongside [`ClusterState`] and
+/// [`JobState`], and follows the same shape: an async trait with an in-memory
+/// implementation today ([`InMemoryCacheState`](crate::cluster::memory::InMemoryCacheState))
+/// and an [`init`](CacheState::init) hook so a future durable backend (e.g. one
+/// backed by an object store) can rehydrate entries on startup. The methods are
+/// `async` even though the in-memory backend does no I/O, so a durable backend
+/// slots in without changing any signatures.
+///
+/// A cache *miss* is simply [`lookup`](CacheState::lookup) returning `None` (the
+/// key is absent, or materialization is still in flight); a *hit* is `Some`.
+#[async_trait::async_trait]
+pub trait CacheState: Send + Sync + 'static {
+    /// Initializes the backend. A no-op for the in-memory backend; durable
+    /// backends load previously persisted entries here.
+    async fn init(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Returns the materialized data for `key`, or `None` on a miss (absent or
+    /// still materializing).
+    async fn lookup(&self, key: &CacheKey) -> Result<Option<MaterializedCache>>;
+
+    /// Attempts to claim `key` for materialization by `job_id`, deduplicating
+    /// concurrent first-time misses to a single [`BeginOutcome::Claimed`].
+    async fn begin_materialization(
+        &self,
+        key: CacheKey,
+        job_id: String,
+    ) -> Result<BeginOutcome>;
+
+    /// Records the materialized shuffle locations for `key`.
+    async fn complete_materialization(
+        &self,
+        key: CacheKey,
+        job_id: String,
+        schema: SchemaRef,
+        locations: Vec<Vec<PartitionLocation>>,
+    ) -> Result<()>;
+
+    /// Invalidates a single entry; the next [`lookup`](CacheState::lookup) is a miss.
+    async fn invalidate(&self, key: &CacheKey) -> Result<()>;
+
+    /// Invalidates every entry holding a partition on `executor_id` (the
+    /// executor-loss policy) and returns the invalidated keys.
+    async fn invalidate_executor(&self, executor_id: &str) -> Result<Vec<CacheKey>>;
+
+    /// Removes every entry owned by `session_id` (session teardown).
+    async fn remove_session(&self, session_id: &str) -> Result<()>;
+
+    /// Returns the job ids whose shuffle data must be pinned past normal cleanup.
+    async fn pinned_job_ids(&self) -> Result<HashSet<String>>;
 }
 
 /// Whether this stage's plan contains a collapse — any operator whose
