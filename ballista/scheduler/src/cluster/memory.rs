@@ -1039,3 +1039,56 @@ impl CacheState for InMemoryCacheState {
         Ok(self.registry.pinned_job_ids())
     }
 }
+
+#[cfg(test)]
+mod cache_state_test {
+    use super::InMemoryCacheState;
+    use crate::cluster::{BallistaCluster, CacheState};
+    use crate::state::cache_registry::{BeginOutcome, CacheKey};
+    use ballista_core::utils::{default_config_producer, default_session_builder};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use std::sync::Arc;
+
+    fn schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
+    }
+
+    // The registry logic is covered in state::cache_registry; these just prove
+    // the async backend delegates and that the cluster wires it up.
+
+    #[tokio::test]
+    async fn backend_delegates_miss_hit_invalidate() {
+        let state = InMemoryCacheState::default();
+        let key = CacheKey::new("s1", "c1");
+
+        assert!(state.lookup(&key).await.unwrap().is_none());
+        let claimed = state.begin_materialization(key.clone(), "j".into()).await;
+        assert_eq!(claimed.unwrap(), BeginOutcome::Claimed);
+        assert!(state.lookup(&key).await.unwrap().is_none()); // still pending
+
+        state
+            .complete_materialization(key.clone(), "j".into(), schema(), vec![])
+            .await
+            .unwrap();
+        assert!(state.lookup(&key).await.unwrap().is_some());
+
+        state.invalidate(&key).await.unwrap();
+        assert!(state.lookup(&key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cluster_exposes_cache_state() {
+        let cluster = BallistaCluster::new_memory(
+            "localhost:50050",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        );
+        let key = CacheKey::new("s1", "c1");
+        let cache = cluster.cache_state();
+        cache
+            .complete_materialization(key.clone(), "j".into(), schema(), vec![])
+            .await
+            .unwrap();
+        assert!(cache.lookup(&key).await.unwrap().is_some());
+    }
+}
