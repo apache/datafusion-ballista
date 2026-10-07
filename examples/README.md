@@ -69,6 +69,29 @@ cargo run --release --example remote-dataframe
 
 Source: [`examples/examples/remote-dataframe.rs`](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/remote-dataframe.rs)
 
+### Arrow Flight SQL / Python ADBC
+
+Generic SQL clients can talk to the cluster directly, with no Ballista client
+library. Build a scheduler with the (non-default) Flight SQL frontend and start
+it with `--flight-sql`:
+
+```bash
+cargo build --release -p ballista-scheduler --features flight-sql
+RUST_LOG=info ./target/release/ballista-scheduler --flight-sql
+RUST_LOG=info ./target/release/ballista-executor -c 4 -p 50051
+```
+
+Then query it from Python over ADBC:
+
+```bash
+pip install adbc-driver-flightsql pyarrow
+python examples/python/adbc_flight_sql.py
+```
+
+See [`python/adbc_flight_sql.py`](python/adbc_flight_sql.py) and the
+[Arrow Flight SQL user guide](../docs/source/user-guide/flightsql.md). Note that
+a scheduler started this way performs no authentication.
+
 ### Distributed datafusion-spark example
 
 The scheduler and executor binaries must be built with the `spark-compat` feature enabled for this
