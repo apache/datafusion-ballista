@@ -167,15 +167,16 @@ impl AdaptivePlanner {
         // after each stage.
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
 
-        let plan_preparation_state_builder = SessionStateBuilder::from(ctx.state());
+        let state = ctx.state();
+        let balance_file_groups = state
+            .config()
+            .ballista_config()
+            .balance_scan_file_groups_enabled();
         let plan_preparation_state = Self::create_session_state(
-            plan_preparation_state_builder,
+            SessionStateBuilder::from(state),
             Self::plan_preparation_optimizers(
                 plan_id_generator.clone(),
-                ctx.state()
-                    .config()
-                    .ballista_config()
-                    .balance_scan_file_groups_enabled(),
+                balance_file_groups,
             ),
         );
 

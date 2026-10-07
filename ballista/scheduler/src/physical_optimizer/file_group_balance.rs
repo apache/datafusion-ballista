@@ -64,12 +64,12 @@ use std::sync::Arc;
 /// Files without statistics are always kept. The number of file groups never
 /// grows, and shrinks only when fewer files survive than there were groups.
 #[derive(Debug, Default)]
-pub struct BalanceFileGroups {}
+pub struct BalanceFileGroups;
 
 impl BalanceFileGroups {
     /// Creates a new `BalanceFileGroups` rule.
     pub fn new() -> Self {
-        Self {}
+        Self
     }
 }
 
@@ -126,53 +126,37 @@ fn balance_file_groups(config: &FileScanConfig) -> Option<Vec<FileGroup>> {
         .with_file_schema(Arc::clone(config.file_schema()))
         .build(predicate)?;
 
-    let files: Vec<&PartitionedFile> = config
+    // Each file is judged on its own, because one file with missing or inexact
+    // statistics would otherwise stop the whole batch from pruning anything.
+    // A file that cannot be judged is kept.
+    let schema = config.file_schema();
+    let keep = |file: &PartitionedFile| -> bool {
+        let Some(stats) = &file.statistics else {
+            return true;
+        };
+        let prunable =
+            PrunableStatistics::new(vec![Arc::clone(stats)], Arc::clone(schema));
+        pruning_predicate
+            .prune(&prunable)
+            .ok()
+            .and_then(|keep| keep.first().copied())
+            .unwrap_or(true)
+    };
+
+    let total: usize = config.file_groups.iter().map(|group| group.len()).sum();
+    let survivors: Vec<PartitionedFile> = config
         .file_groups
         .iter()
         .flat_map(|group| group.iter())
+        .filter(|file| keep(file))
+        .cloned()
         .collect();
-
-    // Files without statistics cannot be judged, so they are always kept.
-    let with_stats: Vec<usize> = files
-        .iter()
-        .enumerate()
-        .filter(|(_, file)| file.has_statistics())
-        .map(|(idx, _)| idx)
-        .collect();
-    if with_stats.is_empty() {
+    if survivors.len() == total {
         return None;
     }
-    let stats = with_stats
-        .iter()
-        .filter_map(|idx| files[*idx].statistics.clone())
-        .collect();
-    let prunable = PrunableStatistics::new(stats, Arc::clone(config.file_schema()));
-    let keep = match pruning_predicate.prune(&prunable) {
-        Ok(keep) if keep.len() == with_stats.len() => keep,
-        Ok(_) => return None,
-        Err(e) => {
-            debug!("Not pruning scan files by statistics: {e}");
-            return None;
-        }
-    };
-
-    let mut pruned = vec![false; files.len()];
-    for (idx, keep) in with_stats.iter().zip(keep) {
-        pruned[*idx] = !keep;
-    }
-    let pruned_count = pruned.iter().filter(|p| **p).count();
-    if pruned_count == 0 {
-        return None;
-    }
-
-    let survivors: Vec<PartitionedFile> = files
-        .into_iter()
-        .zip(pruned)
-        .filter(|(_, pruned)| !pruned)
-        .map(|(file, _)| file.clone())
-        .collect();
     debug!(
-        "Pruned {pruned_count} scan files by statistics, {} remain over up to {group_count} file groups",
+        "Pruned {} scan files by statistics, {} remain over up to {group_count} file groups",
+        total - survivors.len(),
         survivors.len()
     );
 
@@ -346,6 +330,26 @@ mod tests {
         groups[0][0] = PartitionedFile::new("nostats".to_string(), 100);
         let plan = optimize(scan(groups, Some(range_predicate(500, 600))));
         assert_eq!(group_names(&plan), vec![vec!["nostats"]]);
+    }
+
+    #[test]
+    fn prunes_around_files_with_partial_statistics() {
+        // f0 has no statistics at all, f1 has only an inexact minimum.
+        let mut groups = clustered_groups();
+        groups[0][0] = PartitionedFile::new("nostats".to_string(), 100);
+        let mut partial = file("partial", 0, 9);
+        let mut stats = Statistics::clone(partial.statistics.as_ref().unwrap());
+        stats.column_statistics[0].min_value =
+            Precision::Inexact(ScalarValue::Int64(Some(0)));
+        stats.column_statistics[0].max_value = Precision::Absent;
+        partial.statistics = Some(Arc::new(stats));
+        groups[0][1] = partial;
+
+        let plan = optimize(scan(groups, Some(range_predicate(20, 40))));
+        assert_eq!(
+            group_names(&plan),
+            vec![vec!["nostats"], vec!["partial"], vec!["f2"], vec!["f3"]]
+        );
     }
 
     #[test]
