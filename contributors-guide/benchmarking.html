@@ -411,7 +411,7 @@ reference; it is not an apples-to-apples comparison (see
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Ballista</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/commit/d6d8bd91fceaae4fb39624f6f1083a5f0ad78fbd"><code class="docutils literal notranslate"><span class="pre">d6d8bd91</span></code></a> (<code class="docutils literal notranslate"><span class="pre">main</span></code>, 2026-10-03), Cargo pkg <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code>, DataFusion <code class="docutils literal notranslate"><span class="pre">55.1.0</span></code></p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/commit/c76278cd48583504821ac4d71ea74b44e54ed4ea"><code class="docutils literal notranslate"><span class="pre">c76278cd</span></code></a> (<code class="docutils literal notranslate"><span class="pre">main</span></code>, 2026-10-07), Cargo pkg <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code>, DataFusion <code class="docutils literal notranslate"><span class="pre">55.1.0</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>Spark</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">4.1.3</span></code> (<code class="docutils literal notranslate"><span class="pre">apache/spark:4.1.3</span></code> image, vanilla, no acceleration plugin)</p></td>
@@ -456,14 +456,14 @@ results locally.</p></li>
 <li><p><strong>Data:</strong> TPC-H SF1000 Parquet on S3 (<code class="docutils literal notranslate"><span class="pre">us-west-2</span></code>), ZSTD compression,
 ~512 MiB row groups, one directory per table. <code class="docutils literal notranslate"><span class="pre">lineitem</span></code>, <code class="docutils literal notranslate"><span class="pre">orders</span></code>,
 <code class="docutils literal notranslate"><span class="pre">customer</span></code> and <code class="docutils literal notranslate"><span class="pre">part</span></code> are Hive-style partitioned (e.g.
-<code class="docutils literal notranslate"><span class="pre">lineitem/l_shipdate=YYYY-MM-DD/</span></code>). At <code class="docutils literal notranslate"><span class="pre">d6d8bd91</span></code> the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> runner
-registered tables without partition columns, so Ballista pruned these
-scans only through Parquet statistics, while Spark and Comet applied
-partition filters. This favoured Spark and Comet on date-filtered queries
-such as Q6, Q12, Q14 and Q20. The runner now declares the partition
-columns (see
+<code class="docutils literal notranslate"><span class="pre">lineitem/l_shipdate=YYYY-MM-DD/</span></code>). The <code class="docutils literal notranslate"><span class="pre">tpch</span></code> runner declares the
+partition columns (see
 <a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks#hive-partitioned-data">Hive-partitioned data</a>),
-and the results below predate that change.</p></li>
+so Ballista skips the partitions a filter excludes, as Spark, Comet and
+Trino do. Results from before
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2553">#2553</a> were
+collected without partition columns and pruned these scans only through
+Parquet statistics.</p></li>
 </ul>
 </section>
 <section id="executor-storage">
@@ -703,139 +703,139 @@ iterations after an untimed warm-up run (see
 </thead>
 <tbody>
 <tr class="row-even"><td class="text-right"><p>1</p></td>
-<td class="text-right"><p>13.94</p></td>
+<td class="text-right"><p>14.07</p></td>
 <td class="text-right"><p>71.45</p></td>
 <td class="text-right"><p>10.66</p></td>
 <td class="text-right"><p>5.32</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>2</p></td>
-<td class="text-right"><p>28.35</p></td>
+<td class="text-right"><p>25.81</p></td>
 <td class="text-right"><p>37.98</p></td>
 <td class="text-right"><p>21.66</p></td>
 <td class="text-right"><p>15.34</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>3</p></td>
-<td class="text-right"><p>25.29</p></td>
+<td class="text-right"><p>17.22</p></td>
 <td class="text-right"><p>30.61</p></td>
 <td class="text-right"><p>16.05</p></td>
 <td class="text-right"><p>13.47</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>4</p></td>
-<td class="text-right"><p>8.80</p></td>
+<td class="text-right"><p>15.31</p></td>
 <td class="text-right"><p>23.86</p></td>
 <td class="text-right"><p>8.11</p></td>
 <td class="text-right"><p>8.01</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>5</p></td>
-<td class="text-right"><p>63.94</p></td>
+<td class="text-right"><p>46.88</p></td>
 <td class="text-right"><p>57.39</p></td>
 <td class="text-right"><p>38.32</p></td>
 <td class="text-right"><p>25.98</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>6</p></td>
-<td class="text-right"><p>4.68</p></td>
+<td class="text-right"><p>1.59</p></td>
 <td class="text-right"><p>1.73</p></td>
 <td class="text-right"><p>0.99</p></td>
 <td class="text-right"><p>0.84</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>7</p></td>
-<td class="text-right"><p>45.85</p></td>
+<td class="text-right"><p>37.26</p></td>
 <td class="text-right"><p>25.34</p></td>
 <td class="text-right"><p>16.60</p></td>
 <td class="text-right"><p>16.19</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>8</p></td>
-<td class="text-right"><p>28.93</p></td>
+<td class="text-right"><p>20.13</p></td>
 <td class="text-right"><p>58.17</p></td>
 <td class="text-right"><p>46.04</p></td>
 <td class="text-right"><p>30.93</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>9</p></td>
-<td class="text-right"><p>37.64</p></td>
+<td class="text-right"><p>35.94</p></td>
 <td class="text-right"><p>74.90</p></td>
 <td class="text-right"><p>55.78</p></td>
 <td class="text-right"><p>41.71</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>10</p></td>
-<td class="text-right"><p>38.18</p></td>
+<td class="text-right"><p>43.36</p></td>
 <td class="text-right"><p>35.31</p></td>
 <td class="text-right"><p>21.31</p></td>
 <td class="text-right"><p>20.41</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>11</p></td>
-<td class="text-right"><p>15.87</p></td>
+<td class="text-right"><p>15.01</p></td>
 <td class="text-right"><p>31.66</p></td>
 <td class="text-right"><p>14.79</p></td>
 <td class="text-right"><p>5.73</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>12</p></td>
-<td class="text-right"><p>10.18</p></td>
+<td class="text-right"><p>10.49</p></td>
 <td class="text-right"><p>13.24</p></td>
 <td class="text-right"><p>5.33</p></td>
 <td class="text-right"><p>4.40</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>13</p></td>
-<td class="text-right"><p>9.78</p></td>
+<td class="text-right"><p>11.05</p></td>
 <td class="text-right"><p>22.73</p></td>
 <td class="text-right"><p>11.31</p></td>
 <td class="text-right"><p>10.56</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>14</p></td>
-<td class="text-right"><p>8.88</p></td>
+<td class="text-right"><p>5.54</p></td>
 <td class="text-right"><p>7.25</p></td>
 <td class="text-right"><p>2.50</p></td>
 <td class="text-right"><p>1.66</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>15</p></td>
-<td class="text-right"><p>10.61</p></td>
+<td class="text-right"><p>10.58</p></td>
 <td class="text-right"><p>22.45</p></td>
 <td class="text-right"><p>11.85</p></td>
 <td class="text-right"><p>8.30</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>16</p></td>
-<td class="text-right"><p>14.50</p></td>
+<td class="text-right"><p>12.78</p></td>
 <td class="text-right"><p>24.34</p></td>
 <td class="text-right"><p>8.94</p></td>
 <td class="text-right"><p>6.98</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>17</p></td>
-<td class="text-right"><p>19.56</p></td>
+<td class="text-right"><p>20.74</p></td>
 <td class="text-right"><p>81.36</p></td>
 <td class="text-right"><p>25.14</p></td>
 <td class="text-right"><p>24.76</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>18</p></td>
-<td class="text-right"><p>54.43</p></td>
+<td class="text-right"><p>45.63</p></td>
 <td class="text-right"><p>134.11</p></td>
 <td class="text-right"><p>46.42</p></td>
 <td class="text-right"><p>66.00</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>19</p></td>
-<td class="text-right"><p>10.65</p></td>
+<td class="text-right"><p>14.59</p></td>
 <td class="text-right"><p>13.27</p></td>
 <td class="text-right"><p>9.07</p></td>
 <td class="text-right"><p>5.93</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>20</p></td>
-<td class="text-right"><p>20.40</p></td>
+<td class="text-right"><p>14.46</p></td>
 <td class="text-right"><p>16.08</p></td>
 <td class="text-right"><p>6.57</p></td>
 <td class="text-right"><p>8.57</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>21</p></td>
-<td class="text-right"><p>91.31</p></td>
+<td class="text-right"><p>75.74</p></td>
 <td class="text-right"><p>98.04</p></td>
 <td class="text-right"><p>68.43</p></td>
 <td class="text-right"><p>83.22</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>22</p></td>
-<td class="text-right"><p>9.78</p></td>
+<td class="text-right"><p>8.25</p></td>
 <td class="text-right"><p>16.90</p></td>
 <td class="text-right"><p>9.22</p></td>
 <td class="text-right"><p>7.29</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p><strong>Total</strong></p></td>
-<td class="text-right"><p><strong>571.55</strong></p></td>
+<td class="text-right"><p><strong>502.43</strong></p></td>
 <td class="text-right"><p><strong>898.17</strong></p></td>
 <td class="text-right"><p><strong>455.09</strong></p></td>
 <td class="text-right"><p><strong>411.62</strong></p></td>
