@@ -30,7 +30,6 @@ use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
 use ballista_core::JobId;
 use ballista_core::execution_plans::ShuffleWriter;
-use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
 use datafusion::common::{HashMap, exec_err};
@@ -167,17 +166,10 @@ impl AdaptivePlanner {
         // after each stage.
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
 
-        let state = ctx.state();
-        let balance_file_groups = state
-            .config()
-            .ballista_config()
-            .balance_scan_file_groups_enabled();
+        let plan_preparation_state_builder = SessionStateBuilder::from(ctx.state());
         let plan_preparation_state = Self::create_session_state(
-            SessionStateBuilder::from(state),
-            Self::plan_preparation_optimizers(
-                plan_id_generator.clone(),
-                balance_file_groups,
-            ),
+            plan_preparation_state_builder,
+            Self::plan_preparation_optimizers(plan_id_generator.clone()),
         );
 
         let plan = plan_preparation_state
@@ -631,19 +623,16 @@ impl AdaptivePlanner {
     /// running standard set of physical optimizers
     fn plan_preparation_optimizers(
         plan_id_generator: Arc<AtomicUsize>,
-        balance_file_groups: bool,
     ) -> Vec<PhysicalOptimizerRuleRef> {
-        let mut rules: Vec<PhysicalOptimizerRuleRef> =
-            vec![Arc::new(FilterPushdown::new())];
-        // Needs the predicate `FilterPushdown` leaves on each scan. Runs before
-        // DataFusion's own chain so its file-scan repartitioning sees the
-        // pruned files.
-        if balance_file_groups {
-            rules.push(Arc::new(BalanceFileGroups::new()));
-        }
-        rules.push(Arc::new(DelayJoinSelectionRule::new(plan_id_generator)));
-        rules.push(Arc::new(ChaosCreatingRule::default()));
-        rules
+        vec![
+            Arc::new(FilterPushdown::new()),
+            // Needs the predicate `FilterPushdown` leaves on each scan. Runs
+            // before DataFusion's own chain so its file-scan repartitioning
+            // sees the pruned files.
+            Arc::new(BalanceFileGroups::new()),
+            Arc::new(DelayJoinSelectionRule::new(plan_id_generator)),
+            Arc::new(ChaosCreatingRule::default()),
+        ]
     }
 
     /// Creates a session state with the given configuration and optimizer rules.

@@ -32,6 +32,7 @@
 //! remaining files round-robin over the groups so the surviving work is spread
 //! across tasks. It leaves a scan untouched when no file can be pruned.
 
+use ballista_core::config::BallistaConfig;
 use datafusion::common::Result;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::pruning::PrunableStatistics;
@@ -77,8 +78,17 @@ impl PhysicalOptimizerRule for BalanceFileGroups {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-        _config: &ConfigOptions,
+        config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        // On unless a Ballista session turns it off.
+        let enabled = config
+            .extensions
+            .get::<BallistaConfig>()
+            .is_none_or(|c| c.balance_scan_file_groups_enabled());
+        if !enabled {
+            return Ok(plan);
+        }
+
         plan.transform_up(|plan| {
             let Some(exec) = plan.downcast_ref::<DataSourceExec>() else {
                 return Ok(Transformed::no(plan));
@@ -86,15 +96,13 @@ impl PhysicalOptimizerRule for BalanceFileGroups {
             let Some(config) = exec.data_source().downcast_ref::<FileScanConfig>() else {
                 return Ok(Transformed::no(plan));
             };
-            match balance_file_groups(config) {
-                Some(file_groups) => {
-                    let config = FileScanConfigBuilder::from(config.clone())
-                        .with_file_groups(file_groups)
-                        .build();
-                    Ok(Transformed::yes(DataSourceExec::from_data_source(config)))
-                }
-                None => Ok(Transformed::no(plan)),
-            }
+            let Some(file_groups) = balance_file_groups(config) else {
+                return Ok(Transformed::no(plan));
+            };
+            let config = FileScanConfigBuilder::from(config.clone())
+                .with_file_groups(file_groups)
+                .build();
+            Ok(Transformed::yes(DataSourceExec::from_data_source(config)))
         })
         .map(|t| t.data)
     }
@@ -129,27 +137,26 @@ fn balance_file_groups(config: &FileScanConfig) -> Option<Vec<FileGroup>> {
     // Each file is judged on its own, because one file with missing or inexact
     // statistics would otherwise stop the whole batch from pruning anything.
     // A file that cannot be judged is kept.
-    let schema = config.file_schema();
     let keep = |file: &PartitionedFile| -> bool {
         let Some(stats) = &file.statistics else {
             return true;
         };
-        let prunable =
-            PrunableStatistics::new(vec![Arc::clone(stats)], Arc::clone(schema));
+        let prunable = PrunableStatistics::new(
+            vec![Arc::clone(stats)],
+            Arc::clone(config.file_schema()),
+        );
         pruning_predicate
             .prune(&prunable)
             .ok()
-            .and_then(|keep| keep.first().copied())
-            .unwrap_or(true)
+            .is_none_or(|keep| keep[0])
     };
 
     let total: usize = config.file_groups.iter().map(|group| group.len()).sum();
-    let survivors: Vec<PartitionedFile> = config
+    let survivors: Vec<&PartitionedFile> = config
         .file_groups
         .iter()
         .flat_map(|group| group.iter())
         .filter(|file| keep(file))
-        .cloned()
         .collect();
     if survivors.len() == total {
         return None;
@@ -163,16 +170,18 @@ fn balance_file_groups(config: &FileScanConfig) -> Option<Vec<FileGroup>> {
     // Never more groups than files, so no task is handed an empty group, and
     // never fewer than one, so the scan keeps a partition to run.
     let new_group_count = survivors.len().clamp(1, group_count);
-    let mut groups: Vec<Vec<PartitionedFile>> = vec![vec![]; new_group_count];
+    let mut groups = vec![FileGroup::default(); new_group_count];
     for (idx, file) in survivors.into_iter().enumerate() {
-        groups[idx % new_group_count].push(file);
+        groups[idx % new_group_count].push(file.clone());
     }
-    Some(groups.into_iter().map(FileGroup::new).collect())
+    Some(groups)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ballista_core::config::BALLISTA_BALANCE_SCAN_FILE_GROUPS;
+    use ballista_core::extension::SessionConfigExt;
     use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::common::stats::Precision;
     use datafusion::common::{ColumnStatistics, ScalarValue, Statistics};
@@ -182,6 +191,7 @@ mod tests {
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
     use datafusion::physical_plan::Partitioning;
+    use datafusion::prelude::SessionConfig;
 
     fn schema() -> SchemaRef {
         Arc::new(Schema::new(vec![Field::new("d", DataType::Int64, false)]))
@@ -243,14 +253,31 @@ mod tests {
             .unwrap()
     }
 
-    fn group_names(plan: &Arc<dyn ExecutionPlan>) -> Vec<Vec<String>> {
+    fn scan_config(plan: &Arc<dyn ExecutionPlan>) -> &FileScanConfig {
         let exec = plan.downcast_ref::<DataSourceExec>().unwrap();
-        let config = exec.data_source().downcast_ref::<FileScanConfig>().unwrap();
-        config
+        exec.data_source().downcast_ref::<FileScanConfig>().unwrap()
+    }
+
+    fn group_names(plan: &Arc<dyn ExecutionPlan>) -> Vec<Vec<String>> {
+        scan_config(plan)
             .file_groups
             .iter()
             .map(|g| g.iter().map(|f| f.path().to_string()).collect())
             .collect()
+    }
+
+    /// Asserts the scan still has the four contiguous groups of
+    /// `clustered_groups`.
+    fn assert_unchanged(plan: &Arc<dyn ExecutionPlan>) {
+        assert_eq!(
+            group_names(plan),
+            vec![
+                vec!["f0", "f1"],
+                vec!["f2", "f3"],
+                vec!["f4", "f5"],
+                vec!["f6", "f7"]
+            ]
+        );
     }
 
     /// Four contiguous groups of two files each; only the files of group 1
@@ -304,37 +331,19 @@ mod tests {
 
     #[test]
     fn leaves_scan_alone_when_nothing_is_pruned() {
-        let before = scan(clustered_groups(), Some(range_predicate(0, 1000)));
-        let plan = optimize(before);
-        assert_eq!(
-            group_names(&plan),
-            vec![
-                vec!["f0", "f1"],
-                vec!["f2", "f3"],
-                vec!["f4", "f5"],
-                vec!["f6", "f7"]
-            ]
-        );
+        let plan = optimize(scan(clustered_groups(), Some(range_predicate(0, 1000))));
+        assert_unchanged(&plan);
     }
 
     #[test]
     fn leaves_scan_alone_without_a_predicate() {
-        let plan = optimize(scan(clustered_groups(), None));
-        assert_eq!(group_names(&plan).len(), 4);
-        assert_eq!(group_names(&plan)[0], vec!["f0", "f1"]);
+        assert_unchanged(&optimize(scan(clustered_groups(), None)));
     }
 
     #[test]
-    fn keeps_files_without_statistics() {
-        let mut groups = clustered_groups();
-        groups[0][0] = PartitionedFile::new("nostats".to_string(), 100);
-        let plan = optimize(scan(groups, Some(range_predicate(500, 600))));
-        assert_eq!(group_names(&plan), vec![vec!["nostats"]]);
-    }
-
-    #[test]
-    fn prunes_around_files_with_partial_statistics() {
-        // f0 has no statistics at all, f1 has only an inexact minimum.
+    fn prunes_around_files_without_usable_statistics() {
+        // `nostats` has no statistics at all, `partial` only an inexact
+        // minimum. Neither can be judged, so both are kept.
         let mut groups = clustered_groups();
         groups[0][0] = PartitionedFile::new("nostats".to_string(), 100);
         let mut partial = file("partial", 0, 9);
@@ -357,25 +366,26 @@ mod tests {
         let key: Arc<dyn PhysicalExpr> = Arc::new(Column::new("d", 0));
         let builder = scan(clustered_groups(), Some(range_predicate(20, 60)))
             .with_output_partitioning(Some(Partitioning::Hash(vec![key], 4)));
-        let plan = optimize(builder);
-        assert_eq!(
-            group_names(&plan),
-            vec![
-                vec!["f0", "f1"],
-                vec!["f2", "f3"],
-                vec!["f4", "f5"],
-                vec!["f6", "f7"]
-            ]
-        );
+        assert_unchanged(&optimize(builder));
     }
 
     #[test]
     fn leaves_scan_alone_when_order_must_be_preserved() {
         let builder = scan(clustered_groups(), Some(range_predicate(20, 60)))
             .with_preserve_order(true);
-        let plan = optimize(builder);
-        assert_eq!(group_names(&plan).len(), 4);
-        assert_eq!(group_names(&plan)[0], vec!["f0", "f1"]);
+        assert_unchanged(&optimize(builder));
+    }
+
+    #[test]
+    fn leaves_scan_alone_when_disabled() -> Result<()> {
+        let config = SessionConfig::new_with_ballista()
+            .set_bool(BALLISTA_BALANCE_SCAN_FILE_GROUPS, false);
+        let plan = DataSourceExec::from_data_source(
+            scan(clustered_groups(), Some(range_predicate(20, 60))).build(),
+        );
+        let plan = BalanceFileGroups::new().optimize(plan, config.options())?;
+        assert_unchanged(&plan);
+        Ok(())
     }
 
     /// Plans a real `ListingTable` over 16 Parquet files clustered by `d`, so
@@ -385,7 +395,7 @@ mod tests {
     async fn balances_a_planned_listing_table() -> Result<()> {
         use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch};
         use datafusion::parquet::arrow::ArrowWriter;
-        use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
+        use datafusion::prelude::{ParquetReadOptions, SessionContext};
 
         let dir = tempfile::tempdir()?;
         for n in 0..16i64 {
@@ -415,22 +425,16 @@ mod tests {
             .create_physical_plan()
             .await?;
 
-        let scan_groups = |plan: &Arc<dyn ExecutionPlan>| {
-            let mut groups = vec![];
-            plan.apply(|node| {
-                if let Some(exec) = node.downcast_ref::<DataSourceExec>() {
-                    let config =
-                        exec.data_source().downcast_ref::<FileScanConfig>().unwrap();
-                    groups = config
-                        .file_groups
-                        .iter()
-                        .map(|g| g.len())
-                        .collect::<Vec<_>>();
-                }
-                Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
-            })
-            .unwrap();
-            groups
+        let scan_groups = |plan: &Arc<dyn ExecutionPlan>| -> Vec<usize> {
+            let mut leaf = plan;
+            while let Some(child) = leaf.children().first() {
+                leaf = child;
+            }
+            scan_config(leaf)
+                .file_groups
+                .iter()
+                .map(|g| g.len())
+                .collect()
         };
 
         // DataFusion cuts 16 files into 4 contiguous runs of 4.
