@@ -445,9 +445,9 @@ total, compared with 64 GiB for a Ballista executor).</p></li>
 <li><p><strong>Worker pod (Trino):</strong> x86_64, 8 vCPU, 64 GiB memory (the image’s
 default JVM heap of 80 %, about 51 GiB), no spill volume. A separate
 coordinator pod plans and schedules but does not scan data.</p></li>
-<li><p><strong>Driver (Spark and Spark + Comet):</strong> runs the queries through an internal
-Spark benchmark harness. See <a class="reference internal" href="#spark-and-spark--comet"><span class="xref myst">Spark and Spark + Comet</span></a>
-under Reproducing.</p></li>
+<li><p><strong>Driver (Spark and Spark + Comet):</strong> runs the queries through a Spark
+benchmark harness that is not in this repository yet. See
+<a class="reference internal" href="#spark-and-spark--comet"><span class="xref myst">Spark and Spark + Comet</span></a> under Reproducing.</p></li>
 <li><p><strong>Client pod (Ballista):</strong> the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> Rust benchmark runner from
 <a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks"><code class="docutils literal notranslate"><span class="pre">benchmarks/</span></code></a>
 in this repo (<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">run</span> <span class="pre">--release</span> <span class="pre">--bin</span> <span class="pre">tpch</span> <span class="pre">--</span> <span class="pre">benchmark</span> <span class="pre">ballista</span> <span class="pre">...</span></code>),
@@ -846,6 +846,10 @@ iterations after an untimed warm-up run (see
 </section>
 <section id="reproducing">
 <h2>Reproducing<a class="headerlink" href="#reproducing" title="Link to this heading">#</a></h2>
+<p>The Ballista numbers come from the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> runner in this repository. The Spark,
+Spark + Comet, and Trino numbers were collected with a benchmark harness that
+is not in this repository yet. We are working on adding scripts so that anyone
+can reproduce all of these results.</p>
 <section id="ballista">
 <h3>Ballista<a class="headerlink" href="#ballista" title="Link to this heading">#</a></h3>
 <p>Bring up the cluster (one scheduler, N executors), then run the suite from a
@@ -875,8 +879,7 @@ suite’s shuffle output — see <a class="reference internal" href="#executor-s
 </section>
 <section id="spark-and-spark-comet">
 <h3>Spark and Spark + Comet<a class="headerlink" href="#spark-and-spark-comet" title="Link to this heading">#</a></h3>
-<p>The Spark and Spark + Comet numbers above were collected with an internal
-benchmark harness, which isn’t public. The closest public equivalent is
+<p>Until the harness is added, the closest public equivalent is
 <code class="docutils literal notranslate"><span class="pre">tpcbench.py</span></code> from
 <a class="reference external" href="https://github.com/apache/datafusion-benchmarks">apache/datafusion-benchmarks</a>,
 with the settings above and stock Spark 4.1 defaults for everything else:</p>
@@ -908,7 +911,7 @@ and the settings in <a class="reference internal" href="#comet-configuration"><s
 </section>
 <section id="trino">
 <h3>Trino<a class="headerlink" href="#trino" title="Link to this heading">#</a></h3>
-<p>The Trino numbers were also collected with the internal harness. It creates
+<p>The Trino numbers were collected with the same harness. It creates
 external Hive tables over the Parquet files, syncs their partitions, and runs
 each query once untimed and then three times, one query at a time, through the
 Trino client, with the settings in <a class="reference internal" href="#trino-configuration"><span class="xref myst">Trino configuration</span></a>.</p>
