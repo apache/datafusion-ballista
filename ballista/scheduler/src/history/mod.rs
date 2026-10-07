@@ -550,7 +550,6 @@ async fn get_state() -> Json<serde_json::Value> {
         "keda_support": false,
         "prometheus_support": false,
         "graphviz_support": false,
-        "spark_support": false,
         "scheduling_policy": "history-server",
         "enable_embedded_flight_proxy": false,
     }))
@@ -729,7 +728,6 @@ mod tests {
             "keda_support",
             "prometheus_support",
             "graphviz_support",
-            "spark_support",
             "scheduling_policy",
             "enable_embedded_flight_proxy",
         ] {
