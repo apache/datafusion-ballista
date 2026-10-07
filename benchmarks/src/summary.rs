@@ -18,13 +18,17 @@
 //! Timing a query suite and writing its JSON summary, shared by the TPC-H and
 //! TPC-DS runners so both produce the same summary format.
 
+use crate::execute_query_capturing_answer;
 use datafusion::DATAFUSION_VERSION;
+use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::arrow::util::pretty;
 use datafusion::error::{DataFusionError, Result};
+use datafusion::prelude::SessionContext;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QueryResult {
@@ -89,14 +93,8 @@ pub struct BenchmarkRun {
     pub queries: Vec<QueryRun>,
 }
 
-impl Default for BenchmarkRun {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl BenchmarkRun {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             benchmark_version: env!("CARGO_PKG_VERSION").to_owned(),
             datafusion_version: DATAFUSION_VERSION.to_owned(),
@@ -108,10 +106,6 @@ impl BenchmarkRun {
             arguments: std::env::args().skip(1).collect::<Vec<String>>(),
             queries: vec![],
         }
-    }
-
-    pub fn add_query_run(&mut self, query_run: QueryRun) {
-        self.queries.push(query_run)
     }
 }
 
@@ -127,39 +121,40 @@ impl BenchmarkRun {
 pub async fn run_suite(
     name: &str,
     queries: &[usize],
-    iterations: usize,
     output: Option<&Path>,
     mut run_query: impl AsyncFnMut(usize, &mut QueryRun) -> Result<()>,
 ) -> Result<BenchmarkRun> {
     let mut benchmark_run = BenchmarkRun::new();
     let mut total_elapsed = 0.0;
-    let mut failures = vec![];
+    let mut summary_path = None;
 
     for &query in queries {
         let mut query_run = QueryRun::new(query);
         match run_query(query, &mut query_run).await {
-            Ok(()) => {
-                accumulate_total(query, &query_run, iterations, &mut total_elapsed);
-            }
+            Ok(()) => total_elapsed += mean_elapsed(&query_run),
             Err(e) => {
                 eprintln!("Query {query} failed: {e}");
                 query_run.error = Some(e.to_string());
-                failures.push((query, e.to_string()));
             }
         }
-        benchmark_run.add_query_run(query_run);
-        persist_summary(&benchmark_run, name, output)?;
+        benchmark_run.queries.push(query_run);
+        summary_path = persist_summary(&benchmark_run, name, output)?;
     }
 
     println!("Total time: {total_elapsed:.3} s");
-    if let Some(path) = persist_summary(&benchmark_run, name, output)? {
+    if let Some(path) = summary_path {
         println!("Summary written to {}", path.display());
     }
 
+    let failures: Vec<&QueryRun> = benchmark_run
+        .queries
+        .iter()
+        .filter(|q| q.error.is_some())
+        .collect();
     if !failures.is_empty() {
         eprintln!("\n{} query failure(s):", failures.len());
-        for (query, e) in &failures {
-            eprintln!("  q{query}: {e}");
+        for q in &failures {
+            eprintln!("  q{}: {}", q.query, q.error.as_deref().unwrap_or_default());
         }
         return Err(DataFusionError::Execution(format!(
             "{} query failure(s); see the summary for details",
@@ -185,25 +180,45 @@ pub fn print_iteration(
     }
 }
 
-/// Add a completed query's contribution to the running suite total: the average
-/// iteration time when repeating, else the single run.
-fn accumulate_total(
+/// Runs `sqls` on `ctx` `iterations` times, pushing each iteration's timing
+/// into `query_run`, and returns the answer batches from the last iteration
+/// (see `execute_query_capturing_answer`). On error, `query_run` already holds
+/// whatever iterations completed before the failure.
+pub async fn time_query(
+    ctx: &SessionContext,
     query: usize,
-    query_run: &QueryRun,
+    sqls: &[String],
     iterations: usize,
-    total: &mut f64,
-) {
-    let secs: Vec<f64> = query_run.iterations.iter().map(|r| r.elapsed).collect();
-    if secs.is_empty() {
-        return;
+    debug: bool,
+    query_run: &mut QueryRun,
+) -> Result<Vec<RecordBatch>> {
+    let mut result = vec![];
+    for i in 0..iterations {
+        let start = Instant::now();
+        result = execute_query_capturing_answer(ctx, sqls, debug).await?;
+        let elapsed = start.elapsed().as_secs_f64();
+        if debug {
+            pretty::print_batches(&result)?;
+        }
+        let row_count = result.iter().map(|b| b.num_rows()).sum();
+        print_iteration(query, i, iterations, elapsed, row_count);
+        query_run.add_result(elapsed, row_count);
     }
-    if iterations > 1 {
-        let avg = secs.iter().sum::<f64>() / secs.len() as f64;
-        println!("Query {query} avg time: {avg:.3} s");
-        *total += avg;
-    } else {
-        *total += secs.iter().sum::<f64>();
+    Ok(result)
+}
+
+/// A completed query's contribution to the suite total: its mean iteration
+/// time, which is printed when there was more than one iteration.
+fn mean_elapsed(query_run: &QueryRun) -> f64 {
+    let n = query_run.iterations.len();
+    if n == 0 {
+        return 0.0;
     }
+    let mean = query_run.iterations.iter().map(|r| r.elapsed).sum::<f64>() / n as f64;
+    if n > 1 {
+        println!("Query {} avg time: {mean:.3} s", query_run.query);
+    }
+    mean
 }
 
 /// Write the run summary to `dir` if one was configured; a no-op otherwise.
@@ -293,7 +308,7 @@ mod tests {
     #[tokio::test]
     async fn run_suite_records_failures_and_keeps_going() {
         let dir = tempfile::tempdir().unwrap();
-        let result = run_suite("tpcds", &[1, 2, 3], 2, Some(dir.path()), {
+        let result = run_suite("tpcds", &[1, 2, 3], Some(dir.path()), {
             async |query: usize, run: &mut QueryRun| {
                 run.add_result(query as f64, 10);
                 if query == 2 {
@@ -336,7 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_suite_without_output_writes_nothing() {
-        let run = run_suite("tpch", &[4], 1, None, async |_, run: &mut QueryRun| {
+        let run = run_suite("tpch", &[4], None, async |_, run: &mut QueryRun| {
             run.add_result(0.5, 1);
             Ok(())
         })

@@ -17,20 +17,18 @@
 
 //! Benchmark derived from TPC-DS. This is not an official TPC-DS benchmark.
 
-use ballista_benchmarks::summary::{QueryRun, print_iteration, run_suite};
+use ballista_benchmarks::summary::{QueryRun, run_suite, time_query};
 use ballista_benchmarks::{
-    ballista_context, cells_equal, compare_results, execute_query_capturing_answer,
-    register_parquet_tables, rows_as_cells,
+    ParquetTable, ballista_context, benchmark_session_config, cells_equal,
+    compare_results, execute_query_capturing_answer, infer_parquet_tables, local_context,
+    read_query_file, register_parquet_tables, rows_as_cells,
 };
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::arrow::util::pretty;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use std::collections::HashSet;
-use std::fs;
 use std::path::PathBuf;
-use std::time::Instant;
 use structopt::StructOpt;
 
 #[cfg(feature = "mimalloc")]
@@ -200,17 +198,17 @@ fn apply_column_renames(sql: &str, renames: &[(&str, &str)]) -> String {
     })
 }
 
-/// The `COLUMN_RENAMES` pairs that the registered tables need: those whose
-/// `tpcgen-cli` column exists and whose spec column does not.
-async fn column_renames_for(
-    ctx: &SessionContext,
-) -> Result<Vec<(&'static str, &'static str)>> {
-    let mut columns = HashSet::new();
-    for &table in TABLES {
-        let provider = ctx.table_provider(table).await?;
-        columns.extend(provider.schema().fields().iter().map(|f| f.name().clone()));
-    }
-    Ok(renames_needed(&columns))
+/// The `COLUMN_RENAMES` pairs that `tables` need: those whose `tpcgen-cli`
+/// column exists and whose spec column does not.
+fn column_renames_for(tables: &[ParquetTable]) -> Vec<(&'static str, &'static str)> {
+    let columns: HashSet<String> = tables
+        .iter()
+        .flat_map(|t| {
+            let file_columns = t.schema.fields().iter().map(|f| f.name().clone());
+            file_columns.chain(t.partition_cols.iter().map(|(name, _)| name.clone()))
+        })
+        .collect();
+    renames_needed(&columns)
 }
 
 fn renames_needed(columns: &HashSet<String>) -> Vec<(&'static str, &'static str)> {
@@ -232,22 +230,8 @@ fn tpcds_path_column_type(_table: &str, column: &str) -> Option<DataType> {
 }
 
 fn get_query_sql(query: usize, renames: &[(&str, &str)]) -> Result<Vec<String>> {
-    let possibilities = [
-        format!("queries-tpcds/q{query}.sql"),
-        format!("benchmarks/queries-tpcds/q{query}.sql"),
-    ];
-    let mut errors = vec![];
-    for filename in &possibilities {
-        match fs::read_to_string(filename) {
-            Ok(contents) => {
-                return Ok(split_statements(&apply_column_renames(&contents, renames)));
-            }
-            Err(e) => errors.push(format!("{filename}: {e}")),
-        }
-    }
-    Err(DataFusionError::Plan(format!(
-        "Could not find query {query}: {errors:?}"
-    )))
+    let contents = read_query_file("queries-tpcds", query)?;
+    Ok(split_statements(&apply_column_renames(&contents, renames)))
 }
 
 /// The queries to run: an explicit `--query`, else 1..=99 minus `skip`.
@@ -313,10 +297,16 @@ fn compare_allowing_order_by_ties(
     }
 }
 
+/// Tags an error with the phase of `run_one_query` it came from.
+fn phase(phase: &'static str) -> impl FnOnce(DataFusionError) -> DataFusionError {
+    move |e| DataFusionError::Execution(format!("{phase}: {e}"))
+}
+
 /// Run a single TPC-DS query end to end: stand up a fresh Ballista session,
-/// load the query's SQL, execute it on the cluster `opt.iterations` times,
-/// pushing each iteration's timing into `query_run`, and (if `oracle_ctx` is
-/// set) verify the last result against single-process DataFusion.
+/// register `tables` on it, execute the query on the cluster `opt.iterations`
+/// times, pushing each iteration's timing into `query_run`, and (if
+/// `oracle_ctx` is set) verify the last result against single-process
+/// DataFusion.
 ///
 /// Every fallible step is tagged with a `<phase>: ` prefix, so the failure
 /// recorded against this query says where it went wrong. On error,
@@ -324,53 +314,29 @@ fn compare_allowing_order_by_ties(
 async fn run_one_query(
     opt: &Opt,
     address: &str,
+    tables: &[ParquetTable],
+    renames: &[(&str, &str)],
     oracle_ctx: Option<&SessionContext>,
     query: usize,
     query_run: &mut QueryRun,
 ) -> Result<()> {
-    let phase = |phase: &str| {
-        let phase = phase.to_string();
-        move |e: DataFusionError| DataFusionError::Execution(format!("{phase}: {e}"))
-    };
+    let sqls = get_query_sql(query, renames).map_err(phase("load"))?;
 
     // A fresh Ballista session per query (mirrors tpch.rs).
     let ctx = ballista_context(
         address,
         &format!("TPC-DS q{query}"),
-        opt.partitions,
-        opt.batch_size,
-        &opt.config_overrides,
+        benchmark_session_config(opt.partitions, opt.batch_size, &opt.config_overrides),
     )
     .await
     .map_err(phase("connect"))?;
-    register_parquet_tables(
-        &ctx,
-        TABLES,
-        opt.path.as_str(),
-        opt.debug,
-        !opt.no_partition_cols,
-        tpcds_path_column_type,
-    )
-    .await
-    .map_err(phase("register-tables"))?;
+    register_parquet_tables(&ctx, tables)
+        .await
+        .map_err(phase("register-tables"))?;
 
-    let renames = column_renames_for(&ctx).await.map_err(phase("load"))?;
-    let sqls = get_query_sql(query, &renames).map_err(phase("load"))?;
-
-    let mut batches = vec![];
-    for i in 0..opt.iterations {
-        let start = Instant::now();
-        batches = execute_query_capturing_answer(&ctx, &sqls, opt.debug)
-            .await
-            .map_err(phase("run"))?;
-        let elapsed = start.elapsed().as_secs_f64();
-        let row_count = batches.iter().map(|b| b.num_rows()).sum();
-        print_iteration(query, i, opt.iterations, elapsed, row_count);
-        query_run.add_result(elapsed, row_count);
-        if opt.debug {
-            pretty::print_batches(&batches)?;
-        }
-    }
+    let batches = time_query(&ctx, query, &sqls, opt.iterations, opt.debug, query_run)
+        .await
+        .map_err(phase("run"))?;
 
     if let Some(oracle_ctx) = oracle_ctx {
         let expected = execute_query_capturing_answer(oracle_ctx, &sqls, opt.debug)
@@ -400,6 +366,24 @@ async fn main() -> Result<()> {
     println!("Running TPC-DS with the following options: {opt:?}");
     let address = format!("df://{}:{}", opt.host, opt.port);
 
+    // Inferring a table's layout reads its files, so do it once, not per
+    // query. Every query's session then registers the same layouts.
+    let layout_ctx = local_context(benchmark_session_config(
+        opt.partitions,
+        opt.batch_size,
+        &opt.config_overrides,
+    ))?;
+    let tables = infer_parquet_tables(
+        &layout_ctx,
+        TABLES,
+        opt.path.as_str(),
+        opt.debug,
+        !opt.no_partition_cols,
+        tpcds_path_column_type,
+    )
+    .await?;
+    let renames = column_renames_for(&tables);
+
     // Oracle context (single-process DataFusion), built once when verifying.
     // Not per-query, so a failure here is genuinely fatal to the whole run.
     let oracle_ctx = if opt.verify {
@@ -407,34 +391,32 @@ async fn main() -> Result<()> {
             .with_target_partitions(opt.partitions)
             .with_batch_size(opt.batch_size);
         let ctx = SessionContext::new_with_config(cfg);
-        register_parquet_tables(
-            &ctx,
-            TABLES,
-            opt.path.as_str(),
-            opt.debug,
-            !opt.no_partition_cols,
-            tpcds_path_column_type,
-        )
-        .await?;
+        register_parquet_tables(&ctx, &tables).await?;
         Some(ctx)
     } else {
         None
     };
 
-    let run = run_suite(
+    run_suite(
         "tpcds",
         &selected_queries(opt.query, SKIP),
-        opt.iterations,
         opt.output_path.as_deref(),
         async |query, query_run| {
-            run_one_query(&opt, &address, oracle_ctx.as_ref(), query, query_run).await
+            run_one_query(
+                &opt,
+                &address,
+                &tables,
+                &renames,
+                oracle_ctx.as_ref(),
+                query,
+                query_run,
+            )
+            .await
         },
     )
-    .await;
-    if run.is_ok() {
-        println!("\nAll selected TPC-DS queries passed.");
-    }
-    run.map(|_| ())
+    .await?;
+    println!("\nAll selected TPC-DS queries passed.");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -558,6 +540,7 @@ mod tests {
     async fn path_only_date_sk_partition_is_an_integer_and_prunes() -> Result<()> {
         use datafusion::arrow::array::{ArrayRef, Int32Array};
         use datafusion::parquet::arrow::ArrowWriter;
+        use std::fs;
         use std::sync::Arc;
 
         let dir = tempfile::tempdir().unwrap();

@@ -19,10 +19,12 @@
 
 use ballista::extension::SessionConfigExt;
 use ballista::prelude::SessionContextExt;
-use ballista_benchmarks::summary::{BenchmarkRun, QueryRun, print_iteration, run_suite};
+use ballista_benchmarks::summary::{
+    BenchmarkRun, QueryRun, print_iteration, run_suite, time_query,
+};
 use ballista_benchmarks::{
-    answer_statement_index, ballista_context, compare_results,
-    execute_query_capturing_answer, find_path, parquet_table_layout,
+    answer_statement_index, ballista_context, benchmark_session_config, compare_results,
+    execute_query_capturing_answer, find_path, parquet_table_layout, read_query_file,
     register_parquet_table,
 };
 use datafusion::arrow::datatypes::SchemaBuilder;
@@ -432,50 +434,18 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     run_suite(
         "tpch",
         &query_numbers,
-        opt.iterations,
         opt.output_path.as_deref(),
         async |query, query_run| {
             let sqls = get_query_sql(query)?;
             if opt.debug {
                 println!("Query {query}:\n{sqls:?}");
             }
-            result =
-                run_local_query(&ctx, query, &sqls, opt.iterations, opt.debug, query_run)
-                    .await?;
+            result = time_query(&ctx, query, &sqls, opt.iterations, opt.debug, query_run)
+                .await?;
             Ok(())
         },
     )
     .await?;
-    Ok(result)
-}
-
-/// Run one query `iterations` times against a local DataFusion context, pushing
-/// each iteration's timing into `query_run`, and return the answer batches from
-/// the last iteration. On error, `query_run` already holds whatever iterations
-/// completed before the failure.
-async fn run_local_query(
-    ctx: &SessionContext,
-    query: usize,
-    sqls: &[String],
-    iterations: usize,
-    debug: bool,
-    query_run: &mut QueryRun,
-) -> Result<Vec<RecordBatch>> {
-    let mut result = vec![];
-    for i in 0..iterations {
-        let start = Instant::now();
-        // Execute each SQL statement sequentially (required for queries like q15
-        // that create views and then reference them), keeping the result of the
-        // answer statement, not a trailing DROP VIEW.
-        result = execute_query_capturing_answer(ctx, sqls, debug).await?;
-        let elapsed = start.elapsed().as_secs_f64();
-        if debug {
-            pretty::print_batches(&result)?;
-        }
-        let row_count = result.iter().map(|b| b.num_rows()).sum();
-        print_iteration(query, i, iterations, elapsed, row_count);
-        query_run.add_result(elapsed, row_count);
-    }
     Ok(result)
 }
 
@@ -511,7 +481,6 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     run_suite(
         "tpch",
         &query_numbers,
-        opt.iterations,
         opt.output_path.as_deref(),
         async |query, query_run| {
             let sqls = get_query_sql(query)?;
@@ -549,9 +518,7 @@ async fn run_ballista_query(
     let ctx = ballista_context(
         address,
         &format!("Query derived from TPC-H q{query}"),
-        opt.partitions,
-        opt.batch_size,
-        &opt.config_overrides,
+        benchmark_session_config(opt.partitions, opt.batch_size, &opt.config_overrides),
     )
     .await?;
     register_tables(
@@ -949,27 +916,12 @@ fn tpch_path_column_type(table: &str, column: &str) -> Option<DataType> {
 /// Get the SQL statements from the specified query file
 fn get_query_sql(query: usize) -> Result<Vec<String>> {
     if query > 0 && query < 23 {
-        let possibilities = vec![
-            format!("queries/q{query}.sql"),
-            format!("benchmarks/queries/q{query}.sql"),
-        ];
-        let mut errors = vec![];
-        for filename in possibilities {
-            match fs::read_to_string(&filename) {
-                Ok(contents) => {
-                    return Ok(contents
-                        .split(';')
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                        .collect());
-                }
-                Err(e) => errors.push(format!("{filename}: {e}")),
-            };
-        }
-        Err(DataFusionError::Plan(format!(
-            "invalid query. Could not find query: {errors:?}"
-        )))
+        Ok(read_query_file("queries", query)?
+            .split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect())
     } else {
         Err(DataFusionError::Plan(
             "invalid query. Expected value between 1 and 22".to_owned(),
