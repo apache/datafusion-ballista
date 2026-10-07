@@ -143,7 +143,6 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 | Feature                   | Default | Description                                                                                    |
 | ------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
 | `arrow-ipc-optimizations` | Yes     | Enables Arrow IPC optimizations for better shuffle performance                                 |
-| `spark-compat`            | No      | Enables Spark compatibility mode via datafusion-spark                                          |
 | `build-binary`            | No      | Required for building binary executables (AWS S3 support, CLI parsing)                         |
 | `force_hash_collisions`   | No      | Testing-only: forces all values to hash to same value                                          |
 | `utoipa`                  | No      | Derives OpenAPI schemas for scheduler REST types; enabled by `ballista-scheduler`'s `rest-api` |
@@ -156,7 +155,6 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 | `substrait`                | No      | Enables Substrait plan support                                       |
 | `prometheus-metrics`       | No      | Enables Prometheus metrics collection                                |
 | `graphviz-support`         | No      | Enables execution graph visualization                                |
-| `spark-compat`             | No      | Enables Spark compatibility mode                                     |
 | `keda-scaler`              | No      | Kubernetes Event Driven Autoscaling integration                      |
 | `rest-api`                 | Yes     | Enables REST API endpoints, the OpenAPI spec, and the history server |
 | `disable-stage-plan-cache` | No      | Disables caching of stage execution plans                            |
@@ -168,7 +166,6 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 | `arrow-ipc-optimizations` | Yes     | Enables Arrow IPC optimizations                       |
 | `build-binary`            | Yes     | Builds the executor binary with CLI and logging       |
 | `mimalloc`                | Yes     | Uses mimalloc memory allocator for better performance |
-| `spark-compat`            | No      | Enables Spark compatibility mode                      |
 
 ### ballista-cli
 
@@ -188,9 +185,6 @@ cargo build -p ballista
 
 # Build with Substrait support
 cargo build -p ballista-scheduler --features substrait
-
-# Build with Spark compatibility
-cargo build -p ballista-executor --features spark-compat
 ```
 
 ## Project Status

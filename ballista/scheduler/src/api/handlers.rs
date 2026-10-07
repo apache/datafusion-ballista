@@ -53,7 +53,6 @@ pub struct SchedulerStateResponse {
     pub keda_support: bool,
     pub prometheus_support: bool,
     pub graphviz_support: bool,
-    pub spark_support: bool,
     pub scheduling_policy: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub advertise_flight_endpoint: Option<String>,
@@ -193,7 +192,6 @@ pub async fn get_scheduler_state<
         keda_support: cfg!(feature = "keda-scaler"),
         prometheus_support: cfg!(feature = "prometheus-metrics"),
         graphviz_support: cfg!(feature = "graphviz-support"),
-        spark_support: cfg!(feature = "spark-compat"),
         scheduling_policy: data_server.state.config.scheduling_policy.to_string(),
         advertise_flight_endpoint: data_server
             .state

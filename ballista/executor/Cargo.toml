@@ -50,7 +50,6 @@ build-binary = [
     "dep:axum",
 ]
 default = ["arrow-ipc-optimizations", "build-binary"]
-spark-compat = ["ballista-core/spark-compat"]
 
 [dependencies]
 arrow = { workspace = true }
