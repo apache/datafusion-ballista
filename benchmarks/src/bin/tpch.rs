@@ -25,13 +25,14 @@ use ballista_benchmarks::{
 use ballista_core::object_store::{
     session_config_with_s3_support, session_state_with_s3_support,
 };
-use datafusion::arrow::datatypes::SchemaBuilder;
+use datafusion::arrow::datatypes::{SchemaBuilder, SchemaRef};
 use datafusion::common::{DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::SessionState;
+use datafusion::execution::options::ReadOptions;
 #[cfg(test)]
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::logical_expr::{Expr, expr::Cast};
@@ -142,6 +143,12 @@ struct BallistaBenchmarkOpt {
     /// same data.
     #[structopt(long = "verify")]
     verify: bool,
+
+    /// Register Parquet tables without their Hive partition columns, so
+    /// filters on those columns no longer skip directories. This is how the
+    /// runner registered tables before it detected partitions.
+    #[structopt(long = "no-partition-cols")]
+    no_partition_cols: bool,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -187,6 +194,12 @@ struct DataFusionBenchmarkOpt {
     /// Path to output directory where JSON summary file should be written to
     #[structopt(parse(from_os_str), short = "o", long = "output")]
     output_path: Option<PathBuf>,
+
+    /// Register Parquet tables without their Hive partition columns, so
+    /// filters on those columns no longer skip directories. This is how the
+    /// runner registered tables before it detected partitions.
+    #[structopt(long = "no-partition-cols")]
+    no_partition_cols: bool,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -233,6 +246,12 @@ struct BallistaLoadtestOpt {
     /// Ballista executor port
     #[structopt(long = "port")]
     port: Option<u16>,
+
+    /// Register Parquet tables without their Hive partition columns, so
+    /// filters on those columns no longer skip directories. This is how the
+    /// runner registered tables before it detected partitions.
+    #[structopt(long = "no-partition-cols")]
+    no_partition_cols: bool,
 }
 
 #[derive(Debug, StructOpt)]
@@ -384,6 +403,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
                     opt.path.to_str().unwrap(),
                     table,
                     opt.file_format.as_str(),
+                    !opt.no_partition_cols,
                 )
                 .await?
             };
@@ -404,6 +424,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
             &ctx,
             opt.path.to_str().unwrap(),
             opt.file_format.as_str(),
+            !opt.no_partition_cols,
         )
         .await?;
     }
@@ -552,8 +573,13 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             .with_target_partitions(opt.partitions)
             .with_batch_size(opt.batch_size);
         let ctx = SessionContext::new_with_config(cfg);
-        register_datafusion_tables(&ctx, opt.path.as_str(), opt.file_format.as_str())
-            .await?;
+        register_datafusion_tables(
+            &ctx,
+            opt.path.as_str(),
+            opt.file_format.as_str(),
+            !opt.no_partition_cols,
+        )
+        .await?;
         Some(ctx)
     } else {
         None
@@ -643,7 +669,14 @@ async fn run_ballista_query(
 
     let state = session_state_with_s3_support(config)?;
     let ctx = SessionContext::remote_with_state(address, state).await?;
-    register_tables(opt.path.as_str(), opt.file_format.as_str(), &ctx, opt.debug).await?;
+    register_tables(
+        opt.path.as_str(),
+        opt.file_format.as_str(),
+        &ctx,
+        opt.debug,
+        !opt.no_partition_cols,
+    )
+    .await?;
 
     let answer_idx = answer_statement_index(sqls);
     let mut batches = vec![];
@@ -872,7 +905,8 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
     let sql_path = opt.sql_path.to_str().unwrap().to_string();
 
     for ctx in &clients {
-        register_tables(path, file_format, ctx, opt.debug).await?;
+        register_tables(path, file_format, ctx, opt.debug, !opt.no_partition_cols)
+            .await?;
     }
 
     let request_per_thread = request_amount.div(concurrency);
@@ -956,11 +990,13 @@ async fn register_datafusion_tables(
     ctx: &SessionContext,
     path: &str,
     file_format: &str,
+    partition_cols: bool,
 ) -> Result<()> {
     for table in TABLES {
         let table_provider = {
             let mut session_state = ctx.state();
-            get_table(&mut session_state, path, table, file_format).await?
+            get_table(&mut session_state, path, table, file_format, partition_cols)
+                .await?
         };
         ctx.register_table(*table, table_provider)?;
     }
@@ -972,6 +1008,7 @@ async fn register_tables(
     file_format: &str,
     ctx: &SessionContext,
     debug: bool,
+    partition_cols: bool,
 ) -> Result<()> {
     for &table in TABLES {
         match file_format {
@@ -1013,7 +1050,7 @@ async fn register_tables(
                         "Registering table '{table}' using Parquet files at path {path}"
                     );
                 }
-                ctx.register_parquet(table, &path, ParquetReadOptions::default())
+                register_parquet_table(ctx, table, &path, partition_cols)
                     .await
                     .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
             }
@@ -1025,6 +1062,71 @@ async fn register_tables(
         }
     }
     Ok(())
+}
+
+/// Registers a Parquet table, declaring the Hive partition columns that its
+/// directory names encode (e.g. `lineitem/l_shipdate=1994-01-01/`) unless
+/// `partition_cols` is false. Filters on those columns then skip whole
+/// directories at planning time instead of reading every file's footer.
+async fn register_parquet_table(
+    ctx: &SessionContext,
+    table: &str,
+    path: &str,
+    partition_cols: bool,
+) -> Result<()> {
+    let state = ctx.state();
+    let options = ParquetReadOptions::default()
+        .to_listing_options(state.config(), state.default_table_options());
+    let table_url = ListingTableUrl::parse(path)?;
+    let (schema, partition_cols) =
+        parquet_table_layout(&state, table, &table_url, &options, partition_cols).await?;
+    let options = ParquetReadOptions::default()
+        .schema(&schema)
+        .table_partition_cols(partition_cols);
+    ctx.register_parquet(table, path, options).await
+}
+
+/// Splits a Parquet table's columns into the file schema and the Hive
+/// partition columns that its directory names encode.
+///
+/// A partition column that the files also store keeps the files' type and
+/// leaves the file schema, because `ListingTable` appends partition columns
+/// itself and rejects duplicate names. A column that only exists in the path
+/// takes its type from the TPC-H schema, so dates stay dates. Any other
+/// partition column is a string.
+async fn parquet_table_layout(
+    state: &SessionState,
+    table: &str,
+    table_url: &ListingTableUrl,
+    options: &ListingOptions,
+    detect_partitions: bool,
+) -> Result<(SchemaRef, Vec<(String, DataType)>)> {
+    let file_schema = options.infer_schema(state, table_url).await?;
+    if !detect_partitions {
+        return Ok((file_schema, vec![]));
+    }
+    let tpch_schema = get_schema(table);
+    let partition_cols: Vec<(String, DataType)> = options
+        .infer_partitions(state, table_url)
+        .await?
+        .into_iter()
+        .map(|name| {
+            let data_type = file_schema
+                .field_with_name(&name)
+                .or_else(|_| tpch_schema.field_with_name(&name))
+                .map_or(DataType::Utf8, |field| field.data_type().clone());
+            (name, data_type)
+        })
+        .collect();
+    let file_fields: Vec<_> = file_schema
+        .fields()
+        .iter()
+        .filter(|field| partition_cols.iter().all(|(name, _)| name != field.name()))
+        .cloned()
+        .collect();
+    let file_schema =
+        Schema::new_with_metadata(file_fields, file_schema.metadata().clone());
+    Ok((Arc::new(file_schema), partition_cols))
 }
 
 /// Get the SQL statements from the specified query file
@@ -1197,6 +1299,7 @@ async fn get_table(
     path: &str,
     table: &str,
     table_format: &str,
+    partition_cols: bool,
 ) -> Result<Arc<dyn TableProvider>> {
     let (format, path, extension, schema): (
         Arc<dyn FileFormat>,
@@ -1251,12 +1354,17 @@ async fn get_table(
     let options = ListingOptions::new(format).with_file_extension(extension.to_owned());
 
     let url = ListingTableUrl::parse(path)?;
-    let config = ListingTableConfig::new(url).with_listing_options(options);
 
     let config = if table_format == "parquet" {
-        config.infer_schema(ctx).await?
+        let (schema, partition_cols) =
+            parquet_table_layout(ctx, table, &url, &options, partition_cols).await?;
+        ListingTableConfig::new(url)
+            .with_listing_options(options.with_table_partition_cols(partition_cols))
+            .with_schema(schema)
     } else {
-        config.with_schema(Arc::new(schema))
+        ListingTableConfig::new(url)
+            .with_listing_options(options)
+            .with_schema(Arc::new(schema))
     };
 
     Ok(Arc::new(ListingTable::try_new(config)?))
@@ -1658,6 +1766,12 @@ struct QueryResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::array::{ArrayRef, Date32Array, Int64Array, StringArray};
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+    use datafusion::datasource::physical_plan::FileScanConfig;
+    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::parquet::arrow::ArrowWriter;
+    use datafusion::physical_plan::ExecutionPlan;
     use std::env;
     use std::sync::Arc;
 
@@ -1810,6 +1924,252 @@ mod tests {
         let run = run_with(vec![qr]);
         let cmp = compare_benchmark_runs(&run, &run);
         assert!(cmp[0].baseline.is_none());
+    }
+
+    /// Writes `batch` as a Parquet file at `root/relative`.
+    fn write_parquet(root: &Path, relative: &str, batch: &RecordBatch) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let file = File::create(path).unwrap();
+        let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+        writer.write(batch).unwrap();
+        writer.close().unwrap();
+    }
+
+    /// `lineitem` split into one directory per ship date, with one row in
+    /// each. `stored` says whether the files also keep the `l_shipdate`
+    /// column, like the SF1000 data, or drop it, like Spark's `partitionBy`.
+    fn lineitem_by_shipdate(stored: bool) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        // Days since the Unix epoch for each partition's date.
+        let partitions = [
+            ("1993-12-31", 8765),
+            ("1994-01-01", 8766),
+            ("1995-01-01", 9131),
+        ];
+        for (orderkey, (date, days)) in partitions.into_iter().enumerate() {
+            let orderkey: ArrayRef = Arc::new(Int64Array::from(vec![orderkey as i64]));
+            let batch = if stored {
+                let shipdate: ArrayRef = Arc::new(Date32Array::from(vec![days]));
+                RecordBatch::try_from_iter([
+                    ("l_orderkey", orderkey),
+                    ("l_shipdate", shipdate),
+                ])
+            } else {
+                RecordBatch::try_from_iter([("l_orderkey", orderkey)])
+            }
+            .unwrap();
+            write_parquet(
+                dir.path(),
+                &format!("lineitem/l_shipdate={date}/part-0.parquet"),
+                &batch,
+            );
+        }
+        dir
+    }
+
+    fn parquet_options() -> ListingOptions {
+        ListingOptions::new(Arc::new(ParquetFormat::default()))
+            .with_file_extension(DEFAULT_PARQUET_EXTENSION)
+    }
+
+    /// The file columns and partition columns chosen for `root/<table>`.
+    async fn layout(
+        root: &Path,
+        table: &str,
+        detect_partitions: bool,
+    ) -> (Vec<String>, Vec<(String, DataType)>) {
+        let state = SessionContext::new().state();
+        let url = ListingTableUrl::parse(root.join(table).to_str().unwrap()).unwrap();
+        let (schema, partition_cols) = parquet_table_layout(
+            &state,
+            table,
+            &url,
+            &parquet_options(),
+            detect_partitions,
+        )
+        .await
+        .unwrap();
+        let file_columns = schema.fields().iter().map(|f| f.name().clone()).collect();
+        (file_columns, partition_cols)
+    }
+
+    // The SF1000 layout: `l_shipdate` is a directory level and also a column
+    // in the files. `ListingTable` appends partition columns itself and
+    // rejects duplicate names, so the column has to leave the file schema.
+    #[tokio::test]
+    async fn stored_partition_column_moves_out_of_file_schema() {
+        let dir = lineitem_by_shipdate(true);
+        let (file_columns, partition_cols) = layout(dir.path(), "lineitem", true).await;
+        assert_eq!(file_columns, ["l_orderkey"]);
+        assert_eq!(
+            partition_cols,
+            [("l_shipdate".to_string(), DataType::Date32)]
+        );
+    }
+
+    // Spark's `partitionBy` layout keeps the column only in the path. Its type
+    // comes from the TPC-H schema, so date filters compare dates, not strings.
+    #[tokio::test]
+    async fn path_only_partition_column_takes_tpch_type() {
+        let dir = lineitem_by_shipdate(false);
+        let (file_columns, partition_cols) = layout(dir.path(), "lineitem", true).await;
+        assert_eq!(file_columns, ["l_orderkey"]);
+        assert_eq!(
+            partition_cols,
+            [("l_shipdate".to_string(), DataType::Date32)]
+        );
+    }
+
+    // A partition column stored in the files keeps the type the files give
+    // it, so declaring partitions leaves the table's column types unchanged.
+    #[tokio::test]
+    async fn stored_partition_column_keeps_file_type() {
+        let dir = tempfile::tempdir().unwrap();
+        for segment in ["BUILDING", "MACHINERY"] {
+            let custkey: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+            let mktsegment: ArrayRef = Arc::new(StringArray::from(vec![segment]));
+            let batch = RecordBatch::try_from_iter([
+                ("c_custkey", custkey),
+                ("c_mktsegment", mktsegment),
+            ])
+            .unwrap();
+            write_parquet(
+                dir.path(),
+                &format!("customer/c_mktsegment={segment}/part-0.parquet"),
+                &batch,
+            );
+        }
+        let state = SessionContext::new().state();
+        let url = ListingTableUrl::parse(dir.path().join("customer").to_str().unwrap())
+            .unwrap();
+        let inferred = parquet_options().infer_schema(&state, &url).await.unwrap();
+        let file_type = inferred
+            .field_with_name("c_mktsegment")
+            .unwrap()
+            .data_type()
+            .clone();
+        // DataFusion reads Parquet strings as `Utf8View`, so this case can
+        // tell the files' type apart from the TPC-H schema's `Utf8`.
+        assert_ne!(file_type, DataType::Utf8);
+
+        let (_, partition_cols) = layout(dir.path(), "customer", true).await;
+        assert_eq!(partition_cols, [("c_mktsegment".to_string(), file_type)]);
+    }
+
+    // Data generated by `tpchgen-cli` is flat and must register as before.
+    #[tokio::test]
+    async fn flat_layout_declares_no_partition_cols() {
+        let dir = tempfile::tempdir().unwrap();
+        let orderkey: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+        let shipdate: ArrayRef = Arc::new(Date32Array::from(vec![8766]));
+        let batch = RecordBatch::try_from_iter([
+            ("l_orderkey", orderkey),
+            ("l_shipdate", shipdate),
+        ])
+        .unwrap();
+        write_parquet(dir.path(), "lineitem/part-0.parquet", &batch);
+        let (file_columns, partition_cols) = layout(dir.path(), "lineitem", true).await;
+        assert_eq!(file_columns, ["l_orderkey", "l_shipdate"]);
+        assert!(partition_cols.is_empty());
+    }
+
+    // `--no-partition-cols` reproduces the old registration for A/B runs.
+    #[tokio::test]
+    async fn disabled_detection_keeps_partition_column_in_files() {
+        let dir = lineitem_by_shipdate(true);
+        let (file_columns, partition_cols) = layout(dir.path(), "lineitem", false).await;
+        assert_eq!(file_columns, ["l_orderkey", "l_shipdate"]);
+        assert!(partition_cols.is_empty());
+    }
+
+    // A directory level that is neither stored in the files nor a TPC-H
+    // column is read as a string.
+    #[tokio::test]
+    async fn unknown_partition_column_is_a_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let orderkey: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+        let batch = RecordBatch::try_from_iter([("l_orderkey", orderkey)]).unwrap();
+        write_parquet(dir.path(), "lineitem/batch=7/part-0.parquet", &batch);
+        let (_, partition_cols) = layout(dir.path(), "lineitem", true).await;
+        assert_eq!(partition_cols, [("batch".to_string(), DataType::Utf8)]);
+    }
+
+    /// Paths of the files a physical plan scans.
+    fn scanned_files(plan: &Arc<dyn ExecutionPlan>) -> Vec<String> {
+        let mut files = vec![];
+        plan.apply(|node| {
+            if let Some(config) = node
+                .downcast_ref::<DataSourceExec>()
+                .and_then(|exec| exec.data_source().downcast_ref::<FileScanConfig>())
+            {
+                for group in &config.file_groups {
+                    files
+                        .extend(group.iter().map(|f| f.object_meta.location.to_string()));
+                }
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .unwrap();
+        files.sort();
+        files.dedup();
+        files
+    }
+
+    /// Plans and runs Q6's ship date range, which only the 1994-01-01
+    /// partition matches, and checks the other partitions are never scanned.
+    async fn assert_only_1994_scanned(ctx: &SessionContext) -> Result<()> {
+        let df = ctx
+            .sql(
+                "SELECT l_orderkey, l_shipdate FROM lineitem \
+                 WHERE l_shipdate >= DATE '1994-01-01' \
+                 AND l_shipdate < DATE '1995-01-01'",
+            )
+            .await?;
+        let files = scanned_files(&df.clone().create_physical_plan().await?);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(
+            files[0].ends_with("/l_shipdate=1994-01-01/part-0.parquet"),
+            "{files:?}"
+        );
+        datafusion::assert_batches_eq!(
+            [
+                "+------------+------------+",
+                "| l_orderkey | l_shipdate |",
+                "+------------+------------+",
+                "| 1          | 1994-01-01 |",
+                "+------------+------------+",
+            ],
+            &df.collect().await?
+        );
+        Ok(())
+    }
+
+    // The registration `benchmark ballista` uses.
+    #[tokio::test]
+    async fn ballista_registration_prunes_shipdate_partitions() -> Result<()> {
+        let dir = lineitem_by_shipdate(true);
+        let ctx = SessionContext::new();
+        let path = find_path(dir.path().to_str().unwrap(), "lineitem", "parquet")?;
+        register_parquet_table(&ctx, "lineitem", &path, true).await?;
+        assert_only_1994_scanned(&ctx).await
+    }
+
+    // The registration `benchmark datafusion` and the `--verify` oracle use.
+    #[tokio::test]
+    async fn datafusion_registration_prunes_shipdate_partitions() -> Result<()> {
+        let dir = lineitem_by_shipdate(true);
+        let ctx = SessionContext::new();
+        let table = get_table(
+            &mut ctx.state(),
+            dir.path().to_str().unwrap(),
+            "lineitem",
+            "parquet",
+            true,
+        )
+        .await?;
+        ctx.register_table("lineitem", table)?;
+        assert_only_1994_scanned(&ctx).await
     }
 
     #[tokio::test]
@@ -2153,6 +2513,7 @@ mod tests {
                 file_format: "tbl".to_string(),
                 mem_table: false,
                 output_path: None,
+                no_partition_cols: false,
             };
             let actual = benchmark_datafusion(opt).await?;
             let expected_schema = get_answer_schema(n);

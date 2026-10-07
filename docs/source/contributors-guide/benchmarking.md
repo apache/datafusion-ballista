@@ -63,11 +63,14 @@ reference; it is not an apples-to-apples comparison (see
 - **Data:** TPC-H SF1000 Parquet on S3 (`us-west-2`), ZSTD compression,
   ~512 MiB row groups, one directory per table. `lineitem`, `orders`,
   `customer` and `part` are Hive-style partitioned (e.g.
-  `lineitem/l_shipdate=YYYY-MM-DD/`). The `tpch` runner registers tables
-  without partition columns, so Ballista prunes these scans only through
-  Parquet statistics, while Spark and Comet apply partition filters. This
-  favours Spark and Comet on date-filtered queries such as Q6, Q12, Q14
-  and Q20.
+  `lineitem/l_shipdate=YYYY-MM-DD/`). At `d6d8bd91` the `tpch` runner
+  registered tables without partition columns, so Ballista pruned these
+  scans only through Parquet statistics, while Spark and Comet applied
+  partition filters. This favoured Spark and Comet on date-filtered queries
+  such as Q6, Q12, Q14 and Q20. The runner now declares the partition
+  columns (see
+  [Hive-partitioned data](https://github.com/apache/datafusion-ballista/tree/main/benchmarks#hive-partitioned-data)),
+  and the results below predate that change.
 
 ## Executor storage
 
