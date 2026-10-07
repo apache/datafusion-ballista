@@ -17,6 +17,8 @@
 
 //! Session-scoped reuse of executor runtime state.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -67,6 +69,10 @@ pub trait SessionRuntimeCache: Send + Sync {
     ) -> datafusion::error::Result<Arc<RuntimeEnv>>;
 }
 
+/// Shared base envs keyed by (session id, [`config_fingerprint`]) — see
+/// [`DefaultSessionRuntimeCache`].
+type BaseRuntimeLru = LruCache<(String, u64), Arc<RuntimeEnv>>;
+
 /// A bounded, session-keyed cache of shared *base* [`RuntimeEnv`]s.
 ///
 /// A base env carries the read-side state safe to share across all tasks of a
@@ -80,13 +86,21 @@ pub trait SessionRuntimeCache: Send + Sync {
 /// the shared base, which installs a fresh per-task memory pool — so memory
 /// isolation is unchanged.
 ///
+/// The cache key pairs the session id with a fingerprint of the session
+/// config's extension entries (see [`config_fingerprint`]). The base producer
+/// captures config state when it builds the env — the S3-aware producer
+/// clones the session's `S3Options` into the object-store registry — so a
+/// `SET` that lands between two tasks of the same session must miss the
+/// cache and build a fresh base; otherwise the new task keeps reading with
+/// the settings the session's first task carried.
+///
 /// The cache is bounded by an LRU of `capacity` sessions. A capacity of `0`
-/// disables caching entirely: every call builds a fresh base env, matching the
-/// behavior of building a runtime per task.
+/// disables caching entirely: every call builds a fresh base env, matching
+/// the behavior of building a runtime per task.
 pub struct DefaultSessionRuntimeCache {
     base_producer: RuntimeProducer,
     pool_policy: MemoryPoolPolicy,
-    cache: Option<Mutex<LruCache<String, Arc<RuntimeEnv>>>>,
+    cache: Option<Mutex<BaseRuntimeLru>>,
 }
 
 impl DefaultSessionRuntimeCache {
@@ -120,7 +134,8 @@ impl SessionRuntimeCache for DefaultSessionRuntimeCache {
         let base = match &self.cache {
             None => (self.base_producer)(config)?,
             Some(cache) => {
-                if let Some(base) = cache.lock().get(session_id) {
+                let key = (session_id.to_string(), config_fingerprint(config));
+                if let Some(base) = cache.lock().get(&key) {
                     base.clone()
                 } else {
                     // Build the base env without holding the lock, so a miss
@@ -129,7 +144,7 @@ impl SessionRuntimeCache for DefaultSessionRuntimeCache {
                     // harmless (idempotent, cheap) — the last writer wins and
                     // the extra env is dropped.
                     let base = (self.base_producer)(config)?;
-                    cache.lock().put(session_id.to_string(), base.clone());
+                    cache.lock().put(key, base.clone());
                     base
                 }
             }
@@ -138,10 +153,41 @@ impl SessionRuntimeCache for DefaultSessionRuntimeCache {
     }
 }
 
+/// Fingerprint of the session config's extension entries.
+///
+/// A base [`RuntimeEnv`] bakes in whatever config the producer reads at build
+/// time (e.g. the `S3Options` cloned into the object-store registry), and
+/// every extension entry flows through `SET`-driven task properties, so this
+/// is the part of the config that can legitimately change mid-session.
+/// Built-in `datafusion.*` options are not included: they do not feed the
+/// base env's shared state.
+///
+/// Extension iteration is ordered by prefix, and each extension's entries
+/// are sorted by key, so equal configs always produce equal fingerprints.
+fn config_fingerprint(config: &SessionConfig) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for (prefix, extension) in config.options().extensions.iter() {
+        prefix.hash(&mut hasher);
+        let mut entries = extension.entries();
+        entries.sort_by(|a, b| a.key.cmp(&b.key));
+        for entry in entries {
+            entry.key.hash(&mut hasher);
+            entry.value.hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ballista_core::extension::SessionConfigHelperExt;
+    use ballista_core::object_store::{
+        runtime_env_with_s3_support, session_config_with_s3_support,
+    };
+    use ballista_core::serde::protobuf::KeyValuePair;
     use datafusion::execution::memory_pool::GreedyMemoryPool;
+    use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
     fn base_producer() -> RuntimeProducer {
@@ -227,5 +273,105 @@ mod tests {
         cache.produce_runtime("s3", &cfg, 1).unwrap();
         let s1_b = cache.produce_runtime("s1", &cfg, 1).unwrap();
         assert!(!Arc::ptr_eq(&s1_a.cache_manager, &s1_b.cache_manager));
+    }
+
+    fn kv(key: &str, value: &str) -> KeyValuePair {
+        KeyValuePair {
+            key: key.to_string(),
+            value: Some(value.to_string()),
+        }
+    }
+
+    /// Mirrors what `execution_loop` does per task: a default config with the
+    /// task's `s3.*` properties applied on top.
+    fn s3_task_config(key_id: &str) -> SessionConfig {
+        session_config_with_s3_support().update_from_key_value_pair(&[
+            kv("s3.access_key_id", key_id),
+            kv("s3.secret_access_key", "secret"),
+            kv("s3.region", "us-east-1"),
+        ])
+    }
+
+    fn s3_cache(capacity: usize) -> DefaultSessionRuntimeCache {
+        DefaultSessionRuntimeCache::new(
+            Arc::new(runtime_env_with_s3_support),
+            identity_policy(),
+            capacity,
+        )
+    }
+
+    #[test]
+    fn changed_s3_options_build_new_base_runtime() {
+        let url = ObjectStoreUrl::parse("s3://bucket").unwrap();
+        let cache = s3_cache(16);
+
+        let rt1 = cache
+            .produce_runtime("s1", &s3_task_config("KEY_ONE"), 1)
+            .unwrap();
+        let store1 = format!("{:?}", rt1.object_store(&url).unwrap());
+        assert!(store1.contains("KEY_ONE"));
+
+        // A SET between two tasks of the same session must reach the second
+        // task; keyed by session id alone the second task kept the first
+        // task's S3Options.
+        let rt2 = cache
+            .produce_runtime("s1", &s3_task_config("KEY_TWO"), 1)
+            .unwrap();
+        let store2 = format!("{:?}", rt2.object_store(&url).unwrap());
+        assert!(store2.contains("KEY_TWO"));
+        assert!(!store2.contains("KEY_ONE"));
+    }
+
+    #[test]
+    fn unchanged_s3_options_share_base_runtime() {
+        let cache = s3_cache(16);
+        // Two separately built configs with equal extension entries must hit
+        // the same cached base.
+        let e1 = cache
+            .produce_runtime("s1", &s3_task_config("KEY_ONE"), 1)
+            .unwrap();
+        let e2 = cache
+            .produce_runtime("s1", &s3_task_config("KEY_ONE"), 1)
+            .unwrap();
+        assert!(Arc::ptr_eq(&e1, &e2));
+    }
+
+    #[test]
+    fn reverted_s3_options_hit_original_base_runtime() {
+        let cache = s3_cache(16);
+        let e1 = cache
+            .produce_runtime("s1", &s3_task_config("KEY_ONE"), 1)
+            .unwrap();
+        let e2 = cache
+            .produce_runtime("s1", &s3_task_config("KEY_TWO"), 1)
+            .unwrap();
+        let e3 = cache
+            .produce_runtime("s1", &s3_task_config("KEY_ONE"), 1)
+            .unwrap();
+        assert!(!Arc::ptr_eq(&e1, &e2));
+        assert!(Arc::ptr_eq(&e1, &e3));
+    }
+
+    #[test]
+    fn different_sessions_same_s3_options_get_different_base() {
+        let cache = s3_cache(16);
+        let e1 = cache
+            .produce_runtime("s1", &s3_task_config("KEY_ONE"), 1)
+            .unwrap();
+        let e2 = cache
+            .produce_runtime("s2", &s3_task_config("KEY_ONE"), 1)
+            .unwrap();
+        assert!(!Arc::ptr_eq(&e1, &e2));
+    }
+
+    #[test]
+    fn fingerprint_tracks_extension_entries() {
+        let a = config_fingerprint(&s3_task_config("KEY_ONE"));
+        let a_again = config_fingerprint(&s3_task_config("KEY_ONE"));
+        let b = config_fingerprint(&s3_task_config("KEY_TWO"));
+        let no_ext = config_fingerprint(&SessionConfig::new());
+        assert_eq!(a, a_again);
+        assert_ne!(a, b);
+        assert_ne!(a, no_ext);
     }
 }
