@@ -29,7 +29,7 @@ reference; it is not an apples-to-apples comparison (see
 
 | Engine   | Version                                                                                                                                                                                                                |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ballista | [`d6d8bd91`](https://github.com/apache/datafusion-ballista/commit/d6d8bd91fceaae4fb39624f6f1083a5f0ad78fbd) (`main`, 2026-10-03), Cargo pkg `55.0.0`, DataFusion `55.1.0`                                              |
+| Ballista | [`c76278cd`](https://github.com/apache/datafusion-ballista/commit/c76278cd48583504821ac4d71ea74b44e54ed4ea) (`main`, 2026-10-07), Cargo pkg `55.0.0`, DataFusion `55.1.0`                                              |
 | Spark    | `4.1.3` (`apache/spark:4.1.3` image, vanilla, no acceleration plugin)                                                                                                                                                  |
 | Comet    | [Apache DataFusion Comet](https://github.com/apache/datafusion-comet) `1.1.0-rc2` ([`992c806a`](https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa)) on the same Spark `4.1.3` |
 | Trino    | `483` (`trinodb/trino:483` image, Hive connector)                                                                                                                                                                      |
@@ -63,14 +63,14 @@ reference; it is not an apples-to-apples comparison (see
 - **Data:** TPC-H SF1000 Parquet on S3 (`us-west-2`), ZSTD compression,
   ~512 MiB row groups, one directory per table. `lineitem`, `orders`,
   `customer` and `part` are Hive-style partitioned (e.g.
-  `lineitem/l_shipdate=YYYY-MM-DD/`). At `d6d8bd91` the `tpch` runner
-  registered tables without partition columns, so Ballista pruned these
-  scans only through Parquet statistics, while Spark and Comet applied
-  partition filters. This favoured Spark and Comet on date-filtered queries
-  such as Q6, Q12, Q14 and Q20. The runner now declares the partition
-  columns (see
+  `lineitem/l_shipdate=YYYY-MM-DD/`). The `tpch` runner declares the
+  partition columns (see
   [Hive-partitioned data](https://github.com/apache/datafusion-ballista/tree/main/benchmarks#hive-partitioned-data)),
-  and the results below predate that change.
+  so Ballista skips the partitions a filter excludes, as Spark, Comet and
+  Trino do. Results from before
+  [#2553](https://github.com/apache/datafusion-ballista/pull/2553) were
+  collected without partition columns and pruned these scans only through
+  Parquet statistics.
 
 ## Executor storage
 
@@ -214,29 +214,29 @@ iterations after an untimed warm-up run (see
 
 |     Query | Ballista (s) | Spark 4.1.3 (s) | Spark 4.1.3 + Comet 1.1.0-rc2 (s) | Trino 483 (s) |
 | --------: | -----------: | --------------: | --------------------------------: | ------------: |
-|         1 |        13.94 |           71.45 |                             10.66 |          5.32 |
-|         2 |        28.35 |           37.98 |                             21.66 |         15.34 |
-|         3 |        25.29 |           30.61 |                             16.05 |         13.47 |
-|         4 |         8.80 |           23.86 |                              8.11 |          8.01 |
-|         5 |        63.94 |           57.39 |                             38.32 |         25.98 |
-|         6 |         4.68 |            1.73 |                              0.99 |          0.84 |
-|         7 |        45.85 |           25.34 |                             16.60 |         16.19 |
-|         8 |        28.93 |           58.17 |                             46.04 |         30.93 |
-|         9 |        37.64 |           74.90 |                             55.78 |         41.71 |
-|        10 |        38.18 |           35.31 |                             21.31 |         20.41 |
-|        11 |        15.87 |           31.66 |                             14.79 |          5.73 |
-|        12 |        10.18 |           13.24 |                              5.33 |          4.40 |
-|        13 |         9.78 |           22.73 |                             11.31 |         10.56 |
-|        14 |         8.88 |            7.25 |                              2.50 |          1.66 |
-|        15 |        10.61 |           22.45 |                             11.85 |          8.30 |
-|        16 |        14.50 |           24.34 |                              8.94 |          6.98 |
-|        17 |        19.56 |           81.36 |                             25.14 |         24.76 |
-|        18 |        54.43 |          134.11 |                             46.42 |         66.00 |
-|        19 |        10.65 |           13.27 |                              9.07 |          5.93 |
-|        20 |        20.40 |           16.08 |                              6.57 |          8.57 |
-|        21 |        91.31 |           98.04 |                             68.43 |         83.22 |
-|        22 |         9.78 |           16.90 |                              9.22 |          7.29 |
-| **Total** |   **571.55** |      **898.17** |                        **455.09** |    **411.62** |
+|         1 |        14.07 |           71.45 |                             10.66 |          5.32 |
+|         2 |        25.81 |           37.98 |                             21.66 |         15.34 |
+|         3 |        17.22 |           30.61 |                             16.05 |         13.47 |
+|         4 |        15.31 |           23.86 |                              8.11 |          8.01 |
+|         5 |        46.88 |           57.39 |                             38.32 |         25.98 |
+|         6 |         1.59 |            1.73 |                              0.99 |          0.84 |
+|         7 |        37.26 |           25.34 |                             16.60 |         16.19 |
+|         8 |        20.13 |           58.17 |                             46.04 |         30.93 |
+|         9 |        35.94 |           74.90 |                             55.78 |         41.71 |
+|        10 |        43.36 |           35.31 |                             21.31 |         20.41 |
+|        11 |        15.01 |           31.66 |                             14.79 |          5.73 |
+|        12 |        10.49 |           13.24 |                              5.33 |          4.40 |
+|        13 |        11.05 |           22.73 |                             11.31 |         10.56 |
+|        14 |         5.54 |            7.25 |                              2.50 |          1.66 |
+|        15 |        10.58 |           22.45 |                             11.85 |          8.30 |
+|        16 |        12.78 |           24.34 |                              8.94 |          6.98 |
+|        17 |        20.74 |           81.36 |                             25.14 |         24.76 |
+|        18 |        45.63 |          134.11 |                             46.42 |         66.00 |
+|        19 |        14.59 |           13.27 |                              9.07 |          5.93 |
+|        20 |        14.46 |           16.08 |                              6.57 |          8.57 |
+|        21 |        75.74 |           98.04 |                             68.43 |         83.22 |
+|        22 |         8.25 |           16.90 |                              9.22 |          7.29 |
+| **Total** |   **502.43** |      **898.17** |                        **455.09** |    **411.62** |
 
 ## Reproducing
 
