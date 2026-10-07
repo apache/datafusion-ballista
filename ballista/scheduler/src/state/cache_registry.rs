@@ -264,11 +264,11 @@ impl CacheRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ballista_core::JobId;
     use ballista_core::serde::scheduler::{
         ExecutorMetadata, ExecutorSpecification, PartitionId, PartitionLocation,
         PartitionStats,
     };
-    use ballista_core::JobId;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -287,7 +287,12 @@ mod tests {
         }
     }
 
-    fn location(job: &str, stage: usize, partition: usize, exec: &str) -> PartitionLocation {
+    fn location(
+        job: &str,
+        stage: usize,
+        partition: usize,
+        exec: &str,
+    ) -> PartitionLocation {
         PartitionLocation {
             map_partition_id: partition,
             partition_id: PartitionId::new(&JobId::new(job), stage, partition),
@@ -403,9 +408,24 @@ mod tests {
     #[test]
     fn remove_session_drops_all_its_entries() {
         let registry = CacheRegistry::new();
-        registry.complete_materialization(CacheKey::new("s1", "a"), "j", schema(), vec![]);
-        registry.complete_materialization(CacheKey::new("s1", "b"), "j", schema(), vec![]);
-        registry.complete_materialization(CacheKey::new("s2", "a"), "j", schema(), vec![]);
+        registry.complete_materialization(
+            CacheKey::new("s1", "a"),
+            "j",
+            schema(),
+            vec![],
+        );
+        registry.complete_materialization(
+            CacheKey::new("s1", "b"),
+            "j",
+            schema(),
+            vec![],
+        );
+        registry.complete_materialization(
+            CacheKey::new("s2", "a"),
+            "j",
+            schema(),
+            vec![],
+        );
 
         let removed = registry.remove_session("s1");
         assert_eq!(removed.len(), 2);
