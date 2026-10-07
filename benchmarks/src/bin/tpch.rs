@@ -19,20 +19,19 @@
 
 use ballista::extension::SessionConfigExt;
 use ballista::prelude::SessionContextExt;
+use ballista_benchmarks::summary::{BenchmarkRun, QueryRun, print_iteration, run_suite};
 use ballista_benchmarks::{
-    answer_statement_index, compare_results, execute_query_capturing_answer, find_path,
+    answer_statement_index, ballista_context, compare_results,
+    execute_query_capturing_answer, find_path, parquet_table_layout,
+    register_parquet_table,
 };
-use ballista_core::object_store::{
-    session_config_with_s3_support, session_state_with_s3_support,
-};
-use datafusion::arrow::datatypes::{SchemaBuilder, SchemaRef};
+use datafusion::arrow::datatypes::SchemaBuilder;
 use datafusion::common::{DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::SessionState;
-use datafusion::execution::options::ReadOptions;
 #[cfg(test)]
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::logical_expr::{Expr, expr::Cast};
@@ -44,7 +43,6 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
 use datafusion::{
-    DATAFUSION_VERSION,
     arrow::datatypes::{DataType, Field, Schema},
     datasource::file_format::{FileFormat, csv::CsvFormat},
 };
@@ -57,15 +55,13 @@ use datafusion::{
 };
 use futures::future::join_all;
 use rand::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::ops::Div;
 use std::{
-    fs::{self, File},
-    io::Write,
+    fs,
     iter::Iterator,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Instant, SystemTime},
+    time::Instant,
 };
 use structopt::StructOpt;
 #[cfg(test)]
@@ -432,54 +428,24 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     // Determine which queries to run
     let query_numbers = select_queries(opt.query, &opt.skip)?;
 
-    let mut benchmark_run = BenchmarkRun::new();
     let mut result: Vec<RecordBatch> = Vec::with_capacity(1);
-    let mut total_elapsed = 0.0;
-
-    let mut any_failed = false;
-
-    for query in query_numbers {
-        let sqls = get_query_sql(query)?;
-        if opt.debug {
-            println!("Query {query}:\n{sqls:?}");
-        }
-        let mut query_run = QueryRun::new(query);
-        match run_local_query(
-            &ctx,
-            query,
-            &sqls,
-            opt.iterations,
-            opt.debug,
-            &mut query_run,
-        )
-        .await
-        {
-            Ok(batches) => {
-                result = batches;
-                accumulate_total(query, &query_run, opt.iterations, &mut total_elapsed);
+    run_suite(
+        "tpch",
+        &query_numbers,
+        opt.iterations,
+        opt.output_path.as_deref(),
+        async |query, query_run| {
+            let sqls = get_query_sql(query)?;
+            if opt.debug {
+                println!("Query {query}:\n{sqls:?}");
             }
-            Err(e) => {
-                eprintln!("Query {query} failed: {e}");
-                query_run.error = Some(e.to_string());
-                any_failed = true;
-            }
-        }
-        benchmark_run.add_query_run(query_run);
-        // Persist after every query so a hard kill mid-suite still leaves the
-        // results collected so far on disk.
-        persist_summary(&benchmark_run, opt.output_path.as_deref())?;
-    }
-
-    println!("Total time: {total_elapsed:.3} s");
-    if let Some(path) = persist_summary(&benchmark_run, opt.output_path.as_deref())? {
-        println!("Summary written to {}", path.display());
-    }
-
-    if any_failed {
-        return Err(DataFusionError::Execution(
-            "one or more queries failed; see the summary for details".to_string(),
-        ));
-    }
+            result =
+                run_local_query(&ctx, query, &sqls, opt.iterations, opt.debug, query_run)
+                    .await?;
+            Ok(())
+        },
+    )
+    .await?;
     Ok(result)
 }
 
@@ -513,49 +479,6 @@ async fn run_local_query(
     Ok(result)
 }
 
-fn print_iteration(
-    query: usize,
-    iteration: usize,
-    iterations: usize,
-    elapsed: f64,
-    row_count: usize,
-) {
-    if iterations == 1 {
-        println!("Query {query} took {elapsed:.3} s and returned {row_count} rows");
-    } else {
-        println!(
-            "Query {query} iteration {iteration} took {elapsed:.3} s and returned {row_count} rows"
-        );
-    }
-}
-
-/// Add a completed query's contribution to the running suite total: the average
-/// iteration time when repeating, else the single run.
-fn accumulate_total(
-    query: usize,
-    query_run: &QueryRun,
-    iterations: usize,
-    total: &mut f64,
-) {
-    let secs: Vec<f64> = query_run.iterations.iter().map(|r| r.elapsed).collect();
-    if secs.is_empty() {
-        return;
-    }
-    if iterations > 1 {
-        let avg = secs.iter().sum::<f64>() / secs.len() as f64;
-        println!("Query {query} avg time: {avg:.3} s");
-        *total += avg;
-    } else {
-        *total += secs.iter().sum::<f64>();
-    }
-}
-
-/// Write the run summary to `dir` if one was configured; a no-op otherwise.
-/// Returns the written path when it wrote one.
-fn persist_summary(run: &BenchmarkRun, dir: Option<&Path>) -> Result<Option<PathBuf>> {
-    dir.map(|d| write_summary_json(run, d)).transpose()
-}
-
 async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     println!("Running benchmarks with the following options: {opt:?}");
 
@@ -585,52 +508,28 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         None
     };
 
-    let mut benchmark_run = BenchmarkRun::new();
-    let mut total_elapsed = 0.0;
-
-    let mut any_failed = false;
-
-    for query in query_numbers {
-        let sqls = get_query_sql(query)?;
-        if opt.debug {
-            println!("Running benchmark with query {}:\n {:?}", query, sqls);
-        }
-        let mut query_run = QueryRun::new(query);
-        match run_ballista_query(
-            &address,
-            &opt,
-            oracle_ctx.as_ref(),
-            query,
-            &sqls,
-            &mut query_run,
-        )
-        .await
-        {
-            Ok(()) => {
-                accumulate_total(query, &query_run, opt.iterations, &mut total_elapsed);
+    run_suite(
+        "tpch",
+        &query_numbers,
+        opt.iterations,
+        opt.output_path.as_deref(),
+        async |query, query_run| {
+            let sqls = get_query_sql(query)?;
+            if opt.debug {
+                println!("Running benchmark with query {}:\n {:?}", query, sqls);
             }
-            Err(e) => {
-                eprintln!("Query {query} failed: {e}");
-                query_run.error = Some(e.to_string());
-                any_failed = true;
-            }
-        }
-        benchmark_run.add_query_run(query_run);
-        // Persist after every query so a hard kill mid-suite still leaves the
-        // results collected so far on disk.
-        persist_summary(&benchmark_run, opt.output_path.as_deref())?;
-    }
-
-    println!("Total time: {total_elapsed:.3} s");
-    if let Some(path) = persist_summary(&benchmark_run, opt.output_path.as_deref())? {
-        println!("Summary written to {}", path.display());
-    }
-
-    if any_failed {
-        return Err(DataFusionError::Execution(
-            "one or more queries failed; see the summary for details".to_string(),
-        ));
-    }
+            run_ballista_query(
+                &address,
+                &opt,
+                oracle_ctx.as_ref(),
+                query,
+                &sqls,
+                query_run,
+            )
+            .await
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -647,28 +546,14 @@ async fn run_ballista_query(
     sqls: &[String],
     query_run: &mut QueryRun,
 ) -> Result<()> {
-    let mut config = session_config_with_s3_support()
-        .with_target_partitions(opt.partitions)
-        .with_ballista_job_name(&format!("Query derived from TPC-H q{}", query))
-        .with_batch_size(opt.batch_size)
-        .with_collect_statistics(true);
-
-    for kv in &opt.config_overrides {
-        if let Some((key, value)) = kv.split_once('=') {
-            if let Err(e) = config.options_mut().set(key.trim(), value.trim()) {
-                println!("Warning: could not set config '{}': {}", kv, e);
-            }
-        } else {
-            println!(
-                "Warning: ignoring invalid config override '{}'. \
-                 Expected format: key=value",
-                kv
-            );
-        }
-    }
-
-    let state = session_state_with_s3_support(config)?;
-    let ctx = SessionContext::remote_with_state(address, state).await?;
+    let ctx = ballista_context(
+        address,
+        &format!("Query derived from TPC-H q{query}"),
+        opt.partitions,
+        opt.batch_size,
+        &opt.config_overrides,
+    )
+    .await?;
     register_tables(
         opt.path.as_str(),
         opt.file_format.as_str(),
@@ -722,25 +607,6 @@ async fn run_ballista_query(
         println!("Query {query} verified against DataFusion: OK");
     }
     Ok(())
-}
-
-/// Write (or overwrite) the run summary as `tpch-<start_time>.json` in `dir`.
-///
-/// The write is atomic — a temp file is written then renamed over the target —
-/// so callers can persist after every query without risking a truncated file if
-/// the process is killed (e.g. an OOM SIGKILL) mid-write. Returns the final path.
-fn write_summary_json(benchmark_run: &BenchmarkRun, dir: &Path) -> Result<PathBuf> {
-    let json =
-        serde_json::to_string_pretty(&benchmark_run).expect("summary is serializable");
-    let final_path = dir.join(format!("tpch-{}.json", benchmark_run.start_time));
-    let tmp_path = dir.join(format!("tpch-{}.json.tmp", benchmark_run.start_time));
-    {
-        let mut file = File::create(&tmp_path)?;
-        file.write_all(json.as_bytes())?;
-        file.sync_all()?;
-    }
-    fs::rename(&tmp_path, &final_path)?;
-    Ok(final_path)
 }
 
 /// Per-query comparison of two benchmark runs, keyed by query number. A side is
@@ -1050,9 +916,15 @@ async fn register_tables(
                         "Registering table '{table}' using Parquet files at path {path}"
                     );
                 }
-                register_parquet_table(ctx, table, &path, partition_cols)
-                    .await
-                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
+                register_parquet_table(
+                    ctx,
+                    table,
+                    &path,
+                    partition_cols,
+                    tpch_path_column_type,
+                )
+                .await
+                .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
             }
             other => {
                 return Err(DataFusionError::Plan(format!(
@@ -1064,69 +936,14 @@ async fn register_tables(
     Ok(())
 }
 
-/// Registers a Parquet table, declaring the Hive partition columns that its
-/// directory names encode (e.g. `lineitem/l_shipdate=1994-01-01/`) unless
-/// `partition_cols` is false. Filters on those columns then skip whole
-/// directories at planning time instead of reading every file's footer.
-async fn register_parquet_table(
-    ctx: &SessionContext,
-    table: &str,
-    path: &str,
-    partition_cols: bool,
-) -> Result<()> {
-    let state = ctx.state();
-    let options = ParquetReadOptions::default()
-        .to_listing_options(state.config(), state.default_table_options());
-    let table_url = ListingTableUrl::parse(path)?;
-    let (schema, partition_cols) =
-        parquet_table_layout(&state, table, &table_url, &options, partition_cols).await?;
-    let options = ParquetReadOptions::default()
-        .schema(&schema)
-        .table_partition_cols(partition_cols);
-    ctx.register_parquet(table, path, options).await
-}
-
-/// Splits a Parquet table's columns into the file schema and the Hive
-/// partition columns that its directory names encode.
-///
-/// A partition column that the files also store keeps the files' type and
-/// leaves the file schema, because `ListingTable` appends partition columns
-/// itself and rejects duplicate names. A column that only exists in the path
-/// takes its type from the TPC-H schema, so dates stay dates. Any other
-/// partition column is a string.
-async fn parquet_table_layout(
-    state: &SessionState,
-    table: &str,
-    table_url: &ListingTableUrl,
-    options: &ListingOptions,
-    detect_partitions: bool,
-) -> Result<(SchemaRef, Vec<(String, DataType)>)> {
-    let file_schema = options.infer_schema(state, table_url).await?;
-    if !detect_partitions {
-        return Ok((file_schema, vec![]));
-    }
-    let tpch_schema = get_schema(table);
-    let partition_cols: Vec<(String, DataType)> = options
-        .infer_partitions(state, table_url)
-        .await?
-        .into_iter()
-        .map(|name| {
-            let data_type = file_schema
-                .field_with_name(&name)
-                .or_else(|_| tpch_schema.field_with_name(&name))
-                .map_or(DataType::Utf8, |field| field.data_type().clone());
-            (name, data_type)
-        })
-        .collect();
-    let file_fields: Vec<_> = file_schema
-        .fields()
-        .iter()
-        .filter(|field| partition_cols.iter().all(|(name, _)| name != field.name()))
-        .cloned()
-        .collect();
-    let file_schema =
-        Schema::new_with_metadata(file_fields, file_schema.metadata().clone());
-    Ok((Arc::new(file_schema), partition_cols))
+/// The type of a TPC-H column that a Parquet table only stores in its
+/// directory names (e.g. Spark's `partitionBy`), so date filters compare
+/// dates, not strings.
+fn tpch_path_column_type(table: &str, column: &str) -> Option<DataType> {
+    get_schema(table)
+        .field_with_name(column)
+        .ok()
+        .map(|field| field.data_type().clone())
 }
 
 /// Get the SQL statements from the specified query file
@@ -1356,8 +1173,15 @@ async fn get_table(
     let url = ListingTableUrl::parse(path)?;
 
     let config = if table_format == "parquet" {
-        let (schema, partition_cols) =
-            parquet_table_layout(ctx, table, &url, &options, partition_cols).await?;
+        let (schema, partition_cols) = parquet_table_layout(
+            ctx,
+            table,
+            &url,
+            &options,
+            partition_cols,
+            tpch_path_column_type,
+        )
+        .await?;
         ListingTableConfig::new(url)
             .with_listing_options(options.with_table_partition_cols(partition_cols))
             .with_schema(schema)
@@ -1470,83 +1294,6 @@ pub fn get_tbl_tpch_table_schema(table: &str) -> Schema {
     let mut schema = SchemaBuilder::from(get_schema(table).fields);
     schema.push(Field::new("__placeholder", DataType::Utf8, false));
     schema.finish()
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct QueryRun {
-    /// query number
-    query: usize,
-    /// list of individual run times and row counts
-    iterations: Vec<QueryResult>,
-    /// Set when the query did not run all iterations to completion. The message
-    /// captures why; `iterations` then holds only the iterations that finished
-    /// before the failure (possibly none).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-impl QueryRun {
-    fn new(query: usize) -> Self {
-        Self {
-            query,
-            iterations: vec![],
-            error: None,
-        }
-    }
-
-    fn add_result(&mut self, elapsed: f64, row_count: usize) {
-        self.iterations.push(QueryResult { elapsed, row_count })
-    }
-
-    /// Fastest completed iteration in seconds, or `None` if no iteration
-    /// finished (e.g. the query failed before completing one).
-    fn min_elapsed(&self) -> Option<f64> {
-        self.iterations
-            .iter()
-            .map(|r| r.elapsed)
-            .min_by(|a, b| a.total_cmp(b))
-    }
-
-    /// Row count from the first completed iteration.
-    fn row_count(&self) -> Option<usize> {
-        self.iterations.first().map(|r| r.row_count)
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct BenchmarkRun {
-    /// Benchmark crate version
-    benchmark_version: String,
-    /// DataFusion crate version
-    datafusion_version: String,
-    /// Number of CPU cores
-    num_cpus: usize,
-    /// Start time
-    start_time: u64,
-    /// CLI arguments
-    arguments: Vec<String>,
-    /// Results for each query
-    queries: Vec<QueryRun>,
-}
-
-impl BenchmarkRun {
-    fn new() -> Self {
-        Self {
-            benchmark_version: env!("CARGO_PKG_VERSION").to_owned(),
-            datafusion_version: DATAFUSION_VERSION.to_owned(),
-            num_cpus: std::thread::available_parallelism().unwrap().get(),
-            start_time: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("current time is later than UNIX_EPOCH")
-                .as_secs(),
-            arguments: std::env::args().skip(1).collect::<Vec<String>>(),
-            queries: vec![],
-        }
-    }
-
-    fn add_query_run(&mut self, query_run: QueryRun) {
-        self.queries.push(query_run)
-    }
 }
 
 /// Get the expected answer for a specific query at scale factor 1
@@ -1757,12 +1504,6 @@ fn string_schema(schema: Schema) -> Schema {
     )
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct QueryResult {
-    elapsed: f64,
-    row_count: usize,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1773,6 +1514,7 @@ mod tests {
     use datafusion::parquet::arrow::ArrowWriter;
     use datafusion::physical_plan::ExecutionPlan;
     use std::env;
+    use std::fs::File;
     use std::sync::Arc;
 
     #[test]
@@ -1848,43 +1590,6 @@ mod tests {
             qr.add_result(t, rows);
         }
         qr
-    }
-
-    #[test]
-    fn min_elapsed_picks_fastest_iteration() {
-        let qr = query_run_with(1, &[3.0, 1.5, 2.0], 4);
-        assert_eq!(qr.min_elapsed(), Some(1.5));
-        assert_eq!(qr.row_count(), Some(4));
-    }
-
-    #[test]
-    fn min_elapsed_is_none_without_iterations() {
-        let qr = QueryRun::new(7);
-        assert_eq!(qr.min_elapsed(), None);
-        assert_eq!(qr.row_count(), None);
-    }
-
-    #[test]
-    fn success_run_omits_error_and_roundtrips() {
-        let qr = query_run_with(1, &[1.0], 4);
-        let json = serde_json::to_string(&qr).unwrap();
-        assert!(
-            !json.contains("error"),
-            "success run should omit error: {json}"
-        );
-        let back: QueryRun = serde_json::from_str(&json).unwrap();
-        assert!(back.error.is_none());
-        assert_eq!(back.iterations.len(), 1);
-    }
-
-    #[test]
-    fn failed_run_keeps_partial_iterations_and_error() {
-        let mut qr = query_run_with(5, &[2.0], 3); // one iteration completed
-        qr.error = Some("boom".to_string());
-        let json = serde_json::to_string(&qr).unwrap();
-        let back: QueryRun = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.error.as_deref(), Some("boom"));
-        assert_eq!(back.min_elapsed(), Some(2.0)); // partial iteration preserved
     }
 
     #[test]
@@ -1987,6 +1692,7 @@ mod tests {
             &url,
             &parquet_options(),
             detect_partitions,
+            tpch_path_column_type,
         )
         .await
         .unwrap();
@@ -2151,7 +1857,8 @@ mod tests {
         let dir = lineitem_by_shipdate(true);
         let ctx = SessionContext::new();
         let path = find_path(dir.path().to_str().unwrap(), "lineitem", "parquet")?;
-        register_parquet_table(&ctx, "lineitem", &path, true).await?;
+        register_parquet_table(&ctx, "lineitem", &path, true, tpch_path_column_type)
+            .await?;
         assert_only_1994_scanned(&ctx).await
     }
 
