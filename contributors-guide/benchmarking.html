@@ -456,11 +456,14 @@ results locally.</p></li>
 <li><p><strong>Data:</strong> TPC-H SF1000 Parquet on S3 (<code class="docutils literal notranslate"><span class="pre">us-west-2</span></code>), ZSTD compression,
 ~512 MiB row groups, one directory per table. <code class="docutils literal notranslate"><span class="pre">lineitem</span></code>, <code class="docutils literal notranslate"><span class="pre">orders</span></code>,
 <code class="docutils literal notranslate"><span class="pre">customer</span></code> and <code class="docutils literal notranslate"><span class="pre">part</span></code> are Hive-style partitioned (e.g.
-<code class="docutils literal notranslate"><span class="pre">lineitem/l_shipdate=YYYY-MM-DD/</span></code>). The <code class="docutils literal notranslate"><span class="pre">tpch</span></code> runner registers tables
-without partition columns, so Ballista prunes these scans only through
-Parquet statistics, while Spark and Comet apply partition filters. This
-favours Spark and Comet on date-filtered queries such as Q6, Q12, Q14
-and Q20.</p></li>
+<code class="docutils literal notranslate"><span class="pre">lineitem/l_shipdate=YYYY-MM-DD/</span></code>). At <code class="docutils literal notranslate"><span class="pre">d6d8bd91</span></code> the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> runner
+registered tables without partition columns, so Ballista pruned these
+scans only through Parquet statistics, while Spark and Comet applied
+partition filters. This favoured Spark and Comet on date-filtered queries
+such as Q6, Q12, Q14 and Q20. The runner now declares the partition
+columns (see
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks#hive-partitioned-data">Hive-partitioned data</a>),
+and the results below predate that change.</p></li>
 </ul>
 </section>
 <section id="executor-storage">
