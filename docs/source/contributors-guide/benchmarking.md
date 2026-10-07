@@ -52,9 +52,9 @@ reference; it is not an apples-to-apples comparison (see
 - **Worker pod (Trino):** x86_64, 8 vCPU, 64 GiB memory (the image's
   default JVM heap of 80 %, about 51 GiB), no spill volume. A separate
   coordinator pod plans and schedules but does not scan data.
-- **Driver (Spark and Spark + Comet):** runs the queries through an internal
-  Spark benchmark harness. See [Spark and Spark + Comet](#spark-and-spark--comet)
-  under Reproducing.
+- **Driver (Spark and Spark + Comet):** runs the queries through a Spark
+  benchmark harness that is not in this repository yet. See
+  [Spark and Spark + Comet](#spark-and-spark--comet) under Reproducing.
 - **Client pod (Ballista):** the `tpch` Rust benchmark runner from
   [`benchmarks/`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks)
   in this repo (`cargo run --release --bin tpch -- benchmark ballista ...`),
@@ -240,6 +240,11 @@ iterations after an untimed warm-up run (see
 
 ## Reproducing
 
+The Ballista numbers come from the `tpch` runner in this repository. The Spark,
+Spark + Comet, and Trino numbers were collected with a benchmark harness that
+is not in this repository yet. We are working on adding scripts so that anyone
+can reproduce all of these results.
+
 ### Ballista
 
 Bring up the cluster (one scheduler, N executors), then run the suite from a
@@ -274,8 +279,7 @@ The runner sets `target_partitions` from `--partitions` and enables
 
 ### Spark and Spark + Comet
 
-The Spark and Spark + Comet numbers above were collected with an internal
-benchmark harness, which isn't public. The closest public equivalent is
+Until the harness is added, the closest public equivalent is
 `tpcbench.py` from
 [apache/datafusion-benchmarks](https://github.com/apache/datafusion-benchmarks),
 with the settings above and stock Spark 4.1 defaults for everything else:
@@ -310,7 +314,7 @@ and the settings in [Comet configuration](#comet-configuration):
 
 ### Trino
 
-The Trino numbers were also collected with the internal harness. It creates
+The Trino numbers were collected with the same harness. It creates
 external Hive tables over the Parquet files, syncs their partitions, and runs
 each query once untimed and then three times, one query at a time, through the
 Trino client, with the settings in [Trino configuration](#trino-configuration).
