@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Apache DataFusion Ballista 55.0.0 Changelog &#8212; Apache DataFusion Ballista  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=64cc4de3f052d77215f0"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'changelog/55.0.0';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Apache DataFusion Ballista 54.1.0 Changelog" href="54.1.0.html" />
+    <link rel="prev" title="Changelog" href="index.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/ballista_black.svg" class="logo__image only-light" alt="Apache DataFusion Ballista  documentation - Home"/>
+    <img src="../_static/ballista_white.svg" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Ballista  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/introduction.html">Introduction</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cluster Deployment</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../user-guide/deployment/index.html">Deployment</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/quick-start.html">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/cargo-install.html">Cargo Install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/docker.html">Docker</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/docker-compose.html">Docker Compose</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/kubernetes.html">Kubernetes</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/scheduler.html">Scheduler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/history-server.html">History Server</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Clients</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../user-guide/python/index.html">Python</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/python/quickstart.html">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/python/cloud-storage.html">Querying S3 Data</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/python/jupyter.html">Jupyter Notebooks</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/rust.html">Rust</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/cli.html">SQL CLI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/flightsql.html">Arrow Flight SQL</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/configs.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/tuning-guide.html">Tuning Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/metrics.html">Ballista Scheduler Metrics</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/faq.html">Frequently Asked Questions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/extending-components.html">Extending Ballista Scheduler And Executors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/spark-compatible-functions.html">Spark-Compatible Functions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/extensions-example.html">Extensions Example</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Changelog</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="index.html">Changelog</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2 current active"><a aria-current="page" class="current reference internal" href="#">Apache DataFusion Ballista 55.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="54.1.0.html">Apache DataFusion Ballista 54.1.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="54.0.0.html">Apache DataFusion Ballista 54.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="53.0.0.html">Apache DataFusion Ballista 53.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="52.0.0.html">Apache DataFusion Ballista 52.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="51.0.0.html">Apache DataFusion Ballista 51.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="50.0.0.html">Apache DataFusion Ballista 50.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="49.0.0.html">Apache DataFusion Ballista 49.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="48.0.0.html">Apache DataFusion Ballista 48.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="47.0.0.html">Apache DataFusion Ballista 47.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="46.0.0.html">Apache DataFusion Ballista 46.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="45.0.0.html">Apache DataFusion Ballista 45.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="44.0.0.html">Apache DataFusion Ballista 44.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="43.0.0.html">Apache DataFusion Ballista 43.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.12.0.html">Apache DataFusion Ballista 0.12.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.11.0.html">Apache DataFusion Ballista 0.11.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.10.0.html">Apache DataFusion Ballista 0.10.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.9.0.html">Apache DataFusion Ballista 0.9.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.8.0.html">Apache DataFusion Ballista 0.8.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.7.0.html">Apache DataFusion Ballista 0.7.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.6.0.html">Apache DataFusion Ballista 0.6.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="0.5.0.html">Apache DataFusion Ballista 0.5.0 Changelog</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Upgrade Guides</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../upgrading/index.html">Upgrade Guides</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/55.0.0.html">Ballista 55.0.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/54.0.0.html">Ballista 54.0.0</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Contributors Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/architecture.html">Ballista Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/shuffle.html">Shuffle Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/code-organization.html">Ballista Code Organization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/user-personas.html">User Personas</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/development.html">Ballista Development</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/benchmarking.html">Benchmarking</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/">Source code</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../community/adopters.html">Who Uses Ballista</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
+</ul>
+
+    
+  </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Changelog</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Apache DataFusion Ballista 55.0.0 Changelog</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<section id="apache-datafusion-ballista-55-0-0-changelog">
+<h1>Apache DataFusion Ballista 55.0.0 Changelog<a class="headerlink" href="#apache-datafusion-ballista-55-0-0-changelog" title="Link to this heading">#</a></h1>
+<p>This release consists of 322 commits from 25 contributors. See credits at the end of this changelog for more information.</p>
+<p><strong>Fixed bugs:</strong></p>
+<ul class="simple">
+<li><p>fix(scheduler): persist terminal job state before cache eviction <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2037">#2037</a> (phillipleblanc)</p></li>
+<li><p>fix: spill sort shuffle writer when the memory pool rejects a reservation grow <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2061">#2061</a> (andygrove)</p></li>
+<li><p>fix: enable the executor client pool by default <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2069">#2069</a> (andygrove)</p></li>
+<li><p>fix: map a task’s partition through UnionExec when restricting file scans <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2070">#2070</a> (andygrove)</p></li>
+<li><p>fix: keep EmptyExec partition count intact across stage serialization [AQE] <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2062">#2062</a> (andygrove)</p></li>
+<li><p>fix: remove the static planner SortMergeJoinExec broadcast conversion <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2072">#2072</a> (andygrove)</p></li>
+<li><p>fix: propagate sort shuffle memory_limit_per_task_bytes to executors <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2090">#2090</a> (andygrove)</p></li>
+<li><p>fix: executor hanging on ctrl+c <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2107">#2107</a> (sandugood)</p></li>
+<li><p>fix: Various fixes for AQE join selection <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2124">#2124</a> (andygrove)</p></li>
+<li><p>fix: Enable more TPC-DS queries <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2064">#2064</a> (andygrove)</p></li>
+<li><p>fix(executor): keep heartbeating while all task slots are busy <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2159">#2159</a> (andygrove)</p></li>
+<li><p>fix: unskip five TPC-DS queries by rewriting generator column names <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2183">#2183</a> (andygrove)</p></li>
+<li><p>fix: stop every task running every union branch at low partition counts <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2186">#2186</a> (andygrove)</p></li>
+<li><p>fix(scheduler): execute null-aware anti joins in one task <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2188">#2188</a> (phillipleblanc)</p></li>
+<li><p>fix(scheduler): keep GROUP BY-less aggregates when propagating empty stages <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2194">#2194</a> (andygrove)</p></li>
+<li><p>fix(scheduler): harden PropagateEmptyExecRule against grouping sets, embedded projections, and dropped exchange partitioning <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2200">#2200</a> (andygrove)</p></li>
+<li><p>fix(cli): sort jobs by stage completion ratio <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/1947">#1947</a> (QuakeWang)</p></li>
+<li><p>fix(scheduler): preserve stages on transition errors <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2215">#2215</a> (QuakeWang)</p></li>
+<li><p>fix(scheduler): fail running jobs when all executors are lost <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2212">#2212</a> (akshaychitneni)</p></li>
+<li><p>fix(executor): bind the gRPC listener before registering with the scheduler <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2225">#2225</a> (andygrove)</p></li>
+<li><p>fix: update mTLS example for poll_loop arguments <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2229">#2229</a> (phillipleblanc)</p></li>
+<li><p>fix(scheduler): route launch-failure executor removal through ExecutorLost <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2240">#2240</a> (andygrove)</p></li>
+<li><p>fix: classify wrapped FetchFailed as fetch partition error <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2202">#2202</a> (villebro)</p></li>
+<li><p>fix(core): fix main build errors <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2254">#2254</a> (avantgardnerio)</p></li>
+<li><p>fix: pin datafusion versions to 54.0.0 for python subproject <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2277">#2277</a> (milenkovicm)</p></li>
+<li><p>fix(scheduler): key AQE shuffle output by job_id <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2278">#2278</a> (villebro)</p></li>
+<li><p>fix(scheduler): default no-executors grace to executor timeout (&gt;= heartbeat) <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2279">#2279</a> (akshaychitneni)</p></li>
+<li><p>fix(docs): k8s executors dial the registration Service; scheduler needs maxUnavailable: 1 <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2289">#2289</a> (avantgardnerio)</p></li>
+<li><p>fix(ci): apply cargo fmt to chaos-executor <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2304">#2304</a> (andygrove)</p></li>
+<li><p>fix(scheduler): label every operator in the DOT graph <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2305">#2305</a> (andygrove)</p></li>
+<li><p>fix(core): report the real partitioning from ShuffleWriterExec <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2307">#2307</a> (andygrove)</p></li>
+<li><p>fix(scheduler): drop an executor’s cached gRPC client when it is removed <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2310">#2310</a> (Dandandan)</p></li>
+<li><p>fix: repair AQE plan rewrites, remove a redundant shuffle, and enable adaptive query planning by default <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2315">#2315</a> (Dandandan)</p></li>
+<li><p>fix(tui): use the shared API wire types instead of local copies <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2258">#2258</a> (andygrove)</p></li>
+<li><p>fix(chaos): harden k8s backend — supervise port-forward, guard fixture dir <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2346">#2346</a> (akshaychitneni)</p></li>
+<li><p>fix(docker): base runtime images on ubuntu:26.04 <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2380">#2380</a> (avantgardnerio)</p></li>
+<li><p>fix(scheduler): fix test job-completion polling <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2354">#2354</a> (NoahKusaba)</p></li>
+<li><p>fix(ci): pin tinyvec in the MSRV dependency checker <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2421">#2421</a> (andygrove)</p></li>
+<li><p>fix(executor): wake graceful shutdown after tasks drain <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2393">#2393</a> (1fanwang)</p></li>
+<li><p>fix(scheduler): repair test broken by a stale-base merge <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2439">#2439</a> (NoahKusaba)</p></li>
+<li><p>fix: derive stage input/output rows from the plan’s leaves and root instead of summing every operator <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2435">#2435</a> (Dandandan)</p></li>
+<li><p>fix(ci): pull the MinIO test image from quay.io <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2447">#2447</a> (comphead)</p></li>
+<li><p>fix(ci): resolve datafusion.proto from datafusion-proto-models <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2390">#2390</a> (AnuragRaut08)</p></li>
+<li><p>fix(ci): upload both cluster logs from the container benchmark jobs <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2460">#2460</a> (amitvijapur)</p></li>
+<li><p>fix(ci): run the S3 integration tests against RustFS instead of MinIO <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2488">#2488</a> (NoahKusaba)</p></li>
+<li><p>fix(executor): forward arrow-ipc-optimizations to ballista-core <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2373">#2373</a> (stag7824)</p></li>
+<li><p>fix(scheduler): refund the vcores of running tasks when a job is aborted <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2477">#2477</a> (amitvijapur)</p></li>
+<li><p>fix(scheduler): fail jobs whose tasks cannot be prepared <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2492">#2492</a> (andygrove)</p></li>
+<li><p>fix(scheduler): declare distributed EXPLAIN output columns not-null <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2494">#2494</a> (andygrove)</p></li>
+<li><p>fix(core): refuse queries that mix information_schema with other tables <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2493">#2493</a> (andygrove)</p></li>
+<li><p>fix(release): prepare the 55 release process <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2527">#2527</a> (andygrove)</p></li>
+<li><p>fix(docker): publish images from release tag pushes <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2526">#2526</a> (andygrove)</p></li>
+</ul>
+<p><strong>Performance related:</strong></p>
+<ul class="simple">
+<li><p>perf(kll): batch-oriented ingest KLL <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2216">#2216</a> (avantgardnerio)</p></li>
+<li><p>perf(core): zero-copy block receive on the remote fetch path <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2312">#2312</a> (Dandandan)</p></li>
+<li><p>perf(core): push a consumer’s row limit into RangeShuffleReaderExec <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2334">#2334</a> (Dandandan)</p></li>
+<li><p>perf(scheduler): push filters once, not on every replan <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2344">#2344</a> (Dandandan)</p></li>
+<li><p>perf(scheduler): only give a broadcast build side its own stage when the probe is partitioned <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2342">#2342</a> (Dandandan)</p></li>
+<li><p>perf(scheduler): read an unfiltered small scan inline instead of staging it <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2338">#2338</a> (Dandandan)</p></li>
+<li><p>perf(core): write one sort-shuffle file per task instead of one per input <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2316">#2316</a> (Dandandan)</p></li>
+<li><p>perf(core): reuse shuffle partition-index buffers across batches <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2359">#2359</a> (NoahKusaba)</p></li>
+<li><p>perf(core): strength reduce hash partition modulo <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2363">#2363</a> (NoahKusaba)</p></li>
+<li><p>perf(core): skip IPC validation on the sort-shuffle read paths <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2365">#2365</a> (NoahKusaba)</p></li>
+<li><p>perf(scheduler): stop re-encoding the session config for every task <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2358">#2358</a> (NoahKusaba)</p></li>
+<li><p>perf(core): remove the inert shuffle-read sort <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2414">#2414</a> (NoahKusaba)</p></li>
+<li><p>perf(scheduler): share the file statistics cache across sessions <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2498">#2498</a> (andygrove)</p></li>
+</ul>
+<p><strong>Implemented enhancements:</strong></p>
+<ul class="simple">
+<li><p>feat: make compression codec configurable <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2039">#2039</a> (sandugood)</p></li>
+<li><p>feat: make broadcast_join_threshold_bytes/rows authoritative under AQE and the static planner <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2086">#2086</a> (andygrove)</p></li>
+<li><p>feat: add BALLISTA_PROTOCOL_VERSION + k8s health probes <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2088">#2088</a> (avantgardnerio)</p></li>
+<li><p>feat: allow an external semaphore for executor task concurrency <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/1892">#1892</a> (Jeadie)</p></li>
+<li><p>feat: log sort shuffle spills at WARN, keep write completion at DEBUG <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2091">#2091</a> (andygrove)</p></li>
+<li><p>feat(benchmarks): persist TPC-H results resiliently and add a compare subcommand <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2102">#2102</a> (andygrove)</p></li>
+<li><p>feat(core): RuntimeStatsExec — passthrough tap for row counts + quantile sketches <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2094">#2094</a> (avantgardnerio)</p></li>
+<li><p>feat(core): BufferExec — generic flow-control op with a memory-pool Dam mode <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2095">#2095</a> (avantgardnerio)</p></li>
+<li><p>feat: Improve TPC-H performance with AQE on <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2084">#2084</a> (andygrove)</p></li>
+<li><p>feat(benchmarks): add –skip to omit queries from a tpch suite run <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2129">#2129</a> (andygrove)</p></li>
+<li><p>feat(core): report the actual sort shuffle spill trigger in logs <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2143">#2143</a> (andygrove)</p></li>
+<li><p>feat(core): add UnorderedRangeRepartitionExec — value-range router over unordered inputs <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2123">#2123</a> (avantgardnerio)</p></li>
+<li><p>feat(executor): default to a bounded, auto-sized memory pool <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2160">#2160</a> (andygrove)</p></li>
+<li><p>feat(core): add OrderedRangeRepartitionExec — N sorted overlapping → K sorted disjoint <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2169">#2169</a> (avantgardnerio)</p></li>
+<li><p>feat(core): add PerPartitionFilterExec — per-input-partition boolean predicate <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2195">#2195</a> (avantgardnerio)</p></li>
+<li><p>feat(core): rewrite NOT IN subqueries into distributable anti join plans <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2199">#2199</a> (andygrove)</p></li>
+<li><p>feat(scheduler): range-repartition rule primitives (batteries-included) <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2196">#2196</a> (avantgardnerio)</p></li>
+<li><p>feat: make gRPC max message size consistently configurable <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2173">#2173</a> (andygrove)</p></li>
+<li><p>feat: add <code class="docutils literal notranslate"><span class="pre">poll_now_notify</span></code> to <code class="docutils literal notranslate"><span class="pre">poll_loop</span></code> and <code class="docutils literal notranslate"><span class="pre">on_work_available</span></code> callback <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/1893">#1893</a> (Jeadie)</p></li>
+<li><p>feat(scheduler): expose existing job state event stream <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/1891">#1891</a> (Jeadie)</p></li>
+<li><p>feat(scheduler): Redirect ‘/’ to nighlies.a.o WebTUI <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2059">#2059</a> (martin-g)</p></li>
+<li><p>feat(core): metrics() for OrderedRangeRepartitionExec and RuntimeStatsExec <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2250">#2250</a> (avantgardnerio)</p></li>
+<li><p>feat: add DistributedQueryExec::explain_executed_plan and show logical plan in display <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2042">#2042</a> (andygrove)</p></li>
+<li><p>feat(core): PBWAG — parallel BWAG wrapper <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2253">#2253</a> (avantgardnerio)</p></li>
+<li><p>feat(core): RangeShuffleReaderExec — ordering-preserving shuffle reader (purely additive) <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2255">#2255</a> (avantgardnerio)</p></li>
+<li><p>feat(core): RangeFilterExec — sorted-input per-partition range filter (purely additive) <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2262">#2262</a> (avantgardnerio)</p></li>
+<li><p>feat(history): add the event-log schema, writer, and reader <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2260">#2260</a> (andygrove)</p></li>
+<li><p>feat(scheduler): record a per-job event log behind –event-log-dir <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2264">#2264</a> (andygrove)</p></li>
+<li><p>feat: pluggable job id generator <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2269">#2269</a> (milenkovicm)</p></li>
+<li><p>feat: parallel BWAG for the range-window shape (h2o Q8) <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2223">#2223</a> (avantgardnerio)</p></li>
+<li><p>feat: embedded flight proxy explicit config entry <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2288">#2288</a> (sandugood)</p></li>
+<li><p>feat(core): quantile sketching for any fixed-width ORDER BY key <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2294">#2294</a> (avantgardnerio)</p></li>
+<li><p>feat(core): Replace TDigest with KLL <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2337">#2337</a> (avantgardnerio)</p></li>
+<li><p>feat: parallel prefix scan for UNBOUNDED PRECEDING window aggregates <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2211">#2211</a> (avantgardnerio)</p></li>
+<li><p>feat: remove serialisation of built-in file formats from ballista <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2348">#2348</a> (milenkovicm)</p></li>
+<li><p>feat(core): range shuffle reads only the bytes a consumer’s range covers <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2364">#2364</a> (avantgardnerio)</p></li>
+<li><p>feat(scheduler): add the history server <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2265">#2265</a> (andygrove)</p></li>
+<li><p>feat: scheduler REST &amp; GRPC returns ballista version headers <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2378">#2378</a> (milenkovicm)</p></li>
+<li><p>feat: cleanup &amp; simplify ballista config <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2387">#2387</a> (milenkovicm)</p></li>
+<li><p>feat(history): mark running event logs with a .running suffix until job completion <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2405">#2405</a> (milenkovicm)</p></li>
+<li><p>feat(scheduler): stage a join’s build side before deciding the join <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2434">#2434</a> (andygrove)</p></li>
+<li><p>feat(scheduler): document REST API with OpenAPI and serve /api/openapi.json <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2397">#2397</a> (DebadityaHait)</p></li>
+<li><p>feat(scheduler): record scheduler id in job starts <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2462">#2462</a> (villebro)</p></li>
+<li><p>feat(scheduler): add a setting to disable the shared file statistics cache <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2510">#2510</a> (andygrove)</p></li>
+<li><p>feat: Column statistics support v1 <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/1916">#1916</a> (coderfender)</p></li>
+<li><p>feat: error when the client and scheduler have different major versions <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2514">#2514</a> (andygrove)</p></li>
+<li><p>feat: Arrow Flight SQL frontend for the scheduler + ADBC support <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2416">#2416</a> (andygrove)</p></li>
+</ul>
+<p><strong>Documentation updates:</strong></p>
+<ul class="simple">
+<li><p>docs: add user personas as a review contract for additive changes <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2002">#2002</a> (andygrove)</p></li>
+<li><p>docs: include TestPyPI wheels link in release vote email <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2010">#2010</a> (andygrove)</p></li>
+<li><p>docs: remove outdated TPC-H benchmark results from READMEs <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2015">#2015</a> (andygrove)</p></li>
+<li><p>Rename <code class="docutils literal notranslate"><span class="pre">task_slots</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">vcores</span></code> (executor spec + CLI) <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2045">#2045</a> (avantgardnerio)</p></li>
+<li><p>docs: add benchmarking page to the contributors guide <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2075">#2075</a> (andygrove)</p></li>
+<li><p>Multi-partition tasks: partition_slice plumbing + SortShuffleWriter refactor <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2038">#2038</a> (avantgardnerio)</p></li>
+<li><p>docs(config): rewrite max_partitions_per_task description to be timeless <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2093">#2093</a> (avantgardnerio)</p></li>
+<li><p>docs: refresh SF1000 benchmark results on 2x16-core AQE-on reference cluster <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2109">#2109</a> (andygrove)</p></li>
+<li><p>Remove the hash-partitioning shuffle writer <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2106">#2106</a> (andygrove)</p></li>
+<li><p>docs: correct scan partitioning description in tuning guide <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2125">#2125</a> (andygrove)</p></li>
+<li><p>Generate the config reference documentation from the config registry <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2146">#2146</a> (andygrove)</p></li>
+<li><p>docs: refresh benchmarking.md with current SF1000 results (Ballista main &#64; 696ca29b, Spark 3.4 baseline) <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2161">#2161</a> (andygrove)</p></li>
+<li><p>docs: refresh benchmarking.md with dedicated shuffle PVC results <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2171">#2171</a> (andygrove)</p></li>
+<li><p>docs: add 54.0.0 changelog <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2012">#2012</a> (andygrove)</p></li>
+<li><p>feat(core,scheduler): transport RuntimeStatsExec reports to scheduler; log merged quantile cuts per stage <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2175">#2175</a> (avantgardnerio)</p></li>
+<li><p>docs(kubernetes): two-Service pattern for scheduler bootstrap <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2245">#2245</a> (avantgardnerio)</p></li>
+<li><p>docs: add 54.1.0 changelog to main <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2271">#2271</a> (andygrove)</p></li>
+<li><p>docs: document Web TUI <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2268">#2268</a> (jvsilva12600009)</p></li>
+<li><p>docs: clean up stale and broken documentation links <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2287">#2287</a> (AntiO2)</p></li>
+<li><p>docs: document DataFusion dependency cycle in contributor guide <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2293">#2293</a> (andygrove)</p></li>
+<li><p>docs: explain why Ballista uses a blocking shuffle <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2308">#2308</a> (andygrove)</p></li>
+<li><p>docs(bench): refresh TPC-H SF1000 results at 67b3a19b <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2417">#2417</a> (andygrove)</p></li>
+<li><p>docs: move developer docs into the published contributors guide <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2481">#2481</a> (NoahKusaba)</p></li>
+<li><p>docs: say vcores instead of task slots and concurrency levels <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2482">#2482</a> (NoahKusaba)</p></li>
+<li><p>docs: include examples and config tables from source instead of copying them <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2480">#2480</a> (NoahKusaba)</p></li>
+<li><p>docs: describe how joins are chosen under AQE <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2479">#2479</a> (NoahKusaba)</p></li>
+<li><p>ci: run ruff over the whole repository <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2472">#2472</a> (NoahKusaba)</p></li>
+<li><p>docs(chaos): don’t link to the feature-gated k8s module <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2506">#2506</a> (milenkovicm)</p></li>
+<li><p>docs: correct stale defaults, flags, and feature docs <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2478">#2478</a> (NoahKusaba)</p></li>
+<li><p>chore(release): release the Python client separately from the Rust crates <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2512">#2512</a> (andygrove)</p></li>
+</ul>
+<p><strong>Other:</strong></p>
+<ul class="simple">
+<li><p>ci: install Rust via rustup in wheel build to fix release-build startup_failure <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2008">#2008</a> (andygrove)</p></li>
+<li><p>chore: Update project description to remove Apache Arrow <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2044">#2044</a> (andygrove)</p></li>
+<li><p>chore(deps): bump cryptography from 46.0.3 to 48.0.1 in /python <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2056">#2056</a> (dependabot[bot])</p></li>
+<li><p>chore(deps): bump pyjwt from 2.12.0 to 2.13.0 in /python <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2055">#2055</a> (dependabot[bot])</p></li>
+<li><p>chore(ci): Add a CI workflow that checks that the used CI actions and their versions are allowed <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2058">#2058</a> (martin-g)</p></li>
+<li><p>refactor(tui): Drop the header banner/logo <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2057">#2057</a> (martin-g)</p></li>
+<li><p>Add TPC-DS correctness testing <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2048">#2048</a> (andygrove)</p></li>
+<li><p>ci: skip expensive workflows for docs-only changes <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2073">#2073</a> (andygrove)</p></li>
+<li><p>chore(scheduler,executor): downgrade #2038 per-task traces to debug <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2104">#2104</a> (avantgardnerio)</p></li>
+<li><p>ci(tpch): add AQE-on smoke pass with multi-partition tasks <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2120">#2120</a> (avantgardnerio)</p></li>
+<li><p>Retryable IO errors misclassified when wrapped in DataFusionError::Shared <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2119">#2119</a> (goingforstudying-ctrl)</p></li>
+<li><p>chore: upgrade DataFusion to 54.1.0 <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2126">#2126</a> (andygrove)</p></li>
+<li><p>ci: allow the docs site deploy to be triggered manually <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2177">#2177</a> (andygrove)</p></li>
+<li><p>kll: add native Rust KLL quantile sketch <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2180">#2180</a> (avantgardnerio)</p></li>
+<li><p>chore(deps): bump arrow from 58.3.0 to 58.4.0 <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2178">#2178</a> (andygrove)</p></li>
+<li><p>chore(deps): bump quinn-proto from 0.11.14 to 0.11.16 <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2176">#2176</a> (dependabot[bot])</p></li>
+<li><p>ci: run TPC-DS SF1 with 1 and 4 partitions per task <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2197">#2197</a> (andygrove)</p></li>
+<li><p>chore: use taplo for Cargo.toml formatting <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2179">#2179</a> (villebro)</p></li>
+<li><p>test: add HA chaos harness that drives the scheduler’s fault-tolerance paths on a real cluster <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2026">#2026</a> (andygrove)</p></li>
+<li><p>chore(deps): bump cryptography from 48.0.1 to 50.0.0 in /python <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2221">#2221</a> (dependabot[bot])</p></li>
+<li><p>ci: add h2o window suite CI job <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2230">#2230</a> (avantgardnerio)</p></li>
+<li><p>chore(docker): ca-certificates + h2o binary in benchmarks image <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2251">#2251</a> (avantgardnerio)</p></li>
+<li><p>refactor(scheduler): extract REST API wire types into ballista-api-types <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2256">#2256</a> (andygrove)</p></li>
+<li><p>refactor(core): use DataFusionError::External for structured task errors <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2276">#2276</a> (villebro)</p></li>
+<li><p>chore(deps): Track DataFusion git, pinned to the 55.0.0-rc2 tag <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2241">#2241</a> (andygrove)</p></li>
+<li><p>chore(deps): bump the DataFusion pin to the 55.0.0-rc3 tag <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2301">#2301</a> (andygrove)</p></li>
+<li><p>test: centralize physical plan snapshot assertions <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2297">#2297</a> (floze-the-genius)</p></li>
+<li><p>test(chaos): add a Kubernetes (kind) backend for the chaos harness <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2244">#2244</a> (akshaychitneni)</p></li>
+<li><p>chore: prune stale NOTICE.txt entries, add mini-redis attribution <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2300">#2300</a> (andygrove)</p></li>
+<li><p>chore(core): remove unused diagram module <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2355">#2355</a> (NoahKusaba)</p></li>
+<li><p>Revert “remove redundant logic from ballista logical codec (#2348)” <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2379">#2379</a> (andygrove)</p></li>
+<li><p>chore(deps): use the released DataFusion 55.0.0 crates from crates.io <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2375">#2375</a> (andygrove)</p></li>
+<li><p>ci: assign issues via take/untake comments <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2391">#2391</a> (andygrove)</p></li>
+<li><p>chore: require an approving review before merging <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2394">#2394</a> (andygrove)</p></li>
+<li><p>refactor(scheduler): share the constructor tail between SchedulerServer builders <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2398">#2398</a> (NoahKusaba)</p></li>
+<li><p>chore(deps): drop unused md-5, move insta to dev-deps <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2407">#2407</a> (NoahKusaba)</p></li>
+<li><p>chore: consolidate shared manifest metadata into the workspace <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2409">#2409</a> (NoahKusaba)</p></li>
+<li><p>test: dedupe shuffle reader test setup <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2415">#2415</a> (NoahKusaba)</p></li>
+<li><p>chore(ci): run cargo machete to catch unused dependencies <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2411">#2411</a> (7487)</p></li>
+<li><p>ci: share one cluster harness across the tpch, tpcds and h2o jobs <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2408">#2408</a> (NoahKusaba)</p></li>
+<li><p>bug: Prevent exec hang when task decode fails <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2016">#2016</a> (coderfender)</p></li>
+<li><p>chore(deps): bump DataFusion to 55.1.0 <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2461">#2461</a> (andygrove)</p></li>
+<li><p>ci: move the stale PR workflow where GitHub runs it <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2475">#2475</a> (NoahKusaba)</p></li>
+<li><p>ci: fix lint scripts that skipped checks or passed without running <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2473">#2473</a> (NoahKusaba)</p></li>
+<li><p>chore: remove leftovers inherited from Arrow <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2474">#2474</a> (NoahKusaba)</p></li>
+<li><p>refactor: move the Flight proxy service into ballista-core <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2495">#2495</a> (andygrove)</p></li>
+<li><p>test(chaos): run #2029 executor-loss scenarios on the k8s backend <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2425">#2425</a> (akshaychitneni)</p></li>
+<li><p>chore(deps): bump pyjwt from 2.13.0 to 2.15.0 in /python <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2515">#2515</a> (dependabot[bot])</p></li>
+<li><p>chore(ci): fix clippy errors from Rust 1.99 <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2519">#2519</a> (NoahKusaba)</p></li>
+<li><p>chore: bump Ballista version to 55.0.0 <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2524">#2524</a> (andygrove)</p></li>
+<li><p>chore(deps): bump urllib3 from 2.7.0 to 2.8.0 in /python <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2516">#2516</a> (dependabot[bot])</p></li>
+</ul>
+<section id="credits">
+<h2>Credits<a class="headerlink" href="#credits" title="Link to this heading">#</a></h2>
+<p>Thank you to everyone who contributed to this release. Here is a breakdown of commits (PRs merged) per contributor.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>   <span class="mi">135</span>	<span class="n">dependabot</span><span class="p">[</span><span class="n">bot</span><span class="p">]</span>
+    <span class="mi">79</span>	<span class="n">Andy</span> <span class="n">Grove</span>
+    <span class="mi">30</span>	<span class="n">Brent</span> <span class="n">Gardner</span>
+    <span class="mi">24</span>	<span class="n">NoahKusaba</span>
+     <span class="mi">9</span>	<span class="n">Daniël</span> <span class="n">Heres</span>
+     <span class="mi">7</span>	<span class="n">Marko</span> <span class="n">Milenković</span>
+     <span class="mi">5</span>	<span class="n">Akshay</span> <span class="n">Chitneni</span>
+     <span class="mi">5</span>	<span class="n">Ville</span> <span class="n">Brofeldt</span>
+     <span class="mi">3</span>	<span class="n">Jack</span> <span class="n">Eadie</span>
+     <span class="mi">3</span>	<span class="n">Martin</span> <span class="n">Grigorov</span>
+     <span class="mi">3</span>	<span class="n">Phillip</span> <span class="n">LeBlanc</span>
+     <span class="mi">3</span>	<span class="n">alexander</span> <span class="n">domenti</span>
+     <span class="mi">2</span>	<span class="n">Amit</span> <span class="n">Vijapur</span>
+     <span class="mi">2</span>	<span class="n">Bhargava</span> <span class="n">Vadlamani</span>
+     <span class="mi">2</span>	<span class="n">QuakeWang</span>
+     <span class="mi">1</span>	<span class="n">Anurag</span> <span class="n">Tryambak</span> <span class="n">Raut</span>
+     <span class="mi">1</span>	<span class="n">BingEdward</span>
+     <span class="mi">1</span>	<span class="n">Floze</span>
+     <span class="mi">1</span>	<span class="n">Joao</span> <span class="n">Victor</span> <span class="n">e</span> <span class="n">Silva</span>
+     <span class="mi">1</span>	<span class="n">Li</span> <span class="n">Zinuo</span>
+     <span class="mi">1</span>	<span class="n">Oleks</span> <span class="n">V</span>
+     <span class="mi">1</span>	<span class="n">Stefan</span> <span class="n">Wang</span>
+     <span class="mi">1</span>	<span class="n">Syed</span> <span class="n">Talha</span> <span class="n">Ahmed</span> <span class="n">Gardazi</span>
+     <span class="mi">1</span>	<span class="n">debaditya</span>
+     <span class="mi">1</span>	<span class="n">goingforstudying</span><span class="o">-</span><span class="n">ctrl</span>
+</pre></div>
+</div>
+<p>Thank you also to everyone who contributed in other ways such as filing issues, reviewing PRs, and providing feedback on this release.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="index.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Changelog</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="54.1.0.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Apache DataFusion Ballista 54.1.0 Changelog</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#credits">Credits</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/changelog/55.0.0.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../_sources/changelog/55.0.0.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion Ballista, Arrow Ballista, Apache, the Apache feather logo, and the Apache DataFusion Ballista project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
