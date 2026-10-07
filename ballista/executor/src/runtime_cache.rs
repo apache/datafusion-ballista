@@ -69,7 +69,7 @@ pub trait SessionRuntimeCache: Send + Sync {
     ) -> datafusion::error::Result<Arc<RuntimeEnv>>;
 }
 
-/// Shared base envs keyed by (session id, [`config_fingerprint`]) — see
+/// Shared base envs keyed by (session id, `config_fingerprint`) — see
 /// [`DefaultSessionRuntimeCache`].
 type BaseRuntimeLru = LruCache<(String, u64), Arc<RuntimeEnv>>;
 
@@ -87,7 +87,7 @@ type BaseRuntimeLru = LruCache<(String, u64), Arc<RuntimeEnv>>;
 /// isolation is unchanged.
 ///
 /// The cache key pairs the session id with a fingerprint of the session
-/// config's extension entries (see [`config_fingerprint`]). The base producer
+/// config's extension entries (see `config_fingerprint`). The base producer
 /// captures config state when it builds the env — the S3-aware producer
 /// clones the session's `S3Options` into the object-store registry — so a
 /// `SET` that lands between two tasks of the same session must miss the
