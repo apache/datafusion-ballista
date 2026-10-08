@@ -26,17 +26,17 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../_static/styles/theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+  <link href="../_static/styles/theme.css?digest=18bd87630a240e9c25be" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=18bd87630a240e9c25be" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="../_static/scripts/fontawesome.js?digest=64cc4de3f052d77215f0"></script>
+  <script defer src="../_static/scripts/fontawesome.js?digest=18bd87630a240e9c25be"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0" />
-<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0" />
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=18bd87630a240e9c25be" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=18bd87630a240e9c25be" />
 
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
@@ -48,6 +48,7 @@
     <link rel="next" title="Tuning Guide" href="tuning-guide.html" />
     <link rel="prev" title="Arrow Flight SQL" href="flightsql.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="color-scheme" content="light dark"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
   
@@ -542,92 +543,97 @@ standard DataFusion settings.</p>
 <td><p>(none)</p></td>
 <td><p>Sets the job name that will appear in the web user interface for any submitted jobs</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.optimizer.broadcast_join_threshold_bytes</p></td>
+<tr class="row-odd"><td><p>ballista.optimizer.balance_scan_file_groups</p></td>
+<td><p>Boolean</p></td>
+<td><p>true</p></td>
+<td><p>Prunes scan files using their Parquet statistics while planning and deals the remaining files round-robin over the scan’s file groups. DataFusion builds file groups before any predicate is applied, so when files are clustered by the filtered column (for example a date range over date-partitioned files) the files that survive pruning land in a few neighbouring groups and only those tasks have work to do. Set to false to keep the file groups as DataFusion built them.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.optimizer.broadcast_join_threshold_bytes</p></td>
 <td><p>UInt64</p></td>
 <td><p>134217728</p></td>
 <td><p>Byte-size threshold below which a hash join’s smaller side is promoted to CollectLeft and lowered via the broadcast pattern. Governs broadcast selection under both the static distributed planner and adaptive query planning (AQE). It also caps null-aware anti joins with a known build size because they require single-task CollectLeft execution. Set to 0 to disable promotion and reject null-aware anti joins.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.optimizer.broadcast_join_threshold_rows</p></td>
+<tr class="row-odd"><td><p>ballista.optimizer.broadcast_join_threshold_rows</p></td>
 <td><p>UInt64</p></td>
 <td><p>1000000</p></td>
 <td><p>Row-count threshold below which a hash join’s smaller side is promoted to CollectLeft and lowered via the broadcast pattern, used as a fallback when byte-size statistics are unavailable. Applies to adaptive query planning (AQE). Set to 0 to disable promotion via the row-count path.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.optimizer.hash_join_max_build_partition_bytes</p></td>
+<tr class="row-even"><td><p>ballista.optimizer.hash_join_max_build_partition_bytes</p></td>
 <td><p>UInt64</p></td>
 <td><p>67108864</p></td>
 <td><p>Maximum per-partition hash-join build-side bytes for a Partitioned hash join under AQE. A build partition larger than this falls back to SortMergeJoin (spillable). Defaults to 64 MiB; 0 disables the check, which makes AQE use a hash join regardless of build size.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.optimizer.not_in_subquery_rewrite</p></td>
+<tr class="row-odd"><td><p>ballista.optimizer.not_in_subquery_rewrite</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
 <td><p>Rewrites uncorrelated NOT IN (subquery) filter predicates into a plain anti join plus a one-row count aggregate during logical optimization. The rewrite avoids DataFusion’s null-aware hash join, which Ballista must otherwise execute in a single task. Set to false to keep the null-aware join and its single-task lowering.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.optimizer.stage_build_side</p></td>
+<tr class="row-even"><td><p>ballista.optimizer.stage_build_side</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
 <td><p>Stages a join’s prospective build side as its own shuffle before choosing the join strategy. Applies only when that side’s size is an estimate rather than a measurement, and the probe side is far larger: an exact size over the broadcast budget is a fact that no further measurement can change. Lets AQE measure the build side and pick a broadcast join instead of committing to a full shuffle of the probe side up front. Set to false to always shuffle both sides at once.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.optimizer.stage_build_side_max_estimate_multiple</p></td>
+<tr class="row-odd"><td><p>ballista.optimizer.stage_build_side_max_estimate_multiple</p></td>
 <td><p>UInt64</p></td>
 <td><p>32</p></td>
 <td><p>How far over broadcast_join_threshold_bytes an estimated build side may sit and still be worth measuring. Past this multiple the side is large on any reading and no measurement brings it back under budget, so it is shuffled without the extra round trip. Only consulted when stage_build_side is enabled, and only for build sides whose size is an estimate rather than a measurement.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.optimizer.stage_build_side_min_probe_ratio</p></td>
+<tr class="row-even"><td><p>ballista.optimizer.stage_build_side_min_probe_ratio</p></td>
 <td><p>UInt64</p></td>
 <td><p>10</p></td>
 <td><p>How many times larger the probe side must be before AQE stages a join’s build side on its own. Staging serialises two shuffles that would otherwise run concurrently, so the deferral costs at most the smaller side’s runtime; this ratio bounds the cost of being wrong. Only consulted when stage_build_side is enabled, and only for build sides whose size is an estimate rather than a measurement.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.planner.adaptive.enabled</p></td>
+<tr class="row-odd"><td><p>ballista.planner.adaptive.enabled</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
 <td><p>Enables Adaptive Query Planning: joins and partition counts are chosen from measured runtime statistics instead of planning-time estimates. Set to false to use the static distributed planner.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.planner.adaptive_join.enabled</p></td>
+<tr class="row-even"><td><p>ballista.planner.adaptive_join.enabled</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
 <td><p>Enables the AQE dynamic join-selection rule (SelectJoinRule). When true (default), DynamicJoinSelectionExec nodes are resolved to concrete HashJoin or CollectLeft join implementations at runtime. Disable only for debugging.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.planner.coalesce.enabled</p></td>
+<tr class="row-odd"><td><p>ballista.planner.coalesce.enabled</p></td>
 <td><p>Boolean</p></td>
 <td><p>false</p></td>
 <td><p>Enables the AQE coalesce-shuffle-partitions rule. Disabled by default — opt in when fewer/larger downstream tasks matter more than parallelism.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.planner.coalesce.merged_partition_factor</p></td>
+<tr class="row-even"><td><p>ballista.planner.coalesce.merged_partition_factor</p></td>
 <td><p>Float64</p></td>
 <td><p>1.2</p></td>
 <td><p>Two adjacent partitions are merged when their combined size is below target_partition_bytes times this factor. Mirrors Spark’s legacy coalesce semantics.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.planner.coalesce.small_partition_factor</p></td>
+<tr class="row-odd"><td><p>ballista.planner.coalesce.small_partition_factor</p></td>
 <td><p>Float64</p></td>
 <td><p>0.2</p></td>
 <td><p>A coalesced partition smaller than target_partition_bytes times this factor counts as small and is merged into its neighbour. Mirrors Spark’s legacy coalesce semantics.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.planner.coalesce.target_partition_bytes</p></td>
+<tr class="row-even"><td><p>ballista.planner.coalesce.target_partition_bytes</p></td>
 <td><p>UInt64</p></td>
 <td><p>67108864</p></td>
 <td><p>Target post-coalesce partition size in bytes. Mirrors Spark’s advisoryPartitionSizeInBytes.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.planner.parallel_window.enabled</p></td>
+<tr class="row-odd"><td><p>ballista.planner.parallel_window.enabled</p></td>
 <td><p>Boolean</p></td>
 <td><p>false</p></td>
 <td><p>Enables the AQE parallel-window rule (ParallelWindowRule), which rewrites bounded-RANGE-frame windows into a distributed range-shuffle so BoundedWindowAggExec’s single-partition constraint is not a serial bottleneck. Disabled by default — opt in when the workload contains matching window shapes.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.planner.propagate_empty.enabled</p></td>
+<tr class="row-even"><td><p>ballista.planner.propagate_empty.enabled</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
 <td><p>Enables the AQE propagate-empty-relation rule. Injects EmptyExec into the plan where an input is known to be empty, such as one side of a join, allowing downstream work to be skipped.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.scheduler.max_partitions_per_task</p></td>
+<tr class="row-odd"><td><p>ballista.scheduler.max_partitions_per_task</p></td>
 <td><p>UInt64</p></td>
 <td><p>0</p></td>
 <td><p>Upper bound on the number of input partitions packed into a single task’s <code class="docutils literal notranslate"><span class="pre">partition_slice</span></code>. <code class="docutils literal notranslate"><span class="pre">0</span></code> (default) means unbounded — the scheduler fills each task up to the executor’s free vcore count. <code class="docutils literal notranslate"><span class="pre">1</span></code> means one task per input partition. Does not apply to collapse stages, which must pack their full pending queue into a single task for correctness.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.scheduler.share_file_statistics_cache</p></td>
+<tr class="row-even"><td><p>ballista.scheduler.share_file_statistics_cache</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
 <td><p>Shares one file statistics cache across all jobs the scheduler plans, so a job reuses the statistics earlier jobs read from Parquet footers instead of reading every footer again. A cached entry is only used while the file’s size and modification time still match, which misses a file rewritten in place without changing either. Set to false to keep this session’s jobs off the shared cache.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.standalone.parallelism</p></td>
+<tr class="row-odd"><td><p>ballista.standalone.parallelism</p></td>
 <td><p>UInt16</p></td>
 <td><p>number of available CPU cores</p></td>
 <td><p>Number of vcores advertised by the standalone in-process executor.</p></td>
@@ -897,8 +903,8 @@ manage the whole cluster are also needed to be taken care of.</p>
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0"></script>
-<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0"></script>
+  <script defer src="../_static/scripts/bootstrap.js?digest=18bd87630a240e9c25be"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=18bd87630a240e9c25be"></script>
 
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">
