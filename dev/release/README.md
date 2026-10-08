@@ -326,7 +326,11 @@ After the vote passes, pushing the final tag such as `55.0.0` publishes that
 version and updates `latest`. The separately released `python-*` tags do not
 trigger Docker publishing.
 
-Images can be found at [https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone)
+The published images are:
+
+- [`ghcr.io/apache/datafusion-ballista-standalone`](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone)
+- [`ghcr.io/apache/datafusion-ballista-scheduler`](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-scheduler)
+- [`ghcr.io/apache/datafusion-ballista-executor`](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-executor)
 
 ### Call the vote
 
