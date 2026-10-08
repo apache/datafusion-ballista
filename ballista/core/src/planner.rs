@@ -129,7 +129,6 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                     // The plan already carries the table schema resolved from
                     // this context's catalog, and it cannot be serialized, so
                     // it is planned here rather than on the cluster.
-                    log::debug!("create_physical_plan - handling describe table");
                     self.local_planner
                         .create_physical_plan(logical_plan, session_state)
                         .await
