@@ -54,6 +54,14 @@ docker push <your-repo>/datafusion-ballista-scheduler:latest
 docker push <your-repo>/datafusion-ballista-executor:latest
 ```
 
+If clients will fetch results from outside the cluster, also publish the Result Service image (see
+[Serving Results to Clients Outside the Cluster](#serving-results-to-clients-outside-the-cluster)):
+
+```bash
+docker tag apache/datafusion-ballista-result-service:latest <your-repo>/datafusion-ballista-result-service:latest
+docker push <your-repo>/datafusion-ballista-result-service:latest
+```
+
 ## Create Persistent Volume and Persistent Volume Claim
 
 Copy the following yaml to a `pv.yaml` file and apply to the cluster to create a persistent volume and a persistent
@@ -392,12 +400,173 @@ Use the following command to set up port-forwarding.
 kubectl port-forward service/ballista-scheduler 50050:50050
 ```
 
+## Serving Results to Clients Outside the Cluster
+
+Port forwarding the scheduler is enough to submit queries, but by default clients fetch query
+results directly from the executors, and executor pods are not reachable from outside the cluster.
+Deploy a Result Service that clients can reach, and have the scheduler point them at it. See
+[Fetching Query Results](../scheduler.md#fetching-query-results) for how it works.
+
+Save the following as `result-service.yaml`:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ballista-result-service
+spec:
+  ports:
+    - port: 50055
+      name: flight
+  selector:
+    app: ballista-result-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ballista-result-service
+spec:
+  # Replicas are interchangeable: each forwards any fetch to the executor that
+  # holds the partition and keeps no state, so scale with result traffic.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ballista-result-service
+  template:
+    metadata:
+      labels:
+        app: ballista-result-service
+        ballista-cluster: ballista
+    spec:
+      # On SIGTERM the Result Service stops accepting new fetches and lets
+      # in-flight result streams finish; give large results time to drain.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: ballista-result-service
+          image: <your-repo>/datafusion-ballista-result-service:latest
+          args: ["--bind-port=50055"]
+          ports:
+            - containerPort: 50055
+              name: flight
+          readinessProbe:
+            tcpSocket:
+              port: 50055
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 50055
+            periodSeconds: 10
+```
+
+Then add `--advertise-flight-endpoint` to the scheduler container's `args` in `cluster.yaml`. Which
+address to advertise depends on how clients reach the cluster.
+
+### Through port forwarding
+
+For a client on your own machine, forward a local port to the Result Service as well as to the
+scheduler, and advertise the local address:
+
+```yaml
+args: ["--bind-port=50050", "--advertise-flight-endpoint=127.0.0.1:50055"]
+```
+
+```bash
+kubectl apply -f result-service.yaml
+kubectl apply -f cluster.yaml
+kubectl port-forward service/ballista-scheduler 50050:50050 &
+kubectl port-forward service/ballista-result-service 50055:50055 &
+```
+
+`kubectl port-forward` sends all traffic to a single pod, so use this for testing only.
+
+### Through a TLS-terminating ingress
+
+In production, expose the Result Service through an ingress or load balancer that forwards gRPC
+(HTTP/2) to its backends, and advertise the ingress's public name with a `grpc+tls://` URI so that
+clients connect with TLS. The Result Service pods keep serving plaintext behind it.
+
+```yaml
+args:
+  - "--bind-port=50050"
+  - "--advertise-flight-endpoint=grpc+tls://ballista-results.example.com"
+```
+
+For example, with [ingress-nginx](https://kubernetes.github.io/ingress-nginx/):
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ballista-result-service
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    # Result streams are long-lived; the default 60s timeouts would cut off
+    # large results.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ballista-results.example.com
+      secretName: ballista-results-tls
+  rules:
+    - host: ballista-results.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ballista-result-service
+                port:
+                  number: 50055
+```
+
+Ballista clients need TLS roots for the ingress's certificate, supplied through a gRPC endpoint
+override.
+
+### Restricting what the Result Service can reach
+
+The Result Service checks no credentials, and it dials whichever executor address a fetch ticket
+names without checking that the address belongs to the cluster, so a forged ticket can make it
+connect to an arbitrary host. Keep it on networks you trust and, where your cluster enforces
+network policies, allow it to connect only to the executors' Arrow Flight port:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ballista-result-service-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: ballista-result-service
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ballista-executor
+      ports:
+        - port: 50051
+          protocol: TCP
+```
+
+If executors register with host names rather than pod IPs (`--external-host`), also allow DNS.
+
 ## Deleting the Ballista Cluster
 
 Run the following kubectl command to delete the cluster.
 
 ```bash
 kubectl delete -f cluster.yaml
+```
+
+If you deployed a Result Service, delete it too:
+
+```bash
+kubectl delete -f result-service.yaml
 ```
 
 ## Autoscaling Executors

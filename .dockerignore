@@ -11,11 +11,13 @@ CHANGELOG.md
 **/data
 !target/release/ballista-scheduler
 !target/release/ballista-executor
+!target/release/ballista-result-service
 !target/release/ballista-cli
 !target/release/tpch
 !target/release/h2o
 !target/release-nonlto/ballista-scheduler
 !target/release-nonlto/ballista-executor
+!target/release-nonlto/ballista-result-service
 !target/release-nonlto/ballista-cli
 !target/release-nonlto/tpch
 !target/release-nonlto/h2o

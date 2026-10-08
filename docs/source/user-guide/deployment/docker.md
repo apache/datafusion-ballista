@@ -40,13 +40,14 @@ This will create the following images:
 - `apache/datafusion-ballista-benchmarks:latest`
 - `apache/datafusion-ballista-cli:latest`
 - `apache/datafusion-ballista-executor:latest`
+- `apache/datafusion-ballista-result-service:latest`
 - `apache/datafusion-ballista-scheduler:latest`
 - `apache/datafusion-ballista-standalone:latest`
 
 Only the standalone, scheduler, and executor images are published to
-`ghcr.io/apache/`. The CLI and benchmarks images are built locally only, so the
-`apache/datafusion-ballista-cli:latest` commands below require a local build
-first.
+`ghcr.io/apache/`. The CLI, benchmarks, and Result Service images are built
+locally only, so the `apache/datafusion-ballista-cli:latest` commands below
+require a local build first.
 
 ## Start a Cluster
 

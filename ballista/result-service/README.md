@@ -51,6 +51,12 @@ Result bytes then flow **client → Result Service → executor**; the scheduler
 result data. Multiple replicas are interchangeable (the service holds no state), so scale
 by running more of them behind a gRPC-aware load balancer.
 
+`./dev/build-ballista-docker.sh` builds an `apache/datafusion-ballista-result-service`
+image, and the [Kubernetes deployment guide] has example manifests, including a
+TLS-terminating ingress and a network policy that limits what the service can reach. The
+service shuts down gracefully on SIGTERM or Ctrl-C, letting in-flight result streams
+finish.
+
 ## Behind a TLS-terminating ingress
 
 Advertise the ingress's public name as an Arrow Flight location URI, and clients connect
@@ -94,3 +100,4 @@ the service beyond networks you trust until fetch tickets are authenticated.
   pre-signed URLs), and opaque result handles that hide executor topology. See [#2484].
 
 [#2484]: https://github.com/apache/datafusion-ballista/issues/2484
+[kubernetes deployment guide]: https://datafusion.apache.org/ballista/user-guide/deployment/kubernetes.html#serving-results-to-clients-outside-the-cluster

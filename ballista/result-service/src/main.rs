@@ -95,9 +95,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Completes on Ctrl-C so the server shuts down gracefully.
+/// Completes on Ctrl-C, or on SIGTERM where the platform has it, so the server
+/// stops accepting new fetches and lets in-flight streams finish. SIGTERM is
+/// what Kubernetes sends before it kills a pod.
+///
+/// If a signal cannot be listened for, that branch never completes, rather than
+/// shutting the server down at startup.
 async fn shutdown_signal() {
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        error!("failed to listen for shutdown signal: {e}");
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            error!("failed to listen for Ctrl-C: {e}");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            Err(e) => {
+                error!("failed to listen for SIGTERM: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => info!("Received Ctrl-C, shutting down"),
+        () = terminate => info!("Received SIGTERM, shutting down"),
     }
 }

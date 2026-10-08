@@ -54,7 +54,8 @@ ballista-scheduler --advertise-flight-endpoint ballista-results.example.com:5005
 Clients then fetch each partition from the Result Service, which forwards the fetch to the executor
 that holds it, so the scheduler serves no result data. The Result Service holds no state: scale it
 by running more replicas behind a gRPC-aware load balancer and advertising the load balancer's
-address.
+address. For Kubernetes manifests, see
+[Serving Results to Clients Outside the Cluster](deployment/kubernetes.md#serving-results-to-clients-outside-the-cluster).
 
 ### Behind a TLS-terminating ingress
 
