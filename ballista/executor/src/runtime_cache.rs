@@ -23,6 +23,8 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use ballista_core::RuntimeProducer;
+use ballista_core::config::BallistaConfig;
+use datafusion::config::ConfigExtension;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::prelude::SessionConfig;
 use lru::LruCache;
@@ -162,11 +164,21 @@ impl SessionRuntimeCache for DefaultSessionRuntimeCache {
 /// Built-in `datafusion.*` options are not included: they do not feed the
 /// base env's shared state.
 ///
+/// The `ballista` extension is skipped for the same reason: none of the
+/// shipped producers read it, and the client re-sends `ballista.job.name`
+/// with every job, so keying on it would give a session that `SET`s a job
+/// name a fresh fingerprint per query — each one building a new base (and
+/// dropping the footer cache and cross-query reuse) and taking another LRU
+/// slot.
+///
 /// Extension iteration is ordered by prefix, and each extension's entries
 /// are sorted by key, so equal configs always produce equal fingerprints.
 fn config_fingerprint(config: &SessionConfig) -> u64 {
     let mut hasher = DefaultHasher::new();
     for (prefix, extension) in config.options().extensions.iter() {
+        if prefix == BallistaConfig::PREFIX {
+            continue;
+        }
         prefix.hash(&mut hasher);
         let mut entries = extension.entries();
         entries.sort_by(|a, b| a.key.cmp(&b.key));
@@ -181,7 +193,8 @@ fn config_fingerprint(config: &SessionConfig) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ballista_core::extension::SessionConfigHelperExt;
+    use ballista_core::config::BALLISTA_JOB_NAME;
+    use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
     use ballista_core::object_store::{
         runtime_env_with_s3_support, session_config_with_s3_support,
     };
@@ -362,6 +375,51 @@ mod tests {
             .produce_runtime("s2", &s3_task_config("KEY_ONE"), 1)
             .unwrap();
         assert!(!Arc::ptr_eq(&e1, &e2));
+    }
+
+    /// Same as `s3_task_config` plus a `ballista.job.name`, mimicking the
+    /// client re-sending a per-query job name with every job.
+    fn s3_task_config_with_job_name(key_id: &str, job_name: &str) -> SessionConfig {
+        session_config_with_s3_support().update_from_key_value_pair(&[
+            kv("s3.access_key_id", key_id),
+            kv("s3.secret_access_key", "secret"),
+            kv("s3.region", "us-east-1"),
+            kv(BALLISTA_JOB_NAME, job_name),
+        ])
+    }
+
+    #[test]
+    fn changed_ballista_job_name_hits_same_base_runtime() {
+        let with_name = |key_id: &str, job_name: &str| {
+            let cfg = s3_task_config_with_job_name(key_id, job_name);
+            // sanity: the SET actually landed on the ballista extension
+            assert_eq!(
+                cfg.ballista_config()
+                    .settings()
+                    .get(BALLISTA_JOB_NAME)
+                    .map(String::as_str),
+                Some(job_name)
+            );
+            cfg
+        };
+        let cache = s3_cache(16);
+        let e1 = cache
+            .produce_runtime("s1", &with_name("KEY_ONE", "job-a"), 1)
+            .unwrap();
+        let e2 = cache
+            .produce_runtime("s1", &with_name("KEY_ONE", "job-b"), 1)
+            .unwrap();
+        assert!(Arc::ptr_eq(&e1, &e2));
+    }
+
+    #[test]
+    fn fingerprint_ignores_ballista_extension() {
+        let a = config_fingerprint(&s3_task_config_with_job_name("KEY_ONE", "job-a"));
+        let b = config_fingerprint(&s3_task_config_with_job_name("KEY_ONE", "job-b"));
+        assert_eq!(a, b);
+        // s3.* entries still rekey the fingerprint
+        let c = config_fingerprint(&s3_task_config("KEY_TWO"));
+        assert_ne!(a, c);
     }
 
     #[test]
