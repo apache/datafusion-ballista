@@ -27,10 +27,11 @@
 //! groups have rows to read, the rest open and skip their files, and the stage
 //! takes as long as the busiest few tasks.
 //!
-//! [`BalanceFileGroups`] evaluates the scan's predicate against each file's
-//! statistics while planning, drops the files that cannot match, and deals the
-//! remaining files round-robin over the groups so the surviving work is spread
-//! across tasks. It leaves a scan untouched when no file can be pruned.
+//! [`BalanceAndPruneFileGroups`] evaluates the scan's predicate against each
+//! file's statistics while planning, drops the files that cannot match, and
+//! deals the remaining files round-robin over the groups so the surviving work
+//! is spread across tasks. It leaves a scan untouched when no file can be
+//! pruned.
 
 use ballista_core::config::BallistaConfig;
 use datafusion::common::Result;
@@ -65,16 +66,16 @@ use std::sync::Arc;
 /// Files without statistics are always kept. The number of file groups never
 /// grows, and shrinks only when fewer files survive than there were groups.
 #[derive(Debug, Default)]
-pub struct BalanceFileGroups;
+pub struct BalanceAndPruneFileGroups;
 
-impl BalanceFileGroups {
-    /// Creates a new `BalanceFileGroups` rule.
+impl BalanceAndPruneFileGroups {
+    /// Creates a new `BalanceAndPruneFileGroups` rule.
     pub fn new() -> Self {
         Self
     }
 }
 
-impl PhysicalOptimizerRule for BalanceFileGroups {
+impl PhysicalOptimizerRule for BalanceAndPruneFileGroups {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
@@ -108,7 +109,7 @@ impl PhysicalOptimizerRule for BalanceFileGroups {
     }
 
     fn name(&self) -> &str {
-        "BalanceFileGroups"
+        "BalanceAndPruneFileGroups"
     }
 
     fn schema_check(&self) -> bool {
@@ -248,7 +249,7 @@ mod tests {
 
     fn optimize(builder: FileScanConfigBuilder) -> Arc<dyn ExecutionPlan> {
         let plan = DataSourceExec::from_data_source(builder.build());
-        BalanceFileGroups::new()
+        BalanceAndPruneFileGroups::new()
             .optimize(plan, &ConfigOptions::default())
             .unwrap()
     }
@@ -383,7 +384,7 @@ mod tests {
         let plan = DataSourceExec::from_data_source(
             scan(clustered_groups(), Some(range_predicate(20, 60))).build(),
         );
-        let plan = BalanceFileGroups::new().optimize(plan, config.options())?;
+        let plan = BalanceAndPruneFileGroups::new().optimize(plan, config.options())?;
         assert_unchanged(&plan);
         Ok(())
     }
@@ -441,7 +442,7 @@ mod tests {
         assert_eq!(scan_groups(&plan), vec![4, 4, 4, 4]);
 
         let balanced =
-            BalanceFileGroups::new().optimize(plan, &ConfigOptions::default())?;
+            BalanceAndPruneFileGroups::new().optimize(plan, &ConfigOptions::default())?;
         // Only 4 files survive, one per group.
         assert_eq!(scan_groups(&balanced), vec![1, 1, 1, 1]);
         Ok(())

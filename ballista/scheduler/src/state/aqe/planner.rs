@@ -14,7 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-use crate::physical_optimizer::file_group_balance::BalanceFileGroups;
+use crate::physical_optimizer::file_group_balance::BalanceAndPruneFileGroups;
 use crate::physical_optimizer::filter_pushdown::FilterPushdown;
 use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{
@@ -629,7 +629,7 @@ impl AdaptivePlanner {
             // Needs the predicate `FilterPushdown` leaves on each scan. Runs
             // before DataFusion's own chain so its file-scan repartitioning
             // sees the pruned files.
-            Arc::new(BalanceFileGroups::new()),
+            Arc::new(BalanceAndPruneFileGroups::new()),
             Arc::new(DelayJoinSelectionRule::new(plan_id_generator)),
             Arc::new(ChaosCreatingRule::default()),
         ]

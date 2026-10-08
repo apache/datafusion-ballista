@@ -17,7 +17,7 @@
 
 use crate::cluster::{ExecutorSlot, JobState, JobStateEventStream};
 use crate::config::SchedulerConfig;
-use crate::physical_optimizer::file_group_balance::BalanceFileGroups;
+use crate::physical_optimizer::file_group_balance::BalanceAndPruneFileGroups;
 use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::aqe::AdaptiveExecutionGraph;
@@ -293,7 +293,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
                     let physical_plan =
                         ctx.state().create_physical_plan(logical_plan).await?;
-                    let physical_plan = BalanceFileGroups::new()
+                    let physical_plan = BalanceAndPruneFileGroups::new()
                         .optimize(physical_plan, session_config.options())?;
                     let physical_plan =
                         handle_explain_plan(job_id, &ctx, logical_plan, physical_plan)
