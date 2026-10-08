@@ -46,12 +46,12 @@ pub(crate) async fn generate_distributed_explain_plan(
     job_id: &JobId,
     session_ctx: &SessionContext,
     plan: Arc<LogicalPlan>,
+    mut planner: DefaultDistributedPlanner,
 ) -> Result<String> {
     let session_config = Arc::new(session_ctx.copied_config());
 
     let plan = session_ctx.state().create_physical_plan(&plan).await?;
 
-    let mut planner = DefaultDistributedPlanner::new();
     let shuffle_stages =
         planner.plan_query_stages(job_id, plan, session_config.options())?;
     let builder = ExecutionStageBuilder::new(session_config.clone());
@@ -193,11 +193,15 @@ fn render_stages(stages: HashMap<usize, ExecutionStage>) -> String {
     buf
 }
 
+/// `planner` breaks the plan into the rendered stages. The static planner path
+/// passes one configured like its own, so the stages shown are the ones that
+/// run.
 pub(crate) async fn handle_explain_plan(
     job_id: &JobId,
     ctx: &SessionContext,
     logical_plan: &LogicalPlan,
     plan: Arc<dyn ExecutionPlan>,
+    planner: DefaultDistributedPlanner,
 ) -> ballista_core::error::Result<Arc<dyn ExecutionPlan>> {
     if let LogicalPlan::Explain(explain_plan) = &logical_plan
         && let Some(explain) = plan.downcast_ref::<ExplainExec>()
@@ -206,7 +210,7 @@ pub(crate) async fn handle_explain_plan(
         let plans = explain.stringified_plans();
 
         let distributed_txt =
-            generate_distributed_explain_plan(job_id, ctx, inner_plan).await?;
+            generate_distributed_explain_plan(job_id, ctx, inner_plan, planner).await?;
         let (logical_txt, physical_txt) = extract_logical_and_physical_plans(plans);
 
         construct_distributed_explain_exec(logical_txt, physical_txt, distributed_txt)

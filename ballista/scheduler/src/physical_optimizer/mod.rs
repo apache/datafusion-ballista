@@ -25,3 +25,4 @@ pub mod filter_pushdown;
 // specific cases. it has been used in static
 // execution graph only.
 pub mod join_selection;
+pub mod reuse_exchange;

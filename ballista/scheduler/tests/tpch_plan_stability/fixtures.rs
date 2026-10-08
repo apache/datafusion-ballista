@@ -26,13 +26,20 @@
 use std::sync::Arc;
 
 use ballista_core::JobId;
+use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::extension::SessionConfigExt;
+use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use ballista_scheduler::planner::{DefaultDistributedPlanner, DistributedPlanner};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
+use datafusion::execution::TaskContext;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion_proto::physical_plan::{
+    PhysicalExtensionCodec, PhysicalProtoConverterExtension,
+};
 
-use crate::stats_table::TpchStatsTable;
+use crate::stats_table::{StatsExec, TpchStatsTable};
 
 const TARGET_PARTITIONS: usize = 16;
 const JOB_ID: &str = "plan_stability";
@@ -160,8 +167,9 @@ fn is_query_stmt(stmt: &str) -> bool {
     u.starts_with("SELECT") || u.starts_with("WITH")
 }
 
-/// Produce the normalized distributed staged-plan text for a TPC-H query.
-pub async fn staged_plan_text(query_name: &str) -> String {
+/// Build the distributed stages for a TPC-H query, with or without exchange
+/// reuse (the scheduler enables it by default).
+async fn plan_stages(query_name: &str, reuse: bool) -> Vec<Arc<dyn ShuffleWriter>> {
     // Read the query SQL directly from the canonical benchmark location rather
     // than a copy, so a change to a benchmark query surfaces as a golden diff.
     let sql_path = format!(
@@ -204,11 +212,61 @@ pub async fn staged_plan_text(query_name: &str) -> String {
     let physical = physical.unwrap();
 
     let mut planner = DefaultDistributedPlanner::new();
+    if reuse {
+        planner = planner.with_exchange_reuse(Arc::new(FixtureReuseCodec {
+            inner: BallistaPhysicalExtensionCodec::default(),
+        }));
+    }
     let state = ctx.state();
     let job_id: JobId = JOB_ID.into();
-    let stages = planner
+    planner
         .plan_query_stages(&job_id, physical, state.config().options())
-        .unwrap();
+        .unwrap()
+}
+
+/// Codec for this fixture's exchange-reuse key. The test-only [`StatsExec`]
+/// scan has no protobuf form, so it is fingerprinted by schema and row count.
+/// Without this every stage would fail to encode and reuse would never fire.
+/// Keys are never decoded. Everything else goes to the production
+/// `BallistaPhysicalExtensionCodec`.
+#[derive(Debug)]
+struct FixtureReuseCodec {
+    inner: BallistaPhysicalExtensionCodec,
+}
+
+impl PhysicalExtensionCodec for FixtureReuseCodec {
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> datafusion::error::Result<()> {
+        if let Some(stats) = node.downcast_ref::<StatsExec>() {
+            let rows = stats.num_rows();
+            buf.extend_from_slice(
+                format!("StatsExec|schema={:?}|rows={rows}", stats.schema()).as_bytes(),
+            );
+            Ok(())
+        } else {
+            self.inner.try_encode(node, buf, proto_converter)
+        }
+    }
+
+    fn try_decode(
+        &self,
+        buf: &[u8],
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        self.inner.try_decode(buf, inputs, ctx, proto_converter)
+    }
+}
+
+/// Produce the normalized distributed staged-plan text for a TPC-H query,
+/// with exchange reuse applied as the scheduler does by default.
+pub async fn staged_plan_text(query_name: &str) -> String {
+    let stages = plan_stages(query_name, true).await;
 
     let mut out = String::new();
     for stage in &stages {
@@ -218,6 +276,13 @@ pub async fn staged_plan_text(query_name: &str) -> String {
         out.push('\n');
     }
     normalize(&out)
+}
+
+/// Stage counts for a query planned without and with exchange reuse.
+pub async fn stage_counts(query_name: &str) -> (usize, usize) {
+    let before = plan_stages(query_name, false).await.len();
+    let after = plan_stages(query_name, true).await.len();
+    (before, after)
 }
 
 fn normalize(plan: &str) -> String {

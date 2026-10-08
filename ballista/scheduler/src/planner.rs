@@ -50,10 +50,14 @@ use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, Partitioning, ReplaceChildrenOptions,
     replace_children_if_necessary,
 };
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use log::debug;
 
 use crate::physical_optimizer::join_selection::{
     collect_left_broadcast_safe, should_swap_join_order,
+};
+use crate::physical_optimizer::reuse_exchange::{
+    protobuf_canonical_key, reuse_shuffle_stages,
 };
 use crate::state::task_builder::restrict_plan_to_partitions;
 
@@ -86,6 +90,9 @@ pub struct DefaultDistributedPlanner {
     /// Optimizer rule for re-enforcing distribution and sort requirements after
     /// stage splitting.
     optimizer_ensure_requirements: EnsureRequirements,
+    /// Codec whose encoding keys stages for exchange reuse, see
+    /// [`Self::with_exchange_reuse`].
+    exchange_reuse: Option<Arc<dyn PhysicalExtensionCodec>>,
 }
 
 impl DefaultDistributedPlanner {
@@ -97,7 +104,16 @@ impl DefaultDistributedPlanner {
             // thus stage re-optimisation is needed to adjust sort information
             optimizer_ensure_requirements:
                 datafusion::physical_optimizer::ensure_requirements::EnsureRequirements::default(),
+            exchange_reuse: None,
         }
+    }
+
+    /// Merges structurally identical exchanges after planning so a repeated
+    /// subplan is computed once. Stages are compared by their protobuf encoding
+    /// under `codec`, which should be the codec that ships stages to executors.
+    pub fn with_exchange_reuse(mut self, codec: Arc<dyn PhysicalExtensionCodec>) -> Self {
+        self.exchange_reuse = Some(codec);
+        self
     }
 }
 
@@ -127,7 +143,12 @@ impl DistributedPlanner for DefaultDistributedPlanner {
             None,
             config,
         )?);
-        Ok(stages)
+        match &self.exchange_reuse {
+            Some(codec) => reuse_shuffle_stages(stages, config, &|plan| {
+                protobuf_canonical_key(plan, codec.as_ref())
+            }),
+            None => Ok(stages),
+        }
     }
 }
 
