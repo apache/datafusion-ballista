@@ -15,14 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Ballista standalone Result Service binary.
-//!
-//! A stateless data plane that serves query results to clients, decoupled from
-//! the scheduler (control plane). In this first increment it forwards each fetch
-//! to the producing executor named in the request — the same behavior as the
-//! scheduler's deprecated embedded proxy, but as an independently scalable fleet
-//! that is off the scheduler's data path. Point the scheduler's `--advertise-flight-endpoint`
-//! at this service and clients fetch results here with no client changes.
+//! Ballista Result Service: serves query results to clients by forwarding each
+//! partition fetch to the executor that holds the partition. Point the
+//! scheduler's `--advertise-flight-endpoint` at it.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -81,9 +76,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         })?;
 
-    // Forwarding backend: relay every fetch to the executor named in the request.
-    // This is the shared serving core, so behavior matches the executor's own
-    // serving path and the scheduler's embedded proxy.
     let backend = ForwardingBackend::new(
         config.grpc_max_decoding_message_size,
         config.grpc_max_encoding_message_size,
@@ -94,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_decoding_message_size(config.grpc_max_decoding_message_size)
         .max_encoding_message_size(config.grpc_max_encoding_message_size);
 
-    info!("Ballista Result Service listening on {addr} (forwarding mode)");
+    info!("Ballista Result Service listening on {addr}");
 
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let server = create_grpc_server(&GrpcServerConfig::default())
@@ -114,8 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         () = shutdown_signal() => {}
     }
 
-    // Stop accepting connections and ask clients to open no new streams
-    // (HTTP/2 GOAWAY), then give in-flight result streams a bounded time to
+    // Stop accepting connections, then give in-flight streams a bounded time to
     // finish.
     let _ = stop_tx.send(());
     drain_or_time_out(
@@ -147,9 +138,7 @@ async fn drain_or_time_out<E>(
     }
 }
 
-/// Completes on Ctrl-C, or on SIGTERM where the platform has it, which starts
-/// the graceful shutdown. SIGTERM is what Kubernetes sends before it kills a
-/// pod.
+/// Completes on Ctrl-C, or on SIGTERM where the platform has it.
 ///
 /// If a signal cannot be listened for, that branch never completes, rather than
 /// shutting the server down at startup.

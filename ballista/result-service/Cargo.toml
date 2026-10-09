@@ -17,7 +17,7 @@
 
 [package]
 name = "ballista-result-service"
-description = "Ballista standalone Result Service — a stateless data plane for serving query results"
+description = "Ballista Distributed Compute - Result Service"
 license = { workspace = true }
 version = { workspace = true }
 homepage = { workspace = true }

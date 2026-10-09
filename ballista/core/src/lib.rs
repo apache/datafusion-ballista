@@ -98,7 +98,7 @@ pub mod planner;
 pub mod registry;
 /// Serialization and deserialization for Ballista messages and plans.
 pub mod serde;
-/// Shared Arrow Flight serving core for result/shuffle fetches.
+/// Serves partition fetches over Arrow Flight.
 pub mod serving;
 /// Quantile sketching of a fixed-width `ORDER BY` key, NULLs included.
 pub mod sort_key;

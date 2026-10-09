@@ -15,15 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A standalone Ballista Result Service for the chaos harness.
-//!
-//! Configured entirely from the environment, because `TestCluster` spawns it as
-//! a child process (mirroring `chaos-scheduler`/`chaos-executor`). It forwards
-//! every result fetch to the producing executor named in the request, using the
-//! shared serving core in `ballista-core` — the same `ForwardingBackend` the
-//! scheduler's embedded proxy uses and the standalone `ballista-result-service`
-//! binary uses. The harness points the scheduler's `advertise_flight_endpoint`
-//! at this process, so clients fetch results here instead of dialing executors.
+//! Result Service for the chaos harness. It is configured from the environment
+//! because `TestCluster` spawns it as a child process, like `chaos-scheduler`
+//! and `chaos-executor`.
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::serving::{ForwardingBackend, ServingFlightService};
@@ -47,8 +41,7 @@ async fn main() -> ballista_core::error::Result<()> {
         .parse()
         .expect("result service address must parse");
 
-    // Forwarding mode: relay each fetch to the executor named in the request.
-    // `use_tls = false` — the harness runs everything on loopback.
+    // Plaintext: the harness runs everything on loopback.
     let backend = ForwardingBackend::new(MAX_MESSAGE_SIZE, MAX_MESSAGE_SIZE, false, None);
     let service = FlightServiceServer::new(ServingFlightService::new(backend))
         .max_decoding_message_size(MAX_MESSAGE_SIZE)

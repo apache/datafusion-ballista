@@ -155,10 +155,9 @@ deadline is now 120s, and on expiry the error message carries the tail of
 every child process log, so a recurrence in CI is diagnosable from the test
 output alone.
 
-Result fetches go through a standalone Result Service by default: the harness
-spawns `chaos-result-service` and points the scheduler's
-`advertise_flight_endpoint` at it, so every scenario exercises the decoupled
-result path ([#2484]). Set `CHAOS_RESULT_SERVICE=0` (or call
+Result fetches go through a Result Service by default: the harness spawns
+`chaos-result-service` and points the scheduler's `advertise_flight_endpoint`
+at it. Set `CHAOS_RESULT_SERVICE=0` (or call
 `TestClusterBuilder::result_service(false)`) to have clients fetch straight
 from the executors instead.
 
@@ -410,5 +409,3 @@ Killing an executor can be noticed in two ways: heartbeat expiry
 E biases toward the fetch-failure path. Scenario D exercises the broader
 mid-stage executor-loss path, including stale task-attempt cancellation during
 executor-loss recovery. Both paths now recover and return the baseline result.
-
-[#2484]: https://github.com/apache/datafusion-ballista/issues/2484

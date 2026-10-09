@@ -115,9 +115,8 @@ impl Default for TestClusterBuilder {
             // Ballista's default is 30s. A short grace makes the total-loss
             // scenario fail the job a second or so after the reap.
             no_executors_grace_seconds: 1,
-            // Route result fetches through a standalone Result Service by default
-            // (the decoupled data-plane path), so every scenario exercises it.
-            // See `result_service` to opt back into peer-to-peer.
+            // Route result fetches through a Result Service by default, so every
+            // scenario exercises it.
             result_service: true,
         }
     }
@@ -154,10 +153,9 @@ impl TestClusterBuilder {
         self
     }
 
-    /// Whether result fetches route through a standalone Result Service (the
-    /// decoupled data-plane path, the default) or go peer-to-peer directly to
-    /// executors. When enabled, the harness spawns a `chaos-result-service` and
-    /// points the scheduler's advertised flight endpoint at it.
+    /// Whether result fetches go through a `chaos-result-service` that the
+    /// harness spawns and advertises (the default), or straight to the
+    /// executors.
     pub fn result_service(mut self, enabled: bool) -> Self {
         self.result_service = enabled;
         self
@@ -188,9 +186,7 @@ impl TestClusterBuilder {
         let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
         let log_dir = temp.path().join("logs");
         std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
-        // Whether result fetches route through a standalone Result Service.
-        // Defaults to the builder setting; `CHAOS_RESULT_SERVICE=0` (or `false`)
-        // forces peer-to-peer for an A/B run without editing the test.
+        // `CHAOS_RESULT_SERVICE=0` (or `false`) overrides the builder setting.
         let result_service_enabled = self.result_service
             && !matches!(
                 std::env::var("CHAOS_RESULT_SERVICE").as_deref(),
@@ -208,10 +204,8 @@ impl TestClusterBuilder {
             (scheduler_port, None)
         };
 
-        // Start the Result Service before the scheduler so the advertised
-        // endpoint is live by the time a client first fetches results. It holds
-        // no cluster state and forwards each fetch to the executor named in the
-        // request, so it needs neither scheduler nor executor coordination.
+        // Start the Result Service before the scheduler, so the advertised
+        // endpoint is live by the time a client first fetches results.
         let result_service = match result_service_port {
             Some(port) => {
                 let log = log_dir.join("result-service.log");
@@ -325,8 +319,7 @@ impl TestClusterBuilder {
 pub struct TestCluster {
     scheduler: Child,
     scheduler_port: u16,
-    /// The standalone Result Service process, when result serving is routed
-    /// through it (the default). `None` means peer-to-peer result fetches.
+    /// The Result Service process, if results go through one.
     result_service: Option<Child>,
     /// The port the Result Service listens on, mirrored from `result_service`.
     result_service_port: Option<u16>,
@@ -385,8 +378,7 @@ impl TestCluster {
         format!("http://127.0.0.1:{}", self.scheduler_port)
     }
 
-    /// The Result Service port clients are pointed at, when result serving is
-    /// routed through it (the default). `None` for a peer-to-peer configuration.
+    /// The Result Service's port, if results go through one.
     pub fn result_service_port(&self) -> Option<u16> {
         self.result_service_port
     }
@@ -459,10 +451,8 @@ impl TestCluster {
         Ok(())
     }
 
-    /// Block until the Result Service accepts TCP connections, or fail with its
-    /// log tail if the process has already exited. A plain connect suffices: the
-    /// service binds its gRPC port before it can serve, and clients connect
-    /// lazily at fetch time, so this only guards against a startup crash.
+    /// Waits until the Result Service accepts TCP connections, or fails with its
+    /// log tail if it has exited.
     async fn await_result_service_ready(&mut self) -> Result<(), String> {
         let Some(port) = self.result_service_port else {
             return Ok(());

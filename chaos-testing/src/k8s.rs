@@ -181,12 +181,9 @@ impl K8sCluster {
         clear_dir_contents(&shared_dir)?;
         write_marker(&shared_dir)?;
 
-        // Both local forward ports are reserved together, and before rendering:
-        // the scheduler advertises the Result Service forward as its result
-        // endpoint, since the client fetches from outside the cluster. They
-        // stay reserved through the rollout, which can take a while, so that
-        // neither another process nor the other reservation can take them, and
-        // are released just before the forwards bind them.
+        // Reserved before rendering, because the scheduler advertises the
+        // Result Service forward, and held through the rollout so nothing else
+        // takes them before the forwards bind.
         let reserved = ReservedPorts::new(2)?;
         let (scheduler_local_port, result_service_local_port) =
             (reserved.ports[0], reserved.ports[1]);
@@ -252,10 +249,8 @@ impl K8sCluster {
         Ok(cluster)
     }
 
-    /// Block until the Result Service port-forward accepts connections on
-    /// `port`, so that a forward that cannot bind its local port fails startup
-    /// here, with diagnostics, rather than surfacing later as an opaque
-    /// result-fetch error.
+    /// Waits for the Result Service port-forward to accept connections, so a
+    /// forward that cannot bind fails startup with diagnostics.
     async fn await_result_service_forward(&self, port: u16) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
@@ -606,12 +601,8 @@ fn require_kubectl() -> Result<(), String> {
 }
 
 /// Reserve a free local TCP port for the port-forward.
-/// Distinct free local ports, reserved by holding a listener on each until this
-/// is dropped.
-///
-/// Holding every listener while the next port is chosen is what keeps the
-/// ports distinct, and holding them until just before use keeps another process
-/// from taking one in the meantime.
+/// Distinct free local ports, held until this is dropped so nothing else can
+/// take them.
 struct ReservedPorts {
     ports: Vec<u16>,
     _listeners: Vec<TcpListener>,

@@ -28,8 +28,8 @@ use tonic::{Request, Response, Status, Streaming};
 /// Service implementing a proxy from scheduler to executor Apache Arrow Flight Protocol
 ///
 /// The proxy only implements the FlightService::do_get api and forwards the requests
-/// to the respective executors. It is a [`ServingFlightService`] over a
-/// [`ForwardingBackend`], kept under this name so existing callers keep working.
+/// to the respective executors. Equivalent to a [`ServingFlightService`] over a
+/// [`ForwardingBackend`].
 #[derive(Clone)]
 pub struct BallistaFlightProxyService {
     inner: ServingFlightService<ForwardingBackend>,

@@ -94,9 +94,6 @@ impl FlightService for BallistaFlightService {
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
-        // Serve from the local work directory via the shared serving core. The
-        // standalone Result Service answers the same request with a forwarding
-        // backend instead; only the byte source differs.
         serve_do_get(&LocalDiskBackend::new(self.work_dir.clone()), request).await
     }
 
@@ -256,10 +253,8 @@ impl FlightService for BallistaFlightService {
     }
 }
 
-/// A [`ResultBackend`] that serves a partition from the executor's local work
-/// directory. This is the executor's original `do_get` serving logic, now
-/// expressed through the shared serving core so the standalone Result Service
-/// can reuse the same request contract with a forwarding backend instead.
+/// A [`ResultBackend`] that serves partitions from the executor's work
+/// directory.
 struct LocalDiskBackend {
     work_dir: String,
 }

@@ -15,33 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Shared serving core for Ballista result/shuffle fetches over Arrow Flight.
-//!
-//! A fetch request (`do_get` on a [`Ticket`] carrying a [`FetchPartition`]) is
-//! answered the same way everywhere — decode the ticket, produce a stream of
-//! [`FlightData`] — and the only thing that varies is *where the bytes come
-//! from*. That difference is a [`ResultBackend`]:
-//!
-//! - the executor serves from its local work directory (a backend living in the
-//!   executor crate, over its shuffle-format helpers), and
-//! - the standalone Result Service and the scheduler's embedded proxy forward to
-//!   the producing executor ([`ForwardingBackend`]).
-//!
-//! [`serve_do_get`] is the shared shell both paths run; [`ServingFlightService`]
-//! wraps a backend as a `do_get`-only [`FlightService`] for callers (the Result
-//! Service, the embedded proxy) that serve nothing else. The executor keeps its
-//! own [`FlightService`] impl — it also answers `do_action` block transfers,
-//! which stay executor-internal and are deliberately not part of this core.
-//!
-//! [`Ticket`]: arrow_flight::Ticket
-//! [`FetchPartition`]: crate::serde::scheduler::Action::FetchPartition
-//! [`FlightData`]: arrow_flight::FlightData
-//! [`FlightService`]: arrow_flight::flight_service_server::FlightService
-//! [`ResultBackend`]: crate::serving::ResultBackend
-//! [`ForwardingBackend`]: crate::serving::ForwardingBackend
-//! [`serve_do_get`]: crate::serving::serve_do_get
-//! [`ServingFlightService`]: crate::serving::ServingFlightService
-
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -61,23 +34,19 @@ use crate::serde::decode_protobuf;
 use crate::serde::scheduler::Action as BallistaAction;
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 
-/// A boxed, `Send` Flight stream — the return shape every serving path shares.
+/// A boxed `Send` stream of Flight messages.
 pub type BoxedFlightStream<T> =
     Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
 
-/// Maps a [`BallistaError`] into a gRPC [`Status`], matching the executor's own
-/// serving errors so the two paths report failures identically.
+/// Maps a [`BallistaError`] to an internal gRPC [`Status`].
 pub fn from_ballista_err(e: &BallistaError) -> Status {
     Status::internal(format!("Ballista Error: {e:?}"))
 }
 
-/// Where a fetched partition's bytes come from.
+/// Supplies the data for a partition fetch.
 ///
-/// The one variant a fetch carries today is
-/// [`FetchPartition`](BallistaAction::FetchPartition); an implementation reads it
-/// and returns the bytes as a stream of [`FlightData`]. The original [`Ticket`]
-/// is passed through untouched so a forwarding backend can relay it verbatim
-/// without re-encoding.
+/// `ticket` is the request's original ticket, so a forwarding backend can relay
+/// it without re-encoding.
 #[tonic::async_trait]
 pub trait ResultBackend: Send + Sync + 'static {
     /// Produce the [`FlightData`] stream that answers `action`.
@@ -88,12 +57,8 @@ pub trait ResultBackend: Send + Sync + 'static {
     ) -> Result<BoxedFlightStream<FlightData>, Status>;
 }
 
-/// The shared `do_get` shell: decode the ticket to a [`BallistaAction`] and hand
-/// it to `backend`. Both the executor's `do_get` and [`ServingFlightService`]
-/// run this so the decode-and-dispatch contract lives in exactly one place.
-///
-/// A ticket that does not decode as a Ballista action is the client's mistake,
-/// so it is reported as `InvalidArgument` rather than as a server failure.
+/// Answers a `do_get` from `backend`. A ticket that does not decode as a
+/// Ballista action is rejected as `InvalidArgument`.
 pub async fn serve_do_get<B: ResultBackend + ?Sized>(
     backend: &B,
     request: Request<Ticket>,
@@ -105,11 +70,8 @@ pub async fn serve_do_get<B: ResultBackend + ?Sized>(
     Ok(Response::new(stream))
 }
 
-/// A `do_get`-only [`FlightService`] over a [`ResultBackend`].
-///
-/// Used by callers that serve results and nothing else — the standalone Result
-/// Service and the scheduler's embedded proxy. Every other Flight method returns
-/// `unimplemented`, exactly as the previous scheduler proxy did.
+/// A [`FlightService`] that answers `do_get` from a [`ResultBackend`] and
+/// returns `unimplemented` for every other method.
 pub struct ServingFlightService<B: ResultBackend> {
     backend: Arc<B>,
 }
@@ -123,8 +85,7 @@ impl<B: ResultBackend> ServingFlightService<B> {
     }
 }
 
-// Manual `Clone` (not derived) so it holds for any `B`, not only `B: Clone` —
-// the backend is behind an `Arc`, and tonic requires the service to be `Clone`.
+// Not derived, so that `B` needn't be `Clone`.
 impl<B: ResultBackend> Clone for ServingFlightService<B> {
     fn clone(&self) -> Self {
         Self {
@@ -214,13 +175,8 @@ impl<B: ResultBackend> FlightService for ServingFlightService<B> {
     }
 }
 
-/// A [`ResultBackend`] that forwards fetches to the producing executor.
-///
-/// The executor's address travels inside the fetch request itself, so this
-/// backend reads it from the decoded action, opens a Flight client to that
-/// executor, and relays the original ticket's `do_get` stream straight back.
-/// This is the byte-relay that the standalone Result Service and the scheduler's
-/// embedded proxy both use; it holds no per-request state and is cheap to clone.
+/// A [`ResultBackend`] that fetches the partition from the executor named in
+/// the ticket and relays its stream.
 #[derive(Clone)]
 pub struct ForwardingBackend {
     max_decoding_message_size: usize,
@@ -232,8 +188,7 @@ pub struct ForwardingBackend {
 }
 
 impl ForwardingBackend {
-    /// Creates a forwarding backend. The message sizes configure this backend's
-    /// own client to the executors it forwards to.
+    /// Creates a backend whose connections to executors use these settings.
     pub fn new(
         max_decoding_message_size: usize,
         max_encoding_message_size: usize,
