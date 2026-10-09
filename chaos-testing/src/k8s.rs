@@ -181,10 +181,15 @@ impl K8sCluster {
         clear_dir_contents(&shared_dir)?;
         write_marker(&shared_dir)?;
 
-        // Chosen before rendering: the scheduler advertises this local forward
-        // as the result endpoint, since the client fetches from outside the
-        // cluster.
-        let result_service_local_port = free_port()?;
+        // Both local forward ports are reserved together, and before rendering:
+        // the scheduler advertises the Result Service forward as its result
+        // endpoint, since the client fetches from outside the cluster. They
+        // stay reserved through the rollout, which can take a while, so that
+        // neither another process nor the other reservation can take them, and
+        // are released just before the forwards bind them.
+        let reserved = ReservedPorts::new(2)?;
+        let (scheduler_local_port, result_service_local_port) =
+            (reserved.ports[0], reserved.ports[1]);
         let manifests = render_manifests(
             &namespace,
             executors,
@@ -214,7 +219,7 @@ impl K8sCluster {
             .await?;
         }
 
-        let scheduler_local_port = free_port()?;
+        drop(reserved);
         let port_forward = PortForward::spawn(
             &namespace,
             "ballista-scheduler",
@@ -237,11 +242,37 @@ impl K8sCluster {
             client: crate::rest::build_client(),
         };
 
+        cluster
+            .await_result_service_forward(result_service_local_port)
+            .await?;
         cluster.await_executors(executors).await?;
 
         // Everything is up; keep the namespace (transfer ownership to `cluster`).
         std::mem::forget(guard);
         Ok(cluster)
+    }
+
+    /// Block until the Result Service port-forward accepts connections on
+    /// `port`, so that a forward that cannot bind its local port fails startup
+    /// here, with diagnostics, rather than surfacing later as an opaque
+    /// result-fetch error.
+    async fn await_result_service_forward(&self, port: u16) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                self.dump_diagnostics().await;
+                return Err(format!(
+                    "timed out waiting for the Result Service port-forward on 127.0.0.1:{port}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
     }
 
     /// `df://…` endpoint for the `ballista` client, via the port-forward.
@@ -575,13 +606,39 @@ fn require_kubectl() -> Result<(), String> {
 }
 
 /// Reserve a free local TCP port for the port-forward.
-fn free_port() -> Result<u16, String> {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| format!("bind ephemeral port: {e}"))?;
-    listener
-        .local_addr()
-        .map(|a| a.port())
-        .map_err(|e| e.to_string())
+/// Distinct free local ports, reserved by holding a listener on each until this
+/// is dropped.
+///
+/// Holding every listener while the next port is chosen is what keeps the
+/// ports distinct, and holding them until just before use keeps another process
+/// from taking one in the meantime.
+struct ReservedPorts {
+    ports: Vec<u16>,
+    _listeners: Vec<TcpListener>,
+}
+
+impl ReservedPorts {
+    fn new(count: usize) -> Result<Self, String> {
+        let listeners = (0..count)
+            .map(|_| {
+                TcpListener::bind("127.0.0.1:0")
+                    .map_err(|e| format!("bind ephemeral port: {e}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let ports = listeners
+            .iter()
+            .map(|listener| {
+                listener
+                    .local_addr()
+                    .map(|a| a.port())
+                    .map_err(|e| e.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            ports,
+            _listeners: listeners,
+        })
+    }
 }
 
 /// A supervised `kubectl port-forward` to a Service.
@@ -1009,6 +1066,19 @@ spec:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserved_ports_are_distinct() {
+        let reserved = ReservedPorts::new(16).unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for port in &reserved.ports {
+            assert!(
+                seen.insert(*port),
+                "port {port} handed out twice: {:?}",
+                reserved.ports
+            );
+        }
+    }
 
     #[test]
     fn guard_allows_empty_directory() {
