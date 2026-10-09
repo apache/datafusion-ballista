@@ -444,8 +444,8 @@ spec:
         app: ballista-result-service
         ballista-cluster: ballista
     spec:
-      # Covers the preStop sleep (5s) plus the drain bound (45s), so a pod is
-      # never killed mid-drain.
+      # Leaves 10s of headroom after the preStop sleep (5s) and the drain
+      # bound (45s).
       terminationGracePeriodSeconds: 60
       containers:
         - name: ballista-result-service
