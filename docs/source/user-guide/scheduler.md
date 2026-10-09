@@ -59,28 +59,20 @@ address. For Kubernetes manifests, see
 
 ### Behind a TLS-terminating ingress
 
-`--advertise-flight-endpoint` takes either a bare `HOST:PORT`, which leaves TLS to each client's own
-configuration, or an Arrow Flight location URI that tells clients how to connect:
-
-| Form                     | Clients connect with | Default port |
-| ------------------------ | -------------------- | ------------ |
-| `grpc+tls://HOST[:PORT]` | TLS                  | 443          |
-| `grpc+tcp://HOST[:PORT]` | plaintext            | 80           |
-| `grpc://HOST[:PORT]`     | plaintext            | 80           |
-| `HOST:PORT`              | the client's setting | required     |
-
-To serve results through an ingress or load balancer that terminates TLS, advertise its public name
-with `grpc+tls://`. The Result Service replicas behind it keep serving plaintext:
+To serve results through an ingress or load balancer that terminates TLS, advertise its address. The
+Result Service replicas behind it keep serving plaintext:
 
 ```bash
 ballista-result-service --bind-port 50055
-ballista-scheduler --advertise-flight-endpoint grpc+tls://ballista-results.example.com
+ballista-scheduler --advertise-flight-endpoint ballista-results.example.com:443
 ```
 
-The ingress must forward HTTP/2 (gRPC) to the replicas, for example with ingress-nginx's
-`nginx.ingress.kubernetes.io/backend-protocol: "GRPC"` annotation, and its read and send timeouts
-must be long enough for the largest result stream. Ballista clients still need TLS roots for the
-ingress's certificate; supply them with a gRPC endpoint override, as the [mTLS cluster example] does.
+Clients choose TLS for result fetches themselves, with `ballista.client.use_tls`, and need TLS roots
+for the ingress's certificate, supplied through a gRPC endpoint override as the
+[mTLS cluster example] does. `ballista.client.use_tls` applies to every result fetch a client
+makes, including direct fetches from executors. The ingress must forward HTTP/2 (gRPC) to the
+replicas, for example with ingress-nginx's `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"`
+annotation, and its read and send timeouts must be long enough for the largest result stream.
 
 [mtls cluster example]: https://github.com/apache/datafusion-ballista/blob/main/examples/examples/mtls-cluster.rs
 
@@ -93,10 +85,10 @@ The Result Service checks no credentials, and it dials whichever executor addres
 names without checking that the address belongs to the cluster. Keep it on a trusted network.
 ```
 
-| Option                           | Description                                                                                                                                                                                    |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--advertise-flight-endpoint`    | Where clients are told to fetch results from, instead of the executors: a Result Service, or a load balancer or ingress in front of one. A `HOST:PORT` or a `grpc+tls://` / `grpc+tcp://` URI. |
-| `--enable-embedded-flight-proxy` | **Deprecated, to be removed in 57.0.0.** Runs an Arrow Flight proxy inside the scheduler process, on the scheduler's own host and port, and points clients at the scheduler for results.       |
+| Option                           | Description                                                                                                                                                                              |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--advertise-flight-endpoint`    | The `HOST:PORT` address clients are told to fetch results from, instead of the executors: a Result Service, or a load balancer in front of one.                                          |
+| `--enable-embedded-flight-proxy` | **Deprecated, to be removed in 57.0.0.** Runs an Arrow Flight proxy inside the scheduler process, on the scheduler's own host and port, and points clients at the scheduler for results. |
 
 ### The embedded proxy (deprecated)
 

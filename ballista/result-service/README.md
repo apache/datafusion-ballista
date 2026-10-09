@@ -60,16 +60,15 @@ finish.
 
 ## Behind a TLS-terminating ingress
 
-Advertise the ingress's public name as an Arrow Flight location URI, and clients connect
-to it with TLS while the replicas behind it keep serving plaintext:
+Advertise the ingress's address, and have clients enable TLS for result fetches with
+`ballista.client.use_tls`, supplying the ingress's TLS roots through a gRPC endpoint
+override. The replicas behind the ingress keep serving plaintext:
 
 ```bash
-ballista-scheduler --advertise-flight-endpoint=grpc+tls://ballista-results.example.com
+ballista-scheduler --advertise-flight-endpoint=ballista-results.example.com:443
 ```
 
-`grpc+tls://` defaults to port 443; `grpc+tcp://HOST[:PORT]` forces plaintext, and a bare
-`HOST:PORT` leaves TLS to each client's own setting. The ingress must forward HTTP/2
-(gRPC) to the replicas, for example with ingress-nginx's
+The ingress must forward HTTP/2 (gRPC) to the replicas, for example with ingress-nginx's
 `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"`, and allow long-lived streams.
 
 ## Options

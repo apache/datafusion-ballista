@@ -482,13 +482,13 @@ kubectl port-forward service/ballista-result-service 50055:50055 &
 ### Through a TLS-terminating ingress
 
 In production, expose the Result Service through an ingress or load balancer that forwards gRPC
-(HTTP/2) to its backends, and advertise the ingress's public name with a `grpc+tls://` URI so that
-clients connect with TLS. The Result Service pods keep serving plaintext behind it.
+(HTTP/2) to its backends, and advertise the ingress's address. The Result Service pods keep serving
+plaintext behind it.
 
 ```yaml
 args:
   - "--bind-port=50050"
-  - "--advertise-flight-endpoint=grpc+tls://ballista-results.example.com"
+  - "--advertise-flight-endpoint=ballista-results.example.com:443"
 ```
 
 For example, with [ingress-nginx](https://kubernetes.github.io/ingress-nginx/):
@@ -523,8 +523,8 @@ spec:
                   number: 50055
 ```
 
-Ballista clients need TLS roots for the ingress's certificate, supplied through a gRPC endpoint
-override.
+Clients then fetch results over TLS by setting `ballista.client.use_tls` to `true`, with TLS roots
+for the ingress's certificate supplied through a gRPC endpoint override.
 
 ### Restricting what the Result Service can reach
 

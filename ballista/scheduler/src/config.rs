@@ -29,7 +29,6 @@ use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
 use crate::scheduler_server::JobIdGenerator;
 use ballista_core::extension::EndpointOverrideFn;
-use ballista_core::serving::ResultEndpoint;
 use ballista_core::{
     ConfigProducer, JobId, config::TaskSchedulingPolicy, ids::new_instance_id,
 };
@@ -86,7 +85,7 @@ pub struct Config {
         alias = "advertise-flight-sql-endpoint",
         num_args = 0..=1,
         default_missing_value = "",
-        help = "Address advertised to clients for fetching result partitions over Arrow Flight: a Result Service (ballista-result-service), or a load balancer or ingress in front of one, instead of the executors. Either an Arrow Flight location URI ('grpc+tls://HOST[:PORT]' for a TLS endpoint such as a TLS-terminating ingress, port 443 by default; 'grpc+tcp://HOST[:PORT]' for plaintext) or 'HOST:PORT', which leaves TLS to each client's own setting. Passing the flag with no value starts the deprecated embedded proxy, and is itself deprecated. The old name --advertise-flight-sql-endpoint is a deprecated alias."
+        help = "Address advertised to clients for fetching result partitions over Arrow Flight. Use 'HOST:PORT' to point clients at a Result Service (ballista-result-service), or a load balancer in front of one, instead of the executors. Passing the flag with no value starts the deprecated embedded proxy, and is itself deprecated. The old name --advertise-flight-sql-endpoint is a deprecated alias."
     )]
     pub advertise_flight_endpoint: Option<String>,
     /// Start an embedded Arrow Flight proxy on the scheduler host/port.
@@ -351,12 +350,7 @@ pub struct SchedulerConfig {
     pub finished_job_state_clean_up_interval_seconds: u64,
     /// The address advertised to clients for fetching result partitions over
     /// Arrow Flight, for example a Result Service (`ballista-result-service`)
-    /// or a load balancer or ingress in front of one.
-    ///
-    /// Either an Arrow Flight location URI or a bare `HOST:PORT`; see
-    /// [`ResultEndpoint`] for the accepted forms. Use `grpc+tls://HOST` for an
-    /// endpoint behind a TLS-terminating ingress. [`Self::validate`] rejects
-    /// anything else.
+    /// or a load balancer in front of one.
     ///
     /// This is plain Arrow Flight, not Flight SQL, which was removed in
     /// <https://github.com/apache/datafusion-ballista/pull/1228>.
@@ -558,14 +552,6 @@ impl SchedulerConfig {
                  as unset. To point clients at a Result Service, set it to that \
                  service's address."
             );
-        }
-        if let Some(endpoint) = self
-            .advertise_flight_endpoint
-            .as_deref()
-            .filter(|e| !e.is_empty())
-        {
-            // Fail at startup rather than on every client's first result fetch.
-            endpoint.parse::<ResultEndpoint>()?;
         }
         if self.flight_sql_enabled() && self.enable_embedded_flight_proxy {
             info!(
@@ -1124,34 +1110,6 @@ mod tests {
             ..Default::default()
         };
         cfg.validate().unwrap();
-    }
-
-    #[test]
-    fn advertised_endpoint_must_be_a_flight_location_or_host_port() {
-        for endpoint in [
-            "results.example.com:50055",
-            "grpc+tls://results.example.com",
-            "grpc+tcp://results.example.com:50055",
-        ] {
-            SchedulerConfig::default()
-                .with_advertise_flight_endpoint(Some(endpoint.to_string()))
-                .validate()
-                .unwrap();
-        }
-
-        for endpoint in [
-            "results.example.com",
-            "https://results.example.com/ballista",
-        ] {
-            let err = SchedulerConfig::default()
-                .with_advertise_flight_endpoint(Some(endpoint.to_string()))
-                .validate()
-                .unwrap_err();
-            assert!(
-                err.to_string().contains("invalid result endpoint"),
-                "unexpected error for {endpoint:?}: {err}"
-            );
-        }
     }
 
     #[test]
