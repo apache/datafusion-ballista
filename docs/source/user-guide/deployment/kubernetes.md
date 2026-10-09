@@ -496,8 +496,7 @@ that removal asynchronously, so for a few seconds new connections can still be r
 The `preStop` sleep keeps the pod accepting connections during that window. On SIGTERM, which
 follows the sleep, it stops accepting connections and lets in-flight result streams finish, for up
 to `--graceful-shutdown-timeout-seconds` (10 by default), before exiting. The rolling-update
-strategy and the PodDisruptionBudget keep at least one replica serving throughout. The `preStop`
-`sleep` action needs Kubernetes 1.30 or later.
+strategy and the PodDisruptionBudget keep at least one replica serving throughout.
 
 Then add `--advertise-flight-endpoint` to the scheduler container's `args` in `cluster.yaml`. Which
 address to advertise depends on how clients reach the cluster.
