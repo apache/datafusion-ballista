@@ -115,7 +115,7 @@ impl Default for TestClusterBuilder {
             // Ballista's default is 30s. A short grace makes the total-loss
             // scenario fail the job a second or so after the reap.
             no_executors_grace_seconds: 1,
-            // Route result fetches through a Result Service by default, so every
+            // Route result fetches through a result service by default, so every
             // scenario exercises it.
             result_service: true,
         }
@@ -204,7 +204,7 @@ impl TestClusterBuilder {
             (scheduler_port, None)
         };
 
-        // Start the Result Service before the scheduler, so the advertised
+        // Start the result service before the scheduler, so the advertised
         // endpoint is live by the time a client first fetches results.
         let result_service = match result_service_port {
             Some(port) => {
@@ -267,7 +267,7 @@ impl TestClusterBuilder {
             )
             .stdout(Stdio::from(scheduler_stdout))
             .stderr(Stdio::from(scheduler_stderr));
-        // Point clients at the Result Service instead of the executors.
+        // Point clients at the result service instead of the executors.
         if let Some(port) = result_service_port {
             scheduler.env(
                 "CHAOS_ADVERTISE_FLIGHT_ENDPOINT",
@@ -292,7 +292,7 @@ impl TestClusterBuilder {
             _machine_lock: machine_lock,
         };
 
-        // Fail fast if the Result Service crashed on startup, rather than letting
+        // Fail fast if the result service crashed on startup, rather than letting
         // it surface later as an opaque result-fetch error.
         if cluster.result_service.is_some() {
             cluster.await_result_service_ready().await?;
@@ -319,9 +319,9 @@ impl TestClusterBuilder {
 pub struct TestCluster {
     scheduler: Child,
     scheduler_port: u16,
-    /// The Result Service process, if results go through one.
+    /// The result service process, if results go through one.
     result_service: Option<Child>,
-    /// The port the Result Service listens on, mirrored from `result_service`.
+    /// The port the result service listens on, mirrored from `result_service`.
     result_service_port: Option<u16>,
     pub(crate) executors: Vec<ExecutorHandle>,
     temp: tempfile::TempDir,
@@ -378,7 +378,7 @@ impl TestCluster {
         format!("http://127.0.0.1:{}", self.scheduler_port)
     }
 
-    /// The Result Service's port, if results go through one.
+    /// The result service's port, if results go through one.
     pub fn result_service_port(&self) -> Option<u16> {
         self.result_service_port
     }
@@ -451,7 +451,7 @@ impl TestCluster {
         Ok(())
     }
 
-    /// Waits until the Result Service accepts TCP connections, or fails with its
+    /// Waits until the result service accepts TCP connections, or fails with its
     /// log tail if it has exited.
     async fn await_result_service_ready(&mut self) -> Result<(), String> {
         let Some(port) = self.result_service_port else {

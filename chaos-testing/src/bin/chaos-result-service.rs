@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Result Service for the chaos harness. It is configured from the environment
+//! result service for the chaos harness. It is configured from the environment
 //! because `TestCluster` spawns it as a child process, like `chaos-scheduler`
 //! and `chaos-executor`.
 

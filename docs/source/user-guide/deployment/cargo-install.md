@@ -27,7 +27,7 @@ cargo install --locked ballista-scheduler
 cargo install --locked ballista-executor
 ```
 
-If clients cannot reach the executors, also install the Result Service, which serves them query
+If clients cannot reach the executors, also install the result service, which serves them query
 results instead (see [Fetching Query Results](../scheduler.md#fetching-query-results)):
 
 ```bash

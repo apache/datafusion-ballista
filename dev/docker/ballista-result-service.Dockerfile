@@ -23,7 +23,7 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 ARG RELEASE_FLAG=release
 
-# ca-certificates so the Result Service can verify executors' TLS certificates
+# ca-certificates so the result service can verify executors' TLS certificates
 # when it runs with --use-tls.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \

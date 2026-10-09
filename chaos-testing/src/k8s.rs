@@ -35,7 +35,7 @@
 //!
 //! The harness process runs outside the cluster, so it reaches the scheduler's
 //! gRPC + REST (both on one port) through a `kubectl port-forward`. Results are
-//! fetched through a Result Service pod, reached through a second port-forward
+//! fetched through a result service pod, reached through a second port-forward
 //! that the scheduler advertises to clients (`advertise_flight_endpoint`), so
 //! the client never contacts executor pod IPs directly.
 //!
@@ -132,9 +132,9 @@ pub struct K8sCluster {
 }
 
 impl K8sCluster {
-    /// Deploy a scheduler + Result Service + `executors` executor pods, wait
+    /// Deploy a scheduler + result service + `executors` executor pods, wait
     /// until all executors have registered, and open port-forwards to the
-    /// scheduler and the Result Service.
+    /// scheduler and the result service.
     ///
     /// The executor pods use a realistic graceful-shutdown window
     /// ([`DEFAULT_EXECUTOR_GRACE_SECONDS`]). A scenario that needs an *abrupt*
@@ -182,7 +182,7 @@ impl K8sCluster {
         write_marker(&shared_dir)?;
 
         // Reserved before rendering, because the scheduler advertises the
-        // Result Service forward, and held through the rollout so nothing else
+        // result service forward, and held through the rollout so nothing else
         // takes them before the forwards bind.
         let reserved = ReservedPorts::new(2)?;
         let (scheduler_local_port, result_service_local_port) =
@@ -249,7 +249,7 @@ impl K8sCluster {
         Ok(cluster)
     }
 
-    /// Waits for the Result Service port-forward to accept connections, so a
+    /// Waits for the result service port-forward to accept connections, so a
     /// forward that cannot bind fails startup with diagnostics.
     async fn await_result_service_forward(&self, port: u16) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -263,7 +263,7 @@ impl K8sCluster {
             if Instant::now() > deadline {
                 self.dump_diagnostics().await;
                 return Err(format!(
-                    "timed out waiting for the Result Service port-forward on 127.0.0.1:{port}"
+                    "timed out waiting for the result service port-forward on 127.0.0.1:{port}"
                 ));
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -304,7 +304,7 @@ impl K8sCluster {
         }
     }
 
-    /// Print pod status and scheduler/Result Service/executor logs to stderr — invoked when a
+    /// Print pod status and scheduler/result service/executor logs to stderr — invoked when a
     /// wait times out, so a failed run is diagnosable even though the namespace
     /// is torn down afterwards. Set `CHAOS_KEEP_NS=1` to keep the namespace for
     /// manual `kubectl` inspection.
@@ -636,7 +636,7 @@ impl ReservedPorts {
 ///
 /// The forwards carry everything the harness does from outside the cluster —
 /// the `df://` client connection and the `/api/executors` poll to the scheduler,
-/// and query results from the Result Service. `kubectl port-forward`
+/// and query results from the result service. `kubectl port-forward`
 /// resolves the Service to a single pod when it starts and never re-resolves,
 /// and long-lived forwards also drop on their own from apiserver hiccups or idle
 /// timeouts. A single unmonitored forward would therefore turn a scheduler pod
@@ -833,7 +833,7 @@ async fn kubectl_apply(manifests: &str) -> Result<(), String> {
     }
 }
 
-/// Render the namespace + scheduler (Deployment + Service) + Result Service
+/// Render the namespace + scheduler (Deployment + Service) + result service
 /// (Deployment + Service) + executor Deployment. `mount` is the fixture
 /// directory, bind-mounted into the scheduler and executor pods (see
 /// [`fixture_dir`]); it must match the kind `extraMounts` path.

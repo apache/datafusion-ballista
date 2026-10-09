@@ -54,7 +54,7 @@ docker push <your-repo>/datafusion-ballista-scheduler:latest
 docker push <your-repo>/datafusion-ballista-executor:latest
 ```
 
-If clients will fetch results from outside the cluster, also publish the Result Service image (see
+If clients will fetch results from outside the cluster, also publish the result service image (see
 [Serving Results to Clients Outside the Cluster](#serving-results-to-clients-outside-the-cluster)):
 
 ```bash
@@ -404,7 +404,7 @@ kubectl port-forward service/ballista-scheduler 50050:50050
 
 Port forwarding the scheduler is enough to submit queries, but by default clients fetch query
 results directly from the executors, and executor pods are not reachable from outside the cluster.
-Deploy a Result Service that clients can reach, and have the scheduler point them at it. See
+Deploy a result service that clients can reach, and have the scheduler point them at it. See
 [Fetching Query Results](../scheduler.md#fetching-query-results) for how it works.
 
 Save the following as `result-service.yaml`:
@@ -499,7 +499,7 @@ address to advertise depends on how clients reach the cluster.
 
 ### Through port forwarding
 
-For a client on your own machine, forward a local port to the Result Service as well as to the
+For a client on your own machine, forward a local port to the result service as well as to the
 scheduler, and advertise the local address:
 
 ```yaml
@@ -517,8 +517,8 @@ kubectl port-forward service/ballista-result-service 50055:50055 &
 
 ### Through a TLS-terminating gateway
 
-In production, expose the Result Service through the [Gateway API] with a Gateway that terminates
-TLS and a `GRPCRoute` to the Result Service, and advertise the gateway's address. The Result
+In production, expose the result service through the [Gateway API] with a Gateway that terminates
+TLS and a `GRPCRoute` to the result service, and advertise the gateway's address. The Result
 Service pods keep serving plaintext behind it.
 
 ```yaml
@@ -565,9 +565,9 @@ to `true`, with TLS roots for the gateway's certificate supplied through a gRPC 
 
 [gateway api]: https://gateway-api.sigs.k8s.io/
 
-### Restricting what the Result Service can reach
+### Restricting what the result service can reach
 
-The Result Service checks no credentials, and it dials whichever executor address a fetch ticket
+The result service checks no credentials, and it dials whichever executor address a fetch ticket
 names without checking that the address belongs to the cluster, so a forged ticket can make it
 connect to an arbitrary host. Keep it on networks you trust and, where your cluster enforces
 network policies, allow it to connect only to the executors' Arrow Flight port:
@@ -602,7 +602,7 @@ Run the following kubectl command to delete the cluster.
 kubectl delete -f cluster.yaml
 ```
 
-If you deployed a Result Service, delete it too:
+If you deployed a result service, delete it too:
 
 ```bash
 kubectl delete -f result-service.yaml

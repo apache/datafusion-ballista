@@ -29,7 +29,7 @@ use ballista_core::utils::{GrpcServerConfig, create_grpc_server};
 use clap::Parser;
 use log::{error, info, warn};
 
-/// Command-line configuration for the Result Service.
+/// Command-line configuration for the result service.
 #[derive(Debug, Parser)]
 #[command(name = "ballista-result-service", version, about)]
 struct Config {

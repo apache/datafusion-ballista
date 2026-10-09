@@ -323,7 +323,7 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 ### Publish Docker Images
 
 Pushing an RC tag such as `55.0.0-rc1` publishes the standalone, executor,
-scheduler, and Result Service images with that exact tag. It does not update
+scheduler, and result service images with that exact tag. It does not update
 `latest`, because the candidate has not passed the ASF vote yet.
 
 After the vote passes, pushing the final tag such as `55.0.0` publishes that

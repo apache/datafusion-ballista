@@ -67,7 +67,7 @@ async fn main() -> ballista_core::error::Result<()> {
             "CHAOS_NO_EXECUTORS_GRACE_SECONDS",
             1,
         ),
-        // The harness's Result Service. Unset or empty means clients fetch from
+        // The harness's result service. Unset or empty means clients fetch from
         // the executors.
         advertise_flight_endpoint: std::env::var("CHAOS_ADVERTISE_FLIGHT_ENDPOINT")
             .ok()

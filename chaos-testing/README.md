@@ -155,7 +155,7 @@ deadline is now 120s, and on expiry the error message carries the tail of
 every child process log, so a recurrence in CI is diagnosable from the test
 output alone.
 
-Result fetches go through a Result Service by default: the harness spawns
+Result fetches go through a result service by default: the harness spawns
 `chaos-result-service` and points the scheduler's `advertise_flight_endpoint`
 at it. Set `CHAOS_RESULT_SERVICE=0` (or call
 `TestClusterBuilder::result_service(false)`) to have clients fetch straight
@@ -186,7 +186,7 @@ The harness also has an opt-in Kubernetes backend (`K8sCluster`, in
 [kind](https://kind.sigs.k8s.io) cluster rather than as local processes. It is
 gated behind the `k8s` feature _and_ `CHAOS_BACKEND=kind`, so a plain `cargo
 test` never touches a cluster. It runs the scenarios that genuinely need a
-cluster — real pod lifecycle, rescheduling, and the port-forward/Result Service
+cluster — real pod lifecycle, rescheduling, and the port-forward/result service
 path — while the backend-agnostic fault-injection scenarios stay on the fast
 process harness:
 
@@ -237,7 +237,7 @@ Because the harness runs outside the cluster, a few pieces bridge the gap:
   generates a `$HOME` config for local use).
 - **Reaching the cluster.** The client talks to the scheduler's gRPC + REST
   (both on one port) through a `kubectl port-forward`, and fetches query results
-  through a Result Service pod over a second port-forward (which the scheduler
+  through a result service pod over a second port-forward (which the scheduler
   advertises as its `advertise_flight_endpoint`), so it never contacts executor
   pod IPs directly.
 - **Pods.** Both expose `/healthz` + `/readyz` with liveness/readiness probes

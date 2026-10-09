@@ -43,7 +43,7 @@ produced them, over Arrow Flight. This keeps the scheduler out of the data path,
 every client to have network access to every executor — which is not the case in isolated
 environments such as Kubernetes, where clients can usually reach only a few entry points.
 
-For those deployments, run a Result Service (`ballista-result-service`) that clients can reach, and
+For those deployments, run a result service (`ballista-result-service`) that clients can reach, and
 have the scheduler advertise its address:
 
 ```bash
@@ -51,8 +51,8 @@ ballista-result-service --bind-port 50055
 ballista-scheduler --advertise-flight-endpoint ballista-results.example.com:50055
 ```
 
-Clients then fetch each partition from the Result Service, which forwards the fetch to the executor
-that holds it, so the scheduler serves no result data. The Result Service holds no state: scale it
+Clients then fetch each partition from the result service, which forwards the fetch to the executor
+that holds it, so the scheduler serves no result data. The result service holds no state: scale it
 by running more replicas behind a gRPC-aware load balancer and advertising the load balancer's
 address. For Kubernetes manifests, see
 [Serving Results to Clients Outside the Cluster](deployment/kubernetes.md#serving-results-to-clients-outside-the-cluster).
@@ -60,7 +60,7 @@ address. For Kubernetes manifests, see
 ### Behind a TLS-terminating gateway
 
 To serve results through a gateway or load balancer that terminates TLS, advertise its address. The
-Result Service replicas behind it keep serving plaintext:
+result service replicas behind it keep serving plaintext:
 
 ```bash
 ballista-result-service --bind-port 50055
@@ -80,13 +80,13 @@ replicas, for example with a Gateway API `GRPCRoute`, and allow long-lived strea
 > [Flight SQL frontend](flightsql.md) instead.
 
 ```{warning}
-The Result Service checks no credentials, and it dials whichever executor address a fetch ticket
+The result service checks no credentials, and it dials whichever executor address a fetch ticket
 names without checking that the address belongs to the cluster. Keep it on a trusted network.
 ```
 
 | Option                           | Description                                                                                                                                                                              |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--advertise-flight-endpoint`    | The `HOST:PORT` address clients are told to fetch results from, instead of the executors: a Result Service, or a load balancer in front of one.                                          |
+| `--advertise-flight-endpoint`    | The `HOST:PORT` address clients are told to fetch results from, instead of the executors: a result service, or a load balancer in front of one.                                          |
 | `--enable-embedded-flight-proxy` | **Deprecated, to be removed in 57.0.0.** Runs an Arrow Flight proxy inside the scheduler process, on the scheduler's own host and port, and points clients at the scheduler for results. |
 
 ### The embedded proxy (deprecated)

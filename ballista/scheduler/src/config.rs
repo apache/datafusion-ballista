@@ -85,17 +85,17 @@ pub struct Config {
         alias = "advertise-flight-sql-endpoint",
         num_args = 0..=1,
         default_missing_value = "",
-        help = "Address advertised to clients for fetching result partitions over Arrow Flight. Use 'HOST:PORT' to point clients at a Result Service (ballista-result-service), or a load balancer in front of one, instead of the executors. Passing the flag with no value starts the deprecated embedded proxy, and is itself deprecated. The old name --advertise-flight-sql-endpoint is a deprecated alias."
+        help = "Address advertised to clients for fetching result partitions over Arrow Flight. Use 'HOST:PORT' to point clients at a result service (ballista-result-service), or a load balancer in front of one, instead of the executors. Passing the flag with no value starts the deprecated embedded proxy, and is itself deprecated. The old name --advertise-flight-sql-endpoint is a deprecated alias."
     )]
     pub advertise_flight_endpoint: Option<String>,
     /// Start an embedded Arrow Flight proxy on the scheduler host/port.
     ///
-    /// Deprecated, and to be removed in 57.0.0: run a Result Service and point
+    /// Deprecated, and to be removed in 57.0.0: run a result service and point
     /// `--advertise-flight-endpoint` at it instead.
     #[arg(
         long,
         default_value_t = false,
-        help = "Deprecated, to be removed in 57.0.0: run a Result Service (ballista-result-service) and point --advertise-flight-endpoint at it instead. Starts an embedded Arrow Flight proxy on the scheduler, so clients fetch result partitions through the scheduler instead of connecting to executors directly. Independent of --advertise-flight-endpoint: if that is set to a non-empty address, clients are pointed at it rather than at this scheduler."
+        help = "Deprecated, to be removed in 57.0.0: run a result service (ballista-result-service) and point --advertise-flight-endpoint at it instead. Starts an embedded Arrow Flight proxy on the scheduler, so clients fetch result partitions through the scheduler instead of connecting to executors directly. Independent of --advertise-flight-endpoint: if that is set to a non-empty address, clients are pointed at it rather than at this scheduler."
     )]
     pub enable_embedded_flight_proxy: bool,
     /// Namespace for the ballista cluster.
@@ -349,7 +349,7 @@ pub struct SchedulerConfig {
     /// The delayed interval for cleaning up finished job state stored in the backend, 0 means the cleaning up is disabled.
     pub finished_job_state_clean_up_interval_seconds: u64,
     /// The address advertised to clients for fetching result partitions over
-    /// Arrow Flight, for example a Result Service (`ballista-result-service`)
+    /// Arrow Flight, for example a result service (`ballista-result-service`)
     /// or a load balancer in front of one.
     ///
     /// This is plain Arrow Flight, not Flight SQL, which was removed in
@@ -369,7 +369,7 @@ pub struct SchedulerConfig {
     /// embedded proxy.
     ///
     /// Deprecated, and to be removed in 57.0.0: the proxy puts result traffic
-    /// on the scheduler. Run a Result Service and advertise it with
+    /// on the scheduler. Run a result service and advertise it with
     /// [`Self::advertise_flight_endpoint`] instead. The scheduler logs a warning
     /// at startup while this is set.
     pub enable_embedded_flight_proxy: bool,
@@ -549,7 +549,7 @@ impl SchedulerConfig {
         if self.advertise_flight_endpoint.as_deref() == Some("") {
             warn!(
                 "advertise_flight_endpoint is set to an empty string, which is treated \
-                 as unset. To point clients at a Result Service, set it to that \
+                 as unset. To point clients at a result service, set it to that \
                  service's address."
             );
         }
@@ -646,7 +646,7 @@ impl SchedulerConfig {
     }
 
     /// Sets the Arrow Flight endpoint advertised to clients for fetching result
-    /// partitions, typically a Result Service or a load balancer in front of
+    /// partitions, typically a result service or a load balancer in front of
     /// one.
     ///
     /// An empty string is treated as unset. (Previously an empty value enabled
