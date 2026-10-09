@@ -522,8 +522,8 @@ kubectl port-forward service/ballista-result-service 50055:50055 &
 ### Through a TLS-terminating gateway
 
 In production, expose the result service through the [Gateway API] with a Gateway that terminates
-TLS and a `GRPCRoute` to the result service, and advertise the gateway's address. The Result
-Service pods keep serving plaintext behind it.
+TLS and a `GRPCRoute` to the result service, and advertise the gateway's address. The result
+service pods keep serving plaintext behind it.
 
 ```yaml
 args:
@@ -537,6 +537,8 @@ kind: Gateway
 metadata:
   name: ballista-results
 spec:
+  # The class your Gateway controller provides, for example `eg` (Envoy
+  # Gateway), `istio` or `cilium`; `kubectl get gatewayclass` lists them.
   gatewayClassName: <your-gateway-class>
   listeners:
     - name: grpc

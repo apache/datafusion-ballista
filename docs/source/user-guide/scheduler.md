@@ -94,8 +94,8 @@ names without checking that the address belongs to the cluster. Keep it on a tru
 The scheduler can still proxy results itself with `--enable-embedded-flight-proxy`. This puts result
 traffic on the scheduler's process and thread pool, competing with query planning and task
 scheduling, and it scales only with the scheduler. It is deprecated in 56.0.0 and will be removed in
-57.0.0; the scheduler logs a warning at startup while it is enabled. To migrate, deploy a Result
-Service and set `--advertise-flight-endpoint` to its address.
+57.0.0; the scheduler logs a warning at startup while it is enabled. To migrate, deploy a result
+service and set `--advertise-flight-endpoint` to its address.
 
 > `--advertise-flight-sql-endpoint` is accepted as a deprecated alias of
 > `--advertise-flight-endpoint`. Passing either flag with no value starts the deprecated embedded
