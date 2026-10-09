@@ -145,7 +145,7 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
     # session context, and ballista planner.
     #
     def _to_internal_df(self):
-        blob_plan = self.optimized_logical_plan().to_proto()
+        blob_plan = self.optimized_logical_plan().to_bytes()
         df = create_ballista_data_frame(
             blob_plan,
             self.address,
