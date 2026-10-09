@@ -24,13 +24,15 @@
 //! that is off the scheduler's data path. Point the scheduler's `--advertise-flight-endpoint`
 //! at this service and clients fetch results here with no client changes.
 
+use std::future::Future;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::serving::{ForwardingBackend, ServingFlightService};
 use ballista_core::utils::{GrpcServerConfig, create_grpc_server};
 use clap::Parser;
-use log::{error, info};
+use log::{error, info, warn};
 
 /// Command-line configuration for the Result Service.
 #[derive(Debug, Parser)]
@@ -55,6 +57,14 @@ struct Config {
     /// Maximum gRPC message size, in bytes, this service will encode.
     #[arg(long, default_value_t = 16777216)]
     grpc_max_encoding_message_size: usize,
+
+    /// Time in seconds to let in-flight result streams finish after a
+    /// shutdown signal (SIGTERM or Ctrl-C) before exiting anyway. Keep it below
+    /// your orchestrator's termination grace period (Kubernetes'
+    /// terminationGracePeriodSeconds, 30 by default), so this bound is reached
+    /// before a SIGKILL is.
+    #[arg(long, default_value_t = 10)]
+    graceful_shutdown_timeout_seconds: u64,
 }
 
 #[tokio::main]
@@ -86,18 +96,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Ballista Result Service listening on {addr} (forwarding mode)");
 
-    create_grpc_server(&GrpcServerConfig::default())
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = create_grpc_server(&GrpcServerConfig::default())
         .add_service(service)
-        .serve_with_shutdown(addr, shutdown_signal())
-        .await?;
+        .serve_with_shutdown(addr, async {
+            let _ = stop_rx.await;
+        });
+    tokio::pin!(server);
+
+    // Serve until a shutdown signal arrives, unless the server fails first.
+    tokio::select! {
+        result = &mut server => {
+            result?;
+            info!("Ballista Result Service stopped");
+            return Ok(());
+        }
+        () = shutdown_signal() => {}
+    }
+
+    // Stop accepting connections and ask clients to open no new streams
+    // (HTTP/2 GOAWAY), then give in-flight result streams a bounded time to
+    // finish.
+    let _ = stop_tx.send(());
+    drain_or_time_out(
+        server,
+        Duration::from_secs(config.graceful_shutdown_timeout_seconds),
+    )
+    .await?;
 
     info!("Ballista Result Service stopped");
     Ok(())
 }
 
-/// Completes on Ctrl-C, or on SIGTERM where the platform has it, so the server
-/// stops accepting new fetches and lets in-flight streams finish. SIGTERM is
-/// what Kubernetes sends before it kills a pod.
+/// Waits for the shutting-down `server` to finish its in-flight streams, but no
+/// longer than `bound`, after which the streams still running are abandoned.
+async fn drain_or_time_out<E>(
+    server: impl Future<Output = Result<(), E>>,
+    bound: Duration,
+) -> Result<(), E> {
+    match tokio::time::timeout(bound, server).await {
+        Ok(result) => result,
+        Err(_) => {
+            warn!(
+                "Graceful shutdown timed out after {}s; exiting with result \
+                 streams still in flight",
+                bound.as_secs()
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Completes on Ctrl-C, or on SIGTERM where the platform has it, which starts
+/// the graceful shutdown. SIGTERM is what Kubernetes sends before it kills a
+/// pod.
 ///
 /// If a signal cannot be listened for, that branch never completes, rather than
 /// shutting the server down at startup.
@@ -128,5 +180,31 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => info!("Received Ctrl-C, shutting down"),
         () = terminate => info!("Received SIGTERM, shutting down"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_stalled_drain_gives_up_once_the_bound_elapses() {
+        let result: Result<(), String> =
+            drain_or_time_out(std::future::pending(), Duration::from_millis(50)).await;
+        assert!(result.is_ok(), "must give up after the bound, not hang");
+    }
+
+    #[tokio::test]
+    async fn a_finished_drain_passes_its_result_through() {
+        let ok: Result<(), String> =
+            drain_or_time_out(async { Ok(()) }, Duration::from_secs(10)).await;
+        assert!(ok.is_ok());
+
+        let failed = drain_or_time_out(
+            async { Err::<(), _>("server failed".to_string()) },
+            Duration::from_secs(10),
+        )
+        .await;
+        assert_eq!(failed, Err("server failed".to_string()));
     }
 }

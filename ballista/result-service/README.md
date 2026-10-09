@@ -55,8 +55,8 @@ Install it with `cargo install --locked ballista-result-service`, or use the
 `ghcr.io/apache/datafusion-ballista-result-service` image (built locally by
 `./dev/build-ballista-docker.sh`). The [Kubernetes deployment guide] has example manifests, including a
 TLS-terminating ingress and a network policy that limits what the service can reach. The
-service shuts down gracefully on SIGTERM or Ctrl-C, letting in-flight result streams
-finish.
+service shuts down gracefully on SIGTERM or Ctrl-C: it stops accepting connections and
+lets in-flight result streams finish, for up to `--graceful-shutdown-timeout-seconds`.
 
 ## Behind a TLS-terminating ingress
 
@@ -73,13 +73,14 @@ The ingress must forward HTTP/2 (gRPC) to the replicas, for example with ingress
 
 ## Options
 
-| Flag                               | Default    | Meaning                              |
-| ---------------------------------- | ---------- | ------------------------------------ |
-| `--bind-host`                      | `0.0.0.0`  | Host/IP the Flight service binds to  |
-| `--bind-port`                      | `50055`    | Port the Flight service binds to     |
-| `--use-tls`                        | `false`    | Use TLS when connecting to executors |
-| `--grpc-max-decoding-message-size` | `16777216` | Max gRPC message size decoded        |
-| `--grpc-max-encoding-message-size` | `16777216` | Max gRPC message size encoded        |
+| Flag                                  | Default    | Meaning                                                             |
+| ------------------------------------- | ---------- | ------------------------------------------------------------------- |
+| `--bind-host`                         | `0.0.0.0`  | Host/IP the Flight service binds to                                 |
+| `--bind-port`                         | `50055`    | Port the Flight service binds to                                    |
+| `--use-tls`                           | `false`    | Use TLS when connecting to executors                                |
+| `--grpc-max-decoding-message-size`    | `16777216` | Max gRPC message size decoded                                       |
+| `--grpc-max-encoding-message-size`    | `16777216` | Max gRPC message size encoded                                       |
+| `--graceful-shutdown-timeout-seconds` | `10`       | Time in-flight result streams get to finish after SIGTERM or Ctrl-C |
 
 Set `RUST_LOG=debug` to log each forwarded `FetchPartition` (useful for confirming the
 data path bypasses the scheduler).

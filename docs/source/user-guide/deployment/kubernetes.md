@@ -429,6 +429,12 @@ spec:
   # Replicas are interchangeable: each forwards any fetch to the executor that
   # holds the partition and keeps no state, so scale with result traffic.
   replicas: 2
+  # Start a replacement before stopping an old pod, so rollouts keep capacity.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: ballista-result-service
@@ -438,13 +444,24 @@ spec:
         app: ballista-result-service
         ballista-cluster: ballista
     spec:
-      # On SIGTERM the Result Service stops accepting new fetches and lets
-      # in-flight result streams finish; give large results time to drain.
+      # Covers the preStop sleep (5s) plus the drain bound (45s), so a pod is
+      # never killed mid-drain.
       terminationGracePeriodSeconds: 60
       containers:
         - name: ballista-result-service
           image: <your-repo>/datafusion-ballista-result-service:latest
-          args: ["--bind-port=50055"]
+          args:
+            - "--bind-port=50055"
+            # After SIGTERM, stop accepting connections and give in-flight
+            # result streams up to 45s to finish.
+            - "--graceful-shutdown-timeout-seconds=45"
+          lifecycle:
+            # Keep serving for a few seconds after the pod starts terminating,
+            # while the Service and any ingress stop routing new connections
+            # to it. Kubernetes sends SIGTERM once this hook returns.
+            preStop:
+              exec:
+                command: ["sleep", "5"]
           ports:
             - containerPort: 50055
               name: flight
@@ -456,7 +473,24 @@ spec:
             tcpSocket:
               port: 50055
             periodSeconds: 10
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ballista-result-service
+spec:
+  # Node drains evict at most one replica at a time.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ballista-result-service
 ```
+
+When a pod is replaced or moved to another node, it keeps serving through the `preStop` sleep
+while the Service and any ingress stop routing new connections to it. On SIGTERM it then stops
+accepting connections and lets in-flight result streams finish, for up to
+`--graceful-shutdown-timeout-seconds` (10 by default), before exiting. The rolling-update strategy
+and the PodDisruptionBudget keep at least one replica serving throughout.
 
 Then add `--advertise-flight-endpoint` to the scheduler container's `args` in `cluster.yaml`. Which
 address to advertise depends on how clients reach the cluster.
