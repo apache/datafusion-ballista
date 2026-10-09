@@ -51,8 +51,9 @@ Result bytes then flow **client → Result Service → executor**; the scheduler
 result data. Multiple replicas are interchangeable (the service holds no state), so scale
 by running more of them behind a gRPC-aware load balancer.
 
-`./dev/build-ballista-docker.sh` builds an `apache/datafusion-ballista-result-service`
-image, and the [Kubernetes deployment guide] has example manifests, including a
+Install it with `cargo install --locked ballista-result-service`, or use the
+`ghcr.io/apache/datafusion-ballista-result-service` image (built locally by
+`./dev/build-ballista-docker.sh`). The [Kubernetes deployment guide] has example manifests, including a
 TLS-terminating ingress and a network policy that limits what the service can reach. The
 service shuts down gracefully on SIGTERM or Ctrl-C, letting in-flight result streams
 finish.

@@ -22,12 +22,10 @@ license = { workspace = true }
 version = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
+readme = "README.md"
 authors = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
-# Not published until the release tooling and Docker images cover it
-# (apache/datafusion-ballista#2484).
-publish = false
 
 [[bin]]
 name = "ballista-result-service"

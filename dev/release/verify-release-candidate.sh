@@ -149,6 +149,7 @@ test_source_distribution() {
     ballista-api-types
     ballista-executor
     ballista-history
+    ballista-result-service
     ballista-scheduler
     ballista
     ballista-cli

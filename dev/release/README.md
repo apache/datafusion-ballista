@@ -290,6 +290,7 @@ of the following crates:
 - [ballista-executor](https://crates.io/crates/ballista-executor)
 - [ballista-api-types](https://crates.io/crates/ballista-api-types)
 - [ballista-history](https://crates.io/crates/ballista-history)
+- [ballista-result-service](https://crates.io/crates/ballista-result-service)
 - [ballista-scheduler](https://crates.io/crates/ballista-scheduler)
 
 Download and unpack the official release tarball
@@ -308,6 +309,7 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 
 ```shell
 (cd ballista/core && cargo publish)
+(cd ballista/result-service && cargo publish)
 (cd ballista/executor && cargo publish)
 (cd ballista/api-types && cargo publish)
 (cd ballista/history && cargo publish)
@@ -318,8 +320,8 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 
 ### Publish Docker Images
 
-Pushing an RC tag such as `55.0.0-rc1` publishes the standalone, executor, and
-scheduler images with that exact tag. It does not update `latest`, because the
+Pushing an RC tag such as `55.0.0-rc1` publishes the standalone, executor,
+scheduler, and Result Service images with that exact tag. It does not update `latest`, because the
 candidate has not passed the ASF vote yet.
 
 After the vote passes, pushing the final tag such as `55.0.0` publishes that

@@ -22,6 +22,7 @@ digraph G {
     ballista_history
     ballista_scheduler
     ballista_executor
+    ballista_result_service
     ballista
     ballista_cli
 
@@ -31,6 +32,8 @@ digraph G {
     ballista_history -> ballista_api_types
 
     ballista_executor -> ballista_core
+
+    ballista_result_service -> ballista_core
 
     ballista -> ballista_core
     ballista -> ballista_scheduler
