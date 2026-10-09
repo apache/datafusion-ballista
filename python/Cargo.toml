@@ -17,7 +17,7 @@
 
 [package]
 name = "pyballista"
-version = "54.0.0"
+version = "55.0.0"
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
@@ -30,21 +30,24 @@ include = ["/src", "/ballista", "/LICENSE.txt", "pyproject.toml", "Cargo.toml", 
 publish = false
 
 [dependencies]
-# ballista = { path = "../ballista/client", version = "54.0.0" }
-# ballista-core = { path = "../ballista/core", version = "54.0.0" }
-# ballista-executor = { path = "../ballista/executor", version = "54.0.0", default-features = false }
-# ballista-scheduler = { path = "../ballista/scheduler", version = "54.0.0", default-features = false }
+# ballista = { path = "../ballista/client", version = "55.0.0" }
+# ballista-core = { path = "../ballista/core", version = "55.0.0" }
+# ballista-executor = { path = "../ballista/executor", version = "55.0.0", default-features = false }
+# ballista-scheduler = { path = "../ballista/scheduler", version = "55.0.0", default-features = false }
 
-ballista = { version = "=54.0.0" }
-ballista-core = { version = "=54.0.0" }
-ballista-executor = { version = "=54.0.0", default-features = false }
-ballista-scheduler = { version = "=54.0.0", default-features = false }
+ballista = { version = "=55.0.0" }
+ballista-core = { version = "=55.0.0" }
+ballista-executor = { version = "=55.0.0", default-features = false }
+ballista-scheduler = { version = "=55.0.0", default-features = false }
 
-datafusion = { version = "=54.0.0", features = ["avro"] }
-datafusion-proto = { version = "=54.0.0" }
-datafusion-python = { version = "=54.0.0", default-features = false }
+datafusion = { version = "=55.2.0", features = ["avro"] }
+datafusion-proto = { version = "=55.2.0" }
+# datafusion-python 55.0.0 is not on crates.io yet, so build against its release
+# candidate tag. Switch to `version = "=55.0.0"` once it is published, because
+# the Python release check only accepts crates.io dependencies.
+datafusion-python = { git = "https://github.com/apache/datafusion-python.git", tag = "55.0.0-rc1", default-features = false }
 log = { version = "0.4" }
-pyo3 = { version = "0.28", features = ["extension-module", "abi3", "abi3-py310"] }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3", "abi3-py310"] }
 pyo3-log = "0.13"
 tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync"] }
 tonic = { version = "0.14" }
