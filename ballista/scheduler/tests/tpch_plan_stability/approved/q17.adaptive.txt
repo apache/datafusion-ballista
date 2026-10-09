@@ -1,0 +1,17 @@
+AdaptiveDatafusionExec: is_final=true, plan_id=5, stage_id=4, stage_resolved=true
+  ProjectionExec: expr=[CAST(sum(lineitem.l_extendedprice)@0 AS Float64) / 7 as avg_yearly]
+    AggregateExec: mode=Single, gby=[], aggr=[sum(lineitem.l_extendedprice)]
+      CoalescePartitionsExec
+        ExchangeExec: partitioning=None, plan_id=6, stage_id=3, stage_resolved=true
+          HashJoinExec: mode=Partitioned, join_type=LeftSemi, on=[(p_partkey@2, l_partkey@1)], filter=CAST(l_quantity@0 AS Decimal128(30, 15)) < Float64(0.2) * avg(lineitem.l_quantity)@1, projection=[l_extendedprice@1]
+            ExchangeExec: partitioning=Hash([p_partkey@2], 16), plan_id=2, stage_id=0, stage_resolved=true
+              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(p_partkey@0, l_partkey@0)], projection=[l_quantity@2, l_extendedprice@3, p_partkey@0]
+                FilterExec: p_brand@1 = Brand#23 AND p_container@2 = MED BOX, projection=[p_partkey@0]
+                  StatsExec: rows=20000000
+                StatsExec: rows=600037902
+            ExchangeExec: partitioning=Hash([l_partkey@1], 16), plan_id=3, stage_id=2, stage_resolved=true
+              ProjectionExec: expr=[CAST(0.2 * CAST(avg(lineitem.l_quantity)@1 AS Float64) AS Decimal128(30, 15)) as Float64(0.2) * avg(lineitem.l_quantity), l_partkey@0 as l_partkey]
+                AggregateExec: mode=FinalPartitioned, gby=[l_partkey@0 as l_partkey], aggr=[avg(lineitem.l_quantity)]
+                  ExchangeExec: partitioning=Hash([l_partkey@0], 16), plan_id=4, stage_id=1, stage_resolved=true
+                    AggregateExec: mode=Partial, gby=[l_partkey@0 as l_partkey], aggr=[avg(lineitem.l_quantity)]
+                      StatsExec: rows=600037902
