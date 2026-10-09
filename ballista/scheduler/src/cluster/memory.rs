@@ -16,8 +16,12 @@
 // under the License.
 
 use crate::cluster::{
-    BoundTask, ClusterState, ExecutorSlot, JobState, JobStateEvent, JobStateEventStream,
-    JobStatus, TaskDistributionPolicy, bind_task_bias, bind_task_round_robin,
+    BoundTask, CacheState, ClusterState, ExecutorSlot, JobState, JobStateEvent,
+    JobStateEventStream, JobStatus, TaskDistributionPolicy, bind_task_bias,
+    bind_task_round_robin,
+};
+use crate::state::cache_registry::{
+    BeginOutcome, CacheKey, CacheRegistry, MaterializedCache,
 };
 use crate::state::execution_graph::ExecutionGraphBox;
 use ballista_core::error::{BallistaError, Result};
@@ -25,9 +29,11 @@ use ballista_core::serde::protobuf::{
     AvailableVcores, ExecutorHeartbeat, ExecutorStatus, FailedJob, QueuedJob,
     executor_status,
 };
+use ballista_core::serde::scheduler::PartitionLocation;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::{ConfigProducer, JobId, JobStatusSubscriber};
 use dashmap::DashMap;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use tokio::sync::mpsc::error::TrySendError;
 
@@ -970,5 +976,119 @@ mod test {
         }
 
         Ok(())
+    }
+}
+
+/// In-memory [`CacheState`] backend — the only implementation today.
+///
+/// A thin async wrapper over the synchronous, unit-tested [`CacheRegistry`],
+/// mirroring how [`InMemoryJobState`] wraps its maps. A durable backend would be
+/// a sibling type implementing [`CacheState`] whose `init` loads persisted
+/// entries; no caller changes needed.
+#[derive(Debug, Default)]
+pub struct InMemoryCacheState {
+    registry: CacheRegistry,
+}
+
+#[async_trait::async_trait]
+impl CacheState for InMemoryCacheState {
+    async fn lookup(&self, key: &CacheKey) -> Result<Option<MaterializedCache>> {
+        Ok(self.registry.lookup(key))
+    }
+
+    async fn begin_materialization(
+        &self,
+        key: CacheKey,
+        job_id: String,
+    ) -> Result<BeginOutcome> {
+        Ok(self.registry.begin_materialization(key, job_id))
+    }
+
+    async fn complete_materialization(
+        &self,
+        key: CacheKey,
+        job_id: String,
+        schema: SchemaRef,
+        locations: Vec<Vec<PartitionLocation>>,
+    ) -> Result<()> {
+        self.registry
+            .complete_materialization(key, job_id, schema, locations);
+        Ok(())
+    }
+
+    async fn invalidate(&self, key: &CacheKey) -> Result<()> {
+        self.registry.invalidate(key);
+        Ok(())
+    }
+
+    async fn invalidate_executor(&self, executor_id: &str) -> Result<Vec<CacheKey>> {
+        Ok(self
+            .registry
+            .invalidate_executor(executor_id)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect())
+    }
+
+    async fn remove_session(&self, session_id: &str) -> Result<()> {
+        self.registry.remove_session(session_id);
+        Ok(())
+    }
+
+    async fn pinned_job_ids(&self) -> Result<HashSet<String>> {
+        Ok(self.registry.pinned_job_ids())
+    }
+}
+
+#[cfg(test)]
+mod cache_state_test {
+    use super::InMemoryCacheState;
+    use crate::cluster::{BallistaCluster, CacheState};
+    use crate::state::cache_registry::{BeginOutcome, CacheKey};
+    use ballista_core::utils::{default_config_producer, default_session_builder};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use std::sync::Arc;
+
+    fn schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
+    }
+
+    // The registry logic is covered in state::cache_registry; these just prove
+    // the async backend delegates and that the cluster wires it up.
+
+    #[tokio::test]
+    async fn backend_delegates_miss_hit_invalidate() {
+        let state = InMemoryCacheState::default();
+        let key = CacheKey::new("s1", "c1");
+
+        assert!(state.lookup(&key).await.unwrap().is_none());
+        let claimed = state.begin_materialization(key.clone(), "j".into()).await;
+        assert_eq!(claimed.unwrap(), BeginOutcome::Claimed);
+        assert!(state.lookup(&key).await.unwrap().is_none()); // still pending
+
+        state
+            .complete_materialization(key.clone(), "j".into(), schema(), vec![])
+            .await
+            .unwrap();
+        assert!(state.lookup(&key).await.unwrap().is_some());
+
+        state.invalidate(&key).await.unwrap();
+        assert!(state.lookup(&key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cluster_exposes_cache_state() {
+        let cluster = BallistaCluster::new_memory(
+            "localhost:50050",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        );
+        let key = CacheKey::new("s1", "c1");
+        let cache = cluster.cache_state();
+        cache
+            .complete_materialization(key.clone(), "j".into(), schema(), vec![])
+            .await
+            .unwrap();
+        assert!(cache.lookup(&key).await.unwrap().is_some());
     }
 }

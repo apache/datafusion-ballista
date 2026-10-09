@@ -39,6 +39,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod aqe;
+/// Cross-job registry of materialized `DataFrame::cache()` results.
+pub mod cache_registry;
 mod distributed_explain;
 /// Execution graph representation and management.
 pub mod execution_graph;
