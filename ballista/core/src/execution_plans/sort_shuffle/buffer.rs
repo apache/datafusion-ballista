@@ -17,42 +17,42 @@
 
 //! In-memory buffering for sort-based shuffle.
 //!
-//! Holds whole input record batches plus per-output-partition row indices
-//! (`(batch_idx, row_idx)` pairs). Rows are not copied at insertion time;
-//! materialization is deferred to spill or final-write time and performed
-//! via `arrow::compute::interleave_record_batch`.
+//! Holds whole input record batches plus each output partition's
+//! `(batch_idx, row_idx)` pairs. Rows are not copied when they arrive; output
+//! batches are gathered with `interleave_record_batch` when the buffer is
+//! drained, at spill or final-write time.
 
+use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::error::Result;
 
-/// Return type of [`BufferedBatches::take`]: `(batches, per-partition indices)`.
-pub type BufferedTake = (Vec<RecordBatch>, Vec<Vec<(u32, u32)>>);
-
-/// Holds whole input `RecordBatch`es and per-partition `(batch_idx, row_idx)`
-/// index lists. Rows are not copied at insertion time — only the indices are
-/// recorded. Materialization happens through `PartitionedBatchIterator` at
-/// spill or final-write time, by way of `interleave_record_batch`.
+/// Rows buffered for every output partition of one input partition.
 #[derive(Debug)]
 pub struct BufferedBatches {
     schema: SchemaRef,
-    /// All input batches, in arrival order. Indexed by `batch_idx` in
-    /// `indices`. Never sliced.
+    batch_size: usize,
+    /// Input batches in arrival order, indexed by `batch_idx`.
     batches: Vec<RecordBatch>,
-    /// One entry per output partition. Each `(u32, u32)` is `(batch_idx,
-    /// row_idx)`, referring to a row inside `batches[batch_idx]`.
+    /// Total `get_array_memory_size` of `batches`.
+    batches_bytes: usize,
+    /// One list of `(batch_idx, row_idx)` pairs per output partition.
     indices: Vec<Vec<(u32, u32)>>,
-    /// Total rows currently referenced by `indices`. Test diagnostic only.
-    num_buffered_rows: usize,
+    /// Total allocated capacity of `indices`, in bytes.
+    indices_bytes: usize,
 }
 
 impl BufferedBatches {
-    /// Creates a new buffer for the given partition count and schema.
-    pub fn new(num_partitions: usize, schema: SchemaRef) -> Self {
+    /// Creates a buffer for `num_partitions` output partitions that drains
+    /// into batches of at most `batch_size` rows.
+    pub fn new(num_partitions: usize, schema: SchemaRef, batch_size: usize) -> Self {
         Self {
             schema,
+            batch_size,
             batches: Vec::new(),
-            indices: (0..num_partitions).map(|_| Vec::new()).collect(),
-            num_buffered_rows: 0,
+            batches_bytes: 0,
+            indices: vec![Vec::new(); num_partitions],
+            indices_bytes: 0,
         }
     }
 
@@ -61,35 +61,19 @@ impl BufferedBatches {
         self.indices.len()
     }
 
-    /// Returns true if no batches have been pushed yet.
+    /// Returns true if no rows are buffered.
     pub fn is_empty(&self) -> bool {
         self.batches.is_empty()
     }
 
-    /// Returns the total number of rows currently referenced by indices.
-    #[allow(dead_code)]
-    pub fn num_buffered_rows(&self) -> usize {
-        self.num_buffered_rows
+    /// Returns the bytes held: the buffered batches plus the allocated
+    /// capacity of the index lists.
+    pub fn memory_size(&self) -> usize {
+        self.batches_bytes + self.indices_bytes
     }
 
-    /// Returns the total heap-allocated size, in bytes, of the per-partition
-    /// `(batch_idx, row_idx)` index `Vec`s. Uses capacity (not length) so the
-    /// figure tracks actual heap allocation as `Vec`s grow.
-    pub fn indices_allocated_size(&self) -> usize {
-        self.indices
-            .iter()
-            .map(|v| v.capacity() * std::mem::size_of::<(u32, u32)>())
-            .sum()
-    }
-
-    /// Returns the row indices for output partition `partition_id`.
-    pub fn indices_for(&self, partition_id: usize) -> &[(u32, u32)] {
-        &self.indices[partition_id]
-    }
-
-    /// Pushes a whole input `batch` and records, for each output partition
-    /// `p`, the row indices from `per_partition_rows[p]` as `(batch_idx, r)`
-    /// pairs in that partition's index list.
+    /// Buffers `batch`, recording the rows listed in `per_partition_rows[p]`
+    /// for output partition `p`.
     ///
     /// `per_partition_rows.len()` must equal `num_partitions()`.
     pub fn push_batch(&mut self, batch: RecordBatch, per_partition_rows: &[Vec<u32>]) {
@@ -99,26 +83,38 @@ impl BufferedBatches {
             "BufferedBatches::push_batch schema mismatch"
         );
         let batch_idx = self.batches.len() as u32;
-        for (p, rows) in per_partition_rows.iter().enumerate() {
-            let dst = &mut self.indices[p];
-            dst.reserve(rows.len());
-            for &r in rows {
-                dst.push((batch_idx, r));
-                self.num_buffered_rows += 1;
-            }
+        for (partition_indices, rows) in self.indices.iter_mut().zip(per_partition_rows) {
+            let capacity_before = partition_indices.capacity();
+            partition_indices.extend(rows.iter().map(|&r| (batch_idx, r)));
+            self.indices_bytes += (partition_indices.capacity() - capacity_before)
+                * size_of::<(u32, u32)>();
         }
+        self.batches_bytes += batch.get_array_memory_size();
         self.batches.push(batch);
     }
 
-    /// Drains all state, returning the buffered batches and per-partition
-    /// index lists. After this call the buffer is empty.
-    pub fn take(&mut self) -> BufferedTake {
-        self.num_buffered_rows = 0;
+    /// Empties the buffer, passing each output batch of at most `batch_size`
+    /// rows to `f` with its partition, in partition order and then arrival
+    /// order. Output batches are gathered one at a time, as `f` consumes them.
+    pub fn drain(
+        &mut self,
+        mut f: impl FnMut(usize, RecordBatch) -> Result<()>,
+    ) -> Result<()> {
+        self.batches_bytes = 0;
+        self.indices_bytes = 0;
         let batches = std::mem::take(&mut self.batches);
-        // Preserve the partition count by replacing each inner vec with empty
-        let indices: Vec<Vec<(u32, u32)>> =
-            self.indices.iter_mut().map(std::mem::take).collect();
-        (batches, indices)
+        let indices: Vec<_> = self.indices.iter_mut().map(std::mem::take).collect();
+        for (partition, partition_indices) in indices.iter().enumerate() {
+            let iter = PartitionedBatchIterator::new(
+                &batches,
+                partition_indices,
+                self.batch_size,
+            );
+            for batch in iter {
+                f(partition, batch?)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -129,58 +125,67 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
-    fn create_test_schema() -> SchemaRef {
+    fn schema() -> SchemaRef {
         Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
     }
 
-    fn create_test_batch(schema: &SchemaRef, values: Vec<i32>) -> RecordBatch {
-        let array = Int32Array::from(values);
-        RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap()
+    fn batch(values: Vec<i32>) -> RecordBatch {
+        RecordBatch::try_new(schema(), vec![Arc::new(Int32Array::from(values))]).unwrap()
+    }
+
+    fn drain(bb: &mut BufferedBatches) -> Vec<(usize, RecordBatch)> {
+        let mut out = vec![];
+        bb.drain(|p, b| {
+            out.push((p, b));
+            Ok(())
+        })
+        .unwrap();
+        out
     }
 
     #[test]
-    fn buffered_batches_pushes_and_partitions_indices() {
-        let schema = create_test_schema();
-        let mut bb = BufferedBatches::new(3, schema.clone());
+    fn drains_each_partition_in_arrival_order_and_batch_size() {
+        let mut bb = BufferedBatches::new(3, schema(), 2);
         assert!(bb.is_empty());
         assert_eq!(bb.num_partitions(), 3);
 
-        let batch_a = create_test_batch(&schema, vec![10, 20, 30, 40]);
-        let batch_b = create_test_batch(&schema, vec![50, 60]);
-
-        // Partition 0 gets rows {0, 2} from batch 0; partition 1 gets {1, 3} from
-        // batch 0; partition 2 gets {0, 1} from batch 1.
-        let per_partition_a: Vec<Vec<u32>> = vec![vec![0, 2], vec![1, 3], vec![]];
-        let per_partition_b: Vec<Vec<u32>> = vec![vec![], vec![], vec![0, 1]];
-
-        bb.push_batch(batch_a, &per_partition_a);
-        bb.push_batch(batch_b, &per_partition_b);
-
+        // Partition 0 gets rows {0, 2} of the first batch and all of the
+        // second; partition 1 gets {3, 1} of the first.
+        bb.push_batch(
+            batch(vec![10, 20, 30, 40]),
+            &[vec![0, 2], vec![3, 1], vec![]],
+        );
+        bb.push_batch(batch(vec![50, 60]), &[vec![0, 1], vec![], vec![]]);
         assert!(!bb.is_empty());
-        // Total rows referenced by indices: 2 + 2 + 2 = 6
-        assert_eq!(bb.num_buffered_rows(), 6);
 
-        let p0 = bb.indices_for(0);
-        assert_eq!(p0, &[(0u32, 0u32), (0, 2)]);
-        let p1 = bb.indices_for(1);
-        assert_eq!(p1, &[(0u32, 1u32), (0, 3)]);
-        let p2 = bb.indices_for(2);
-        assert_eq!(p2, &[(1u32, 0u32), (1, 1)]);
+        assert_eq!(
+            drain(&mut bb),
+            vec![
+                (0, batch(vec![10, 30])),
+                (0, batch(vec![50, 60])),
+                (1, batch(vec![40, 20])),
+            ]
+        );
+        assert!(bb.is_empty());
+        assert_eq!(drain(&mut bb), vec![]);
     }
 
     #[test]
-    fn buffered_batches_take_drains_state() {
-        let schema = create_test_schema();
-        let mut bb = BufferedBatches::new(2, schema.clone());
-        bb.push_batch(create_test_batch(&schema, vec![1, 2]), &[vec![0], vec![1]]);
+    fn memory_size_counts_batches_and_index_capacity() {
+        let mut bb = BufferedBatches::new(2, schema(), 8);
+        assert_eq!(bb.memory_size(), 0);
 
-        let (batches, indices) = bb.take();
-        assert_eq!(batches.len(), 1);
-        assert_eq!(indices.len(), 2);
-        assert_eq!(indices[0], vec![(0, 0)]);
-        assert_eq!(indices[1], vec![(0, 1)]);
+        let input = batch(vec![1, 2, 3]);
+        let batch_bytes = input.get_array_memory_size();
+        bb.push_batch(input, &[vec![0, 2], vec![1]]);
+        let index_bytes: usize = bb
+            .indices
+            .iter()
+            .map(|v| v.capacity() * size_of::<(u32, u32)>())
+            .sum();
+        assert_eq!(bb.memory_size(), batch_bytes + index_bytes);
 
-        assert!(bb.is_empty());
-        assert_eq!(bb.num_buffered_rows(), 0);
+        drain(&mut bb);
+        assert_eq!(bb.memory_size(), 0);
     }
 }
