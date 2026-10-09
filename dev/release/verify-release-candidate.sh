@@ -148,6 +148,7 @@ test_source_distribution() {
     ballista-core
     ballista-api-types
     ballista-executor
+    ballista-flight-sql
     ballista-history
     ballista-result-service
     ballista-scheduler

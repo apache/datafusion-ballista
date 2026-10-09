@@ -289,6 +289,7 @@ of the following crates:
 - [ballista-core](https://crates.io/crates/ballista-core)
 - [ballista-executor](https://crates.io/crates/ballista-executor)
 - [ballista-api-types](https://crates.io/crates/ballista-api-types)
+- [ballista-flight-sql](https://crates.io/crates/ballista-flight-sql)
 - [ballista-history](https://crates.io/crates/ballista-history)
 - [ballista-result-service](https://crates.io/crates/ballista-result-service)
 - [ballista-scheduler](https://crates.io/crates/ballista-scheduler)
@@ -312,6 +313,7 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 (cd ballista/result-service && cargo publish)
 (cd ballista/executor && cargo publish)
 (cd ballista/api-types && cargo publish)
+(cd ballista/flight-sql && cargo publish)
 (cd ballista/history && cargo publish)
 (cd ballista/scheduler && cargo publish)
 (cd ballista/client && cargo publish)
@@ -321,14 +323,19 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 ### Publish Docker Images
 
 Pushing an RC tag such as `55.0.0-rc1` publishes the standalone, executor,
-scheduler, and Result Service images with that exact tag. It does not update `latest`, because the
-candidate has not passed the ASF vote yet.
+scheduler, and Result Service images with that exact tag. It does not update
+`latest`, because the candidate has not passed the ASF vote yet.
 
 After the vote passes, pushing the final tag such as `55.0.0` publishes that
 version and updates `latest`. The separately released `python-*` tags do not
 trigger Docker publishing.
 
-Images can be found at [https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone)
+The published images are:
+
+- [`ghcr.io/apache/datafusion-ballista-standalone`](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone)
+- [`ghcr.io/apache/datafusion-ballista-scheduler`](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-scheduler)
+- [`ghcr.io/apache/datafusion-ballista-executor`](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-executor)
+- [`ghcr.io/apache/datafusion-ballista-result-service`](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-result-service)
 
 ### Call the vote
 
