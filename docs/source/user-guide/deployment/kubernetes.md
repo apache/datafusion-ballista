@@ -458,12 +458,14 @@ spec:
             # result streams up to 45s to finish.
             - "--graceful-shutdown-timeout-seconds=45"
           lifecycle:
-            # Keep serving for a few seconds after the pod starts terminating,
-            # while the Service and any gateway stop routing new connections
-            # to it. Kubernetes sends SIGTERM once this hook returns.
+            # Kubernetes removes a terminating pod from the Service's endpoints
+            # in parallel with shutting it down, and kube-proxy and gateways
+            # learn of the removal asynchronously, so new connections can still
+            # arrive for a few seconds. Sleeping keeps the pod accepting them
+            # until routing catches up; SIGTERM follows once the hook returns.
             preStop:
-              exec:
-                command: ["sleep", "5"]
+              sleep:
+                seconds: 5
           ports:
             - containerPort: 50055
               name: flight
@@ -488,11 +490,14 @@ spec:
       app: ballista-result-service
 ```
 
-When a pod is replaced or moved to another node, it keeps serving through the `preStop` sleep
-while the Service and any gateway stop routing new connections to it. On SIGTERM it then stops
-accepting connections and lets in-flight result streams finish, for up to
-`--graceful-shutdown-timeout-seconds` (10 by default), before exiting. The rolling-update strategy
-and the PodDisruptionBudget keep at least one replica serving throughout.
+When a pod is replaced or moved to another node, Kubernetes removes it from the Service's
+endpoints at the same time as it starts shutting the pod down. kube-proxy and any gateway pick up
+that removal asynchronously, so for a few seconds new connections can still be routed to the pod.
+The `preStop` sleep keeps the pod accepting connections during that window. On SIGTERM, which
+follows the sleep, it stops accepting connections and lets in-flight result streams finish, for up
+to `--graceful-shutdown-timeout-seconds` (10 by default), before exiting. The rolling-update
+strategy and the PodDisruptionBudget keep at least one replica serving throughout. The `preStop`
+`sleep` action needs Kubernetes 1.30 or later.
 
 Then add `--advertise-flight-endpoint` to the scheduler container's `args` in `cluster.yaml`. Which
 address to advertise depends on how clients reach the cluster.
