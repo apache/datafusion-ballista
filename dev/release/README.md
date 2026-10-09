@@ -289,6 +289,7 @@ of the following crates:
 - [ballista-core](https://crates.io/crates/ballista-core)
 - [ballista-executor](https://crates.io/crates/ballista-executor)
 - [ballista-api-types](https://crates.io/crates/ballista-api-types)
+- [ballista-flight-sql](https://crates.io/crates/ballista-flight-sql)
 - [ballista-history](https://crates.io/crates/ballista-history)
 - [ballista-scheduler](https://crates.io/crates/ballista-scheduler)
 
@@ -310,6 +311,7 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 (cd ballista/core && cargo publish)
 (cd ballista/executor && cargo publish)
 (cd ballista/api-types && cargo publish)
+(cd ballista/flight-sql && cargo publish)
 (cd ballista/history && cargo publish)
 (cd ballista/scheduler && cargo publish)
 (cd ballista/client && cargo publish)
