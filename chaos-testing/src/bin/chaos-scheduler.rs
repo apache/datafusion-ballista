@@ -67,15 +67,8 @@ async fn main() -> ballista_core::error::Result<()> {
             "CHAOS_NO_EXECUTORS_GRACE_SECONDS",
             1,
         ),
-        // Starts the deprecated embedded flight proxy, so clients fetch results
-        // through the scheduler. Neither harness sets it any more (both route
-        // results through a Result Service); it is kept so a run can compare
-        // against the old path. Unset -> false -> no proxy.
-        enable_embedded_flight_proxy: env_parsed("CHAOS_EMBEDDED_FLIGHT_PROXY", false),
-        // Point clients at a standalone Result Service: the process harness sets
-        // this to the `chaos-result-service` it spawns, and the k8s harness to
-        // its port-forward to the Result Service pod. Clients then fetch results
-        // from there instead of dialing executors. Empty -> None -> peer-to-peer.
+        // The harness's Result Service. Unset or empty means clients fetch from
+        // the executors.
         advertise_flight_endpoint: std::env::var("CHAOS_ADVERTISE_FLIGHT_ENDPOINT")
             .ok()
             .filter(|s| !s.is_empty()),
