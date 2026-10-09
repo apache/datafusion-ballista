@@ -418,6 +418,8 @@ spec:
   ports:
     - port: 50055
       name: flight
+      # Plaintext HTTP/2, so a Gateway API route speaks gRPC to the pods.
+      appProtocol: kubernetes.io/h2c
   selector:
     app: ballista-result-service
 ---
@@ -457,7 +459,7 @@ spec:
             - "--graceful-shutdown-timeout-seconds=45"
           lifecycle:
             # Keep serving for a few seconds after the pod starts terminating,
-            # while the Service and any ingress stop routing new connections
+            # while the Service and any gateway stop routing new connections
             # to it. Kubernetes sends SIGTERM once this hook returns.
             preStop:
               exec:
@@ -487,7 +489,7 @@ spec:
 ```
 
 When a pod is replaced or moved to another node, it keeps serving through the `preStop` sleep
-while the Service and any ingress stop routing new connections to it. On SIGTERM it then stops
+while the Service and any gateway stop routing new connections to it. On SIGTERM it then stops
 accepting connections and lets in-flight result streams finish, for up to
 `--graceful-shutdown-timeout-seconds` (10 by default), before exiting. The rolling-update strategy
 and the PodDisruptionBudget keep at least one replica serving throughout.
@@ -513,11 +515,11 @@ kubectl port-forward service/ballista-result-service 50055:50055 &
 
 `kubectl port-forward` sends all traffic to a single pod, so use this for testing only.
 
-### Through a TLS-terminating ingress
+### Through a TLS-terminating gateway
 
-In production, expose the Result Service through an ingress or load balancer that forwards gRPC
-(HTTP/2) to its backends, and advertise the ingress's address. The Result Service pods keep serving
-plaintext behind it.
+In production, expose the Result Service through the [Gateway API] with a Gateway that terminates
+TLS and a `GRPCRoute` to the Result Service, and advertise the gateway's address. The Result
+Service pods keep serving plaintext behind it.
 
 ```yaml
 args:
@@ -525,40 +527,43 @@ args:
   - "--advertise-flight-endpoint=ballista-results.example.com:443"
 ```
 
-For example, with [ingress-nginx](https://kubernetes.github.io/ingress-nginx/):
-
 ```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ballista-results
+spec:
+  gatewayClassName: <your-gateway-class>
+  listeners:
+    - name: grpc
+      protocol: HTTPS
+      port: 443
+      hostname: ballista-results.example.com
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: ballista-results-tls
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
 metadata:
   name: ballista-result-service
-  annotations:
-    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
-    # Result streams are long-lived; the default 60s timeouts would cut off
-    # large results.
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 spec:
-  ingressClassName: nginx
-  tls:
-    - hosts:
-        - ballista-results.example.com
-      secretName: ballista-results-tls
+  parentRefs:
+    - name: ballista-results
+  hostnames:
+    - ballista-results.example.com
   rules:
-    - host: ballista-results.example.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: ballista-result-service
-                port:
-                  number: 50055
+    - backendRefs:
+        - name: ballista-result-service
+          port: 50055
 ```
 
-Clients then fetch results over TLS by setting `ballista.client.use_tls` to `true`, with TLS roots
-for the ingress's certificate supplied through a gRPC endpoint override.
+Result streams are long-lived, so make sure the gateway implementation's idle and stream timeouts
+allow for the largest result. Clients fetch results over TLS by setting `ballista.client.use_tls`
+to `true`, with TLS roots for the gateway's certificate supplied through a gRPC endpoint override.
+
+[gateway api]: https://gateway-api.sigs.k8s.io/
 
 ### Restricting what the Result Service can reach
 

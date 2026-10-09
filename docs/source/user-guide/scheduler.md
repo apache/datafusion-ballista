@@ -57,9 +57,9 @@ by running more replicas behind a gRPC-aware load balancer and advertising the l
 address. For Kubernetes manifests, see
 [Serving Results to Clients Outside the Cluster](deployment/kubernetes.md#serving-results-to-clients-outside-the-cluster).
 
-### Behind a TLS-terminating ingress
+### Behind a TLS-terminating gateway
 
-To serve results through an ingress or load balancer that terminates TLS, advertise its address. The
+To serve results through a gateway or load balancer that terminates TLS, advertise its address. The
 Result Service replicas behind it keep serving plaintext:
 
 ```bash
@@ -68,11 +68,10 @@ ballista-scheduler --advertise-flight-endpoint ballista-results.example.com:443
 ```
 
 Clients choose TLS for result fetches themselves, with `ballista.client.use_tls`, and need TLS roots
-for the ingress's certificate, supplied through a gRPC endpoint override as the
+for the gateway's certificate, supplied through a gRPC endpoint override as the
 [mTLS cluster example] does. `ballista.client.use_tls` applies to every result fetch a client
-makes, including direct fetches from executors. The ingress must forward HTTP/2 (gRPC) to the
-replicas, for example with ingress-nginx's `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"`
-annotation, and its read and send timeouts must be long enough for the largest result stream.
+makes, including direct fetches from executors. The gateway must forward gRPC (HTTP/2) to the
+replicas, for example with a Gateway API `GRPCRoute`, and allow long-lived streams.
 
 [mtls cluster example]: https://github.com/apache/datafusion-ballista/blob/main/examples/examples/mtls-cluster.rs
 
