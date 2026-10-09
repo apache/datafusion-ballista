@@ -34,15 +34,17 @@
 //! re-mounts the same directory, so the fixture survives executor kills.
 //!
 //! The harness process runs outside the cluster, so it reaches the scheduler's
-//! gRPC + REST (both on one port) through a `kubectl port-forward`. Results are
-//! fetched through a result service pod, reached through a second port-forward
-//! that the scheduler advertises to clients (`advertise_flight_endpoint`), so
-//! the client never contacts executor pod IPs directly.
+//! gRPC + REST (both on one port) through a `kubectl port-forward`. Each
+//! cluster fetches results either through a result service pod, reached through
+//! a second port-forward that the scheduler advertises, or through the
+//! scheduler's embedded proxy, chosen at random (see [`crate::fetch`]). Either
+//! way the client never contacts executor pod IPs directly.
 //!
 //! This backend shells out to `kubectl`; it assumes a `kind` cluster already
 //! exists, `kubectl` is on `PATH` pointed at it, and the chaos image has been
 //! `kind load`ed. See `chaos-testing/k8s/` and the crate README for the runbook.
 
+use crate::fetch::{RESULT_FETCH_ENV, ResultFetch};
 use std::collections::VecDeque;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -124,7 +126,8 @@ pub struct K8sCluster {
     namespace: String,
     scheduler_local_port: u16,
     port_forward: PortForward,
-    result_service_forward: PortForward,
+    result_service_forward: Option<PortForward>,
+    result_fetch: ResultFetch,
     shared_dir: PathBuf,
     /// REST-polling client, owned per cluster so its connection pool lives on
     /// this test's runtime (see [`crate::rest`]).
@@ -132,9 +135,10 @@ pub struct K8sCluster {
 }
 
 impl K8sCluster {
-    /// Deploy a scheduler + result service + `executors` executor pods, wait
-    /// until all executors have registered, and open port-forwards to the
-    /// scheduler and the result service.
+    /// Deploy a scheduler + `executors` executor pods, plus a result service
+    /// when that is the chosen fetch mode, wait until all executors have
+    /// registered, and open port-forwards to the scheduler and any result
+    /// service.
     ///
     /// The executor pods use a realistic graceful-shutdown window
     /// ([`DEFAULT_EXECUTOR_GRACE_SECONDS`]). A scenario that needs an *abrupt*
@@ -181,12 +185,24 @@ impl K8sCluster {
         clear_dir_contents(&shared_dir)?;
         write_marker(&shared_dir)?;
 
+        // Executor pod IPs aren't reachable from outside the cluster, so direct
+        // fetches aren't an option here.
+        let result_fetch = ResultFetch::choose(&[
+            ResultFetch::ResultService,
+            ResultFetch::SchedulerProxy,
+        ])?;
+        eprintln!(
+            "chaos k8s cluster fetches results via {result_fetch}; \
+             {RESULT_FETCH_ENV}={result_fetch} repeats that"
+        );
+        let result_service = result_fetch == ResultFetch::ResultService;
+
         // Reserved before rendering, because the scheduler advertises the
         // result service forward, and held through the rollout so nothing else
         // takes them before the forwards bind.
-        let reserved = ReservedPorts::new(2)?;
-        let (scheduler_local_port, result_service_local_port) =
-            (reserved.ports[0], reserved.ports[1]);
+        let reserved = ReservedPorts::new(if result_service { 2 } else { 1 })?;
+        let scheduler_local_port = reserved.ports[0];
+        let result_service_local_port = reserved.ports.get(1).copied();
         let manifests = render_manifests(
             &namespace,
             executors,
@@ -201,10 +217,11 @@ impl K8sCluster {
             namespace: namespace.clone(),
         };
 
-        for deployment in [
-            "deploy/ballista-scheduler",
-            "deploy/ballista-result-service",
-        ] {
+        let mut deployments = vec!["deploy/ballista-scheduler"];
+        if result_service {
+            deployments.push("deploy/ballista-result-service");
+        }
+        for deployment in deployments {
             kubectl(&[
                 "-n",
                 &namespace,
@@ -223,25 +240,28 @@ impl K8sCluster {
             scheduler_local_port,
             SCHEDULER_PORT,
         );
-        let result_service_forward = PortForward::spawn(
-            &namespace,
-            "ballista-result-service",
-            result_service_local_port,
-            RESULT_SERVICE_PORT,
-        );
+        let result_service_forward = result_service_local_port.map(|port| {
+            PortForward::spawn(
+                &namespace,
+                "ballista-result-service",
+                port,
+                RESULT_SERVICE_PORT,
+            )
+        });
 
         let cluster = Self {
             namespace,
             scheduler_local_port,
             port_forward,
             result_service_forward,
+            result_fetch,
             shared_dir,
             client: crate::rest::build_client(),
         };
 
-        cluster
-            .await_result_service_forward(result_service_local_port)
-            .await?;
+        if let Some(port) = result_service_local_port {
+            cluster.await_result_service_forward(port).await?;
+        }
         cluster.await_executors(executors).await?;
 
         // Everything is up; keep the namespace (transfer ownership to `cluster`).
@@ -268,6 +288,11 @@ impl K8sCluster {
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
+    }
+
+    /// How clients fetch results from this cluster.
+    pub fn result_fetch(&self) -> ResultFetch {
+        self.result_fetch
     }
 
     /// `df://…` endpoint for the `ballista` client, via the port-forward.
@@ -348,9 +373,12 @@ impl K8sCluster {
         // poll, results), so their stderr is often the first sign of why a wait
         // failed — a dropped or pod-restart-killed forward, for example.
         for (name, forward) in [
-            ("scheduler", &self.port_forward),
-            ("result service", &self.result_service_forward),
-        ] {
+            ("scheduler", Some(&self.port_forward)),
+            ("result service", self.result_service_forward.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(name, forward)| Some((name, forward?)))
+        {
             let forward_stderr = forward.recent_stderr();
             if !forward_stderr.is_empty() {
                 eprintln!(
@@ -833,20 +861,36 @@ async fn kubectl_apply(manifests: &str) -> Result<(), String> {
     }
 }
 
-/// Render the namespace + scheduler (Deployment + Service) + result service
-/// (Deployment + Service) + executor Deployment. `mount` is the fixture
-/// directory, bind-mounted into the scheduler and executor pods (see
-/// [`fixture_dir`]); it must match the kind `extraMounts` path.
-/// `result_service_local_port` is the harness-side port-forward to the Result
-/// Service, which the scheduler advertises to clients.
+/// Render the namespace + scheduler (Deployment + Service) + executor
+/// Deployment. `mount` is the fixture directory, bind-mounted into the
+/// scheduler and executor pods (see [`fixture_dir`]); it must match the kind
+/// `extraMounts` path. With `result_service_local_port`, the harness's
+/// port-forward to it, a result service (Deployment + Service) is rendered too
+/// and the scheduler advertises that forward; otherwise the scheduler proxies
+/// results itself.
 fn render_manifests(
     namespace: &str,
     executors: usize,
     executor_grace_seconds: u64,
     mount: &std::path::Path,
-    result_service_local_port: u16,
+    result_service_local_port: Option<u16>,
 ) -> String {
     let mount = mount.display();
+    // With a result service, the scheduler advertises the harness's forward to
+    // it; without one, the scheduler proxies results itself.
+    let (fetch_env_name, fetch_env_value, result_service_manifests) =
+        match result_service_local_port {
+            Some(port) => (
+                "CHAOS_ADVERTISE_FLIGHT_ENDPOINT",
+                format!("127.0.0.1:{port}"),
+                render_result_service(namespace),
+            ),
+            None => (
+                "CHAOS_EMBEDDED_FLIGHT_PROXY",
+                "true".to_string(),
+                String::new(),
+            ),
+        };
     format!(
         r#"
 apiVersion: v1
@@ -881,8 +925,8 @@ spec:
               value: "0.0.0.0"
             - name: CHAOS_EXTERNAL_HOST
               value: "ballista-scheduler"
-            - name: CHAOS_ADVERTISE_FLIGHT_ENDPOINT
-              value: "127.0.0.1:{result_service_local_port}"
+            - name: {fetch_env_name}
+              value: "{fetch_env_value}"
             - name: CHAOS_EXECUTOR_TIMEOUT_SECONDS
               value: "5"
             - name: CHAOS_EXPIRE_INTERVAL_SECONDS
@@ -929,53 +973,7 @@ spec:
   ports:
     - port: {SCHEDULER_PORT}
       targetPort: {SCHEDULER_PORT}
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ballista-result-service
-  namespace: {namespace}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: ballista-result-service
-  template:
-    metadata:
-      labels:
-        app: ballista-result-service
-    spec:
-      containers:
-        - name: result-service
-          image: {CHAOS_IMAGE}
-          imagePullPolicy: Never
-          command: ["/root/chaos-result-service"]
-          env:
-            - name: CHAOS_RESULT_SERVICE_PORT
-              value: "{RESULT_SERVICE_PORT}"
-            - name: CHAOS_BIND_HOST
-              value: "0.0.0.0"
-            - name: RUST_LOG
-              value: "info"
-          ports:
-            - containerPort: {RESULT_SERVICE_PORT}
-          readinessProbe:
-            tcpSocket:
-              port: {RESULT_SERVICE_PORT}
-            periodSeconds: 2
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ballista-result-service
-  namespace: {namespace}
-spec:
-  selector:
-    app: ballista-result-service
-  ports:
-    - port: {RESULT_SERVICE_PORT}
-      targetPort: {RESULT_SERVICE_PORT}
----
+{result_service_manifests}---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -1050,6 +1048,59 @@ spec:
           hostPath:
             path: {mount}
             type: DirectoryOrCreate
+"#
+    )
+}
+
+/// The result service's Deployment and Service.
+fn render_result_service(namespace: &str) -> String {
+    format!(
+        r#"---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ballista-result-service
+  namespace: {namespace}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ballista-result-service
+  template:
+    metadata:
+      labels:
+        app: ballista-result-service
+    spec:
+      containers:
+        - name: result-service
+          image: {CHAOS_IMAGE}
+          imagePullPolicy: Never
+          command: ["/root/chaos-result-service"]
+          env:
+            - name: CHAOS_RESULT_SERVICE_PORT
+              value: "{RESULT_SERVICE_PORT}"
+            - name: CHAOS_BIND_HOST
+              value: "0.0.0.0"
+            - name: RUST_LOG
+              value: "info"
+          ports:
+            - containerPort: {RESULT_SERVICE_PORT}
+          readinessProbe:
+            tcpSocket:
+              port: {RESULT_SERVICE_PORT}
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ballista-result-service
+  namespace: {namespace}
+spec:
+  selector:
+    app: ballista-result-service
+  ports:
+    - port: {RESULT_SERVICE_PORT}
+      targetPort: {RESULT_SERVICE_PORT}
 "#
     )
 }

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::fetch::{RESULT_FETCH_ENV, ResultFetch};
 use nix::fcntl::{Flock, FlockArg};
 use std::fs::{File, OpenOptions};
 use std::net::TcpListener;
@@ -98,7 +99,7 @@ pub struct TestClusterBuilder {
     stage_max_failures: usize,
     concurrent_tasks: usize,
     no_executors_grace_seconds: u64,
-    result_service: bool,
+    result_fetch: Option<ResultFetch>,
 }
 
 impl Default for TestClusterBuilder {
@@ -115,9 +116,7 @@ impl Default for TestClusterBuilder {
             // Ballista's default is 30s. A short grace makes the total-loss
             // scenario fail the job a second or so after the reap.
             no_executors_grace_seconds: 1,
-            // Route result fetches through a result service by default, so every
-            // scenario exercises it.
-            result_service: true,
+            result_fetch: None,
         }
     }
 }
@@ -153,11 +152,9 @@ impl TestClusterBuilder {
         self
     }
 
-    /// Whether result fetches go through a `chaos-result-service` that the
-    /// harness spawns and advertises (the default), or straight to the
-    /// executors.
-    pub fn result_service(mut self, enabled: bool) -> Self {
-        self.result_service = enabled;
+    /// Fetches results this way, instead of a randomly chosen mode.
+    pub fn result_fetch(mut self, mode: ResultFetch) -> Self {
+        self.result_fetch = Some(mode);
         self
     }
 
@@ -186,12 +183,15 @@ impl TestClusterBuilder {
         let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
         let log_dir = temp.path().join("logs");
         std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
-        // `CHAOS_RESULT_SERVICE=0` (or `false`) overrides the builder setting.
-        let result_service_enabled = self.result_service
-            && !matches!(
-                std::env::var("CHAOS_RESULT_SERVICE").as_deref(),
-                Ok("0") | Ok("false")
-            );
+        let result_fetch = match self.result_fetch {
+            Some(mode) => mode,
+            None => ResultFetch::choose(&ResultFetch::ALL)?,
+        };
+        eprintln!(
+            "chaos cluster fetches results via {result_fetch}; \
+             {RESULT_FETCH_ENV}={result_fetch} repeats that"
+        );
+        let result_service_enabled = result_fetch == ResultFetch::ResultService;
 
         // Reserve the scheduler port and (when enabled) the result-service port
         // together so they are distinct — see `free_ports`; separate calls could
@@ -267,12 +267,14 @@ impl TestClusterBuilder {
             )
             .stdout(Stdio::from(scheduler_stdout))
             .stderr(Stdio::from(scheduler_stderr));
-        // Point clients at the result service instead of the executors.
         if let Some(port) = result_service_port {
             scheduler.env(
                 "CHAOS_ADVERTISE_FLIGHT_ENDPOINT",
                 format!("127.0.0.1:{port}"),
             );
+        }
+        if result_fetch == ResultFetch::SchedulerProxy {
+            scheduler.env("CHAOS_EMBEDDED_FLIGHT_PROXY", "true");
         }
         let scheduler = scheduler
             .spawn()
@@ -283,6 +285,7 @@ impl TestClusterBuilder {
             scheduler_port,
             result_service,
             result_service_port,
+            result_fetch,
             executors: Vec::new(),
             temp,
             log_dir,
@@ -323,6 +326,7 @@ pub struct TestCluster {
     result_service: Option<Child>,
     /// The port the result service listens on, mirrored from `result_service`.
     result_service_port: Option<u16>,
+    result_fetch: ResultFetch,
     pub(crate) executors: Vec<ExecutorHandle>,
     temp: tempfile::TempDir,
     log_dir: PathBuf,
@@ -378,9 +382,9 @@ impl TestCluster {
         format!("http://127.0.0.1:{}", self.scheduler_port)
     }
 
-    /// The result service's port, if results go through one.
-    pub fn result_service_port(&self) -> Option<u16> {
-        self.result_service_port
+    /// How clients fetch results from this cluster.
+    pub fn result_fetch(&self) -> ResultFetch {
+        self.result_fetch
     }
 
     /// The shared directory for fixtures and fault budgets. Every executor can
@@ -542,7 +546,7 @@ impl TestCluster {
 
     /// The last lines of every child process log, for timeout diagnostics.
     pub fn log_tails(&self) -> String {
-        let mut out = String::new();
+        let mut out = format!("result fetch: {}\n", self.result_fetch);
         let mut paths: Vec<PathBuf> = std::fs::read_dir(&self.log_dir)
             .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect())
             .unwrap_or_default();

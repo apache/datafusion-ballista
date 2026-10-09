@@ -155,11 +155,14 @@ deadline is now 120s, and on expiry the error message carries the tail of
 every child process log, so a recurrence in CI is diagnosable from the test
 output alone.
 
-Result fetches go through a result service by default: the harness spawns
-`chaos-result-service` and points the scheduler's `advertise_flight_endpoint`
-at it. Set `CHAOS_RESULT_SERVICE=0` (or call
-`TestClusterBuilder::result_service(false)`) to have clients fetch straight
-from the executors instead.
+Each cluster fetches results in a randomly chosen way: straight from the
+executors, through the scheduler's deprecated embedded proxy, or through a
+`chaos-result-service` that the harness spawns and advertises. Over many runs,
+every scenario meets every mode. The cluster prints its mode when it starts,
+so a failing test's output shows it. Set
+`CHAOS_RESULT_FETCH=direct|proxy|result-service` to repeat a mode or to run
+the whole suite in one, or pin a mode in a test with
+`TestClusterBuilder::result_fetch`.
 
 The `chaos-scheduler`/`chaos-executor`/`chaos-result-service` binaries are
 spawned as real child processes rather than run in-process, but `cargo test`
@@ -186,8 +189,8 @@ The harness also has an opt-in Kubernetes backend (`K8sCluster`, in
 [kind](https://kind.sigs.k8s.io) cluster rather than as local processes. It is
 gated behind the `k8s` feature _and_ `CHAOS_BACKEND=kind`, so a plain `cargo
 test` never touches a cluster. It runs the scenarios that genuinely need a
-cluster — real pod lifecycle, rescheduling, and the port-forward/result service
-path — while the backend-agnostic fault-injection scenarios stay on the fast
+cluster — real pod lifecycle, rescheduling, and fetching results through
+port-forwards — while the backend-agnostic fault-injection scenarios stay on the fast
 process harness:
 
 - **baseline** — a real query whose result must match plain local DataFusion
@@ -236,10 +239,11 @@ Because the harness runs outside the cluster, a few pieces bridge the gap:
   static `k8s/kind-config.yaml` uses `/tmp` for Linux CI; `dev/chaos-kind.sh`
   generates a `$HOME` config for local use).
 - **Reaching the cluster.** The client talks to the scheduler's gRPC + REST
-  (both on one port) through a `kubectl port-forward`, and fetches query results
+  (both on one port) through a `kubectl port-forward`. It fetches query results
   through a result service pod over a second port-forward (which the scheduler
-  advertises as its `advertise_flight_endpoint`), so it never contacts executor
-  pod IPs directly.
+  advertises as its `advertise_flight_endpoint`) or through the scheduler's
+  embedded proxy, chosen at random as above, so it never contacts executor pod
+  IPs directly. Direct fetches aren't possible from outside the cluster.
 - **Pods.** Both expose `/healthz` + `/readyz` with liveness/readiness probes
   (the scheduler's readiness uses `/healthz`, not `/readyz`, so its Service
   routes before executors register), and use `imagePullPolicy: Never` since the
