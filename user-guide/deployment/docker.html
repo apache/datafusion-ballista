@@ -402,8 +402,16 @@
 <h1>Starting a Ballista Cluster using Docker<a class="headerlink" href="#starting-a-ballista-cluster-using-docker" title="Link to this heading">#</a></h1>
 <section id="build-docker-images">
 <h2>Build Docker Images<a class="headerlink" href="#build-docker-images" title="Link to this heading">#</a></h2>
-<p>Run the following commands to download the <a class="reference external" href="https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone">official Docker image</a>:</p>
+<p>The official Docker images are published to the GitHub Container Registry:</p>
+<ul class="simple">
+<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone"><code class="docutils literal notranslate"><span class="pre">ghcr.io/apache/datafusion-ballista-standalone</span></code></a></p></li>
+<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-scheduler"><code class="docutils literal notranslate"><span class="pre">ghcr.io/apache/datafusion-ballista-scheduler</span></code></a></p></li>
+<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-executor"><code class="docutils literal notranslate"><span class="pre">ghcr.io/apache/datafusion-ballista-executor</span></code></a></p></li>
+</ul>
+<p>Pull the images needed for your deployment with the following commands:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>pull<span class="w"> </span>ghcr.io/apache/datafusion-ballista-standalone:latest
+docker<span class="w"> </span>pull<span class="w"> </span>ghcr.io/apache/datafusion-ballista-scheduler:latest
+docker<span class="w"> </span>pull<span class="w"> </span>ghcr.io/apache/datafusion-ballista-executor:latest
 </pre></div>
 </div>
 <p>Alternatively run the following commands to clone the source repository and build the Docker images from source:</p>
@@ -420,10 +428,9 @@
 <li><p><code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-scheduler:latest</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-standalone:latest</span></code></p></li>
 </ul>
-<p>Only the standalone, scheduler, and executor images are published to
-<code class="docutils literal notranslate"><span class="pre">ghcr.io/apache/</span></code>. The CLI and benchmarks images are built locally only, so the
-<code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-cli:latest</span></code> commands below require a local build
-first.</p>
+<p>The CLI and benchmarks images are built locally only, so the
+<code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-cli:latest</span></code> command below requires a local build
+first. Use the <code class="docutils literal notranslate"><span class="pre">ghcr.io/apache/</span></code> names shown above for the published images.</p>
 </section>
 <section id="start-a-cluster">
 <h2>Start a Cluster<a class="headerlink" href="#start-a-cluster" title="Link to this heading">#</a></h2>
@@ -431,14 +438,14 @@ first.</p>
 <h3>Start a Scheduler<a class="headerlink" href="#start-a-scheduler" title="Link to this heading">#</a></h3>
 <p>Start a scheduler using the following syntax:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>run<span class="w"> </span>--network<span class="o">=</span>host<span class="w"> </span><span class="se">\</span>
-<span class="w"> </span>-d<span class="w"> </span>apache/datafusion-ballista-scheduler:latest<span class="w"> </span><span class="se">\</span>
+<span class="w"> </span>-d<span class="w"> </span>ghcr.io/apache/datafusion-ballista-scheduler:latest<span class="w"> </span><span class="se">\</span>
 <span class="w"> </span>--bind-port<span class="w"> </span><span class="m">50050</span>
 </pre></div>
 </div>
 <p>Run <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">ps</span></code> to check that the process is running:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ docker ps
 CONTAINER ID   IMAGE                                    COMMAND                  CREATED         STATUS         PORTS     NAMES
-a756055576f3   apache/datafusion-ballista-scheduler:latest   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
+a756055576f3   ghcr.io/apache/datafusion-ballista-scheduler:latest   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
 </pre></div>
 </div>
 <p>Run <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">logs</span> <span class="pre">CONTAINER_ID</span></code> to check the output from the process:</p>
@@ -454,15 +461,15 @@ INFO ballista_core::event_loop: Starting the event loop query_stage
 <h3>Start Executors<a class="headerlink" href="#start-executors" title="Link to this heading">#</a></h3>
 <p>Start one or more executor processes. Each executor process will need to listen on a different port.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>run<span class="w"> </span>--network<span class="o">=</span>host<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-d<span class="w"> </span>apache/datafusion-ballista-executor:latest<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span>ghcr.io/apache/datafusion-ballista-executor:latest<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--external-host<span class="w"> </span>localhost<span class="w"> </span>--bind-port<span class="w"> </span><span class="m">50051</span>
 </pre></div>
 </div>
 <p>Use <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">ps</span></code> to check that both the scheduler and executor(s) are now running:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ docker ps
 CONTAINER ID   IMAGE                                    COMMAND                  CREATED         STATUS         PORTS     NAMES
-fb8b530cee6d   apache/datafusion-ballista-executor:latest    "/root/executor-entr…"   2 seconds ago   Up 1 second              gallant_galois
-a756055576f3   apache/datafusion-ballista-scheduler:latest   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
+fb8b530cee6d   ghcr.io/apache/datafusion-ballista-executor:latest    "/root/executor-entr…"   2 seconds ago   Up 1 second              gallant_galois
+a756055576f3   ghcr.io/apache/datafusion-ballista-scheduler:latest   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
 </pre></div>
 </div>
 <p>Use <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">logs</span> <span class="pre">CONTAINER_ID</span></code> to check the output from the executor(s):</p>
