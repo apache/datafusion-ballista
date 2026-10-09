@@ -17,18 +17,18 @@
   under the License.
 -->
 
-## Ballista Code Organization
+# Ballista Code Organization
 
 This section provides links to the source code for major areas of functionality.
 
-### ballista-core crate
+## ballista-core crate
 
 - [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/core)
 - [Protocol Buffer Definition](https://github.com/apache/datafusion-ballista/blob/main/ballista/core/proto/ballista.proto)
 - [Execution Plans](https://github.com/apache/datafusion-ballista/tree/main/ballista/core/src/execution_plans)
 - [Ballista Client](https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/client.rs)
 
-### ballista-scheduler crate
+## ballista-scheduler crate
 
 - [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler)
 - [Distributed Query Planner](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/planner.rs)
@@ -36,17 +36,17 @@ This section provides links to the source code for major areas of functionality.
 - [REST API](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/src/api)
 - [Prometheus Integration](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/metrics/prometheus.rs)
 
-### ballista-executor crate
+## ballista-executor crate
 
 - [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/executor)
 - [Flight Service](https://github.com/apache/datafusion-ballista/blob/main/ballista/executor/src/flight_service.rs)
 - [Executor Server](https://github.com/apache/datafusion-ballista/blob/main/ballista/executor/src/executor_server.rs)
 
-### ballista crate
+## ballista crate
 
 - [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/client)
 - [Context Extensions](https://github.com/apache/datafusion-ballista/blob/main/ballista/client/src/extension.rs)
 
-### PyBallista
+## PyBallista
 
 - [Source](https://github.com/apache/datafusion-ballista/tree/main/python)
