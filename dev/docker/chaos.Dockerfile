@@ -42,17 +42,20 @@ ENV RUSTFLAGS="-C strip=symbols"
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build -p ballista-chaos --bin chaos-scheduler --bin chaos-executor \
+        --bin chaos-result-service \
     && mkdir -p /out \
-    && cp target/debug/chaos-scheduler target/debug/chaos-executor /out/
+    && cp target/debug/chaos-scheduler target/debug/chaos-executor \
+        target/debug/chaos-result-service /out/
 
 FROM debian:bookworm-slim
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 COPY --from=builder /out/chaos-scheduler /root/chaos-scheduler
 COPY --from=builder /out/chaos-executor /root/chaos-executor
+COPY --from=builder /out/chaos-result-service /root/chaos-result-service
 
 # scheduler gRPC/REST (50050); executor Arrow Flight (50051), gRPC (50052), and
-# HTTP health probes (50053).
-EXPOSE 50050 50051 50052 50053
+# HTTP health probes (50053); result service Arrow Flight (50060).
+EXPOSE 50050 50051 50052 50053 50060
 
 # No ENTRYPOINT: the pod manifest sets `command` to the desired binary.

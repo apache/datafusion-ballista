@@ -150,6 +150,7 @@ test_source_distribution() {
     ballista-executor
     ballista-flight-sql
     ballista-history
+    ballista-result-service
     ballista-scheduler
     ballista
     ballista-cli

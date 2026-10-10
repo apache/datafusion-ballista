@@ -110,6 +110,7 @@ def main():
             "ballista/core",
             "ballista/api-types",
             "ballista/history",
+            "ballista/result-service",
             "ballista/scheduler",
             "ballista/executor",
             "ballista/client",

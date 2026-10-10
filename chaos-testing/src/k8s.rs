@@ -34,15 +34,17 @@
 //! re-mounts the same directory, so the fixture survives executor kills.
 //!
 //! The harness process runs outside the cluster, so it reaches the scheduler's
-//! gRPC + REST (both on one port) through a `kubectl port-forward`. Results are
-//! fetched through the scheduler's embedded flight proxy
-//! (`enable_embedded_flight_proxy`), so the client never contacts executor pod
-//! IPs directly.
+//! gRPC + REST (both on one port) through a `kubectl port-forward`. Each
+//! cluster fetches results either through a result service pod, reached through
+//! a second port-forward that the scheduler advertises, or through the
+//! scheduler's embedded proxy, as the scenario chooses (see [`crate::fetch`]).
+//! Either way the client never contacts executor pod IPs directly.
 //!
 //! This backend shells out to `kubectl`; it assumes a `kind` cluster already
 //! exists, `kubectl` is on `PATH` pointed at it, and the chaos image has been
 //! `kind load`ed. See `chaos-testing/k8s/` and the crate README for the runbook.
 
+use crate::fetch::ResultFetch;
 use std::collections::VecDeque;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -73,6 +75,7 @@ fn fixture_dir() -> String {
 
 const CHAOS_IMAGE: &str = "ballista-chaos:test";
 const SCHEDULER_PORT: u16 = 50050;
+const RESULT_SERVICE_PORT: u16 = 50060;
 /// Port the executor pods serve `/healthz` + `/readyz` on for the k8s probes.
 const EXECUTOR_HEALTH_PORT: u16 = 50053;
 const EXECUTOR_DEPLOYMENT: &str = "ballista-executor";
@@ -123,6 +126,8 @@ pub struct K8sCluster {
     namespace: String,
     scheduler_local_port: u16,
     port_forward: PortForward,
+    result_service_forward: Option<PortForward>,
+    result_fetch: ResultFetch,
     shared_dir: PathBuf,
     /// REST-polling client, owned per cluster so its connection pool lives on
     /// this test's runtime (see [`crate::rest`]).
@@ -130,15 +135,25 @@ pub struct K8sCluster {
 }
 
 impl K8sCluster {
-    /// Deploy a scheduler + `executors` executor pods, wait until all executors
-    /// have registered, and open a port-forward to the scheduler.
+    /// Deploy a scheduler + `executors` executor pods, plus a result service
+    /// when that is the chosen fetch mode, wait until all executors have
+    /// registered, and open port-forwards to the scheduler and any result
+    /// service.
     ///
     /// The executor pods use a realistic graceful-shutdown window
     /// ([`DEFAULT_EXECUTOR_GRACE_SECONDS`]). A scenario that needs an *abrupt*
     /// kill — the kubelet SIGKILLing an executor before it can drain in-flight
     /// tasks — should use [`Self::start_with_executor_grace`] with a short grace.
-    pub async fn start(executors: usize) -> Result<Self, String> {
-        Self::start_with_executor_grace(executors, DEFAULT_EXECUTOR_GRACE_SECONDS).await
+    pub async fn start(
+        executors: usize,
+        result_fetch: ResultFetch,
+    ) -> Result<Self, String> {
+        Self::start_with_executor_grace(
+            executors,
+            DEFAULT_EXECUTOR_GRACE_SECONDS,
+            result_fetch,
+        )
+        .await
     }
 
     /// Like [`Self::start`], but with an explicit executor pod
@@ -149,6 +164,7 @@ impl K8sCluster {
     pub async fn start_with_executor_grace(
         executors: usize,
         executor_grace_seconds: u64,
+        result_fetch: ResultFetch,
     ) -> Result<Self, String> {
         require_kubectl()?;
 
@@ -178,8 +194,28 @@ impl K8sCluster {
         clear_dir_contents(&shared_dir)?;
         write_marker(&shared_dir)?;
 
-        let manifests =
-            render_manifests(&namespace, executors, executor_grace_seconds, &shared_dir);
+        // Executor pod IPs aren't reachable from outside the cluster, so direct
+        // fetches aren't an option here.
+        let result_fetch = ResultFetch::forced_or(
+            result_fetch,
+            &[ResultFetch::ResultService, ResultFetch::SchedulerProxy],
+        )?;
+        eprintln!("chaos k8s cluster fetches results via {result_fetch}");
+        let result_service = result_fetch == ResultFetch::ResultService;
+
+        // Reserved before rendering, because the scheduler advertises the
+        // result service forward, and held through the rollout so nothing else
+        // takes them before the forwards bind.
+        let reserved = ReservedPorts::new(if result_service { 2 } else { 1 })?;
+        let scheduler_local_port = reserved.ports[0];
+        let result_service_local_port = reserved.ports.get(1).copied();
+        let manifests = render_manifests(
+            &namespace,
+            executors,
+            executor_grace_seconds,
+            &shared_dir,
+            result_service_local_port,
+        );
         kubectl_apply(&manifests).await?;
 
         // Guard so the namespace is torn down even if a later step fails.
@@ -187,32 +223,82 @@ impl K8sCluster {
             namespace: namespace.clone(),
         };
 
-        kubectl(&[
-            "-n",
-            &namespace,
-            "rollout",
-            "status",
-            "deploy/ballista-scheduler",
-            "--timeout=120s",
-        ])
-        .await?;
+        let mut deployments = vec!["deploy/ballista-scheduler"];
+        if result_service {
+            deployments.push("deploy/ballista-result-service");
+        }
+        for deployment in deployments {
+            kubectl(&[
+                "-n",
+                &namespace,
+                "rollout",
+                "status",
+                deployment,
+                "--timeout=120s",
+            ])
+            .await?;
+        }
 
-        let scheduler_local_port = free_port()?;
-        let port_forward = PortForward::spawn(&namespace, scheduler_local_port);
+        drop(reserved);
+        let port_forward = PortForward::spawn(
+            &namespace,
+            "ballista-scheduler",
+            scheduler_local_port,
+            SCHEDULER_PORT,
+        );
+        let result_service_forward = result_service_local_port.map(|port| {
+            PortForward::spawn(
+                &namespace,
+                "ballista-result-service",
+                port,
+                RESULT_SERVICE_PORT,
+            )
+        });
 
         let cluster = Self {
             namespace,
             scheduler_local_port,
             port_forward,
+            result_service_forward,
+            result_fetch,
             shared_dir,
             client: crate::rest::build_client(),
         };
 
+        if let Some(port) = result_service_local_port {
+            cluster.await_result_service_forward(port).await?;
+        }
         cluster.await_executors(executors).await?;
 
         // Everything is up; keep the namespace (transfer ownership to `cluster`).
         std::mem::forget(guard);
         Ok(cluster)
+    }
+
+    /// Waits for the result service port-forward to accept connections, so a
+    /// forward that cannot bind fails startup with diagnostics.
+    async fn await_result_service_forward(&self, port: u16) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                self.dump_diagnostics().await;
+                return Err(format!(
+                    "timed out waiting for the result service port-forward on 127.0.0.1:{port}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// How clients fetch results from this cluster.
+    pub fn result_fetch(&self) -> ResultFetch {
+        self.result_fetch
     }
 
     /// `df://…` endpoint for the `ballista` client, via the port-forward.
@@ -249,7 +335,7 @@ impl K8sCluster {
         }
     }
 
-    /// Print pod status and scheduler/executor logs to stderr — invoked when a
+    /// Print pod status and scheduler/result service/executor logs to stderr — invoked when a
     /// wait times out, so a failed run is diagnosable even though the namespace
     /// is torn down afterwards. Set `CHAOS_KEEP_NS=1` to keep the namespace for
     /// manual `kubectl` inspection.
@@ -270,6 +356,14 @@ impl K8sCluster {
                 &self.namespace,
                 "logs",
                 "-l",
+                "app=ballista-result-service",
+                "--tail=40",
+            ],
+            vec![
+                "-n",
+                &self.namespace,
+                "logs",
+                "-l",
                 "app=ballista-executor",
                 "--tail=40",
                 "--prefix",
@@ -281,14 +375,22 @@ impl K8sCluster {
             }
         }
 
-        // The port-forward carries every out-of-cluster call (client, executor
-        // poll, results), so its stderr is often the first sign of why a wait
+        // The port-forwards carry every out-of-cluster call (client, executor
+        // poll, results), so their stderr is often the first sign of why a wait
         // failed — a dropped or pod-restart-killed forward, for example.
-        let forward_stderr = self.port_forward.recent_stderr();
-        if !forward_stderr.is_empty() {
-            eprintln!(
-                "--- kubectl port-forward stderr (last {PORT_FORWARD_STDERR_LINES} lines) ---\n{forward_stderr}"
-            );
+        for (name, forward) in [
+            ("scheduler", Some(&self.port_forward)),
+            ("result service", self.result_service_forward.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(name, forward)| Some((name, forward?)))
+        {
+            let forward_stderr = forward.recent_stderr();
+            if !forward_stderr.is_empty() {
+                eprintln!(
+                    "--- kubectl port-forward ({name}) stderr (last {PORT_FORWARD_STDERR_LINES} lines) ---\n{forward_stderr}"
+                );
+            }
         }
     }
 
@@ -533,20 +635,42 @@ fn require_kubectl() -> Result<(), String> {
 }
 
 /// Reserve a free local TCP port for the port-forward.
-fn free_port() -> Result<u16, String> {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| format!("bind ephemeral port: {e}"))?;
-    listener
-        .local_addr()
-        .map(|a| a.port())
-        .map_err(|e| e.to_string())
+/// Distinct free local ports, held until this is dropped so nothing else can
+/// take them.
+struct ReservedPorts {
+    ports: Vec<u16>,
+    _listeners: Vec<TcpListener>,
 }
 
-/// A supervised `kubectl port-forward` to the scheduler Service.
+impl ReservedPorts {
+    fn new(count: usize) -> Result<Self, String> {
+        let listeners = (0..count)
+            .map(|_| {
+                TcpListener::bind("127.0.0.1:0")
+                    .map_err(|e| format!("bind ephemeral port: {e}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let ports = listeners
+            .iter()
+            .map(|listener| {
+                listener
+                    .local_addr()
+                    .map(|a| a.port())
+                    .map_err(|e| e.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            ports,
+            _listeners: listeners,
+        })
+    }
+}
+
+/// A supervised `kubectl port-forward` to a Service.
 ///
-/// The forward carries everything the harness does from outside the cluster —
-/// the `df://` client connection, the `/api/executors` poll, and query results
-/// coming back through the scheduler's flight proxy. `kubectl port-forward`
+/// The forwards carry everything the harness does from outside the cluster —
+/// the `df://` client connection and the `/api/executors` poll to the scheduler,
+/// and query results from the result service. `kubectl port-forward`
 /// resolves the Service to a single pod when it starts and never re-resolves,
 /// and long-lived forwards also drop on their own from apiserver hiccups or idle
 /// timeouts. A single unmonitored forward would therefore turn a scheduler pod
@@ -560,16 +684,18 @@ struct PortForward {
 }
 
 impl PortForward {
-    /// Start supervising a forward from `local_port` to the scheduler Service in
-    /// `namespace`. The forward is (re)established in the background, so callers
-    /// should reach the scheduler through a retrying poll rather than assuming it
-    /// is immediately up.
-    fn spawn(namespace: &str, local_port: u16) -> Self {
+    /// Start supervising a forward from `local_port` to `remote_port` on
+    /// `service` in `namespace`. The forward is (re)established in the
+    /// background, so callers should reach the Service through a retrying poll
+    /// rather than assuming it is immediately up.
+    fn spawn(namespace: &str, service: &str, local_port: u16, remote_port: u16) -> Self {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let stderr = Arc::new(Mutex::new(VecDeque::new()));
         let task = tokio::spawn(supervise_port_forward(
             namespace.to_string(),
+            service.to_string(),
             local_port,
+            remote_port,
             shutdown_rx,
             stderr.clone(),
         ));
@@ -616,7 +742,9 @@ fn record_port_forward_stderr(buf: &Arc<Mutex<VecDeque<String>>>, line: String) 
 /// Supervisor loop: (re)spawn `kubectl port-forward` until asked to stop.
 async fn supervise_port_forward(
     namespace: String,
+    service: String,
     local_port: u16,
+    remote_port: u16,
     mut shutdown: oneshot::Receiver<()>,
     stderr: Arc<Mutex<VecDeque<String>>>,
 ) {
@@ -626,8 +754,8 @@ async fn supervise_port_forward(
                 "-n",
                 &namespace,
                 "port-forward",
-                "svc/ballista-scheduler",
-                &format!("{local_port}:{SCHEDULER_PORT}"),
+                &format!("svc/{service}"),
+                &format!("{local_port}:{remote_port}"),
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -739,16 +867,36 @@ async fn kubectl_apply(manifests: &str) -> Result<(), String> {
     }
 }
 
-/// Render the namespace + scheduler (Deployment + Service) + executor Deployment.
-/// `mount` is the fixture directory, bind-mounted into both pods (see
-/// [`fixture_dir`]); it must match the kind `extraMounts` path.
+/// Render the namespace + scheduler (Deployment + Service) + executor
+/// Deployment. `mount` is the fixture directory, bind-mounted into the
+/// scheduler and executor pods (see [`fixture_dir`]); it must match the kind
+/// `extraMounts` path. With `result_service_local_port`, the harness's
+/// port-forward to it, a result service (Deployment + Service) is rendered too
+/// and the scheduler advertises that forward; otherwise the scheduler proxies
+/// results itself.
 fn render_manifests(
     namespace: &str,
     executors: usize,
     executor_grace_seconds: u64,
     mount: &std::path::Path,
+    result_service_local_port: Option<u16>,
 ) -> String {
     let mount = mount.display();
+    // With a result service, the scheduler advertises the harness's forward to
+    // it; without one, the scheduler proxies results itself.
+    let (fetch_env_name, fetch_env_value, result_service_manifests) =
+        match result_service_local_port {
+            Some(port) => (
+                "CHAOS_ADVERTISE_FLIGHT_ENDPOINT",
+                format!("127.0.0.1:{port}"),
+                render_result_service(namespace),
+            ),
+            None => (
+                "CHAOS_EMBEDDED_FLIGHT_PROXY",
+                "true".to_string(),
+                String::new(),
+            ),
+        };
     format!(
         r#"
 apiVersion: v1
@@ -783,8 +931,8 @@ spec:
               value: "0.0.0.0"
             - name: CHAOS_EXTERNAL_HOST
               value: "ballista-scheduler"
-            - name: CHAOS_EMBEDDED_FLIGHT_PROXY
-              value: "true"
+            - name: {fetch_env_name}
+              value: "{fetch_env_value}"
             - name: CHAOS_EXECUTOR_TIMEOUT_SECONDS
               value: "5"
             - name: CHAOS_EXPIRE_INTERVAL_SECONDS
@@ -831,7 +979,7 @@ spec:
   ports:
     - port: {SCHEDULER_PORT}
       targetPort: {SCHEDULER_PORT}
----
+{result_service_manifests}---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -910,9 +1058,75 @@ spec:
     )
 }
 
+/// The result service's Deployment and Service.
+fn render_result_service(namespace: &str) -> String {
+    format!(
+        r#"---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ballista-result-service
+  namespace: {namespace}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ballista-result-service
+  template:
+    metadata:
+      labels:
+        app: ballista-result-service
+    spec:
+      containers:
+        - name: result-service
+          image: {CHAOS_IMAGE}
+          imagePullPolicy: Never
+          command: ["/root/chaos-result-service"]
+          env:
+            - name: CHAOS_RESULT_SERVICE_PORT
+              value: "{RESULT_SERVICE_PORT}"
+            - name: CHAOS_BIND_HOST
+              value: "0.0.0.0"
+            - name: RUST_LOG
+              value: "info"
+          ports:
+            - containerPort: {RESULT_SERVICE_PORT}
+          readinessProbe:
+            tcpSocket:
+              port: {RESULT_SERVICE_PORT}
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ballista-result-service
+  namespace: {namespace}
+spec:
+  selector:
+    app: ballista-result-service
+  ports:
+    - port: {RESULT_SERVICE_PORT}
+      targetPort: {RESULT_SERVICE_PORT}
+"#
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserved_ports_are_distinct() {
+        let reserved = ReservedPorts::new(16).unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for port in &reserved.ports {
+            assert!(
+                seen.insert(*port),
+                "port {port} handed out twice: {:?}",
+                reserved.ports
+            );
+        }
+    }
 
     #[test]
     fn guard_allows_empty_directory() {

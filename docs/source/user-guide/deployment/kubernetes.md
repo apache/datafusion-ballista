@@ -54,6 +54,14 @@ docker push <your-repo>/datafusion-ballista-scheduler:latest
 docker push <your-repo>/datafusion-ballista-executor:latest
 ```
 
+If clients will fetch results from outside the cluster, also publish the result service image (see
+[Serving Results to Clients Outside the Cluster](#serving-results-to-clients-outside-the-cluster)):
+
+```bash
+docker tag apache/datafusion-ballista-result-service:latest <your-repo>/datafusion-ballista-result-service:latest
+docker push <your-repo>/datafusion-ballista-result-service:latest
+```
+
 ## Create Persistent Volume and Persistent Volume Claim
 
 Copy the following yaml to a `pv.yaml` file and apply to the cluster to create a persistent volume and a persistent
@@ -392,12 +400,229 @@ Use the following command to set up port-forwarding.
 kubectl port-forward service/ballista-scheduler 50050:50050
 ```
 
+## Serving Results to Clients Outside the Cluster
+
+Port forwarding the scheduler is enough to submit queries, but by default clients fetch query
+results directly from the executors, and executor pods are not reachable from outside the cluster.
+Deploy a result service that clients can reach, and have the scheduler point them at it. See
+[Fetching Query Results](../scheduler.md#fetching-query-results) for how it works.
+
+Save the following as `result-service.yaml`:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ballista-result-service
+spec:
+  ports:
+    - port: 50055
+      name: flight
+      # Plaintext HTTP/2, so a Gateway API route speaks gRPC to the pods.
+      appProtocol: kubernetes.io/h2c
+  selector:
+    app: ballista-result-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ballista-result-service
+spec:
+  # Replicas are interchangeable: each forwards any fetch to the executor that
+  # holds the partition and keeps no state, so scale with result traffic.
+  replicas: 2
+  # Start a replacement before stopping an old pod, so rollouts keep capacity.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: ballista-result-service
+  template:
+    metadata:
+      labels:
+        app: ballista-result-service
+        ballista-cluster: ballista
+    spec:
+      # Prefer placing replicas on different nodes, so they don't share a
+      # node's network bandwidth.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: ballista-result-service
+      # Leaves 10s of headroom after the preStop sleep (5s) and the drain
+      # bound (45s).
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: ballista-result-service
+          image: <your-repo>/datafusion-ballista-result-service:latest
+          args:
+            - "--bind-port=50055"
+            # After SIGTERM, stop accepting connections and give in-flight
+            # result streams up to 45s to finish.
+            - "--graceful-shutdown-timeout-seconds=45"
+          lifecycle:
+            # Kubernetes removes a terminating pod from the Service's endpoints
+            # in parallel with shutting it down, and kube-proxy and gateways
+            # learn of the removal asynchronously, so new connections can still
+            # arrive for a few seconds. Sleeping keeps the pod accepting them
+            # until routing catches up; SIGTERM follows once the hook returns.
+            preStop:
+              sleep:
+                seconds: 5
+          ports:
+            - containerPort: 50055
+              name: flight
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 50055
+            failureThreshold: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 50055
+            failureThreshold: 3
+            periodSeconds: 5
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ballista-result-service
+spec:
+  # Node drains evict at most one replica at a time.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ballista-result-service
+```
+
+When a pod is replaced or moved to another node, Kubernetes removes it from the Service's
+endpoints at the same time as it starts shutting the pod down. kube-proxy and any gateway pick up
+that removal asynchronously, so for a few seconds new connections can still be routed to the pod.
+The `preStop` sleep keeps the pod accepting connections during that window. On SIGTERM, which
+follows the sleep, it stops accepting connections and lets in-flight result streams finish, for up
+to `--graceful-shutdown-timeout-seconds` (10 by default), before exiting. The rolling-update
+strategy and the PodDisruptionBudget keep at least one replica serving throughout.
+
+Then add `--advertise-flight-endpoint` to the scheduler container's `args` in `cluster.yaml`. Which
+address to advertise depends on how clients reach the cluster.
+
+### Through port forwarding
+
+For a client on your own machine, forward a local port to the result service as well as to the
+scheduler, and advertise the local address:
+
+```yaml
+args: ["--bind-port=50050", "--advertise-flight-endpoint=127.0.0.1:50055"]
+```
+
+```bash
+kubectl apply -f result-service.yaml
+kubectl apply -f cluster.yaml
+kubectl port-forward service/ballista-scheduler 50050:50050 &
+kubectl port-forward service/ballista-result-service 50055:50055 &
+```
+
+`kubectl port-forward` sends all traffic to a single pod, so use this for testing only.
+
+### Through a TLS-terminating gateway
+
+In production, expose the result service through the [Gateway API] with a Gateway that terminates
+TLS and a `GRPCRoute` to the result service, and advertise the gateway's address. The result
+service pods keep serving plaintext behind it.
+
+```yaml
+args:
+  - "--bind-port=50050"
+  - "--advertise-flight-endpoint=ballista-results.example.com:443"
+```
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ballista-results
+spec:
+  gatewayClassName: <your-gateway-class>
+  listeners:
+    - name: grpc
+      protocol: HTTPS
+      port: 443
+      hostname: ballista-results.example.com
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: ballista-results-tls
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: ballista-result-service
+spec:
+  parentRefs:
+    - name: ballista-results
+  hostnames:
+    - ballista-results.example.com
+  rules:
+    - backendRefs:
+        - name: ballista-result-service
+          port: 50055
+```
+
+Result streams are long-lived, so make sure the gateway implementation's idle and stream timeouts
+allow for the largest result. Clients fetch results over TLS by setting `ballista.client.use_tls`
+to `true`, with TLS roots for the gateway's certificate supplied through a gRPC endpoint override.
+
+[gateway api]: https://gateway-api.sigs.k8s.io/
+
+### Restricting what the result service can reach
+
+The result service checks no credentials, and it dials whichever executor address a fetch ticket
+names without checking that the address belongs to the cluster, so a forged ticket can make it
+connect to an arbitrary host. Keep it on networks you trust and, where your cluster enforces
+network policies, allow it to connect only to the executors' Arrow Flight port:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ballista-result-service-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: ballista-result-service
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ballista-executor
+      ports:
+        - port: 50051
+          protocol: TCP
+```
+
+If executors register with host names rather than pod IPs (`--external-host`), also allow DNS.
+
 ## Deleting the Ballista Cluster
 
 Run the following kubectl command to delete the cluster.
 
 ```bash
 kubectl delete -f cluster.yaml
+```
+
+If you deployed a result service, delete it too:
+
+```bash
+kubectl delete -f result-service.yaml
 ```
 
 ## Autoscaling Executors

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::fetch::ResultFetch;
 use nix::fcntl::{Flock, FlockArg};
 use std::fs::{File, OpenOptions};
 use std::net::TcpListener;
@@ -98,6 +99,7 @@ pub struct TestClusterBuilder {
     stage_max_failures: usize,
     concurrent_tasks: usize,
     no_executors_grace_seconds: u64,
+    result_fetch: Option<ResultFetch>,
 }
 
 impl Default for TestClusterBuilder {
@@ -114,6 +116,7 @@ impl Default for TestClusterBuilder {
             // Ballista's default is 30s. A short grace makes the total-loss
             // scenario fail the job a second or so after the reap.
             no_executors_grace_seconds: 1,
+            result_fetch: None,
         }
     }
 }
@@ -149,6 +152,12 @@ impl TestClusterBuilder {
         self
     }
 
+    /// Fetches results this way, instead of directly from the executors.
+    pub fn result_fetch(mut self, mode: ResultFetch) -> Self {
+        self.result_fetch = Some(mode);
+        self
+    }
+
     pub async fn start(self) -> Result<TestCluster, String> {
         // Held for the cluster's whole lifetime, so only one cluster exists in
         // this process at a time. `--test-threads=1` gives the same guarantee,
@@ -174,7 +183,51 @@ impl TestClusterBuilder {
         let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
         let log_dir = temp.path().join("logs");
         std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
-        let [scheduler_port] = free_ports();
+        // Clients here can reach the executors, so they fetch directly unless
+        // a test or the environment picks another mode.
+        let result_fetch = match self.result_fetch {
+            Some(mode) => mode,
+            None => ResultFetch::forced_or(ResultFetch::Direct, &ResultFetch::ALL)?,
+        };
+        eprintln!("chaos cluster fetches results via {result_fetch}");
+        let result_service_enabled = result_fetch == ResultFetch::ResultService;
+
+        // Reserve the scheduler port and (when enabled) the result-service port
+        // together so they are distinct — see `free_ports`; separate calls could
+        // hand the same number to both.
+        let (scheduler_port, result_service_port) = if result_service_enabled {
+            let [scheduler_port, rs_port] = free_ports();
+            (scheduler_port, Some(rs_port))
+        } else {
+            let [scheduler_port] = free_ports();
+            (scheduler_port, None)
+        };
+
+        // Start the result service before the scheduler, so the advertised
+        // endpoint is live by the time a client first fetches results.
+        let result_service = match result_service_port {
+            Some(port) => {
+                let log = log_dir.join("result-service.log");
+                let stdout = open_log(&log).map_err(|e| {
+                    format!("open result-service log {}: {e}", log.display())
+                })?;
+                let stderr = open_log(&log).map_err(|e| {
+                    format!("open result-service log {}: {e}", log.display())
+                })?;
+                let child = Command::new(binary("chaos-result-service"))
+                    .env("CHAOS_RESULT_SERVICE_PORT", port.to_string())
+                    .env(
+                        "RUST_LOG",
+                        std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
+                    )
+                    .stdout(Stdio::from(stdout))
+                    .stderr(Stdio::from(stderr))
+                    .spawn()
+                    .map_err(|e| format!("spawn result service: {e}"))?;
+                Some(child)
+            }
+            None => None,
+        };
 
         let scheduler_log = log_dir.join("scheduler.log");
         let scheduler_stdout = open_log(&scheduler_log).map_err(|e| {
@@ -213,6 +266,15 @@ impl TestClusterBuilder {
             )
             .stdout(Stdio::from(scheduler_stdout))
             .stderr(Stdio::from(scheduler_stderr));
+        if let Some(port) = result_service_port {
+            scheduler.env(
+                "CHAOS_ADVERTISE_FLIGHT_ENDPOINT",
+                format!("127.0.0.1:{port}"),
+            );
+        }
+        if result_fetch == ResultFetch::SchedulerProxy {
+            scheduler.env("CHAOS_EMBEDDED_FLIGHT_PROXY", "true");
+        }
         let scheduler = scheduler
             .spawn()
             .map_err(|e| format!("spawn scheduler: {e}"))?;
@@ -220,6 +282,9 @@ impl TestClusterBuilder {
         let mut cluster = TestCluster {
             scheduler,
             scheduler_port,
+            result_service,
+            result_service_port,
+            result_fetch,
             executors: Vec::new(),
             temp,
             log_dir,
@@ -228,6 +293,12 @@ impl TestClusterBuilder {
             _cluster_lock: cluster_lock,
             _machine_lock: machine_lock,
         };
+
+        // Fail fast if the result service crashed on startup, rather than letting
+        // it surface later as an opaque result-fetch error.
+        if cluster.result_service.is_some() {
+            cluster.await_result_service_ready().await?;
+        }
 
         // Executors dial the scheduler over gRPC the moment they start. If they
         // are spawned before the scheduler has bound its port, some of them get
@@ -250,6 +321,11 @@ impl TestClusterBuilder {
 pub struct TestCluster {
     scheduler: Child,
     scheduler_port: u16,
+    /// The result service process, if results go through one.
+    result_service: Option<Child>,
+    /// The port the result service listens on, mirrored from `result_service`.
+    result_service_port: Option<u16>,
+    result_fetch: ResultFetch,
     pub(crate) executors: Vec<ExecutorHandle>,
     temp: tempfile::TempDir,
     log_dir: PathBuf,
@@ -303,6 +379,11 @@ impl TestCluster {
     /// The scheduler REST base URL. gRPC and REST share one port.
     pub fn rest_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.scheduler_port)
+    }
+
+    /// How clients fetch results from this cluster.
+    pub fn result_fetch(&self) -> ResultFetch {
+        self.result_fetch
     }
 
     /// The shared directory for fixtures and fault budgets. Every executor can
@@ -373,6 +454,40 @@ impl TestCluster {
         Ok(())
     }
 
+    /// Waits until the result service accepts TCP connections, or fails with its
+    /// log tail if it has exited.
+    async fn await_result_service_ready(&mut self) -> Result<(), String> {
+        let Some(port) = self.result_service_port else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let exited = self
+                .result_service
+                .as_mut()
+                .and_then(|c| c.try_wait().ok().flatten());
+            if let Some(status) = exited {
+                return Err(format!(
+                    "result service exited before becoming ready: {status}\n{}",
+                    self.log_tails()
+                ));
+            }
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "timed out waiting for result service to accept connections\n{}",
+                    self.log_tails()
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// Block until the scheduler is accepting REST/gRPC connections.
     ///
     /// Returns early with the log tail if the scheduler process has already
@@ -430,7 +545,7 @@ impl TestCluster {
 
     /// The last lines of every child process log, for timeout diagnostics.
     pub fn log_tails(&self) -> String {
-        let mut out = String::new();
+        let mut out = format!("result fetch: {}\n", self.result_fetch);
         let mut paths: Vec<PathBuf> = std::fs::read_dir(&self.log_dir)
             .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect())
             .unwrap_or_default();
@@ -726,6 +841,10 @@ impl Drop for TestCluster {
         }
         let scheduler_log = self.log_dir.join("scheduler.log");
         reap(&mut self.scheduler, &scheduler_log);
+        let result_service_log = self.log_dir.join("result-service.log");
+        if let Some(result_service) = self.result_service.as_mut() {
+            reap(result_service, &result_service_log);
+        }
     }
 }
 

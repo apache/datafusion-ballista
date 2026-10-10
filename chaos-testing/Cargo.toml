@@ -32,6 +32,7 @@ k8s = []
 
 [dependencies]
 arrow = { workspace = true }
+arrow-flight = { workspace = true }
 ballista = { workspace = true }
 ballista-core = { workspace = true }
 ballista-executor = { workspace = true }
@@ -43,7 +44,7 @@ nix = { version = "0.31", features = ["fs", "signal"] }
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "sync", "time", "net", "signal"] }
 
 [dev-dependencies]
 rstest = { workspace = true }
@@ -55,6 +56,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "chaos-executor"
 path = "src/bin/chaos-executor.rs"
+
+[[bin]]
+name = "chaos-result-service"
+path = "src/bin/chaos-result-service.rs"
 
 [[bin]]
 name = "chaos-scheduler"

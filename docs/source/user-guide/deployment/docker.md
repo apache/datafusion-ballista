@@ -26,6 +26,7 @@ The official Docker images are published to the GitHub Container Registry:
 - [`ghcr.io/apache/datafusion-ballista-standalone`](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone)
 - [`ghcr.io/apache/datafusion-ballista-scheduler`](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-scheduler)
 - [`ghcr.io/apache/datafusion-ballista-executor`](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-executor)
+- [`ghcr.io/apache/datafusion-ballista-result-service`](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-result-service)
 
 Pull the images needed for your deployment with the following commands:
 
@@ -33,6 +34,8 @@ Pull the images needed for your deployment with the following commands:
 docker pull ghcr.io/apache/datafusion-ballista-standalone:latest
 docker pull ghcr.io/apache/datafusion-ballista-scheduler:latest
 docker pull ghcr.io/apache/datafusion-ballista-executor:latest
+# Only needed if clients cannot reach the executors:
+docker pull ghcr.io/apache/datafusion-ballista-result-service:latest
 ```
 
 Alternatively run the following commands to clone the source repository and build the Docker images from source:
@@ -48,6 +51,7 @@ This will create the following images:
 - `apache/datafusion-ballista-benchmarks:latest`
 - `apache/datafusion-ballista-cli:latest`
 - `apache/datafusion-ballista-executor:latest`
+- `apache/datafusion-ballista-result-service:latest`
 - `apache/datafusion-ballista-scheduler:latest`
 - `apache/datafusion-ballista-standalone:latest`
 
