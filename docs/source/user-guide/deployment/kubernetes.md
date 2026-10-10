@@ -446,6 +446,15 @@ spec:
         app: ballista-result-service
         ballista-cluster: ballista
     spec:
+      # Prefer placing replicas on different nodes, so they don't share a
+      # node's network bandwidth.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: ballista-result-service
       # Leaves 10s of headroom after the preStop sleep (5s) and the drain
       # bound (45s).
       terminationGracePeriodSeconds: 60
