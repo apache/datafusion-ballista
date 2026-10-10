@@ -537,8 +537,6 @@ kind: Gateway
 metadata:
   name: ballista-results
 spec:
-  # The class your Gateway controller provides, for example `eg` (Envoy
-  # Gateway), `istio` or `cilium`; `kubectl get gatewayclass` lists them.
   gatewayClassName: <your-gateway-class>
   listeners:
     - name: grpc
