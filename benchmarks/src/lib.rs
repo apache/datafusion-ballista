@@ -18,15 +18,33 @@
 //! Shared helpers for the TPC-H and TPC-DS benchmark/correctness binaries.
 //!
 //! These are benchmark-agnostic: result comparison against a DataFusion oracle,
-//! path resolution, answer-statement selection, and Parquet table registration.
+//! path resolution, answer-statement selection, Ballista session setup, Parquet
+//! table registration, and suite timing (see [`summary`]).
 
+pub mod summary;
+
+use ballista::extension::SessionConfigExt;
+use ballista::prelude::SessionContextExt;
+use ballista_core::object_store::{
+    session_config_with_s3_support, session_state_with_s3_support,
+};
 use datafusion::arrow::array::*;
-use datafusion::arrow::datatypes::{DataType, Schema};
+use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::display::array_value_to_string;
+use datafusion::datasource::listing::{ListingOptions, ListingTableUrl};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use datafusion::execution::context::SessionState;
+use datafusion::execution::options::ReadOptions;
+use datafusion::prelude::{
+    Expr, ParquetReadOptions, SessionConfig, SessionContext, cast, ident, lit, nullif,
+};
+use futures::TryStreamExt;
+use futures::future::try_join_all;
+use std::collections::HashSet;
+use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Maximum relative-or-absolute difference tolerated between floating-point
 /// cells. Distributed (Ballista) and single-process (DataFusion) execution
@@ -241,25 +259,315 @@ pub async fn execute_query_capturing_answer(
     Ok(answer)
 }
 
-/// Register each named table as a Parquet source under `path`, inferring the
-/// schema from the files. Works for both a single `<table>.parquet` file and a
-/// partitioned `<table>/` directory (see `find_path`).
-pub async fn register_parquet_tables(
+/// The type of a Hive partition column that only exists in the directory
+/// names, given the table and column name, or `None` to read it as a string.
+pub type PathColumnType = fn(&str, &str) -> Option<DataType>;
+
+/// The value that Hive and Spark put in a partition directory's name when the
+/// partition key is NULL, as in `ss_sold_date_sk=__HIVE_DEFAULT_PARTITION__/`.
+const HIVE_DEFAULT_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
+
+/// A Parquet table's location and layout. Inferring the layout reads the
+/// files, so the runners do it once per table and register the result on each
+/// per-query session, which then reads nothing.
+pub struct ParquetTable {
+    pub name: String,
+    pub path: String,
+    pub schema: SchemaRef,
+    pub partition_cols: Vec<(String, DataType)>,
+    /// The partition columns that have a `__HIVE_DEFAULT_PARTITION__`
+    /// directory (see [`ParquetTable::register`]).
+    pub null_partition_cols: Vec<String>,
+}
+
+impl ParquetTable {
+    /// Infers the layout of the Parquet table at `path`, including the Hive
+    /// partition columns that its directory names encode (e.g.
+    /// `lineitem/l_shipdate=1994-01-01/`) unless `partition_cols` is false
+    /// (see [`parquet_table_layout`]).
+    pub async fn infer(
+        ctx: &SessionContext,
+        name: &str,
+        path: &str,
+        partition_cols: bool,
+        path_column_type: PathColumnType,
+    ) -> Result<Self> {
+        let state = ctx.state();
+        let options = ParquetReadOptions::default()
+            .to_listing_options(state.config(), state.default_table_options());
+        let table_url = ListingTableUrl::parse(path)?;
+        let (schema, partition_cols) = parquet_table_layout(
+            &state,
+            name,
+            &table_url,
+            &options,
+            partition_cols,
+            path_column_type,
+        )
+        .await?;
+        let null_partition_cols =
+            null_partition_cols(&state, &table_url, &options, &partition_cols).await?;
+        Ok(Self {
+            name: name.to_string(),
+            path: path.to_string(),
+            schema,
+            partition_cols,
+            null_partition_cols,
+        })
+    }
+
+    /// Registers the table on `ctx` with the inferred layout. Filters on the
+    /// partition columns then skip whole directories at planning time instead
+    /// of reading every file's footer.
+    ///
+    /// DataFusion casts each partition directory's value to the column's type,
+    /// and `__HIVE_DEFAULT_PARTITION__` only casts to a string
+    /// (<https://github.com/apache/datafusion/issues/18083>). So when a column
+    /// has that directory, the files are registered as `<name>_raw` with the
+    /// column as a string, and `<name>` is a view that maps that directory to
+    /// NULL and casts the other values back. Filters on the column still skip
+    /// directories.
+    pub async fn register(&self, ctx: &SessionContext) -> Result<()> {
+        if self.null_partition_cols.is_empty() {
+            return self
+                .register_files(ctx, &self.name, self.partition_cols.clone())
+                .await;
+        }
+
+        let mut raw_partition_cols = vec![];
+        let mut columns: Vec<Expr> = self
+            .schema
+            .fields()
+            .iter()
+            .map(|field| ident(field.name()))
+            .collect();
+        for (name, data_type) in &self.partition_cols {
+            if self.null_partition_cols.contains(name) {
+                raw_partition_cols.push((name.clone(), DataType::Utf8));
+                let value = nullif(ident(name), lit(HIVE_DEFAULT_PARTITION));
+                columns.push(cast(value, data_type.clone()).alias(name));
+            } else {
+                raw_partition_cols.push((name.clone(), data_type.clone()));
+                columns.push(ident(name));
+            }
+        }
+
+        let raw_name = format!("{}_raw", self.name);
+        self.register_files(ctx, &raw_name, raw_partition_cols)
+            .await?;
+        let view = ctx.table(raw_name.as_str()).await?.select(columns)?;
+        ctx.register_table(self.name.as_str(), view.into_view())?;
+        Ok(())
+    }
+
+    /// Registers the files as table `name` with the given partition columns.
+    async fn register_files(
+        &self,
+        ctx: &SessionContext,
+        name: &str,
+        partition_cols: Vec<(String, DataType)>,
+    ) -> Result<()> {
+        let options = ParquetReadOptions::default()
+            .schema(&self.schema)
+            .table_partition_cols(partition_cols);
+        ctx.register_parquet(name, &self.path, options).await
+    }
+}
+
+/// The columns in `partition_cols` that have a `__HIVE_DEFAULT_PARTITION__`
+/// directory anywhere under `table_url`. Finding them lists every file, so an
+/// unpartitioned table skips the listing.
+async fn null_partition_cols(
+    state: &SessionState,
+    table_url: &ListingTableUrl,
+    options: &ListingOptions,
+    partition_cols: &[(String, DataType)],
+) -> Result<Vec<String>> {
+    if partition_cols.is_empty() {
+        return Ok(vec![]);
+    }
+    let null_dir_suffix = format!("={HIVE_DEFAULT_PARTITION}");
+    let store = state.runtime_env().object_store(table_url)?;
+    let mut files = table_url
+        .list_all_files(state, store.as_ref(), &options.file_extension)
+        .await?;
+    let mut null_cols = HashSet::new();
+    while let Some(file) = files.try_next().await? {
+        let dirs = table_url.strip_prefix(&file.location).into_iter().flatten();
+        for dir in dirs {
+            if let Some(name) = dir.strip_suffix(&null_dir_suffix) {
+                null_cols.insert(name.to_string());
+            }
+        }
+    }
+    Ok(partition_cols
+        .iter()
+        .map(|(name, _)| name)
+        .filter(|name| null_cols.contains(*name))
+        .cloned()
+        .collect())
+}
+
+/// Infers the layout of each named table under `path`, concurrently. Works for
+/// both a single `<table>.parquet` file and a partitioned `<table>/` directory
+/// (see `find_path`).
+pub async fn infer_parquet_tables(
     ctx: &SessionContext,
     tables: &[&str],
     path: &str,
     debug: bool,
-) -> Result<()> {
-    for &table in tables {
+    partition_cols: bool,
+    path_column_type: PathColumnType,
+) -> Result<Vec<ParquetTable>> {
+    try_join_all(tables.iter().map(|&table| async move {
         let table_path = find_path(path, table, "parquet")?;
         if debug {
-            println!("Registering table '{table}' from Parquet at {table_path}");
+            println!(
+                "Inferring the layout of table '{table}' from Parquet at {table_path}"
+            );
         }
-        ctx.register_parquet(table, &table_path, ParquetReadOptions::default())
+        ParquetTable::infer(ctx, table, &table_path, partition_cols, path_column_type)
             .await
-            .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
+            .map_err(|e| DataFusionError::Plan(format!("{table}: {e:?}")))
+    }))
+    .await
+}
+
+/// Registers `tables` on `ctx` (see [`ParquetTable::register`]).
+pub async fn register_parquet_tables(
+    ctx: &SessionContext,
+    tables: &[ParquetTable],
+) -> Result<()> {
+    for table in tables {
+        table.register(ctx).await?;
     }
     Ok(())
+}
+
+/// Infers a Parquet table's layout and registers it (see [`ParquetTable`]).
+pub async fn register_parquet_table(
+    ctx: &SessionContext,
+    table: &str,
+    path: &str,
+    partition_cols: bool,
+    path_column_type: PathColumnType,
+) -> Result<()> {
+    ParquetTable::infer(ctx, table, path, partition_cols, path_column_type)
+        .await?
+        .register(ctx)
+        .await
+}
+
+/// Splits a Parquet table's columns into the file schema and the Hive
+/// partition columns that its directory names encode.
+///
+/// A partition column that the files also store keeps the files' type and
+/// leaves the file schema, because `ListingTable` appends partition columns
+/// itself and rejects duplicate names. A column that only exists in the path
+/// takes its type from `path_column_type`, so that, for example, dates stay
+/// dates. Any other partition column is a string.
+pub async fn parquet_table_layout(
+    state: &SessionState,
+    table: &str,
+    table_url: &ListingTableUrl,
+    options: &ListingOptions,
+    detect_partitions: bool,
+    path_column_type: PathColumnType,
+) -> Result<(SchemaRef, Vec<(String, DataType)>)> {
+    let file_schema = options.infer_schema(state, table_url).await?;
+    if !detect_partitions {
+        return Ok((file_schema, vec![]));
+    }
+    let partition_cols: Vec<(String, DataType)> = options
+        .infer_partitions(state, table_url)
+        .await?
+        .into_iter()
+        .map(|name| {
+            let data_type = file_schema
+                .field_with_name(&name)
+                .map(|field| field.data_type().clone())
+                .ok()
+                .or_else(|| path_column_type(table, &name))
+                .unwrap_or(DataType::Utf8);
+            (name, data_type)
+        })
+        .collect();
+    let file_fields: Vec<_> = file_schema
+        .fields()
+        .iter()
+        .filter(|field| partition_cols.iter().all(|(name, _)| name != field.name()))
+        .cloned()
+        .collect();
+    let file_schema =
+        Schema::new_with_metadata(file_fields, file_schema.metadata().clone());
+    Ok((Arc::new(file_schema), partition_cols))
+}
+
+/// The session config the benchmark runners use: S3 support, the given
+/// target partitions and batch size, statistics collection, and the given
+/// `key=value` config overrides.
+pub fn benchmark_session_config(
+    partitions: usize,
+    batch_size: usize,
+    config_overrides: &[String],
+) -> SessionConfig {
+    let mut config = session_config_with_s3_support()
+        .with_target_partitions(partitions)
+        .with_batch_size(batch_size)
+        .with_collect_statistics(true);
+
+    for kv in config_overrides {
+        if let Some((key, value)) = kv.split_once('=') {
+            if let Err(e) = config.options_mut().set(key.trim(), value.trim()) {
+                println!("Warning: could not set config '{kv}': {e}");
+            }
+        } else {
+            println!(
+                "Warning: ignoring invalid config override '{kv}'. \
+                 Expected format: key=value"
+            );
+        }
+    }
+    config
+}
+
+/// Connects a new session with `config` to the Ballista scheduler at
+/// `address` (a `df://host:port` URL). The benchmark runners build one per
+/// query so that `job_name` identifies the query in the scheduler.
+pub async fn ballista_context(
+    address: &str,
+    job_name: &str,
+    config: SessionConfig,
+) -> Result<SessionContext> {
+    let state = session_state_with_s3_support(config.with_ballista_job_name(job_name))?;
+    SessionContext::remote_with_state(address, state).await
+}
+
+/// A single-process session with `config` that can read from S3, for work
+/// that must not go to the cluster, such as inferring table layouts.
+pub fn local_context(config: SessionConfig) -> Result<SessionContext> {
+    Ok(SessionContext::new_with_state(
+        session_state_with_s3_support(config)?,
+    ))
+}
+
+/// Reads query `query`'s SQL from `<dir>/q<query>.sql`, relative to either the
+/// current directory or the repository root.
+pub fn read_query_file(dir: &str, query: usize) -> Result<String> {
+    let possibilities = [
+        format!("{dir}/q{query}.sql"),
+        format!("benchmarks/{dir}/q{query}.sql"),
+    ];
+    let mut errors = vec![];
+    for filename in &possibilities {
+        match fs::read_to_string(filename) {
+            Ok(contents) => return Ok(contents),
+            Err(e) => errors.push(format!("{filename}: {e}")),
+        }
+    }
+    Err(DataFusionError::Plan(format!(
+        "Could not find query {query}: {errors:?}"
+    )))
 }
 
 #[cfg(test)]
