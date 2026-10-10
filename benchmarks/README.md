@@ -411,6 +411,15 @@ directory names, such as `ss_sold_date_sk` in data written with Spark's
 `partitionBy`, is read as an integer, because TPC-DS partitions its fact tables
 by date surrogate key.
 
+Some fact table rows have a NULL date key. Spark writes them to a directory
+such as `store_sales/ss_sold_date_sk=__HIVE_DEFAULT_PARTITION__/`, which
+DataFusion can't read as an integer yet
+([apache/datafusion#18083](https://github.com/apache/datafusion/issues/18083)).
+For a table with such a directory, the runner registers the files as
+`<table>_raw`, with that column as a string, and `<table>` as a view that reads
+the directory as NULL and casts the other values to integers. Filters on the
+column still skip directories.
+
 `tpcgen-cli` names three columns differently from the TPC-DS spec, which the
 queries follow, so the runner rewrites those references when the tables have
 the `tpcgen-cli` names. Data from `dsdgen` or Spark uses the spec names and the

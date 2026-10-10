@@ -36,8 +36,12 @@ use datafusion::datasource::listing::{ListingOptions, ListingTableUrl};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::SessionState;
 use datafusion::execution::options::ReadOptions;
-use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
+use datafusion::prelude::{
+    Expr, ParquetReadOptions, SessionConfig, SessionContext, cast, ident, lit, nullif,
+};
+use futures::TryStreamExt;
 use futures::future::try_join_all;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -259,6 +263,10 @@ pub async fn execute_query_capturing_answer(
 /// names, given the table and column name, or `None` to read it as a string.
 pub type PathColumnType = fn(&str, &str) -> Option<DataType>;
 
+/// The value that Hive and Spark put in a partition directory's name when the
+/// partition key is NULL, as in `ss_sold_date_sk=__HIVE_DEFAULT_PARTITION__/`.
+const HIVE_DEFAULT_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
+
 /// A Parquet table's location and layout. Inferring the layout reads the
 /// files, so the runners do it once per table and register the result on each
 /// per-query session, which then reads nothing.
@@ -267,6 +275,9 @@ pub struct ParquetTable {
     pub path: String,
     pub schema: SchemaRef,
     pub partition_cols: Vec<(String, DataType)>,
+    /// The partition columns that have a `__HIVE_DEFAULT_PARTITION__`
+    /// directory (see [`ParquetTable::register`]).
+    pub null_partition_cols: Vec<String>,
 }
 
 impl ParquetTable {
@@ -294,23 +305,107 @@ impl ParquetTable {
             path_column_type,
         )
         .await?;
+        let null_partition_cols =
+            null_partition_cols(&state, &table_url, &options, &partition_cols).await?;
         Ok(Self {
             name: name.to_string(),
             path: path.to_string(),
             schema,
             partition_cols,
+            null_partition_cols,
         })
     }
 
     /// Registers the table on `ctx` with the inferred layout. Filters on the
     /// partition columns then skip whole directories at planning time instead
     /// of reading every file's footer.
+    ///
+    /// DataFusion casts each partition directory's value to the column's type,
+    /// and `__HIVE_DEFAULT_PARTITION__` only casts to a string
+    /// (<https://github.com/apache/datafusion/issues/18083>). So when a column
+    /// has that directory, the files are registered as `<name>_raw` with the
+    /// column as a string, and `<name>` is a view that maps that directory to
+    /// NULL and casts the other values back. Filters on the column still skip
+    /// directories.
     pub async fn register(&self, ctx: &SessionContext) -> Result<()> {
+        if self.null_partition_cols.is_empty() {
+            return self
+                .register_files(ctx, &self.name, self.partition_cols.clone())
+                .await;
+        }
+
+        let mut raw_partition_cols = vec![];
+        let mut columns: Vec<Expr> = self
+            .schema
+            .fields()
+            .iter()
+            .map(|field| ident(field.name()))
+            .collect();
+        for (name, data_type) in &self.partition_cols {
+            if self.null_partition_cols.contains(name) {
+                raw_partition_cols.push((name.clone(), DataType::Utf8));
+                let value = nullif(ident(name), lit(HIVE_DEFAULT_PARTITION));
+                columns.push(cast(value, data_type.clone()).alias(name));
+            } else {
+                raw_partition_cols.push((name.clone(), data_type.clone()));
+                columns.push(ident(name));
+            }
+        }
+
+        let raw_name = format!("{}_raw", self.name);
+        self.register_files(ctx, &raw_name, raw_partition_cols)
+            .await?;
+        let view = ctx.table(raw_name.as_str()).await?.select(columns)?;
+        ctx.register_table(self.name.as_str(), view.into_view())?;
+        Ok(())
+    }
+
+    /// Registers the files as table `name` with the given partition columns.
+    async fn register_files(
+        &self,
+        ctx: &SessionContext,
+        name: &str,
+        partition_cols: Vec<(String, DataType)>,
+    ) -> Result<()> {
         let options = ParquetReadOptions::default()
             .schema(&self.schema)
-            .table_partition_cols(self.partition_cols.clone());
-        ctx.register_parquet(&self.name, &self.path, options).await
+            .table_partition_cols(partition_cols);
+        ctx.register_parquet(name, &self.path, options).await
     }
+}
+
+/// The columns in `partition_cols` that have a `__HIVE_DEFAULT_PARTITION__`
+/// directory anywhere under `table_url`. Finding them lists every file, so an
+/// unpartitioned table skips the listing.
+async fn null_partition_cols(
+    state: &SessionState,
+    table_url: &ListingTableUrl,
+    options: &ListingOptions,
+    partition_cols: &[(String, DataType)],
+) -> Result<Vec<String>> {
+    if partition_cols.is_empty() {
+        return Ok(vec![]);
+    }
+    let null_dir_suffix = format!("={HIVE_DEFAULT_PARTITION}");
+    let store = state.runtime_env().object_store(table_url)?;
+    let mut files = table_url
+        .list_all_files(state, store.as_ref(), &options.file_extension)
+        .await?;
+    let mut null_cols = HashSet::new();
+    while let Some(file) = files.try_next().await? {
+        let dirs = table_url.strip_prefix(&file.location).into_iter().flatten();
+        for dir in dirs {
+            if let Some(name) = dir.strip_suffix(&null_dir_suffix) {
+                null_cols.insert(name.to_string());
+            }
+        }
+    }
+    Ok(partition_cols
+        .iter()
+        .map(|(name, _)| name)
+        .filter(|name| null_cols.contains(*name))
+        .cloned()
+        .collect())
 }
 
 /// Infers the layout of each named table under `path`, concurrently. Works for

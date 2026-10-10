@@ -533,21 +533,23 @@ mod tests {
         assert!(!replace_word(&joined, "r_reason_desc", "?").contains('?'));
     }
 
-    // Spark's `partitionBy` layout: `ss_sold_date_sk` is only a directory
-    // level. It must register as an integer, so it joins `d_date_sk` and a
-    // filter on it skips the other partitions.
-    #[tokio::test]
-    async fn path_only_date_sk_partition_is_an_integer_and_prunes() -> Result<()> {
+    /// Writes a one-column `store_sales` table under `dir` in the layout of
+    /// Spark's `partitionBy`, where `ss_sold_date_sk` is only a directory
+    /// level, and registers it on a new session. Each `(item, date_sk)` pair
+    /// becomes the one row of `store_sales/ss_sold_date_sk=<date_sk>/`.
+    async fn spark_store_sales(
+        dir: &std::path::Path,
+        rows: &[(i32, &str)],
+    ) -> Result<SessionContext> {
         use datafusion::arrow::array::{ArrayRef, Int32Array};
         use datafusion::parquet::arrow::ArrowWriter;
         use std::fs;
         use std::sync::Arc;
 
-        let dir = tempfile::tempdir().unwrap();
-        for (item, date_sk) in [(1, 2451000), (2, 2451001)] {
-            let item: ArrayRef = Arc::new(Int32Array::from(vec![item]));
+        for (item, date_sk) in rows {
+            let item: ArrayRef = Arc::new(Int32Array::from(vec![*item]));
             let batch = RecordBatch::try_from_iter([("ss_item_sk", item)]).unwrap();
-            let path = dir.path().join(format!(
+            let path = dir.join(format!(
                 "store_sales/ss_sold_date_sk={date_sk}/part-0.parquet"
             ));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -562,7 +564,7 @@ mod tests {
         }
 
         let ctx = SessionContext::new();
-        let path = format!("{}/store_sales", dir.path().display());
+        let path = format!("{}/store_sales", dir.display());
         ballista_benchmarks::register_parquet_table(
             &ctx,
             "store_sales",
@@ -571,6 +573,26 @@ mod tests {
             tpcds_path_column_type,
         )
         .await?;
+        Ok(ctx)
+    }
+
+    async fn physical_plan(df: &datafusion::prelude::DataFrame) -> Result<String> {
+        Ok(format!(
+            "{}",
+            datafusion::physical_plan::displayable(
+                df.clone().create_physical_plan().await?.as_ref()
+            )
+            .indent(false)
+        ))
+    }
+
+    // The date key must register as an integer, so it joins `d_date_sk`, and
+    // a filter on it skips the other partitions.
+    #[tokio::test]
+    async fn path_only_date_sk_partition_is_an_integer_and_prunes() -> Result<()> {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx =
+            spark_store_sales(dir.path(), &[(1, "2451000"), (2, "2451001")]).await?;
 
         let schema = ctx.table_provider("store_sales").await?.schema();
         assert_eq!(
@@ -581,13 +603,7 @@ mod tests {
         let df = ctx
             .sql("SELECT ss_item_sk FROM store_sales WHERE ss_sold_date_sk = 2451001")
             .await?;
-        let plan = format!(
-            "{}",
-            datafusion::physical_plan::displayable(
-                df.clone().create_physical_plan().await?.as_ref()
-            )
-            .indent(false)
-        );
+        let plan = physical_plan(&df).await?;
         assert!(plan.contains("ss_sold_date_sk=2451001"), "{plan}");
         assert!(!plan.contains("ss_sold_date_sk=2451000"), "{plan}");
         datafusion::assert_batches_eq!(
@@ -596,6 +612,65 @@ mod tests {
                 "| ss_item_sk |",
                 "+------------+",
                 "| 2          |",
+                "+------------+",
+            ],
+            &df.collect().await?
+        );
+        Ok(())
+    }
+
+    // Spark writes the rows whose partition key is NULL to a
+    // `__HIVE_DEFAULT_PARTITION__` directory, and TPC-DS fact tables have
+    // rows with a NULL date key. They must read back as NULL integers
+    // instead of failing the scan, and a filter on the key must still skip
+    // that directory.
+    #[tokio::test]
+    async fn null_date_sk_partition_reads_as_null() -> Result<()> {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = spark_store_sales(
+            dir.path(),
+            &[(1, "2451000"), (2, "__HIVE_DEFAULT_PARTITION__")],
+        )
+        .await?;
+
+        let schema = ctx.table_provider("store_sales").await?.schema();
+        assert_eq!(
+            schema.field_with_name("ss_sold_date_sk")?.data_type(),
+            &DataType::Int32
+        );
+
+        let all = ctx
+            .sql(
+                "SELECT ss_item_sk, ss_sold_date_sk FROM store_sales ORDER BY ss_item_sk",
+            )
+            .await?;
+        datafusion::assert_batches_eq!(
+            [
+                "+------------+-----------------+",
+                "| ss_item_sk | ss_sold_date_sk |",
+                "+------------+-----------------+",
+                "| 1          | 2451000         |",
+                "| 2          |                 |",
+                "+------------+-----------------+",
+            ],
+            &all.collect().await?
+        );
+
+        let df = ctx
+            .sql("SELECT ss_item_sk FROM store_sales WHERE ss_sold_date_sk = 2451000")
+            .await?;
+        let plan = physical_plan(&df).await?;
+        assert!(plan.contains("ss_sold_date_sk=2451000"), "{plan}");
+        assert!(
+            !plan.contains("ss_sold_date_sk=__HIVE_DEFAULT_PARTITION__"),
+            "{plan}"
+        );
+        datafusion::assert_batches_eq!(
+            [
+                "+------------+",
+                "| ss_item_sk |",
+                "+------------+",
+                "| 1          |",
                 "+------------+",
             ],
             &df.collect().await?
