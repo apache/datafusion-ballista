@@ -63,7 +63,6 @@ impl<B: ResultBackend> ResultBackend for MeteredBackend<B> {
 struct FetchRecord {
     metrics: Arc<dyn ResultMetricsCollector>,
     started: Instant,
-    bytes: u64,
     outcome: Option<FetchOutcome>,
 }
 
@@ -73,7 +72,6 @@ impl FetchRecord {
         Self {
             metrics,
             started: Instant::now(),
-            bytes: 0,
             outcome: None,
         }
     }
@@ -84,7 +82,6 @@ impl Drop for FetchRecord {
         self.metrics.record_finished(
             self.outcome.unwrap_or(FetchOutcome::Cancelled),
             self.started.elapsed(),
-            self.bytes,
         );
     }
 }
@@ -104,9 +101,9 @@ impl Stream for MeteredStream {
         let polled = self.inner.as_mut().poll_next(cx);
         let record = &mut self.record;
         match &polled {
-            Poll::Ready(Some(Ok(data))) => {
-                record.bytes += (data.data_header.len() + data.data_body.len()) as u64;
-            }
+            Poll::Ready(Some(Ok(data))) => record
+                .metrics
+                .record_bytes((data.data_header.len() + data.data_body.len()) as u64),
             Poll::Ready(Some(Err(_))) => record.outcome = Some(FetchOutcome::Failed),
             Poll::Ready(None) => {
                 record.outcome.get_or_insert(FetchOutcome::Completed);
@@ -130,7 +127,18 @@ mod tests {
     #[derive(Default)]
     struct RecordingCollector {
         started: Mutex<usize>,
-        finished: Mutex<Vec<(FetchOutcome, u64)>>,
+        bytes: Mutex<u64>,
+        finished: Mutex<Vec<FetchOutcome>>,
+    }
+
+    impl RecordingCollector {
+        fn bytes(&self) -> u64 {
+            *self.bytes.lock().unwrap()
+        }
+
+        fn finished(&self) -> Vec<FetchOutcome> {
+            self.finished.lock().unwrap().clone()
+        }
     }
 
     impl ResultMetricsCollector for RecordingCollector {
@@ -138,8 +146,12 @@ mod tests {
             *self.started.lock().unwrap() += 1;
         }
 
-        fn record_finished(&self, outcome: FetchOutcome, _elapsed: Duration, bytes: u64) {
-            self.finished.lock().unwrap().push((outcome, bytes));
+        fn record_bytes(&self, bytes: u64) {
+            *self.bytes.lock().unwrap() += bytes;
+        }
+
+        fn record_finished(&self, outcome: FetchOutcome, _elapsed: Duration) {
+            self.finished.lock().unwrap().push(outcome);
         }
 
         fn gather_metrics(&self) -> BallistaResult<Option<(Vec<u8>, String)>> {
@@ -195,18 +207,25 @@ mod tests {
         backend.fetch(action, Ticket::default()).await
     }
 
-    fn finished(collector: &RecordingCollector) -> Vec<(FetchOutcome, u64)> {
-        collector.finished.lock().unwrap().clone()
-    }
-
     #[tokio::test]
-    async fn a_fully_read_stream_is_completed_with_its_bytes() {
+    async fn a_fully_read_stream_is_completed() {
         let (backend, collector) = metered(Some(vec![data(8, 100), data(8, 50)]));
         let stream = fetch(&backend).await.unwrap();
         assert_eq!(stream.collect::<Vec<_>>().await.len(), 2);
 
         assert_eq!(*collector.started.lock().unwrap(), 1);
-        assert_eq!(finished(&collector), vec![(FetchOutcome::Completed, 166)]);
+        assert_eq!(collector.bytes(), 166);
+        assert_eq!(collector.finished(), vec![FetchOutcome::Completed]);
+    }
+
+    #[tokio::test]
+    async fn bytes_are_recorded_as_they_are_relayed() {
+        let (backend, collector) = metered(Some(vec![data(8, 100), data(8, 50)]));
+        let mut stream = fetch(&backend).await.unwrap();
+        assert!(stream.next().await.is_some());
+
+        assert_eq!(collector.bytes(), 108);
+        assert!(collector.finished().is_empty(), "still in flight");
     }
 
     #[tokio::test]
@@ -216,7 +235,8 @@ mod tests {
         let stream = fetch(&backend).await.unwrap();
         drop(stream.collect::<Vec<_>>().await);
 
-        assert_eq!(finished(&collector), vec![(FetchOutcome::Failed, 108)]);
+        assert_eq!(collector.bytes(), 108);
+        assert_eq!(collector.finished(), vec![FetchOutcome::Failed]);
     }
 
     #[tokio::test]
@@ -224,7 +244,8 @@ mod tests {
         let (backend, collector) = metered(None);
         assert!(fetch(&backend).await.is_err());
 
-        assert_eq!(finished(&collector), vec![(FetchOutcome::Failed, 0)]);
+        assert_eq!(collector.bytes(), 0);
+        assert_eq!(collector.finished(), vec![FetchOutcome::Failed]);
     }
 
     #[tokio::test]
@@ -232,9 +253,8 @@ mod tests {
         let (backend, collector) = metered(Some(vec![data(8, 100), data(8, 50)]));
         let mut stream = fetch(&backend).await.unwrap();
         assert!(stream.next().await.is_some());
-        assert!(finished(&collector).is_empty(), "still in flight");
         drop(stream);
 
-        assert_eq!(finished(&collector), vec![(FetchOutcome::Cancelled, 108)]);
+        assert_eq!(collector.finished(), vec![FetchOutcome::Cancelled]);
     }
 }

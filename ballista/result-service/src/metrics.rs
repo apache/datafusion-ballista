@@ -38,8 +38,11 @@ pub trait ResultMetricsCollector: Send + Sync {
     /// A fetch started.
     fn record_started(&self);
 
-    /// A fetch ended after `elapsed`, having relayed `bytes` of Flight data.
-    fn record_finished(&self, outcome: FetchOutcome, elapsed: Duration, bytes: u64);
+    /// A fetch relayed `bytes` of Flight data to its client.
+    fn record_bytes(&self, bytes: u64);
+
+    /// A fetch ended after `elapsed`.
+    fn record_finished(&self, outcome: FetchOutcome, elapsed: Duration);
 
     /// The metrics and their content type, or `None` if this collector exports
     /// none.
@@ -55,7 +58,9 @@ pub struct NoopMetricsCollector;
 impl ResultMetricsCollector for NoopMetricsCollector {
     fn record_started(&self) {}
 
-    fn record_finished(&self, _outcome: FetchOutcome, _elapsed: Duration, _bytes: u64) {}
+    fn record_bytes(&self, _bytes: u64) {}
+
+    fn record_finished(&self, _outcome: FetchOutcome, _elapsed: Duration) {}
 
     fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>> {
         Ok(None)
@@ -165,10 +170,13 @@ mod prometheus_metrics {
             self.in_flight.inc();
         }
 
-        fn record_finished(&self, outcome: FetchOutcome, elapsed: Duration, bytes: u64) {
+        fn record_bytes(&self, bytes: u64) {
+            self.bytes.inc_by(bytes as f64);
+        }
+
+        fn record_finished(&self, outcome: FetchOutcome, elapsed: Duration) {
             self.in_flight.dec();
             self.time.observe(elapsed.as_secs_f64());
-            self.bytes.inc_by(bytes as f64);
             match outcome {
                 FetchOutcome::Completed => self.completed.inc(),
                 FetchOutcome::Failed => self.failed.inc(),
@@ -199,11 +207,8 @@ mod prometheus_metrics {
             let collector = PrometheusMetricsCollector::new(&Registry::new())?;
             collector.record_started();
             collector.record_started();
-            collector.record_finished(
-                FetchOutcome::Completed,
-                Duration::from_millis(5),
-                1024,
-            );
+            collector.record_bytes(1024);
+            collector.record_finished(FetchOutcome::Completed, Duration::from_millis(5));
 
             let (text, _) = collector.gather_metrics()?.expect("prometheus exports");
             let text = String::from_utf8(text).expect("utf-8");
