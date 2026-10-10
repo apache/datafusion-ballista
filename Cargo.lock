@@ -1244,11 +1244,15 @@ name = "ballista-result-service"
 version = "55.0.0"
 dependencies = [
  "arrow-flight",
+ "axum",
  "ballista-core",
  "clap 4.6.7",
  "env_logger",
+ "futures",
  "log",
+ "prometheus",
  "tokio",
+ "tonic",
 ]
 
 [[package]]

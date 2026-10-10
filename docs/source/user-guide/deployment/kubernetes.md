@@ -469,14 +469,20 @@ spec:
           ports:
             - containerPort: 50055
               name: flight
-          readinessProbe:
-            tcpSocket:
-              port: 50055
-            periodSeconds: 5
+            - containerPort: 50056
+              name: http
           livenessProbe:
-            tcpSocket:
-              port: 50055
+            httpGet:
+              path: /healthz
+              port: 50056
+            failureThreshold: 3
             periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 50056
+            failureThreshold: 3
+            periodSeconds: 5
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

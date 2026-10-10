@@ -44,6 +44,21 @@ deployment guide] has example manifests.
 On SIGTERM or Ctrl-C the service stops accepting connections and lets in-flight result
 streams finish, for up to `--graceful-shutdown-timeout-seconds`.
 
+## Health and metrics
+
+An HTTP server on `--bind-http-port` serves:
+
+- `/healthz`: 200 while the process runs
+- `/readyz`: 200 once the Flight service is listening, and 503 after a shutdown signal
+- `/api/metrics`: Prometheus metrics when built with the `prometheus-metrics` feature
+  (`cargo install --locked ballista-result-service --features prometheus-metrics`),
+  otherwise 204
+
+The metrics count fetches by outcome (`fetch_started_total`, `fetch_completed_total`,
+`fetch_failed_total`, `fetch_cancelled_total`), and track fetches in flight
+(`fetch_in_flight`), fetch time (`fetch_time_seconds`) and the bytes relayed to clients
+(`fetch_bytes_total`). On Linux they include the process's CPU and memory use.
+
 ## Behind a TLS-terminating gateway
 
 Advertise the gateway's address, and have clients enable TLS for result fetches with
@@ -63,6 +78,7 @@ The gateway must forward gRPC (HTTP/2) to the replicas, for example with a Gatew
 | ------------------------------------- | ---------- | ------------------------------------------------------------------- |
 | `--bind-host`                         | `0.0.0.0`  | Host/IP the Flight service binds to                                 |
 | `--bind-port`                         | `50055`    | Port the Flight service binds to                                    |
+| `--bind-http-port`                    | `50056`    | Port the HTTP server for health probes and metrics binds to         |
 | `--use-tls`                           | `false`    | Use TLS when connecting to executors                                |
 | `--grpc-max-decoding-message-size`    | `16777216` | Max gRPC message size decoded                                       |
 | `--grpc-max-encoding-message-size`    | `16777216` | Max gRPC message size encoded                                       |

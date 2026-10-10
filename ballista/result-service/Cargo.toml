@@ -31,10 +31,17 @@ rust-version = { workspace = true }
 name = "ballista-result-service"
 path = "src/main.rs"
 
+[features]
+prometheus-metrics = ["prometheus"]
+
 [dependencies]
 arrow-flight = { workspace = true }
+axum = { workspace = true }
 ballista-core = { workspace = true }
 clap = { workspace = true }
 env_logger = { workspace = true }
+futures = { workspace = true }
 log = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+prometheus = { version = "0.14", features = ["process"], optional = true }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
+tonic = { workspace = true }
