@@ -55,10 +55,23 @@ impl ResultFetch {
     /// Picks one of `allowed`: the mode [`RESULT_FETCH_ENV`] names if it is
     /// set, otherwise a random one, so repeated runs cover every mode.
     pub fn choose(allowed: &[ResultFetch]) -> Result<ResultFetch, String> {
-        let forced = std::env::var(RESULT_FETCH_ENV)
-            .ok()
-            .filter(|name| !name.is_empty());
-        choose_from(forced.as_deref(), allowed, RandomState::new().hash_one(()))
+        choose_from(
+            forced().as_deref(),
+            allowed,
+            RandomState::new().hash_one(()),
+        )
+    }
+
+    /// The mode [`RESULT_FETCH_ENV`] names, which must be one of `allowed`,
+    /// or `default` when it is unset.
+    pub fn forced_or(
+        default: ResultFetch,
+        allowed: &[ResultFetch],
+    ) -> Result<ResultFetch, String> {
+        match forced() {
+            Some(name) => choose_from(Some(&name), allowed, 0),
+            None => Ok(default),
+        }
     }
 }
 
@@ -66,6 +79,12 @@ impl fmt::Display for ResultFetch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
     }
+}
+
+fn forced() -> Option<String> {
+    std::env::var(RESULT_FETCH_ENV)
+        .ok()
+        .filter(|name| !name.is_empty())
 }
 
 fn choose_from(

@@ -152,7 +152,7 @@ impl TestClusterBuilder {
         self
     }
 
-    /// Fetches results this way, instead of a randomly chosen mode.
+    /// Fetches results this way, instead of directly from the executors.
     pub fn result_fetch(mut self, mode: ResultFetch) -> Self {
         self.result_fetch = Some(mode);
         self
@@ -183,9 +183,11 @@ impl TestClusterBuilder {
         let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
         let log_dir = temp.path().join("logs");
         std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
+        // Clients here can reach the executors, so they fetch directly unless
+        // a test or the environment picks another mode.
         let result_fetch = match self.result_fetch {
             Some(mode) => mode,
-            None => ResultFetch::choose(&ResultFetch::ALL)?,
+            None => ResultFetch::forced_or(ResultFetch::Direct, &ResultFetch::ALL)?,
         };
         eprintln!(
             "chaos cluster fetches results via {result_fetch}; \

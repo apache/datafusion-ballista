@@ -155,14 +155,12 @@ deadline is now 120s, and on expiry the error message carries the tail of
 every child process log, so a recurrence in CI is diagnosable from the test
 output alone.
 
-Each cluster fetches results in a randomly chosen way: straight from the
-executors, through the scheduler's deprecated embedded proxy, or through a
-`chaos-result-service` that the harness spawns and advertises. Over many runs,
-every scenario meets every mode. The cluster prints its mode when it starts,
-so a failing test's output shows it. Set
-`CHAOS_RESULT_FETCH=direct|proxy|result-service` to repeat a mode or to run
-the whole suite in one, or pin a mode in a test with
-`TestClusterBuilder::result_fetch`.
+Clients fetch results straight from the executors, as a client on the same
+network would. Set `CHAOS_RESULT_FETCH=proxy` or `CHAOS_RESULT_FETCH=result-service`
+to fetch through the scheduler's deprecated embedded proxy, or through a
+`chaos-result-service` that the harness spawns and advertises, instead. A test
+can pin a mode with `TestClusterBuilder::result_fetch`. Each cluster prints its
+mode when it starts.
 
 The `chaos-scheduler`/`chaos-executor`/`chaos-result-service` binaries are
 spawned as real child processes rather than run in-process, but `cargo test`
@@ -242,8 +240,10 @@ Because the harness runs outside the cluster, a few pieces bridge the gap:
   (both on one port) through a `kubectl port-forward`. It fetches query results
   through a result service pod over a second port-forward (which the scheduler
   advertises as its `advertise_flight_endpoint`) or through the scheduler's
-  embedded proxy, chosen at random as above, so it never contacts executor pod
-  IPs directly. Direct fetches aren't possible from outside the cluster.
+  embedded proxy, so it never contacts executor pod IPs directly. Each cluster
+  picks one of the two at random and prints its choice, so over many runs
+  every scenario meets both; `CHAOS_RESULT_FETCH` forces one. Direct fetches
+  aren't possible from outside the cluster.
 - **Pods.** Both expose `/healthz` + `/readyz` with liveness/readiness probes
   (the scheduler's readiness uses `/healthz`, not `/readyz`, so its Service
   routes before executors register), and use `imagePullPolicy: Never` since the
