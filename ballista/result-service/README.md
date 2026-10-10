@@ -46,10 +46,10 @@ streams finish, for up to `--graceful-shutdown-timeout-seconds`.
 
 ## Health and metrics
 
-An HTTP server on `--bind-http-port` serves:
+Like the scheduler, the service also answers HTTP on its port:
 
-- `/healthz`: 200 while the process runs
-- `/readyz`: 200 once the Flight service is listening, and 503 after a shutdown signal
+- `/healthz` and `/readyz`: 200 while the service accepts connections, which it stops
+  doing on a shutdown signal
 - `/api/metrics`: Prometheus metrics when built with the `prometheus-metrics` feature
   (`cargo install --locked ballista-result-service --features prometheus-metrics`),
   otherwise 204
@@ -77,8 +77,7 @@ The gateway must forward gRPC (HTTP/2) to the replicas, for example with a Gatew
 | Flag                                  | Default    | Meaning                                                             |
 | ------------------------------------- | ---------- | ------------------------------------------------------------------- |
 | `--bind-host`                         | `0.0.0.0`  | Host/IP the Flight service binds to                                 |
-| `--bind-port`                         | `50055`    | Port the Flight service binds to                                    |
-| `--bind-http-port`                    | `50056`    | Port the HTTP server for health probes and metrics binds to         |
+| `--bind-port`                         | `50055`    | Port the Flight service, health probes and metrics bind to          |
 | `--use-tls`                           | `false`    | Use TLS when connecting to executors                                |
 | `--grpc-max-decoding-message-size`    | `16777216` | Max gRPC message size decoded                                       |
 | `--grpc-max-encoding-message-size`    | `16777216` | Max gRPC message size encoded                                       |

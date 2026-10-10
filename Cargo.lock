@@ -1253,6 +1253,7 @@ dependencies = [
  "prometheus",
  "tokio",
  "tonic",
+ "tower",
 ]
 
 [[package]]

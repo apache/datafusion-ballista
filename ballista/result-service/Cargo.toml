@@ -43,5 +43,8 @@ env_logger = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
 prometheus = { version = "0.14", features = ["process"], optional = true }
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tonic = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

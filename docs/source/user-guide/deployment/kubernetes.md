@@ -478,18 +478,16 @@ spec:
           ports:
             - containerPort: 50055
               name: flight
-            - containerPort: 50056
-              name: http
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 50056
+              port: 50055
             failureThreshold: 3
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 50056
+              port: 50055
             failureThreshold: 3
             periodSeconds: 5
 ---

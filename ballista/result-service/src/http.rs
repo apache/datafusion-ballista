@@ -15,14 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! HTTP endpoints for health probes and metrics.
+//! HTTP endpoints for health probes and metrics, served on the Flight port.
 //!
-//! `/healthz` returns 200 while the process runs. `/readyz` returns 200 once
-//! the Flight service is listening and 503 after a shutdown signal.
-//! `/api/metrics` returns the metrics, or 204 when none are exported.
+//! `/healthz` and `/readyz` return 200 whenever they're served. After a
+//! shutdown signal the service stops accepting connections, so both probes
+//! then fail. `/api/metrics` returns the metrics, or 204 when none are
+//! exported.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::Router;
 use axum::body::Body;
@@ -35,48 +35,26 @@ use log::error;
 
 use crate::metrics::ResultMetricsCollector;
 
-/// Whether the Flight service is accepting fetches. Cheap to clone.
-#[derive(Clone, Default)]
-pub struct Readiness(Arc<AtomicBool>);
-
-impl Readiness {
-    pub fn set(&self, ready: bool) {
-        self.0.store(ready, Ordering::Release);
-    }
-
-    fn is_ready(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-}
-
-#[derive(Clone)]
-struct HttpState {
-    readiness: Readiness,
-    metrics: Arc<dyn ResultMetricsCollector>,
-}
-
-pub fn router(readiness: Readiness, metrics: Arc<dyn ResultMetricsCollector>) -> Router {
+pub fn router(metrics: Arc<dyn ResultMetricsCollector>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/api/metrics", get(metrics_handler))
-        .with_state(HttpState { readiness, metrics })
+        .with_state(metrics)
 }
 
 async fn healthz() -> Response {
     (StatusCode::OK, "ok\n").into_response()
 }
 
-async fn readyz(State(state): State<HttpState>) -> Response {
-    if state.readiness.is_ready() {
-        (StatusCode::OK, "ready\n").into_response()
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "not ready\n").into_response()
-    }
+async fn readyz() -> Response {
+    (StatusCode::OK, "ready\n").into_response()
 }
 
-async fn metrics_handler(State(state): State<HttpState>) -> Response {
-    match state.metrics.gather_metrics() {
+async fn metrics_handler(
+    State(metrics): State<Arc<dyn ResultMetricsCollector>>,
+) -> Response {
+    match metrics.gather_metrics() {
         Ok(Some((data, content_type))) => {
             ([(CONTENT_TYPE, content_type)], Body::from(data)).into_response()
         }
@@ -92,41 +70,29 @@ async fn metrics_handler(State(state): State<HttpState>) -> Response {
 mod tests {
     use super::*;
     use crate::metrics::NoopMetricsCollector;
+    use axum::http::Request;
+    use tower::ServiceExt;
 
-    fn state() -> HttpState {
-        HttpState {
-            readiness: Readiness::default(),
-            metrics: Arc::new(NoopMetricsCollector),
-        }
+    async fn get(router: Router, path: &str) -> Response {
+        let request = Request::get(path).body(Body::empty()).unwrap();
+        router.oneshot(request).await.unwrap()
     }
 
     #[tokio::test]
-    async fn healthz_is_always_ok() {
-        assert_eq!(healthz().await.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn readyz_follows_readiness() {
-        let state = state();
+    async fn probes_are_ok() {
+        let router = router(Arc::new(NoopMetricsCollector));
         assert_eq!(
-            readyz(State(state.clone())).await.status(),
-            StatusCode::SERVICE_UNAVAILABLE
+            get(router.clone(), "/healthz").await.status(),
+            StatusCode::OK
         );
-
-        state.readiness.set(true);
-        assert_eq!(readyz(State(state.clone())).await.status(), StatusCode::OK);
-
-        state.readiness.set(false);
-        assert_eq!(
-            readyz(State(state)).await.status(),
-            StatusCode::SERVICE_UNAVAILABLE
-        );
+        assert_eq!(get(router, "/readyz").await.status(), StatusCode::OK);
     }
 
     #[tokio::test]
     async fn metrics_are_no_content_when_none_are_exported() {
+        let router = router(Arc::new(NoopMetricsCollector));
         assert_eq!(
-            metrics_handler(State(state())).await.status(),
+            get(router, "/api/metrics").await.status(),
             StatusCode::NO_CONTENT
         );
     }
@@ -134,16 +100,10 @@ mod tests {
     #[cfg(feature = "prometheus-metrics")]
     #[tokio::test]
     async fn metrics_are_served_in_the_prometheus_text_format() {
-        let state = HttpState {
-            readiness: Readiness::default(),
-            metrics: Arc::new(
-                crate::metrics::PrometheusMetricsCollector::new(
-                    &prometheus::Registry::new(),
-                )
-                .unwrap(),
-            ),
-        };
-        let response = metrics_handler(State(state)).await;
+        let metrics =
+            crate::metrics::PrometheusMetricsCollector::new(&prometheus::Registry::new())
+                .unwrap();
+        let response = get(router(Arc::new(metrics)), "/api/metrics").await;
         assert_eq!(response.status(), StatusCode::OK);
         let content_type = response.headers()[CONTENT_TYPE].to_str().unwrap();
         assert!(content_type.starts_with("text/plain"), "{content_type}");

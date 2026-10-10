@@ -23,21 +23,21 @@ mod http;
 mod metered;
 mod metrics;
 
-use std::future::{Future, IntoFuture};
+use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::serving::{ForwardingBackend, ServingFlightService};
-use ballista_core::utils::{
-    GrpcServerConfig, create_grpc_server, create_grpc_server_incoming,
-};
+use ballista_core::utils::{GrpcServerConfig, create_grpc_server};
 use clap::Parser;
 use log::{error, info, warn};
+use tonic::service::Routes;
+use tonic::transport::server::Router;
 
-use crate::http::Readiness;
 use crate::metered::MeteredBackend;
-use crate::metrics::default_metrics_collector;
+use crate::metrics::{ResultMetricsCollector, default_metrics_collector};
 
 /// Command-line configuration for the result service.
 #[derive(Debug, Parser)]
@@ -47,14 +47,10 @@ struct Config {
     #[arg(long, default_value = "0.0.0.0")]
     bind_host: String,
 
-    /// Port the Flight service binds to.
+    /// Port the Flight service, health probes (/healthz and /readyz) and
+    /// metrics (/api/metrics) bind to.
     #[arg(long, default_value_t = 50055)]
     bind_port: u16,
-
-    /// Port the HTTP server for health probes (/healthz and /readyz) and
-    /// metrics (/api/metrics) binds to.
-    #[arg(long, default_value_t = 50056)]
-    bind_http_port: u16,
 
     /// Use TLS when connecting to executors.
     #[arg(long, default_value_t = false)]
@@ -82,10 +78,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let config = Config::parse();
 
-    let addr = socket_addr(&config.bind_host, config.bind_port)?;
-    let http_addr = socket_addr(&config.bind_host, config.bind_http_port)?;
+    let addr: SocketAddr = format!("{}:{}", config.bind_host, config.bind_port)
+        .parse()
+        .map_err(|e| {
+            format!(
+                "invalid bind address {}:{}: {e}",
+                config.bind_host, config.bind_port
+            )
+        })?;
 
-    let metrics = default_metrics_collector()?;
+    let server = server(&config, default_metrics_collector()?);
+
+    info!("Ballista Result Service listening on {addr}");
+
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = server.serve_with_shutdown(addr, async {
+        let _ = stop_rx.await;
+    });
+    tokio::pin!(server);
+
+    // Serve until a shutdown signal arrives, unless the server fails first.
+    tokio::select! {
+        result = &mut server => {
+            result?;
+            info!("Ballista Result Service stopped");
+            return Ok(());
+        }
+        () = shutdown_signal() => {}
+    }
+
+    // Stop accepting connections, then give in-flight streams a bounded time to
+    // finish.
+    let _ = stop_tx.send(());
+    drain_or_time_out(
+        server,
+        Duration::from_secs(config.graceful_shutdown_timeout_seconds),
+    )
+    .await?;
+
+    info!("Ballista Result Service stopped");
+    Ok(())
+}
+
+/// The Flight service, health probes and metrics, served on one port.
+fn server(config: &Config, metrics: Arc<dyn ResultMetricsCollector>) -> Router {
     let backend = MeteredBackend::new(
         ForwardingBackend::new(
             config.grpc_max_decoding_message_size,
@@ -98,72 +134,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = FlightServiceServer::new(ServingFlightService::new(backend))
         .max_decoding_message_size(config.grpc_max_decoding_message_size)
         .max_encoding_message_size(config.grpc_max_encoding_message_size);
+    let routes = Routes::new(service)
+        .into_axum_router()
+        .merge(http::router(metrics));
 
-    let grpc_config = GrpcServerConfig::default();
-    let incoming = create_grpc_server_incoming(addr, &grpc_config)
-        .map_err(|e| format!("failed to bind Flight service on {addr}: {e}"))?;
-    let http_listener = tokio::net::TcpListener::bind(http_addr)
-        .await
-        .map_err(|e| format!("failed to bind HTTP server on {http_addr}: {e}"))?;
-
-    let readiness = Readiness::default();
-    let (http_stop_tx, http_stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let http_server = tokio::spawn(
-        axum::serve(http_listener, http::router(readiness.clone(), metrics))
-            .with_graceful_shutdown(async {
-                let _ = http_stop_rx.await;
-            })
-            .into_future(),
-    );
-    info!("Ballista Result Service HTTP endpoints listening on {http_addr}");
-
-    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let server = create_grpc_server(&grpc_config)
-        .add_service(service)
-        .serve_with_incoming_shutdown(incoming, async {
-            let _ = stop_rx.await;
-        });
-    tokio::pin!(server);
-    readiness.set(true);
-    info!("Ballista Result Service listening on {addr}");
-
-    // Serve until a shutdown signal arrives, unless the server fails first.
-    let stopped = tokio::select! {
-        result = &mut server => Some(result),
-        () = shutdown_signal() => None,
-    };
-    let result = match stopped {
-        Some(result) => result,
-        None => {
-            // Stop accepting connections, then give in-flight streams a
-            // bounded time to finish.
-            readiness.set(false);
-            let _ = stop_tx.send(());
-            drain_or_time_out(
-                server,
-                Duration::from_secs(config.graceful_shutdown_timeout_seconds),
-            )
-            .await
-        }
-    };
-
-    // The HTTP endpoints stay up until the Flight service has stopped.
-    let _ = http_stop_tx.send(());
-    match http_server.await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => warn!("HTTP server failed: {e}"),
-        Err(e) => warn!("HTTP server task failed: {e}"),
-    }
-
-    result?;
-    info!("Ballista Result Service stopped");
-    Ok(())
-}
-
-fn socket_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
-    format!("{host}:{port}")
-        .parse()
-        .map_err(|e| format!("invalid bind address {host}:{port}: {e}"))
+    create_grpc_server(&GrpcServerConfig::default())
+        // Health probes and metrics scrapers use HTTP/1.1.
+        .accept_http1(true)
+        .add_routes(Routes::from(routes))
 }
 
 /// Waits for the shutting-down `server` to finish its in-flight streams, but no
@@ -222,6 +200,33 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::NoopMetricsCollector;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tonic::transport::server::TcpIncoming;
+
+    #[tokio::test]
+    async fn health_probes_are_served_over_http1_on_the_flight_port() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let config = Config::parse_from(["ballista-result-service"]);
+        let server = server(&config, Arc::new(NoopMetricsCollector))
+            .serve_with_incoming(TcpIncoming::from(listener));
+        let server = tokio::spawn(server);
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(
+                b"GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        server.abort();
+
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("ready"), "{response}");
+    }
 
     #[tokio::test]
     async fn a_stalled_drain_gives_up_once_the_bound_elapses() {
