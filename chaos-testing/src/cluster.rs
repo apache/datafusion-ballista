@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::fetch::{RESULT_FETCH_ENV, ResultFetch};
+use crate::fetch::ResultFetch;
 use nix::fcntl::{Flock, FlockArg};
 use std::fs::{File, OpenOptions};
 use std::net::TcpListener;
@@ -189,10 +189,7 @@ impl TestClusterBuilder {
             Some(mode) => mode,
             None => ResultFetch::forced_or(ResultFetch::Direct, &ResultFetch::ALL)?,
         };
-        eprintln!(
-            "chaos cluster fetches results via {result_fetch}; \
-             {RESULT_FETCH_ENV}={result_fetch} repeats that"
-        );
+        eprintln!("chaos cluster fetches results via {result_fetch}");
         let result_service_enabled = result_fetch == ResultFetch::ResultService;
 
         // Reserve the scheduler port and (when enabled) the result-service port

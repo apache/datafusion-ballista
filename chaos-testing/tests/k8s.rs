@@ -39,6 +39,7 @@ use std::time::{Duration, Instant};
 
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
 use ballista_core::config::BALLISTA_ADAPTIVE_PLANNER_ENABLED;
+use chaos_testing::fetch::ResultFetch;
 use chaos_testing::fixture::Fixture;
 use chaos_testing::k8s::{K8sCluster, KillMode};
 use datafusion::arrow::util::pretty::pretty_format_batches;
@@ -71,14 +72,16 @@ struct K8sRun {
 }
 
 impl K8sRun {
-    /// Deploy a cluster of `executors`, write the fixture into the shared mount,
-    /// and connect a client with AQE set to `aqe`. Executor pods use the default
-    /// (realistic) graceful-shutdown window.
-    async fn start(aqe: bool, executors: usize) -> Self {
+    /// Deploy a cluster of `executors` that fetches results via `result_fetch`,
+    /// write the fixture into the shared mount, and connect a client with AQE
+    /// set to `aqe`. Executor pods use the default (realistic)
+    /// graceful-shutdown window.
+    async fn start(aqe: bool, executors: usize, result_fetch: ResultFetch) -> Self {
         Self::start_with_executor_grace(
             aqe,
             executors,
             chaos_testing::k8s::DEFAULT_EXECUTOR_GRACE_SECONDS,
+            result_fetch,
         )
         .await
     }
@@ -90,11 +93,15 @@ impl K8sRun {
         aqe: bool,
         executors: usize,
         executor_grace_seconds: u64,
+        result_fetch: ResultFetch,
     ) -> Self {
-        let cluster =
-            K8sCluster::start_with_executor_grace(executors, executor_grace_seconds)
-                .await
-                .expect("kind cluster must start");
+        let cluster = K8sCluster::start_with_executor_grace(
+            executors,
+            executor_grace_seconds,
+            result_fetch,
+        )
+        .await
+        .expect("kind cluster must start");
 
         // Written into the shared mount, so the scheduler and executor pods see it.
         let fixture = Fixture::write(cluster.shared_dir())
@@ -175,7 +182,7 @@ async fn baseline_matches_local_datafusion_on_k8s() {
         return;
     }
 
-    let run = K8sRun::start(false, 2).await;
+    let run = K8sRun::start(false, 2, ResultFetch::ResultService).await;
     let expected = run.local_baseline().await;
     let actual = run
         .sql(Fixture::baseline_query())
@@ -207,10 +214,13 @@ async fn baseline_matches_local_datafusion_on_k8s() {
 /// failure that removed the last executor without arming the grace timer), so
 /// the planner genuinely changes the code path here.
 #[rstest]
-#[case::aqe_off(false)]
-#[case::aqe_on(true)]
+#[case::aqe_off(false, ResultFetch::ResultService)]
+#[case::aqe_on(true, ResultFetch::SchedulerProxy)]
 #[tokio::test]
-async fn killing_every_executor_terminates_the_job_on_k8s(#[case] aqe: bool) {
+async fn killing_every_executor_terminates_the_job_on_k8s(
+    #[case] aqe: bool,
+    #[case] result_fetch: ResultFetch,
+) {
     if !kind_backend_selected() {
         return;
     }
@@ -221,6 +231,7 @@ async fn killing_every_executor_terminates_the_job_on_k8s(#[case] aqe: bool) {
         aqe,
         2,
         chaos_testing::k8s::ABRUPT_EXECUTOR_GRACE_SECONDS,
+        result_fetch,
     )
     .await;
     // Per-batch delay long enough that a task is still running when the SIGKILL
@@ -316,6 +327,7 @@ async fn restarted_executor_rejoins_and_serves_queries_on_k8s() {
         false,
         2,
         chaos_testing::k8s::ABRUPT_EXECUTOR_GRACE_SECONDS,
+        ResultFetch::SchedulerProxy,
     )
     .await;
     let expected = run.local_baseline().await;

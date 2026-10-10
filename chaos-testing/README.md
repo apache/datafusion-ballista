@@ -240,10 +240,10 @@ Because the harness runs outside the cluster, a few pieces bridge the gap:
   (both on one port) through a `kubectl port-forward`. It fetches query results
   through a result service pod over a second port-forward (which the scheduler
   advertises as its `advertise_flight_endpoint`) or through the scheduler's
-  embedded proxy, so it never contacts executor pod IPs directly. Each cluster
-  picks one of the two at random and prints its choice, so over many runs
-  every scenario meets both; `CHAOS_RESULT_FETCH` forces one. Direct fetches
-  aren't possible from outside the cluster.
+  embedded proxy, so it never contacts executor pod IPs directly. Each
+  scenario uses a fixed one of the two, so every run covers both;
+  `CHAOS_RESULT_FETCH` forces one for all of them. Direct fetches aren't
+  possible from outside the cluster.
 - **Pods.** Both expose `/healthz` + `/readyz` with liveness/readiness probes
   (the scheduler's readiness uses `/healthz`, not `/readyz`, so its Service
   routes before executors register), and use `imagePullPolicy: Never` since the

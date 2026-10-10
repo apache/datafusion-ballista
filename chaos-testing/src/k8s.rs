@@ -37,14 +37,14 @@
 //! gRPC + REST (both on one port) through a `kubectl port-forward`. Each
 //! cluster fetches results either through a result service pod, reached through
 //! a second port-forward that the scheduler advertises, or through the
-//! scheduler's embedded proxy, chosen at random (see [`crate::fetch`]). Either
-//! way the client never contacts executor pod IPs directly.
+//! scheduler's embedded proxy, as the scenario chooses (see [`crate::fetch`]).
+//! Either way the client never contacts executor pod IPs directly.
 //!
 //! This backend shells out to `kubectl`; it assumes a `kind` cluster already
 //! exists, `kubectl` is on `PATH` pointed at it, and the chaos image has been
 //! `kind load`ed. See `chaos-testing/k8s/` and the crate README for the runbook.
 
-use crate::fetch::{RESULT_FETCH_ENV, ResultFetch};
+use crate::fetch::ResultFetch;
 use std::collections::VecDeque;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -144,8 +144,16 @@ impl K8sCluster {
     /// ([`DEFAULT_EXECUTOR_GRACE_SECONDS`]). A scenario that needs an *abrupt*
     /// kill — the kubelet SIGKILLing an executor before it can drain in-flight
     /// tasks — should use [`Self::start_with_executor_grace`] with a short grace.
-    pub async fn start(executors: usize) -> Result<Self, String> {
-        Self::start_with_executor_grace(executors, DEFAULT_EXECUTOR_GRACE_SECONDS).await
+    pub async fn start(
+        executors: usize,
+        result_fetch: ResultFetch,
+    ) -> Result<Self, String> {
+        Self::start_with_executor_grace(
+            executors,
+            DEFAULT_EXECUTOR_GRACE_SECONDS,
+            result_fetch,
+        )
+        .await
     }
 
     /// Like [`Self::start`], but with an explicit executor pod
@@ -156,6 +164,7 @@ impl K8sCluster {
     pub async fn start_with_executor_grace(
         executors: usize,
         executor_grace_seconds: u64,
+        result_fetch: ResultFetch,
     ) -> Result<Self, String> {
         require_kubectl()?;
 
@@ -187,14 +196,11 @@ impl K8sCluster {
 
         // Executor pod IPs aren't reachable from outside the cluster, so direct
         // fetches aren't an option here.
-        let result_fetch = ResultFetch::choose(&[
-            ResultFetch::ResultService,
-            ResultFetch::SchedulerProxy,
-        ])?;
-        eprintln!(
-            "chaos k8s cluster fetches results via {result_fetch}; \
-             {RESULT_FETCH_ENV}={result_fetch} repeats that"
-        );
+        let result_fetch = ResultFetch::forced_or(
+            result_fetch,
+            &[ResultFetch::ResultService, ResultFetch::SchedulerProxy],
+        )?;
+        eprintln!("chaos k8s cluster fetches results via {result_fetch}");
         let result_service = result_fetch == ResultFetch::ResultService;
 
         // Reserved before rendering, because the scheduler advertises the

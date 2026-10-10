@@ -17,11 +17,9 @@
 
 //! How clients fetch query results from a test cluster.
 
-use std::collections::hash_map::RandomState;
 use std::fmt;
-use std::hash::BuildHasher;
 
-/// Environment variable that forces a fetch mode instead of a random one.
+/// Environment variable that overrides a cluster's fetch mode.
 pub const RESULT_FETCH_ENV: &str = "CHAOS_RESULT_FETCH";
 
 /// How clients fetch query results.
@@ -52,26 +50,16 @@ impl ResultFetch {
         }
     }
 
-    /// Picks one of `allowed`: the mode [`RESULT_FETCH_ENV`] names if it is
-    /// set, otherwise a random one, so repeated runs cover every mode.
-    pub fn choose(allowed: &[ResultFetch]) -> Result<ResultFetch, String> {
-        choose_from(
-            forced().as_deref(),
-            allowed,
-            RandomState::new().hash_one(()),
-        )
-    }
-
-    /// The mode [`RESULT_FETCH_ENV`] names, which must be one of `allowed`,
-    /// or `default` when it is unset.
+    /// The mode [`RESULT_FETCH_ENV`] names, or `default` when it is unset.
+    /// Either must be one of `allowed`.
     pub fn forced_or(
         default: ResultFetch,
         allowed: &[ResultFetch],
     ) -> Result<ResultFetch, String> {
-        match forced() {
-            Some(name) => choose_from(Some(&name), allowed, 0),
-            None => Ok(default),
-        }
+        let forced = std::env::var(RESULT_FETCH_ENV)
+            .ok()
+            .filter(|name| !name.is_empty());
+        resolve(forced.as_deref(), default, allowed)
     }
 }
 
@@ -81,30 +69,38 @@ impl fmt::Display for ResultFetch {
     }
 }
 
-fn forced() -> Option<String> {
-    std::env::var(RESULT_FETCH_ENV)
-        .ok()
-        .filter(|name| !name.is_empty())
+fn names(modes: &[ResultFetch]) -> String {
+    modes
+        .iter()
+        .map(|mode| mode.name())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-fn choose_from(
+fn resolve(
     forced: Option<&str>,
+    default: ResultFetch,
     allowed: &[ResultFetch],
-    random: u64,
 ) -> Result<ResultFetch, String> {
-    match forced {
-        Some(name) => allowed
-            .iter()
-            .copied()
+    let mode = match forced {
+        Some(name) => ResultFetch::ALL
+            .into_iter()
             .find(|mode| mode.name() == name)
             .ok_or_else(|| {
-                let names: Vec<_> = allowed.iter().map(|mode| mode.name()).collect();
                 format!(
                     "{RESULT_FETCH_ENV}={name} is not one of: {}",
-                    names.join(", ")
+                    names(&ResultFetch::ALL)
                 )
-            }),
-        None => Ok(allowed[(random % allowed.len() as u64) as usize]),
+            })?,
+        None => default,
+    };
+    if allowed.contains(&mode) {
+        Ok(mode)
+    } else {
+        Err(format!(
+            "this cluster can't fetch results via {mode}; it supports: {}",
+            names(allowed)
+        ))
     }
 }
 
@@ -112,28 +108,28 @@ fn choose_from(
 mod tests {
     use super::*;
 
+    const K8S: [ResultFetch; 2] =
+        [ResultFetch::ResultService, ResultFetch::SchedulerProxy];
+
     #[test]
-    fn a_forced_mode_wins_over_the_random_pick() {
+    fn the_default_applies_unless_a_mode_is_forced() {
+        assert_eq!(
+            resolve(None, ResultFetch::Direct, &ResultFetch::ALL),
+            Ok(ResultFetch::Direct)
+        );
         for mode in ResultFetch::ALL {
             assert_eq!(
-                choose_from(Some(mode.name()), &ResultFetch::ALL, 0),
+                resolve(Some(mode.name()), ResultFetch::Direct, &ResultFetch::ALL),
                 Ok(mode)
             );
         }
     }
 
     #[test]
-    fn a_forced_mode_must_be_allowed() {
-        let k8s = [ResultFetch::ResultService, ResultFetch::SchedulerProxy];
-        assert!(choose_from(Some("direct"), &k8s, 0).is_err());
-        assert!(choose_from(Some("nonsense"), &ResultFetch::ALL, 0).is_err());
-    }
-
-    #[test]
-    fn random_picks_cover_every_allowed_mode() {
-        let picked: Vec<_> = (0..3)
-            .map(|random| choose_from(None, &ResultFetch::ALL, random).unwrap())
-            .collect();
-        assert_eq!(picked, ResultFetch::ALL);
+    fn the_mode_must_be_known_and_allowed() {
+        let default = ResultFetch::ResultService;
+        assert!(resolve(Some("nonsense"), default, &K8S).is_err());
+        assert!(resolve(Some("direct"), default, &K8S).is_err());
+        assert!(resolve(None, ResultFetch::Direct, &K8S).is_err());
     }
 }
