@@ -61,7 +61,7 @@ impl BufferedBatches {
         self.indices.len()
     }
 
-    /// Returns true if no rows are buffered.
+    /// Returns true if no batches are buffered.
     pub fn is_empty(&self) -> bool {
         self.batches.is_empty()
     }
@@ -96,6 +96,8 @@ impl BufferedBatches {
     /// Empties the buffer, passing each output batch of at most `batch_size`
     /// rows to `f` with its partition, in partition order and then arrival
     /// order. Output batches are gathered one at a time, as `f` consumes them.
+    /// The buffer is emptied first, so if `f` or a gather fails, the remaining
+    /// rows are dropped.
     pub fn drain(
         &mut self,
         mut f: impl FnMut(usize, RecordBatch) -> Result<()>,

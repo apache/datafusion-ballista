@@ -150,10 +150,7 @@ fn encode_buffered_partitions(
     let encoded = writers
         .into_iter()
         .map(|writer| match writer {
-            Some(mut writer) => {
-                writer.finish()?;
-                Ok(writer.into_inner()?)
-            }
+            Some(writer) => Ok(writer.into_inner()?),
             None => Ok(Vec::new()),
         })
         .collect::<Result<Vec<_>>>()?;
