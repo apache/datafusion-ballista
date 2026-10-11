@@ -77,7 +77,7 @@ impl BallistaFlightService {
     }
 }
 
-/// shuffle file block transfer size    
+/// shuffle file block transfer size
 const BLOCK_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
 
 /// A [`ResultBackend`] that serves partitions from the executor's work
