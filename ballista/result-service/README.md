@@ -78,7 +78,6 @@ The gateway must forward gRPC (HTTP/2) to the replicas, for example with a Gatew
 | ------------------------------------- | ---------- | ------------------------------------------------------------------- |
 | `--bind-host`                         | `0.0.0.0`  | Host/IP the Flight service binds to                                 |
 | `--bind-port`                         | `50055`    | Port the Flight service, health probes and metrics bind to          |
-| `--use-tls`                           | `false`    | Use TLS when connecting to executors                                |
 | `--grpc-max-decoding-message-size`    | `16777216` | Max gRPC message size decoded                                       |
 | `--grpc-max-encoding-message-size`    | `16777216` | Max gRPC message size encoded                                       |
 | `--graceful-shutdown-timeout-seconds` | `10`       | Time in-flight result streams get to finish after SIGTERM or Ctrl-C |

@@ -52,10 +52,6 @@ struct Config {
     #[arg(long, default_value_t = 50055)]
     bind_port: u16,
 
-    /// Use TLS when connecting to executors.
-    #[arg(long, default_value_t = false)]
-    use_tls: bool,
-
     /// Maximum gRPC message size, in bytes, this service will decode.
     #[arg(long, default_value_t = 16777216)]
     grpc_max_decoding_message_size: usize,
@@ -126,7 +122,7 @@ fn server(config: &Config, metrics: Arc<dyn ResultMetricsCollector>) -> Router {
         ForwardingBackend::new(
             config.grpc_max_decoding_message_size,
             config.grpc_max_encoding_message_size,
-            config.use_tls,
+            false,
             None,
         ),
         metrics.clone(),
