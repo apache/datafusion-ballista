@@ -534,9 +534,15 @@ kubectl port-forward service/ballista-result-service 50055:50055 &
 
 ### Through a TLS-terminating gateway
 
+The result service doesn't authenticate result fetches, and it connects to executors in
+plaintext. Make the gateway reachable only by trusted clients, for example through an internal
+load balancer or the gateway's access restrictions, and limit what the service can reach as
+described in [Restricting what the result service can reach](#restricting-what-the-result-service-can-reach).
+
 In production, expose the result service through the [Gateway API] with a Gateway that terminates
-TLS and a `GRPCRoute` to the result service, and advertise the gateway's address. The result
-service pods keep serving plaintext behind it.
+TLS and a `GRPCRoute` to the result service, and advertise the gateway's address. TLS covers the
+connections from clients to the gateway. Behind it, the result service pods serve plaintext and
+connect to executors in plaintext.
 
 ```yaml
 args:
@@ -579,8 +585,10 @@ spec:
 Result streams are long-lived, so make sure the gateway implementation's idle and stream timeouts
 allow for the largest result. Clients fetch results over TLS by setting `ballista.client.use_tls`
 to `true`, with TLS roots for the gateway's certificate supplied through a gRPC endpoint override.
+That takes a client built with one of tonic's TLS features, as in the [mTLS cluster example].
 
 [gateway api]: https://gateway-api.sigs.k8s.io/
+[mtls cluster example]: https://github.com/apache/datafusion-ballista/blob/main/examples/examples/mtls-cluster.rs
 
 ### Restricting what the result service can reach
 

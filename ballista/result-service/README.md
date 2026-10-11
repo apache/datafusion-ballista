@@ -65,7 +65,10 @@ process's CPU and memory use.
 
 Advertise the gateway's address, and have clients enable TLS for result fetches with
 `ballista.client.use_tls`, supplying the gateway's TLS roots through a gRPC endpoint
-override:
+override. That takes a client built with one of tonic's TLS features, as in the [mTLS
+cluster example]. TLS covers the connections from clients to the gateway; the service
+connects to executors in plaintext. It doesn't authenticate fetches, so make the gateway
+reachable only by trusted clients.
 
 ```bash
 ballista-scheduler --advertise-flight-endpoint=ballista-results.example.com:443

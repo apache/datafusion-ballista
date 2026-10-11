@@ -59,17 +59,19 @@ address. For Kubernetes manifests, see
 
 ### Behind a TLS-terminating gateway
 
-To serve results through a gateway or load balancer that terminates TLS, advertise its address. The
-result service replicas behind it keep serving plaintext:
+To serve results through a gateway or load balancer that terminates TLS, advertise its address. TLS
+covers the connections from clients to the gateway. The result service replicas behind it serve
+plaintext and connect to executors in plaintext, and they don't authenticate fetches, so make the
+gateway reachable only by trusted clients:
 
 ```bash
 ballista-result-service --bind-port 50055
 ballista-scheduler --advertise-flight-endpoint ballista-results.example.com:443
 ```
 
-Clients choose TLS for result fetches themselves, with `ballista.client.use_tls`, and need TLS roots
-for the gateway's certificate, supplied through a gRPC endpoint override as the
-[mTLS cluster example] does. `ballista.client.use_tls` applies to every result fetch a client
+Clients choose TLS for result fetches themselves, with `ballista.client.use_tls`. That takes a client
+built with one of tonic's TLS features, and TLS roots for the gateway's certificate supplied through
+a gRPC endpoint override, as the [mTLS cluster example] does. `ballista.client.use_tls` applies to every result fetch a client
 makes, including direct fetches from executors. The gateway must forward gRPC (HTTP/2) to the
 replicas, for example with a Gateway API `GRPCRoute`, and allow long-lived streams.
 
