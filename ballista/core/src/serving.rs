@@ -211,14 +211,14 @@ impl ResultBackend for ForwardingBackend {
         action: BallistaAction,
         ticket: Ticket,
     ) -> Result<BoxedFlightStream<FlightData>, Status> {
-        match action {
+        match &action {
             BallistaAction::FetchPartition {
                 host, port, job_id, ..
             } => {
                 debug!("Fetching results for job id: {job_id} from {host}:{port}");
                 let mut client = get_flight_client(
-                    &host,
-                    port,
+                    host,
+                    *port,
                     self.max_decoding_message_size,
                     self.max_encoding_message_size,
                     self.use_tls,
@@ -226,8 +226,10 @@ impl ResultBackend for ForwardingBackend {
                 )
                 .map_err(|e| from_ballista_err(&e))
                 .await?;
-                let response = client.do_get(Request::new(ticket)).await?;
-                Ok(Box::pin(response.into_inner()) as BoxedFlightStream<FlightData>)
+                client
+                    .do_get(Request::new(ticket))
+                    .await
+                    .map(|r| Box::pin(r.into_inner()) as BoxedFlightStream<FlightData>)
             }
         }
     }

@@ -77,8 +77,143 @@ impl BallistaFlightService {
     }
 }
 
-/// shuffle file block transfer size
+/// shuffle file block transfer size    
 const BLOCK_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
+
+/// A [`ResultBackend`] that serves partitions from the executor's work
+/// directory.
+struct LocalDiskBackend {
+    work_dir: String,
+}
+
+impl LocalDiskBackend {
+    fn new(work_dir: String) -> Self {
+        Self { work_dir }
+    }
+}
+
+#[tonic::async_trait]
+impl ResultBackend for LocalDiskBackend {
+    async fn fetch(
+        &self,
+        action: BallistaAction,
+        _ticket: Ticket,
+    ) -> Result<BoxedFlightStream<FlightData>, Status> {
+        match &action {
+            BallistaAction::FetchPartition {
+                job_id,
+                stage_id,
+                partition_id,
+                file_id,
+                layout,
+                file_kind,
+                byte_ranges,
+                ..
+            } => {
+                if !byte_ranges.is_empty() {
+                    // Byte ranges come back as bytes, which `do_get` cannot
+                    // express — it returns decoded FlightData. Serving them
+                    // here would mean decoding on the executor, which is the
+                    // work a ranged read exists to avoid.
+                    return Err(Status::invalid_argument(
+                        "byte ranges are served by the IO_BLOCK_TRANSPORT action, \
+                         not do_get",
+                    ));
+                }
+                let path = resolve_fetch_path(
+                    &self.work_dir,
+                    job_id,
+                    *stage_id,
+                    *partition_id,
+                    *file_id,
+                    *layout,
+                    *file_kind,
+                )?;
+                debug!("FetchPartition reading partition {partition_id} from {path:?}");
+
+                // Check if this is a sort-based shuffle output
+                if is_sort_shuffle_output(&path) {
+                    debug!("Detected sort-based shuffle format for {path:?}");
+                    let index_path = get_index_path(path.as_path());
+                    let stream =
+                        stream_sort_shuffle_partition(&path, &index_path, *partition_id)
+                            .map_err(|e| from_ballista_err(&e))?;
+
+                    let schema = stream.schema();
+                    // Map DataFusionError to FlightError
+                    let stream =
+                        stream.map_err(|e| FlightError::from(ArrowError::from(e)));
+
+                    let write_options: IpcWriteOptions = IpcWriteOptions::default()
+                        .try_with_compression(Some(CompressionType::LZ4_FRAME))
+                        .map_err(|e| from_arrow_err(&e))?;
+                    let flight_data_stream = FlightDataEncoderBuilder::new()
+                        .with_schema(schema)
+                        .with_options(write_options)
+                        .build(stream)
+                        .map_err(|err| Status::from_error(Box::new(err)));
+
+                    return Ok(
+                        Box::pin(flight_data_stream) as BoxedFlightStream<FlightData>
+                    );
+                }
+
+                let (tx, rx) = channel(2);
+                // Range shuffle writes the IPC file format, whose leading
+                // magic an IPC stream decoder rejects. The file says which it
+                // is, so neither the wire protocol nor the caller has to.
+                let schema = if is_ipc_file(&path) {
+                    debug!("Detected range shuffle format for {path:?}");
+                    let reader =
+                        open_ipc_file(&path).map_err(|e| from_ballista_err(&e))?;
+                    let schema = reader.schema();
+                    task::spawn_blocking(move || {
+                        if let Err(e) = read_partition(reader, tx) {
+                            log::warn!("error streaming range shuffle partition: {e}");
+                        }
+                    });
+                    schema
+                } else {
+                    // Standard single-file shuffle output - read the entire file
+                    let file = File::open(&path)
+                        .map_err(|e| {
+                            BallistaError::General(format!(
+                                "Failed to open partition file at {path:?}: {e:?}"
+                            ))
+                        })
+                        .map_err(|e| from_ballista_err(&e))?;
+                    let file = BufReader::new(file);
+                    // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
+                    let reader = unsafe {
+                        StreamReader::try_new(file, None)
+                            .map_err(|e| from_arrow_err(&e))?
+                            .with_skip_validation(cfg!(
+                                feature = "arrow-ipc-optimizations"
+                            ))
+                    };
+                    let schema = reader.schema();
+                    task::spawn_blocking(move || {
+                        if let Err(e) = read_partition(reader, tx) {
+                            log::warn!("error streaming shuffle partition: {e}");
+                        }
+                    });
+                    schema
+                };
+
+                let write_options: IpcWriteOptions = IpcWriteOptions::default()
+                    .try_with_compression(Some(CompressionType::LZ4_FRAME))
+                    .map_err(|e| from_arrow_err(&e))?;
+                let flight_data_stream = FlightDataEncoderBuilder::new()
+                    .with_schema(schema)
+                    .with_options(write_options)
+                    .build(ReceiverStream::new(rx))
+                    .map_err(|err| Status::from_error(Box::new(err)));
+
+                Ok(Box::pin(flight_data_stream) as BoxedFlightStream<FlightData>)
+            }
+        }
+    }
+}
 
 #[tonic::async_trait]
 impl FlightService for BallistaFlightService {
@@ -250,141 +385,6 @@ impl FlightService for BallistaFlightService {
         _request: Request<FlightDescriptor>,
     ) -> Result<Response<PollInfo>, Status> {
         Err(Status::unimplemented("poll_flight_info"))
-    }
-}
-
-/// A [`ResultBackend`] that serves partitions from the executor's work
-/// directory.
-struct LocalDiskBackend {
-    work_dir: String,
-}
-
-impl LocalDiskBackend {
-    fn new(work_dir: String) -> Self {
-        Self { work_dir }
-    }
-}
-
-#[tonic::async_trait]
-impl ResultBackend for LocalDiskBackend {
-    async fn fetch(
-        &self,
-        action: BallistaAction,
-        _ticket: Ticket,
-    ) -> Result<BoxedFlightStream<FlightData>, Status> {
-        match action {
-            BallistaAction::FetchPartition {
-                job_id,
-                stage_id,
-                partition_id,
-                file_id,
-                layout,
-                file_kind,
-                byte_ranges,
-                ..
-            } => {
-                if !byte_ranges.is_empty() {
-                    // Byte ranges come back as bytes, which `do_get` cannot
-                    // express — it returns decoded FlightData. Serving them
-                    // here would mean decoding on the executor, which is the
-                    // work a ranged read exists to avoid.
-                    return Err(Status::invalid_argument(
-                        "byte ranges are served by the IO_BLOCK_TRANSPORT action, \
-                         not do_get",
-                    ));
-                }
-                let path = resolve_fetch_path(
-                    &self.work_dir,
-                    &job_id,
-                    stage_id,
-                    partition_id,
-                    file_id,
-                    layout,
-                    file_kind,
-                )?;
-                debug!("FetchPartition reading partition {partition_id} from {path:?}");
-
-                // Check if this is a sort-based shuffle output
-                if is_sort_shuffle_output(&path) {
-                    debug!("Detected sort-based shuffle format for {path:?}");
-                    let index_path = get_index_path(path.as_path());
-                    let stream =
-                        stream_sort_shuffle_partition(&path, &index_path, partition_id)
-                            .map_err(|e| from_ballista_err(&e))?;
-
-                    let schema = stream.schema();
-                    // Map DataFusionError to FlightError
-                    let stream =
-                        stream.map_err(|e| FlightError::from(ArrowError::from(e)));
-
-                    let write_options: IpcWriteOptions = IpcWriteOptions::default()
-                        .try_with_compression(Some(CompressionType::LZ4_FRAME))
-                        .map_err(|e| from_arrow_err(&e))?;
-                    let flight_data_stream = FlightDataEncoderBuilder::new()
-                        .with_schema(schema)
-                        .with_options(write_options)
-                        .build(stream)
-                        .map_err(|err| Status::from_error(Box::new(err)));
-
-                    return Ok(
-                        Box::pin(flight_data_stream) as BoxedFlightStream<FlightData>
-                    );
-                }
-
-                let (tx, rx) = channel(2);
-                // Range shuffle writes the IPC file format, whose leading
-                // magic an IPC stream decoder rejects. The file says which it
-                // is, so neither the wire protocol nor the caller has to.
-                let schema = if is_ipc_file(&path) {
-                    debug!("Detected range shuffle format for {path:?}");
-                    let reader =
-                        open_ipc_file(&path).map_err(|e| from_ballista_err(&e))?;
-                    let schema = reader.schema();
-                    task::spawn_blocking(move || {
-                        if let Err(e) = read_partition(reader, tx) {
-                            log::warn!("error streaming range shuffle partition: {e}");
-                        }
-                    });
-                    schema
-                } else {
-                    // Standard single-file shuffle output - read the entire file
-                    let file = File::open(&path)
-                        .map_err(|e| {
-                            BallistaError::General(format!(
-                                "Failed to open partition file at {path:?}: {e:?}"
-                            ))
-                        })
-                        .map_err(|e| from_ballista_err(&e))?;
-                    let file = BufReader::new(file);
-                    // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
-                    let reader = unsafe {
-                        StreamReader::try_new(file, None)
-                            .map_err(|e| from_arrow_err(&e))?
-                            .with_skip_validation(cfg!(
-                                feature = "arrow-ipc-optimizations"
-                            ))
-                    };
-                    let schema = reader.schema();
-                    task::spawn_blocking(move || {
-                        if let Err(e) = read_partition(reader, tx) {
-                            log::warn!("error streaming shuffle partition: {e}");
-                        }
-                    });
-                    schema
-                };
-
-                let write_options: IpcWriteOptions = IpcWriteOptions::default()
-                    .try_with_compression(Some(CompressionType::LZ4_FRAME))
-                    .map_err(|e| from_arrow_err(&e))?;
-                let flight_data_stream = FlightDataEncoderBuilder::new()
-                    .with_schema(schema)
-                    .with_options(write_options)
-                    .build(ReceiverStream::new(rx))
-                    .map_err(|err| Status::from_error(Box::new(err)));
-
-                Ok(Box::pin(flight_data_stream) as BoxedFlightStream<FlightData>)
-            }
-        }
     }
 }
 
