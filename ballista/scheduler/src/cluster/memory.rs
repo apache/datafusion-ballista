@@ -21,7 +21,7 @@ use crate::cluster::{
     bind_task_round_robin,
 };
 use crate::state::cache_registry::{
-    BeginOutcome, CacheKey, CacheRegistry, MaterializedCache,
+    BeginOutcome, CacheKey, CacheRegistry, CompleteOutcome, MaterializedCache,
 };
 use crate::state::execution_graph::ExecutionGraphBox;
 use ballista_core::error::{BallistaError, Result};
@@ -981,7 +981,7 @@ mod test {
 
 /// In-memory [`CacheState`] backend — the only implementation today.
 ///
-/// A thin async wrapper over the synchronous, unit-tested [`CacheRegistry`],
+/// A thin async wrapper over the synchronous, unit-tested `CacheRegistry`,
 /// mirroring how [`InMemoryJobState`] wraps its maps. A durable backend would be
 /// a sibling type implementing [`CacheState`] whose `init` loads persisted
 /// entries; no caller changes needed.
@@ -1010,33 +1010,36 @@ impl CacheState for InMemoryCacheState {
         job_id: String,
         schema: SchemaRef,
         locations: Vec<Vec<PartitionLocation>>,
-    ) -> Result<()> {
-        self.registry
-            .complete_materialization(key, job_id, schema, locations);
-        Ok(())
-    }
-
-    async fn invalidate(&self, key: &CacheKey) -> Result<()> {
-        self.registry.invalidate(key);
-        Ok(())
-    }
-
-    async fn invalidate_executor(&self, executor_id: &str) -> Result<Vec<CacheKey>> {
+    ) -> Result<CompleteOutcome> {
         Ok(self
             .registry
-            .invalidate_executor(executor_id)
-            .into_iter()
-            .map(|(key, _)| key)
-            .collect())
+            .complete_materialization(key, job_id, schema, locations))
     }
 
-    async fn remove_session(&self, session_id: &str) -> Result<()> {
-        self.registry.remove_session(session_id);
-        Ok(())
+    async fn abort_materialization(&self, key: &CacheKey, job_id: &str) -> Result<bool> {
+        Ok(self.registry.abort_materialization(key, job_id))
     }
 
-    async fn pinned_job_ids(&self) -> Result<HashSet<String>> {
-        Ok(self.registry.pinned_job_ids())
+    async fn invalidate(&self, key: &CacheKey) -> Result<Option<MaterializedCache>> {
+        Ok(self.registry.invalidate(key))
+    }
+
+    async fn invalidate_executor(
+        &self,
+        executor_id: &str,
+    ) -> Result<Vec<(CacheKey, MaterializedCache)>> {
+        Ok(self.registry.invalidate_executor(executor_id))
+    }
+
+    async fn remove_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<(CacheKey, MaterializedCache)>> {
+        Ok(self.registry.remove_session(session_id))
+    }
+
+    async fn pinned_stages(&self) -> Result<HashSet<(JobId, usize)>> {
+        Ok(self.registry.pinned_stages())
     }
 }
 
@@ -1085,6 +1088,10 @@ mod cache_state_test {
         );
         let key = CacheKey::new("s1", "c1");
         let cache = cluster.cache_state();
+        cache
+            .begin_materialization(key.clone(), "j".into())
+            .await
+            .unwrap();
         cache
             .complete_materialization(key.clone(), "j".into(), schema(), vec![])
             .await

@@ -21,7 +21,8 @@
 //! [`BallistaCacheNode`](ballista_core::extension::BallistaCacheNode). When it
 //! is first executed it is materialized as *pinned* shuffle output on the
 //! executors (shuffle files that survive normal job cleanup). This registry
-//! records, per cache key, the schema and the shuffle [`PartitionLocation`]s of
+//! records, per cache key, the schema and the shuffle
+//! [`PartitionLocation`](ballista_core::serde::scheduler::PartitionLocation)s of
 //! that output so that a later job can read the data back over the existing
 //! shuffle path instead of recomputing the subplan.
 //!
@@ -31,26 +32,36 @@
 //!
 //! # Keying
 //!
-//! Entries are keyed by [`CacheKey`] = `(session_id, cache_id)`, where
-//! `cache_id` is the per-`cache()`-call UUID stamped by
-//! `BallistaCacheFactory`. This gives reuse whenever the client holds on to the
-//! cached `DataFrame` (its logical plan keeps the same `cache_id`). Canonical
-//! plan-based keying for cross-call deduplication is intentionally deferred.
+//! Entries are keyed by [`CacheKey`](crate::state::cache_registry::CacheKey) =
+//! `(session_id, cache_id)`, where `cache_id` is the per-`cache()`-call UUID
+//! stamped by `BallistaCacheFactory`. This gives reuse whenever the client
+//! holds on to the cached `DataFrame` (its logical plan keeps the same
+//! `cache_id`). Canonical plan-based keying for cross-call deduplication is
+//! intentionally deferred.
 //!
 //! # Lifecycle
 //!
 //! ```text
-//!   (absent) --begin_materialization--> Pending
-//!   Pending  --complete_materialization--> Materialized
-//!   Materialized --invalidate / invalidate_executor--> (absent)
+//!   (absent)      --begin_materialization--------------------> Pending{job}
+//!   Pending{job}  --complete_materialization(job) [match]----> Materialized
+//!   Pending{job}  --abort_materialization(job)    [match]----> (absent)
+//!   Pending{job}  --complete_materialization(other|absent)---> Stale (no change)
+//!   Materialized  --invalidate / invalidate_executor / remove_session--> (absent)
 //! ```
 //!
-//! Invalidation simply removes the entry; the next lookup is therefore a miss
-//! and the subplan is re-materialized. This implements the "if an executor
-//! holding a cached partition is lost, the cache is invalidated" policy.
+//! Transitions out of `Pending` are **job-id matched**: a late completion from a
+//! job that no longer owns the claim (because the entry was invalidated and
+//! re-claimed, or the session was removed) is reported
+//! [`CompleteOutcome::Stale`](crate::state::cache_registry::CompleteOutcome::Stale)
+//! and changes nothing, so stale output cannot resurrect a removed entry or
+//! overwrite a newer claim. Invalidation simply removes the entry; the next
+//! lookup is therefore a miss and the subplan is re-materialized. This
+//! implements the "if an executor holding a cached partition is lost, the cache
+//! is invalidated" policy.
 
 use std::collections::HashSet;
 
+use ballista_core::JobId;
 use ballista_core::serde::scheduler::PartitionLocation;
 use dashmap::DashMap;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -92,7 +103,7 @@ pub struct MaterializedCache {
 
 /// Internal state of a cache entry.
 #[derive(Debug, Clone)]
-enum CacheState {
+enum EntryState {
     /// A materialization job has been submitted but has not completed; the
     /// partition locations are not yet known.
     Pending { materializing_job: String },
@@ -103,14 +114,18 @@ enum CacheState {
 /// Cross-job registry of materialized cache entries.
 ///
 /// Cheap to clone-share via `Arc`; all methods take `&self` and are safe to call
-/// concurrently.
+/// concurrently. Kept `pub(crate)`: the public surface is the
+/// [`CacheState`](crate::cluster::CacheState) trait, so this type can evolve
+/// freely while the feature grows.
 #[derive(Debug, Default)]
-pub struct CacheRegistry {
-    entries: DashMap<CacheKey, CacheState>,
+pub(crate) struct CacheRegistry {
+    entries: DashMap<CacheKey, EntryState>,
 }
 
-/// Outcome of [`CacheRegistry::begin_materialization`].
+/// Outcome of claiming a key for materialization
+/// ([`CacheState::begin_materialization`](crate::cluster::CacheState::begin_materialization)).
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BeginOutcome {
     /// This caller claimed the key and should submit the materialization job.
     Claimed,
@@ -120,8 +135,37 @@ pub enum BeginOutcome {
     AlreadyMaterialized,
 }
 
+/// Outcome of recording a materialization
+/// ([`CacheState::complete_materialization`](crate::cluster::CacheState::complete_materialization)).
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CompleteOutcome {
+    /// The pending claim was promoted to materialized.
+    Completed,
+    /// There was no matching pending claim (the entry was removed while
+    /// materializing, is already materialized, or is owned by a different job).
+    /// Nothing was recorded; the caller should clean up the shuffle output it
+    /// produced, as it will never be read.
+    Stale,
+}
+
+/// Returns true if `state` is a materialized entry holding a partition on
+/// `executor_id`.
+fn holds_executor(state: &EntryState, executor_id: &str) -> bool {
+    matches!(
+        state,
+        EntryState::Materialized(cache)
+            if cache
+                .locations
+                .iter()
+                .flatten()
+                .any(|loc| loc.executor_meta.id == executor_id)
+    )
+}
+
 impl CacheRegistry {
     /// Creates an empty registry.
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -130,8 +174,8 @@ impl CacheRegistry {
     /// (a miss) or still pending.
     pub fn lookup(&self, key: &CacheKey) -> Option<MaterializedCache> {
         match self.entries.get(key)?.value() {
-            CacheState::Materialized(cache) => Some(cache.clone()),
-            CacheState::Pending { .. } => None,
+            EntryState::Materialized(cache) => Some(cache.clone()),
+            EntryState::Pending { .. } => None,
         }
     }
 
@@ -150,11 +194,11 @@ impl CacheRegistry {
         use dashmap::mapref::entry::Entry;
         match self.entries.entry(key) {
             Entry::Occupied(occupied) => match occupied.get() {
-                CacheState::Pending { .. } => BeginOutcome::AlreadyPending,
-                CacheState::Materialized(_) => BeginOutcome::AlreadyMaterialized,
+                EntryState::Pending { .. } => BeginOutcome::AlreadyPending,
+                EntryState::Materialized(_) => BeginOutcome::AlreadyMaterialized,
             },
             Entry::Vacant(vacant) => {
-                vacant.insert(CacheState::Pending {
+                vacant.insert(EntryState::Pending {
                     materializing_job: job_id.into(),
                 });
                 BeginOutcome::Claimed
@@ -162,32 +206,72 @@ impl CacheRegistry {
         }
     }
 
-    /// Records the materialized output for `key`, transitioning it to
-    /// [`CacheState::Materialized`]. Overwrites any existing state so that a
-    /// re-materialization (after invalidation) can refresh in place. `job_id` is
-    /// the job that produced the shuffle data and is retained for pin/unpin.
+    /// Promotes the pending claim for `key` to [`EntryState::Materialized`],
+    /// recording its shuffle output — **only if** `key` is still `Pending` and
+    /// owned by `job_id`. Any other state (absent, already materialized, or a
+    /// different owning job) is reported [`CompleteOutcome::Stale`] and the entry
+    /// is left untouched. The check and swap are atomic under the entry lock, so
+    /// a late completion cannot resurrect a removed entry or overwrite a newer
+    /// claim.
+    ///
+    /// Called by the scheduler when a materialization job succeeds (future PR,
+    /// from the `JobFinished` handler); on `Stale` the caller cleans up the
+    /// orphaned shuffle output it produced.
     pub fn complete_materialization(
         &self,
         key: CacheKey,
         job_id: impl Into<String>,
         schema: SchemaRef,
         locations: Vec<Vec<PartitionLocation>>,
-    ) {
-        self.entries.insert(
-            key,
-            CacheState::Materialized(MaterializedCache {
-                schema,
-                locations,
-                materializing_job: job_id.into(),
-            }),
-        );
+    ) -> CompleteOutcome {
+        use dashmap::mapref::entry::Entry;
+        let job_id = job_id.into();
+        match self.entries.entry(key) {
+            Entry::Occupied(mut occupied) => {
+                let owns_claim = matches!(
+                    occupied.get(),
+                    EntryState::Pending { materializing_job } if *materializing_job == job_id
+                );
+                if owns_claim {
+                    occupied.insert(EntryState::Materialized(MaterializedCache {
+                        schema,
+                        locations,
+                        materializing_job: job_id,
+                    }));
+                    CompleteOutcome::Completed
+                } else {
+                    CompleteOutcome::Stale
+                }
+            }
+            Entry::Vacant(_) => CompleteOutcome::Stale,
+        }
+    }
+
+    /// Drops the pending claim for `key` — but **only if** it is still `Pending`
+    /// and owned by `job_id`. Returns whether a claim was removed.
+    ///
+    /// Called when a materialization job fails or is cancelled (future PR, from
+    /// the `JobRunningFailed` handler) so a doomed claim does not stay `Pending`
+    /// forever (which would make every `lookup` miss and every
+    /// `begin_materialization` return `AlreadyPending`). A mismatched `job_id`
+    /// (a newer claim re-took the key) is left untouched.
+    pub fn abort_materialization(&self, key: &CacheKey, job_id: &str) -> bool {
+        self.entries
+            .remove_if(key, |_, state| {
+                matches!(
+                    state,
+                    EntryState::Pending { materializing_job } if materializing_job == job_id
+                )
+            })
+            .is_some()
     }
 
     /// Removes the entry for `key`. The next [`lookup`](Self::lookup) is a miss.
-    /// Returns the removed entry's materialized form, if it was materialized.
+    /// Returns the removed entry's materialized form, if it was materialized, so
+    /// the caller can unpin its shuffle data.
     pub fn invalidate(&self, key: &CacheKey) -> Option<MaterializedCache> {
         match self.entries.remove(key) {
-            Some((_, CacheState::Materialized(cache))) => Some(cache),
+            Some((_, EntryState::Materialized(cache))) => Some(cache),
             _ => None,
         }
     }
@@ -196,6 +280,11 @@ impl CacheRegistry {
     /// `executor_id`. Returns the invalidated entries so the caller can unpin
     /// their shuffle data. Pending entries are left untouched (their job will
     /// fail/retry through the normal task-failure path).
+    ///
+    /// Each removal is a `remove_if` guarded by the same predicate, so the
+    /// check-and-remove is atomic: a key that is concurrently invalidated and
+    /// re-claimed between the scan and the removal is left alone rather than
+    /// having its fresh `Pending` claim dropped.
     pub fn invalidate_executor(
         &self,
         executor_id: &str,
@@ -203,61 +292,76 @@ impl CacheRegistry {
         let affected: Vec<CacheKey> = self
             .entries
             .iter()
-            .filter(|entry| match entry.value() {
-                CacheState::Materialized(cache) => cache
-                    .locations
-                    .iter()
-                    .flatten()
-                    .any(|loc| loc.executor_meta.id == executor_id),
-                CacheState::Pending { .. } => false,
-            })
+            .filter(|entry| holds_executor(entry.value(), executor_id))
             .map(|entry| entry.key().clone())
             .collect();
 
         affected
             .into_iter()
-            .filter_map(|key| self.invalidate(&key).map(|cache| (key, cache)))
+            .filter_map(|key| {
+                match self
+                    .entries
+                    .remove_if(&key, |_, state| holds_executor(state, executor_id))
+                {
+                    Some((key, EntryState::Materialized(cache))) => Some((key, cache)),
+                    _ => None,
+                }
+            })
             .collect()
     }
 
     /// Removes every entry owned by `session_id` (session teardown). Returns the
-    /// removed keys.
-    pub fn remove_session(&self, session_id: &str) -> Vec<CacheKey> {
+    /// removed materialized entries so the caller can unpin their shuffle data;
+    /// pending entries are also removed but not returned (they have no shuffle
+    /// output yet).
+    pub fn remove_session(&self, session_id: &str) -> Vec<(CacheKey, MaterializedCache)> {
         let keys: Vec<CacheKey> = self
             .entries
             .iter()
             .filter(|entry| entry.key().session_id == session_id)
             .map(|entry| entry.key().clone())
             .collect();
-        for key in &keys {
-            self.entries.remove(key);
-        }
-        keys
-    }
-
-    /// Returns the set of job ids whose shuffle data must be pinned (kept past
-    /// normal job cleanup) because it backs a cache entry. Includes both pending
-    /// and materialized entries.
-    pub fn pinned_job_ids(&self) -> HashSet<String> {
-        self.entries
-            .iter()
-            .map(|entry| match entry.value() {
-                CacheState::Pending { materializing_job } => materializing_job.clone(),
-                CacheState::Materialized(cache) => cache.materializing_job.clone(),
+        keys.into_iter()
+            .filter_map(|key| match self.entries.remove(&key) {
+                Some((key, EntryState::Materialized(cache))) => Some((key, cache)),
+                _ => None,
             })
-            .filter(|id| !id.is_empty())
             .collect()
     }
 
-    /// Number of entries currently tracked (pending + materialized). Primarily
-    /// for tests and metrics.
-    pub fn len(&self) -> usize {
-        self.entries.len()
+    /// Returns the `(job_id, stage_id)` shuffle stages that must be pinned (kept
+    /// past normal job cleanup) because they back a materialized cache entry.
+    ///
+    /// Stage-keyed because Ballista stores and deletes shuffle data per stage
+    /// (`work_dir/{job_id}/{stage_id}/`) — a job-level pin cannot protect a
+    /// cached stage that is an intermediate stage of its job. Consumed by the
+    /// pinning layer (future PR) to exclude these stages from job-data cleanup.
+    /// Pending entries contribute nothing (no locations yet; their job is still
+    /// running and not yet subject to success cleanup).
+    pub fn pinned_stages(&self) -> HashSet<(JobId, usize)> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry.value() {
+                EntryState::Materialized(cache) => Some(
+                    cache
+                        .locations
+                        .iter()
+                        .flatten()
+                        .map(|loc| {
+                            (loc.partition_id.job_id.clone(), loc.partition_id.stage_id)
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                EntryState::Pending { .. } => None,
+            })
+            .flatten()
+            .collect()
     }
 
-    /// Whether the registry is empty.
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+    /// Number of entries currently tracked (pending + materialized). For tests.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 }
 
@@ -271,6 +375,8 @@ mod tests {
     };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
+    use std::sync::Barrier;
+    use std::thread;
 
     fn schema() -> SchemaRef {
         Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
@@ -303,6 +409,22 @@ mod tests {
         }
     }
 
+    /// Claim then complete a key with a matching job, asserting the promotion
+    /// succeeds. The common setup path now that `complete_materialization` only
+    /// promotes an existing `Pending` claim.
+    fn materialize(
+        registry: &CacheRegistry,
+        key: CacheKey,
+        job: &str,
+        locs: Vec<Vec<PartitionLocation>>,
+    ) {
+        registry.begin_materialization(key.clone(), job);
+        assert_eq!(
+            registry.complete_materialization(key, job, schema(), locs),
+            CompleteOutcome::Completed
+        );
+    }
+
     /// A fresh key is a miss until it is materialized.
     #[test]
     fn lookup_miss_then_hit() {
@@ -318,7 +440,10 @@ mod tests {
         assert!(registry.lookup(&key).is_none());
 
         let locs = vec![vec![location("job-1", 1, 0, "e1")]];
-        registry.complete_materialization(key.clone(), "job-1", schema(), locs.clone());
+        assert_eq!(
+            registry.complete_materialization(key.clone(), "job-1", schema(), locs),
+            CompleteOutcome::Completed
+        );
 
         let hit = registry.lookup(&key).expect("should be a hit");
         assert_eq!(hit.locations.len(), 1);
@@ -340,10 +465,105 @@ mod tests {
             BeginOutcome::AlreadyPending
         );
 
-        registry.complete_materialization(key.clone(), "job-1", schema(), vec![]);
+        assert_eq!(
+            registry.complete_materialization(key.clone(), "job-1", schema(), vec![]),
+            CompleteOutcome::Completed
+        );
         assert_eq!(
             registry.begin_materialization(key.clone(), "job-3"),
             BeginOutcome::AlreadyMaterialized
+        );
+    }
+
+    /// `complete_materialization` only promotes a matching pending claim; every
+    /// other state is reported `Stale` and left unchanged.
+    #[test]
+    fn complete_requires_matching_pending_claim() {
+        let registry = CacheRegistry::new();
+        let key = CacheKey::new("s1", "c1");
+
+        // No pending claim at all -> stale, nothing recorded.
+        assert_eq!(
+            registry.complete_materialization(key.clone(), "job-1", schema(), vec![]),
+            CompleteOutcome::Stale
+        );
+        assert!(registry.lookup(&key).is_none());
+
+        // A different job cannot complete another job's claim, and does not
+        // overwrite it.
+        registry.begin_materialization(key.clone(), "job-1");
+        assert_eq!(
+            registry.complete_materialization(
+                key.clone(),
+                "job-2",
+                schema(),
+                vec![vec![location("job-2", 1, 0, "e1")]],
+            ),
+            CompleteOutcome::Stale
+        );
+        assert!(
+            registry.lookup(&key).is_none(),
+            "claim still pending, not overwritten"
+        );
+
+        // The owning job completes it.
+        assert_eq!(
+            registry.complete_materialization(
+                key.clone(),
+                "job-1",
+                schema(),
+                vec![vec![location("job-1", 1, 0, "e1")]],
+            ),
+            CompleteOutcome::Completed
+        );
+        assert_eq!(registry.lookup(&key).unwrap().materializing_job, "job-1");
+    }
+
+    /// A completion that arrives after the entry was removed (e.g. the session
+    /// was torn down while materializing) must not resurrect it.
+    #[test]
+    fn remove_session_while_pending_is_not_resurrected() {
+        let registry = CacheRegistry::new();
+        let key = CacheKey::new("s1", "c1");
+
+        registry.begin_materialization(key.clone(), "job-1");
+        assert!(
+            registry.remove_session("s1").is_empty(),
+            "pending entry has nothing to unpin"
+        );
+        assert_eq!(registry.len(), 0);
+
+        // Late completion from the now-orphaned job: stale, no entry recreated.
+        assert_eq!(
+            registry.complete_materialization(
+                key.clone(),
+                "job-1",
+                schema(),
+                vec![vec![location("job-1", 1, 0, "e1")]],
+            ),
+            CompleteOutcome::Stale
+        );
+        assert!(registry.lookup(&key).is_none());
+        assert_eq!(registry.len(), 0);
+    }
+
+    /// Aborting clears only a matching pending claim; a mismatched job is a no-op.
+    #[test]
+    fn abort_materialization_clears_matching_pending() {
+        let registry = CacheRegistry::new();
+        let key = CacheKey::new("s1", "c1");
+        registry.begin_materialization(key.clone(), "job-1");
+
+        // Wrong job id: nothing removed, claim intact.
+        assert!(!registry.abort_materialization(&key, "job-2"));
+        assert_eq!(registry.len(), 1);
+
+        // Owning job: claim dropped, key re-claimable.
+        assert!(registry.abort_materialization(&key, "job-1"));
+        assert_eq!(registry.len(), 0);
+        assert_eq!(
+            registry.begin_materialization(key.clone(), "job-3"),
+            BeginOutcome::Claimed
         );
     }
 
@@ -353,79 +573,53 @@ mod tests {
         let registry = CacheRegistry::new();
         let k1 = CacheKey::new("s1", "c1");
         let k2 = CacheKey::new("s2", "c1");
-        registry.complete_materialization(k1.clone(), "job-1", schema(), vec![]);
+        materialize(&registry, k1.clone(), "job-1", vec![]);
         assert!(registry.lookup(&k1).is_some());
         assert!(registry.lookup(&k2).is_none());
     }
 
-    /// Losing an executor invalidates exactly the entries that hold a partition
-    /// on it, and reports them for unpinning.
+    /// Losing an executor invalidates exactly the entries holding a partition on
+    /// it — including one spread across executors (matched via any partition) —
+    /// and reports them for unpinning; unaffected entries are retained.
     #[test]
-    fn invalidate_executor_only_affects_holders() {
+    fn invalidate_executor_affects_only_partition_holders() {
         let registry = CacheRegistry::new();
-        let on_e1 = CacheKey::new("s1", "on-e1");
-        let on_e2 = CacheKey::new("s1", "on-e2");
-        registry.complete_materialization(
-            on_e1.clone(),
+        let only_e1 = CacheKey::new("s1", "only-e1");
+        let spread = CacheKey::new("s1", "spread-e2-e3");
+        materialize(
+            &registry,
+            only_e1.clone(),
             "job-a",
-            schema(),
             vec![vec![location("job-a", 1, 0, "e1")]],
         );
-        registry.complete_materialization(
-            on_e2.clone(),
+        materialize(
+            &registry,
+            spread.clone(),
             "job-b",
-            schema(),
-            vec![vec![location("job-b", 1, 0, "e2")]],
-        );
-
-        let invalidated = registry.invalidate_executor("e1");
-        assert_eq!(invalidated.len(), 1);
-        assert_eq!(invalidated[0].0, on_e1);
-        assert_eq!(invalidated[0].1.materializing_job, "job-a");
-
-        assert!(registry.lookup(&on_e1).is_none(), "e1 holder evicted");
-        assert!(registry.lookup(&on_e2).is_some(), "e2 holder retained");
-    }
-
-    /// A cache spread across executors is invalidated if any one of them is lost.
-    #[test]
-    fn invalidate_executor_matches_any_partition() {
-        let registry = CacheRegistry::new();
-        let key = CacheKey::new("s1", "spread");
-        registry.complete_materialization(
-            key.clone(),
-            "job-a",
-            schema(),
             vec![
-                vec![location("job-a", 1, 0, "e1")],
-                vec![location("job-a", 1, 1, "e2")],
+                vec![location("job-b", 2, 0, "e2")],
+                vec![location("job-b", 2, 1, "e3")],
             ],
         );
-        assert_eq!(registry.invalidate_executor("e2").len(), 1);
-        assert!(registry.lookup(&key).is_none());
+
+        // Losing e2 hits only the spread entry (matched via its e2 partition).
+        let invalidated = registry.invalidate_executor("e2");
+        assert_eq!(invalidated.len(), 1);
+        assert_eq!(invalidated[0].0, spread);
+        assert_eq!(invalidated[0].1.materializing_job, "job-b");
+        assert!(registry.lookup(&spread).is_none(), "holder evicted");
+        assert!(
+            registry.lookup(&only_e1).is_some(),
+            "unaffected entry retained"
+        );
     }
 
     #[test]
     fn remove_session_drops_all_its_entries() {
         let registry = CacheRegistry::new();
-        registry.complete_materialization(
-            CacheKey::new("s1", "a"),
-            "j",
-            schema(),
-            vec![],
-        );
-        registry.complete_materialization(
-            CacheKey::new("s1", "b"),
-            "j",
-            schema(),
-            vec![],
-        );
-        registry.complete_materialization(
-            CacheKey::new("s2", "a"),
-            "j",
-            schema(),
-            vec![],
-        );
+        materialize(&registry, CacheKey::new("s1", "a"), "ja", vec![]);
+        materialize(&registry, CacheKey::new("s1", "b"), "jb", vec![]);
+        materialize(&registry, CacheKey::new("s2", "a"), "jc", vec![]);
 
         let removed = registry.remove_session("s1");
         assert_eq!(removed.len(), 2);
@@ -433,53 +627,122 @@ mod tests {
         assert!(registry.lookup(&CacheKey::new("s2", "a")).is_some());
     }
 
-    /// Pinned job ids cover both pending and materialized entries, deduped.
+    /// Pinned stages cover materialized entries at `(job_id, stage_id)`
+    /// granularity and drop out when the entry is invalidated.
     #[test]
-    fn pinned_job_ids_tracks_live_entries() {
+    fn pinned_stages_covers_materialized_entries() {
         let registry = CacheRegistry::new();
+        // A pending entry contributes no stage (no locations yet).
         registry.begin_materialization(CacheKey::new("s1", "pending"), "job-1");
-        registry.complete_materialization(
+        materialize(
+            &registry,
             CacheKey::new("s1", "done"),
             "job-2",
-            schema(),
-            vec![vec![location("job-2", 1, 0, "e1")]],
+            vec![vec![location("job-2", 3, 0, "e1")]],
         );
 
-        let pinned = registry.pinned_job_ids();
-        assert_eq!(pinned.len(), 2);
-        assert!(pinned.contains("job-1"));
-        assert!(pinned.contains("job-2"));
-
-        // Invalidating the materialized entry unpins its job.
-        registry.invalidate(&CacheKey::new("s1", "done"));
-        let pinned = registry.pinned_job_ids();
+        let pinned = registry.pinned_stages();
         assert_eq!(pinned.len(), 1);
-        assert!(pinned.contains("job-1"));
+        assert!(pinned.contains(&(JobId::new("job-2"), 3)));
+
+        // Invalidating the materialized entry returns it (for unpinning) and
+        // drops its stage from the pin set.
+        assert!(registry.invalidate(&CacheKey::new("s1", "done")).is_some());
+        assert!(registry.pinned_stages().is_empty());
     }
 
-    /// Re-materializing after invalidation refreshes locations in place.
-    #[test]
-    fn re_materialization_refreshes_locations() {
-        let registry = CacheRegistry::new();
-        let key = CacheKey::new("s1", "c1");
-        registry.complete_materialization(
-            key.clone(),
-            "job-1",
-            schema(),
-            vec![vec![location("job-1", 1, 0, "e1")]],
-        );
-        registry.invalidate(&key);
-        assert!(registry.lookup(&key).is_none());
+    // --- Concurrency invariants (must hold under any interleaving) ---
 
-        registry.begin_materialization(key.clone(), "job-2");
-        registry.complete_materialization(
-            key.clone(),
-            "job-2",
-            schema(),
-            vec![vec![location("job-2", 1, 0, "e2")]],
-        );
-        let hit = registry.lookup(&key).unwrap();
-        assert_eq!(hit.materializing_job, "job-2");
-        assert_eq!(hit.locations[0][0].executor_meta.id, "e2");
+    /// Many threads racing to claim the same key: exactly one wins `Claimed`.
+    #[test]
+    fn concurrent_begin_yields_single_claim() {
+        let registry = Arc::new(CacheRegistry::new());
+        let key = CacheKey::new("s1", "c1");
+        let n = 16;
+        let barrier = Arc::new(Barrier::new(n));
+        let claims: usize = (0..n)
+            .map(|i| {
+                let (r, k, b) = (registry.clone(), key.clone(), barrier.clone());
+                thread::spawn(move || {
+                    b.wait();
+                    matches!(
+                        r.begin_materialization(k, format!("job-{i}")),
+                        BeginOutcome::Claimed
+                    ) as usize
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .sum();
+        assert_eq!(claims, 1, "exactly one claimant");
+    }
+
+    /// Losing two executors that each hold part of the same entry removes and
+    /// reports it exactly once — no double unpin.
+    #[test]
+    fn concurrent_invalidate_executor_removes_entry_once() {
+        for _ in 0..100 {
+            let registry = Arc::new(CacheRegistry::new());
+            let key = CacheKey::new("s1", "spread");
+            materialize(
+                &registry,
+                key.clone(),
+                "job-a",
+                vec![
+                    vec![location("job-a", 1, 0, "e1")],
+                    vec![location("job-a", 1, 1, "e2")],
+                ],
+            );
+            let barrier = Arc::new(Barrier::new(2));
+            let total: usize = ["e1", "e2"]
+                .iter()
+                .map(|exec| {
+                    let (r, b, e) = (registry.clone(), barrier.clone(), exec.to_string());
+                    thread::spawn(move || {
+                        b.wait();
+                        r.invalidate_executor(&e).len()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .sum();
+            assert_eq!(total, 1, "entry removed/returned exactly once");
+            assert!(registry.lookup(&key).is_none());
+        }
+    }
+
+    /// A concurrent complete and abort for the same pending claim are mutually
+    /// exclusive: exactly one wins, and the end state matches the winner.
+    #[test]
+    fn concurrent_complete_and_abort_are_exclusive() {
+        for _ in 0..100 {
+            let registry = Arc::new(CacheRegistry::new());
+            let key = CacheKey::new("s1", "c1");
+            registry.begin_materialization(key.clone(), "job-1");
+            let barrier = Arc::new(Barrier::new(2));
+
+            let completer = {
+                let (r, k, b) = (registry.clone(), key.clone(), barrier.clone());
+                thread::spawn(move || {
+                    b.wait();
+                    r.complete_materialization(k, "job-1", schema(), vec![])
+                        == CompleteOutcome::Completed
+                })
+            };
+            let aborter = {
+                let (r, k, b) = (registry.clone(), key.clone(), barrier.clone());
+                thread::spawn(move || {
+                    b.wait();
+                    r.abort_materialization(&k, "job-1")
+                })
+            };
+
+            let completed = completer.join().unwrap();
+            let aborted = aborter.join().unwrap();
+            assert!(completed ^ aborted, "exactly one of complete/abort wins");
+            assert_eq!(registry.lookup(&key).is_some(), completed);
+        }
     }
 }

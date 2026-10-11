@@ -20,7 +20,9 @@ use crate::cluster::memory::{
 };
 use crate::config::{SchedulerConfig, TaskDistributionPolicy};
 use crate::scheduler_server::SessionBuilder;
-use crate::state::cache_registry::{BeginOutcome, CacheKey, MaterializedCache};
+use crate::state::cache_registry::{
+    BeginOutcome, CacheKey, CompleteOutcome, MaterializedCache,
+};
 use crate::state::execution_graph::{
     ExecutionGraphBox, TaskDescription, create_task_info,
 };
@@ -87,17 +89,26 @@ pub struct BallistaCluster {
 }
 
 impl BallistaCluster {
-    /// Creates a new `BallistaCluster` with the given state backends.
+    /// Creates a new `BallistaCluster` with the given cluster and job state
+    /// backends and the default in-memory cache state. Use
+    /// [`with_cache_state`](Self::with_cache_state) to supply a custom cache
+    /// backend.
     pub fn new(
         cluster_state: Arc<dyn ClusterState>,
         job_state: Arc<dyn JobState>,
-        cache_state: Arc<dyn CacheState>,
     ) -> Self {
         Self {
             cluster_state,
             job_state,
-            cache_state,
+            cache_state: Arc::new(InMemoryCacheState::default()),
         }
+    }
+
+    /// Overrides the cache state backend, returning the updated cluster. Lets a
+    /// caller plug in a custom [`CacheState`] without changing [`new`](Self::new).
+    pub fn with_cache_state(mut self, cache_state: Arc<dyn CacheState>) -> Self {
+        self.cache_state = cache_state;
+        self
     }
 
     /// Creates a new `BallistaCluster` with in-memory state backends.
@@ -383,7 +394,7 @@ pub trait JobState: Send + Sync {
 ///
 /// This is the third piece of scheduler state alongside [`ClusterState`] and
 /// [`JobState`], and follows the same shape: an async trait with an in-memory
-/// implementation today ([`InMemoryCacheState`](crate::cluster::memory::InMemoryCacheState))
+/// implementation today ([`InMemoryCacheState`])
 /// and an [`init`](CacheState::init) hook so a future durable backend (e.g. one
 /// backed by an object store) can rehydrate entries on startup. The methods are
 /// `async` even though the in-memory backend does no I/O, so a durable backend
@@ -411,27 +422,47 @@ pub trait CacheState: Send + Sync + 'static {
         job_id: String,
     ) -> Result<BeginOutcome>;
 
-    /// Records the materialized shuffle locations for `key`.
+    /// Records the materialized shuffle locations for `key`, promoting a
+    /// matching pending claim. Returns [`CompleteOutcome::Stale`] if no such
+    /// claim exists so the caller can discard the orphaned output.
     async fn complete_materialization(
         &self,
         key: CacheKey,
         job_id: String,
         schema: SchemaRef,
         locations: Vec<Vec<PartitionLocation>>,
-    ) -> Result<()>;
+    ) -> Result<CompleteOutcome>;
 
-    /// Invalidates a single entry; the next [`lookup`](CacheState::lookup) is a miss.
-    async fn invalidate(&self, key: &CacheKey) -> Result<()>;
+    /// Drops a pending claim for `key` owned by `job_id` (materialization job
+    /// failed/cancelled). Returns whether a claim was removed. Future PRs call
+    /// this from the `JobRunningFailed` handler.
+    async fn abort_materialization(&self, key: &CacheKey, job_id: &str) -> Result<bool>;
+
+    /// Invalidates a single entry; the next [`lookup`](CacheState::lookup) is a
+    /// miss. Returns the removed materialized entry (if any) so the caller can
+    /// unpin its shuffle data.
+    async fn invalidate(&self, key: &CacheKey) -> Result<Option<MaterializedCache>>;
 
     /// Invalidates every entry holding a partition on `executor_id` (the
-    /// executor-loss policy) and returns the invalidated keys.
-    async fn invalidate_executor(&self, executor_id: &str) -> Result<Vec<CacheKey>>;
+    /// executor-loss policy) and returns the removed entries so the caller can
+    /// unpin their shuffle data.
+    async fn invalidate_executor(
+        &self,
+        executor_id: &str,
+    ) -> Result<Vec<(CacheKey, MaterializedCache)>>;
 
-    /// Removes every entry owned by `session_id` (session teardown).
-    async fn remove_session(&self, session_id: &str) -> Result<()>;
+    /// Removes every entry owned by `session_id` (session teardown) and returns
+    /// the removed materialized entries so the caller can unpin their shuffle
+    /// data.
+    async fn remove_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<(CacheKey, MaterializedCache)>>;
 
-    /// Returns the job ids whose shuffle data must be pinned past normal cleanup.
-    async fn pinned_job_ids(&self) -> Result<HashSet<String>>;
+    /// Returns the `(job_id, stage_id)` shuffle stages that must be pinned past
+    /// normal cleanup because they back a cache entry. Consumed by the pinning
+    /// layer (future PR).
+    async fn pinned_stages(&self) -> Result<HashSet<(JobId, usize)>>;
 }
 
 /// Whether this stage's plan contains a collapse — any operator whose
