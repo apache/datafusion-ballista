@@ -90,28 +90,42 @@ mod prometheus_metrics {
     use super::{FetchOutcome, ResultMetricsCollector};
     use ballista_core::error::{BallistaError, Result};
     use prometheus::{
-        Counter, Encoder, Gauge, Histogram, Registry, TextEncoder,
-        register_counter_with_registry, register_gauge_with_registry,
-        register_histogram_with_registry,
+        Encoder, Histogram, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder,
+        register_histogram_with_registry, register_int_counter_vec_with_registry,
+        register_int_counter_with_registry, register_int_gauge_with_registry,
     };
     use std::time::Duration;
 
+    const OUTCOMES: [FetchOutcome; 3] = [
+        FetchOutcome::Completed,
+        FetchOutcome::Failed,
+        FetchOutcome::Cancelled,
+    ];
+
+    fn outcome_label(outcome: FetchOutcome) -> &'static str {
+        match outcome {
+            FetchOutcome::Completed => "completed",
+            FetchOutcome::Failed => "failed",
+            FetchOutcome::Cancelled => "cancelled",
+        }
+    }
+
     /// A [`ResultMetricsCollector`] that exports Prometheus metrics:
     ///
-    /// - `fetch_started_total`, `fetch_completed_total`, `fetch_failed_total`
-    ///   and `fetch_cancelled_total` count fetches by how they ended
-    /// - `fetch_in_flight` is the number of fetches currently streaming
-    /// - `fetch_time_seconds` is a histogram of fetch durations
-    /// - `fetch_bytes_total` counts the Flight data relayed to clients
+    /// - `ballista_result_service_fetches_total` counts finished fetches by
+    ///   `outcome`: `completed`, `failed` or `cancelled`
+    /// - `ballista_result_service_fetches_in_flight` is the number of fetches
+    ///   currently streaming
+    /// - `ballista_result_service_fetch_duration_seconds` is a histogram of
+    ///   fetch durations
+    /// - `ballista_result_service_relayed_bytes_total` counts the Flight data
+    ///   relayed to clients
     pub struct PrometheusMetricsCollector {
         registry: Registry,
-        started: Counter,
-        completed: Counter,
-        failed: Counter,
-        cancelled: Counter,
-        in_flight: Gauge,
-        time: Histogram,
-        bytes: Counter,
+        fetches: IntCounterVec,
+        in_flight: IntGauge,
+        duration: Histogram,
+        relayed_bytes: IntCounter,
     }
 
     fn registration_error(e: prometheus::Error) -> BallistaError {
@@ -121,67 +135,59 @@ mod prometheus_metrics {
     impl PrometheusMetricsCollector {
         /// Creates the collector, registering its metrics in `registry`.
         pub fn new(registry: &Registry) -> Result<Self> {
-            let counter = |name: &str, help: &str| {
-                register_counter_with_registry!(name, help, registry)
-                    .map_err(registration_error)
-            };
+            let fetches = register_int_counter_vec_with_registry!(
+                "ballista_result_service_fetches_total",
+                "Counter of finished result fetches, by outcome",
+                &["outcome"],
+                registry
+            )
+            .map_err(registration_error)?;
+            // Export every outcome from the start, so a rate over each is
+            // defined before its first fetch.
+            for outcome in OUTCOMES {
+                fetches.with_label_values(&[outcome_label(outcome)]);
+            }
             Ok(Self {
                 registry: registry.clone(),
-                started: counter(
-                    "fetch_started_total",
-                    "Counter of result fetches started",
-                )?,
-                completed: counter(
-                    "fetch_completed_total",
-                    "Counter of result fetches that delivered the whole stream",
-                )?,
-                failed: counter(
-                    "fetch_failed_total",
-                    "Counter of failed result fetches",
-                )?,
-                cancelled: counter(
-                    "fetch_cancelled_total",
-                    "Counter of result fetches the client abandoned",
-                )?,
-                in_flight: register_gauge_with_registry!(
-                    "fetch_in_flight",
+                fetches,
+                in_flight: register_int_gauge_with_registry!(
+                    "ballista_result_service_fetches_in_flight",
                     "Number of result fetches in flight",
                     registry
                 )
                 .map_err(registration_error)?,
-                time: register_histogram_with_registry!(
-                    "fetch_time_seconds",
-                    "Histogram of result fetch time in seconds",
+                duration: register_histogram_with_registry!(
+                    "ballista_result_service_fetch_duration_seconds",
+                    "Histogram of result fetch durations in seconds",
                     vec![0.01_f64, 0.1_f64, 1_f64, 10_f64, 60_f64, 300_f64],
                     registry
                 )
                 .map_err(registration_error)?,
-                bytes: counter(
-                    "fetch_bytes_total",
+                relayed_bytes: register_int_counter_with_registry!(
+                    "ballista_result_service_relayed_bytes_total",
                     "Counter of Flight data bytes relayed to clients",
-                )?,
+                    registry
+                )
+                .map_err(registration_error)?,
             })
         }
     }
 
     impl ResultMetricsCollector for PrometheusMetricsCollector {
         fn record_started(&self) {
-            self.started.inc();
             self.in_flight.inc();
         }
 
         fn record_bytes(&self, bytes: u64) {
-            self.bytes.inc_by(bytes as f64);
+            self.relayed_bytes.inc_by(bytes);
         }
 
         fn record_finished(&self, outcome: FetchOutcome, elapsed: Duration) {
             self.in_flight.dec();
-            self.time.observe(elapsed.as_secs_f64());
-            match outcome {
-                FetchOutcome::Completed => self.completed.inc(),
-                FetchOutcome::Failed => self.failed.inc(),
-                FetchOutcome::Cancelled => self.cancelled.inc(),
-            }
+            self.duration.observe(elapsed.as_secs_f64());
+            self.fetches
+                .with_label_values(&[outcome_label(outcome)])
+                .inc();
         }
 
         fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>> {
@@ -213,12 +219,12 @@ mod prometheus_metrics {
             let (text, _) = collector.gather_metrics()?.expect("prometheus exports");
             let text = String::from_utf8(text).expect("utf-8");
             for line in [
-                "fetch_started_total 2",
-                "fetch_completed_total 1",
-                "fetch_failed_total 0",
-                "fetch_in_flight 1",
-                "fetch_bytes_total 1024",
-                "fetch_time_seconds_count 1",
+                r#"ballista_result_service_fetches_total{outcome="completed"} 1"#,
+                r#"ballista_result_service_fetches_total{outcome="failed"} 0"#,
+                r#"ballista_result_service_fetches_total{outcome="cancelled"} 0"#,
+                "ballista_result_service_fetches_in_flight 1",
+                "ballista_result_service_relayed_bytes_total 1024",
+                "ballista_result_service_fetch_duration_seconds_count 1",
             ] {
                 assert!(text.contains(line), "missing {line:?} in:\n{text}");
             }

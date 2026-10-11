@@ -54,10 +54,12 @@ Like the scheduler, the service also answers HTTP on its port:
   (`cargo install --locked ballista-result-service --features prometheus-metrics`),
   otherwise 204
 
-The metrics count fetches by outcome (`fetch_started_total`, `fetch_completed_total`,
-`fetch_failed_total`, `fetch_cancelled_total`), and track fetches in flight
-(`fetch_in_flight`), fetch time (`fetch_time_seconds`) and the bytes relayed to clients
-(`fetch_bytes_total`). On Linux they include the process's CPU and memory use.
+The metrics count finished fetches by outcome
+(`ballista_result_service_fetches_total`, labelled `completed`, `failed` or
+`cancelled`), and track fetches in flight (`ballista_result_service_fetches_in_flight`),
+fetch durations (`ballista_result_service_fetch_duration_seconds`) and the bytes relayed
+to clients (`ballista_result_service_relayed_bytes_total`). On Linux they include the
+process's CPU and memory use.
 
 ## Behind a TLS-terminating gateway
 

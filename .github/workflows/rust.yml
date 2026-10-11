@@ -97,7 +97,7 @@ jobs:
           export PATH=$PATH:$HOME/d/protoc/bin
           # The Flight SQL frontend is a non-default feature; enable it here so
           # its end-to-end tests are not compiled away.
-          cargo test --profile ci --features=testcontainers,ballista-scheduler/flight-sql
+          cargo test --profile ci --features=testcontainers,ballista-scheduler/flight-sql,ballista-result-service/prometheus-metrics
 
   # Run `cargo doc` to ensure the rustdoc is clean
   rustdoc:
