@@ -43,6 +43,7 @@ fn env_or(key: &str, default: &str) -> String {
 async fn main() -> ballista_core::error::Result<()> {
     env_logger::init();
 
+    #[allow(deprecated)]
     let config = SchedulerConfig {
         // In the process harness these default to loopback; under Kubernetes the
         // scheduler must bind all interfaces and advertise its Service name.

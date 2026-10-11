@@ -197,9 +197,12 @@ pub async fn start_grpc_service_with_listener<
         );
     }
 
+    #[allow(deprecated)]
+    let enable_embedded_flight_proxy = config.enable_embedded_flight_proxy;
+
     // Warn even when the Flight SQL frontend is mounted in its place: the flag
     // still makes the scheduler advertise itself to clients as the proxy.
-    if config.enable_embedded_flight_proxy {
+    if enable_embedded_flight_proxy {
         log::warn!(
             "enable_embedded_flight_proxy is deprecated and will be removed in \
              57.0.0: it puts result traffic on the scheduler. Run \
@@ -208,7 +211,7 @@ pub async fn start_grpc_service_with_listener<
         );
     }
 
-    if !flight_sql_enabled && config.enable_embedded_flight_proxy {
+    if !flight_sql_enabled && enable_embedded_flight_proxy {
         info!("Adding embedded flight proxy service on scheduler");
         tonic_builder.add_service(
             FlightServiceServer::new(flight_proxy)

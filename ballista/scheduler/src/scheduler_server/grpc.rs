@@ -909,6 +909,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// Where clients should fetch result partitions from over Arrow Flight,
     /// advertised in job-status responses. An explicitly advertised endpoint
     /// wins over the embedded proxy, so a load balancer can front it.
+    #[allow(deprecated)]
     fn flight_proxy_config(&self) -> Option<FlightProxy> {
         let config = &self.state.config;
         match config

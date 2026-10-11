@@ -368,10 +368,11 @@ pub struct SchedulerConfig {
     /// the advertisement, which is how you put a load balancer in front of an
     /// embedded proxy.
     ///
-    /// Deprecated, and to be removed in 57.0.0: the proxy puts result traffic
-    /// on the scheduler. Run a result service and advertise it with
-    /// [`Self::advertise_flight_endpoint`] instead. The scheduler logs a warning
-    /// at startup while this is set.
+    /// The scheduler logs a warning at startup while this is set.
+    #[deprecated(
+        since = "56.0.0",
+        note = "the embedded proxy puts result traffic on the scheduler and will be removed in 57.0.0; run `ballista-result-service` and set `advertise_flight_endpoint` instead"
+    )]
     pub enable_embedded_flight_proxy: bool,
     /// If provided, submitted jobs which do not have tasks scheduled will be resubmitted after `job_resubmit_interval_ms`
     /// milliseconds
@@ -460,6 +461,7 @@ pub struct SchedulerConfig {
 }
 
 impl Default for SchedulerConfig {
+    #[allow(deprecated)]
     fn default() -> Self {
         Self {
             namespace: String::default(),
@@ -518,6 +520,7 @@ impl SchedulerConfig {
     ///
     /// Suspicious combinations are logged as warnings rather than rejected,
     /// since small values are legitimate for fail-fast setups and tests.
+    #[allow(deprecated)]
     pub fn validate(&self) -> ballista_core::error::Result<()> {
         if self.scheduler_id.trim().is_empty() {
             return Err(ballista_core::error::BallistaError::Configuration(
@@ -674,6 +677,7 @@ impl SchedulerConfig {
         since = "56.0.0",
         note = "the embedded proxy puts result traffic on the scheduler and will be removed in 57.0.0; run `ballista-result-service` and use `with_advertise_flight_endpoint` instead"
     )]
+    #[allow(deprecated)]
     pub fn with_enable_embedded_flight_proxy(mut self, enable: bool) -> Self {
         self.enable_embedded_flight_proxy = enable;
         self
@@ -863,6 +867,7 @@ pub enum TaskDistributionPolicy {
 impl TryFrom<Config> for SchedulerConfig {
     type Error = ballista_core::error::BallistaError;
 
+    #[allow(deprecated)]
     fn try_from(opt: Config) -> Result<Self, Self::Error> {
         let task_distribution = match opt.task_distribution {
             TaskDistribution::Bias => TaskDistributionPolicy::Bias,
@@ -1034,6 +1039,7 @@ mod tests {
 
     #[cfg(feature = "build-binary")]
     #[test]
+    #[allow(deprecated)]
     fn cli_bare_advertise_endpoint_enables_embedded_proxy() {
         use clap::Parser;
         let opt = Config::parse_from(["scheduler", "--advertise-flight-endpoint"]);
@@ -1045,6 +1051,7 @@ mod tests {
 
     #[cfg(feature = "build-binary")]
     #[test]
+    #[allow(deprecated)]
     fn cli_explicit_embedded_proxy_flag() {
         use clap::Parser;
         let opt = Config::parse_from(["scheduler", "--enable-embedded-flight-proxy"]);
@@ -1055,6 +1062,7 @@ mod tests {
 
     #[cfg(feature = "build-binary")]
     #[test]
+    #[allow(deprecated)]
     fn cli_deprecated_flight_sql_alias_still_parses() {
         use clap::Parser;
         // The pre-rename flag name keeps working, both with and without a value.
@@ -1078,6 +1086,7 @@ mod tests {
 
     #[cfg(feature = "build-binary")]
     #[test]
+    #[allow(deprecated)]
     fn cli_endpoint_and_embedded_proxy_are_independent() {
         use clap::Parser;
         let opt = Config::parse_from([
@@ -1097,6 +1106,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn empty_advertise_endpoint_is_treated_as_unset() {
         let cfg = SchedulerConfig::default()
             .with_advertise_flight_endpoint(Some(String::new()));
