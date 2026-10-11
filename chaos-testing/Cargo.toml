@@ -32,10 +32,10 @@ k8s = []
 
 [dependencies]
 arrow = { workspace = true }
-arrow-flight = { workspace = true }
 ballista = { workspace = true }
 ballista-core = { workspace = true }
 ballista-executor = { workspace = true }
+ballista-result-service = { workspace = true }
 ballista-scheduler = { workspace = true }
 datafusion = { workspace = true }
 env_logger = { workspace = true }

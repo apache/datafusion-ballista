@@ -84,6 +84,30 @@ The gateway must forward gRPC (HTTP/2) to the replicas, for example with a Gatew
 
 Set `RUST_LOG=ballista_core::serving=debug` to log each forwarded fetch.
 
+## As a library
+
+`ballista_result_service::serve` runs the same service from your own binary. Use it to
+customize the connections to executors, for example for mTLS, with the `use_tls` and
+`override_create_grpc_client_endpoint` fields of `ResultServiceConfig`, which work like
+the same-named `SchedulerConfig` fields do for the embedded proxy:
+
+```rust
+use ballista_core::extension::EndpointOverrideFn;
+use ballista_result_service::{ResultServiceConfig, serve, shutdown_signal};
+
+let endpoint_override: EndpointOverrideFn =
+    Arc::new(move |endpoint| Ok(endpoint.tls_config(client_tls.clone())?));
+let config = ResultServiceConfig {
+    use_tls: true,
+    override_create_grpc_client_endpoint: Some(endpoint_override),
+    ..Default::default()
+};
+serve(config, shutdown_signal()).await?;
+```
+
+The connections are only encrypted in a build with one of tonic's TLS features, as in the
+[mTLS cluster example].
+
 ## Security
 
 The service checks no credentials, and it dials whichever executor address a fetch
@@ -91,4 +115,5 @@ ticket names, so a forged ticket can make it connect to an arbitrary host. The
 scheduler's embedded proxy behaves the same way. Run it only on networks you trust; the
 Kubernetes example restricts what it can reach with a NetworkPolicy.
 
+[mtls cluster example]: https://github.com/apache/datafusion-ballista/blob/main/examples/examples/mtls-cluster.rs
 [kubernetes deployment guide]: https://datafusion.apache.org/ballista/user-guide/deployment/kubernetes.html#serving-results-to-clients-outside-the-cluster

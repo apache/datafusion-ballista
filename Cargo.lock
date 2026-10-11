@@ -1062,10 +1062,10 @@ name = "ballista-chaos"
 version = "0.1.0"
 dependencies = [
  "arrow",
- "arrow-flight",
  "ballista",
  "ballista-core",
  "ballista-executor",
+ "ballista-result-service",
  "ballista-scheduler",
  "datafusion",
  "env_logger",

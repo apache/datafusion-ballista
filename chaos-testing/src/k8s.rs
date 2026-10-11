@@ -1092,7 +1092,8 @@ spec:
           ports:
             - containerPort: {RESULT_SERVICE_PORT}
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /readyz
               port: {RESULT_SERVICE_PORT}
             periodSeconds: 2
 ---
