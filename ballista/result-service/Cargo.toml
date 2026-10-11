@@ -47,4 +47,5 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tonic = { workspace = true }
 
 [dev-dependencies]
+prost = { workspace = true }
 tower = { version = "0.5", features = ["util"] }

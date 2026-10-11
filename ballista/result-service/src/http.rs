@@ -18,8 +18,8 @@
 //! HTTP endpoints for health probes and metrics, served on the Flight port.
 //!
 //! `/healthz` and `/readyz` return 200 whenever they're served. After a
-//! shutdown signal the service stops accepting connections, so both probes
-//! then fail. `/api/metrics` returns the metrics, or 204 when none are
+//! shutdown signal the service refuses new connections, so both probes then
+//! fail. `/api/metrics` returns the metrics, or 204 when none are
 //! exported.
 
 use std::sync::Arc;

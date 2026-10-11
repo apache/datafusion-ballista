@@ -37,10 +37,14 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::{BallistaConfigGrpcEndpoint, EndpointOverrideFn};
 use ballista_core::serving::{ForwardingBackend, ResultBackend, ServingFlightService};
-use ballista_core::utils::{GrpcServerConfig, create_grpc_server};
+use ballista_core::utils::{
+    GrpcServerConfig, create_grpc_server, create_grpc_server_incoming,
+};
+use futures::{Stream, StreamExt};
 use log::{error, info, warn};
+use tokio::sync::oneshot;
 use tonic::service::Routes;
-use tonic::transport::server::Router;
+use tonic::transport::server::{Router, TcpIncoming};
 
 use crate::metered::MeteredBackend;
 use crate::metrics::{ResultMetricsCollector, default_metrics_collector};
@@ -82,8 +86,8 @@ impl Default for ResultServiceConfig {
     }
 }
 
-/// Serves results until `shutdown` completes, then stops accepting connections
-/// and gives in-flight result streams up to
+/// Serves results until `shutdown` completes, then refuses new connections and
+/// gives in-flight result streams up to
 /// [`ResultServiceConfig::graceful_shutdown_timeout`] to finish.
 pub async fn serve(
     config: ResultServiceConfig,
@@ -99,14 +103,42 @@ pub async fn serve(
             .map(|f| Arc::new(BallistaConfigGrpcEndpoint::new(f))),
     );
     let addr = config.bind_address;
-    let server = server(backend, &config, default_metrics_collector()?);
-
+    let incoming = create_grpc_server_incoming(addr, &GrpcServerConfig::default())
+        .map_err(|e| {
+            BallistaError::General(format!(
+                "failed to bind result service on {addr}: {e}"
+            ))
+        })?;
     info!("Ballista Result Service listening on {addr}");
 
-    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let server = server.serve_with_shutdown(addr, async {
-        let _ = stop_rx.await;
-    });
+    serve_incoming(
+        backend,
+        &config,
+        default_metrics_collector()?,
+        incoming,
+        shutdown,
+    )
+    .await
+}
+
+/// [`serve`] from an already-bound listener, with any backend.
+async fn serve_incoming<B: ResultBackend>(
+    backend: B,
+    config: &ResultServiceConfig,
+    metrics: Arc<dyn ResultMetricsCollector>,
+    incoming: TcpIncoming,
+    shutdown: impl Future<Output = ()>,
+) -> Result<()> {
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    // tonic keeps its listener open until every connection has closed, so a
+    // connection arriving during the drain would wait unanswered. Ending the
+    // incoming stream drops the listener and refuses such connections. With a
+    // shutdown signal that never fires, tonic still drains the connections it
+    // has once the stream ends.
+    let server = server(backend, config, metrics).serve_with_incoming_shutdown(
+        until_stopped(incoming, stop_rx),
+        std::future::pending(),
+    );
     tokio::pin!(server);
 
     // Serve until the shutdown signal, unless the server fails first.
@@ -119,7 +151,7 @@ pub async fn serve(
         () = shutdown => {}
     }
 
-    // Stop accepting connections, then give in-flight streams a bounded time to
+    // Refuse new connections, then give in-flight streams a bounded time to
     // finish.
     let _ = stop_tx.send(());
     drain_or_time_out(server, config.graceful_shutdown_timeout)
@@ -128,6 +160,20 @@ pub async fn serve(
 
     info!("Ballista Result Service stopped");
     Ok(())
+}
+
+/// `incoming`'s connections until `stop` completes. The stream then ends and
+/// drops the listener.
+fn until_stopped(
+    incoming: TcpIncoming,
+    stop: oneshot::Receiver<()>,
+) -> impl Stream<Item = <TcpIncoming as Stream>::Item> {
+    futures::stream::unfold((incoming, stop), |(mut incoming, mut stop)| async move {
+        tokio::select! {
+            _ = &mut stop => None,
+            next = incoming.next() => next.map(|connection| (connection, (incoming, stop))),
+        }
+    })
 }
 
 /// Completes on Ctrl-C, or on SIGTERM where the platform has it.
@@ -207,8 +253,55 @@ async fn drain_or_time_out<E>(
 mod tests {
     use super::*;
     use crate::metrics::NoopMetricsCollector;
+    use arrow_flight::flight_service_client::FlightServiceClient;
+    use arrow_flight::{FlightData, Ticket};
+    use ballista_core::JobId;
+    use ballista_core::serde::protobuf;
+    use ballista_core::serde::scheduler::Action as BallistaAction;
+    use ballista_core::serving::BoxedFlightStream;
+    use prost::Message;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tonic::transport::server::TcpIncoming;
+    use tokio::sync::{Notify, watch};
+    use tonic::Status;
+
+    /// Holds each fetch's stream open until `release` is set.
+    struct HeldBackend {
+        started: Arc<Notify>,
+        release: watch::Receiver<bool>,
+    }
+
+    #[tonic::async_trait]
+    impl ResultBackend for HeldBackend {
+        async fn fetch(
+            &self,
+            _action: BallistaAction,
+            _ticket: Ticket,
+        ) -> std::result::Result<BoxedFlightStream<FlightData>, Status> {
+            self.started.notify_one();
+            let mut release = self.release.clone();
+            Ok(Box::pin(futures::stream::once(async move {
+                let _ = release.wait_for(|released| *released).await;
+                Ok(FlightData::new())
+            })))
+        }
+    }
+
+    fn fetch_ticket() -> Ticket {
+        let action: protobuf::Action = BallistaAction::FetchPartition {
+            job_id: JobId::new("job"),
+            stage_id: 1,
+            partition_id: 0,
+            host: "executor".to_owned(),
+            port: 50051,
+            file_id: None,
+            layout: Default::default(),
+            file_kind: Default::default(),
+            byte_ranges: vec![],
+        }
+        .try_into()
+        .unwrap();
+        Ticket::new(action.encode_to_vec())
+    }
 
     fn forwarding_backend() -> ForwardingBackend {
         ForwardingBackend::new(16 * 1024 * 1024, 16 * 1024 * 1024, false, None)
@@ -239,6 +332,59 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert!(response.contains("ready"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn the_drain_refuses_new_connections_and_finishes_open_streams() {
+        let incoming = TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let addr = incoming.local_addr().unwrap();
+        let started = Arc::new(Notify::new());
+        let (release_tx, release_rx) = watch::channel(false);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let backend = HeldBackend {
+            started: started.clone(),
+            release: release_rx,
+        };
+        let server = tokio::spawn(async move {
+            let config = ResultServiceConfig::default();
+            serve_incoming(
+                backend,
+                &config,
+                Arc::new(NoopMetricsCollector),
+                incoming,
+                async {
+                    let _ = shutdown_rx.await;
+                },
+            )
+            .await
+        });
+
+        let channel = tonic::transport::Channel::from_shared(format!("http://{addr}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let mut client = FlightServiceClient::new(channel);
+        let mut stream = client.do_get(fetch_ticket()).await.unwrap().into_inner();
+        started.notified().await;
+
+        shutdown_tx.send(()).unwrap();
+        let refused = tokio::time::timeout(Duration::from_secs(5), async {
+            while tokio::net::TcpStream::connect(addr).await.is_ok() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(refused.is_ok(), "the drain must refuse new connections");
+
+        release_tx.send(true).unwrap();
+        assert!(stream.message().await.unwrap().is_some());
+        assert!(stream.message().await.unwrap().is_none());
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the drain must finish once the open stream has")
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

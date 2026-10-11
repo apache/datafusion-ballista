@@ -41,7 +41,7 @@ address. Install the service with `cargo install --locked ballista-result-servic
 use the `ghcr.io/apache/datafusion-ballista-result-service` image. The [Kubernetes
 deployment guide] has example manifests.
 
-On SIGTERM or Ctrl-C the service stops accepting connections and lets in-flight result
+On SIGTERM or Ctrl-C the service refuses new connections and lets in-flight result
 streams finish, for up to `--graceful-shutdown-timeout-seconds`.
 
 ## Health and metrics
