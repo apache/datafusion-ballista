@@ -80,7 +80,6 @@ which is what the client's standalone mode uses.
 | `arrow-ipc-optimizations` | Yes     | Arrow IPC fast paths for shuffle read and write          |
 | `build-binary`            | Yes     | Builds the binary, with CLI parsing, logging, and probes |
 | `mimalloc`                | Yes     | mimalloc allocator, enabled through `build-binary`       |
-| `spark-compat`            | No      | Registers Spark-compatible functions                     |
 
 ## Documentation
 

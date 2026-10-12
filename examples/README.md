@@ -69,21 +69,6 @@ cargo run --release --example remote-dataframe
 
 Source: [`examples/examples/remote-dataframe.rs`](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/remote-dataframe.rs)
 
-### Distributed datafusion-spark example
-
-The scheduler and executor binaries must be built with the `spark-compat` feature enabled for this
-example.
-
-```bash
-cargo build --release --features spark-compat
-```
-
-```bash
-cargo run --release --example remote-spark-functions --features="ballista-core/spark-compat"
-```
-
-Source: [`examples/examples/remote-spark-functions.rs`](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/remote-spark-functions.rs)
-
 ## All examples
 
 Every example in [`examples/examples/`](https://github.com/apache/datafusion-ballista/tree/main/examples/examples),
@@ -96,7 +81,6 @@ including those not walked through above. Run each from this directory.
 | `standalone-substrait.rs`      | nothing, runs in-process                                                           | `cargo run --example standalone-substrait --features="ballista-scheduler/substrait"` |
 | `remote-sql.rs`                | a running cluster                                                                  | `cargo run --example remote-sql`                                                     |
 | `remote-dataframe.rs`          | a running cluster                                                                  | `cargo run --example remote-dataframe`                                               |
-| `remote-spark-functions.rs`    | a cluster built with `spark-compat`                                                | `cargo run --example remote-spark-functions --features="ballista-core/spark-compat"` |
 | `custom-scheduler.rs`          | nothing                                                                            | `cargo run --example custom-scheduler`                                               |
 | `custom-executor.rs`           | `custom-scheduler`                                                                 | `cargo run --example custom-executor`                                                |
 | `custom-client.rs`             | `custom-scheduler`, `custom-executor`, and MinIO (see the file)                    | `cargo run --example custom-client`                                                  |

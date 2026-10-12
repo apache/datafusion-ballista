@@ -57,7 +57,6 @@ Table of content
    user-guide/metrics
    user-guide/faq
    user-guide/extending-components
-   user-guide/spark-compatible-functions
    user-guide/extensions-example
 
 .. toctree::
