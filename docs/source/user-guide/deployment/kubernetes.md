@@ -324,6 +324,15 @@ so the operator (or Deployment controller) can bring a matching version up.
 Bump `BALLISTA_PROTOCOL_VERSION` only on releases that change the
 executor↔scheduler wire format. Most releases will not bump it.
 
+### Stopping executors
+
+When Kubernetes stops an executor pod, for example during a rollout or a node drain, the executor
+gets SIGTERM. It stops taking new tasks, tells the scheduler it is stopping, and exits once its
+running tasks finish. Set the executor Deployment's `terminationGracePeriodSeconds` (30 by default)
+to cover your longest-running tasks, and the scheduler's `--executor-termination-grace-period`
+(also 30 by default) to at least the same value, so the scheduler doesn't count a draining executor
+as lost while its tasks are still running. The scheduler exits as soon as it gets SIGTERM.
+
 ### Rolling both Deployments together
 
 The scheduler and executor live in separate Deployments; there is no single
