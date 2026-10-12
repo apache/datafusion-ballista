@@ -125,6 +125,17 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     logging::init_logging(tui_mode.clone())?;
 
+    // Exit on SIGTERM, as the signal's default action would. That action
+    // doesn't apply to PID 1, which the CLI is in a container.
+    #[cfg(unix)]
+    tokio::spawn(async {
+        use tokio::signal::unix::{SignalKind, signal};
+        if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+            sigterm.recv().await;
+            std::process::exit(143);
+        }
+    });
+
     let args = Args::parse();
 
     #[cfg(feature = "tui")]
