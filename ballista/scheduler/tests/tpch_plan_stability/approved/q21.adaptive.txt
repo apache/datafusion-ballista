@@ -1,0 +1,31 @@
+AdaptiveDatafusionExec: is_final=true, plan_id=7, stage_id=10, stage_resolved=true
+  SortPreservingMergeExec: [numwait@1 DESC, s_name@0 ASC NULLS LAST], fetch=100
+    ExchangeExec: partitioning=None, plan_id=15, stage_id=9, stage_resolved=true
+      ProjectionExec: expr=[s_name@0 as s_name, count(Int64(1))@1 as numwait]
+        SortExec: TopK(fetch=100), expr=[count(Int64(1))@1 DESC, s_name@0 ASC NULLS LAST], preserve_partitioning=[true]
+          AggregateExec: mode=FinalPartitioned, gby=[s_name@0 as s_name], aggr=[count(Int64(1))]
+            ExchangeExec: partitioning=Hash([s_name@0], 16), plan_id=14, stage_id=8, stage_resolved=true
+              AggregateExec: mode=Partial, gby=[s_name@0 as s_name], aggr=[count(Int64(1))]
+                HashJoinExec: mode=Partitioned, join_type=LeftAnti, on=[(l_orderkey@1, l_orderkey@0)], filter=l_suppkey@1 != l_suppkey@0, projection=[s_name@0]
+                  ExchangeExec: partitioning=Hash([l_orderkey@1], 16), plan_id=12, stage_id=6, stage_resolved=true
+                    HashJoinExec: mode=Partitioned, join_type=LeftSemi, on=[(l_orderkey@1, l_orderkey@0)], filter=l_suppkey@1 != l_suppkey@0
+                      ExchangeExec: partitioning=Hash([l_orderkey@1], 16), plan_id=10, stage_id=4, stage_resolved=true
+                        HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(n_nationkey@0, s_nationkey@1)], projection=[s_name@1, l_orderkey@3, l_suppkey@4]
+                          FilterExec: n_name@1 = SAUDI ARABIA, projection=[n_nationkey@0]
+                            StatsExec: rows=25
+                          HashJoinExec: mode=Partitioned, join_type=Inner, on=[(l_orderkey@2, o_orderkey@0)], projection=[s_name@0, s_nationkey@1, l_orderkey@2, l_suppkey@3]
+                            ExchangeExec: partitioning=Hash([l_orderkey@2], 16), plan_id=8, stage_id=2, stage_resolved=true
+                              HashJoinExec: mode=Partitioned, join_type=Inner, on=[(s_suppkey@0, l_suppkey@1)], projection=[s_name@1, s_nationkey@2, l_orderkey@3, l_suppkey@4]
+                                ExchangeExec: partitioning=Hash([s_suppkey@0], 16), plan_id=5, stage_id=0, stage_resolved=true
+                                  StatsExec: rows=1000000
+                                ExchangeExec: partitioning=Hash([l_suppkey@1], 16), plan_id=6, stage_id=1, stage_resolved=true
+                                  FilterExec: l_receiptdate@3 > l_commitdate@2, projection=[l_orderkey@0, l_suppkey@1]
+                                    StatsExec: rows=600037902
+                            ExchangeExec: partitioning=Hash([o_orderkey@0], 16), plan_id=9, stage_id=3, stage_resolved=true
+                              FilterExec: o_orderstatus@1 = F, projection=[o_orderkey@0]
+                                StatsExec: rows=150000000
+                      ExchangeExec: partitioning=Hash([l_orderkey@0], 16), plan_id=11, stage_id=5, stage_resolved=true
+                        StatsExec: rows=600037902
+                  ExchangeExec: partitioning=Hash([l_orderkey@0], 16), plan_id=13, stage_id=7, stage_resolved=true
+                    FilterExec: l_receiptdate@3 > l_commitdate@2, projection=[l_orderkey@0, l_suppkey@1]
+                      StatsExec: rows=600037902

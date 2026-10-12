@@ -1,0 +1,36 @@
+AdaptiveDatafusionExec: is_final=true, plan_id=12, stage_id=10, stage_resolved=true
+  SortPreservingMergeExec: [s_acctbal@0 DESC, n_name@2 ASC NULLS LAST, s_name@1 ASC NULLS LAST, p_partkey@3 ASC NULLS LAST], fetch=100
+    ExchangeExec: partitioning=None, plan_id=18, stage_id=9, stage_resolved=true
+      SortExec: TopK(fetch=100), expr=[s_acctbal@0 DESC, n_name@2 ASC NULLS LAST, s_name@1 ASC NULLS LAST, p_partkey@3 ASC NULLS LAST], preserve_partitioning=[true]
+        HashJoinExec: mode=Partitioned, join_type=LeftSemi, on=[(p_partkey@0, ps_partkey@1), (ps_supplycost@7, min(partsupp.ps_supplycost)@0)], projection=[s_acctbal@5, s_name@2, n_name@8, p_partkey@0, p_mfgr@1, s_address@3, s_phone@4, s_comment@6]
+          ExchangeExec: partitioning=Hash([p_partkey@0, ps_supplycost@7], 16), plan_id=16, stage_id=7, stage_resolved=true
+            HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(r_regionkey@0, n_regionkey@9)], projection=[p_partkey@1, p_mfgr@2, s_name@3, s_address@4, s_phone@5, s_acctbal@6, s_comment@7, ps_supplycost@8, n_name@9]
+              FilterExec: r_name@1 = EUROPE, projection=[r_regionkey@0]
+                StatsExec: rows=5
+              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(n_nationkey@0, s_nationkey@4)], projection=[p_partkey@3, p_mfgr@4, s_name@5, s_address@6, s_phone@8, s_acctbal@9, s_comment@10, ps_supplycost@11, n_name@1, n_regionkey@2]
+                StatsExec: rows=25
+                HashJoinExec: mode=Partitioned, join_type=Inner, on=[(s_suppkey@0, ps_suppkey@2)], projection=[p_partkey@7, p_mfgr@8, s_name@1, s_address@2, s_nationkey@3, s_phone@4, s_acctbal@5, s_comment@6, ps_supplycost@10]
+                  ExchangeExec: partitioning=Hash([s_suppkey@0], 16), plan_id=14, stage_id=5, stage_resolved=true
+                    StatsExec: rows=1000000
+                  ExchangeExec: partitioning=Hash([ps_suppkey@2], 16), plan_id=13, stage_id=4, stage_resolved=true
+                    HashJoinExec: mode=Partitioned, join_type=Inner, on=[(p_partkey@0, ps_partkey@0)], projection=[p_partkey@0, p_mfgr@1, ps_suppkey@3, ps_supplycost@4]
+                      ExchangeExec: partitioning=Hash([p_partkey@0], 16), plan_id=8, stage_id=0, stage_resolved=true
+                        FilterExec: p_size@3 = 15 AND p_type@2 LIKE %BRASS, projection=[p_partkey@0, p_mfgr@1]
+                          StatsExec: rows=20000000
+                      ExchangeExec: partitioning=Hash([ps_partkey@0], 16), plan_id=9, stage_id=1, stage_resolved=true
+                        StatsExec: rows=80000000
+          ExchangeExec: partitioning=Hash([ps_partkey@1, min(partsupp.ps_supplycost)@0], 16), plan_id=17, stage_id=8, stage_resolved=true
+            ProjectionExec: expr=[min(partsupp.ps_supplycost)@1 as min(partsupp.ps_supplycost), ps_partkey@0 as ps_partkey]
+              AggregateExec: mode=FinalPartitioned, gby=[ps_partkey@0 as ps_partkey], aggr=[min(partsupp.ps_supplycost)]
+                ExchangeExec: partitioning=Hash([ps_partkey@0], 16), plan_id=15, stage_id=6, stage_resolved=true
+                  AggregateExec: mode=Partial, gby=[ps_partkey@0 as ps_partkey], aggr=[min(partsupp.ps_supplycost)]
+                    HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(r_regionkey@0, n_regionkey@2)], projection=[ps_partkey@1, ps_supplycost@2]
+                      FilterExec: r_name@1 = EUROPE, projection=[r_regionkey@0]
+                        StatsExec: rows=5
+                      HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(n_nationkey@0, s_nationkey@2)], projection=[ps_partkey@2, ps_supplycost@3, n_regionkey@1]
+                        StatsExec: rows=25
+                        HashJoinExec: mode=Partitioned, join_type=Inner, on=[(s_suppkey@0, ps_suppkey@1)], projection=[ps_partkey@2, ps_supplycost@4, s_nationkey@1]
+                          ExchangeExec: partitioning=Hash([s_suppkey@0], 16), plan_id=11, stage_id=3, stage_resolved=true
+                            StatsExec: rows=1000000
+                          ExchangeExec: partitioning=Hash([ps_suppkey@1], 16), plan_id=10, stage_id=2, stage_resolved=true
+                            StatsExec: rows=80000000

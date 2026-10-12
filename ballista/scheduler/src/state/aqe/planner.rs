@@ -238,7 +238,7 @@ impl AdaptivePlanner {
         Ok(())
     }
 
-    pub(super) fn finalise_stage_internal(
+    pub(crate) fn finalise_stage_internal(
         &mut self,
         stage_id: usize,
         partitions: Vec<Vec<PartitionLocation>>,
@@ -534,6 +534,11 @@ impl AdaptivePlanner {
     #[cfg(test)]
     pub fn current_plan(&self) -> &dyn ExecutionPlan {
         self.plan.as_ref()
+    }
+
+    /// The current plan as an owned handle, for callers outside this module.
+    pub fn current_plan_owned(&self) -> Arc<dyn ExecutionPlan> {
+        Arc::clone(&self.plan)
     }
     /// Returns the default set of physical optimizer rules.
     ///

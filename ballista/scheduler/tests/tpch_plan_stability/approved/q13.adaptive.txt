@@ -1,0 +1,16 @@
+AdaptiveDatafusionExec: is_final=true, plan_id=3, stage_id=4, stage_resolved=true
+  SortPreservingMergeExec: [custdist@1 DESC, c_count@0 DESC]
+    ExchangeExec: partitioning=None, plan_id=5, stage_id=3, stage_resolved=true
+      ProjectionExec: expr=[c_count@0 as c_count, count(Int64(1))@1 as custdist]
+        SortExec: expr=[count(Int64(1))@1 DESC, c_count@0 DESC], preserve_partitioning=[true]
+          AggregateExec: mode=FinalPartitioned, gby=[c_count@0 as c_count], aggr=[count(Int64(1))]
+            ExchangeExec: partitioning=Hash([c_count@0], 16), plan_id=4, stage_id=2, stage_resolved=true
+              AggregateExec: mode=Partial, gby=[c_count@0 as c_count], aggr=[count(Int64(1))]
+                ProjectionExec: expr=[count(orders.o_orderkey)@1 as c_count]
+                  AggregateExec: mode=SinglePartitioned, gby=[c_custkey@0 as c_custkey], aggr=[count(orders.o_orderkey)]
+                    HashJoinExec: mode=Partitioned, join_type=Left, on=[(c_custkey@0, o_custkey@1)], projection=[c_custkey@0, o_orderkey@1]
+                      ExchangeExec: partitioning=Hash([c_custkey@0], 16), plan_id=1, stage_id=0, stage_resolved=true
+                        StatsExec: rows=15000000
+                      ExchangeExec: partitioning=Hash([o_custkey@1], 16), plan_id=2, stage_id=1, stage_resolved=true
+                        FilterExec: o_comment@2 NOT LIKE %special%requests%, projection=[o_orderkey@0, o_custkey@1]
+                          StatsExec: rows=150000000
