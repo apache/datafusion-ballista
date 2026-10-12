@@ -21,6 +21,8 @@ use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::scheduler::PartitionStats;
 
+use datafusion::arrow::array::{ArrayRef, AsArray, GenericByteViewArray};
+use datafusion::arrow::datatypes::ByteViewType;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::ipc::writer::StreamWriter;
@@ -194,6 +196,50 @@ pub fn create_write_options(
         })
 }
 
+/// Compacts `Utf8View` / `BinaryView` columns whose data buffers hold more
+/// than twice the bytes their views reference.
+///
+/// The IPC writer serializes every data buffer of a view array, including
+/// bytes no view points at. Operators such as TopK, `SortPreservingMergeExec`
+/// and `LIMIT` can emit a few rows that still reference the data buffers of
+/// every batch those rows came from, so writing them as is can turn a 20-row
+/// result into tens of MB. Dense columns are left alone, because compacting
+/// them would copy every string to save at most half the bytes. Arrow's
+/// `BatchCoalescer` uses the same threshold before copying strings.
+pub(crate) fn compact_sparse_view_columns(batch: RecordBatch) -> Result<RecordBatch> {
+    let mut compacted = false;
+    let columns: Vec<ArrayRef> = batch
+        .columns()
+        .iter()
+        .map(|c| -> ArrayRef {
+            if let Some(a) = c.as_string_view_opt()
+                && is_sparse(a)
+            {
+                compacted = true;
+                Arc::new(a.gc())
+            } else if let Some(a) = c.as_binary_view_opt()
+                && is_sparse(a)
+            {
+                compacted = true;
+                Arc::new(a.gc())
+            } else {
+                Arc::clone(c)
+            }
+        })
+        .collect();
+    if !compacted {
+        return Ok(batch);
+    }
+    Ok(RecordBatch::try_new(batch.schema(), columns)?)
+}
+
+/// Whether a view array's data buffers hold more than twice the bytes its
+/// views reference.
+fn is_sparse<T: ByteViewType + ?Sized>(array: &GenericByteViewArray<T>) -> bool {
+    let buffered: usize = array.data_buffers().iter().map(|b| b.len()).sum();
+    buffered > 2 * array.total_buffer_bytes_used()
+}
+
 /// Stream data to disk in Arrow IPC format.
 ///
 /// Batches are read from the async stream and forwarded through a bounded
@@ -225,7 +271,7 @@ pub async fn write_stream_to_disk(
 
         while let Some(batch) = rx.blocking_recv() {
             let timer = write_metric.timer();
-            writer.write(&batch)?;
+            writer.write(&compact_sparse_view_columns(batch)?)?;
             timer.done();
         }
         let timer = write_metric.timer();
@@ -465,6 +511,70 @@ pub fn redact_key_value_pairs(pairs: &[KeyValuePair]) -> Vec<KeyValuePair> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::array::{BinaryViewArray, StringViewArray};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+    /// Strings too long to be inlined in their views, so every value lives in
+    /// a data buffer.
+    fn long_strings(n: usize) -> StringViewArray {
+        StringViewArray::from_iter_values(
+            (0..n).map(|i| format!("a string too long to inline {i:04}")),
+        )
+    }
+
+    fn data_buffer_bytes<T: ByteViewType + ?Sized>(
+        array: &GenericByteViewArray<T>,
+    ) -> usize {
+        array.data_buffers().iter().map(|b| b.len()).sum()
+    }
+
+    #[test]
+    fn compacts_sparse_view_columns() {
+        let binaries = BinaryViewArray::from_iter_values(
+            (0..1000).map(|i| format!("a value too long to inline {i:04}").into_bytes()),
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("s", DataType::Utf8View, false),
+            Field::new("b", DataType::BinaryView, false),
+        ]));
+        // 2 rows backed by data buffers that hold all 1000 values
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(long_strings(1000)), Arc::new(binaries)],
+        )
+        .unwrap()
+        .slice(10, 2);
+
+        let compacted = compact_sparse_view_columns(batch.clone()).unwrap();
+
+        assert_eq!(compacted, batch);
+        assert_eq!(
+            data_buffer_bytes(compacted.column(0).as_string_view()),
+            batch.column(0).as_string_view().total_buffer_bytes_used()
+        );
+        assert_eq!(
+            data_buffer_bytes(compacted.column(1).as_binary_view()),
+            batch.column(1).as_binary_view().total_buffer_bytes_used()
+        );
+    }
+
+    #[test]
+    fn leaves_dense_view_columns_alone() {
+        let strings: ArrayRef = Arc::new(long_strings(1000));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Utf8View,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::clone(&strings)]).unwrap();
+
+        let result = compact_sparse_view_columns(batch).unwrap();
+
+        assert!(
+            Arc::ptr_eq(result.column(0), &strings),
+            "a dense column must not be copied"
+        );
+    }
 
     #[test]
     fn redacts_values_of_sensitive_keys() {

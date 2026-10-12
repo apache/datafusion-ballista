@@ -41,7 +41,7 @@ classifiers = [
 ]
 dependencies = [
     "pyarrow>=23.0.1",
-    "datafusion==54",
+    "datafusion==55",
     "typing-extensions;python_version<'3.13'",
 ]
 dynamic = ["version"]
@@ -74,6 +74,17 @@ include = [
 exclude = [".github/**", "ci/**", ".asf.yaml"]
 # Require Cargo.lock is up to date
 locked = true
+
+# datafusion 55.0.0 is not on PyPI yet, and its release candidate wheels are
+# only on TestPyPI. Take datafusion, and nothing else, from TestPyPI until
+# 55.0.0 is published, then remove this index and the source below.
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+explicit = true
+
+[tool.uv.sources]
+datafusion = { index = "testpypi" }
 
 [dependency-groups]
 dev = [

@@ -19,6 +19,7 @@ digraph G {
 
     ballista_core
     ballista_api_types
+    ballista_flight_sql
     ballista_history
     ballista_scheduler
     ballista_executor
@@ -27,6 +28,9 @@ digraph G {
 
     ballista_scheduler -> ballista_core
     ballista_scheduler -> ballista_api_types
+    ballista_scheduler -> ballista_flight_sql
+
+    ballista_flight_sql -> ballista_core
 
     ballista_history -> ballista_api_types
 
