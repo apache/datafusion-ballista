@@ -82,7 +82,7 @@ Table of content
    contributors-guide/code-organization
    contributors-guide/user-personas
    contributors-guide/development
-   contributors-guide/benchmarking
+   contributors-guide/benchmarking/index
    Source code <https://github.com/apache/datafusion-ballista/>
 
 .. _toc.community:
