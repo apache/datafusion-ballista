@@ -61,7 +61,15 @@ message BallistaPhysicalPlanNode {
     RangeFilterExecNode range_filter = 13;
     PrefixMergeExecNode prefix_merge = 14;
     RangeShuffleWriterExecNode range_shuffle_writer = 15;
+    DistributedQueryExecNode distributed_query = 16;
   }
+}
+
+message DistributedQueryExecNode {
+  string scheduler_url = 1;
+  repeated KeyValuePair settings = 2;
+  bytes logical_plan = 3;
+  string session_id = 4;
 }
 
 // Value-range router over N locally-sorted overlapping input partitions.

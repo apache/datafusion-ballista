@@ -28,6 +28,7 @@ from datafusion import functions as f
 # this is helper to setup test
 # ballista cluster
 host, port = setup_test_cluster()
+
 # %%
 # checking ballista version, it should match with datafusion version
 ballista.__version__, datafusion.__version__

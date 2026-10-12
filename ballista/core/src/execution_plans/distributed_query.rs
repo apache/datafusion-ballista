@@ -143,6 +143,26 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         }
     }
 
+    /// Returns the Ballista scheduler URL.
+    pub fn scheduler_url(&self) -> &str {
+        &self.scheduler_url
+    }
+
+    /// Returns the Ballista configuration.
+    pub fn config(&self) -> &BallistaConfig {
+        &self.config
+    }
+
+    /// Returns the logical plan to execute.
+    pub fn plan(&self) -> &LogicalPlan {
+        &self.plan
+    }
+
+    /// Returns the session id.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     /// Returns the scheduler job id after the query has been accepted.
     pub fn job_id(&self) -> Option<JobId> {
         self.job_id.lock().clone()

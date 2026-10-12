@@ -27,7 +27,6 @@ from ._internal_ballista import (
 )
 from .extension import (
     BallistaSessionContext,
-    DistributedDataFrame,
     ExecutionPlanVisualization,
 )
 
