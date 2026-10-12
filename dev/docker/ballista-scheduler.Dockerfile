@@ -27,10 +27,8 @@ ARG RELEASE_FLAG=release
 # plan-time. Applies to any outbound HTTPS: e.g. STS
 # AssumeRoleWithWebIdentity for IRSA-authenticated S3 reads during
 # schema inference, or fetching from HTTPS-hosted config sources.
-# tini runs as PID 1 and passes signals on to the scheduler, so it stops on
-# SIGTERM whether or not it handles the signal itself.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates tini && \
+    apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 ENV RELEASE_FLAG=${RELEASE_FLAG}
@@ -44,4 +42,4 @@ COPY target/${RELEASE_FLAG}/ballista-scheduler /root/ballista-scheduler
 EXPOSE 50050
 
 COPY dev/docker/scheduler-entrypoint.sh /root/scheduler-entrypoint.sh
-ENTRYPOINT ["/usr/bin/tini", "--", "/root/scheduler-entrypoint.sh"]
+ENTRYPOINT ["/root/scheduler-entrypoint.sh"]

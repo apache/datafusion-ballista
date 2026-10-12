@@ -76,7 +76,7 @@ Run `docker ps` to check that the process is running:
 ```
 $ docker ps
 CONTAINER ID   IMAGE                                    COMMAND                  CREATED         STATUS         PORTS     NAMES
-a756055576f3   ghcr.io/apache/datafusion-ballista-scheduler:latest   "/usr/bin/tini -- /r…"   8 seconds ago   Up 8 seconds             xenodochial_carson
+a756055576f3   ghcr.io/apache/datafusion-ballista-scheduler:latest   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
 ```
 
 Run `docker logs CONTAINER_ID` to check the output from the process:
@@ -104,8 +104,8 @@ Use `docker ps` to check that both the scheduler and executor(s) are now running
 ```
 $ docker ps
 CONTAINER ID   IMAGE                                    COMMAND                  CREATED         STATUS         PORTS     NAMES
-fb8b530cee6d   ghcr.io/apache/datafusion-ballista-executor:latest    "/usr/bin/tini -- /r…"   2 seconds ago   Up 1 second              gallant_galois
-a756055576f3   ghcr.io/apache/datafusion-ballista-scheduler:latest   "/usr/bin/tini -- /r…"   8 seconds ago   Up 8 seconds             xenodochial_carson
+fb8b530cee6d   ghcr.io/apache/datafusion-ballista-executor:latest    "/root/executor-entr…"   2 seconds ago   Up 1 second              gallant_galois
+a756055576f3   ghcr.io/apache/datafusion-ballista-scheduler:latest   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
 ```
 
 Use `docker logs CONTAINER_ID` to check the output from the executor(s):
