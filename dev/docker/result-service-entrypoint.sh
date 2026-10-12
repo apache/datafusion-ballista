@@ -19,4 +19,5 @@
 
 set -e
 
-/root/ballista-result-service "$@"
+# exec, so the service runs as PID 1 and receives SIGTERM to start its drain.
+exec /root/ballista-result-service "$@"
