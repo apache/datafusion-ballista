@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#![warn(missing_docs)]
+
 //! Ballista Result Service: serves query results to clients by forwarding each
 //! partition fetch to the executor that holds the partition. Point the
 //! scheduler's `--advertise-flight-endpoint` at it.
