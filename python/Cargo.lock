@@ -492,8 +492,6 @@ dependencies = [
 [[package]]
 name = "ballista"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fe31e72b2eea5984249924d00c76ab6d1482d390aed65b830fc2e1ba751424d"
 dependencies = [
  "async-trait",
  "ballista-core",
@@ -508,8 +506,6 @@ dependencies = [
 [[package]]
 name = "ballista-core"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a090511fa9b3661dbf17444ecbbf5efcd11793e140ddd7fe2fb85f2de88f561"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -538,8 +534,6 @@ dependencies = [
 [[package]]
 name = "ballista-executor"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "403cdac6a4e822e6025348f4f7e43765ba0ca176ca1f225888a9eeb90b9c66ce"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -568,8 +562,6 @@ dependencies = [
 [[package]]
 name = "ballista-scheduler"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "845bb1c2c763ae2b50ecfd9debdfe8e092d13a4fefe84c20e9262bb191a1f1e7"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -1714,7 +1706,8 @@ dependencies = [
 [[package]]
 name = "datafusion-python"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-python.git?tag=55.0.0-rc1#a2882b9fcfe2a366ded6c94f6d50057b69bd8889"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd9ee29752f669b1e59cd2285edf7516cf3a3628630d3590f58114b84875c485"
 dependencies = [
  "arrow",
  "arrow-select",
@@ -1745,7 +1738,8 @@ dependencies = [
 [[package]]
 name = "datafusion-python-util"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-python.git?tag=55.0.0-rc1#a2882b9fcfe2a366ded6c94f6d50057b69bd8889"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9e9dce6d3ebdc38352c45a026e2d012fa5428713eb065829f70ef71ca817b69"
 dependencies = [
  "arrow",
  "datafusion",
@@ -3125,11 +3119,13 @@ dependencies = [
 name = "pyballista"
 version = "55.0.0"
 dependencies = [
+ "async-trait",
  "ballista",
  "ballista-core",
  "ballista-executor",
  "ballista-scheduler",
  "datafusion",
+ "datafusion-ffi",
  "datafusion-proto",
  "datafusion-python",
  "log",
@@ -3138,6 +3134,7 @@ dependencies = [
  "pyo3-log",
  "tokio",
  "tonic",
+ "url",
 ]
 
 [[package]]

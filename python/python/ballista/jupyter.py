@@ -54,6 +54,8 @@ from typing import Optional, List, Dict, Any
 import warnings
 import time
 
+from datafusion import DataFrame
+
 try:
     from IPython.core.magic import Magics, magics_class, line_magic, line_cell_magic
     from IPython.display import display, HTML
@@ -108,7 +110,7 @@ except ImportError:
             return decorator
 
 
-from .extension import BallistaSessionContext, DistributedDataFrame
+from .extension import BallistaSessionContext
 
 
 class BallistaConnectionError(Exception):
@@ -130,7 +132,7 @@ class BallistaMagics(Magics):
         super().__init__(shell)
         self._ctx: Optional[BallistaSessionContext] = None
         self._address: Optional[str] = None
-        self._last_result: Optional[DistributedDataFrame] = None
+        self._last_result: Optional[str] = None
         self._query_history: List[Dict[str, Any]] = []
 
     @property
@@ -222,7 +224,7 @@ class BallistaMagics(Magics):
                 )
 
     @line_cell_magic
-    def sql(self, line: str, cell=None) -> Optional[DistributedDataFrame]:
+    def sql(self, line: str, cell=None) -> Optional[DataFrame]:
         """
         Execute a SQL query (both line and cell magic).
 
@@ -400,7 +402,7 @@ class BallistaMagics(Magics):
     def _execute_sql(
         self,
         query: str,
-    ) -> Optional[DistributedDataFrame]:
+    ) -> Optional[DataFrame]:
         """Execute a SQL query and return the result."""
         start_time = time.time()
 
