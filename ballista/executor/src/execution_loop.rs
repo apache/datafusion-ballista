@@ -58,7 +58,7 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const NOTIFIED_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Maximum time the poll loop waits for a free vcore before polling the
-/// scheduler anyway. `poll_work` doubles as the executor's heartbeat under
+/// scheduler anyway. `poll_work` is what keeps the executor alive under
 /// pull-based scheduling, so a fully-busy executor must keep polling (reporting
 /// zero free vcores) or the scheduler times it out and resets its tasks. Kept
 /// well below the scheduler's executor timeout.
@@ -138,8 +138,9 @@ where
     loop {
         // Wait for a vcore permit before asking for new work, but cap the wait
         // so a fully-busy executor still polls the scheduler periodically.
-        // `poll_work` is the executor's ONLY heartbeat under pull-based
-        // scheduling (the scheduler records a heartbeat on every poll). If every
+        // `poll_work` is what keeps the executor alive under pull-based
+        // scheduling (the scheduler records a heartbeat on every poll; the
+        // metrics heartbeats aren't relied on for liveness). If every
         // vcore is held by a task running longer than the scheduler's executor
         // timeout, blocking here indefinitely stops heartbeats, so the scheduler
         // wrongly marks this healthy-but-busy executor dead and resets its

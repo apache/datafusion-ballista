@@ -194,7 +194,7 @@ pub struct Config {
     #[arg(
         long,
         default_value_t = 60,
-        help = "The heartbeat interval in seconds to the scheduler for push-based task scheduling."
+        help = "The heartbeat interval in seconds to the scheduler. Pull-based executors also send heartbeats, to report metrics and status; polling for work keeps them alive."
     )]
     pub executor_heartbeat_interval_seconds: u64,
     /// Specifying which metrics should be collected and sent to scheduler
