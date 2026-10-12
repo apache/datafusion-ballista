@@ -121,18 +121,6 @@ INFO ballista_executor::executor_server: Executor registration succeed
 INFO ballista_executor::executor_process: Built-in arrow flight server listening on: 0.0.0.0:50051 max_encoding_size: 16777216 max_decoding_size: 16777216
 ```
 
-### Stop the Cluster
-
-`docker stop` sends SIGTERM. An executor then stops taking new tasks, tells the scheduler it is
-stopping, and exits once its running tasks finish. `docker stop` kills a container that is still
-running after 10 seconds, so give executors with long-running tasks more time:
-
-```bash
-docker stop -t 300 CONTAINER_ID
-```
-
-The scheduler exits as soon as it gets SIGTERM.
-
 ## Connect from the CLI
 
 ```shell

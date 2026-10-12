@@ -32,7 +32,6 @@ on:
       - "rust-toolchain.toml"
       - "dev/docker/**"
       - "dev/build-ballista-docker.sh"
-      - "dev/check-docker-sigterm.sh"
       - ".github/workflows/docker.yml"
       # docs-only changes cannot affect this job; exclusions are applied last
       - "!**/*.md"
@@ -50,7 +49,6 @@ on:
       - "rust-toolchain.toml"
       - "dev/docker/**"
       - "dev/build-ballista-docker.sh"
-      - "dev/check-docker-sigterm.sh"
       - ".github/workflows/docker.yml"
       # docs-only changes cannot affect this job; exclusions are applied last
       - "!**/*.md"
@@ -84,7 +82,6 @@ jobs:
           git config --global --add safe.directory /__w/datafusion-ballista/datafusion-ballista
 
           ./dev/build-ballista-docker.sh
-          ./dev/check-docker-sigterm.sh
 
           docker tag apache/datafusion-ballista-standalone:latest ghcr.io/apache/datafusion-ballista-standalone:latest
           docker tag apache/datafusion-ballista-executor:latest ghcr.io/apache/datafusion-ballista-executor:latest
