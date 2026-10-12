@@ -28,7 +28,9 @@ ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get -qq update && apt-get install -qq -y wget
+# tini runs as PID 1 and passes signals on to the entrypoint script, which
+# stops the executor and then the scheduler.
+RUN apt-get -qq update && apt-get install -qq -y wget tini
 
 COPY target/${RELEASE_FLAG}/ballista-scheduler /root/ballista-scheduler
 COPY target/${RELEASE_FLAG}/ballista-executor /root/ballista-executor
@@ -43,4 +45,4 @@ EXPOSE 50050
 EXPOSE 50051
 
 COPY dev/docker/standalone-entrypoint.sh /root/standalone-entrypoint.sh
-ENTRYPOINT ["/root/standalone-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/root/standalone-entrypoint.sh"]

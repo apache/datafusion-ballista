@@ -19,4 +19,4 @@
 
 set -e
 
-/root/ballista-cli "$@"
+exec /root/ballista-cli "$@"

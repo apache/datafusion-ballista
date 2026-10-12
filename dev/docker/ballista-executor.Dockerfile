@@ -26,8 +26,10 @@ ARG RELEASE_FLAG=release
 # ca-certificates so DataFusion's object_store S3 client can verify TLS
 # certs at query time (executors do the parquet reads). Reads from
 # s3:// fail with InvalidCertificate(UnknownIssuer) otherwise.
+# tini runs as PID 1 and passes signals on to the executor, so SIGTERM starts
+# its graceful shutdown.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates tini && \
     rm -rf /var/lib/apt/lists/*
 
 ENV RELEASE_FLAG=${RELEASE_FLAG}
@@ -40,4 +42,4 @@ COPY target/${RELEASE_FLAG}/ballista-executor /root/ballista-executor
 EXPOSE 50051
 
 COPY dev/docker/executor-entrypoint.sh /root/executor-entrypoint.sh
-ENTRYPOINT ["/root/executor-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/root/executor-entrypoint.sh"]

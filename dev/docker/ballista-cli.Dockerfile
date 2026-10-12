@@ -23,6 +23,11 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 ARG RELEASE_FLAG=release
 
+# tini runs as PID 1 and passes signals on to the CLI, so it stops on SIGTERM.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends tini && \
+    rm -rf /var/lib/apt/lists/*
+
 ENV RELEASE_FLAG=${RELEASE_FLAG}
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
@@ -30,4 +35,4 @@ ENV RUST_BACKTRACE=full
 COPY target/${RELEASE_FLAG}/ballista-cli /root/ballista-cli
 
 COPY dev/docker/cli-entrypoint.sh /root/cli-entrypoint.sh
-ENTRYPOINT ["/root/cli-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/root/cli-entrypoint.sh"]

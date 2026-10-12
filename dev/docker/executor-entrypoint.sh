@@ -21,4 +21,4 @@ set -e
 
 mkdir -p /work
 
-/root/ballista-executor "$@"
+exec /root/ballista-executor "$@"
