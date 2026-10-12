@@ -72,9 +72,7 @@ impl ResultMetricsCollector for NoopMetricsCollector {
 pub fn default_metrics_collector() -> Result<Arc<dyn ResultMetricsCollector>> {
     #[cfg(feature = "prometheus-metrics")]
     {
-        Ok(Arc::new(PrometheusMetricsCollector::new(
-            ::prometheus::default_registry(),
-        )?))
+        PrometheusMetricsCollector::current()
     }
     #[cfg(not(feature = "prometheus-metrics"))]
     {
@@ -89,12 +87,16 @@ pub use prometheus_metrics::PrometheusMetricsCollector;
 mod prometheus_metrics {
     use super::{FetchOutcome, ResultMetricsCollector};
     use ballista_core::error::{BallistaError, Result};
+    use once_cell::sync::OnceCell;
     use prometheus::{
         Encoder, Histogram, IntCounter, IntCounterVec, IntGauge, Registry, TextEncoder,
         register_histogram_with_registry, register_int_counter_vec_with_registry,
         register_int_counter_with_registry, register_int_gauge_with_registry,
     };
+    use std::sync::Arc;
     use std::time::Duration;
+
+    static COLLECTOR: OnceCell<Arc<dyn ResultMetricsCollector>> = OnceCell::new();
 
     const OUTCOMES: [FetchOutcome; 3] = [
         FetchOutcome::Completed,
@@ -171,6 +173,17 @@ mod prometheus_metrics {
                 .map_err(registration_error)?,
             })
         }
+
+        /// The process's collector, registered in the default registry on first
+        /// use, so that `serve` can run more than once in a process.
+        pub fn current() -> Result<Arc<dyn ResultMetricsCollector>> {
+            COLLECTOR
+                .get_or_try_init(|| {
+                    let collector = Self::new(::prometheus::default_registry())?;
+                    Ok(Arc::new(collector) as Arc<dyn ResultMetricsCollector>)
+                })
+                .cloned()
+        }
     }
 
     impl ResultMetricsCollector for PrometheusMetricsCollector {
@@ -228,6 +241,14 @@ mod prometheus_metrics {
             ] {
                 assert!(text.contains(line), "missing {line:?} in:\n{text}");
             }
+            Ok(())
+        }
+
+        #[test]
+        fn the_default_collector_is_registered_once_per_process() -> Result<()> {
+            let first = crate::metrics::default_metrics_collector()?;
+            let second = crate::metrics::default_metrics_collector()?;
+            assert!(Arc::ptr_eq(&first, &second));
             Ok(())
         }
     }
