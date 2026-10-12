@@ -60,6 +60,16 @@ pub type MemoryPoolPolicy = Arc<
 /// clients, file-metadata cache) between a session's tasks.
 /// [`DefaultSessionRuntimeCache`] is the built-in implementation — provide a
 /// custom one to change the caching/sharing strategy.
+///
+/// Note for embedders keeping the built-in cache while overriding the base
+/// producer: [`DefaultSessionRuntimeCache`] keys shared base envs by
+/// (session id, fingerprint of the session config's *extension* entries —
+/// excluding the `ballista` extension). Built-in `datafusion.*` options do
+/// not feed the key, so a custom producer that reads `datafusion.*` or
+/// `ballista.*` options when building the env keeps the values seen by the
+/// session's first task for the whole session (until the entry ages out of
+/// the LRU). Only extension options such as `s3.*` rekey the cache; see
+/// `config_fingerprint`.
 pub trait SessionRuntimeCache: Send + Sync {
     /// Returns the per-task runtime for `session_id`, sized to `vcores_consumed`
     /// vcores of the executor's memory budget.
@@ -96,9 +106,19 @@ type BaseRuntimeLru = LruCache<(String, u64), Arc<RuntimeEnv>>;
 /// cache and build a fresh base; otherwise the new task keeps reading with
 /// the settings the session's first task carried.
 ///
-/// The cache is bounded by an LRU of `capacity` sessions. A capacity of `0`
-/// disables caching entirely: every call builds a fresh base env, matching
-/// the behavior of building a runtime per task.
+/// The cache is bounded by an LRU of `capacity` entries keyed by
+/// (session id, config fingerprint): a session that changes its extension
+/// config mid-session occupies one entry per distinct fingerprint. A
+/// capacity of `0` disables caching entirely: every call builds a fresh
+/// base env, matching the behavior of building a runtime per task.
+///
+/// Entries from a session's earlier fingerprints are kept until the LRU
+/// evicts them, so reverting a `SET` hits the original base again. The
+/// bound is on total entries, so this is not a leak; the trade-off is
+/// that a session rotating credentials several times leaves stale bases
+/// around (each holding an object-store client and a footer cache) until
+/// they age out, and those entries can push other sessions' warm caches
+/// out of the LRU.
 pub struct DefaultSessionRuntimeCache {
     base_producer: RuntimeProducer,
     pool_policy: MemoryPoolPolicy,
@@ -107,9 +127,11 @@ pub struct DefaultSessionRuntimeCache {
 
 impl DefaultSessionRuntimeCache {
     /// Creates a new cache that produces per-task runtimes from `base_producer`
-    /// (invoked at most once per cached session) and `pool_policy` (invoked on
-    /// every call). `capacity` bounds the number of distinct sessions kept in
-    /// the LRU; `0` disables caching.
+    /// (invoked at most once per cached entry) and `pool_policy` (invoked on
+    /// every call). `capacity` bounds the number of cached
+    /// (session id, config fingerprint) entries kept in the LRU — a session
+    /// that changes its extension config mid-session uses one entry per
+    /// distinct fingerprint; `0` disables caching.
     pub fn new(
         base_producer: RuntimeProducer,
         pool_policy: MemoryPoolPolicy,

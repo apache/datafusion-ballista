@@ -114,6 +114,15 @@ pub mod version;
 ///
 /// It is intended to be used with executor configuration
 ///
+/// Note for embedders relying on the executor's default session runtime
+/// cache: shared base envs are keyed by (session id, fingerprint of the
+/// session config's *extension* entries, excluding the `ballista`
+/// extension). Built-in `datafusion.*` options do not feed the key, so a
+/// producer that reads `datafusion.*` or `ballista.*` options at build
+/// time keeps the values seen by the session's first task for the whole
+/// session (until the entry ages out of the LRU). Only extension options
+/// such as `s3.*` rekey the cache.
+///
 pub type RuntimeProducer = Arc<
     dyn Fn(&SessionConfig) -> datafusion::error::Result<Arc<RuntimeEnv>> + Send + Sync,
 >;
