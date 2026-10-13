@@ -106,12 +106,13 @@ impl BufferedBatches {
         self.indices_bytes = 0;
         let batches = std::mem::take(&mut self.batches);
         let indices: Vec<_> = self.indices.iter_mut().map(std::mem::take).collect();
+        let batch_refs: Vec<&RecordBatch> = batches.iter().collect();
         for (partition, partition_indices) in indices.iter().enumerate() {
             if partition_indices.is_empty() {
                 continue;
             }
             let mut iter = PartitionedBatchIterator::new(
-                &batches,
+                &batch_refs,
                 partition_indices,
                 self.batch_size,
             );
