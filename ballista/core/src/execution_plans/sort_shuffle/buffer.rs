@@ -93,28 +93,29 @@ impl BufferedBatches {
         self.batches.push(batch);
     }
 
-    /// Empties the buffer, passing each output batch of at most `batch_size`
-    /// rows to `f` with its partition, in partition order and then arrival
-    /// order. Output batches are gathered one at a time, as `f` consumes them.
-    /// The buffer is emptied first, so if `f` or a gather fails, the remaining
-    /// rows are dropped.
+    /// Empties the buffer, calling `f` once per non-empty partition, in
+    /// partition order, with an iterator over its output batches of at most
+    /// `batch_size` rows, in arrival order. Batches are gathered one at a time,
+    /// as `f` consumes them. The buffer is emptied first, so if `f` or a gather
+    /// fails, the remaining rows are dropped.
     pub fn drain(
         &mut self,
-        mut f: impl FnMut(usize, RecordBatch) -> Result<()>,
+        mut f: impl FnMut(usize, &mut dyn Iterator<Item = Result<RecordBatch>>) -> Result<()>,
     ) -> Result<()> {
         self.batches_bytes = 0;
         self.indices_bytes = 0;
         let batches = std::mem::take(&mut self.batches);
         let indices: Vec<_> = self.indices.iter_mut().map(std::mem::take).collect();
         for (partition, partition_indices) in indices.iter().enumerate() {
-            let iter = PartitionedBatchIterator::new(
+            if partition_indices.is_empty() {
+                continue;
+            }
+            let mut iter = PartitionedBatchIterator::new(
                 &batches,
                 partition_indices,
                 self.batch_size,
             );
-            for batch in iter {
-                f(partition, batch?)?;
-            }
+            f(partition, &mut iter)?;
         }
         Ok(())
     }
@@ -135,14 +136,22 @@ mod tests {
         RecordBatch::try_new(schema(), vec![Arc::new(Int32Array::from(values))]).unwrap()
     }
 
-    fn drain(bb: &mut BufferedBatches) -> Vec<(usize, RecordBatch)> {
+    /// Each partition `drain` visits, with its batches.
+    fn drain(bb: &mut BufferedBatches) -> Vec<(usize, Vec<RecordBatch>)> {
         let mut out = vec![];
-        bb.drain(|p, b| {
-            out.push((p, b));
+        bb.drain(|p, batches| {
+            out.push((p, batches.collect::<Result<_>>()?));
             Ok(())
         })
         .unwrap();
         out
+    }
+
+    fn index_bytes(bb: &BufferedBatches) -> usize {
+        bb.indices
+            .iter()
+            .map(|v| v.capacity() * size_of::<(u32, u32)>())
+            .sum()
     }
 
     #[test]
@@ -152,7 +161,7 @@ mod tests {
         assert_eq!(bb.num_partitions(), 3);
 
         // Partition 0 gets rows {0, 2} of the first batch and all of the
-        // second; partition 1 gets {3, 1} of the first.
+        // second; partition 1 gets {3, 1} of the first; partition 2, none.
         bb.push_batch(
             batch(vec![10, 20, 30, 40]),
             &[vec![0, 2], vec![3, 1], vec![]],
@@ -163,9 +172,8 @@ mod tests {
         assert_eq!(
             drain(&mut bb),
             vec![
-                (0, batch(vec![10, 30])),
-                (0, batch(vec![50, 60])),
-                (1, batch(vec![40, 20])),
+                (0, vec![batch(vec![10, 30]), batch(vec![50, 60])]),
+                (1, vec![batch(vec![40, 20])]),
             ]
         );
         assert!(bb.is_empty());
@@ -177,15 +185,19 @@ mod tests {
         let mut bb = BufferedBatches::new(2, schema(), 8);
         assert_eq!(bb.memory_size(), 0);
 
-        let input = batch(vec![1, 2, 3]);
-        let batch_bytes = input.get_array_memory_size();
-        bb.push_batch(input, &[vec![0, 2], vec![1]]);
-        let index_bytes: usize = bb
-            .indices
-            .iter()
-            .map(|v| v.capacity() * size_of::<(u32, u32)>())
-            .sum();
-        assert_eq!(bb.memory_size(), batch_bytes + index_bytes);
+        let first = batch(vec![1, 2, 3]);
+        let mut batch_bytes = first.get_array_memory_size();
+        bb.push_batch(first, &[vec![0, 2], vec![1]]);
+        assert_eq!(bb.memory_size(), batch_bytes + index_bytes(&bb));
+
+        // More rows for partition 0 than its list has room for, so the
+        // running total must follow a reallocation.
+        let capacity_before = bb.indices[0].capacity();
+        let second = batch((0..8).collect());
+        batch_bytes += second.get_array_memory_size();
+        bb.push_batch(second, &[(0..8).collect(), vec![]]);
+        assert!(bb.indices[0].capacity() > capacity_before);
+        assert_eq!(bb.memory_size(), batch_bytes + index_bytes(&bb));
 
         drain(&mut bb);
         assert_eq!(bb.memory_size(), 0);

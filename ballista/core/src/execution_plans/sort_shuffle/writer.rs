@@ -126,34 +126,24 @@ fn encode_buffered_partitions(
     opts: &datafusion::arrow::ipc::writer::IpcWriteOptions,
 ) -> Result<EncodedPartitions> {
     let num_partitions = buffered.num_partitions();
-    let mut writers: Vec<Option<StreamWriter<Vec<u8>>>> =
-        (0..num_partitions).map(|_| None).collect();
+    let mut encoded = vec![Vec::new(); num_partitions];
     let mut stats = vec![EncodedStats::default(); num_partitions];
 
-    buffered.drain(|partition, batch| {
-        let writer = match &mut writers[partition] {
-            Some(writer) => writer,
-            slot => slot.insert(StreamWriter::try_new_with_options(
-                Vec::new(),
-                schema,
-                opts.clone(),
-            )?),
-        };
+    // One writer open at a time: each holds its own compression context.
+    buffered.drain(|partition, batches| {
+        let mut writer =
+            StreamWriter::try_new_with_options(Vec::new(), schema, opts.clone())?;
         let stat = &mut stats[partition];
-        stat.num_rows += batch.num_rows() as u64;
-        stat.num_bytes += batch.get_array_memory_size() as u64;
-        stat.num_batches += 1;
-        writer.write(&batch)?;
+        for batch in batches {
+            let batch = batch?;
+            stat.num_rows += batch.num_rows() as u64;
+            stat.num_bytes += batch.get_array_memory_size() as u64;
+            stat.num_batches += 1;
+            writer.write(&batch)?;
+        }
+        encoded[partition] = writer.into_inner()?;
         Ok(())
     })?;
-
-    let encoded = writers
-        .into_iter()
-        .map(|writer| match writer {
-            Some(writer) => Ok(writer.into_inner()?),
-            None => Ok(Vec::new()),
-        })
-        .collect::<Result<Vec<_>>>()?;
 
     Ok(EncodedPartitions { encoded, stats })
 }
@@ -782,12 +772,14 @@ fn spill_all_partitions(
     }
     let mut batches_written: u64 = 0;
     let mut bytes_written: u64 = 0;
-    buffered.drain(|partition_id, batch| {
-        let written = spill_manager
-            .spill(partition_id, &batch)
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-        batches_written += 1;
-        bytes_written += written;
+    buffered.drain(|partition_id, batches| {
+        for batch in batches {
+            let written = spill_manager
+                .spill(partition_id, &batch?)
+                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            batches_written += 1;
+            bytes_written += written;
+        }
         Ok(())
     })?;
     reservation.free();
