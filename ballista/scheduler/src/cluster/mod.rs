@@ -419,7 +419,7 @@ pub trait CacheState: Send + Sync + 'static {
     async fn begin_materialization(
         &self,
         key: CacheKey,
-        job_id: String,
+        job_id: JobId,
     ) -> Result<BeginOutcome>;
 
     /// Records the materialized shuffle locations for `key`, promoting a
@@ -428,7 +428,7 @@ pub trait CacheState: Send + Sync + 'static {
     async fn complete_materialization(
         &self,
         key: CacheKey,
-        job_id: String,
+        job_id: JobId,
         schema: SchemaRef,
         locations: Vec<Vec<PartitionLocation>>,
     ) -> Result<CompleteOutcome>;
@@ -436,7 +436,8 @@ pub trait CacheState: Send + Sync + 'static {
     /// Drops a pending claim for `key` owned by `job_id` (materialization job
     /// failed/cancelled). Returns whether a claim was removed. Future PRs call
     /// this from the `JobRunningFailed` handler.
-    async fn abort_materialization(&self, key: &CacheKey, job_id: &str) -> Result<bool>;
+    async fn abort_materialization(&self, key: &CacheKey, job_id: &JobId)
+    -> Result<bool>;
 
     /// Invalidates a single entry; the next [`lookup`](CacheState::lookup) is a
     /// miss. Returns the removed materialized entry (if any) so the caller can

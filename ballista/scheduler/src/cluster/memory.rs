@@ -545,15 +545,87 @@ impl JobState for InMemoryJobState {
     }
 }
 
+/// In-memory [`CacheState`] backend — the only implementation today.
+///
+/// A thin async wrapper over the synchronous, unit-tested `CacheRegistry`,
+/// mirroring how [`InMemoryJobState`] wraps its maps. A durable backend would be
+/// a sibling type implementing [`CacheState`] whose `init` loads persisted
+/// entries; no caller changes needed.
+#[derive(Debug, Default)]
+pub struct InMemoryCacheState {
+    registry: CacheRegistry,
+}
+
+#[async_trait::async_trait]
+impl CacheState for InMemoryCacheState {
+    async fn lookup(&self, key: &CacheKey) -> Result<Option<MaterializedCache>> {
+        Ok(self.registry.lookup(key))
+    }
+
+    async fn begin_materialization(
+        &self,
+        key: CacheKey,
+        job_id: JobId,
+    ) -> Result<BeginOutcome> {
+        Ok(self.registry.begin_materialization(key, job_id))
+    }
+
+    async fn complete_materialization(
+        &self,
+        key: CacheKey,
+        job_id: JobId,
+        schema: SchemaRef,
+        locations: Vec<Vec<PartitionLocation>>,
+    ) -> Result<CompleteOutcome> {
+        Ok(self
+            .registry
+            .complete_materialization(key, job_id, schema, locations))
+    }
+
+    async fn abort_materialization(
+        &self,
+        key: &CacheKey,
+        job_id: &JobId,
+    ) -> Result<bool> {
+        Ok(self.registry.abort_materialization(key, job_id))
+    }
+
+    async fn invalidate(&self, key: &CacheKey) -> Result<Option<MaterializedCache>> {
+        Ok(self.registry.invalidate(key))
+    }
+
+    async fn invalidate_executor(
+        &self,
+        executor_id: &str,
+    ) -> Result<Vec<(CacheKey, MaterializedCache)>> {
+        Ok(self.registry.invalidate_executor(executor_id))
+    }
+
+    async fn remove_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<(CacheKey, MaterializedCache)>> {
+        Ok(self.registry.remove_session(session_id))
+    }
+
+    async fn pinned_stages(&self) -> Result<HashSet<(JobId, usize)>> {
+        Ok(self.registry.pinned_stages())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
 
-    use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
+    use crate::cluster::memory::{
+        InMemoryCacheState, InMemoryClusterState, InMemoryJobState,
+    };
     use crate::cluster::test_util::{test_job_lifecycle, test_job_planning_failure};
     use crate::cluster::{
-        BallistaCluster, ClusterState, ClusterStateEvent, JobState, JobStateEvent,
+        BallistaCluster, CacheState, ClusterState, ClusterStateEvent, JobState,
+        JobStateEvent,
     };
+    use crate::state::cache_registry::{BeginOutcome, CacheKey};
     use crate::test_utils::{
         test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
     };
@@ -566,7 +638,7 @@ mod test {
         ExecutorSpecification,
     };
     use ballista_core::utils::{default_config_producer, default_session_builder};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::dataframe::DataFrameWriteOptions;
     use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
     use futures::StreamExt;
@@ -977,80 +1049,6 @@ mod test {
 
         Ok(())
     }
-}
-
-/// In-memory [`CacheState`] backend — the only implementation today.
-///
-/// A thin async wrapper over the synchronous, unit-tested `CacheRegistry`,
-/// mirroring how [`InMemoryJobState`] wraps its maps. A durable backend would be
-/// a sibling type implementing [`CacheState`] whose `init` loads persisted
-/// entries; no caller changes needed.
-#[derive(Debug, Default)]
-pub struct InMemoryCacheState {
-    registry: CacheRegistry,
-}
-
-#[async_trait::async_trait]
-impl CacheState for InMemoryCacheState {
-    async fn lookup(&self, key: &CacheKey) -> Result<Option<MaterializedCache>> {
-        Ok(self.registry.lookup(key))
-    }
-
-    async fn begin_materialization(
-        &self,
-        key: CacheKey,
-        job_id: String,
-    ) -> Result<BeginOutcome> {
-        Ok(self.registry.begin_materialization(key, job_id))
-    }
-
-    async fn complete_materialization(
-        &self,
-        key: CacheKey,
-        job_id: String,
-        schema: SchemaRef,
-        locations: Vec<Vec<PartitionLocation>>,
-    ) -> Result<CompleteOutcome> {
-        Ok(self
-            .registry
-            .complete_materialization(key, job_id, schema, locations))
-    }
-
-    async fn abort_materialization(&self, key: &CacheKey, job_id: &str) -> Result<bool> {
-        Ok(self.registry.abort_materialization(key, job_id))
-    }
-
-    async fn invalidate(&self, key: &CacheKey) -> Result<Option<MaterializedCache>> {
-        Ok(self.registry.invalidate(key))
-    }
-
-    async fn invalidate_executor(
-        &self,
-        executor_id: &str,
-    ) -> Result<Vec<(CacheKey, MaterializedCache)>> {
-        Ok(self.registry.invalidate_executor(executor_id))
-    }
-
-    async fn remove_session(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<(CacheKey, MaterializedCache)>> {
-        Ok(self.registry.remove_session(session_id))
-    }
-
-    async fn pinned_stages(&self) -> Result<HashSet<(JobId, usize)>> {
-        Ok(self.registry.pinned_stages())
-    }
-}
-
-#[cfg(test)]
-mod cache_state_test {
-    use super::InMemoryCacheState;
-    use crate::cluster::{BallistaCluster, CacheState};
-    use crate::state::cache_registry::{BeginOutcome, CacheKey};
-    use ballista_core::utils::{default_config_producer, default_session_builder};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-    use std::sync::Arc;
 
     fn schema() -> SchemaRef {
         Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
