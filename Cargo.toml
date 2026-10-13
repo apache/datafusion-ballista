@@ -62,7 +62,6 @@ datafusion-cli = "55"
 datafusion-functions-aggregate-common = "55"
 datafusion-proto = "55"
 datafusion-proto-common = "55"
-datafusion-spark = "55"
 datafusion-substrait = "55"
 
 ctor = { version = "1.0" }

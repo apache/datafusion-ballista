@@ -326,12 +326,13 @@ $SPARK_HOME/bin/spark-submit \
   --debug
 ```
 
-## TPC-DS Correctness Tests
+## TPC-DS
 
-Unlike the TPC-H suite above (which measures performance), the TPC-DS suite is
-a correctness gate: it runs each query on a Ballista cluster and compares the
-result, row-by-row, against a single-process DataFusion oracle running the
-same query.
+The `tpcds` binary runs the TPC-DS queries on a Ballista cluster. With
+`--verify` it is a correctness gate: it compares each result, row-by-row,
+against a single-process DataFusion oracle running the same query. It also
+times each query, so it doubles as a benchmark, as described in "Running the
+benchmark" below.
 
 ### Vendoring the queries
 
@@ -386,6 +387,43 @@ against a single-process DataFusion `SessionContext` and diffs the results.
 The process exits non-zero and prints a summary if any query fails or
 mismatches. `--verify` assumes a local `--path`: the oracle context registers
 the tables directly and does not apply object-store credentials.
+
+### Running the benchmark
+
+Drop `--verify` and pass `--iterations` and `--output` to time the suite:
+
+```bash
+cargo run --release --bin tpcds -- \
+  --host localhost --port 50050 \
+  --path s3://bucket/tpcds-sf1000 \
+  --partitions 256 \
+  --iterations 3 \
+  --output /tmp/results
+```
+
+The summary is written to `<dir>/tpcds-<start_time>.json`, in the same format
+and with the same per-query persistence and error handling as the TPC-H runner
+(see "Recording and comparing results"), so `tpch compare` reads it too.
+
+Hive-partitioned tables are handled as for TPC-H (see "Hive-partitioned data"),
+including `--no-partition-cols`. A partition column that exists only in the
+directory names, such as `ss_sold_date_sk` in data written with Spark's
+`partitionBy`, is read as an integer, because TPC-DS partitions its fact tables
+by date surrogate key.
+
+Some fact table rows have a NULL date key. Spark writes them to a directory
+such as `store_sales/ss_sold_date_sk=__HIVE_DEFAULT_PARTITION__/`, which
+DataFusion can't read as an integer yet
+([apache/datafusion#18083](https://github.com/apache/datafusion/issues/18083)).
+For a table with such a directory, the runner registers the files as
+`<table>_raw`, with that column as a string, and `<table>` as a view that reads
+the directory as NULL and casts the other values to integers. Filters on the
+column still skip directories.
+
+`tpcgen-cli` names three columns differently from the TPC-DS spec, which the
+queries follow, so the runner rewrites those references when the tables have
+the `tpcgen-cli` names. Data from `dsdgen` or Spark uses the spec names and the
+queries run unchanged.
 
 ### Skip list
 
