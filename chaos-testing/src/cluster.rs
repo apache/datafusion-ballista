@@ -19,7 +19,7 @@ use nix::fcntl::{Flock, FlockArg};
 use std::fs::{File, OpenOptions};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -98,6 +98,7 @@ pub struct TestClusterBuilder {
     stage_max_failures: usize,
     concurrent_tasks: usize,
     no_executors_grace_seconds: u64,
+    flight_shutdown_timeout_seconds: u64,
 }
 
 impl Default for TestClusterBuilder {
@@ -114,6 +115,8 @@ impl Default for TestClusterBuilder {
             // Ballista's default is 30s. A short grace makes the total-loss
             // scenario fail the job a second or so after the reap.
             no_executors_grace_seconds: 1,
+            // Make sure slower CI can finish draining.
+            flight_shutdown_timeout_seconds: 150,
         }
     }
 }
@@ -346,6 +349,10 @@ impl TestCluster {
             )
             .env("CHAOS_WORK_DIR", work_dir.display().to_string())
             .env("CHAOS_HEARTBEAT_SECONDS", "1")
+            .env(
+                "CHAOS_FLIGHT_SHUTDOWN_TIMEOUT_SECONDS",
+                self.builder.flight_shutdown_timeout_seconds.to_string(),
+            )
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
@@ -608,6 +615,38 @@ impl TestCluster {
         kill(Pid::from_raw(pid as i32), Signal::SIGKILL).map_err(|e| e.to_string())?;
         let _ = self.executors[index].child.wait();
         Ok(())
+    }
+
+    /// Request graceful shutdown without waiting, so a client can keep streaming.
+    pub fn terminate_executor(&self, index: usize) -> Result<(), String> {
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+
+        let pid = self.executors[index].child.id();
+        kill(Pid::from_raw(pid as i32), Signal::SIGTERM).map_err(|e| e.to_string())
+    }
+
+    pub async fn await_executor_exit(
+        &mut self,
+        index: usize,
+    ) -> Result<ExitStatus, String> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(status) = self.executors[index]
+                .child
+                .try_wait()
+                .map_err(|e| e.to_string())?
+            {
+                return Ok(status);
+            }
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "executor {index} did not exit\n{}",
+                    self.log_tails()
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     pub async fn await_successful_shuffle_output(

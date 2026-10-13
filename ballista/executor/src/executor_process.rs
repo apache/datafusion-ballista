@@ -286,6 +286,9 @@ pub struct ExecutorProcessConfig {
     pub scheduler_port: u16,
     /// Timeout in seconds for establishing scheduler connection.
     pub scheduler_connect_timeout_seconds: u16,
+    /// Maximum time in seconds to drain Flight streams after the Flight server is
+    /// signalled to shut down. `0` waits indefinitely.
+    pub flight_shutdown_timeout_seconds: u64,
     /// Virtual cores advertised by this executor to the scheduler.
     pub vcores: usize,
     /// Task scheduling policy (pull-staged or push-staged).
@@ -391,6 +394,7 @@ impl Default for ExecutorProcessConfig {
             scheduler_host: "localhost".into(),
             scheduler_port: 50050,
             scheduler_connect_timeout_seconds: 0,
+            flight_shutdown_timeout_seconds: 15,
             vcores: std::thread::available_parallelism().unwrap().get(),
             task_scheduling_policy: Default::default(),
             log_dir: None,
@@ -714,10 +718,12 @@ async fn start_executor_process_inner(
     // Graceful shutdown notification
     let shutdown_notification = ShutdownNotifier::new();
     let flight_work_dir = work_dir.clone();
+    let clean_job_data_on_shutdown = opt.job_data_clean_up_interval_seconds > 0;
 
-    if opt.job_data_clean_up_interval_seconds > 0 {
+    if clean_job_data_on_shutdown {
         let mut interval_time =
             time::interval(Duration::from_secs(opt.job_data_clean_up_interval_seconds));
+        let cleaner_work_dir = work_dir.clone();
 
         let mut shuffle_cleaner_shutdown = shutdown_notification.subscribe_for_shutdown();
         let shuffle_cleaner_complete = shutdown_notification.shutdown_complete_tx.clone();
@@ -727,18 +733,12 @@ async fn start_executor_process_inner(
             while !shuffle_cleaner_shutdown.is_shutdown() {
                 tokio::select! {
                     _ = interval_time.tick() => {
-                            if let Err(e) = clean_shuffle_data_loop(&work_dir, job_data_ttl_seconds).await
+                            if let Err(e) = clean_shuffle_data_loop(&cleaner_work_dir, job_data_ttl_seconds).await
                         {
                             error!("Ballista executor fail to clean_shuffle_data {e:?}")
                         }
                         },
                     _ = shuffle_cleaner_shutdown.recv() => {
-                        if let Err(e) = clean_all_shuffle_data(&work_dir).await
-                        {
-                            error!("Ballista executor fail to clean_shuffle_data {e:?}")
-                        } else {
-                            info!("Shuffle data cleaned.");
-                        }
                         drop(shuffle_cleaner_complete);
                         return;
                     }
@@ -793,7 +793,7 @@ async fn start_executor_process_inner(
     let shutdown = shutdown_notification.subscribe_for_shutdown();
     let override_flight = opt.override_arrow_flight_service.clone();
 
-    service_handlers.push(match override_flight {
+    let mut flight_server = match override_flight {
         None => {
             info!("Starting built-in arrow flight service");
             flight_server_task(
@@ -815,7 +815,34 @@ async fn start_executor_process_inner(
                 opt.grpc_server_config.clone(),
             )
         }
-    });
+    };
+    // Keep shutdown completion open until Flight has drained or its timeout expires.
+    let mut flight_shutdown = shutdown_notification.subscribe_for_shutdown();
+    let flight_shutdown_timeout =
+        Duration::from_secs(opt.flight_shutdown_timeout_seconds);
+    let flight_complete = shutdown_notification.shutdown_complete_tx.clone();
+    service_handlers.push(tokio::spawn(async move {
+        let _flight_complete = flight_complete;
+        tokio::select! {
+            result = &mut flight_server => return result.map_err(BallistaError::TokioError)?,
+            _ = flight_shutdown.recv() => {}
+        }
+        if flight_shutdown_timeout.is_zero() {
+            return flight_server.await.map_err(BallistaError::TokioError)?;
+        }
+        match time::timeout(flight_shutdown_timeout, &mut flight_server).await {
+            Ok(result) => result.map_err(BallistaError::TokioError)?,
+            Err(_) => {
+                warn!(
+                    "Flight shutdown timed out after {} seconds; aborting Flight server",
+                    flight_shutdown_timeout.as_secs()
+                );
+                flight_server.abort();
+                let _ = flight_server.await;
+                Ok(())
+            }
+        }
+    }));
 
     let tasks_drained = TasksDrainedFuture(executor);
 
@@ -898,6 +925,13 @@ async fn start_executor_process_inner(
 
     // Wait for all related components to finish the shutdown processing.
     let _ = shutdown_complete_rx.recv().await;
+    if clean_job_data_on_shutdown {
+        if let Err(e) = clean_all_shuffle_data(&work_dir).await {
+            error!("Ballista executor fail to clean_shuffle_data {e:?}")
+        } else {
+            info!("Shuffle data cleaned.");
+        }
+    }
     info!("Executor stopped.");
     Ok(())
 }
