@@ -15,13 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::codec;
 use crate::ffi_planner_workaround::decode_file_formats_locally;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::planner::BallistaQueryPlanner;
-use ballista_core::serde::{
-    BallistaLogicalExtensionCodec as NativeBallistaLogicalExtensionCodec,
-    BallistaPhysicalExtensionCodec as NativeBallistaPhysicalExtensionCodec,
-};
 use datafusion::catalog::Session;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::config::SessionConfig;
@@ -117,8 +114,7 @@ impl PyBallistaLogicalExtensionCodec {
         let _user_logical_codec: Arc<dyn LogicalExtensionCodec> =
             (&ffi_logical_codec_from_python(session_ctx.clone())?).into();
         let logical_codec: Arc<dyn LogicalExtensionCodec> =
-            // Arc::new(NativeBallistaLogicalExtensionCodec::new(user_logical_codec));
-            Arc::new(NativeBallistaLogicalExtensionCodec::default());
+            Arc::new(codec::PyBallistaLogicalExtensionCodec::default());
         let task_ctx_provider = ffi_task_ctx_provider_from_python(session_ctx.clone())?;
         let ffi_logical_codec = FFI_LogicalExtensionCodec::new(
             Arc::clone(&logical_codec),
@@ -454,14 +450,10 @@ pub(crate) fn with_ballista_query_planner(
 
 fn ballista_physical_ffi_codec(
     session_ctx: Bound<'_, PyAny>,
-    _logical_codec: Arc<dyn LogicalExtensionCodec>,
+    logical_codec: Arc<dyn LogicalExtensionCodec>,
 ) -> PyResult<FFI_PhysicalExtensionCodec> {
-    //let logical_codec = Arc::new(NativeBallistaLogicalExtensionCodec::default());
-
-    let physical_codec: Arc<dyn PhysicalExtensionCodec> = Arc::new(
-        //NativeBallistaPhysicalExtensionCodec::with_logical(logical_codec),
-        NativeBallistaPhysicalExtensionCodec::default(),
-    );
+    let physical_codec: Arc<dyn PhysicalExtensionCodec> =
+        Arc::new(codec::PyBallistaPhysicalExtensionCodec::new(logical_codec));
     let task_ctx_provider = ffi_task_ctx_provider_from_python(session_ctx)?;
     Ok(FFI_PhysicalExtensionCodec::new(
         physical_codec,
