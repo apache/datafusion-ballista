@@ -62,7 +62,7 @@ struct PartitionState {
     drain_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     ready: Arc<AtomicBool>,
     executed: AtomicBool,
-    released: watch::Sender<bool>,
+    release_signal: watch::Sender<bool>,
 }
 
 #[derive(Debug)]
@@ -89,7 +89,7 @@ impl WorkerStageBoundaryExec {
                 drain_task: Mutex::new(None),
                 ready: Arc::new(AtomicBool::new(false)),
                 executed: AtomicBool::new(false),
-                released: watch::channel(false).0,
+                release_signal: watch::channel(false).0,
             })
             .collect();
         Self {
@@ -117,21 +117,25 @@ impl StageBoundary for WorkerStageBoundaryExec {
         let buffered = Arc::clone(&state.buffered);
         let ready = Arc::clone(&state.ready);
         *drain_task = Some(tokio::spawn(async move {
-            let mut batches = Vec::new();
-            while let Some(item) = input.next().await {
-                let terminal_error = item.is_err();
-                batches.push(item);
+            let mut drained_batch_results = Vec::new();
+            while let Some(batch_result) = input.next().await {
+                let terminal_error = batch_result.is_err();
+                drained_batch_results.push(batch_result);
                 if terminal_error {
                     break;
                 }
             }
-            *buffered.lock().unwrap() = Some(batches);
+            *buffered.lock().unwrap() = Some(drained_batch_results);
+            // Publish the completed buffer before signaling readiness.
             ready.store(true, Ordering::Release);
         }));
         Ok(())
     }
 
     fn is_ready(&self, partition: usize) -> bool {
+        // If this reads `true` from the drain task's Release store, it synchronizes
+        // with that store even across worker threads; the buffer write before it
+        // happens-before the caller proceeds.
         self.partitions
             .get(partition)
             .is_some_and(|state| state.ready.load(Ordering::Acquire))
@@ -139,7 +143,7 @@ impl StageBoundary for WorkerStageBoundaryExec {
 
     fn release(&self) {
         for state in &self.partitions {
-            state.released.send_replace(true);
+            state.release_signal.send_replace(true);
         }
     }
 }
@@ -219,34 +223,34 @@ impl ExecutionPlan for WorkerStageBoundaryExec {
             .downstream_execute_calls
             .fetch_add(1, Ordering::Relaxed);
 
-        let released = state.released.subscribe();
+        let release_rx = state.release_signal.subscribe();
         let buffered = Arc::clone(&state.buffered);
         let observations = Arc::clone(&self.observations);
         let output = stream::unfold(
-            (released, None::<std::vec::IntoIter<Result<RecordBatch>>>),
-            move |(mut released, mut batches)| {
+            (release_rx, None::<std::vec::IntoIter<Result<RecordBatch>>>),
+            move |(mut release_rx, mut pending_batch_results)| {
                 let buffered = Arc::clone(&buffered);
                 let observations = Arc::clone(&observations);
                 async move {
-                    if batches.is_none() {
-                        while !*released.borrow() {
-                            if released.changed().await.is_err() {
+                    if pending_batch_results.is_none() {
+                        while !*release_rx.borrow() {
+                            if release_rx.changed().await.is_err() {
                                 return None;
                             }
                         }
-                        let materialized = buffered
+                        let buffered_batch_results = buffered
                             .lock()
                             .unwrap()
                             .take()
                             .expect("driver releases only ready partitions");
-                        batches = Some(materialized.into_iter());
+                        pending_batch_results = Some(buffered_batch_results.into_iter());
                     }
 
-                    let item = batches.as_mut().unwrap().next()?;
-                    if item.is_ok() {
+                    let batch_result = pending_batch_results.as_mut().unwrap().next()?;
+                    if batch_result.is_ok() {
                         observations.emitted_batches.fetch_add(1, Ordering::Relaxed);
                     }
-                    Some((item, (released, batches)))
+                    Some((batch_result, (release_rx, pending_batch_results)))
                 }
             },
         );
