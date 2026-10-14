@@ -183,6 +183,7 @@ pub async fn get_scheduler_state<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
 ) -> impl IntoResponse {
+    #[allow(deprecated)]
     let response = SchedulerStateResponse {
         started: data_server.start_time,
         scheduler_id: data_server.scheduler_id.clone(),
@@ -687,6 +688,8 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    // Still covers the deprecated embedded-proxy flag until it is removed.
+    #[allow(deprecated)]
     async fn scheduler_state_reflects_server_configuration() {
         use crate::config::SchedulerConfig;
         use crate::metrics::default_metrics_collector;

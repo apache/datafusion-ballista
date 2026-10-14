@@ -18,6 +18,7 @@
 //! Ballista Executor Process
 
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -40,7 +41,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::{fs, time};
 
-use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool};
+use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool, TrackConsumersPool};
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::prelude::SessionConfig;
 
@@ -213,11 +214,19 @@ fn detect_pool(budget: MemoryBudget) -> ResolvedPool {
     }
 }
 
+/// How many of a task's largest memory consumers a `ResourcesExhausted` error
+/// lists. Matches DataFusion's default for `RuntimeEnvBuilder::with_memory_limit`.
+const TOP_MEMORY_CONSUMERS: NonZeroUsize = NonZeroUsize::new(5).unwrap();
+
 /// Builds a per-task memory-pool policy: each task's runtime is rebuilt from the
 /// shared base env with a fresh [`FairSpillPool`] of size
 /// `total_bytes / vcores`. The base env's disk manager, cache manager,
 /// and object-store registry are preserved via
 /// [`RuntimeEnvBuilder::from_runtime_env`].
+///
+/// The pool is wrapped in a [`TrackConsumersPool`], so when a reservation is
+/// refused the `ResourcesExhausted` error names the task's largest memory
+/// consumers, as DataFusion does for `RuntimeEnvBuilder::with_memory_limit`.
 ///
 /// Returns an error if the per-task share would be zero (i.e. `total_bytes <
 /// vcores`).
@@ -239,7 +248,10 @@ fn memory_pool_policy(
             // single-vcore share it uses; a 4-partition task gets 4×,
             // matching the parallelism DataFusion will actually drive.
             let size = per_vcore.saturating_mul(vcores_consumed.max(1) as usize);
-            let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(size));
+            let pool: Arc<dyn MemoryPool> = Arc::new(TrackConsumersPool::new(
+                FairSpillPool::new(size),
+                TOP_MEMORY_CONSUMERS,
+            ));
             RuntimeEnvBuilder::from_runtime_env(&base)
                 .with_memory_pool(pool)
                 .build_arc()
@@ -1451,7 +1463,7 @@ mod memory_pool_tests {
         let base = Arc::new(RuntimeEnv::default());
         let first = policy(base.clone(), &SessionConfig::new(), 1).unwrap();
         let second = policy(base, &SessionConfig::new(), 4).unwrap();
-        assert!(first.memory_pool.is::<FairSpillPool>());
+        assert!(first.memory_pool.is::<TrackConsumersPool<FairSpillPool>>());
         assert!(matches!(
             first.memory_pool.memory_limit(),
             MemoryLimit::Finite(1024)
@@ -1554,6 +1566,22 @@ mod memory_pool_tests {
             MemoryLimit::Infinite => panic!("expected Finite, got Infinite"),
             MemoryLimit::Unknown => panic!("expected Finite, got Unknown"),
         }
+    }
+
+    #[test]
+    fn exhausted_memory_error_names_the_largest_consumers() {
+        let policy = memory_pool_policy(1024, 1).unwrap();
+        let env =
+            policy(Arc::new(RuntimeEnv::default()), &SessionConfig::new(), 1).unwrap();
+
+        let build = MemoryConsumer::new("HashJoinInput").register(&env.memory_pool);
+        build.try_grow(1000).unwrap();
+        // 1000 + 100 bytes doesn't fit the 1024-byte pool, so the sorter is refused.
+        let sort = MemoryConsumer::new("ExternalSorter").register(&env.memory_pool);
+        let err = sort.try_grow(100).unwrap_err().to_string();
+
+        // FairSpillPool's own error only names the consumer that was refused.
+        assert!(err.contains("HashJoinInput"), "{err}");
     }
 
     #[test]
