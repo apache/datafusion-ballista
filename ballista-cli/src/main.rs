@@ -145,7 +145,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         crossterm::terminal::LeaveAlternateScreen
                     );
                 }
-                std::process::exit(143);
+                // The status shells report for a process the signal killed.
+                std::process::exit(128 + SignalKind::terminate().as_raw_value());
             }
         });
     }
