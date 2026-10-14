@@ -54,15 +54,14 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{convert::TryInto, io::Cursor};
 
-use crate::config::BallistaConfig;
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    BufferExec, BufferMode, ChaosExec, CoalescePlan, DistributedQueryExec,
-    FinalizedPartitionState, InputOrder, OrderedRangeRepartitionExec, PartitionGroup,
-    PartitionedBoundedWindowAggExec, PerPartitionFilterExec, PrefixMergeExec,
-    RangeFilterExec, RangeShuffleReaderExec, RangeShuffleWriterExec, RuntimeStatsExec,
-    ScalarOp, ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
-    UnorderedRangeRepartitionExec, UnresolvedShuffleExec, WindowApply,
+    BufferExec, BufferMode, ChaosExec, CoalescePlan, FinalizedPartitionState, InputOrder,
+    OrderedRangeRepartitionExec, PartitionGroup, PartitionedBoundedWindowAggExec,
+    PerPartitionFilterExec, PrefixMergeExec, RangeFilterExec, RangeShuffleReaderExec,
+    RangeShuffleWriterExec, RuntimeStatsExec, ScalarOp, ShuffleReaderExec,
+    ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
+    UnresolvedShuffleExec, WindowApply,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -360,26 +359,12 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
 #[derive(Debug)]
 pub struct BallistaPhysicalExtensionCodec {
     default_codec: Arc<dyn PhysicalExtensionCodec>,
-    /// Codec used for logical plans embedded in physical plan nodes
-    /// (e.g. [DistributedQueryExec])
-    logical_codec: Arc<dyn LogicalExtensionCodec>,
 }
 
 impl Default for BallistaPhysicalExtensionCodec {
     fn default() -> Self {
         Self {
             default_codec: Arc::new(DefaultPhysicalExtensionCodec {}),
-            logical_codec: Arc::new(BallistaLogicalExtensionCodec::default()),
-        }
-    }
-}
-
-impl BallistaPhysicalExtensionCodec {
-    /// creates new BallistaPhysicalExtensionCodec
-    pub fn with_logical(logical_codec: Arc<dyn LogicalExtensionCodec>) -> Self {
-        Self {
-            default_codec: Arc::new(DefaultPhysicalExtensionCodec {}),
-            logical_codec,
         }
     }
 }
@@ -1059,35 +1044,10 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     input.clone(),
                 )?))
             }
-            PhysicalPlanType::DistributedQuery(node) => {
-                let plan = LogicalPlanNode::try_decode(&node.logical_plan)
-                    .and_then(|p| {
-                        p.try_into_logical_plan(ctx, self.logical_codec.as_ref())
-                    })
-                    .map_err(|e| {
-                        DataFusionError::Internal(format!(
-                            "failed to decode DistributedQueryExec logical plan: {e:?}"
-                        ))
-                    })?;
-                let settings = node
-                    .settings
-                    .iter()
-                    .filter_map(|kv| {
-                        kv.value.as_ref().map(|v| (kv.key.clone(), v.clone()))
-                    })
-                    .collect();
-                let config = BallistaConfig::with_settings(settings)
-                    .map_err(|e| DataFusionError::Internal(e.to_string()))?;
-                Ok(Arc::new(
-                    DistributedQueryExec::<LogicalPlanNode>::with_extension(
-                        node.scheduler_url.clone(),
-                        config,
-                        plan,
-                        self.logical_codec.clone(),
-                        node.session_id.clone(),
-                    ),
-                ))
-            }
+            PhysicalPlanType::DistributedQuery(_) => Err(DataFusionError::Internal(
+                "DistributedQueryExec is not supported by BallistaPhysicalExtensionCodec"
+                    .to_string(),
+            )),
         }
     }
 
@@ -1516,45 +1476,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode PartitionedBoundedWindowAggExec: {e:?}"
-                ))
-            })?;
-            Ok(())
-        } else if let Some(exec) =
-            node.downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
-        {
-            let mut logical_plan = vec![];
-            LogicalPlanNode::try_from_logical_plan(
-                exec.plan(),
-                self.logical_codec.as_ref(),
-            )
-            .and_then(|p| p.try_encode(&mut logical_plan))
-            .map_err(|e| {
-                DataFusionError::Internal(format!(
-                    "failed to encode DistributedQueryExec logical plan: {e:?}"
-                ))
-            })?;
-            let settings = exec
-                .config()
-                .settings()
-                .iter()
-                .map(|(key, value)| protobuf::KeyValuePair {
-                    key: key.clone(),
-                    value: Some(value.clone()),
-                })
-                .collect();
-            let proto = protobuf::BallistaPhysicalPlanNode {
-                physical_plan_type: Some(PhysicalPlanType::DistributedQuery(
-                    protobuf::DistributedQueryExecNode {
-                        scheduler_url: exec.scheduler_url().to_string(),
-                        settings,
-                        logical_plan,
-                        session_id: exec.session_id().to_string(),
-                    },
-                )),
-            };
-            proto.encode(buf).map_err(|e| {
-                DataFusionError::Internal(format!(
-                    "failed to encode DistributedQueryExec: {e:?}"
                 ))
             })?;
             Ok(())
@@ -3082,44 +3003,5 @@ mod test {
                 "position {encoder_position} must decode as {expected_ext}"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn test_distributed_query_exec_roundtrip() {
-        use datafusion::config::ExtensionOptions;
-
-        let ctx = SessionContext::new();
-        let plan = ctx
-            .sql("SELECT 1 AS a, 'x' AS b")
-            .await
-            .unwrap()
-            .logical_plan()
-            .clone();
-        let mut config = BallistaConfig::default();
-        config.set("job.name", "roundtrip").unwrap();
-
-        let exec: Arc<dyn ExecutionPlan> =
-            Arc::new(DistributedQueryExec::<LogicalPlanNode>::new(
-                "df://localhost:50050".to_string(),
-                config.clone(),
-                plan.clone(),
-                "session-1".to_string(),
-            ));
-
-        let codec = BallistaPhysicalExtensionCodec::default();
-        let converter = DefaultPhysicalProtoConverter {};
-        let mut buf = vec![];
-        codec.try_encode(exec, &mut buf, &converter).unwrap();
-        let decoded = codec
-            .try_decode(&buf, &[], &ctx.task_ctx(), &converter)
-            .unwrap();
-
-        let decoded = decoded
-            .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
-            .expect("decoded plan should be DistributedQueryExec");
-        assert_eq!(decoded.scheduler_url(), "df://localhost:50050");
-        assert_eq!(decoded.session_id(), "session-1");
-        assert_eq!(decoded.config(), &config);
-        assert_eq!(decoded.plan(), &plan);
     }
 }

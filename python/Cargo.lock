@@ -3130,6 +3130,7 @@ dependencies = [
  "datafusion-proto",
  "datafusion-python",
  "log",
+ "prost",
  "pyo3",
  "pyo3-build-config",
  "pyo3-log",
