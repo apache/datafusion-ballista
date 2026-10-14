@@ -22,7 +22,7 @@ use crate::state::aqe::execution_plan::{
 };
 use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
-    CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
+    CoalescePartitionsRule, DelayJoinSelectionRule,
     DistributedExchangeRule, NormalizeInterleaveRule, ParallelWindowRule,
     PrefixWindowRule, PropagateEmptyExecRule, SelectJoinRule,
 };
@@ -606,14 +606,9 @@ impl AdaptivePlanner {
                 // `r_name = EUROPE` in q2 — and every copy is evaluated per row
                 // and again in the row-group pruning predicate.
                 "FilterPushdown" => vec![],
-                // `join_selection` promotes a small build side to `CollectLeft`
-                // without restricting by join type -- safe in one process, but
-                // Ballista runs one task per probe partition. Demote the unsafe
-                // ones straight after, while `EnsureRequirements` can still add
-                // the repartitions a `Partitioned` join needs.
-                "join_selection" => {
-                    vec![r, Arc::new(DemoteUnsafeBroadcastJoinRule::default())]
-                }
+                // `join_selection` only broadcasts join types that are safe for
+                // isolated tasks, because Ballista sets
+                // `datafusion.execution.isolated_partitions`.
                 _ => vec![r],
             })
             .collect()
