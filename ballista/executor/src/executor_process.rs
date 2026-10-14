@@ -286,9 +286,9 @@ pub struct ExecutorProcessConfig {
     pub scheduler_port: u16,
     /// Timeout in seconds for establishing scheduler connection.
     pub scheduler_connect_timeout_seconds: u16,
-    /// Maximum time in seconds to drain Flight streams after the Flight server is
-    /// signalled to shut down. `0` waits indefinitely.
-    pub flight_shutdown_timeout_seconds: u64,
+    /// Maximum time in seconds for scheduler notification, task and Flight draining,
+    /// and shuffle cleanup after shutdown is requested. `0` waits indefinitely.
+    pub graceful_shutdown_timeout_seconds: u64,
     /// Virtual cores advertised by this executor to the scheduler.
     pub vcores: usize,
     /// Task scheduling policy (pull-staged or push-staged).
@@ -394,7 +394,7 @@ impl Default for ExecutorProcessConfig {
             scheduler_host: "localhost".into(),
             scheduler_port: 50050,
             scheduler_connect_timeout_seconds: 0,
-            flight_shutdown_timeout_seconds: 15,
+            graceful_shutdown_timeout_seconds: 10,
             vcores: std::thread::available_parallelism().unwrap().get(),
             task_scheduling_policy: Default::default(),
             log_dir: None,
@@ -780,20 +780,27 @@ async fn start_executor_process_inner(
             );
         }
         _ => {
-            service_handlers.push(tokio::spawn(execution_loop::poll_loop(
+            let poll_loop = execution_loop::poll_loop(
                 scheduler.clone(),
                 executor.clone(),
                 default_codec,
                 None, // poll_now_notify
                 None, // free_vcores: use internal semaphore
                 health,
-            )));
+            );
+            let mut poll_shutdown = shutdown_notification.subscribe_for_shutdown();
+            service_handlers.push(tokio::spawn(async move {
+                tokio::select! {
+                    result = poll_loop => result,
+                    _ = poll_shutdown.recv() => Ok(()),
+                }
+            }));
         }
     };
     let shutdown = shutdown_notification.subscribe_for_shutdown();
     let override_flight = opt.override_arrow_flight_service.clone();
 
-    let mut flight_server = match override_flight {
+    service_handlers.push(match override_flight {
         None => {
             info!("Starting built-in arrow flight service");
             flight_server_task(
@@ -815,34 +822,7 @@ async fn start_executor_process_inner(
                 opt.grpc_server_config.clone(),
             )
         }
-    };
-    // Keep shutdown completion open until Flight has drained or its timeout expires.
-    let mut flight_shutdown = shutdown_notification.subscribe_for_shutdown();
-    let flight_shutdown_timeout =
-        Duration::from_secs(opt.flight_shutdown_timeout_seconds);
-    let flight_complete = shutdown_notification.shutdown_complete_tx.clone();
-    service_handlers.push(tokio::spawn(async move {
-        let _flight_complete = flight_complete;
-        tokio::select! {
-            result = &mut flight_server => return result.map_err(BallistaError::TokioError)?,
-            _ = flight_shutdown.recv() => {}
-        }
-        if flight_shutdown_timeout.is_zero() {
-            return flight_server.await.map_err(BallistaError::TokioError)?;
-        }
-        match time::timeout(flight_shutdown_timeout, &mut flight_server).await {
-            Ok(result) => result.map_err(BallistaError::TokioError)?,
-            Err(_) => {
-                warn!(
-                    "Flight shutdown timed out after {} seconds; aborting Flight server",
-                    flight_shutdown_timeout.as_secs()
-                );
-                flight_server.abort();
-                let _ = flight_server.await;
-                Ok(())
-            }
-        }
-    }));
+    });
 
     let tasks_drained = TasksDrainedFuture(executor);
 
@@ -874,63 +854,85 @@ async fn start_executor_process_inner(
     info!("setting executor to TERMINATING status");
     TERMINATING.store(true, Ordering::Release);
 
-    if notify_scheduler {
-        // Send a heartbeat to update status of executor to `Fenced`. This should signal to the
-        // scheduler to no longer schedule tasks on this executor
-        if let Err(error) = scheduler
-            .heart_beat_from_executor(HeartBeatParams {
-                executor_id: executor_id.clone(),
-                metrics: vec![],
-                status: Some(ExecutorStatus {
-                    status: Some(Status::Terminating(String::default())),
-                }),
-                metadata: Some(executor_meta),
-            })
-            .await
-        {
-            error!("error sending heartbeat with fenced status: {error:?}");
-        }
-
-        // TODO we probably don't need a separate rpc call for this....
-        if let Err(error) = scheduler
-            .executor_stopped(ExecutorStoppedParams {
-                executor_id,
-                reason: stop_reason,
-            })
-            .await
-        {
-            error!("ExecutorStopped grpc failed: {error:?}");
-        }
-
-        // Wait for tasks to drain
-        tasks_drained.await;
-    }
-
-    // Extract the `shutdown_complete` receiver and transmitter
-    // explicitly drop `shutdown_transmitter`. This is important, as the
-    // `.await` below would otherwise never complete.
     let ShutdownNotifier {
         mut shutdown_complete_rx,
         shutdown_complete_tx,
         notify_shutdown,
-        ..
     } = shutdown_notification;
 
-    // When `notify_shutdown` is dropped, all components which have `subscribe`d will
-    // receive the shutdown signal and can exit
-    let _ = notify_shutdown.send(());
-    drop(notify_shutdown);
-    // Drop final `Sender` so the `Receiver` below can complete
-    drop(shutdown_complete_tx);
+    let graceful_shutdown = async {
+        if notify_scheduler {
+            // Send a heartbeat to update status of executor to `Fenced`. This should signal to the
+            // scheduler to no longer schedule tasks on this executor
+            if let Err(error) = scheduler
+                .heart_beat_from_executor(HeartBeatParams {
+                    executor_id: executor_id.clone(),
+                    metrics: vec![],
+                    status: Some(ExecutorStatus {
+                        status: Some(Status::Terminating(String::default())),
+                    }),
+                    metadata: Some(executor_meta),
+                })
+                .await
+            {
+                error!("error sending heartbeat with fenced status: {error:?}");
+            }
 
-    // Wait for all related components to finish the shutdown processing.
-    let _ = shutdown_complete_rx.recv().await;
-    if clean_job_data_on_shutdown {
-        if let Err(e) = clean_all_shuffle_data(&work_dir).await {
-            error!("Ballista executor fail to clean_shuffle_data {e:?}")
-        } else {
-            info!("Shuffle data cleaned.");
+            // TODO we probably don't need a separate rpc call for this....
+            if let Err(error) = scheduler
+                .executor_stopped(ExecutorStoppedParams {
+                    executor_id,
+                    reason: stop_reason,
+                })
+                .await
+            {
+                error!("ExecutorStopped grpc failed: {error:?}");
+            }
+
+            // Wait for tasks to drain
+            tasks_drained.await;
         }
+
+        // Signal all subscribed components to shut down.
+        let _ = notify_shutdown.send(());
+        // Drop final `Sender` so the `Receiver` below can complete
+        drop(shutdown_complete_tx);
+
+        // Wait for all related components to finish the shutdown processing.
+        let _ = shutdown_complete_rx.recv().await;
+        // Drain the servers, including Flight, before removing their shuffle data.
+        while !service_handlers.is_empty() {
+            if let Err(error) = check_services(&mut service_handlers).await {
+                error!("Executor service failed during shutdown: {error:?}");
+            }
+        }
+        if clean_job_data_on_shutdown {
+            if let Err(e) = clean_all_shuffle_data(&work_dir).await {
+                error!("Ballista executor fail to clean_shuffle_data {e:?}")
+            } else {
+                info!("Shuffle data cleaned.");
+            }
+        }
+    };
+
+    let shutdown_timeout = Duration::from_secs(opt.graceful_shutdown_timeout_seconds);
+    if shutdown_timeout.is_zero() {
+        graceful_shutdown.await;
+    } else if time::timeout(shutdown_timeout, graceful_shutdown)
+        .await
+        .is_err()
+    {
+        let message = format!(
+            "Executor graceful shutdown timed out after {} seconds",
+            shutdown_timeout.as_secs()
+        );
+        warn!("{message}; aborting remaining services");
+        // A scheduler RPC or task drain may have timed out before broadcasting shutdown.
+        let _ = notify_shutdown.send(());
+        for service in &service_handlers {
+            service.abort();
+        }
+        return Err(BallistaError::General(message));
     }
     info!("Executor stopped.");
     Ok(())

@@ -52,16 +52,16 @@ async fn main() -> ballista_core::error::Result<()> {
             .unwrap_or_else(|_| "127.0.0.1".into()),
         scheduler_port: env_u16("CHAOS_SCHEDULER_PORT"),
         scheduler_connect_timeout_seconds: 10,
-        flight_shutdown_timeout_seconds: std::env::var(
-            "CHAOS_FLIGHT_SHUTDOWN_TIMEOUT_SECONDS",
+        graceful_shutdown_timeout_seconds: std::env::var(
+            "CHAOS_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS",
         )
         .ok()
         .map(|value| {
             value
                 .parse()
-                .expect("Flight shutdown timeout must be a u64")
+                .expect("Graceful shutdown timeout must be a u64")
         })
-        .unwrap_or(15),
+        .unwrap_or(10),
         vcores: std::env::var("CHAOS_CONCURRENT_TASKS")
             .ok()
             .and_then(|v| v.parse().ok())

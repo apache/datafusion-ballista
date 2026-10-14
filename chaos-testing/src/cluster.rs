@@ -98,7 +98,7 @@ pub struct TestClusterBuilder {
     stage_max_failures: usize,
     concurrent_tasks: usize,
     no_executors_grace_seconds: u64,
-    flight_shutdown_timeout_seconds: u64,
+    graceful_shutdown_timeout_seconds: u64,
 }
 
 impl Default for TestClusterBuilder {
@@ -115,8 +115,8 @@ impl Default for TestClusterBuilder {
             // Ballista's default is 30s. A short grace makes the total-loss
             // scenario fail the job a second or so after the reap.
             no_executors_grace_seconds: 1,
-            // Make sure slower CI can finish draining.
-            flight_shutdown_timeout_seconds: 150,
+            // Let test timeouts bound shutdown so slow CI can finish draining.
+            graceful_shutdown_timeout_seconds: 0,
         }
     }
 }
@@ -350,8 +350,8 @@ impl TestCluster {
             .env("CHAOS_WORK_DIR", work_dir.display().to_string())
             .env("CHAOS_HEARTBEAT_SECONDS", "1")
             .env(
-                "CHAOS_FLIGHT_SHUTDOWN_TIMEOUT_SECONDS",
-                self.builder.flight_shutdown_timeout_seconds.to_string(),
+                "CHAOS_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS",
+                self.builder.graceful_shutdown_timeout_seconds.to_string(),
             )
             .env(
                 "RUST_LOG",
