@@ -37,6 +37,9 @@ use ballista_core::execution_plans::sort_shuffle::{
 };
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
+use ballista_core::serving::{
+    BoxedFlightStream, ResultBackend, from_ballista_err, serve_do_get,
+};
 use datafusion::arrow::ipc::CompressionType;
 
 use arrow_flight::{
@@ -74,31 +77,28 @@ impl BallistaFlightService {
     }
 }
 
-type BoxedFlightStream<T> =
-    Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
-
-/// shuffle file block transfer size    
+/// shuffle file block transfer size
 const BLOCK_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
 
+/// A [`ResultBackend`] that serves partitions from the executor's work
+/// directory.
+struct LocalDiskBackend {
+    work_dir: String,
+}
+
+impl LocalDiskBackend {
+    fn new(work_dir: String) -> Self {
+        Self { work_dir }
+    }
+}
+
 #[tonic::async_trait]
-impl FlightService for BallistaFlightService {
-    type DoActionStream = BoxedFlightStream<arrow_flight::Result>;
-    type DoExchangeStream = BoxedFlightStream<FlightData>;
-    type DoGetStream = BoxedFlightStream<FlightData>;
-    type DoPutStream = BoxedFlightStream<PutResult>;
-    type HandshakeStream = BoxedFlightStream<HandshakeResponse>;
-    type ListActionsStream = BoxedFlightStream<ActionType>;
-    type ListFlightsStream = BoxedFlightStream<FlightInfo>;
-
-    async fn do_get(
+impl ResultBackend for LocalDiskBackend {
+    async fn fetch(
         &self,
-        request: Request<Ticket>,
-    ) -> Result<Response<Self::DoGetStream>, Status> {
-        let ticket = request.into_inner();
-
-        let action =
-            decode_protobuf(&ticket.ticket).map_err(|e| from_ballista_err(&e))?;
-
+        action: BallistaAction,
+        _ticket: Ticket,
+    ) -> Result<BoxedFlightStream<FlightData>, Status> {
         match &action {
             BallistaAction::FetchPartition {
                 job_id,
@@ -153,9 +153,9 @@ impl FlightService for BallistaFlightService {
                         .build(stream)
                         .map_err(|err| Status::from_error(Box::new(err)));
 
-                    return Ok(Response::new(
-                        Box::pin(flight_data_stream) as Self::DoGetStream
-                    ));
+                    return Ok(
+                        Box::pin(flight_data_stream) as BoxedFlightStream<FlightData>
+                    );
                 }
 
                 let (tx, rx) = channel(2);
@@ -209,11 +209,27 @@ impl FlightService for BallistaFlightService {
                     .build(ReceiverStream::new(rx))
                     .map_err(|err| Status::from_error(Box::new(err)));
 
-                Ok(Response::new(
-                    Box::pin(flight_data_stream) as Self::DoGetStream
-                ))
+                Ok(Box::pin(flight_data_stream) as BoxedFlightStream<FlightData>)
             }
         }
+    }
+}
+
+#[tonic::async_trait]
+impl FlightService for BallistaFlightService {
+    type DoActionStream = BoxedFlightStream<arrow_flight::Result>;
+    type DoExchangeStream = BoxedFlightStream<FlightData>;
+    type DoGetStream = BoxedFlightStream<FlightData>;
+    type DoPutStream = BoxedFlightStream<PutResult>;
+    type HandshakeStream = BoxedFlightStream<HandshakeResponse>;
+    type ListActionsStream = BoxedFlightStream<ActionType>;
+    type ListFlightsStream = BoxedFlightStream<FlightInfo>;
+
+    async fn do_get(
+        &self,
+        request: Request<Ticket>,
+    ) -> Result<Response<Self::DoGetStream>, Status> {
+        serve_do_get(&LocalDiskBackend::new(self.work_dir.clone()), request).await
     }
 
     async fn get_schema(
@@ -581,8 +597,4 @@ where
 
 fn from_arrow_err(e: &ArrowError) -> Status {
     Status::internal(format!("ArrowError: {e:?}"))
-}
-
-fn from_ballista_err(e: &ballista_core::error::BallistaError) -> Status {
-    Status::internal(format!("Ballista Error: {e:?}"))
 }

@@ -909,6 +909,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// Where clients should fetch result partitions from over Arrow Flight,
     /// advertised in job-status responses. An explicitly advertised endpoint
     /// wins over the embedded proxy, so a load balancer can front it.
+    #[allow(deprecated)]
     fn flight_proxy_config(&self) -> Option<FlightProxy> {
         let config = &self.state.config;
         match config
@@ -1433,6 +1434,8 @@ mod test {
     }
 
     #[tokio::test]
+    // Still covers the deprecated embedded-proxy flag until it is removed.
+    #[allow(deprecated)]
     async fn flight_proxy_config_reflects_explicit_flag_and_endpoint() {
         use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
 

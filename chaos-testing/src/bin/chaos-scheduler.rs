@@ -43,6 +43,7 @@ fn env_or(key: &str, default: &str) -> String {
 async fn main() -> ballista_core::error::Result<()> {
     env_logger::init();
 
+    #[allow(deprecated)]
     let config = SchedulerConfig {
         // In the process harness these default to loopback; under Kubernetes the
         // scheduler must bind all interfaces and advertise its Service name.
@@ -67,12 +68,12 @@ async fn main() -> ballista_core::error::Result<()> {
             "CHAOS_NO_EXECUTORS_GRACE_SECONDS",
             1,
         ),
-        // Under Kubernetes the client is outside the cluster and cannot reach
-        // executor pod IPs to fetch results. Setting this (to "true" in the k8s
-        // manifest) starts an embedded flight proxy on the scheduler and makes
-        // clients fetch results through the scheduler instead of directly from
-        // executors. Unset in the process harness -> false -> no proxy.
+        // The deprecated embedded proxy, for the harness's proxy fetch mode.
         enable_embedded_flight_proxy: env_parsed("CHAOS_EMBEDDED_FLIGHT_PROXY", false),
+        // The harness's result service, for its result-service fetch mode.
+        advertise_flight_endpoint: std::env::var("CHAOS_ADVERTISE_FLIGHT_ENDPOINT")
+            .ok()
+            .filter(|s| !s.is_empty()),
         override_session_builder: Some(Arc::new(chaos_session_state)),
         ..Default::default()
     };
