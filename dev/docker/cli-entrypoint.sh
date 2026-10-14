@@ -19,4 +19,5 @@
 
 set -e
 
+# exec, so SIGTERM reaches the CLI.
 exec /root/ballista-cli "$@"

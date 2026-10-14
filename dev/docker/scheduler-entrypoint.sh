@@ -19,4 +19,5 @@
 
 set -e
 
+# exec, so SIGTERM reaches the scheduler.
 exec /root/ballista-scheduler "$@"
