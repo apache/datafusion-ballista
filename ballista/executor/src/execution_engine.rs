@@ -489,6 +489,9 @@ async fn drive_shuffle_writer_stage(
     Ok(summaries)
 }
 
+#[cfg(test)]
+mod stage_boundary_tests;
+
 /// Convert the writer's metadata batches (one per output partition, each
 /// with a single row) back into `ShuffleWritePartition` summaries.
 fn metadata_batches_to_summaries(
