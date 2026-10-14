@@ -201,11 +201,9 @@ impl StageBoundary for WorkerStageBoundaryExec {
                 }
             }
             *buffered.lock().unwrap() = Some(drained_batch_results);
-            // Release publishes the completed drain. If `is_ready`'s Acquire load
-            // reads `true`, the buffer write happens-before the caller proceeds.
-            // Acquire is load-only; Relaxed on either side would not establish
-            // this handoff. The Mutex separately guards buffer access; SeqCst
-            // would add a global total order this handoff does not need.
+            // Under Rust's memory model, this Release store publishes the batches
+            // above: a caller whose Acquire load in `is_ready()` reads `true`
+            // observes those writes, even when the tasks run on different threads.
             ready.store(true, Ordering::Release);
         }));
         Ok(())
