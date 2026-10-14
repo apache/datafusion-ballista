@@ -22,11 +22,11 @@ use ballista_core::error::BallistaError;
 use ballista_core::object_store::{
     session_config_with_s3_support, session_state_with_s3_support,
 };
+use ballista_core::utils::shutdown_signal;
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::{Config, SchedulerConfig};
 use ballista_scheduler::scheduler_process::start_server;
 use clap::Parser;
-use log::{error, info};
 use std::sync::Arc;
 use std::{env, io};
 use tracing_subscriber::EnvFilter;
@@ -92,45 +92,11 @@ async fn inner() -> ballista_core::error::Result<()> {
         .with_override_session_builder(Arc::new(session_state_with_s3_support));
 
     let cluster = BallistaCluster::new_from_config(&config).await?;
+    // On Ctrl-C or SIGTERM, exit without draining connections.
     tokio::select! {
         result = start_server(cluster, addr, Arc::new(config)) => result?,
         () = shutdown_signal() => {}
     }
 
     Ok(())
-}
-
-/// Completes on Ctrl-C, or on SIGTERM where the platform has it. The scheduler
-/// then exits without draining its connections.
-///
-/// If a signal cannot be listened for, that branch never completes, rather than
-/// stopping the scheduler at startup.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            error!("failed to listen for Ctrl-C: {e}");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut sigterm) => {
-                sigterm.recv().await;
-            }
-            Err(e) => {
-                error!("failed to listen for SIGTERM: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => info!("Received Ctrl-C, shutting down"),
-        () = terminate => info!("Received SIGTERM, shutting down"),
-    }
 }

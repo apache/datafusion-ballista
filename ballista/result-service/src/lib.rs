@@ -43,7 +43,7 @@ use ballista_core::utils::{
     GrpcServerConfig, create_grpc_server, create_grpc_server_incoming,
 };
 use futures::{Stream, StreamExt};
-use log::{error, info, warn};
+use log::{info, warn};
 use tokio::sync::oneshot;
 use tonic::service::Routes;
 use tonic::transport::server::{Router, TcpIncoming};
@@ -178,39 +178,7 @@ fn until_stopped(
     })
 }
 
-/// Completes on Ctrl-C, or on SIGTERM where the platform has it.
-///
-/// If a signal cannot be listened for, that branch never completes, rather than
-/// shutting the server down at startup.
-pub async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            error!("failed to listen for Ctrl-C: {e}");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut sigterm) => {
-                sigterm.recv().await;
-            }
-            Err(e) => {
-                error!("failed to listen for SIGTERM: {e}");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => info!("Received Ctrl-C, shutting down"),
-        () = terminate => info!("Received SIGTERM, shutting down"),
-    }
-}
+pub use ballista_core::utils::shutdown_signal;
 
 /// The Flight service, health probes and metrics, served on one port.
 fn server<B: ResultBackend>(
