@@ -1065,6 +1065,7 @@ dependencies = [
  "ballista",
  "ballista-core",
  "ballista-executor",
+ "ballista-result-service",
  "ballista-scheduler",
  "datafusion",
  "env_logger",
@@ -1235,6 +1236,25 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "ballista-result-service"
+version = "55.0.0"
+dependencies = [
+ "arrow-flight",
+ "axum",
+ "ballista-core",
+ "clap 4.6.7",
+ "env_logger",
+ "futures",
+ "log",
+ "once_cell",
+ "prometheus",
+ "prost",
+ "tokio",
+ "tonic",
+ "tower",
 ]
 
 [[package]]

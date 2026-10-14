@@ -86,6 +86,7 @@ jobs:
           docker tag apache/datafusion-ballista-standalone:latest ghcr.io/apache/datafusion-ballista-standalone:latest
           docker tag apache/datafusion-ballista-executor:latest ghcr.io/apache/datafusion-ballista-executor:latest
           docker tag apache/datafusion-ballista-scheduler:latest ghcr.io/apache/datafusion-ballista-scheduler:latest
+          docker tag apache/datafusion-ballista-result-service:latest ghcr.io/apache/datafusion-ballista-result-service:latest
 
           # Publish Docker images only for Rust release tags. Use the triggering
           # ref instead of git describe because the final and RC tags can point
@@ -101,10 +102,12 @@ jobs:
             docker tag apache/datafusion-ballista-standalone:latest "ghcr.io/apache/datafusion-ballista-standalone:${DOCKER_TAG}"
             docker tag apache/datafusion-ballista-executor:latest "ghcr.io/apache/datafusion-ballista-executor:${DOCKER_TAG}"
             docker tag apache/datafusion-ballista-scheduler:latest "ghcr.io/apache/datafusion-ballista-scheduler:${DOCKER_TAG}"
+            docker tag apache/datafusion-ballista-result-service:latest "ghcr.io/apache/datafusion-ballista-result-service:${DOCKER_TAG}"
 
             docker push "ghcr.io/apache/datafusion-ballista-standalone:${DOCKER_TAG}"
             docker push "ghcr.io/apache/datafusion-ballista-executor:${DOCKER_TAG}"
             docker push "ghcr.io/apache/datafusion-ballista-scheduler:${DOCKER_TAG}"
+            docker push "ghcr.io/apache/datafusion-ballista-result-service:${DOCKER_TAG}"
 
             # An RC has not passed the ASF vote yet, so it must not replace the
             # latest approved release.
@@ -115,6 +118,7 @@ jobs:
               docker push ghcr.io/apache/datafusion-ballista-standalone:latest
               docker push ghcr.io/apache/datafusion-ballista-executor:latest
               docker push ghcr.io/apache/datafusion-ballista-scheduler:latest
+              docker push ghcr.io/apache/datafusion-ballista-result-service:latest
             fi
 
           fi
