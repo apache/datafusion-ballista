@@ -52,7 +52,7 @@ use super::{DefaultExecutionEngine, ExecutionEngine, QueryStageExecutor};
 
 #[derive(Debug, Default)]
 struct BoundaryObservations {
-    downstream_execute_calls: AtomicUsize,
+    streams_waiting_for_release: AtomicUsize,
     emitted_batches: AtomicUsize,
 }
 
@@ -68,12 +68,14 @@ struct StageBoundaryTestHarness {
 }
 
 impl StageBoundaryTestHarness {
+    /// Builds two partition inputs and the Ballista stage that writes their shuffle output.
     fn new() -> Result<Self> {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "value",
             DataType::UInt32,
             false,
         )]));
+        // Separate batches let the test verify readiness and output for both partitions.
         let input_partitions = vec![
             vec![RecordBatch::try_new(
                 Arc::clone(&schema),
@@ -92,6 +94,7 @@ impl StageBoundaryTestHarness {
         )?);
         let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(source));
         let observations = Arc::new(BoundaryObservations::default());
+        // The test driver controls this node while the shuffle writer consumes its output.
         let boundary = Arc::new(WorkerStageBoundaryExec::new(
             input,
             Arc::clone(&observations),
@@ -101,6 +104,7 @@ impl StageBoundaryTestHarness {
         let job_id = JobId::new("stage-boundary-worker-test");
         let stage_id = 1;
         let work_dir = TempDir::new()?;
+        // Place the boundary under Ballista's real shuffle writer.
         let writer: Arc<dyn ExecutionPlan> = Arc::new(ShuffleWriterExec::try_new(
             job_id.clone(),
             stage_id,
@@ -108,6 +112,7 @@ impl StageBoundaryTestHarness {
             work_dir.path().display().to_string(),
         )?);
         let session_context = SessionContext::new();
+        // Exercise that plan through Ballista's default worker-stage executor.
         let stage_executor = DefaultExecutionEngine::new().create_query_stage_exec(
             job_id.clone(),
             stage_id,
@@ -293,10 +298,6 @@ impl ExecutionPlan for WorkerStageBoundaryExec {
                 "WorkerStageBoundaryExec partition {partition} executed twice"
             );
         }
-        self.observations
-            .downstream_execute_calls
-            .fetch_add(1, Ordering::Relaxed);
-
         let release_rx = state.release_signal.subscribe();
         let buffered = Arc::clone(&state.buffered);
         let observations = Arc::clone(&self.observations);
@@ -307,7 +308,12 @@ impl ExecutionPlan for WorkerStageBoundaryExec {
                 let observations = Arc::clone(&observations);
                 async move {
                     if pending_batch_results.is_none() {
-                        // First poll waits for release before taking the buffer.
+                        if !*release_rx.borrow() {
+                            // Record that this downstream stream has reached the gate.
+                            observations
+                                .streams_waiting_for_release
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
                         while !*release_rx.borrow() {
                             if release_rx.changed().await.is_err() {
                                 // A closed sender cannot release this stream, so it ends without output.
@@ -337,11 +343,12 @@ impl ExecutionPlan for WorkerStageBoundaryExec {
     }
 }
 
+/// A test driver drains both boundary inputs while the shuffle writer waits, then releases it.
 #[tokio::test]
-async fn query_stage_executor_can_gate_shuffle_input_with_stage_boundary() -> Result<()> {
+async fn driver_can_drain_inputs_before_releasing_shuffle_writer() -> Result<()> {
     let harness = StageBoundaryTestHarness::new()?;
 
-    // Run Ballista's stage executor until it has requested both partitions.
+    // Start Ballista's worker-stage executor and wait until both output streams reach the gate.
     let stage_task = tokio::spawn({
         let stage_executor = Arc::clone(&harness.stage_executor);
         let task_context = harness.session_context.task_ctx();
@@ -350,7 +357,7 @@ async fn query_stage_executor_can_gate_shuffle_input_with_stage_boundary() -> Re
     wait_until(|| {
         harness
             .observations
-            .downstream_execute_calls
+            .streams_waiting_for_release
             .load(Ordering::Relaxed)
             == 2
     })
