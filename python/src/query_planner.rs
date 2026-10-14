@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::ffi_planner_workaround::decode_file_formats_locally;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::planner::BallistaQueryPlanner;
 use ballista_core::serde::{
@@ -271,6 +272,7 @@ impl PyBallistaQueryPlanner {
             self.fallback_logical_codec.clone(),
             self.fallback_physical_codec.clone(),
         );
+        let ffi = decode_file_formats_locally(ffi);
 
         // This exact name is the ABI consumed by datafusion-python.
         PyCapsule::new_with_value(py, ffi, cr"datafusion_query_planner")
