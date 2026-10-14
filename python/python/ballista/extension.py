@@ -22,6 +22,7 @@ from datafusion import (
 from typing import Dict, Optional
 import warnings
 
+from ._internal_ballista import BallistaConfigExtension
 from ._internal_ballista import ballista_datafusion_config_defaults
 from ._internal_ballista import with_ballista_query_planner
 
@@ -214,12 +215,18 @@ def BallistaSessionContext(
     # (e.g. datafusion.execution.listing_table_factory_infer_partitions)
     # are consulted during local table registration / planning, before
     # the plan is shipped to the scheduler. Ballista-namespaced keys
-    # are not understood by the local SessionConfig and are forwarded
-    # to the scheduler only.
+    # are registered locally as a config extension below.
     if config is None:
         config = SessionConfig()
         for key, value in ballista_datafusion_config_defaults().items():
             config = config.set(key, value)
+    # Register Ballista options as a config extension so `ballista.*` keys
+    # are known to the local session (`SET`, information_schema.df_settings).
+    # Options already registered on a user supplied config take precedence.
+    ballista_settings = {
+        k: v for k, v in (cluster_config or {}).items() if k.startswith("ballista.")
+    }
+    config = config.with_extension(BallistaConfigExtension(ballista_settings))
 
     source_ctx = SessionContext(config, runtime)
     configured_ctx = with_ballista_query_planner(
