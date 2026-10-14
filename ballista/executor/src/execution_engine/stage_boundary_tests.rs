@@ -48,12 +48,87 @@ use tempfile::TempDir;
 use tokio::sync::watch;
 use tokio::time::timeout;
 
-use super::{DefaultExecutionEngine, ExecutionEngine};
+use super::{DefaultExecutionEngine, ExecutionEngine, QueryStageExecutor};
 
 #[derive(Debug, Default)]
 struct BoundaryObservations {
     downstream_execute_calls: AtomicUsize,
     emitted_batches: AtomicUsize,
+}
+
+struct StageBoundaryTestHarness {
+    boundary: Arc<dyn StageBoundary>,
+    observations: Arc<BoundaryObservations>,
+    session_context: SessionContext,
+    stage_executor: Arc<dyn QueryStageExecutor>,
+    job_id: JobId,
+    stage_id: usize,
+    work_dir: TempDir,
+    expected_batches: Vec<RecordBatch>,
+}
+
+impl StageBoundaryTestHarness {
+    fn new() -> Result<Self> {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::UInt32,
+            false,
+        )]));
+        let input_partitions = vec![
+            vec![RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(UInt32Array::from(vec![1, 2]))],
+            )?],
+            vec![RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(UInt32Array::from(vec![3, 4]))],
+            )?],
+        ];
+        let expected_batches = input_partitions.iter().flatten().cloned().collect();
+        let source = Arc::new(MemorySourceConfig::try_new(
+            &input_partitions,
+            Arc::clone(&schema),
+            None,
+        )?);
+        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(source));
+        let observations = Arc::new(BoundaryObservations::default());
+        let boundary = Arc::new(WorkerStageBoundaryExec::new(
+            input,
+            Arc::clone(&observations),
+        ));
+        let boundary: Arc<dyn StageBoundary> = boundary;
+
+        let job_id = JobId::new("stage-boundary-worker-test");
+        let stage_id = 1;
+        let work_dir = TempDir::new()?;
+        let writer: Arc<dyn ExecutionPlan> = Arc::new(ShuffleWriterExec::try_new(
+            job_id.clone(),
+            stage_id,
+            boundary.clone(),
+            work_dir.path().display().to_string(),
+        )?);
+        let session_context = SessionContext::new();
+        let stage_executor = DefaultExecutionEngine::new().create_query_stage_exec(
+            job_id.clone(),
+            stage_id,
+            0,
+            vec![0, 1],
+            writer,
+            work_dir.path().to_str().unwrap(),
+            &SessionConfig::new(),
+        )?;
+
+        Ok(Self {
+            boundary,
+            observations,
+            session_context,
+            stage_executor,
+            job_id,
+            stage_id,
+            work_dir,
+            expected_batches,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -126,16 +201,17 @@ impl StageBoundary for WorkerStageBoundaryExec {
                 }
             }
             *buffered.lock().unwrap() = Some(drained_batch_results);
-            // Publish the completed buffer before signaling readiness.
+            // Release publishes the completed drain. If `is_ready`'s Acquire load
+            // reads `true`, the buffer write happens-before the caller proceeds.
+            // Acquire is load-only; Relaxed on either side would not establish
+            // this handoff. The Mutex separately guards buffer access; SeqCst
+            // would add a global total order this handoff does not need.
             ready.store(true, Ordering::Release);
         }));
         Ok(())
     }
 
     fn is_ready(&self, partition: usize) -> bool {
-        // If this reads `true` from the drain task's Release store, it synchronizes
-        // with that store even across worker threads; the buffer write before it
-        // happens-before the caller proceeds.
         self.partitions
             .get(partition)
             .is_some_and(|state| state.ready.load(Ordering::Acquire))
@@ -233,8 +309,10 @@ impl ExecutionPlan for WorkerStageBoundaryExec {
                 let observations = Arc::clone(&observations);
                 async move {
                     if pending_batch_results.is_none() {
+                        // First poll waits for release before taking the buffer.
                         while !*release_rx.borrow() {
                             if release_rx.changed().await.is_err() {
+                                // A closed sender cannot release this stream, so it ends without output.
                                 return None;
                             }
                         }
@@ -246,6 +324,7 @@ impl ExecutionPlan for WorkerStageBoundaryExec {
                         pending_batch_results = Some(buffered_batch_results.into_iter());
                     }
 
+                    // Yield one buffered result; keep the iterator for the next poll.
                     let batch_result = pending_batch_results.as_mut().unwrap().next()?;
                     if batch_result.is_ok() {
                         observations.emitted_batches.fetch_add(1, Ordering::Relaxed);
@@ -262,90 +341,56 @@ impl ExecutionPlan for WorkerStageBoundaryExec {
 
 #[tokio::test]
 async fn query_stage_executor_can_gate_shuffle_input_with_stage_boundary() -> Result<()> {
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "value",
-        DataType::UInt32,
-        false,
-    )]));
-    let input_batches = vec![
-        vec![RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![Arc::new(UInt32Array::from(vec![1, 2]))],
-        )?],
-        vec![RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![Arc::new(UInt32Array::from(vec![3, 4]))],
-        )?],
-    ];
-    let source = Arc::new(MemorySourceConfig::try_new(
-        &input_batches,
-        Arc::clone(&schema),
-        None,
-    )?);
-    let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(source));
-    let observations = Arc::new(BoundaryObservations::default());
-    let boundary = Arc::new(WorkerStageBoundaryExec::new(
-        input,
-        Arc::clone(&observations),
-    ));
-    let boundary_handle: Arc<dyn StageBoundary> = boundary.clone();
+    let harness = StageBoundaryTestHarness::new()?;
 
-    let job_id = JobId::new("stage-boundary-worker-test");
-    let stage_id = 1;
-    let work_dir = TempDir::new()?;
-    let writer: Arc<dyn ExecutionPlan> = Arc::new(ShuffleWriterExec::try_new(
-        job_id.clone(),
-        stage_id,
-        boundary,
-        work_dir.path().display().to_string(),
-    )?);
-    let session_context = SessionContext::new();
-    let stage_executor = DefaultExecutionEngine::new().create_query_stage_exec(
-        job_id.clone(),
-        stage_id,
-        0,
-        vec![0, 1],
-        writer,
-        work_dir.path().to_str().unwrap(),
-        &SessionConfig::new(),
-    )?;
-
+    // Run Ballista's stage executor until it has requested both partitions.
     let stage_task = tokio::spawn({
-        let stage_executor = Arc::clone(&stage_executor);
-        let task_context = session_context.task_ctx();
+        let stage_executor = Arc::clone(&harness.stage_executor);
+        let task_context = harness.session_context.task_ctx();
         async move { stage_executor.execute_query_stage(0, task_context).await }
     });
     wait_until(|| {
-        observations
+        harness
+            .observations
             .downstream_execute_calls
             .load(Ordering::Relaxed)
             == 2
     })
     .await;
 
+    // Prime both inputs and verify the writer remains blocked with no batches.
     for partition in 0..2 {
-        boundary_handle.prime(partition, session_context.task_ctx())?;
+        harness
+            .boundary
+            .prime(partition, harness.session_context.task_ctx())?;
     }
-    wait_until(|| (0..2).all(|partition| boundary_handle.is_ready(partition))).await;
+    wait_until(|| (0..2).all(|partition| harness.boundary.is_ready(partition))).await;
 
     assert!(!stage_task.is_finished());
-    assert_eq!(observations.emitted_batches.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        harness.observations.emitted_batches.load(Ordering::Relaxed),
+        0
+    );
 
-    boundary_handle.release();
+    // Release the buffer, then verify the shuffle output.
+    harness.boundary.release();
     let writes = timeout(Duration::from_secs(5), stage_task)
         .await
         .expect("Ballista query stage remained blocked after boundary release")
         .expect("Ballista query stage task panicked")?;
 
     assert_eq!(writes.iter().map(|write| write.num_rows).sum::<u64>(), 4);
-    assert_eq!(observations.emitted_batches.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        harness.observations.emitted_batches.load(Ordering::Relaxed),
+        2
+    );
 
     let mut actual_batches = Vec::new();
     for write in writes {
         let path = create_shuffle_path(
-            work_dir.path(),
-            &job_id,
-            stage_id,
+            harness.work_dir.path(),
+            &harness.job_id,
+            harness.stage_id,
             write.partition_id as usize,
             write.file_id,
             write.is_sort_shuffle,
@@ -353,10 +398,7 @@ async fn query_stage_executor_can_gate_shuffle_input_with_stage_boundary() -> Re
         let reader = StreamReader::try_new(std::fs::File::open(path)?, None)?;
         actual_batches.extend(reader.collect::<std::result::Result<Vec<_>, _>>()?);
     }
-    assert_eq!(
-        actual_batches,
-        input_batches.into_iter().flatten().collect::<Vec<_>>()
-    );
+    assert_eq!(actual_batches, harness.expected_batches);
     Ok(())
 }
 
