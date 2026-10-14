@@ -28,6 +28,7 @@ use pyo3::prelude::*;
 use std::collections::HashMap;
 
 mod cluster;
+mod ffi_planner_workaround;
 mod query_planner;
 mod utils;
 

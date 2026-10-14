@@ -3119,6 +3119,7 @@ dependencies = [
 name = "pyballista"
 version = "55.0.0"
 dependencies = [
+ "async-ffi",
  "async-trait",
  "ballista",
  "ballista-core",
@@ -3132,6 +3133,7 @@ dependencies = [
  "pyo3",
  "pyo3-build-config",
  "pyo3-log",
+ "stabby",
  "tokio",
  "tonic",
  "url",
