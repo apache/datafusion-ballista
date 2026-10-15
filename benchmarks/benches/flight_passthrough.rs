@@ -18,32 +18,30 @@
 //! Criterion benchmark for the shuffle Flight serve path.
 //!
 //! `serve_shuffle_partition` measures the server-side work done to answer a
-//! shuffle fetch for one partition. On this branch it reproduces today's
-//! `do_get`: decode the partition's IPC bytes into `RecordBatch`es, then
-//! re-encode them to Flight. The passthrough branch keeps the same benchmark
-//! name but relays the raw IPC messages, so `critcmp before after` is a single
-//! row.
+//! shuffle fetch for one partition. On this branch it relays the partition's
+//! raw IPC messages (metadata + body) straight to `FlightData`, without
+//! decoding to `RecordBatch` or re-encoding. The baseline branch keeps the
+//! same benchmark name but decodes then re-encodes, so `critcmp before after`
+//! is a single row.
 
 use std::hint::black_box;
-use std::io::Cursor;
 use std::sync::Arc;
 
-use arrow_flight::encode::FlightDataEncoderBuilder;
-use arrow_flight::error::FlightError;
+use arrow_flight::FlightData;
 use criterion::{Criterion, criterion_group, criterion_main};
 use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::ipc::CompressionType;
-use datafusion::arrow::ipc::reader::StreamReader;
-use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
+use datafusion::arrow::ipc::root_as_message;
+use datafusion::arrow::ipc::writer::{EncodedData, IpcWriteOptions, StreamWriter};
 use datafusion::arrow::record_batch::RecordBatch;
-use futures::TryStreamExt;
 use rand::RngExt;
 
 const BATCH_SIZE: usize = 8192;
 const NUM_BATCHES: usize = 16;
+const CONTINUATION_MARKER: [u8; 4] = [0xff; 4];
 
 fn build_schema() -> SchemaRef {
     let mut fields = Vec::new();
@@ -114,29 +112,46 @@ fn build_fixture(schema: &SchemaRef) -> Vec<u8> {
     buf
 }
 
+/// Walk the encapsulated IPC stream and relay each message's metadata+body as
+/// `FlightData`, without decoding to `RecordBatch` or re-encoding.
+fn relay_messages(bytes: &[u8]) -> Vec<FlightData> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while pos + 4 <= bytes.len() {
+        let mut marker = [0u8; 4];
+        marker.copy_from_slice(&bytes[pos..pos + 4]);
+        pos += 4;
+        let size = if marker == CONTINUATION_MARKER {
+            let mut s = [0u8; 4];
+            s.copy_from_slice(&bytes[pos..pos + 4]);
+            pos += 4;
+            u32::from_le_bytes(s) as usize
+        } else {
+            u32::from_le_bytes(marker) as usize
+        };
+        if size == 0 {
+            break;
+        }
+        let meta = &bytes[pos..pos + size];
+        pos += size;
+        let body_len = root_as_message(meta).unwrap().bodyLength() as usize;
+        let body = &bytes[pos..pos + body_len];
+        pos += body_len;
+        out.push(FlightData::from(EncodedData {
+            ipc_message: meta.to_vec(),
+            arrow_data: body.to_vec(),
+        }));
+    }
+    out
+}
+
 fn bench_serve(c: &mut Criterion) {
     let schema = build_schema();
     let fixture = build_fixture(&schema);
-    let opts = lz4_options();
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
 
     c.bench_function("serve_shuffle_partition", |b| {
         b.iter(|| {
-            let reader =
-                StreamReader::try_new(Cursor::new(fixture.as_slice()), None).unwrap();
-            let batches: Vec<RecordBatch> = reader.collect::<Result<_, _>>().unwrap();
-
-            let input = futures::stream::iter(
-                batches.into_iter().map(Ok::<RecordBatch, FlightError>),
-            );
-            let encoder = FlightDataEncoderBuilder::new()
-                .with_schema(schema.clone())
-                .with_options(opts.clone())
-                .build(input);
-
-            let out = rt.block_on(encoder.try_collect::<Vec<_>>()).unwrap();
+            let out = relay_messages(fixture.as_slice());
             black_box(out);
         })
     });
