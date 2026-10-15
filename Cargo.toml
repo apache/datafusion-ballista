@@ -59,12 +59,15 @@ clap = { version = "4.5", features = ["derive", "cargo"] }
 # Keep these as minor-version requirements rather than exact patch pins so a
 # DataFusion patch release can be picked up with a lockfile bump alone.
 # Cargo.lock records the exact patch version CI builds against.
-datafusion = "55"
-datafusion-cli = "55"
-datafusion-functions-aggregate-common = "55"
-datafusion-proto = "55"
-datafusion-proto-common = "55"
-datafusion-substrait = "55"
+# DO NOT MERGE: this draft temporarily pins DataFusion to a StageBoundary-only
+# compatibility commit based on DataFusion 55.2.0, matching Ballista's Arrow
+# generation while the upstream API PR is developed on newer main.
+datafusion = { git = "https://github.com/edmondop/arrow-datafusion", rev = "ab2d2c1f60994ebd0aba4dbd0674be6eb4374f55" }
+datafusion-cli = { git = "https://github.com/edmondop/arrow-datafusion", rev = "ab2d2c1f60994ebd0aba4dbd0674be6eb4374f55" }
+datafusion-functions-aggregate-common = { git = "https://github.com/edmondop/arrow-datafusion", rev = "ab2d2c1f60994ebd0aba4dbd0674be6eb4374f55" }
+datafusion-proto = { git = "https://github.com/edmondop/arrow-datafusion", rev = "ab2d2c1f60994ebd0aba4dbd0674be6eb4374f55" }
+datafusion-proto-common = { git = "https://github.com/edmondop/arrow-datafusion", rev = "ab2d2c1f60994ebd0aba4dbd0674be6eb4374f55" }
+datafusion-substrait = { git = "https://github.com/edmondop/arrow-datafusion", rev = "ab2d2c1f60994ebd0aba4dbd0674be6eb4374f55" }
 
 ctor = { version = "1.0" }
 insta = "1.47"
