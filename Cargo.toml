@@ -151,3 +151,14 @@ lto = false
 debug = false
 debug-assertions = false
 incremental = false
+
+# Experimental: DataFusion 55.2.0 with the `isolated_partitions` backport from
+# apache/datafusion (see the linked DataFusion PR). Remove once Ballista upgrades
+# to a DataFusion release that contains it.
+[patch.crates-io]
+datafusion = { git = "https://github.com/andygrove/datafusion.git", rev = "448ed538be3bafdc5d0e5a5a1c11fdcc1431e7c7" }
+datafusion-cli = { git = "https://github.com/andygrove/datafusion.git", rev = "448ed538be3bafdc5d0e5a5a1c11fdcc1431e7c7" }
+datafusion-functions-aggregate-common = { git = "https://github.com/andygrove/datafusion.git", rev = "448ed538be3bafdc5d0e5a5a1c11fdcc1431e7c7" }
+datafusion-proto = { git = "https://github.com/andygrove/datafusion.git", rev = "448ed538be3bafdc5d0e5a5a1c11fdcc1431e7c7" }
+datafusion-proto-common = { git = "https://github.com/andygrove/datafusion.git", rev = "448ed538be3bafdc5d0e5a5a1c11fdcc1431e7c7" }
+datafusion-substrait = { git = "https://github.com/andygrove/datafusion.git", rev = "448ed538be3bafdc5d0e5a5a1c11fdcc1431e7c7" }

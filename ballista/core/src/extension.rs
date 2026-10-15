@@ -755,6 +755,9 @@ impl SessionConfigHelperExt for SessionConfig {
             //
             // See https://github.com/apache/datafusion-ballista/issues/1375
             .set_bool("datafusion.optimizer.enable_dynamic_filter_pushdown", false)
+            // Ballista runs each partition as an isolated task, so DataFusion
+            // must not broadcast a build side whose rows the join emits.
+            .set_bool("datafusion.execution.isolated_partitions", true)
     }
 }
 
