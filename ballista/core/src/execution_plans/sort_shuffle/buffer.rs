@@ -157,7 +157,10 @@ mod tests {
 
     #[test]
     fn drains_each_partition_in_arrival_order_and_batch_size() {
-        let mut bb = BufferedBatches::new(3, schema(), 2);
+        // With 3 rows a batch, partition 0's first output batch takes rows
+        // from both inputs, so chunking by `batch_size` is told apart from
+        // one output batch per input batch.
+        let mut bb = BufferedBatches::new(3, schema(), 3);
         assert!(bb.is_empty());
         assert_eq!(bb.num_partitions(), 3);
 
@@ -173,7 +176,7 @@ mod tests {
         assert_eq!(
             drain(&mut bb),
             vec![
-                (0, vec![batch(vec![10, 30]), batch(vec![50, 60])]),
+                (0, vec![batch(vec![10, 30, 50]), batch(vec![60])]),
                 (1, vec![batch(vec![40, 20])]),
             ]
         );
