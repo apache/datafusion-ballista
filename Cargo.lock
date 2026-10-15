@@ -1038,6 +1038,7 @@ dependencies = [
 name = "ballista-benchmarks"
 version = "55.0.0"
 dependencies = [
+ "arrow-flight",
  "ballista",
  "ballista-core",
  "clap 4.6.7",

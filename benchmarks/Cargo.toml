@@ -54,6 +54,7 @@ tokio = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+arrow-flight = { workspace = true }
 criterion = { version = "0.8", features = ["html_reports"] }
 datafusion-functions-aggregate-common = { workspace = true }
 ordered-float = { workspace = true }
@@ -65,3 +66,7 @@ name = "sort_shuffle"
 [[bench]]
 harness = false
 name = "quantile_sketch"
+
+[[bench]]
+harness = false
+name = "flight_passthrough"
