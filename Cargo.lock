@@ -1069,6 +1069,7 @@ dependencies = [
  "ballista-scheduler",
  "datafusion",
  "env_logger",
+ "futures",
  "log",
  "nix 0.31.3",
  "reqwest 0.13.5",
