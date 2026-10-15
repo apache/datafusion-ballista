@@ -332,6 +332,188 @@ mod supported {
         Ok(())
     }
 
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_execute_information_schema_query_reading_other_tables(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        // information_schema is read on the client, and its rows go to the
+        // cluster with the rest of the plan
+        let result = ctx
+            .sql("select table_name, (select count(*) from test) as row_count from information_schema.tables where table_name = 'test'")
+            .await?
+            .collect()
+            .await?;
+        let expected = [
+            "+------------+-----------+",
+            "| table_name | row_count |",
+            "+------------+-----------+",
+            "| test       | 8         |",
+            "+------------+-----------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_execute_information_schema_join_with_other_tables(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        // numeric_precision is nullable but set for `id`, so the scheduler
+        // sees it as a column that is not nullable
+        let result = ctx
+            .sql("select c.column_name, c.numeric_precision, count(*) as row_count from information_schema.columns c cross join test t where c.table_name = 'test' and c.column_name = 'id' group by c.column_name, c.numeric_precision")
+            .await?
+            .collect()
+            .await?;
+        let expected = [
+            "+-------------+-------------------+-----------+",
+            "| column_name | numeric_precision | row_count |",
+            "+-------------+-------------------+-----------+",
+            "| id          | 32                | 8         |",
+            "+-------------+-------------------+-----------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_execute_information_schema_query_matching_no_rows(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        let result = ctx
+            .sql("select table_name, (select count(*) from test) as row_count from information_schema.tables where table_name = 'missing'")
+            .await?
+            .collect()
+            .await?;
+
+        assert_eq!(
+            result.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+            0
+        );
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_execute_information_schema_settings_query_reading_other_tables(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+        ctx.sql("SET ballista.job.name = 'Super Cool Ballista App'")
+            .await?
+            .show()
+            .await?;
+
+        let result = ctx
+            .sql("select value, (select count(*) from test) as row_count from information_schema.df_settings where name = 'ballista.job.name'")
+            .await?
+            .collect()
+            .await?;
+        let expected = [
+            "+-------------------------+-----------+",
+            "| value                   | row_count |",
+            "+-------------------------+-----------+",
+            "| Super Cool Ballista App | 8         |",
+            "+-------------------------+-----------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_execute_information_schema_exists_query_reading_other_tables(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        // EXISTS needs no columns from information_schema, and NOT EXISTS
+        // over a missing table needs no rows either
+        let expected = [
+            "+-----------+",
+            "| row_count |",
+            "+-----------+",
+            "| 8         |",
+            "+-----------+",
+        ];
+        for sql in [
+            "select count(*) as row_count from test where exists (select 1 from information_schema.tables where table_name = 'test')",
+            "select count(*) as row_count from test where not exists (select 1 from information_schema.tables where table_name = 'missing')",
+        ] {
+            let result = ctx.sql(sql).await?.collect().await?;
+
+            assert_batches_eq!(expected, &result);
+        }
+
+        Ok(())
+    }
+
     // select from ballista config
     // check for SET =
     #[rstest]
