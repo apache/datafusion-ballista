@@ -22,6 +22,7 @@ pub mod distributed_exchange;
 pub mod join_selection;
 pub mod normalize_interleave;
 pub mod parallel_window;
+pub mod partition_probe_side;
 pub mod prefix_window;
 pub mod propagate_empty;
 
@@ -31,5 +32,6 @@ pub use distributed_exchange::*;
 pub use join_selection::*;
 pub use normalize_interleave::*;
 pub use parallel_window::*;
+pub use partition_probe_side::*;
 pub use prefix_window::*;
 pub use propagate_empty::*;

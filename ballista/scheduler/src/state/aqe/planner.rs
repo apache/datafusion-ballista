@@ -24,7 +24,8 @@ use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
     DistributedExchangeRule, NormalizeInterleaveRule, ParallelWindowRule,
-    PrefixWindowRule, PropagateEmptyExecRule, SelectJoinRule,
+    PartitionProbeSideBroadcastRule, PrefixWindowRule, PropagateEmptyExecRule,
+    SelectJoinRule,
 };
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
@@ -304,9 +305,9 @@ impl AdaptivePlanner {
     }
 
     /// Once all tasks have completed, pop the accumulated stage output as a
-    /// K-shaped `Vec<Vec<PartitionLocation>>` (or the broadcast-shape variant)
-    /// *without* parking it on the ExchangeExec. Caller can post-process
-    /// (e.g. range-repartition overlap remap) before calling
+    /// K-shaped `Vec<Vec<PartitionLocation>>` *without* parking it on the
+    /// ExchangeExec. Caller can post-process (e.g. range-repartition overlap
+    /// remap) before calling
     /// [`resolve_stage_partitions`](Self::resolve_stage_partitions).
     pub fn take_stage_output_partitions(
         &mut self,
@@ -317,28 +318,21 @@ impl AdaptivePlanner {
                 "Can't find active cache resolve".into(),
             ),
         )?;
-        let is_broadcast = stage
-            .downcast_ref::<ExchangeExec>()
-            .map(|e| e.broadcast)
-            .unwrap_or(false);
-
-        let output_partition_count = stage.output_partitioning().partition_count();
-        let stage_output = if is_broadcast {
-            self.runnable_stage_output
-                .remove(&stage_id)
-                .ok_or(datafusion::error::DataFusionError::Execution(
-                    "Can't find active stage to resolve".into(),
-                ))?
-                .partition_locations_broadcast()
-        } else {
-            self.runnable_stage_output
-                .remove(&stage_id)
-                .ok_or(datafusion::error::DataFusionError::Execution(
-                    "Can't find active stage to resolve".into(),
-                ))?
-                .partition_locations(output_partition_count)
+        // A broadcast stage reports one partition but writes one per input
+        // partition, kept in order so it can also be read partitioned.
+        let partition_count = match stage.downcast_ref::<ExchangeExec>() {
+            Some(exchange) if exchange.broadcast => {
+                exchange.input().output_partitioning().partition_count()
+            }
+            _ => stage.output_partitioning().partition_count(),
         };
-        Ok(stage_output)
+        Ok(self
+            .runnable_stage_output
+            .remove(&stage_id)
+            .ok_or(datafusion::error::DataFusionError::Execution(
+                "Can't find active stage to resolve".into(),
+            ))?
+            .partition_locations(partition_count))
     }
 
     /// Save the given partition list on the stage's ExchangeExec and trigger a replan.
@@ -610,10 +604,13 @@ impl AdaptivePlanner {
                 // without restricting by join type -- safe in one process, but
                 // Ballista runs one task per probe partition. Demote the unsafe
                 // ones straight after, while `EnsureRequirements` can still add
-                // the repartitions a `Partitioned` join needs.
-                "join_selection" => {
-                    vec![r, Arc::new(DemoteUnsafeBroadcastJoinRule::default())]
-                }
+                // the repartitions a `Partitioned` join needs. A swap can also
+                // move a broadcast onto the probe side; read it partitioned.
+                "join_selection" => vec![
+                    r,
+                    Arc::new(DemoteUnsafeBroadcastJoinRule::default()),
+                    Arc::new(PartitionProbeSideBroadcastRule::default()),
+                ],
                 _ => vec![r],
             })
             .collect()

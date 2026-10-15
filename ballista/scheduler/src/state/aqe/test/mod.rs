@@ -27,6 +27,8 @@ mod job_failure;
 mod join_selection;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
+/// A broadcast exchange that a later swap moves onto the probe side
+mod probe_side_broadcast;
 /// Regression tests for range-repartition planning end-to-end
 /// through `AdaptivePlanner` (DER → routing park → filter injection).
 mod range_repartition;
