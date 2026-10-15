@@ -92,6 +92,9 @@ async fn main() -> ballista_core::error::Result<()> {
     }
 
     let memory_metrics = ExecutorMemoryMetrics::default();
+    // This binary installs `AccountingAllocator` as its global allocator, so
+    // its balance can be reported alongside the pool usage.
+    memory_metrics.set_allocated_bytes_source(current_balance);
     let logging_metrics = memory_metrics.clone();
     let memory_logging = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
@@ -106,7 +109,8 @@ async fn main() -> ballista_core::error::Result<()> {
                 log::info!(
                     "Ballista executor memory usage: allocated {:.1} MiB, \
                      reserved {:.1} MiB, pool size {pool_size} ({} live pools)",
-                    current_balance() as f64 / (1024.0 * 1024.0),
+                    logging_metrics.allocated_bytes().unwrap_or_default() as f64
+                        / (1024.0 * 1024.0),
                     usage.reserved as f64 / (1024.0 * 1024.0),
                     usage.pool_count,
                 );
