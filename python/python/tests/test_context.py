@@ -64,6 +64,33 @@ def test_register_parquet(ctx):
     assert len(batches[0]) == 8
 
 
+def test_multi_stage_query(ctx):
+    """A query with a shuffle boundary, so it runs as more than one stage.
+
+    Single-stage queries still round-trip the final stage's shuffle output
+    through Arrow Flight, but only a repartitioning query also exercises the
+    intermediate shuffle write/read path between executors. Regressions in
+    shuffle file naming or partition bookkeeping show up here.
+    """
+    ctx.register_parquet("test", "testdata/test.parquet")
+    df = ctx.sql(
+        "SELECT bool_col, count(*) AS n, sum(int_col) AS total "
+        "FROM test GROUP BY bool_col ORDER BY bool_col"
+    )
+    batches = df.collect()
+
+    rows = [
+        (
+            batch.column(0)[i].as_py(),
+            batch.column(1)[i].as_py(),
+            batch.column(2)[i].as_py(),
+        )
+        for batch in batches
+        for i in range(len(batch))
+    ]
+    assert sorted(rows) == [(False, 4, 4), (True, 4, 0)]
+
+
 def test_read_dataframe_api(ctx):
     df = (
         ctx.read_csv("testdata/test.csv", has_header=True)
