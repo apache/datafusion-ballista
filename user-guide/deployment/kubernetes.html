@@ -296,6 +296,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Upgrade Guides</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1 has-children"><a class="reference internal" href="../../upgrading/index.html">Upgrade Guides</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../upgrading/56.0.0.html">Ballista 56.0.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../../upgrading/55.0.0.html">Ballista 55.0.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../../upgrading/54.0.0.html">Ballista 54.0.0</a></li>
 </ul>
@@ -436,6 +437,12 @@ must be enabled using the following command.</p>
 docker<span class="w"> </span>tag<span class="w"> </span>apache/datafusion-ballista-executor:latest<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-executor:latest
 docker<span class="w"> </span>push<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-scheduler:latest
 docker<span class="w"> </span>push<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-executor:latest
+</pre></div>
+</div>
+<p>If clients will fetch results from outside the cluster, also publish the result service image (see
+<a class="reference internal" href="#serving-results-to-clients-outside-the-cluster"><span class="xref myst">Serving Results to Clients Outside the Cluster</span></a>):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>tag<span class="w"> </span>apache/datafusion-ballista-result-service:latest<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-result-service:latest
+docker<span class="w"> </span>push<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-result-service:latest
 </pre></div>
 </div>
 </section>
@@ -686,6 +693,12 @@ so the operator (or Deployment controller) can bring a matching version up.</p>
 <p>Bump <code class="docutils literal notranslate"><span class="pre">BALLISTA_PROTOCOL_VERSION</span></code> only on releases that change the
 executor↔scheduler wire format. Most releases will not bump it.</p>
 </section>
+<section id="stopping-executors">
+<h3>Stopping executors<a class="headerlink" href="#stopping-executors" title="Link to this heading">#</a></h3>
+<p>Executors finish their running tasks before exiting on SIGTERM. If tasks can run longer than 30
+seconds, raise the executor pods’ <code class="docutils literal notranslate"><span class="pre">terminationGracePeriodSeconds</span></code> and the scheduler’s
+<code class="docutils literal notranslate"><span class="pre">--executor-termination-grace-period</span></code> to match.</p>
+</section>
 <section id="rolling-both-deployments-together">
 <h3>Rolling both Deployments together<a class="headerlink" href="#rolling-both-deployments-together" title="Link to this heading">#</a></h3>
 <p>The scheduler and executor live in separate Deployments; there is no single
@@ -767,10 +780,217 @@ ballista-scheduler<span class="w">   </span>ClusterIP<span class="w">   </span><
 </pre></div>
 </div>
 </section>
+<section id="serving-results-to-clients-outside-the-cluster">
+<h2>Serving Results to Clients Outside the Cluster<a class="headerlink" href="#serving-results-to-clients-outside-the-cluster" title="Link to this heading">#</a></h2>
+<p>Port forwarding the scheduler is enough to submit queries, but by default clients fetch query
+results directly from the executors, and executor pods are not reachable from outside the cluster.
+Deploy a result service that clients can reach, and have the scheduler point them at it. See
+<a class="reference internal" href="../scheduler.html#fetching-query-results"><span class="std std-ref">Fetching Query Results</span></a> for how it works.</p>
+<p>Save the following as <code class="docutils literal notranslate"><span class="pre">result-service.yaml</span></code>:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Service</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">ports</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50055</span>
+<span class="w">      </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flight</span>
+<span class="w">      </span><span class="c1"># Plaintext HTTP/2, so a Gateway API route speaks gRPC to the pods.</span>
+<span class="w">      </span><span class="nt">appProtocol</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">kubernetes.io/h2c</span>
+<span class="w">  </span><span class="nt">selector</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service</span>
+<span class="nn">---</span>
+<span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">apps/v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Deployment</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="c1"># Replicas are interchangeable: each forwards any fetch to the executor that</span>
+<span class="w">  </span><span class="c1"># holds the partition and keeps no state, so scale with result traffic.</span>
+<span class="w">  </span><span class="nt">replicas</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">  </span><span class="c1"># Start a replacement before stopping an old pod, so rollouts keep capacity.</span>
+<span class="w">  </span><span class="nt">strategy</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">RollingUpdate</span>
+<span class="w">    </span><span class="nt">rollingUpdate</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">maxSurge</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">      </span><span class="nt">maxUnavailable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<span class="w">  </span><span class="nt">selector</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">matchLabels</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service</span>
+<span class="w">  </span><span class="nt">template</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">metadata</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">labels</span><span class="p">:</span>
+<span class="w">        </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service</span>
+<span class="w">        </span><span class="nt">ballista-cluster</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista</span>
+<span class="w">    </span><span class="nt">spec</span><span class="p">:</span>
+<span class="w">      </span><span class="c1"># Prefer placing replicas on different nodes, so they don't share a</span>
+<span class="w">      </span><span class="c1"># node's network bandwidth.</span>
+<span class="w">      </span><span class="nt">topologySpreadConstraints</span><span class="p">:</span>
+<span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">maxSkew</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">          </span><span class="nt">topologyKey</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">kubernetes.io/hostname</span>
+<span class="w">          </span><span class="nt">whenUnsatisfiable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ScheduleAnyway</span>
+<span class="w">          </span><span class="nt">labelSelector</span><span class="p">:</span>
+<span class="w">            </span><span class="nt">matchLabels</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service</span>
+<span class="w">      </span><span class="c1"># Leaves 10s of headroom after the preStop sleep (5s) and the drain</span>
+<span class="w">      </span><span class="c1"># bound (45s).</span>
+<span class="w">      </span><span class="nt">terminationGracePeriodSeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
+<span class="w">      </span><span class="nt">containers</span><span class="p">:</span>
+<span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service</span>
+<span class="w">          </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;your-repo&gt;/datafusion-ballista-result-service:latest</span>
+<span class="w">          </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"--bind-port=50055"</span>
+<span class="w">            </span><span class="c1"># After SIGTERM, stop accepting connections and give in-flight</span>
+<span class="w">            </span><span class="c1"># result streams up to 45s to finish.</span>
+<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"--graceful-shutdown-timeout-seconds=45"</span>
+<span class="w">          </span><span class="nt">lifecycle</span><span class="p">:</span>
+<span class="w">            </span><span class="c1"># Kubernetes removes a terminating pod from the Service's endpoints</span>
+<span class="w">            </span><span class="c1"># in parallel with shutting it down, and kube-proxy and gateways</span>
+<span class="w">            </span><span class="c1"># learn of the removal asynchronously, so new connections can still</span>
+<span class="w">            </span><span class="c1"># arrive for a few seconds. Sleeping keeps the pod accepting them</span>
+<span class="w">            </span><span class="c1"># until routing catches up; SIGTERM follows once the hook returns.</span>
+<span class="w">            </span><span class="nt">preStop</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">sleep</span><span class="p">:</span>
+<span class="w">                </span><span class="nt">seconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
+<span class="w">          </span><span class="nt">ports</span><span class="p">:</span>
+<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">containerPort</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50055</span>
+<span class="w">              </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flight</span>
+<span class="w">          </span><span class="nt">livenessProbe</span><span class="p">:</span>
+<span class="w">            </span><span class="nt">httpGet</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/healthz</span>
+<span class="w">              </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50055</span>
+<span class="w">            </span><span class="nt">failureThreshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<span class="w">            </span><span class="nt">periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+<span class="w">          </span><span class="nt">readinessProbe</span><span class="p">:</span>
+<span class="w">            </span><span class="nt">httpGet</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/readyz</span>
+<span class="w">              </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50055</span>
+<span class="w">            </span><span class="nt">failureThreshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<span class="w">            </span><span class="nt">periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
+<span class="nn">---</span>
+<span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">policy/v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">PodDisruptionBudget</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="c1"># Node drains evict at most one replica at a time.</span>
+<span class="w">  </span><span class="nt">minAvailable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">  </span><span class="nt">selector</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">matchLabels</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service</span>
+</pre></div>
+</div>
+<p>When a pod is replaced or moved to another node, Kubernetes removes it from the Service’s
+endpoints at the same time as it starts shutting the pod down. kube-proxy and any gateway pick up
+that removal asynchronously, so for a few seconds new connections can still be routed to the pod.
+The <code class="docutils literal notranslate"><span class="pre">preStop</span></code> sleep keeps the pod accepting connections during that window. On SIGTERM, which
+follows the sleep, it stops accepting connections and lets in-flight result streams finish, for up
+to <code class="docutils literal notranslate"><span class="pre">--graceful-shutdown-timeout-seconds</span></code> (10 by default), before exiting. The rolling-update
+strategy and the PodDisruptionBudget keep at least one replica serving throughout.</p>
+<p>Then add <code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code> to the scheduler container’s <code class="docutils literal notranslate"><span class="pre">args</span></code> in <code class="docutils literal notranslate"><span class="pre">cluster.yaml</span></code>. Which
+address to advertise depends on how clients reach the cluster.</p>
+<section id="through-port-forwarding">
+<h3>Through port forwarding<a class="headerlink" href="#through-port-forwarding" title="Link to this heading">#</a></h3>
+<p>For a client on your own machine, forward a local port to the result service as well as to the
+scheduler, and advertise the local address:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"--bind-port=50050"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"--advertise-flight-endpoint=127.0.0.1:50055"</span><span class="p p-Indicator">]</span>
+</pre></div>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>result-service.yaml
+kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>cluster.yaml
+kubectl<span class="w"> </span>port-forward<span class="w"> </span>service/ballista-scheduler<span class="w"> </span><span class="m">50050</span>:50050<span class="w"> </span><span class="p">&amp;</span>
+kubectl<span class="w"> </span>port-forward<span class="w"> </span>service/ballista-result-service<span class="w"> </span><span class="m">50055</span>:50055<span class="w"> </span><span class="p">&amp;</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">port-forward</span></code> sends all traffic to a single pod, so use this for testing only.</p>
+</section>
+<section id="through-a-tls-terminating-gateway">
+<h3>Through a TLS-terminating gateway<a class="headerlink" href="#through-a-tls-terminating-gateway" title="Link to this heading">#</a></h3>
+<p>The result service doesn’t authenticate result fetches, and it connects to executors in
+plaintext. Make the gateway reachable only by trusted clients, for example through an internal
+load balancer or the gateway’s access restrictions, and limit what the service can reach as
+described in <a class="reference internal" href="#restricting-what-the-result-service-can-reach"><span class="xref myst">Restricting what the result service can reach</span></a>.</p>
+<p>In production, expose the result service through the <a class="reference external" href="https://gateway-api.sigs.k8s.io/">Gateway API</a> with a Gateway that terminates
+TLS and a <code class="docutils literal notranslate"><span class="pre">GRPCRoute</span></code> to the result service, and advertise the gateway’s address. TLS covers the
+connections from clients to the gateway. Behind it, the result service pods serve plaintext and
+connect to executors in plaintext.</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">args</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"--bind-port=50050"</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"--advertise-flight-endpoint=ballista-results.example.com:443"</span>
+</pre></div>
+</div>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gateway.networking.k8s.io/v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Gateway</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-results</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">gatewayClassName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;your-gateway-class&gt;</span>
+<span class="w">  </span><span class="nt">listeners</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">grpc</span>
+<span class="w">      </span><span class="nt">protocol</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">HTTPS</span>
+<span class="w">      </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">443</span>
+<span class="w">      </span><span class="nt">hostname</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-results.example.com</span>
+<span class="w">      </span><span class="nt">tls</span><span class="p">:</span>
+<span class="w">        </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Terminate</span>
+<span class="w">        </span><span class="nt">certificateRefs</span><span class="p">:</span>
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-results-tls</span>
+<span class="nn">---</span>
+<span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gateway.networking.k8s.io/v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GRPCRoute</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">parentRefs</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-results</span>
+<span class="w">  </span><span class="nt">hostnames</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-results.example.com</span>
+<span class="w">  </span><span class="nt">rules</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">backendRefs</span><span class="p">:</span>
+<span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service</span>
+<span class="w">          </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50055</span>
+</pre></div>
+</div>
+<p>Result streams are long-lived, so make sure the gateway implementation’s idle and stream timeouts
+allow for the largest result. Clients fetch results over TLS by setting <code class="docutils literal notranslate"><span class="pre">ballista.client.use_tls</span></code>
+to <code class="docutils literal notranslate"><span class="pre">true</span></code>, with TLS roots for the gateway’s certificate supplied through a gRPC endpoint override.
+That takes a client built with one of tonic’s TLS features, as in the <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/examples/examples/mtls-cluster.rs">mTLS cluster example</a>.</p>
+</section>
+<section id="restricting-what-the-result-service-can-reach">
+<h3>Restricting what the result service can reach<a class="headerlink" href="#restricting-what-the-result-service-can-reach" title="Link to this heading">#</a></h3>
+<p>The result service checks no credentials, and it dials whichever executor address a fetch ticket
+names without checking that the address belongs to the cluster, so a forged ticket can make it
+connect to an arbitrary host. Keep it on networks you trust and, where your cluster enforces
+network policies, allow it to connect only to the executors’ Arrow Flight port:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">networking.k8s.io/v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">NetworkPolicy</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service-egress</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">podSelector</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">matchLabels</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-result-service</span>
+<span class="w">  </span><span class="nt">policyTypes</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"Egress"</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">egress</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">to</span><span class="p">:</span>
+<span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">podSelector</span><span class="p">:</span>
+<span class="w">            </span><span class="nt">matchLabels</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-executor</span>
+<span class="w">      </span><span class="nt">ports</span><span class="p">:</span>
+<span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50051</span>
+<span class="w">          </span><span class="nt">protocol</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">TCP</span>
+</pre></div>
+</div>
+<p>If executors register with host names rather than pod IPs (<code class="docutils literal notranslate"><span class="pre">--external-host</span></code>), also allow DNS.</p>
+</section>
+</section>
 <section id="deleting-the-ballista-cluster">
 <h2>Deleting the Ballista Cluster<a class="headerlink" href="#deleting-the-ballista-cluster" title="Link to this heading">#</a></h2>
 <p>Run the following kubectl command to delete the cluster.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>delete<span class="w"> </span>-f<span class="w"> </span>cluster.yaml
+</pre></div>
+</div>
+<p>If you deployed a result service, delete it too:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>delete<span class="w"> </span>-f<span class="w"> </span>result-service.yaml
 </pre></div>
 </div>
 </section>
@@ -871,10 +1091,17 @@ scale the executors.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deploying-a-ballista-cluster">Deploying a Ballista Cluster</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#health-probes-and-rolling-upgrades">Health Probes and Rolling Upgrades</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#protocol-version-and-forced-upgrades">Protocol version and forced upgrades</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stopping-executors">Stopping executors</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rolling-both-deployments-together">Rolling both Deployments together</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#port-forwarding">Port Forwarding</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serving-results-to-clients-outside-the-cluster">Serving Results to Clients Outside the Cluster</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#through-port-forwarding">Through port forwarding</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#through-a-tls-terminating-gateway">Through a TLS-terminating gateway</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#restricting-what-the-result-service-can-reach">Restricting what the result service can reach</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deleting-the-ballista-cluster">Deleting the Ballista Cluster</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#autoscaling-executors">Autoscaling Executors</a></li>
 </ul>

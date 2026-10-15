@@ -296,6 +296,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Upgrade Guides</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1 has-children"><a class="reference internal" href="../../upgrading/index.html">Upgrade Guides</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../upgrading/56.0.0.html">Ballista 56.0.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../../upgrading/55.0.0.html">Ballista 55.0.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../../upgrading/54.0.0.html">Ballista 54.0.0</a></li>
 </ul>
@@ -414,11 +415,14 @@
 <li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone"><code class="docutils literal notranslate"><span class="pre">ghcr.io/apache/datafusion-ballista-standalone</span></code></a></p></li>
 <li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-scheduler"><code class="docutils literal notranslate"><span class="pre">ghcr.io/apache/datafusion-ballista-scheduler</span></code></a></p></li>
 <li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-executor"><code class="docutils literal notranslate"><span class="pre">ghcr.io/apache/datafusion-ballista-executor</span></code></a></p></li>
+<li><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-result-service"><code class="docutils literal notranslate"><span class="pre">ghcr.io/apache/datafusion-ballista-result-service</span></code></a></p></li>
 </ul>
 <p>Pull the images needed for your deployment with the following commands:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>pull<span class="w"> </span>ghcr.io/apache/datafusion-ballista-standalone:latest
 docker<span class="w"> </span>pull<span class="w"> </span>ghcr.io/apache/datafusion-ballista-scheduler:latest
 docker<span class="w"> </span>pull<span class="w"> </span>ghcr.io/apache/datafusion-ballista-executor:latest
+<span class="c1"># Only needed if clients cannot reach the executors:</span>
+docker<span class="w"> </span>pull<span class="w"> </span>ghcr.io/apache/datafusion-ballista-result-service:latest
 </pre></div>
 </div>
 <p>Alternatively run the following commands to clone the source repository and build the Docker images from source:</p>
@@ -432,6 +436,7 @@ docker<span class="w"> </span>pull<span class="w"> </span>ghcr.io/apache/datafus
 <li><p><code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-benchmarks:latest</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-cli:latest</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-executor:latest</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-result-service:latest</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-scheduler:latest</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">apache/datafusion-ballista-standalone:latest</span></code></p></li>
 </ul>

@@ -296,6 +296,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Upgrade Guides</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1 has-children"><a class="reference internal" href="../../upgrading/index.html">Upgrade Guides</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../upgrading/56.0.0.html">Ballista 56.0.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../../upgrading/55.0.0.html">Ballista 55.0.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../../upgrading/54.0.0.html">Ballista 54.0.0</a></li>
 </ul>
@@ -411,6 +412,11 @@
 the scheduler and executor crates.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>ballista-scheduler
 cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>ballista-executor
+</pre></div>
+</div>
+<p>If clients cannot reach the executors, also install the result service, which serves them query
+results instead (see <a class="reference internal" href="../scheduler.html#fetching-query-results"><span class="std std-ref">Fetching Query Results</span></a>):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>ballista-result-service
 </pre></div>
 </div>
 <p>With these crates installed, it is now possible to start a scheduler process.</p>

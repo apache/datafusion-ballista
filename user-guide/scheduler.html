@@ -296,6 +296,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Upgrade Guides</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1 has-children"><a class="reference internal" href="../upgrading/index.html">Upgrade Guides</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/56.0.0.html">Ballista 56.0.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../upgrading/55.0.0.html">Ballista 55.0.0</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../upgrading/54.0.0.html">Ballista 54.0.0</a></li>
 </ul>
@@ -424,15 +425,43 @@ from <code class="docutils literal notranslate"><span class="pre">--external-hos
 <p>By default a client fetches the result partitions of a query directly from the executors that
 produced them, over Arrow Flight. This keeps the scheduler out of the data path, but it requires
 every client to have network access to every executor — which is not the case in isolated
-environments where only the scheduler is reachable.</p>
-<p>For those deployments the scheduler can advertise a different address for clients to fetch results
-from, and can optionally host an Arrow Flight proxy itself.</p>
+environments such as Kubernetes, where clients can usually reach only a few entry points.</p>
+<p>For those deployments, run a result service (<code class="docutils literal notranslate"><span class="pre">ballista-result-service</span></code>) that clients can reach, and
+have the scheduler advertise its address:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ballista-result-service<span class="w"> </span>--bind-port<span class="w"> </span><span class="m">50055</span>
+ballista-scheduler<span class="w"> </span>--advertise-flight-endpoint<span class="w"> </span>ballista-results.example.com:50055
+</pre></div>
+</div>
+<p>Clients then fetch each partition from the result service, which forwards the fetch to the executor
+that holds it, so the scheduler serves no result data. The result service holds no state: scale it
+by running more replicas behind a gRPC-aware load balancer and advertising the load balancer’s
+address. For Kubernetes manifests, see
+<a class="reference internal" href="deployment/kubernetes.html#serving-results-to-clients-outside-the-cluster"><span class="std std-ref">Serving Results to Clients Outside the Cluster</span></a>.</p>
+<section id="behind-a-tls-terminating-gateway">
+<h3>Behind a TLS-terminating gateway<a class="headerlink" href="#behind-a-tls-terminating-gateway" title="Link to this heading">#</a></h3>
+<p>To serve results through a gateway or load balancer that terminates TLS, advertise its address. TLS
+covers the connections from clients to the gateway. The result service replicas behind it serve
+plaintext and connect to executors in plaintext, and they don’t authenticate fetches, so make the
+gateway reachable only by trusted clients:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ballista-result-service<span class="w"> </span>--bind-port<span class="w"> </span><span class="m">50055</span>
+ballista-scheduler<span class="w"> </span>--advertise-flight-endpoint<span class="w"> </span>ballista-results.example.com:443
+</pre></div>
+</div>
+<p>Clients choose TLS for result fetches themselves, with <code class="docutils literal notranslate"><span class="pre">ballista.client.use_tls</span></code>. That takes a client
+built with one of tonic’s TLS features, and TLS roots for the gateway’s certificate supplied through
+a gRPC endpoint override, as the <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/examples/examples/mtls-cluster.rs">mTLS cluster example</a> does. <code class="docutils literal notranslate"><span class="pre">ballista.client.use_tls</span></code> applies to every result fetch a client
+makes, including direct fetches from executors. The gateway must forward gRPC (HTTP/2) to the
+replicas, for example with a Gateway API <code class="docutils literal notranslate"><span class="pre">GRPCRoute</span></code>, and allow long-lived streams.</p>
 <blockquote>
-<div><p>Note: this is plain Arrow Flight, used to move result partitions. It is not Flight SQL, which was
-removed in Ballista 46.0.0 — the proxy only serves Ballista’s <code class="docutils literal notranslate"><span class="pre">FetchPartition</span></code> action, so generic
-Flight SQL or JDBC clients cannot use this endpoint.</p>
+<div><p>Note: the advertised endpoint serves plain Arrow Flight <code class="docutils literal notranslate"><span class="pre">DoGet</span></code> for Ballista’s own partition-fetch
+tickets. Generic Flight SQL, JDBC, and ADBC clients connect to the scheduler’s
+<a class="reference internal" href="flightsql.html"><span class="std std-doc">Flight SQL frontend</span></a> instead.</p>
 </div></blockquote>
-<p>Two independent options control this:</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>The result service checks no credentials, and it dials whichever executor address a fetch ticket
+names without checking that the address belongs to the cluster. Keep it on a trusted network.</p>
+</div>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Option</p></th>
@@ -440,37 +469,29 @@ Flight SQL or JDBC clients cannot use this endpoint.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--enable-embedded-flight-proxy</span></code></p></td>
-<td><p>Runs an Arrow Flight proxy inside the scheduler process, on the scheduler’s own host and port. The proxy forwards each fetch to the executor that owns the partition.</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code></p></td>
+<td><p>The <code class="docutils literal notranslate"><span class="pre">HOST:PORT</span></code> address clients are told to fetch results from, instead of the executors: a result service, or a load balancer in front of one.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code></p></td>
-<td><p>The <code class="docutils literal notranslate"><span class="pre">HOST:PORT</span></code> address clients are told to fetch results from, instead of the executors. Use it to point clients at a load balancer or a standalone proxy.</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--enable-embedded-flight-proxy</span></code></p></td>
+<td><p><strong>Deprecated, to be removed in 57.0.0.</strong> Runs an Arrow Flight proxy inside the scheduler process, on the scheduler’s own host and port, and points clients at the scheduler for results.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>The first controls whether a proxy <em>runs</em>; the second controls what clients are <em>told</em>. Setting
-both is a supported combination: the embedded proxy runs, and clients are pointed at the advertised
-address, which is how you put a load balancer in front of one or more schedulers.</p>
-<p>To let clients fetch results through the scheduler itself:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ballista-scheduler<span class="w"> </span>--enable-embedded-flight-proxy
-</pre></div>
-</div>
-<p>To point clients at a load balancer that fronts the schedulers:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ballista-scheduler<span class="w"> </span>--enable-embedded-flight-proxy<span class="w"> </span><span class="se">\</span>
-<span class="w">                   </span>--advertise-flight-endpoint<span class="w"> </span>ballista-flight.example.com:50050
-</pre></div>
-</div>
-<p>Both options are disabled by default, and the embedded proxy should be enabled deliberately: it
-puts result traffic on the scheduler’s process and thread pool, competing with query planning and
-task scheduling. Under load this is a known source of scheduler congestion, so prefer a separate
-proxy — advertised with <code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code> — for clusters where result volume is
-significant.</p>
+</section>
+<section id="the-embedded-proxy-deprecated">
+<h3>The embedded proxy (deprecated)<a class="headerlink" href="#the-embedded-proxy-deprecated" title="Link to this heading">#</a></h3>
+<p>The scheduler can still proxy results itself with <code class="docutils literal notranslate"><span class="pre">--enable-embedded-flight-proxy</span></code>. This puts result
+traffic on the scheduler’s process and thread pool, competing with query planning and task
+scheduling, and it scales only with the scheduler. It is deprecated in 56.0.0 and will be removed in
+57.0.0; the scheduler logs a warning at startup while it is enabled. To migrate, deploy a result
+service and set <code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code> to its address.</p>
 <blockquote>
 <div><p><code class="docutils literal notranslate"><span class="pre">--advertise-flight-sql-endpoint</span></code> is accepted as a deprecated alias of
-<code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code>. Passing either flag with no value used to start the embedded proxy;
-that is deprecated too and logs a warning — use <code class="docutils literal notranslate"><span class="pre">--enable-embedded-flight-proxy</span></code> instead.</p>
+<code class="docutils literal notranslate"><span class="pre">--advertise-flight-endpoint</span></code>. Passing either flag with no value starts the deprecated embedded
+proxy, is itself deprecated, and logs a warning.</p>
 </div></blockquote>
+</section>
 </section>
 <section id="rest-api">
 <h2>REST API<a class="headerlink" href="#rest-api" title="Link to this heading">#</a></h2>
@@ -645,7 +666,11 @@ scheduler with <code class="docutils literal notranslate"><span class="pre">--di
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scheduler-identity">Scheduler Identity</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fetching-query-results">Fetching Query Results</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fetching-query-results">Fetching Query Results</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#behind-a-tls-terminating-gateway">Behind a TLS-terminating gateway</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-embedded-proxy-deprecated">The embedded proxy (deprecated)</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rest-api">REST API</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#web-tui-configuration">Web TUI Configuration</a></li>
 </ul>

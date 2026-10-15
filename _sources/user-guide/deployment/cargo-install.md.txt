@@ -27,6 +27,13 @@ cargo install --locked ballista-scheduler
 cargo install --locked ballista-executor
 ```
 
+If clients cannot reach the executors, also install the result service, which serves them query
+results instead (see [Fetching Query Results](../scheduler.md#fetching-query-results)):
+
+```bash
+cargo install --locked ballista-result-service
+```
+
 With these crates installed, it is now possible to start a scheduler process.
 
 ```bash
