@@ -27,6 +27,7 @@ use ballista_benchmarks::{
     execute_query_capturing_answer, find_path, parquet_table_layout, read_query_file,
     register_parquet_table,
 };
+use ballista_core::test_utils::tpch::tpch_schema;
 use datafusion::arrow::datatypes::SchemaBuilder;
 use datafusion::common::{DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
 use datafusion::datasource::listing::ListingTableUrl;
@@ -865,7 +866,7 @@ async fn register_tables(
             }
             "csv" => {
                 let path = find_path(path, table, "csv")?;
-                let schema = get_schema(table);
+                let schema = tpch_schema(table);
                 let options = CsvReadOptions::new().schema(&schema).has_header(true);
                 if debug {
                     println!(
@@ -907,7 +908,7 @@ async fn register_tables(
 /// directory names (e.g. Spark's `partitionBy`), so date filters compare
 /// dates, not strings.
 fn tpch_path_column_type(table: &str, column: &str) -> Option<DataType> {
-    get_schema(table)
+    tpch_schema(table)
         .field_with_name(column)
         .ok()
         .map(|field| field.data_type().clone())
@@ -995,7 +996,7 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
     let output_root_path = Path::new(&opt.output_path);
     for table in TABLES {
         let start = Instant::now();
-        let schema = get_schema(table);
+        let schema = tpch_schema(table);
 
         let input_path = format!("{}/{}.tbl", opt.input_path.to_str().unwrap(), table);
         let options = CsvReadOptions::new()
@@ -1101,7 +1102,7 @@ async fn get_table(
                 Arc::new(format),
                 path,
                 DEFAULT_CSV_EXTENSION,
-                get_schema(table),
+                tpch_schema(table),
             )
         }
         "parquet" => {
@@ -1112,7 +1113,7 @@ async fn get_table(
                 Arc::new(format),
                 path,
                 DEFAULT_PARQUET_EXTENSION,
-                get_schema(table),
+                tpch_schema(table),
             )
         }
         other => {
@@ -1146,104 +1147,9 @@ async fn get_table(
     Ok(Arc::new(ListingTable::try_new(config)?))
 }
 
-fn get_schema(table: &str) -> Schema {
-    // note that the schema intentionally uses signed integers so that any generated Parquet
-    // files can also be used to benchmark tools that only support signed integers, such as
-    // Apache Spark
-
-    match table {
-        "part" => Schema::new(vec![
-            Field::new("p_partkey", DataType::Int64, false),
-            Field::new("p_name", DataType::Utf8, false),
-            Field::new("p_mfgr", DataType::Utf8, false),
-            Field::new("p_brand", DataType::Utf8, false),
-            Field::new("p_type", DataType::Utf8, false),
-            Field::new("p_size", DataType::Int32, false),
-            Field::new("p_container", DataType::Utf8, false),
-            Field::new("p_retailprice", DataType::Decimal128(15, 2), false),
-            Field::new("p_comment", DataType::Utf8, false),
-        ]),
-
-        "supplier" => Schema::new(vec![
-            Field::new("s_suppkey", DataType::Int64, false),
-            Field::new("s_name", DataType::Utf8, false),
-            Field::new("s_address", DataType::Utf8, false),
-            Field::new("s_nationkey", DataType::Int64, false),
-            Field::new("s_phone", DataType::Utf8, false),
-            Field::new("s_acctbal", DataType::Decimal128(15, 2), false),
-            Field::new("s_comment", DataType::Utf8, false),
-        ]),
-
-        "partsupp" => Schema::new(vec![
-            Field::new("ps_partkey", DataType::Int64, false),
-            Field::new("ps_suppkey", DataType::Int64, false),
-            Field::new("ps_availqty", DataType::Int32, false),
-            Field::new("ps_supplycost", DataType::Decimal128(15, 2), false),
-            Field::new("ps_comment", DataType::Utf8, false),
-        ]),
-
-        "customer" => Schema::new(vec![
-            Field::new("c_custkey", DataType::Int64, false),
-            Field::new("c_name", DataType::Utf8, false),
-            Field::new("c_address", DataType::Utf8, false),
-            Field::new("c_nationkey", DataType::Int64, false),
-            Field::new("c_phone", DataType::Utf8, false),
-            Field::new("c_acctbal", DataType::Decimal128(15, 2), false),
-            Field::new("c_mktsegment", DataType::Utf8, false),
-            Field::new("c_comment", DataType::Utf8, false),
-        ]),
-
-        "orders" => Schema::new(vec![
-            Field::new("o_orderkey", DataType::Int64, false),
-            Field::new("o_custkey", DataType::Int64, false),
-            Field::new("o_orderstatus", DataType::Utf8, false),
-            Field::new("o_totalprice", DataType::Decimal128(15, 2), false),
-            Field::new("o_orderdate", DataType::Date32, false),
-            Field::new("o_orderpriority", DataType::Utf8, false),
-            Field::new("o_clerk", DataType::Utf8, false),
-            Field::new("o_shippriority", DataType::Int32, false),
-            Field::new("o_comment", DataType::Utf8, false),
-        ]),
-
-        "lineitem" => Schema::new(vec![
-            Field::new("l_orderkey", DataType::Int64, false),
-            Field::new("l_partkey", DataType::Int64, false),
-            Field::new("l_suppkey", DataType::Int64, false),
-            Field::new("l_linenumber", DataType::Int32, false),
-            Field::new("l_quantity", DataType::Decimal128(15, 2), false),
-            Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),
-            Field::new("l_discount", DataType::Decimal128(15, 2), false),
-            Field::new("l_tax", DataType::Decimal128(15, 2), false),
-            Field::new("l_returnflag", DataType::Utf8, false),
-            Field::new("l_linestatus", DataType::Utf8, false),
-            Field::new("l_shipdate", DataType::Date32, false),
-            Field::new("l_commitdate", DataType::Date32, false),
-            Field::new("l_receiptdate", DataType::Date32, false),
-            Field::new("l_shipinstruct", DataType::Utf8, false),
-            Field::new("l_shipmode", DataType::Utf8, false),
-            Field::new("l_comment", DataType::Utf8, false),
-        ]),
-
-        "nation" => Schema::new(vec![
-            Field::new("n_nationkey", DataType::Int64, false),
-            Field::new("n_name", DataType::Utf8, false),
-            Field::new("n_regionkey", DataType::Int64, false),
-            Field::new("n_comment", DataType::Utf8, false),
-        ]),
-
-        "region" => Schema::new(vec![
-            Field::new("r_regionkey", DataType::Int64, false),
-            Field::new("r_name", DataType::Utf8, false),
-            Field::new("r_comment", DataType::Utf8, false),
-        ]),
-
-        _ => unimplemented!(),
-    }
-}
-
 /// The `.tbl` file contains a trailing column
 pub fn get_tbl_tpch_table_schema(table: &str) -> Schema {
-    let mut schema = SchemaBuilder::from(get_schema(table).fields);
+    let mut schema = SchemaBuilder::from(tpch_schema(table).fields);
     schema.push(Field::new("__placeholder", DataType::Utf8, false));
     schema.finish()
 }
@@ -2071,7 +1977,7 @@ mod tests {
         let ctx = SessionContext::new_with_config(config);
 
         for &table in TABLES {
-            let schema = get_schema(table);
+            let schema = tpch_schema(table);
             let batch = RecordBatch::new_empty(Arc::new(schema.to_owned()));
 
             let provider = MemTable::try_new(Arc::new(schema), vec![vec![batch]])?;
@@ -2217,7 +2123,7 @@ mod ballista_round_trip {
         let path = ListingTableUrl::parse(tpch_data_path)?;
 
         for &table in TABLES {
-            let schema = get_schema(table);
+            let schema = tpch_schema(table);
             let options = CsvReadOptions::new()
                 .schema(&schema)
                 .delimiter(b'|')
@@ -2274,7 +2180,7 @@ mod ballista_round_trip {
         let path = ListingTableUrl::parse(tpch_data_path)?;
 
         for &table in TABLES {
-            let schema = get_schema(table);
+            let schema = tpch_schema(table);
             let options = CsvReadOptions::new()
                 .schema(&schema)
                 .delimiter(b'|')
