@@ -1254,7 +1254,7 @@ mod tests {
         });
 
         let result = tokio::time::timeout(
-            Duration::from_secs(30),
+            Duration::from_secs(5),
             super::start_executor_process(config),
         )
         .await
