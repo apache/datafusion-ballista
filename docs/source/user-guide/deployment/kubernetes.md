@@ -324,6 +324,12 @@ so the operator (or Deployment controller) can bring a matching version up.
 Bump `BALLISTA_PROTOCOL_VERSION` only on releases that change the
 executor↔scheduler wire format. Most releases will not bump it.
 
+### Stopping executors
+
+Executors finish their running tasks before exiting on SIGTERM. If tasks can run longer than 30
+seconds, raise the executor pods' `terminationGracePeriodSeconds` and the scheduler's
+`--executor-termination-grace-period` to match.
+
 ### Rolling both Deployments together
 
 The scheduler and executor live in separate Deployments; there is no single

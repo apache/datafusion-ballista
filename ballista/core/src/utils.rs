@@ -34,7 +34,7 @@ use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, metrics};
 use futures::StreamExt;
-use log::error;
+use log::{error, info};
 use std::borrow::Cow;
 use std::io::BufWriter;
 use std::net::SocketAddr;
@@ -506,6 +506,40 @@ pub fn redact_key_value_pairs(pairs: &[KeyValuePair]) -> Vec<KeyValuePair> {
                 .map(|value| redact_config_value(key, value).to_string()),
         })
         .collect()
+}
+
+/// Completes on Ctrl-C, or on SIGTERM where the platform has it.
+///
+/// If a signal cannot be listened for, that branch never completes, rather than
+/// signalling a shutdown at startup.
+pub async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            error!("failed to listen for Ctrl-C: {e}");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            Err(e) => {
+                error!("failed to listen for SIGTERM: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => info!("Received Ctrl-C, shutting down"),
+        () = terminate => info!("Received SIGTERM, shutting down"),
+    }
 }
 
 #[cfg(test)]
