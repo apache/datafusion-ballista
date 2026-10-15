@@ -44,12 +44,14 @@ use futures::{Stream, StreamExt};
 use log::{debug, warn};
 use prost::Message;
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::{
     convert::{TryFrom, TryInto},
     task::{Context, Poll},
 };
-use tonic::{Code, Streaming};
+use tonic::transport::Channel;
+use tonic::{Code, Status, Streaming};
 
 /// Client for interacting with Ballista executors.
 #[derive(Clone)]
@@ -62,6 +64,45 @@ pub struct BallistaClient {
 }
 
 impl BallistaClient {
+    fn encode_action(action: &Action) -> BResult<Vec<u8>> {
+        let serialized_action: protobuf::Action = action.to_owned().try_into()?;
+        let mut buf = Vec::with_capacity(serialized_action.encoded_len());
+        serialized_action
+            .encode(&mut buf)
+            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
+        Ok(buf)
+    }
+
+    async fn retry_io<T, F, Fut>(&self, mut op: F) -> Result<T, Status>
+    where
+        F: FnMut(FlightServiceClient<Channel>) -> Fut,
+        Fut: Future<Output = Result<T, Status>>,
+    {
+        let attempts = self.io_retries_times.max(1);
+        let mut attempt = 0;
+
+        loop {
+            if attempt > 0 {
+                warn!(
+                    "Remote shuffle read fail, retry {attempt} times, sleep {} ms.",
+                    self.io_retry_wait_time_ms
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    self.io_retry_wait_time_ms,
+                ))
+                .await;
+            }
+
+            match op(self.flight_client.clone()).await {
+                Ok(result) => return Ok(result),
+                Err(error) if error.code() == Code::Unknown && attempt + 1 < attempts => {
+                    attempt += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     /// Create a new BallistaClient to connect to the executor listening on the specified
     /// host and port
     #[allow(clippy::too_many_arguments)]
@@ -293,77 +334,28 @@ impl BallistaClient {
         &mut self,
         action: &Action,
     ) -> BResult<SendableRecordBatchStream> {
-        let serialized_action: protobuf::Action = action.to_owned().try_into()?;
-
-        let mut buf: Vec<u8> = Vec::with_capacity(serialized_action.encoded_len());
-
-        serialized_action
-            .encode(&mut buf)
-            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
-
-        let io_retries_times = self.io_retries_times;
-        let io_retry_wait_time_ms = self.io_retry_wait_time_ms;
-        for i in 0..io_retries_times {
-            if i > 0 {
-                warn!(
-                    "Remote shuffle read fail, retry {i} times, sleep {io_retry_wait_time_ms} ms."
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    io_retry_wait_time_ms,
-                ))
-                .await;
-            }
-
-            let request = tonic::Request::new(Ticket {
-                ticket: buf.clone().into(),
-            });
-            let result = self.flight_client.do_get(request).await;
-            let res = match result {
-                Ok(res) => res,
-                Err(ref err) => {
-                    // IO related error like connection timeout, reset... will warp with Code::Unknown
-                    // This means IO related error will retry.
-                    if i == io_retries_times - 1 || err.code() != Code::Unknown {
-                        return BallistaError::GrpcActionError(format!(
-                            "{:?}",
-                            result.unwrap_err()
-                        ))
-                        .into();
-                    }
-                    // retry request
-                    continue;
+        let buf = Self::encode_action(action)?;
+        let (stream, flight_data) = self
+            .retry_io(|mut client| {
+                let buf = buf.clone();
+                async move {
+                    let request = tonic::Request::new(Ticket { ticket: buf.into() });
+                    let response = client.do_get(request).await?;
+                    let mut stream = response.into_inner();
+                    let flight_data = stream.message().await?;
+                    Ok((stream, flight_data))
                 }
-            };
+            })
+            .await
+            .map_err(|error| BallistaError::GrpcActionError(format!("{error:?}")))?;
 
-            let mut stream = res.into_inner();
-
-            match stream.message().await {
-                Ok(res) => {
-                    return match res {
-                        Some(flight_data) => {
-                            let schema = Arc::new(Schema::try_from(&flight_data)?);
-
-                            // all the remaining stream messages should be dictionary and record batches
-                            Ok(Box::pin(FlightDataStream::new(stream, schema)))
-                        }
-                        None => Err(BallistaError::GrpcActionError(
-                            "Did not receive schema batch from flight server".to_string(),
-                        )),
-                    };
-                }
-                Err(e) => {
-                    if i == io_retries_times - 1 || e.code() != Code::Unknown {
-                        return BallistaError::GrpcActionError(format!(
-                            "{:?}",
-                            e.to_string()
-                        ))
-                        .into();
-                    }
-                    continue;
-                }
-            }
-        }
-        unreachable!("Did not receive schema batch from flight server");
+        let flight_data = flight_data.ok_or_else(|| {
+            BallistaError::GrpcActionError(
+                "Did not receive schema batch from flight server".to_string(),
+            )
+        })?;
+        let schema = Arc::new(Schema::try_from(&flight_data)?);
+        Ok(Box::pin(FlightDataStream::new(stream, schema)))
     }
 
     /// Executes the specified action and retrieves the results from the remote executor
@@ -391,75 +383,46 @@ impl BallistaClient {
         action: &Action,
         header: Option<Vec<u8>>,
     ) -> BResult<SendableRecordBatchStream> {
-        let serialized_action: protobuf::Action = action.to_owned().try_into()?;
-
-        let mut buf: Vec<u8> = Vec::with_capacity(serialized_action.encoded_len());
-
-        serialized_action
-            .encode(&mut buf)
-            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
-
-        let io_retries_times = self.io_retries_times;
-        let io_retry_wait_time_ms = self.io_retry_wait_time_ms;
-        for i in 0..io_retries_times {
-            if i > 0 {
-                warn!(
-                    "Remote shuffle read fail, retry {i} times, sleep {io_retry_wait_time_ms} ms."
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    io_retry_wait_time_ms,
-                ))
-                .await;
-            }
-
-            let request = tonic::Request::new(arrow_flight::Action {
-                body: buf.clone().into(),
-                r#type: "IO_BLOCK_TRANSPORT".to_string(),
-            });
-            let result = self.flight_client.do_action(request).await;
-            let res = match result {
-                Ok(res) => res,
-                Err(ref err) => {
-                    // IO related error like connection timeout, reset... will warp with Code::Unknown
-                    // This means IO related error will retry.
-                    if i == io_retries_times - 1 || err.code() != Code::Unknown {
-                        return BallistaError::GrpcActionError(format!(
-                            "{:?}",
-                            result.unwrap_err()
-                        ))
-                        .into();
-                    }
-                    // retry request
-                    continue;
+        let buf = Self::encode_action(action)?;
+        let response = self
+            .retry_io(|mut client| {
+                let buf = buf.clone();
+                async move {
+                    let request = tonic::Request::new(arrow_flight::Action {
+                        body: buf.into(),
+                        r#type: "IO_BLOCK_TRANSPORT".to_string(),
+                    });
+                    client.do_action(request).await
                 }
-            };
+            })
+            .await
+            .map_err(|error| BallistaError::GrpcActionError(format!("{error:?}")))?;
 
-            let stream = res.into_inner();
-            let stream = stream.map(|m| {
-                m.map(|b| b.body).map_err(|e| {
-                    DataFusionError::ArrowError(
-                        Box::new(ArrowError::IpcError(e.to_string())),
-                        None,
-                    )
-                })
-            });
+        let stream = response.into_inner();
+        let stream = stream.map(|m| {
+            m.map(|b| b.body).map_err(|e| {
+                DataFusionError::ArrowError(
+                    Box::new(ArrowError::IpcError(e.to_string())),
+                    None,
+                )
+            })
+        });
 
-            // A caller fetching byte ranges gets batch messages with no schema
-            // ahead of them, because the schema is not in the bytes it asked
-            // for. It supplies the header it already knows.
-            let stream =
-                match header.clone() {
-                    Some(header) => futures::stream::once(async move {
-                        Ok(prost::bytes::Bytes::from(header))
-                    })
-                    .chain(stream)
-                    .boxed(),
-                    None => stream.boxed(),
-                };
+        // A caller fetching byte ranges gets batch messages with no schema
+        // ahead of them, because the schema is not in the bytes it asked
+        // for. It supplies the header it already knows.
+        let stream = match header {
+            Some(header) => {
+                futures::stream::once(
+                    async move { Ok(prost::bytes::Bytes::from(header)) },
+                )
+                .chain(stream)
+                .boxed()
+            }
+            None => stream.boxed(),
+        };
 
-            return Ok(Box::pin(BlockDataStream::try_new(stream).await?));
-        }
-        unreachable!("Did not receive schema batch from flight server");
+        Ok(Box::pin(BlockDataStream::try_new(stream).await?))
     }
 }
 
@@ -711,6 +674,7 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> RecordBatchStream
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use datafusion::arrow::{
         array::{DictionaryArray, Int32Array, RecordBatch},
@@ -720,7 +684,73 @@ mod tests {
     use futures::{StreamExt, TryStreamExt};
     use prost::bytes::Bytes;
 
-    use crate::client::BlockDataStream;
+    use crate::client::{BallistaClient, BlockDataStream};
+
+    #[tokio::test]
+    async fn retry_io_attempts_once_when_retries_are_zero() {
+        let mut client = BallistaClient::new_for_test("localhost", 50050);
+        client.io_retries_times = 0;
+        client.io_retry_wait_time_ms = 0;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&attempts);
+
+        let error = client
+            .retry_io(move |_| {
+                observed.fetch_add(1, Ordering::Relaxed);
+                async { Err::<(), _>(tonic::Status::unavailable("offline")) }
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), tonic::Code::Unavailable);
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_io_retries_unknown_errors() {
+        let mut client = BallistaClient::new_for_test("localhost", 50050);
+        client.io_retries_times = 3;
+        client.io_retry_wait_time_ms = 0;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&attempts);
+
+        let result = client
+            .retry_io(move |_| {
+                let attempt = observed.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    if attempt < 2 {
+                        Err(tonic::Status::unknown("transient"))
+                    } else {
+                        Ok("done")
+                    }
+                }
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result, "done");
+        assert_eq!(attempts.load(Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_io_does_not_retry_other_statuses() {
+        let mut client = BallistaClient::new_for_test("localhost", 50050);
+        client.io_retries_times = 3;
+        client.io_retry_wait_time_ms = 0;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&attempts);
+
+        let error = client
+            .retry_io(move |_| {
+                observed.fetch_add(1, Ordering::Relaxed);
+                async { Err::<(), _>(tonic::Status::invalid_argument("bad")) }
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
 
     fn generate_batches() -> Vec<RecordBatch> {
         let batch0 = RecordBatch::try_from_iter([
