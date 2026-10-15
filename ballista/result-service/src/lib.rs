@@ -40,7 +40,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::{BallistaConfigGrpcEndpoint, EndpointOverrideFn};
 use ballista_core::serving::{ForwardingBackend, ResultBackend, ServingFlightService};
 use ballista_core::utils::{
-    GrpcServerConfig, create_grpc_server, create_grpc_server_incoming,
+    GrpcServerConfig, create_grpc_server, create_grpc_server_incoming, drain_or_time_out,
 };
 use futures::{Stream, StreamExt};
 use log::{info, warn};
@@ -62,7 +62,7 @@ pub struct ResultServiceConfig {
     /// Maximum gRPC message size, in bytes, the service encodes.
     pub grpc_max_encoding_message_size: usize,
     /// Time to let in-flight result streams finish after the shutdown signal
-    /// before stopping anyway.
+    /// before stopping anyway. Zero waits as long as it takes.
     pub graceful_shutdown_timeout: Duration,
     /// Connect to executors with `https://` URLs. The connections are only
     /// encrypted in a build with one of tonic's TLS features, typically with
@@ -198,25 +198,6 @@ fn server<B: ResultBackend>(
         // Health probes and metrics scrapers use HTTP/1.1.
         .accept_http1(true)
         .add_routes(Routes::from(routes))
-}
-
-/// Waits for the shutting-down `server` to finish its in-flight streams, but no
-/// longer than `bound`, after which the streams still running are abandoned.
-async fn drain_or_time_out<E>(
-    server: impl Future<Output = std::result::Result<(), E>>,
-    bound: Duration,
-) -> std::result::Result<(), E> {
-    match tokio::time::timeout(bound, server).await {
-        Ok(result) => result,
-        Err(_) => {
-            warn!(
-                "Graceful shutdown timed out after {}s; exiting with result \
-                 streams still in flight",
-                bound.as_secs()
-            );
-            Ok(())
-        }
-    }
 }
 
 #[cfg(test)]
@@ -355,26 +336,5 @@ mod tests {
             .expect("the drain must finish once the open stream has")
             .unwrap()
             .unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_stalled_drain_gives_up_once_the_bound_elapses() {
-        let result: std::result::Result<(), String> =
-            drain_or_time_out(std::future::pending(), Duration::from_millis(50)).await;
-        assert!(result.is_ok(), "must give up after the bound, not hang");
-    }
-
-    #[tokio::test]
-    async fn a_finished_drain_passes_its_result_through() {
-        let ok: std::result::Result<(), String> =
-            drain_or_time_out(async { Ok(()) }, Duration::from_secs(10)).await;
-        assert!(ok.is_ok());
-
-        let failed = drain_or_time_out(
-            async { Err::<(), _>("server failed".to_string()) },
-            Duration::from_secs(10),
-        )
-        .await;
-        assert_eq!(failed, Err("server failed".to_string()));
     }
 }

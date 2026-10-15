@@ -48,7 +48,7 @@ struct Config {
     /// shutdown signal (SIGTERM or Ctrl-C) before exiting anyway. Keep it below
     /// your orchestrator's termination grace period (Kubernetes'
     /// terminationGracePeriodSeconds, 30 by default), so this bound is reached
-    /// before a SIGKILL is.
+    /// before a SIGKILL is. 0 waits as long as it takes.
     #[arg(long, default_value_t = 10)]
     graceful_shutdown_timeout_seconds: u64,
 }
