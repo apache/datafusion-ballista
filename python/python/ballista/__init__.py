@@ -39,6 +39,5 @@ __all__ = [
     "BallistaScheduler",
     "BallistaExecutor",
     "BallistaSessionContext",
-    "DistributedDataFrame",
     "ExecutionPlanVisualization",
 ]
