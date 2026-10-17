@@ -172,11 +172,24 @@ df.explain_visual(analyze=True)
 
 ### Progress Indicators
 
-For long-running queries, use `collect_with_progress()` to see execution status:
+For long-running queries, use `collect_with_progress()` to see execution status.
+In Jupyter it displays elapsed time while the query runs:
 
 ```python
+from ballista.jupyter import collect_with_progress
+
 df = ctx.sql("SELECT * FROM large_table")
-batches = df.collect_with_progress()
+batches = collect_with_progress(df)
+```
+
+Outside Jupyter, or to handle progress yourself, pass a callback:
+
+```python
+def my_callback(status: str, progress: float):
+    # progress is -1.0 while running, 1.0 when completed
+    print(f"{status}: {progress}")
+
+batches = collect_with_progress(df, callback=my_callback, poll_interval=1.0)
 ```
 
 ### Example Notebooks

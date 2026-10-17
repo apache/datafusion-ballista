@@ -23,6 +23,7 @@ from ballista import (
     setup_test_cluster,
     ExecutionPlanVisualization,
 )
+from ballista.jupyter import collect_with_progress
 
 
 @pytest.fixture
@@ -90,3 +91,37 @@ class TestHTMLRendering:
         html = df._repr_html_()
         # The HTML should contain table tags or similar
         assert html is not None
+
+
+class TestCollectWithProgress:
+    """Tests for the collect_with_progress method."""
+
+    def test_collect_with_progress_returns_batches(self, ctx):
+        """Test that collect_with_progress returns batches."""
+        df = ctx.sql("SELECT 1 as value")
+        batches = collect_with_progress(df)
+        assert batches is not None
+        assert len(batches) > 0
+
+    def test_collect_with_progress_callback(self, ctx):
+        """Test collect_with_progress with callback."""
+        df = ctx.sql("SELECT 1 as value")
+        callback_calls = []
+
+        def callback(status, progress):
+            callback_calls.append((status, progress))
+
+        batches = collect_with_progress(df, callback=callback)
+        assert batches is not None
+        # Callback should have been called at least once for completion
+        assert len(callback_calls) > 0
+
+    def test_collect_with_progress_matches_collect(self, ctx):
+        """Test that collect_with_progress returns same data as collect."""
+        df = ctx.sql("SELECT 1 as value")
+        batches_progress = collect_with_progress(df)
+        batches_normal = df.collect()
+
+        assert len(batches_progress) == len(batches_normal)
+        for bp, bn in zip(batches_progress, batches_normal):
+            assert len(bp) == len(bn)
