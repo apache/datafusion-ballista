@@ -16,15 +16,18 @@
 # under the License.
 
 from datafusion import (
+    RuntimeEnvBuilder,
     SessionConfig,
     SessionContext,
 )
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 import warnings
 
 from ._internal_ballista import BallistaConfigExtension
 from ._internal_ballista import ballista_datafusion_config_defaults
 from ._internal_ballista import with_ballista_query_planner
+
+ConfigValue = Union[str, int, float, bool]
 
 
 class ExecutionPlanVisualization:
@@ -202,31 +205,12 @@ class ExecutionPlanVisualization:
 
 def BallistaSessionContext(
     address: str,
-    config=None,
-    runtime=None,
-    cluster_config: Optional[Dict[str, str]] = None,
-):
-    cluster_config = (
-        {str(k): str(v) for k, v in cluster_config.items()}
-        if cluster_config is not None
-        else None
-    )
-    # Apply overrides to the local SessionContext too: some settings
-    # (e.g. datafusion.execution.listing_table_factory_infer_partitions)
-    # are consulted during local table registration / planning, before
-    # the plan is shipped to the scheduler. Ballista-namespaced keys
-    # are registered locally as a config extension below.
-    if config is None:
-        config = SessionConfig()
-        for key, value in ballista_datafusion_config_defaults().items():
-            config = config.set(key, value)
-    # Register Ballista options as a config extension so `ballista.*` keys
-    # are known to the local session (`SET`, information_schema.df_settings).
-    # Options already registered on a user supplied config take precedence.
-    ballista_settings = {
-        k: v for k, v in (cluster_config or {}).items() if k.startswith("ballista.")
-    }
-    config = config.with_extension(BallistaConfigExtension(ballista_settings))
+    config: Optional[Union[SessionConfig, Dict[str, str]]] = None,
+    runtime: Optional[RuntimeEnvBuilder] = None,
+    cluster_config: Optional[Dict[str, ConfigValue]] = None,
+) -> SessionContext:
+    cluster_config = _normalize_cluster_config(cluster_config)
+    config = _produce_valid_config(config, cluster_config)
 
     source_ctx = SessionContext(config, runtime)
     configured_ctx = with_ballista_query_planner(
@@ -235,3 +219,72 @@ def BallistaSessionContext(
         cluster_config,
     )
     return configured_ctx
+
+
+# DataFusion options overridden by Ballista, mirrors
+# `SessionConfigExt::ballista_restricted_configuration` in ballista-core
+#
+# value is `True` if option is restricted and cant be overridden, 
+# if value is `False` if users can override it using dict parameter
+# in dictionary.
+#
+# TODO: At the moment values are duplicated,
+_BALLISTA_RESTRICTED_DATAFUSION_OPTIONS: Dict[str, bool] = {
+    "datafusion.optimizer.enable_round_robin_repartition": True,
+    "datafusion.execution.parquet.schema_force_view_types": False,
+    "datafusion.sql_parser.map_string_types_to_utf8view": False,
+    "datafusion.optimizer.hash_join_single_partition_threshold": False,
+    "datafusion.optimizer.hash_join_single_partition_threshold_rows": False,
+    "datafusion.optimizer.prefer_hash_join": True,
+    "datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery": True,
+    "datafusion.optimizer.enable_dynamic_filter_pushdown": True,
+}
+
+def _config_value_to_str(value: ConfigValue) -> str:
+    # `str(True)` is "True", config parsers expect lowercase
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _normalize_cluster_config(
+    cluster_config: Optional[Dict[str, ConfigValue]],
+) -> Optional[Dict[str, str]]:
+    if cluster_config is None:
+        return None
+    return {str(k): _config_value_to_str(v) for k, v in cluster_config.items()}
+
+
+def _produce_valid_config(
+    config: Optional[Union[SessionConfig, Dict[str, str]]] = None,
+    cluster_config: Optional[Dict[str, ConfigValue]] = None,
+) -> SessionConfig:
+    cluster_config = _normalize_cluster_config(cluster_config)
+
+    ballista_settings = {
+        k: v for k, v in (cluster_config or {}).items() if k.startswith("ballista.")
+    }
+
+    # options explicitly set by the user, only known when config is a dict
+    user_options = config if isinstance(config, dict) else {}
+
+    if config is None:
+        config = SessionConfig()
+    elif isinstance(config, dict):
+        config = SessionConfig(config)
+
+    for key, value in ballista_datafusion_config_defaults().items():
+        if (
+            key.startswith("datafusion.")
+            and key in _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS
+        ):
+            restricted = _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS[key]
+            # keep user value for options which are not restricted
+            if not restricted and key in user_options:
+                continue
+            config = config.set(key, value)
+        elif key.startswith("ballista."):
+            ballista_settings.setdefault(key, value)
+
+    config = config.with_extension(BallistaConfigExtension(ballista_settings))
+    return config
