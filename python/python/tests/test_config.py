@@ -15,6 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import pytest
+
 from ballista._internal_ballista import (
     BallistaConfigExtension,
     ballista_datafusion_config_defaults,
@@ -147,3 +149,33 @@ def test_session_config_overrides_non_restricted_options():
     settings = _settings(_produce_valid_config(config))
 
     assert settings[key] == "false"
+
+
+_CLIENT_OPTIONS = ("ballista.client.use_tls", "ballista.client.pull")
+
+_USER_CONFIGS = pytest.mark.parametrize(
+    "make_config",
+    [
+        lambda: None,
+        lambda: SessionConfig().with_target_partitions(3),
+        lambda: {"datafusion.execution.target_partitions": "3"},
+    ],
+    ids=["no_config", "session_config", "dict_config"],
+)
+
+
+@_USER_CONFIGS
+def test_client_options_default(make_config):
+    settings = _settings(_produce_valid_config(make_config()))
+
+    for key in _CLIENT_OPTIONS:
+        assert settings[key] == "false", key
+
+
+@_USER_CONFIGS
+def test_client_options_set_from_cluster_config(make_config):
+    cluster_config = {key: True for key in _CLIENT_OPTIONS}
+    settings = _settings(_produce_valid_config(make_config(), cluster_config))
+
+    for key in _CLIENT_OPTIONS:
+        assert settings[key] == "true", key
