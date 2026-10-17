@@ -185,6 +185,24 @@ def test_cluster_config(cluster):
     assert result.to_pydict() == {"c": [8]}
 
 
+def test_sql_explain_analyze(ctx):
+    ctx.register_parquet("t", TEST_PARQUET)
+    result = to_table(
+        ctx.sql("EXPLAIN ANALYZE SELECT bool_col, count(*) FROM t GROUP BY bool_col")
+    )
+
+    assert result.column_names == ["plan_type", "plan"]
+    plan = "\n".join(result.column("plan").to_pylist())
+    assert "output_rows" in plan
+
+
+def test_dataframe_explain_analyze(ctx, capsys):
+    ctx.register_parquet("t", TEST_PARQUET)
+    ctx.sql("SELECT count(*) FROM t").explain(analyze=True)
+
+    assert "output_rows" in capsys.readouterr().out
+
+
 def test_invalid_sql_raises(ctx):
     with pytest.raises(Exception):
         ctx.sql("SELECT * FROM table_does_not_exist").collect()

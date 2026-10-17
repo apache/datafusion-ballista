@@ -62,6 +62,7 @@ message BallistaPhysicalPlanNode {
     PrefixMergeExecNode prefix_merge = 14;
     RangeShuffleWriterExecNode range_shuffle_writer = 15;
     DistributedQueryExecNode distributed_query = 16;
+    DistributedExplainAnalyzeExecNode distributed_explain_analyze = 17;
   }
 }
 
@@ -70,6 +71,14 @@ message DistributedQueryExecNode {
   repeated KeyValuePair settings = 2;
   bytes logical_plan = 3;
   string session_id = 4;
+}
+
+// Wraps a DistributedQueryExec (its single input) and fetches the job
+// metrics from the scheduler once the query has completed.
+message DistributedExplainAnalyzeExecNode {
+  string scheduler_url = 1;
+  datafusion_common.Schema schema = 2;
+  bool verbose = 3;
 }
 
 // Value-range router over N locally-sorted overlapping input partitions.
