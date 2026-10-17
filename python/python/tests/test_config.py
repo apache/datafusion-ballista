@@ -69,8 +69,21 @@ def test_non_restricted_options_kept_from_user_config():
     config = SessionConfig().with_target_partitions(3).with_batch_size(1234)
     settings = _settings(_produce_valid_config(config))
 
-    assert settings["datafusion.execution.target_partitions"] == "3"
+    assert settings["datafusion.execution.target_partitions"] == "16"
     assert settings["datafusion.execution.batch_size"] == "1234"
+
+
+def test_target_partitions_default():
+    settings = _settings(_produce_valid_config())
+
+    assert settings["datafusion.execution.target_partitions"] == "16"
+
+
+def test_target_partitions_overridden_by_user_config():
+    config = {"datafusion.execution.target_partitions": "128"}
+    settings = _settings(_produce_valid_config(config))
+
+    assert settings["datafusion.execution.target_partitions"] == "128"
 
 
 def test_ballista_defaults_set_without_cluster_config():

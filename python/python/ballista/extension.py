@@ -302,6 +302,7 @@ def BallistaSessionContext(
 _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS: Dict[str, bool] = {
     "datafusion.optimizer.enable_round_robin_repartition": True,
     "datafusion.execution.parquet.schema_force_view_types": False,
+    "datafusion.execution.target_partitions": False,
     "datafusion.sql_parser.map_string_types_to_utf8view": False,
     "datafusion.optimizer.hash_join_single_partition_threshold": False,
     "datafusion.optimizer.hash_join_single_partition_threshold_rows": False,
