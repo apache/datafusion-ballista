@@ -17,13 +17,16 @@
 
 """Tests for notebook-specific features in Ballista."""
 
+import os
+import tempfile
+
 import pytest
 from ballista import (
     BallistaSessionContext,
     setup_test_cluster,
     ExecutionPlanVisualization,
 )
-from ballista.jupyter import collect_with_progress
+from ballista.jupyter import collect_with_progress, explain_visual
 
 
 @pytest.fixture
@@ -31,6 +34,88 @@ def ctx():
     """Create a connected Ballista context for testing."""
     (address, port) = setup_test_cluster()
     return BallistaSessionContext(address=f"df://{address}:{port}")
+
+
+class TestExplainVisual:
+    """Tests for the explain_visual method."""
+
+    def test_explain_visual_returns_visualization(self, ctx):
+        """Test that explain_visual returns an ExecutionPlanVisualization."""
+        df = ctx.sql("SELECT 1 as value")
+        viz = explain_visual(df)
+        assert isinstance(viz, ExecutionPlanVisualization)
+
+    def test_explain_visual_with_analyze(self, ctx):
+        """Test explain_visual with analyze=True."""
+        df = ctx.sql("SELECT 1 as value")
+        viz = explain_visual(df, analyze=True)
+        assert isinstance(viz, ExecutionPlanVisualization)
+        assert viz.analyze is True
+
+    def test_visualization_to_dot(self, ctx):
+        """Test converting visualization to DOT format."""
+        df = ctx.sql("SELECT 1 as value")
+        viz = explain_visual(df)
+        dot = viz.to_dot()
+        assert "digraph" in dot
+        assert "ExecutionPlan" in dot
+
+    def test_visualization_to_svg(self, ctx):
+        """Test converting visualization to SVG or HTML fallback."""
+        df = ctx.sql("SELECT 1 as value")
+        viz = explain_visual(df)
+        svg = viz.to_svg()
+        # Should return either SVG or HTML fallback
+        assert svg is not None
+        assert len(svg) > 0
+
+    def test_visualization_repr_html(self, ctx):
+        """Test HTML representation for Jupyter."""
+        df = ctx.sql("SELECT 1 as value")
+        viz = explain_visual(df)
+        html = viz._repr_html_()
+        assert html is not None
+        assert len(html) > 0
+
+    def test_visualization_repr(self, ctx):
+        """Test string representation."""
+        df = ctx.sql("SELECT 1 as value")
+        viz = explain_visual(df)
+        s = repr(viz)
+        assert "ExecutionPlanVisualization" in s
+
+    def test_visualization_save_dot(self, ctx):
+        """Test saving visualization as DOT file."""
+        df = ctx.sql("SELECT 1 as value")
+        viz = explain_visual(df)
+
+        with tempfile.NamedTemporaryFile(suffix=".dot", delete=False) as f:
+            path = f.name
+
+        try:
+            viz.save(path)
+            with open(path) as f:
+                content = f.read()
+            assert "digraph" in content
+        finally:
+            os.unlink(path)
+
+    def test_visualization_save_svg(self, ctx):
+        """Test saving visualization as SVG file."""
+        df = ctx.sql("SELECT 1 as value")
+        viz = explain_visual(df)
+
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+            path = f.name
+
+        try:
+            viz.save(path)
+            with open(path) as f:
+                content = f.read()
+            # Should have some content (either SVG or HTML fallback)
+            assert len(content) > 0
+        finally:
+            os.unlink(path)
 
 
 class TestExecutionPlanVisualization:

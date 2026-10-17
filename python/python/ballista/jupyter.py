@@ -110,7 +110,7 @@ except ImportError:
             return decorator
 
 
-from .extension import BallistaSessionContext
+from .extension import BallistaSessionContext, ExecutionPlanVisualization
 
 
 class BallistaConnectionError(Exception):
@@ -530,6 +530,37 @@ Examples:
             display(HTML(f"<pre>{help_info}</pre>"))
         else:
             print(help_info)
+
+
+def explain_visual(df: DataFrame, analyze: bool = False) -> ExecutionPlanVisualization:
+    """
+    Generate a visual representation of the execution plan.
+
+    This method creates an SVG visualization of the query execution plan,
+    which can be displayed directly in Jupyter notebooks.
+
+    Args:
+        df: DataFrame to visualize.
+        analyze: If True, includes runtime statistics from actual execution.
+
+    Returns:
+        ExecutionPlanVisualization: An object that renders as SVG in Jupyter.
+
+    Example:
+        >>> df = ctx.sql("SELECT * FROM orders WHERE amount > 100")
+        >>> explain_visual(df)  # Displays SVG in notebook
+        >>> viz = explain_visual(df, analyze=True)
+        >>> viz.save("plan.svg")  # Save to file
+    """
+    # Get the execution plan as a string representation
+    # Note: explain() prints but doesn't return a string, so we use logical_plan()
+    try:
+        plan = df.logical_plan()
+        plan_str = plan.display_indent()
+    except Exception:
+        # Fallback if logical_plan() fails
+        plan_str = "Unable to retrieve execution plan"
+    return ExecutionPlanVisualization(plan_str, analyze=analyze)
 
 
 def collect_with_progress(
