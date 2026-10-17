@@ -30,12 +30,14 @@ release. See the
 ## Creating a SessionContext
 
 > [!IMPORTANT]
-> Current approach is to support datafusion python API, there are know limitations of current approach,
-> with some cases producing errors.
 >
-> We are trying to come up with the best approach to support ballista python interface.
+> Ballista supports the DataFusion Python API natively: `BallistaSessionContext`
+> returns a standard `datafusion.SessionContext` and queries created from it
+> are executed on the Ballista cluster.
 >
-> More details could be found at [#1142](https://github.com/apache/datafusion-ballista/issues/1142)
+> Some features are still being worked on, such as support for Python UDFs
+> and custom extension codecs. See the known limitations below.
+>
 
 Creates a new context which connects to a Ballista scheduler process.
 
@@ -95,7 +97,8 @@ Check [DataFusion python](https://datafusion.apache.org/python/) provides more e
 
 PyBallista provides first-class Jupyter notebook support with SQL magic commands and rich HTML rendering.
 
-### Install Jupyter extras first:
+### Install Jupyter extras first
+
 ```bash
 pip install "ballista[jupyter]"
 ```
