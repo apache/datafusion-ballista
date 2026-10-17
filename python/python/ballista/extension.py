@@ -224,7 +224,7 @@ def BallistaSessionContext(
 # DataFusion options overridden by Ballista, mirrors
 # `SessionConfigExt::ballista_restricted_configuration` in ballista-core
 #
-# value is `True` if option is restricted and cant be overridden, 
+# value is `True` if option is restricted and cant be overridden,
 # if value is `False` if users can override it using dict parameter
 # in dictionary.
 #
@@ -239,6 +239,7 @@ _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS: Dict[str, bool] = {
     "datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery": True,
     "datafusion.optimizer.enable_dynamic_filter_pushdown": True,
 }
+
 
 def _config_value_to_str(value: ConfigValue) -> str:
     # `str(True)` is "True", config parsers expect lowercase
