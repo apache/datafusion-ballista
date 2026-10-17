@@ -161,11 +161,13 @@ SELECT * FROM orders WHERE status = 'pending'
 Visualize query execution plans directly in notebooks:
 
 ```python
+from ballista.jupyter import explain_visual
+
 df = ctx.sql("SELECT * FROM orders WHERE amount > 100")
-df.explain_visual()  # Displays SVG visualization
+explain_visual(df)  # Displays SVG visualization
 
 # With runtime statistics
-df.explain_visual(analyze=True)
+explain_visual(df, analyze=True)
 ```
 
 > **Note:** Full SVG visualization requires graphviz to be installed (`brew install graphviz` on macOS).
