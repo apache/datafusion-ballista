@@ -209,6 +209,76 @@ def BallistaSessionContext(
     runtime: Optional[RuntimeEnvBuilder] = None,
     cluster_config: Optional[Dict[str, ConfigValue]] = None,
 ) -> SessionContext:
+    """
+    Create a DataFusion ``SessionContext`` that executes queries on a Ballista cluster.
+
+    The returned object is a regular ``datafusion.SessionContext``, so the whole
+    DataFusion Python API (``sql``, ``read_parquet``, ``register_*``, DataFrame
+    operations, ...) is available. Planning happens locally; physical plans are
+    sent to the Ballista scheduler at ``address`` for distributed execution.
+
+    Args:
+        address: Ballista scheduler URL, for example ``"df://localhost:50050"``.
+        config: Local session configuration, either a ``SessionConfig`` or a
+            dictionary of ``datafusion.*`` options. It is used for local planning
+            only and is not propagated to the cluster. DataFusion options which
+            Ballista does not support are overridden with Ballista defaults.
+        runtime: Optional runtime environment used by the local session.
+        cluster_config: Options applied to the local session and propagated to
+            the scheduler-side session. Keys must start with ``datafusion.`` or
+            ``ballista.``; values may be ``str``, ``int``, ``float`` or ``bool``.
+
+    Returns:
+        A ``SessionContext`` configured with the Ballista query planner.
+
+    Raises:
+        ValueError: If a ``cluster_config`` key does not start with
+            ``datafusion.`` or ``ballista.``.
+
+    Examples:
+        Connect to a scheduler and run SQL:
+
+        >>> from ballista import BallistaSessionContext
+        >>> ctx = BallistaSessionContext("df://localhost:50050")
+        >>> ctx.register_parquet("t", "./testdata/test.parquet")
+        >>> ctx.sql("SELECT count(*) FROM t").show()
+
+        Use the DataFrame API:
+
+        >>> from datafusion import col, lit
+        >>> df = ctx.read_parquet("./testdata/test.parquet")
+        >>> batches = df.filter(col("id") > lit(4)).limit(5).collect()
+
+        Configure settings which should reach the cluster:
+
+        >>> ctx = BallistaSessionContext(
+        ...     "df://localhost:50050",
+        ...     cluster_config={
+        ...         "datafusion.execution.target_partitions": 16,
+        ...         "datafusion.execution.batch_size": 8192,
+        ...     },
+        ... )
+
+        Configure Ballista specific settings, such as job name shown in the
+        scheduler UI, or adaptive query planning:
+
+        >>> ctx = BallistaSessionContext(
+        ...     "df://localhost:50050",
+        ...     cluster_config={
+        ...         "ballista.job.name": "daily report",
+        ...         "ballista.planner.adaptive.enabled": True,
+        ...         "ballista.optimizer.broadcast_join_threshold_bytes": 10 * 1024 * 1024,
+        ...     },
+        ... )
+
+        Configure the local session only:
+
+        >>> from datafusion import SessionConfig
+        >>> ctx = BallistaSessionContext(
+        ...     "df://localhost:50050",
+        ...     config=SessionConfig().with_information_schema(True),
+        ... )
+    """
     cluster_config = _normalize_cluster_config(cluster_config)
     config = _produce_valid_config(config, cluster_config)
 
