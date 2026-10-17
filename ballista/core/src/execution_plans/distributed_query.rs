@@ -331,19 +331,33 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         let metric_total_bytes =
             MetricBuilder::new(&self.metrics).counter("transferred_bytes", partition);
 
-        let session_config = context.session_config().clone();
+        let session_config = context.session_config();
 
-        if session_config.ballista_config().client_pull() {
+        // Prefer the BallistaConfig registered on the task's session config.
+        // It can be missing when the task context comes from a session not
+        // set up by Ballista (as seen with Ballista Python), so fall back to
+        // the config this plan was created with.
+        let bc = session_config
+            .options()
+            .extensions
+            .get::<BallistaConfig>()
+            .unwrap_or(&self.config);
+
+        let grpc_config = GrpcClientConfig::from(bc);
+
+        if bc.client_pull() {
             let stream = futures::stream::once(execute_query_pull(
                 self.scheduler_url.clone(),
                 self.session_id.clone(),
                 query,
-                self.config.grpc_client_max_message_size(),
-                GrpcClientConfig::from(&self.config),
+                bc.grpc_client_max_message_size(),
+                grpc_config,
                 Arc::new(self.metrics.clone()),
                 Arc::clone(&self.job_id),
                 partition,
-                session_config,
+                session_config.ballista_grpc_interceptor(),
+                session_config.ballista_override_create_grpc_client_endpoint(),
+                bc.use_tls(),
             ))
             .try_flatten()
             .inspect(move |batch| {
@@ -363,12 +377,14 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             let stream = futures::stream::once(execute_query_push(
                 self.scheduler_url.clone(),
                 query,
-                self.config.grpc_client_max_message_size(),
-                GrpcClientConfig::from(&self.config),
+                bc.grpc_client_max_message_size(),
+                grpc_config,
                 Arc::new(self.metrics.clone()),
                 Arc::clone(&self.job_id),
                 partition,
-                session_config,
+                session_config.ballista_grpc_interceptor(),
+                session_config.ballista_override_create_grpc_client_endpoint(),
+                bc.use_tls(),
             ))
             .try_flatten()
             .inspect(move |batch| {
@@ -435,25 +451,36 @@ pub async fn execute_physical_plan<U: 'static + AsExecutionPlan>(
         operation_id,
     };
 
-    let max_message_size = config.grpc_client_max_message_size();
-    let grpc_config = GrpcClientConfig::from(config);
     let metrics = Arc::new(ExecutionPlanMetricsSet::new());
     let job_id_handle = Arc::new(Mutex::new(None));
     let partition = 0;
 
+    // Prefer the BallistaConfig registered on the task's session config.
+    // It can be missing when the task context comes from a session not
+    // set up by Ballista (as seen with Ballista Python), so fall back to
+    // the config this plan was created with.
+    let bc = session_config
+        .options()
+        .extensions
+        .get::<BallistaConfig>()
+        .unwrap_or(config);
+    let grpc_config = GrpcClientConfig::from(bc);
+
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>> =
-        if session_config.ballista_config().client_pull() {
+        if bc.client_pull() {
             Box::pin(
                 execute_query_pull(
                     scheduler_url,
                     session_id,
                     query,
-                    max_message_size,
+                    bc.grpc_client_max_message_size(),
                     grpc_config,
                     metrics,
                     job_id_handle,
                     partition,
-                    session_config,
+                    session_config.ballista_grpc_interceptor(),
+                    session_config.ballista_override_create_grpc_client_endpoint(),
+                    bc.use_tls(),
                 )
                 .await?,
             )
@@ -462,12 +489,14 @@ pub async fn execute_physical_plan<U: 'static + AsExecutionPlan>(
                 execute_query_push(
                     scheduler_url,
                     query,
-                    max_message_size,
+                    bc.grpc_client_max_message_size(),
                     grpc_config,
                     metrics,
                     job_id_handle,
                     partition,
-                    session_config,
+                    session_config.ballista_grpc_interceptor(),
+                    session_config.ballista_override_create_grpc_client_endpoint(),
+                    bc.use_tls(),
                 )
                 .await?,
             )
@@ -533,12 +562,10 @@ async fn execute_query_pull(
     metrics: Arc<ExecutionPlanMetricsSet>,
     job_id_handle: Arc<Mutex<Option<JobId>>>,
     partition: usize,
-    session_config: SessionConfig,
+    grpc_interceptor: Arc<BallistaGrpcMetadataInterceptor>,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    use_tls: bool,
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
-    let grpc_interceptor = session_config.ballista_grpc_interceptor();
-    let customize_endpoint =
-        session_config.ballista_override_create_grpc_client_endpoint();
-    let use_tls = session_config.ballista_use_tls();
     let io_retries_times = grpc_config.io_retries_times;
     let io_retry_wait_time_ms = grpc_config.io_retry_wait_time_ms;
 
@@ -716,12 +743,10 @@ async fn execute_query_push(
     metrics: Arc<ExecutionPlanMetricsSet>,
     job_id_handle: Arc<Mutex<Option<JobId>>>,
     partition: usize,
-    session_config: SessionConfig,
+    grpc_interceptor: Arc<BallistaGrpcMetadataInterceptor>,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    use_tls: bool,
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
-    let grpc_interceptor = session_config.ballista_grpc_interceptor();
-    let customize_endpoint =
-        session_config.ballista_override_create_grpc_client_endpoint();
-    let use_tls = session_config.ballista_use_tls();
     let io_retries_times = grpc_config.io_retries_times;
     let io_retry_wait_time_ms = grpc_config.io_retry_wait_time_ms;
 
@@ -993,7 +1018,6 @@ mod test {
         DistributedQueryExec, check_scheduler_version, execute_query_pull,
         execute_query_push, get_client_host_port, job_submission_request,
     };
-    use crate::extension::SessionConfigExt;
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
     use crate::serde::protobuf::scheduler_grpc_server::{
         SchedulerGrpc, SchedulerGrpcServer,
@@ -1236,7 +1260,9 @@ mod test {
             Arc::new(ExecutionPlanMetricsSet::new()),
             Arc::new(Mutex::new(None)),
             0,
-            SessionConfig::new_with_ballista(),
+            Default::default(),
+            None,
+            false,
         )
         .await;
 
@@ -1261,7 +1287,9 @@ mod test {
             Arc::new(ExecutionPlanMetricsSet::new()),
             Arc::new(Mutex::new(None)),
             0,
-            SessionConfig::new_with_ballista(),
+            Default::default(),
+            None,
+            false,
         )
         .await;
 
