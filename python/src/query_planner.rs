@@ -354,26 +354,13 @@ impl QueryPlanner for LazyBallistaQueryPlanner {
 
 #[pyfunction]
 pub(crate) fn ballista_datafusion_config_defaults() -> HashMap<String, String> {
-    let defaults = SessionConfig::new();
-    let ballista = SessionConfig::new_with_ballista();
-    let default_values = defaults
-        .options()
-        .entries()
-        .into_iter()
-        .map(|entry| (entry.key, entry.value))
-        .collect::<HashMap<_, _>>();
-
-    ballista
+    SessionConfig::new_with_ballista()
         .options()
         .entries()
         .into_iter()
         .filter_map(|entry| {
-            if !entry.key.starts_with("datafusion.") {
-                return None;
-            }
             let value = entry.value?;
-            (default_values.get(&entry.key) != Some(&Some(value.clone())))
-                .then_some((entry.key, value))
+            Some((entry.key, value))
         })
         .collect()
 }

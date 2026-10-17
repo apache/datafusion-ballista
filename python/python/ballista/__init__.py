@@ -15,10 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
-try:
-    import importlib.metadata as importlib_metadata
-except ImportError:
-    import importlib_metadata
+
+import importlib.metadata as importlib_metadata
 
 from ._internal_ballista import (
     BallistaConfigExtension,
