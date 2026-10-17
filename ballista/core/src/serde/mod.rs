@@ -1050,6 +1050,12 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 "DistributedQueryExec is only supported by PyBallistaPhysicalExtensionCodec"
                     .to_string(),
             )),
+            PhysicalPlanType::DistributedExplainAnalyze(_) => {
+                Err(DataFusionError::Internal(
+                    "DistributedExplainAnalyzeExec is only supported by PyBallistaPhysicalExtensionCodec"
+                        .to_string(),
+                ))
+            }
         }
     }
 

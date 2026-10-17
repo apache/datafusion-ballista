@@ -333,13 +333,6 @@ impl QueryPlanner for LazyBallistaQueryPlanner {
         logical_plan: &LogicalPlan,
         session: &dyn Session,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        if matches!(logical_plan, LogicalPlan::Analyze(_)) {
-            return Err(DataFusionError::NotImplemented(
-                "EXPLAIN ANALYZE is not yet supported by the Ballista Python FFI planner"
-                    .to_string(),
-            ));
-        }
-
         // Parse only when DataFusion asks for a physical plan so malformed
         // addresses fail lazily, not during context construction.
         let scheduler_url = parse_scheduler_url(&self.address)?;
