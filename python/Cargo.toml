@@ -43,6 +43,17 @@ ballista-scheduler = { path = "../ballista/scheduler", version = "55.0.0", defau
 # ballista-executor = { version = "=55.0.0", default-features = false }
 # ballista-scheduler = { version = "=55.0.0", default-features = false }
 
+# Version se to 55.2.0 as  Workaround for missing file-format 
+# support in `datafusion-ffi` 55.2.0.
+#
+# Remove once `datafusion-ffi` delegates file formats to
+# `DefaultLogicalExtensionCodec` in `ForeignLogicalExtensionCodec`.
+#
+# This relies on the private field layouts of `FFI_QueryPlanner` and
+# `FFI_SessionRef`, mirrored below. It is only valid for the pinned
+# `datafusion-ffi = "=55.2.0"`.
+# see `src/ffi_planner_workaround.rs` for more details
+
 datafusion = { version = "=55.2.0", features = ["avro"] }
 datafusion-ffi = { version = "=55.2.0" }
 datafusion-proto = { version = "=55.2.0" }
