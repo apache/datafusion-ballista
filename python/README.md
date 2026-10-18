@@ -38,6 +38,8 @@ release. See the
 > Some features are still being worked on, such as support for Python UDFs
 > and custom extension codecs. See the known limitations below.
 >
+> Progress has been tracked at [#2618](https://github.com/apache/datafusion-ballista/issues/2618)
+>
 
 Creates a new context which connects to a Ballista scheduler process.
 
