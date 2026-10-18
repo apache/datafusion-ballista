@@ -51,8 +51,7 @@ XFAIL_IN_MEMORY = pytest.mark.xfail(
 )
 XFAIL_UDF = pytest.mark.xfail(
     strict=True,
-    reason="python udfs cannot be serialized "
-    "(no logical extension codec handles them)",
+    reason="python udfs cannot be serialized (no logical extension codec handles them)",
 )
 
 # contents of TEST_CSV
@@ -426,14 +425,16 @@ def test_register_record_batches(ctx):
 # udfs
 #
 
-# note: looks like exception is coming from schedule's 
+# note: looks like exception is coming from schedule's
 #       logical planner
+
 
 def is_null(array: pa.Array) -> pa.Array:
     return array.is_null()
 
 
 is_null_udf = udf(is_null, [pa.int64()], pa.bool_(), "stable", name="is_null_udf")
+
 
 @XFAIL_UDF
 def test_udf_dataframe(ctx):
