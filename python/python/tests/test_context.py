@@ -20,7 +20,7 @@ import json
 import shutil
 
 from ballista import BallistaConfigExtension, BallistaSessionContext, setup_test_cluster
-from datafusion import CsvReadOptions, SessionConfig, SessionContext, col, lit
+from datafusion import CsvReadOptions, SessionConfig, SessionContext, col, lit, udf
 from datafusion.dataframe import (
     DataFrameWriteOptions,
     InsertOp,
@@ -48,6 +48,11 @@ XFAIL_IN_MEMORY = pytest.mark.xfail(
     strict=True,
     reason="in-memory table providers cannot be serialized "
     "(no extension codec handles them)",
+)
+XFAIL_UDF = pytest.mark.xfail(
+    strict=True,
+    reason="python udfs cannot be serialized "
+    "(no logical extension codec handles them)",
 )
 
 # contents of TEST_CSV
@@ -415,6 +420,34 @@ def test_register_record_batches(ctx):
     ctx.register_record_batches("mem", [[batch]])
     result = to_table(ctx.sql("SELECT sum(a) AS s FROM mem"))
     assert result.to_pydict() == {"s": [15]}
+
+
+#
+# udfs
+#
+
+
+def is_null(array: pa.Array) -> pa.Array:
+    return array.is_null()
+
+
+is_null_udf = udf(is_null, [pa.int64()], pa.bool_(), "stable", name="is_null_udf")
+
+
+@XFAIL_UDF
+def test_udf_dataframe(ctx):
+    df = ctx.read_csv(TEST_CSV, has_header=True).select(
+        col("a"), is_null_udf(col("a")).alias("n")
+    )
+    assert sorted_pydict(to_table(df)) == {"a": EXPECTED_A, "n": [False] * 5}
+
+
+@XFAIL_UDF
+def test_udf_sql(ctx):
+    ctx.register_csv("test", TEST_CSV, has_header=True)
+    ctx.register_udf(is_null_udf)
+    result = to_table(ctx.sql("SELECT a, is_null_udf(a) AS n FROM test"))
+    assert sorted_pydict(result) == {"a": EXPECTED_A, "n": [False] * 5}
 
 
 #
