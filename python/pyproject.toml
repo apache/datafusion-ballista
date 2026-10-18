@@ -40,15 +40,18 @@ classifiers = [
     "Programming Language :: Rust",
 ]
 dependencies = [
-    "pyarrow>=23.0.1",
     "datafusion==55",
-    "typing-extensions;python_version<'3.13'",
 ]
 dynamic = ["version"]
 
 [project.optional-dependencies]
 jupyter = [
     "ipython>=8.0.0",
+]
+test = [
+    "pyarrow>=16.0.0;python_version<'3.14'",
+    "pyarrow>=22.0.0;python_version>='3.14'",
+    "pytest",
 ]
 
 [project.urls]
@@ -94,6 +97,8 @@ dev = [
     "ruff>=0.9.1",
     "toml>=0.10.2",
     "pygithub==2.5.0",
+    "pyarrow>=16.0.0;python_version<'3.14'",
+    "pyarrow>=22.0.0;python_version>='3.14'",
 ]
 docs = [
 ]
