@@ -426,13 +426,14 @@ def test_register_record_batches(ctx):
 # udfs
 #
 
+# note: looks like exception is coming from schedule's 
+#       logical planner
 
 def is_null(array: pa.Array) -> pa.Array:
     return array.is_null()
 
 
 is_null_udf = udf(is_null, [pa.int64()], pa.bool_(), "stable", name="is_null_udf")
-
 
 @XFAIL_UDF
 def test_udf_dataframe(ctx):
