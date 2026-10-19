@@ -43,7 +43,7 @@ use ballista_core::utils::{
     GrpcServerConfig, create_grpc_server, create_grpc_server_incoming, drain_or_time_out,
 };
 use futures::{Stream, StreamExt};
-use log::{info, warn};
+use log::info;
 use tokio::sync::oneshot;
 use tonic::service::Routes;
 use tonic::transport::server::{Router, TcpIncoming};

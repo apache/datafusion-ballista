@@ -510,8 +510,10 @@ pub fn redact_key_value_pairs(pairs: &[KeyValuePair]) -> Vec<KeyValuePair> {
 }
 
 /// Waits for a shutting-down `server` to finish its in-flight work, but no
-/// longer than `bound`, after which the work still running is abandoned. A zero
-/// `bound` waits for as long as it takes.
+/// longer than `bound`, after which it stops waiting and returns `Ok(())`. The
+/// work still running isn't cancelled: the server's connection tasks are
+/// detached, so they keep running until the process exits. A zero `bound` waits
+/// for as long as it takes.
 pub async fn drain_or_time_out<E>(
     server: impl Future<Output = std::result::Result<(), E>>,
     bound: Duration,
@@ -523,7 +525,7 @@ pub async fn drain_or_time_out<E>(
         Ok(result) => result,
         Err(_) => {
             log::warn!(
-                "Graceful shutdown timed out after {}s; exiting with work still in flight",
+                "Graceful shutdown timed out after {}s; no longer waiting for work still in flight",
                 bound.as_secs()
             );
             Ok(())
