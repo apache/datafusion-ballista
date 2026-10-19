@@ -19,7 +19,12 @@ import gzip
 import json
 import shutil
 
-from ballista import BallistaConfigExtension, BallistaSessionContext, setup_test_cluster
+from ballista import (
+    BallistaConfigExtension,
+    BallistaSessionConfig,
+    BallistaSessionContext,
+    setup_test_cluster,
+)
 from datafusion import CsvReadOptions, SessionConfig, SessionContext, col, lit, udf
 from datafusion.dataframe import (
     DataFrameWriteOptions,
@@ -178,12 +183,28 @@ def test_custom_session_config(cluster):
     assert result.to_pydict() == {"c": [8]}
 
 
-def test_cluster_config(cluster):
+def test_dict_config(cluster):
     (address, port) = cluster
     ctx = BallistaSessionContext(
         address=f"df://{address}:{port}",
-        cluster_config={"datafusion.execution.batch_size": 2},
+        config={
+            "datafusion.execution.batch_size": 2,
+            "ballista.job.name": "test_job",
+        },
     )
+    ctx.register_parquet("t", TEST_PARQUET)
+    result = to_table(ctx.sql("SELECT count(*) AS c FROM t"))
+    assert result.to_pydict() == {"c": [8]}
+
+
+def test_ballista_session_config(cluster):
+    (address, port) = cluster
+    config = (
+        BallistaSessionConfig()
+        .with_job_name("test_job")
+        .set("datafusion.execution.batch_size", 2)
+    )
+    ctx = BallistaSessionContext(address=f"df://{address}:{port}", config=config)
     ctx.register_parquet("t", TEST_PARQUET)
     result = to_table(ctx.sql("SELECT count(*) AS c FROM t"))
     assert result.to_pydict() == {"c": [8]}
