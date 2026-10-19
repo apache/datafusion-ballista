@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::cluster::{BallistaCluster, BoundTask, ExecutorSlot};
+use crate::cluster::{BallistaCluster, BoundTask, CacheState, ExecutorSlot};
 use crate::config::SchedulerConfig;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
-use crate::scheduler_server::timestamp_millis;
+use crate::scheduler_server::{DefaultJobGenerator, JobIdGenerator, timestamp_millis};
 use crate::state::execution_graph::TaskDescription;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
@@ -39,6 +39,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod aqe;
+/// Links the jobs behind a `DataFrame::cache()` query so none of them blocks.
+pub(crate) mod cache_linker;
 /// Cross-job registry of materialized `DataFrame::cache()` results.
 pub mod cache_registry;
 mod distributed_explain;
@@ -107,6 +109,13 @@ pub struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     pub session_manager: SessionManager,
     /// Codec for serializing logical and physical plans.
     pub codec: BallistaCodec<T, U>,
+    /// Cross-job cache registry consulted when resolving `DataFrame::cache()`.
+    pub cache_state: Arc<dyn CacheState>,
+    /// Links the jobs of `DataFrame::cache()` queries.
+    pub(crate) cache_linker: Arc<cache_linker::CacheLinker>,
+    /// The job id generator, shared with the scheduler server so jobs the
+    /// scheduler starts itself (cache builds) get ids from it too.
+    pub(crate) job_id_generator: Arc<dyn JobIdGenerator>,
     /// Scheduler configuration.
     pub config: Arc<SchedulerConfig>,
 }
@@ -133,6 +142,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 config.clone(),
             ),
             session_manager: SessionManager::new(cluster.job_state()),
+            cache_state: cluster.cache_state(),
+            cache_linker: Default::default(),
+            job_id_generator: config
+                .job_id_generator
+                .clone()
+                .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default())),
             codec,
             config,
         }
@@ -175,6 +190,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 config.clone(),
             ),
             session_manager: SessionManager::new(cluster.job_state()),
+            cache_state: cluster.cache_state(),
+            cache_linker: Default::default(),
+            job_id_generator: config
+                .job_id_generator
+                .clone()
+                .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default())),
             codec,
             config,
         }
@@ -433,20 +454,31 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Ok(())
     }
 
-    /// Immediately reclaim intermediate shuffle data, then spawn a delayed
-    /// future to clean up the remaining job data (final-stage output + job
-    /// state) on both Scheduler and Executors.
-    pub(crate) fn clean_up_successful_job(
+    /// Reclaim a finished job's shuffle data and schedule state cleanup. A job
+    /// backing a cache (recorded by [`on_job_terminal`](Self::on_job_terminal)
+    /// before this runs) keeps its final-stage data; unpinning is future work.
+    pub(crate) async fn clean_up_successful_job(
         &self,
         job_id: JobId,
         intermediate_stage_ids: Vec<u32>,
     ) {
         self.executor_manager
             .clean_up_intermediate_job_data(job_id.clone(), intermediate_stage_ids);
-        self.executor_manager.clean_up_job_data_delayed(
-            job_id.clone(),
-            self.config.finished_job_data_clean_up_interval_seconds,
-        );
+        let pinned = match self.cache_state.pinned_stages().await {
+            Ok(pinned) => pinned.iter().any(|(pinned_job, _)| pinned_job == &job_id),
+            Err(e) => {
+                warn!("Failed to read pinned cache stages for job {job_id}: {e:?}");
+                false
+            }
+        };
+        if pinned {
+            info!("Job {job_id} backs a cache entry; retaining its pinned stage");
+        } else {
+            self.executor_manager.clean_up_job_data_delayed(
+                job_id.clone(),
+                self.config.finished_job_data_clean_up_interval_seconds,
+            );
+        }
         self.task_manager.clean_up_job_delayed(
             job_id,
             self.config.finished_job_state_clean_up_interval_seconds,

@@ -32,10 +32,11 @@ use datafusion::physical_plan::{ExecutionPlan, Metric};
 use datafusion::prelude::SessionConfig;
 use log::{debug, warn};
 
+use ballista_core::cache::is_external_stage_id;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
-    RangeShuffleWriterExec, ShuffleWriterExec, SortShuffleWriterExec, TaskRuntimeStats,
-    TaskWindowState,
+    RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
+    TaskRuntimeStats, TaskWindowState,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
@@ -1377,6 +1378,48 @@ fn stage_input_partitions(plan: &Arc<dyn ExecutionPlan>) -> usize {
         plan.properties().output_partitioning().partition_count()
     }
     .max(1)
+}
+
+/// The inputs `plan` reads from outside its job, e.g. a cache read: a complete
+/// [`StageOutput`] per external [`ShuffleReaderExec`]. As stage inputs, rollback
+/// and re-resolution restore them like any other input.
+pub(crate) fn external_inputs(plan: &dyn ExecutionPlan) -> HashMap<usize, StageOutput> {
+    fn collect(plan: &dyn ExecutionPlan, inputs: &mut HashMap<usize, StageOutput>) {
+        if let Some(reader) = plan.downcast_ref::<ShuffleReaderExec>()
+            && is_external_stage_id(reader.stage_id)
+        {
+            let output = inputs.entry(reader.stage_id).or_default();
+            for (partition, locations) in reader.partition.iter().enumerate() {
+                output
+                    .partition_locations
+                    .entry(partition)
+                    .or_default()
+                    .extend(locations.iter().cloned());
+            }
+            output.complete = true;
+        }
+        for child in plan.children() {
+            collect(child.as_ref(), inputs);
+        }
+    }
+    let mut inputs = HashMap::new();
+    collect(plan, &mut inputs);
+    inputs
+}
+
+/// Whether `inputs` hold external (cache) data on `executor_id`.
+pub(crate) fn reads_external_data_on(
+    inputs: &HashMap<usize, StageOutput>,
+    executor_id: &str,
+) -> bool {
+    inputs.iter().any(|(id, output)| {
+        is_external_stage_id(*id)
+            && output
+                .partition_locations
+                .values()
+                .flatten()
+                .any(|location| location.executor_meta.id == executor_id)
+    })
 }
 
 /// This data structure collects the partition locations for an `ExecutionStage`.

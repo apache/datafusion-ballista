@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::cache::name_missing_cache_read_planner;
 use crate::cluster::{ExecutorSlot, JobState, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::physical_optimizer::file_group_balance::BalanceAndPruneFileGroups;
@@ -273,8 +274,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let session_config = session_state.config();
 
         let mut graph = match plan {
-            SubmitPlan::Logical(logical_plan) => {
-                if session_config.ballista_adaptive_query_planner_enabled() {
+            SubmitPlan::Logical(logical_plan) => async {
+                let graph = if session_config.ballista_adaptive_query_planner_enabled() {
                     debug!("Using adaptive query planner (AQE) for job planning");
                     Box::new(
                         AdaptiveExecutionGraph::try_new(
@@ -310,8 +311,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         &mut planner,
                         Some(logical_plan.display_indent().to_string()),
                     )?) as ExecutionGraphBox
-                }
+                };
+                Ok::<_, BallistaError>(graph)
             }
+            .await
+            .map_err(|e| name_missing_cache_read_planner(logical_plan, e))?,
             SubmitPlan::Physical(physical_plan) => {
                 // AQE plans from the logical plan, so an already-built
                 // physical plan always uses the static planner, including when
@@ -748,13 +752,33 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ///
     /// Returns a list of running tasks that need to be cancelled.
     pub async fn executor_lost(&self, executor_id: &str) -> Result<Vec<RunningTaskInfo>> {
+        Ok(self.executor_lost_with_cache_loss(executor_id).await?.0)
+    }
+
+    /// As [`executor_lost`](Self::executor_lost), also returning the jobs that
+    /// lost cache data with the executor, with when they were queued. Their
+    /// graphs cannot re-run another job's output, so they are not reset; the
+    /// caller fails them.
+    pub(crate) async fn executor_lost_with_cache_loss(
+        &self,
+        executor_id: &str,
+    ) -> Result<(Vec<RunningTaskInfo>, Vec<(JobId, u64)>)> {
         // Collect all the running task need to cancel when there are running stages rolled back.
         let mut running_tasks_to_cancel: Vec<RunningTaskInfo> = vec![];
+        let mut lost_cache = vec![];
 
         {
             for pairs in self.active_job_cache.iter() {
-                let (_job_id, job_info) = pairs.pair();
+                let (job_id, job_info) = pairs.pair();
                 let mut graph = job_info.execution_graph.write().await;
+                if graph.reads_external_data_on(executor_id) {
+                    let queued_at = match &graph.status().status {
+                        Some(job_status::Status::Running(running)) => running.queued_at,
+                        _ => 0,
+                    };
+                    lost_cache.push((job_id.clone(), queued_at));
+                    continue;
+                }
                 let reset = graph.reset_stages_on_lost_executor(executor_id)?;
                 if !reset.0.is_empty() {
                     running_tasks_to_cancel.extend(reset.1);
@@ -762,7 +786,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             }
         }
 
-        Ok(running_tasks_to_cancel)
+        Ok((running_tasks_to_cancel, lost_cache))
     }
 
     /// Retrieves the number of available tasks for the given job.
