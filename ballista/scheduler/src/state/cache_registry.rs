@@ -182,6 +182,15 @@ impl CacheRegistry {
         }
     }
 
+    /// The job materializing `key`, if it is `Pending`, so another submission
+    /// waits on it instead of starting a second one.
+    pub fn pending_job(&self, key: &CacheKey) -> Option<JobId> {
+        match self.entries.get(key)?.value() {
+            EntryState::Pending { materializing_job } => Some(materializing_job.clone()),
+            EntryState::Materialized(_) => None,
+        }
+    }
+
     /// Attempts to claim `key` for materialization by `job_id`.
     ///
     /// Returns [`BeginOutcome::Claimed`] only when the caller is responsible for
@@ -219,8 +228,8 @@ impl CacheRegistry {
     /// swap are atomic under the entry lock, so a late completion cannot
     /// resurrect a removed entry or overwrite a newer claim.
     ///
-    /// Called by the scheduler when a materialization job succeeds (future PR,
-    /// from the `JobFinished` handler); on `Stale` the caller cleans up the
+    /// Called by the scheduler when a materialization job succeeds (from the
+    /// `JobFinished` handler); on `Stale` the caller cleans up the
     /// orphaned shuffle output it produced.
     pub fn complete_materialization(
         &self,
@@ -262,8 +271,8 @@ impl CacheRegistry {
     /// Drops the pending claim for `key` — but **only if** it is still `Pending`
     /// and owned by `job_id`. Returns whether a claim was removed.
     ///
-    /// Called when a materialization job fails or is cancelled (future PR, from
-    /// the `JobRunningFailed` handler) so a doomed claim does not stay `Pending`
+    /// Called when a materialization job fails or is cancelled (from the job
+    /// failure and cancel handlers) so a doomed claim does not stay `Pending`
     /// forever (which would make every `lookup` miss and every
     /// `begin_materialization` return `AlreadyPending`). A mismatched `job_id`
     /// (a newer claim re-took the key) is left untouched.
@@ -283,6 +292,23 @@ impl CacheRegistry {
     /// the caller can unpin its shuffle data.
     pub fn invalidate(&self, key: &CacheKey) -> Option<MaterializedCache> {
         match self.entries.remove(key) {
+            Some((_, EntryState::Materialized(cache))) => Some(cache),
+            _ => None,
+        }
+    }
+
+    /// Removes `key`'s entry only while it is still `materializing_job`'s, so a
+    /// caller acting on an entry seen earlier never removes what replaced it.
+    /// Returns the entry this call removed.
+    pub fn invalidate_if(
+        &self,
+        key: &CacheKey,
+        materializing_job: &JobId,
+    ) -> Option<MaterializedCache> {
+        match self.entries.remove_if(key, |_, state| {
+            matches!(state, EntryState::Materialized(cache)
+                if &cache.materializing_job == materializing_job)
+        }) {
             Some((_, EntryState::Materialized(cache))) => Some(cache),
             _ => None,
         }
@@ -346,8 +372,8 @@ impl CacheRegistry {
     ///
     /// Stage-keyed because Ballista stores and deletes shuffle data per stage
     /// (`work_dir/{job_id}/{stage_id}/`) — a job-level pin cannot protect a
-    /// cached stage that is an intermediate stage of its job. Consumed by the
-    /// pinning layer (future PR) to exclude these stages from job-data cleanup.
+    /// cached stage that is an intermediate stage of its job. Consumed by
+    /// job-data cleanup, which skips these stages.
     /// Pending entries contribute nothing (no locations yet; their job is still
     /// running and not yet subject to success cleanup).
     pub fn pinned_stages(&self) -> HashSet<(JobId, usize)> {
@@ -461,6 +487,32 @@ mod tests {
         assert_eq!(hit.locations.len(), 1);
         assert_eq!(hit.materializing_job.as_str(), "job-1");
         assert_eq!(hit.schema.fields().len(), 1);
+    }
+
+    /// `invalidate_if` removes only the materialization the caller saw, never a
+    /// claim or materialization that replaced it.
+    #[test]
+    fn invalidate_if_only_removes_the_materialization_it_names() {
+        let registry = CacheRegistry::new();
+        let key = CacheKey::new("s1", "c1");
+        materialize(
+            &registry,
+            key.clone(),
+            "old",
+            vec![vec![location("old", 1, 0, "e1")]],
+        );
+
+        // A different job's materialization is left alone.
+        assert!(registry.invalidate_if(&key, &JobId::new("other")).is_none());
+        assert!(registry.lookup(&key).is_some());
+
+        // The named one is removed and returned.
+        assert!(registry.invalidate_if(&key, &JobId::new("old")).is_some());
+
+        // A newer claim on the key survives a late call naming the old job.
+        registry.begin_materialization(key.clone(), "new");
+        assert!(registry.invalidate_if(&key, &JobId::new("old")).is_none());
+        assert_eq!(registry.pending_job(&key), Some(JobId::new("new")));
     }
 
     /// Only the first caller claims a key; concurrent callers are told to back off.
