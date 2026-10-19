@@ -121,9 +121,13 @@ impl JobIdGenerator for DefaultJobGenerator {
     }
 }
 
-/// Why a scheduler that is shutting down refuses a new job.
-pub(crate) const SHUTTING_DOWN: &str =
-    "the scheduler is shutting down and is not accepting new jobs";
+/// The error for a new job at a scheduler that is shutting down: an
+/// `Unavailable` status, so a client knows to submit elsewhere or retry.
+fn shutting_down() -> BallistaError {
+    BallistaError::GrpcError(Box::new(tonic::Status::unavailable(
+        "the scheduler is shutting down and is not accepting new jobs",
+    )))
+}
 
 /// The main scheduler server that coordinates distributed query execution.
 ///
@@ -346,7 +350,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     pub fn admit(&self) -> Result<Admission> {
         let admission = Admission::new(&self.admissions);
         if self.is_draining() {
-            return Err(BallistaError::General(SHUTTING_DOWN.to_owned()));
+            return Err(shutting_down());
         }
         Ok(admission)
     }
@@ -1180,6 +1184,11 @@ mod test {
             )
             .await
             .unwrap_err();
+        assert!(
+            matches!(&error, ballista_core::error::BallistaError::GrpcError(status)
+                if status.code() == tonic::Code::Unavailable),
+            "{error}"
+        );
         assert!(error.to_string().contains("shutting down"), "{error}");
         Ok(())
     }

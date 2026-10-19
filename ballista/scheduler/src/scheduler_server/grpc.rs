@@ -818,15 +818,18 @@ fn extract_connect_info<T>(request: &Request<T>) -> Option<ConnectInfo<SocketAdd
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
-    /// The status for a job that couldn't be submitted: `Unavailable` while the
-    /// scheduler is shutting down, so a client knows to submit elsewhere.
+    /// The status for a job that couldn't be submitted. A refusal that already
+    /// is a status, such as `Unavailable` while the scheduler is shutting down,
+    /// keeps its code, so a client knows to submit elsewhere.
     fn submit_error(&self, job_name: &str, e: BallistaError) -> Status {
-        if self.is_draining() {
-            return Status::unavailable(crate::scheduler_server::SHUTTING_DOWN);
+        match e {
+            BallistaError::GrpcError(status) => *status,
+            e => {
+                let msg = format!("Failed to send JobQueued event for {job_name}: {e:?}");
+                error!("{msg}");
+                Status::internal(msg)
+            }
         }
-        let msg = format!("Failed to send JobQueued event for {job_name}: {e:?}");
-        error!("{msg}");
-        Status::internal(msg)
     }
 
     async fn create_context(
