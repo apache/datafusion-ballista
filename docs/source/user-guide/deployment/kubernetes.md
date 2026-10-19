@@ -317,7 +317,8 @@ Both the scheduler and executor expose two Kubernetes-style HTTP probe endpoints
   executor fleet down with it in a restart cascade.
 - **`/readyz`** — readiness. Returns `200 OK` when the pod is prepared to
   accept traffic (scheduler: at least `--min-ready-executors` executors
-  registered; executor: last heartbeat to the scheduler succeeded).
+  registered and not shutting down; executor: last heartbeat to the scheduler
+  succeeded).
   A failing `/readyz` removes the pod from `Service` endpoints but does
   **not** trigger a restart, so it is safe to gate on cluster state.
 

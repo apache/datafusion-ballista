@@ -22,7 +22,10 @@
 //! the sole condition under which k8s should kill and restart the pod).
 //!
 //! `/readyz` returns 200 only when the scheduler is ready to accept work,
-//! defined as having at least `min_ready_executors` live executors registered.
+//! defined as having at least `min_ready_executors` live executors registered
+//! and not being shut down: a scheduler that received SIGTERM refuses new jobs
+//! while its active ones finish, and fails `/readyz` so a Service stops routing
+//! new work to it.
 //! A readiness failure removes the pod from Service endpoints but leaves the
 //! process alone, which is what we want during rolling upgrades: a fresh
 //! scheduler with `BALLISTA_PROTOCOL_VERSION` rejects executors from the
