@@ -104,7 +104,8 @@ pub struct PartitionGroup {
 /// being executed by an executor
 #[derive(Debug, Clone)]
 pub struct ShuffleReaderExec {
-    /// The query stage id to read from
+    /// The query stage id to read from; for a cache read, an external id (see
+    /// [`crate::cache::EXTERNAL_STAGE_ID_BASE`]).
     pub stage_id: usize,
     pub(crate) schema: SchemaRef,
     /// Each partition of a shuffle can read data from multiple locations

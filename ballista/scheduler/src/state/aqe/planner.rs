@@ -29,6 +29,7 @@ use crate::state::aqe::optimizer_rule::{
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
 use ballista_core::JobId;
+use ballista_core::cache::is_external_stage_id;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
@@ -455,6 +456,7 @@ impl AdaptivePlanner {
                 match exec.downcast_ref::<ExchangeExec>() {
                     Some(exchange) if exchange.inactive_stage => continue,
                     Some(exchange) if exchange.stage_id().is_none() => {
+                        debug_assert!(!is_external_stage_id(self.stage_id_generator));
                         exchange.set_stage_id(self.stage_id_generator);
                         // keeping stage in stage cache
                         // so we can process updates
@@ -485,6 +487,7 @@ impl AdaptivePlanner {
                 // previously
                 Ok(Some(vec![self.plan.clone()]))
             } else {
+                debug_assert!(!is_external_stage_id(self.stage_id_generator));
                 root.set_stage_id(self.stage_id_generator);
                 root.set_final_plan();
                 // keeping stage in stage cache

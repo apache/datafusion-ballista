@@ -163,7 +163,7 @@ pub fn default_session_builder(
     config: SessionConfig,
 ) -> datafusion::common::Result<SessionState> {
     use crate::extension::{
-        ballista_aggregate_functions, ballista_scalar_functions,
+        SessionStateBuilderExt, ballista_aggregate_functions, ballista_scalar_functions,
         ballista_window_functions,
     };
 
@@ -175,6 +175,7 @@ pub fn default_session_builder(
         .with_scalar_functions(ballista_scalar_functions())
         .with_aggregate_functions(ballista_aggregate_functions())
         .with_window_functions(ballista_window_functions())
+        .with_cache_read_planner()
         .build();
 
     Ok(state)
