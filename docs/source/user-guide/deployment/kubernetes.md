@@ -351,8 +351,12 @@ On SIGTERM the scheduler fails `/readyz` and refuses new jobs with
 can finish. It then closes its connections, gives in-flight requests and result
 streams the rest of `--graceful-shutdown-timeout-seconds`, and exits. Jobs still
 running when that time passes are lost, because the scheduler keeps its state in
-memory. Set it to cover your longest jobs, and set the pod's
-`terminationGracePeriodSeconds` above it.
+memory.
+
+The time limit defaults to 25 seconds, which fits inside the 30 seconds
+Kubernetes gives a pod by default. If your jobs can run longer, raise it, and
+set the pod's `terminationGracePeriodSeconds` above it, as the scheduler
+manifest above does with 45 and 60 seconds.
 
 ### Rolling both Deployments together
 
