@@ -340,9 +340,11 @@ executor↔scheduler wire format. Most releases will not bump it.
 
 ### Stopping executors
 
-Executors finish their running tasks before exiting on SIGTERM. If tasks can run longer than 30
-seconds, raise the executor pods' `terminationGracePeriodSeconds` and the scheduler's
-`--executor-termination-grace-period` to match.
+Executors finish their running tasks before exiting on SIGTERM, for up to
+`--graceful-shutdown-timeout-seconds` (10 by default). After that they abort and exit with an error.
+If tasks can run longer, raise that limit, set the executor pods' `terminationGracePeriodSeconds`
+above it, and raise the scheduler's `--executor-termination-grace-period` (30 by default) to at
+least the same, so the scheduler doesn't count a draining executor as lost.
 
 ### Stopping the scheduler
 
@@ -356,7 +358,9 @@ memory.
 The time limit defaults to 25 seconds, which fits inside the 30 seconds
 Kubernetes gives a pod by default. If your jobs can run longer, raise it, and
 set the pod's `terminationGracePeriodSeconds` above it, as the scheduler
-manifest above does with 45 and 60 seconds.
+manifest above does with 45 and 60 seconds. The grace period also covers the
+5-second `preStop` sleep, which is why the manifest leaves 10 seconds of
+headroom.
 
 ### Rolling both Deployments together
 

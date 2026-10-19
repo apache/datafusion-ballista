@@ -70,7 +70,7 @@ async fn main() -> ballista_core::error::Result<()> {
         ),
         graceful_shutdown_timeout_seconds: env_parsed(
             "CHAOS_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS",
-            10,
+            25,
         ),
         // The deprecated embedded proxy, for the harness's proxy fetch mode.
         enable_embedded_flight_proxy: env_parsed("CHAOS_EMBEDDED_FLIGHT_PROXY", false),
