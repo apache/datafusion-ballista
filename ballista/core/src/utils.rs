@@ -557,16 +557,11 @@ pub async fn drain_or_time_out<T>(
     }
 }
 
-/// Waits until `active` has reported no work twice in a row, polling it a few
-/// times a second. The second look covers work that is between being accepted
-/// and being counted.
+/// Waits until `active` reports no work, polling it a few times a second.
+/// `active` has to count work from the moment it is accepted, or an idle reading
+/// can miss work that is still being registered.
 pub async fn wait_until_idle(active: impl Fn() -> usize) {
-    let mut idle_polls = 0;
-    loop {
-        idle_polls = if active() == 0 { idle_polls + 1 } else { 0 };
-        if idle_polls == 2 {
-            return;
-        }
+    while active() != 0 {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
@@ -1051,16 +1046,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn idle_means_no_work_twice_in_a_row() {
-        let polls = std::sync::Mutex::new(vec![2, 1, 0, 1, 0, 0].into_iter());
+    async fn idle_is_the_first_reading_of_no_active_work() {
+        let polls = std::sync::Mutex::new(vec![2, 1, 0, 5].into_iter());
         let active = || polls.lock().unwrap().next().unwrap_or(0);
         tokio::time::timeout(Duration::from_secs(10), wait_until_idle(active))
             .await
             .expect("must become idle");
-        assert_eq!(
-            polls.lock().unwrap().next(),
-            None,
-            "must keep polling past a lone zero"
-        );
+        assert_eq!(polls.lock().unwrap().next(), Some(5), "stops at the zero");
     }
 }

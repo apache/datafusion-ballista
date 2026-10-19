@@ -298,6 +298,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 plan,
                 queued_at,
                 subscriber,
+                admission,
             } => {
                 info!("Job queued: [{job_id}]");
 
@@ -312,6 +313,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 let state = self.state.clone();
                 tokio::spawn(async move {
+                    // Held until planning has registered the job as running, or
+                    // has failed.
+                    let _admission = admission;
                     let event = if let Err(e) = state
                         .submit_job(
                             &job_id,

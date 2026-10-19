@@ -24,6 +24,7 @@ use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::{JobId, JobStatusSubscriber, serde::protobuf::TaskStatus};
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A plan submitted for execution by a client.
 ///
@@ -47,6 +48,37 @@ pub enum SubmitPlan {
     Physical(Arc<dyn ExecutionPlan>),
 }
 
+/// Proof that a job submission was admitted, held from admission until the job
+/// is running or has failed to plan. A scheduler that is shutting down counts
+/// these as work still in progress, so it doesn't conclude it is idle while a
+/// job is between being accepted and being registered. Cloning shares the same
+/// admission, which ends when the last clone is dropped.
+#[derive(Clone, Debug)]
+pub struct Admission {
+    /// Counted until dropped.
+    _count: Arc<AdmissionCount>,
+}
+
+#[derive(Debug)]
+struct AdmissionCount(Arc<AtomicUsize>);
+
+impl Drop for AdmissionCount {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Admission {
+    /// Counts one more admission in `admissions`, until the returned value and
+    /// all its clones are dropped.
+    pub(crate) fn new(admissions: &Arc<AtomicUsize>) -> Self {
+        admissions.fetch_add(1, Ordering::SeqCst);
+        Admission {
+            _count: Arc::new(AdmissionCount(admissions.clone())),
+        }
+    }
+}
+
 /// Events that drive the query stage scheduler state machine.
 #[derive(Clone)]
 pub enum QueryStageSchedulerEvent {
@@ -64,6 +96,9 @@ pub enum QueryStageSchedulerEvent {
         queued_at: u64,
         /// job status subscriber
         subscriber: Option<JobStatusSubscriber>,
+        /// Keeps the scheduler from counting itself idle while this job is
+        /// still being registered.
+        admission: Admission,
     },
     /// A job has been submitted for execution.
     JobSubmitted {

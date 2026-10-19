@@ -16,7 +16,7 @@
 // under the License.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ballista_core::error::{BallistaError, Result};
@@ -45,7 +45,7 @@ use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use log::{debug, info, warn};
 
-use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
+use crate::scheduler_server::event::{Admission, QueryStageSchedulerEvent, SubmitPlan};
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 
 use crate::state::SchedulerState;
@@ -157,6 +157,9 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     /// Set once the scheduler is shutting down: it keeps serving the jobs it
     /// has, but takes no new ones and reports itself not ready.
     draining: Arc<AtomicBool>,
+    /// Submissions admitted and not yet registered as running jobs, see
+    /// [`Admission`].
+    admissions: Arc<AtomicUsize>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
@@ -261,6 +264,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             generator,
             shutdown_tx: broadcast::channel(1).0,
             draining: Arc::new(AtomicBool::new(false)),
+            admissions: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -291,12 +295,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// false, while the jobs it already has keep running. Executors and
     /// clients are served as before.
     pub fn start_draining(&self) {
-        self.draining.store(true, Ordering::Release);
+        self.draining.store(true, Ordering::SeqCst);
     }
 
     /// True once [`start_draining`](Self::start_draining) was called.
     pub fn is_draining(&self) -> bool {
-        self.draining.load(Ordering::Acquire)
+        self.draining.load(Ordering::SeqCst)
     }
 
     /// Initializes the scheduler and starts background tasks.
@@ -318,9 +322,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.state.task_manager.running_job_number()
     }
 
-    /// Returns the number of jobs that are queued or running.
+    /// Returns the number of jobs that are being submitted, queued or running.
+    ///
+    /// A job moves from being admitted, to pending, to running, and is counted
+    /// in the later stage before it leaves the earlier one. The stages are read
+    /// in that order, so a job moving between them is seen in at least one.
     pub fn active_job_number(&self) -> usize {
-        self.pending_job_number() + self.running_job_number()
+        self.admissions.load(Ordering::SeqCst)
+            + self.pending_job_number()
+            + self.running_job_number()
+    }
+
+    /// Admits a job submission, or refuses it if the scheduler is shutting
+    /// down. The count goes up before the flag is checked, and
+    /// [`start_draining`](Self::start_draining) sets the flag before anyone
+    /// reads the count, so a submission is either refused or counted.
+    pub(crate) fn admit(&self) -> Result<Admission> {
+        let admission = Admission::new(&self.admissions);
+        if self.is_draining() {
+            return Err(BallistaError::General(SHUTTING_DOWN.to_owned()));
+        }
+        Ok(admission)
     }
 
     /// Returns a stream of job state events from the configured state backend.
@@ -387,9 +409,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<JobId> {
         log::debug!("Received submit request for job {job_name}");
-        if self.is_draining() {
-            return Err(BallistaError::General(SHUTTING_DOWN.to_owned()));
-        }
+        let admission = self.admit()?;
         let job_id: JobId = self.generator.next_id().await.into();
         self.query_stage_event_loop
             .get_sender()?
@@ -400,6 +420,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 plan: Box::new(plan.clone()),
                 queued_at: timestamp_millis(),
                 subscriber,
+                admission,
             })
             .await?;
 
@@ -1154,6 +1175,70 @@ mod test {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("shutting down"), "{error}");
+        Ok(())
+    }
+
+    async fn scheduler_that_is_ready_without_executors()
+    -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(SchedulerConfig {
+                    min_ready_executors: 0,
+                    ..Default::default()
+                }),
+                Arc::new(TestMetricsCollector::default()),
+            );
+        scheduler.init().await?;
+        Ok(scheduler)
+    }
+
+    /// A submission is paused after it was admitted and before its job is
+    /// registered, so no job is visible yet. Draining starts meanwhile. The
+    /// scheduler must not count itself idle until the submission is done.
+    #[tokio::test]
+    async fn an_admitted_submission_keeps_the_scheduler_busy() -> Result<()> {
+        let scheduler = scheduler_that_is_ready_without_executors().await?;
+
+        let admission = scheduler.admit()?;
+        assert_eq!(scheduler.pending_job_number(), 0);
+        assert_eq!(scheduler.running_job_number(), 0);
+
+        scheduler.start_draining();
+        assert_eq!(scheduler.active_job_number(), 1);
+
+        let idle =
+            ballista_core::utils::wait_until_idle(|| scheduler.active_job_number());
+        tokio::pin!(idle);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), &mut idle)
+                .await
+                .is_err(),
+            "must keep waiting while the submission is in progress"
+        );
+
+        // Clones share the admission, as when the event is cloned.
+        let clone = admission.clone();
+        drop(admission);
+        assert_eq!(scheduler.active_job_number(), 1);
+        drop(clone);
+        tokio::time::timeout(Duration::from_secs(5), idle)
+            .await
+            .expect("must become idle once the submission is done");
+        assert_eq!(scheduler.active_job_number(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_submission_after_draining_started_is_refused_and_not_counted() -> Result<()>
+    {
+        let scheduler = scheduler_that_is_ready_without_executors().await?;
+        scheduler.start_draining();
+
+        assert!(scheduler.admit().is_err());
+        assert_eq!(scheduler.active_job_number(), 0);
         Ok(())
     }
 
