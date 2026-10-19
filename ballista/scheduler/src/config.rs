@@ -261,7 +261,7 @@ pub struct Config {
     /// long as it takes).
     #[arg(
         long,
-        default_value_t = 10,
+        default_value_t = 25,
         help = "Time in seconds the scheduler takes to shut down after a shutdown signal (SIGTERM/Ctrl-C): first to let active jobs finish while taking no new ones, then to drain in-flight requests and embedded Flight-proxy result streams. It exits with an error if the time passes first; 0 waits as long as it takes. Keep this below your orchestrator's termination grace period (e.g. Kubernetes' default terminationGracePeriodSeconds=30) so this timeout can fire before a SIGKILL does, and long enough for your jobs."
     )]
     pub graceful_shutdown_timeout_seconds: u64,
@@ -501,7 +501,7 @@ impl Default for SchedulerConfig {
             grpc_client_max_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
-            graceful_shutdown_timeout_seconds: 10,
+            graceful_shutdown_timeout_seconds: 25,
             // Defaults to `executor_timeout_seconds` so the grace is always >=
             // the executor heartbeat interval (see the field doc).
             no_executors_grace_period_seconds: 180,
@@ -1000,6 +1000,22 @@ mod tests {
             "grace {} must be >= executor_timeout {}",
             cfg.no_executors_grace_period_seconds,
             cfg.executor_timeout_seconds,
+        );
+    }
+
+    /// The scheduler waits for whole jobs, so it gets longer than the executor and
+    /// the result service. It stays under the 30 seconds that Kubernetes allows a
+    /// pod by default, so the time limit passes before the kubelet's SIGKILL.
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn graceful_shutdown_timeout_defaults_to_25_seconds_on_the_cli_and_in_code() {
+        use clap::Parser;
+        let from_cli =
+            SchedulerConfig::try_from(Config::parse_from(["scheduler"])).unwrap();
+        assert_eq!(from_cli.graceful_shutdown_timeout_seconds, 25);
+        assert_eq!(
+            SchedulerConfig::default().graceful_shutdown_timeout_seconds,
+            25
         );
     }
 
