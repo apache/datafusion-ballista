@@ -297,7 +297,7 @@ pub async fn start_server(
 /// `shutdown`, `serve` gets up to `bound` to finish its in-flight work.
 async fn serve_until_shutdown(
     serve: impl Future<Output = ballista_core::error::Result<()>>,
-    shutdown: impl Future<Output = ()>,
+    shutdown: impl Future,
     trigger_shutdown: impl FnOnce(),
     bound: Duration,
 ) -> ballista_core::error::Result<()> {
@@ -308,11 +308,13 @@ async fn serve_until_shutdown(
             trigger_shutdown();
             return result;
         }
-        () = shutdown => {}
+        _ = shutdown => {}
     }
 
     trigger_shutdown();
-    drain_or_time_out(serve, bound).await
+    drain_or_time_out(serve, bound)
+        .await
+        .map_err(BallistaError::from)?
 }
 
 #[cfg(test)]
@@ -437,7 +439,7 @@ mod tests {
         let triggered = std::sync::atomic::AtomicBool::new(false);
         let result = serve_until_shutdown(
             async { Err(BallistaError::General("bind failed".to_string())) },
-            std::future::pending(),
+            std::future::pending::<()>(),
             || triggered.store(true, std::sync::atomic::Ordering::SeqCst),
             Duration::from_secs(10),
         )
@@ -472,7 +474,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stalled_server_is_given_up_on_at_the_bound() {
+    async fn a_stalled_server_times_out_at_the_bound() {
         let result = serve_until_shutdown(
             std::future::pending(),
             async {},
@@ -481,6 +483,9 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok());
+        assert!(
+            matches!(&result, Err(BallistaError::General(m)) if m.contains("timed out")),
+            "{result:?}"
+        );
     }
 }

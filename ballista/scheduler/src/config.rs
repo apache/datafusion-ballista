@@ -256,11 +256,11 @@ pub struct Config {
     pub expire_dead_executor_interval_seconds: u64,
     /// Bound, in seconds, on how long the scheduler waits for in-flight
     /// requests and embedded Flight-proxy result streams to drain after a
-    /// shutdown signal before exiting anyway (0 = wait as long as it takes).
+    /// shutdown signal before exiting with an error (0 = wait as long as it takes).
     #[arg(
         long,
         default_value_t = 10,
-        help = "Time in seconds to wait for in-flight requests and embedded Flight-proxy result streams to drain after a shutdown signal (SIGTERM/Ctrl-C) before exiting anyway; 0 waits as long as it takes. Keep this well below your orchestrator's termination grace period (e.g. Kubernetes' default terminationGracePeriodSeconds=30) so this timeout can fire before a SIGKILL does."
+        help = "Time in seconds to wait for in-flight requests and embedded Flight-proxy result streams to drain after a shutdown signal (SIGTERM/Ctrl-C) before exiting with an error; 0 waits as long as it takes. Keep this well below your orchestrator's termination grace period (e.g. Kubernetes' default terminationGracePeriodSeconds=30) so this timeout can fire before a SIGKILL does."
     )]
     pub graceful_shutdown_timeout_seconds: u64,
     /// Grace period in seconds to wait for an executor to (re)appear after the
@@ -403,7 +403,7 @@ pub struct SchedulerConfig {
     pub expire_dead_executor_interval_seconds: u64,
     /// Bound, in seconds, on how long the scheduler waits for in-flight
     /// requests and embedded Flight-proxy result streams to drain after a
-    /// shutdown signal before exiting anyway (0 = wait as long as it takes).
+    /// shutdown signal before exiting with an error (0 = wait as long as it takes).
     pub graceful_shutdown_timeout_seconds: u64,
     /// Grace period in seconds to wait for an executor to (re)register after the
     /// cluster has lost its last executor before failing the running jobs. This

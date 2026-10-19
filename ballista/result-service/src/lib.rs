@@ -62,7 +62,7 @@ pub struct ResultServiceConfig {
     /// Maximum gRPC message size, in bytes, the service encodes.
     pub grpc_max_encoding_message_size: usize,
     /// Time to let in-flight result streams finish after the shutdown signal
-    /// before stopping anyway. Zero waits as long as it takes.
+    /// before stopping with an error. Zero waits as long as it takes.
     pub graceful_shutdown_timeout: Duration,
     /// Connect to executors with `https://` URLs. The connections are only
     /// encrypted in a build with one of tonic's TLS features, typically with
@@ -91,10 +91,7 @@ impl Default for ResultServiceConfig {
 /// Serves results until `shutdown` completes, then refuses new connections and
 /// gives in-flight result streams up to
 /// [`ResultServiceConfig::graceful_shutdown_timeout`] to finish.
-pub async fn serve(
-    config: ResultServiceConfig,
-    shutdown: impl Future<Output = ()>,
-) -> Result<()> {
+pub async fn serve(config: ResultServiceConfig, shutdown: impl Future) -> Result<()> {
     let backend = ForwardingBackend::new(
         config.grpc_max_decoding_message_size,
         config.grpc_max_encoding_message_size,
@@ -129,7 +126,7 @@ async fn serve_incoming<B: ResultBackend>(
     config: &ResultServiceConfig,
     metrics: Arc<dyn ResultMetricsCollector>,
     incoming: TcpIncoming,
-    shutdown: impl Future<Output = ()>,
+    shutdown: impl Future,
 ) -> Result<()> {
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
     // tonic keeps its listener open until every connection has closed, so a
@@ -150,14 +147,14 @@ async fn serve_incoming<B: ResultBackend>(
             info!("Ballista Result Service stopped");
             return Ok(());
         }
-        () = shutdown => {}
+        _ = shutdown => {}
     }
 
     // Refuse new connections, then give in-flight streams a bounded time to
     // finish.
     let _ = stop_tx.send(());
     drain_or_time_out(server, config.graceful_shutdown_timeout)
-        .await
+        .await?
         .map_err(BallistaError::TonicError)?;
 
     info!("Ballista Result Service stopped");

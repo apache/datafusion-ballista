@@ -509,62 +509,126 @@ pub fn redact_key_value_pairs(pairs: &[KeyValuePair]) -> Vec<KeyValuePair> {
         .collect()
 }
 
-/// Waits for a shutting-down `server` to finish its in-flight work, but no
-/// longer than `bound`, after which it stops waiting and returns `Ok(())`. The
-/// work still running isn't cancelled: the server's connection tasks are
-/// detached, so they keep running until the process exits. A zero `bound` waits
-/// for as long as it takes.
-pub async fn drain_or_time_out<E>(
-    server: impl Future<Output = std::result::Result<(), E>>,
-    bound: Duration,
-) -> std::result::Result<(), E> {
-    if bound.is_zero() {
-        return server.await;
+/// A graceful shutdown that outlasted its bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrainTimedOut {
+    /// The bound that elapsed.
+    pub bound: Duration,
+}
+
+impl std::fmt::Display for DrainTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "graceful shutdown timed out after {} seconds",
+            self.bound.as_secs()
+        )
     }
-    match tokio::time::timeout(bound, server).await {
-        Ok(result) => result,
+}
+
+impl std::error::Error for DrainTimedOut {}
+
+impl From<DrainTimedOut> for BallistaError {
+    fn from(timed_out: DrainTimedOut) -> Self {
+        BallistaError::General(timed_out.to_string())
+    }
+}
+
+/// Waits for the in-flight work of a shutting-down component to finish, but no
+/// longer than `bound`. A zero `bound` waits for as long as it takes.
+///
+/// On timeout this stops waiting and returns [`DrainTimedOut`]. The work isn't
+/// cancelled: a server's connection tasks are detached, so they keep running
+/// until the process exits.
+pub async fn drain_or_time_out<T>(
+    work: impl Future<Output = T>,
+    bound: Duration,
+) -> std::result::Result<T, DrainTimedOut> {
+    if bound.is_zero() {
+        return Ok(work.await);
+    }
+    match tokio::time::timeout(bound, work).await {
+        Ok(output) => Ok(output),
         Err(_) => {
-            log::warn!(
-                "Graceful shutdown timed out after {}s; no longer waiting for work still in flight",
-                bound.as_secs()
-            );
-            Ok(())
+            let timed_out = DrainTimedOut { bound };
+            log::warn!("{timed_out}; no longer waiting for work still in flight");
+            Err(timed_out)
         }
     }
 }
 
-/// Completes on Ctrl-C, or on SIGTERM where the platform has it.
+/// A signal that asks the process to shut down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownSignal {
+    /// Ctrl-C.
+    CtrlC,
+    /// The platform's request to terminate, see [`terminate_signal`].
+    Terminate,
+}
+
+impl std::fmt::Display for ShutdownSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ShutdownSignal::CtrlC => "ctrl-c event",
+            ShutdownSignal::Terminate => "terminate signal",
+        })
+    }
+}
+
+/// Completes when the platform asks the process to terminate: SIGTERM on Unix,
+/// and Ctrl-Break, closing the console or a system shutdown on Windows. Other
+/// platforms never complete.
 ///
-/// If a signal cannot be listened for, that branch never completes, rather than
+/// This is what `docker stop` and the Kubernetes kubelet send. Fails if the
+/// signal can't be listened for.
+pub async fn terminate_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        signal(SignalKind::terminate())?.recv().await;
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_shutdown};
+        let mut brk = ctrl_break()?;
+        let mut close = ctrl_close()?;
+        let mut shutdown = ctrl_shutdown()?;
+        tokio::select! {
+            _ = brk.recv() => {}
+            _ = close.recv() => {}
+            _ = shutdown.recv() => {}
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
+    std::future::pending().await
+}
+
+/// Completes on Ctrl-C or [`terminate_signal`], saying which arrived.
+///
+/// If a signal can't be listened for, that branch never completes, rather than
 /// signalling a shutdown at startup.
-pub async fn shutdown_signal() {
+pub async fn shutdown_signal() -> ShutdownSignal {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
             error!("failed to listen for Ctrl-C: {e}");
             std::future::pending::<()>().await;
         }
     };
-
-    #[cfg(unix)]
     let terminate = async {
-        use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut sigterm) => {
-                sigterm.recv().await;
-            }
-            Err(e) => {
-                error!("failed to listen for SIGTERM: {e}");
-                std::future::pending::<()>().await;
-            }
+        if let Err(e) = terminate_signal().await {
+            error!("failed to listen for the terminate signal: {e}");
+            std::future::pending::<()>().await;
         }
     };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
 
-    tokio::select! {
-        () = ctrl_c => info!("Received Ctrl-C, shutting down"),
-        () = terminate => info!("Received SIGTERM, shutting down"),
-    }
+    let signal = tokio::select! {
+        () = ctrl_c => ShutdownSignal::CtrlC,
+        () = terminate => ShutdownSignal::Terminate,
+    };
+    info!("Received {signal}, shutting down");
+    signal
 }
 
 #[cfg(test)]
@@ -772,33 +836,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stalled_drain_gives_up_once_the_bound_elapses() {
-        let result: std::result::Result<(), String> =
-            drain_or_time_out(std::future::pending(), Duration::from_millis(50)).await;
-        assert!(result.is_ok(), "must give up after the bound, not hang");
+    async fn a_stalled_drain_times_out_at_the_bound() {
+        let bound = Duration::from_millis(50);
+        let result = drain_or_time_out(std::future::pending::<()>(), bound).await;
+        assert_eq!(result, Err(DrainTimedOut { bound }));
     }
 
     #[tokio::test]
     async fn a_zero_bound_waits_for_the_drain_to_finish() {
         let slow = async {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            Err::<(), _>("finished after the wait".to_string())
+            "finished after the wait"
         };
         let result = drain_or_time_out(slow, Duration::ZERO).await;
-        assert_eq!(result, Err("finished after the wait".to_string()));
+        assert_eq!(result, Ok("finished after the wait"));
     }
 
     #[tokio::test]
-    async fn a_finished_drain_passes_its_result_through() {
-        let ok: std::result::Result<(), String> =
-            drain_or_time_out(async { Ok(()) }, Duration::from_secs(10)).await;
-        assert!(ok.is_ok());
+    async fn a_finished_drain_returns_its_output() {
+        let result = drain_or_time_out(async { 7 }, Duration::from_secs(10)).await;
+        assert_eq!(result, Ok(7));
+    }
 
-        let failed = drain_or_time_out(
-            async { Err::<(), _>("server failed".to_string()) },
-            Duration::from_secs(10),
-        )
-        .await;
-        assert_eq!(failed, Err("server failed".to_string()));
+    #[test]
+    fn a_timed_out_drain_converts_to_an_error_naming_the_bound() {
+        let error = BallistaError::from(DrainTimedOut {
+            bound: Duration::from_secs(10),
+        });
+        assert!(
+            error
+                .to_string()
+                .contains("graceful shutdown timed out after 10 seconds"),
+            "{error}"
+        );
+    }
+
+    /// Sends SIGTERM to this process once `signal` is listening, and returns
+    /// what `signal` completed with.
+    #[cfg(unix)]
+    async fn after_sigterm<T>(signal: impl Future<Output = T>) -> T {
+        let mut signal = Box::pin(signal);
+        // The first poll registers the listener, so the signal can't arrive
+        // before it is ready and take the default action instead.
+        assert!(futures::poll!(signal.as_mut()).is_pending());
+        let status = std::process::Command::new("kill")
+            .args(["-TERM", &std::process::id().to_string()])
+            .status()
+            .expect("kill runs");
+        assert!(status.success());
+        tokio::time::timeout(Duration::from_secs(10), signal)
+            .await
+            .expect("the signal must arrive")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sigterm_completes_the_terminate_signal() {
+        assert!(after_sigterm(terminate_signal()).await.is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sigterm_is_reported_as_the_shutdown_signal() {
+        assert_eq!(
+            after_sigterm(shutdown_signal()).await,
+            ShutdownSignal::Terminate
+        );
     }
 }
