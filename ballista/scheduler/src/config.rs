@@ -254,13 +254,15 @@ pub struct Config {
         help = "Interval, in seconds, to check expired or dead executors."
     )]
     pub expire_dead_executor_interval_seconds: u64,
-    /// Bound, in seconds, on how long the scheduler waits for in-flight
-    /// requests and embedded Flight-proxy result streams to drain after a
-    /// shutdown signal before exiting with an error (0 = wait as long as it takes).
+    /// Bound, in seconds, on how long the scheduler takes to shut down after a
+    /// shutdown signal: first to let its active jobs finish while taking no new
+    /// ones, then to drain in-flight requests and embedded Flight-proxy result
+    /// streams. It exits with an error if the bound passes first (0 = wait as
+    /// long as it takes).
     #[arg(
         long,
         default_value_t = 10,
-        help = "Time in seconds to wait for in-flight requests and embedded Flight-proxy result streams to drain after a shutdown signal (SIGTERM/Ctrl-C) before exiting with an error; 0 waits as long as it takes. Keep this well below your orchestrator's termination grace period (e.g. Kubernetes' default terminationGracePeriodSeconds=30) so this timeout can fire before a SIGKILL does."
+        help = "Time in seconds the scheduler takes to shut down after a shutdown signal (SIGTERM/Ctrl-C): first to let active jobs finish while taking no new ones, then to drain in-flight requests and embedded Flight-proxy result streams. It exits with an error if the time passes first; 0 waits as long as it takes. Keep this below your orchestrator's termination grace period (e.g. Kubernetes' default terminationGracePeriodSeconds=30) so this timeout can fire before a SIGKILL does, and long enough for your jobs."
     )]
     pub graceful_shutdown_timeout_seconds: u64,
     /// Grace period in seconds to wait for an executor to (re)appear after the
@@ -401,9 +403,11 @@ pub struct SchedulerConfig {
     pub executor_timeout_seconds: u64,
     /// The interval to check expired or dead executors
     pub expire_dead_executor_interval_seconds: u64,
-    /// Bound, in seconds, on how long the scheduler waits for in-flight
-    /// requests and embedded Flight-proxy result streams to drain after a
-    /// shutdown signal before exiting with an error (0 = wait as long as it takes).
+    /// Bound, in seconds, on how long the scheduler takes to shut down after a
+    /// shutdown signal: first to let its active jobs finish while taking no new
+    /// ones, then to drain in-flight requests and embedded Flight-proxy result
+    /// streams. It exits with an error if the bound passes first (0 = wait as
+    /// long as it takes).
     pub graceful_shutdown_timeout_seconds: u64,
     /// Grace period in seconds to wait for an executor to (re)register after the
     /// cluster has lost its last executor before failing the running jobs. This
@@ -662,8 +666,9 @@ impl SchedulerConfig {
         self
     }
 
-    /// Sets the bound on how long the scheduler waits for in-flight requests
-    /// and embedded Flight-proxy result streams to drain on shutdown.
+    /// Sets the bound on how long the scheduler takes to shut down: to let its
+    /// active jobs finish, then to drain in-flight requests and embedded
+    /// Flight-proxy result streams.
     pub fn with_graceful_shutdown_timeout_seconds(
         mut self,
         graceful_shutdown_timeout_seconds: u64,

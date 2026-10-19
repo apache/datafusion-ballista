@@ -519,3 +519,48 @@ async fn scheduler_final_results_survive_sigterm() {
     .await
     .expect("query and shutdown must not hang");
 }
+
+/// Scenario J: SIGTERM the scheduler while a job is running.
+///
+/// The scheduler must report not ready and refuse new jobs, keep serving the
+/// executor and the client so the running job finishes with the right result,
+/// and only then exit.
+#[tokio::test]
+async fn scheduler_finishes_its_running_job_before_exiting() {
+    let mut run = ChaosRun::start(false, 1).await;
+    let expected = run.local_baseline().await;
+
+    // Hold the scan stage open, so the job is still running after SIGTERM.
+    let sql = Fixture::chaos_query("chaos_delay(f.key >= 0, 300)");
+    let query = tokio::spawn({
+        let ctx = run.clone_ctx();
+        async move { ctx.sql(&sql).await?.collect().await }
+    });
+
+    let job_id = run.cluster.running_job_id().await.expect("job must appear");
+    run.cluster
+        .await_stage_running(&job_id, 1)
+        .await
+        .expect("delayed stage must start running");
+
+    run.cluster.terminate_scheduler().unwrap();
+    run.cluster
+        .await_scheduler_not_ready()
+        .await
+        .expect("scheduler must report that it is draining");
+
+    let refused = run.sql(Fixture::baseline_query()).await.unwrap_err();
+    assert!(refused.contains("shutting down"), "{refused}");
+
+    let batches = timeout(Duration::from_secs(120), query)
+        .await
+        .expect("the running job must not hang")
+        .expect("query task must not panic")
+        .expect("the running job must finish while the scheduler drains");
+    let actual = datafusion::arrow::util::pretty::pretty_format_batches(&batches)
+        .unwrap()
+        .to_string();
+    assert_eq!(actual, expected, "result must match the baseline");
+
+    assert!(run.cluster.await_scheduler_exit().await.unwrap().success());
+}

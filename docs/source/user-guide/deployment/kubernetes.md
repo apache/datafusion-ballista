@@ -175,10 +175,23 @@ spec:
         app: ballista-scheduler
         ballista-cluster: ballista
     spec:
+      # Leaves 10s of headroom after the preStop sleep (5s) and the shutdown
+      # bound (45s).
+      terminationGracePeriodSeconds: 60
       containers:
         - name: ballista-scheduler
           image: <your-repo>/datafusion-ballista-scheduler:latest
-          args: ["--bind-port=50050"]
+          args:
+            - "--bind-port=50050"
+            # After SIGTERM, refuse new jobs and give the active ones, then
+            # in-flight requests, up to 45s to finish.
+            - "--graceful-shutdown-timeout-seconds=45"
+          lifecycle:
+            # Keeps accepting connections until the Service stops routing to
+            # the pod, as for the result service below.
+            preStop:
+              sleep:
+                seconds: 5
           ports:
             - containerPort: 50050
               name: flight
@@ -329,6 +342,16 @@ executor↔scheduler wire format. Most releases will not bump it.
 Executors finish their running tasks before exiting on SIGTERM. If tasks can run longer than 30
 seconds, raise the executor pods' `terminationGracePeriodSeconds` and the scheduler's
 `--executor-termination-grace-period` to match.
+
+### Stopping the scheduler
+
+On SIGTERM the scheduler fails `/readyz` and refuses new jobs with
+`Unavailable`, while it keeps serving executors and clients so the jobs it has
+can finish. It then closes its connections, gives in-flight requests and result
+streams the rest of `--graceful-shutdown-timeout-seconds`, and exits. Jobs still
+running when that time passes are lost, because the scheduler keeps its state in
+memory. Set it to cover your longest jobs, and set the pod's
+`terminationGracePeriodSeconds` above it.
 
 ### Rolling both Deployments together
 

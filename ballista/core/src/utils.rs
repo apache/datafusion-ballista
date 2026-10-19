@@ -557,6 +557,69 @@ pub async fn drain_or_time_out<T>(
     }
 }
 
+/// Waits until `active` has reported no work twice in a row, polling it a few
+/// times a second. The second look covers work that is between being accepted
+/// and being counted.
+pub async fn wait_until_idle(active: impl Fn() -> usize) {
+    let mut idle_polls = 0;
+    loop {
+        idle_polls = if active() == 0 { idle_polls + 1 } else { 0 };
+        if idle_polls == 2 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Runs `serve` until it ends or `shutdown` completes, then winds it down
+/// within `bound`:
+///
+/// 1. `begin_drain` runs, and the component keeps serving until the future it
+///    returns completes. This is where it stops taking new work and waits for
+///    what it has, for example with [`wait_until_idle`]. A component with
+///    nothing to wait for returns a ready future.
+/// 2. `stop` tells the server to stop accepting connections, and `serve` gets
+///    the rest of `bound` to finish its in-flight requests.
+///
+/// `stop` also runs if `serve` ends first, or if `bound` elapses, so the
+/// component's background tasks are stopped on every path. It must be safe to
+/// call more than once. A timeout is an error, see [`drain_or_time_out`].
+pub async fn serve_until_shutdown<E, Idle>(
+    serve: impl Future<Output = std::result::Result<(), E>>,
+    shutdown: impl Future,
+    begin_drain: impl FnOnce() -> Idle,
+    mut stop: impl FnMut(),
+    bound: Duration,
+) -> Result<()>
+where
+    Idle: Future<Output = ()>,
+    BallistaError: From<E>,
+{
+    tokio::pin!(serve);
+
+    tokio::select! {
+        result = &mut serve => {
+            stop();
+            return result.map_err(BallistaError::from);
+        }
+        _ = shutdown => {}
+    }
+
+    let idle = begin_drain();
+    let wind_down = async {
+        tokio::select! {
+            result = &mut serve => return result,
+            () = idle => {}
+        }
+        stop();
+        serve.await
+    };
+    let outcome = drain_or_time_out(wind_down, bound).await;
+    // Reached after a timeout too, when `wind_down` may never have stopped it.
+    stop();
+    outcome?.map_err(BallistaError::from)
+}
+
 /// A signal that asks the process to shut down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownSignal {
@@ -901,6 +964,103 @@ mod tests {
         assert_eq!(
             after_sigterm(shutdown_signal()).await,
             ShutdownSignal::Terminate
+        );
+    }
+
+    /// What a component did while `serve_until_shutdown` wound it down.
+    #[derive(Default)]
+    struct Events(std::sync::Mutex<Vec<&'static str>>);
+
+    impl Events {
+        fn record(&self, event: &'static str) {
+            self.0.lock().unwrap().push(event);
+        }
+
+        fn all(&self) -> Vec<&'static str> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failing_server_is_stopped_and_its_error_returned() {
+        let events = Events::default();
+        let result = serve_until_shutdown(
+            async { Err::<(), _>(BallistaError::General("bind failed".to_string())) },
+            std::future::pending::<()>(),
+            || async { events.record("drain") },
+            || events.record("stop"),
+            Duration::from_secs(10),
+        )
+        .await;
+
+        assert!(matches!(result, Err(BallistaError::General(m)) if m == "bind failed"));
+        assert_eq!(events.all(), vec!["stop"]);
+    }
+
+    #[tokio::test]
+    async fn the_server_keeps_serving_until_the_drain_is_done() {
+        let events = Events::default();
+        let server = async {
+            // Ends once told to stop, like a server draining its connections.
+            while !events.all().contains(&"stop") {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Ok::<(), BallistaError>(())
+        };
+        let result = serve_until_shutdown(
+            server,
+            async {},
+            || async {
+                events.record("drain started");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                events.record("drain done");
+            },
+            || events.record("stop"),
+            Duration::from_secs(10),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let events = events.all();
+        assert_eq!(events.first(), Some(&"drain started"));
+        let stopped_at = events.iter().position(|e| *e == "stop").unwrap();
+        let drained_at = events.iter().position(|e| *e == "drain done").unwrap();
+        assert!(
+            drained_at < stopped_at,
+            "stopped before the drain: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_drain_that_outlasts_the_bound_times_out_and_still_stops() {
+        let events = Events::default();
+        let result = serve_until_shutdown(
+            std::future::pending::<std::result::Result<(), BallistaError>>(),
+            async {},
+            std::future::pending::<()>,
+            || events.record("stop"),
+            Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(
+            matches!(&result, Err(BallistaError::General(m)) if m.contains("timed out")),
+            "{result:?}"
+        );
+        assert_eq!(events.all(), vec!["stop"]);
+    }
+
+    #[tokio::test]
+    async fn idle_means_no_work_twice_in_a_row() {
+        let polls = std::sync::Mutex::new(vec![2, 1, 0, 1, 0, 0].into_iter());
+        let active = || polls.lock().unwrap().next().unwrap_or(0);
+        tokio::time::timeout(Duration::from_secs(10), wait_until_idle(active))
+            .await
+            .expect("must become idle");
+        assert_eq!(
+            polls.lock().unwrap().next(),
+            None,
+            "must keep polling past a lone zero"
         );
     }
 }

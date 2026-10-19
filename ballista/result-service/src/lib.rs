@@ -40,7 +40,8 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::{BallistaConfigGrpcEndpoint, EndpointOverrideFn};
 use ballista_core::serving::{ForwardingBackend, ResultBackend, ServingFlightService};
 use ballista_core::utils::{
-    GrpcServerConfig, create_grpc_server, create_grpc_server_incoming, drain_or_time_out,
+    GrpcServerConfig, create_grpc_server, create_grpc_server_incoming,
+    serve_until_shutdown,
 };
 use futures::{Stream, StreamExt};
 use log::info;
@@ -138,24 +139,23 @@ async fn serve_incoming<B: ResultBackend>(
         until_stopped(incoming, stop_rx),
         std::future::pending(),
     );
-    tokio::pin!(server);
 
-    // Serve until the shutdown signal, unless the server fails first.
-    tokio::select! {
-        result = &mut server => {
-            result.map_err(BallistaError::TonicError)?;
-            info!("Ballista Result Service stopped");
-            return Ok(());
-        }
-        _ = shutdown => {}
-    }
-
-    // Refuse new connections, then give in-flight streams a bounded time to
-    // finish.
-    let _ = stop_tx.send(());
-    drain_or_time_out(server, config.graceful_shutdown_timeout)
-        .await?
-        .map_err(BallistaError::TonicError)?;
+    // On shutdown there is nothing to finish before the server stops taking
+    // connections: it refuses new ones, and gives its in-flight streams the
+    // bound to finish.
+    let mut stop_tx = Some(stop_tx);
+    serve_until_shutdown(
+        server,
+        shutdown,
+        || std::future::ready(()),
+        || {
+            if let Some(stop_tx) = stop_tx.take() {
+                let _ = stop_tx.send(());
+            }
+        },
+        config.graceful_shutdown_timeout,
+    )
+    .await?;
 
     info!("Ballista Result Service stopped");
     Ok(())

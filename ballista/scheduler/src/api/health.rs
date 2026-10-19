@@ -90,7 +90,13 @@ pub(crate) async fn readyz<
 ) -> Response {
     let alive = scheduler.state.executor_manager.get_alive_executors().len();
     let required = scheduler.state.config.min_ready_executors;
-    if scheduler.is_ready() {
+    if scheduler.is_draining() {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not ready: shutting down\n".to_string(),
+        )
+            .into_response()
+    } else if scheduler.is_ready() {
         (
             StatusCode::OK,
             format!("ready: {alive} executors registered\n"),
@@ -154,6 +160,14 @@ mod tests {
         let scheduler = scheduler_with_min_ready(0).await;
         let response = readyz(State(scheduler)).await;
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn readyz_fails_once_the_scheduler_is_draining() {
+        let scheduler = scheduler_with_min_ready(0).await;
+        scheduler.start_draining();
+        let response = readyz(State(scheduler)).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]

@@ -746,6 +746,24 @@ impl TestCluster {
         kill(Pid::from_raw(pid as i32), Signal::SIGTERM).map_err(|e| e.to_string())
     }
 
+    /// Block until the scheduler's `/readyz` fails, which it does as soon as it
+    /// starts draining after SIGTERM. New jobs are refused from then on.
+    pub async fn await_scheduler_not_ready(&self) -> Result<(), String> {
+        let url = format!("{}/readyz", self.rest_url());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(response) = self.client.get(&url).send().await
+                && response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(format!("scheduler stayed ready\n{}", self.log_tails()));
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     pub async fn await_scheduler_exit(&mut self) -> Result<ExitStatus, String> {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {

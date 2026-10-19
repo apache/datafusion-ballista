@@ -16,9 +16,10 @@
 // under the License.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ballista_core::error::Result;
+use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::TaskStatus;
@@ -120,6 +121,10 @@ impl JobIdGenerator for DefaultJobGenerator {
     }
 }
 
+/// Why a scheduler that is shutting down refuses a new job.
+pub(crate) const SHUTTING_DOWN: &str =
+    "the scheduler is shutting down and is not accepting new jobs";
+
 /// The main scheduler server that coordinates distributed query execution.
 ///
 /// The `SchedulerServer` is responsible for:
@@ -149,6 +154,9 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     /// Broadcasts the shutdown signal to background tasks and, via
     /// [`shutdown_signal`](Self::shutdown_signal), to the serving future.
     shutdown_tx: broadcast::Sender<()>,
+    /// Set once the scheduler is shutting down: it keeps serving the jobs it
+    /// has, but takes no new ones and reports itself not ready.
+    draining: Arc<AtomicBool>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
@@ -252,6 +260,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             config,
             generator,
             shutdown_tx: broadcast::channel(1).0,
+            draining: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -278,6 +287,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let _ = self.shutdown_tx.send(());
     }
 
+    /// Stops the scheduler taking new jobs and makes [`is_ready`](Self::is_ready)
+    /// false, while the jobs it already has keep running. Executors and
+    /// clients are served as before.
+    pub fn start_draining(&self) {
+        self.draining.store(true, Ordering::Release);
+    }
+
+    /// True once [`start_draining`](Self::start_draining) was called.
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Acquire)
+    }
+
     /// Initializes the scheduler and starts background tasks.
     pub async fn init(&mut self) -> Result<()> {
         self.state.init().await?;
@@ -297,6 +318,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.state.task_manager.running_job_number()
     }
 
+    /// Returns the number of jobs that are queued or running.
+    pub fn active_job_number(&self) -> usize {
+        self.pending_job_number() + self.running_job_number()
+    }
+
     /// Returns a stream of job state events from the configured state backend.
     pub async fn job_state_events(&self) -> Result<JobStateEventStream> {
         self.state.task_manager.job_state_events().await
@@ -308,12 +334,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 
     /// True when at least `min_ready_executors` executors currently have
-    /// live heartbeats. Embedders can call this from their own health/readiness
-    /// handler and AND it with whatever app-specific state they track. The
-    /// built-in `/readyz` endpoint (see `api::health`) reports the same value.
+    /// live heartbeats and the scheduler isn't [draining](Self::start_draining).
+    /// Embedders can call this from their own health/readiness handler and AND
+    /// it with whatever app-specific state they track. The built-in `/readyz`
+    /// endpoint (see `api::health`) reports the same value.
     pub fn is_ready(&self) -> bool {
         let alive = self.state.executor_manager.get_alive_executors().len();
-        alive >= self.state.config.min_ready_executors
+        !self.is_draining() && alive >= self.state.config.min_ready_executors
     }
     #[cfg(feature = "rest-api")]
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
@@ -360,6 +387,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<JobId> {
         log::debug!("Received submit request for job {job_name}");
+        if self.is_draining() {
+            return Err(BallistaError::General(SHUTTING_DOWN.to_owned()));
+        }
         let job_id: JobId = self.generator.next_id().await.into();
         self.query_stage_event_loop
             .get_sender()?
@@ -1093,6 +1123,40 @@ mod test {
 
     // If the physical planning fails, the job should be marked as failed.
     // Here we simulate a planning failure using ExplodingTableProvider to test this.
+    #[tokio::test]
+    async fn a_draining_scheduler_refuses_new_jobs_and_is_not_ready() -> Result<()> {
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(SchedulerConfig {
+                    min_ready_executors: 0,
+                    ..Default::default()
+                }),
+                Arc::new(TestMetricsCollector::default()),
+            );
+        scheduler.init().await?;
+        assert!(scheduler.is_ready());
+        assert_eq!(scheduler.active_job_number(), 0);
+
+        scheduler.start_draining();
+
+        assert!(scheduler.is_draining());
+        assert!(!scheduler.is_ready());
+        let error = scheduler
+            .submit_job(
+                "",
+                Arc::new(datafusion::prelude::SessionContext::new()),
+                &test_plan(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("shutting down"), "{error}");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_planning_failure() -> Result<()> {
         let metrics_collector = Arc::new(TestMetricsCollector::default());

@@ -36,7 +36,7 @@ use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
-use ballista_core::utils::{drain_or_time_out, shutdown_signal};
+use ballista_core::utils::{serve_until_shutdown, shutdown_signal, wait_until_idle};
 use datafusion::DATAFUSION_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -266,10 +266,13 @@ pub async fn start_grpc_service_with_listener<
 ///
 /// Method is a helper method which calls [create_scheduler] and [start_grpc_service]
 ///
-/// On SIGTERM/Ctrl-C, stops accepting new connections and waits for in-flight
-/// requests and streams (including the embedded Flight proxy, when enabled)
-/// to drain, bounded by [`SchedulerConfig::graceful_shutdown_timeout_seconds`]
-/// so a stalled client can't hang shutdown forever.
+/// On SIGTERM/Ctrl-C, the scheduler stops taking new jobs and fails `/readyz`
+/// while it keeps serving executors and clients, so the jobs it has can finish.
+/// Then it stops accepting connections and waits for in-flight requests and
+/// streams (including the embedded Flight proxy, when enabled) to drain. The
+/// whole shutdown is bounded by
+/// [`SchedulerConfig::graceful_shutdown_timeout_seconds`], so a stalled job or
+/// client can't hang it forever.
 pub async fn start_server(
     cluster: BallistaCluster,
     address: SocketAddr,
@@ -286,35 +289,20 @@ pub async fn start_server(
     serve_until_shutdown(
         start_grpc_service(address, scheduler.clone()),
         shutdown_signal(),
+        || {
+            // Executors and clients are still served, so the jobs it has can
+            // finish; new ones are refused and `/readyz` reports not ready.
+            scheduler.start_draining();
+            info!(
+                "Scheduler draining: waiting for {} active jobs",
+                scheduler.active_job_number()
+            );
+            wait_until_idle(|| scheduler.active_job_number())
+        },
         || scheduler.trigger_shutdown(),
         Duration::from_secs(graceful_shutdown_timeout_seconds),
     )
     .await
-}
-
-/// Runs `serve` until it ends or `shutdown` completes. Either way,
-/// `trigger_shutdown` runs, so the scheduler's background tasks stop. After
-/// `shutdown`, `serve` gets up to `bound` to finish its in-flight work.
-async fn serve_until_shutdown(
-    serve: impl Future<Output = ballista_core::error::Result<()>>,
-    shutdown: impl Future,
-    trigger_shutdown: impl FnOnce(),
-    bound: Duration,
-) -> ballista_core::error::Result<()> {
-    tokio::pin!(serve);
-
-    tokio::select! {
-        result = &mut serve => {
-            trigger_shutdown();
-            return result;
-        }
-        _ = shutdown => {}
-    }
-
-    trigger_shutdown();
-    drain_or_time_out(serve, bound)
-        .await
-        .map_err(BallistaError::from)?
 }
 
 #[cfg(test)]
@@ -432,60 +420,5 @@ mod tests {
         );
 
         drop(client);
-    }
-
-    #[tokio::test]
-    async fn a_failing_server_still_shuts_the_scheduler_down() {
-        let triggered = std::sync::atomic::AtomicBool::new(false);
-        let result = serve_until_shutdown(
-            async { Err(BallistaError::General("bind failed".to_string())) },
-            std::future::pending::<()>(),
-            || triggered.store(true, std::sync::atomic::Ordering::SeqCst),
-            Duration::from_secs(10),
-        )
-        .await;
-
-        assert!(result.is_err(), "the server's error is returned");
-        assert!(triggered.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    async fn the_shutdown_signal_triggers_shutdown_and_waits_for_the_server() {
-        let triggered = std::sync::atomic::AtomicBool::new(false);
-        let server = async {
-            // Finishes only once shutdown has been triggered.
-            while !triggered.load(std::sync::atomic::Ordering::SeqCst) {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-            Err(BallistaError::General("drained".to_string()))
-        };
-        let result = serve_until_shutdown(
-            server,
-            async {},
-            || triggered.store(true, std::sync::atomic::Ordering::SeqCst),
-            Duration::from_secs(10),
-        )
-        .await;
-
-        assert!(
-            matches!(result, Err(BallistaError::General(m)) if m == "drained"),
-            "the drained server's result is returned"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_stalled_server_times_out_at_the_bound() {
-        let result = serve_until_shutdown(
-            std::future::pending(),
-            async {},
-            || {},
-            Duration::from_millis(50),
-        )
-        .await;
-
-        assert!(
-            matches!(&result, Err(BallistaError::General(m)) if m.contains("timed out")),
-            "{result:?}"
-        );
     }
 }
