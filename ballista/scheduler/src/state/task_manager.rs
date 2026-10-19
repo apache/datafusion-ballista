@@ -823,17 +823,37 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ///
     /// Returns a list of running tasks that need to be cancelled.
     pub async fn executor_lost(&self, executor_id: &str) -> Result<Vec<RunningTaskInfo>> {
+        Ok(self.executor_lost_with_cache_loss(executor_id).await?.0)
+    }
+
+    /// As [`executor_lost`](Self::executor_lost), also returning the jobs that
+    /// lost cache data with the executor, with when they were queued. Their
+    /// graphs cannot re-run another job's output, so they are not reset; the
+    /// caller fails them.
+    pub(crate) async fn executor_lost_with_cache_loss(
+        &self,
+        executor_id: &str,
+    ) -> Result<(Vec<RunningTaskInfo>, Vec<(JobId, u64)>)> {
         // Its capacity has been removed, so there is nothing left to refund.
         // Do this even for evicted jobs and before a graph reset can fail.
         self.outstanding_task_reservations
             .retain(|(executor, _, _), _| executor != executor_id);
         // Collect all the running task need to cancel when there are running stages rolled back.
         let mut running_tasks_to_cancel: Vec<RunningTaskInfo> = vec![];
+        let mut lost_cache = vec![];
 
         {
             for pairs in self.active_job_cache.iter() {
-                let (_job_id, job_info) = pairs.pair();
+                let (job_id, job_info) = pairs.pair();
                 let mut graph = job_info.execution_graph.write().await;
+                if graph.reads_external_data_on(executor_id) {
+                    let queued_at = match &graph.status().status {
+                        Some(job_status::Status::Running(running)) => running.queued_at,
+                        _ => 0,
+                    };
+                    lost_cache.push((job_id.clone(), queued_at));
+                    continue;
+                }
                 let reset = graph.reset_stages_on_lost_executor(executor_id)?;
                 if !reset.0.is_empty() {
                     running_tasks_to_cancel.extend(reset.1);
@@ -841,7 +861,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             }
         }
 
-        Ok(running_tasks_to_cancel)
+        Ok((running_tasks_to_cancel, lost_cache))
     }
 
     /// Retrieves the number of available tasks for the given job.

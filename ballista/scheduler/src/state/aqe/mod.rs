@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::cache::CACHE_DATA_LOST;
 use crate::display::print_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
@@ -24,7 +25,9 @@ use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ResolvedStage, RunningTaskInfo,
     StageOutput,
 };
-use crate::state::execution_stage::RunningStage;
+use crate::state::execution_stage::{
+    RunningStage, external_inputs, is_external_fetch_failure,
+};
 use crate::state::task_manager::UpdatedStages;
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
@@ -218,12 +221,14 @@ impl AdaptiveExecutionGraph {
         stage: AdaptiveStageInfo,
     ) -> ballista_core::error::Result<(usize, ExecutionStage)> {
         let stage_id = stage.plan.stage_id();
+        let mut inputs = stage.inputs;
+        inputs.extend(external_inputs(stage.plan.as_ref()));
         let stage = ExecutionStage::Resolved(ResolvedStage::new(
             stage_id,
             0,
             stage.plan,
             vec![], // we do not know output links at this moment
-            stage.inputs,
+            inputs,
             HashSet::new(),
             session_config,
         ));
@@ -939,6 +944,19 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                                 "Stages was marked failed, ignore FetchPartitionError from task {task_identity}"
                                             );
                                             warn!("{error_msg}");
+                                        } else if is_external_fetch_failure(
+                                            &running_stage.inputs,
+                                            &executor_id,
+                                            map_stage_id,
+                                            map_partition_id,
+                                        ) {
+                                            // Cache data is another job's output,
+                                            // which this graph cannot re-run.
+                                            let error_msg = format!(
+                                                "Stage {stage_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
+                                            );
+                                            error!("{error_msg}");
+                                            failed_stages.insert(stage_id, error_msg);
                                         } else {
                                             // There are different removal strategies here.
                                             // We can choose just remove the map_partition_id in the FetchPartitionError, when resubmit the input stage, there are less tasks

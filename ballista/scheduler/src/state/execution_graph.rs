@@ -51,9 +51,12 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
 use ballista_core::execution_plans::log_merged_runtime_stats;
 
-use crate::state::execution_stage::RunningStage;
+use crate::cache::CACHE_DATA_LOST;
 pub(crate) use crate::state::execution_stage::{
     ExecutionStage, ResolvedStage, StageOutput, TaskInfo, UnresolvedStage,
+};
+use crate::state::execution_stage::{
+    RunningStage, external_inputs, is_external_fetch_failure, reads_external_data_on,
 };
 use crate::state::task_manager::UpdatedStages;
 
@@ -188,6 +191,24 @@ pub trait ExecutionGraph: Debug {
         &mut self,
         executor_id: &str,
     ) -> Result<(HashSet<usize>, Vec<RunningTaskInfo>)>;
+
+    /// Whether a stage that has not finished reads cache data (an external
+    /// input) held on `executor_id`. The graph cannot re-run another job's
+    /// output, so losing it fails the job.
+    fn reads_external_data_on(&self, executor_id: &str) -> bool {
+        self.stages().values().any(|stage| match stage {
+            ExecutionStage::UnResolved(stage) => {
+                reads_external_data_on(&stage.inputs, executor_id)
+            }
+            ExecutionStage::Resolved(stage) => {
+                reads_external_data_on(&stage.inputs, executor_id)
+            }
+            ExecutionStage::Running(stage) => {
+                reads_external_data_on(&stage.inputs, executor_id)
+            }
+            _ => false,
+        })
+    }
 
     /// Converts an unresolved stage to resolved state.
     ///
@@ -873,6 +894,19 @@ impl ExecutionGraph for StaticExecutionGraph {
                                                 "Stages was marked failed, ignore FetchPartitionError from task {task_identity}"
                                             );
                                             warn!("{error_msg}");
+                                        } else if is_external_fetch_failure(
+                                            &running_stage.inputs,
+                                            &executor_id,
+                                            map_stage_id,
+                                            map_partition_id,
+                                        ) {
+                                            // Cache data is another job's output,
+                                            // which this graph cannot re-run.
+                                            let error_msg = format!(
+                                                "Stage {stage_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
+                                            );
+                                            error!("{error_msg}");
+                                            failed_stages.insert(stage_id, error_msg);
                                         } else {
                                             // There are different removal strategies here.
                                             // We can choose just remove the map_partition_id in the FetchPartitionError, when resubmit the input stage, there are less tasks
@@ -1060,6 +1094,19 @@ impl ExecutionGraph for StaticExecutionGraph {
                                 )) if failed_stages.is_empty()
                                     && current_running_stages.contains(
                                         &(fetch_partiton_error.map_stage_id as usize),
+                                    )
+                                    // A cache's build stage id can match one of
+                                    // this job's: reset own inputs only, never for
+                                    // a failed cache fetch (a lost cache fails the
+                                    // stage when it runs again).
+                                    && unsolved_stage
+                                        .inputs
+                                        .contains_key(&(fetch_partiton_error.map_stage_id as usize))
+                                    && !is_external_fetch_failure(
+                                        &unsolved_stage.inputs,
+                                        &fetch_partiton_error.executor_id,
+                                        fetch_partiton_error.map_stage_id as usize,
+                                        fetch_partiton_error.map_partition_id as usize,
                                     )
                                     && !unsolved_stage
                                         .last_attempt_failure_reasons
@@ -1682,6 +1729,8 @@ impl ExecutionStageBuilder {
                 .stage_dependencies
                 .remove(&stage_id)
                 .unwrap_or_default();
+            // Complete from the start, and kept so rollback can restore them.
+            let external_inputs = external_inputs(stage.as_ref());
 
             let stage = if child_stages.is_empty() {
                 ExecutionStage::Resolved(ResolvedStage::new(
@@ -1689,18 +1738,20 @@ impl ExecutionStageBuilder {
                     0,
                     stage,
                     output_links,
-                    HashMap::new(),
+                    external_inputs,
                     HashSet::new(),
                     self.session_config.clone(),
                 ))
             } else {
-                ExecutionStage::UnResolved(UnresolvedStage::new(
+                let mut stage = UnresolvedStage::new(
                     stage_id,
                     stage,
                     output_links,
                     child_stages,
                     self.session_config.clone(),
-                ))
+                );
+                stage.inputs.extend(external_inputs);
+                ExecutionStage::UnResolved(stage)
             };
             execution_stages.insert(stage_id, stage);
         }
@@ -1868,8 +1919,13 @@ mod test {
         SendableRecordBatchStream,
     };
 
+    use crate::cache::CACHE_DATA_LOST;
+    use crate::cache::{EXTERNAL_STAGE_ID_BASE, is_external_stage_id};
+    use crate::planner::DefaultDistributedPlanner;
     use crate::state::execution_graph::ExecutionGraph;
+    use crate::state::execution_graph::StaticExecutionGraph;
     use crate::state::execution_stage::ExecutionStage;
+    use crate::state::execution_stage::StageOutput;
     use crate::test_utils::{
         mock_completed_task, mock_executor, mock_failed_task,
         revive_graph_and_complete_next_stage,
@@ -1877,7 +1933,20 @@ mod test {
         test_coalesce_plan, test_join_plan, test_two_aggregations_plan,
         test_union_all_plan, test_union_plan,
     };
-    use ballista_core::serde::scheduler::PartitionLocation;
+    use ballista_core::JobId;
+    use ballista_core::execution_plans::ShuffleReaderExec;
+    use ballista_core::extension::SessionConfigExt;
+    use ballista_core::serde::scheduler::{
+        ExecutorMetadata, ExecutorSpecification, PartitionId, PartitionLocation,
+        PartitionStats,
+    };
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::functions_aggregate::sum::sum;
+    use datafusion::logical_expr::col;
+    use datafusion::physical_plan::Partitioning;
+    use datafusion::physical_plan::union::UnionExec;
+    use datafusion::prelude::{SessionConfig, SessionContext};
+    use datafusion::test_util::scan_empty_with_partitions;
 
     #[derive(Debug)]
     struct FailingPlanRewriteExec {
@@ -3354,6 +3423,201 @@ mod test {
             graph.update_task_status(&executor, vec![task_status], 1, 1)?;
         }
 
+        Ok(())
+    }
+
+    /// A cache's location: partition `partition` of the build job's stage
+    /// `stage`, on `executor`.
+    fn external_location(
+        stage: usize,
+        partition: usize,
+        executor: &str,
+    ) -> PartitionLocation {
+        PartitionLocation {
+            map_partition_id: partition,
+            partition_id: PartitionId::new(&JobId::new("cache-job"), stage, partition),
+            executor_meta: ExecutorMetadata {
+                id: executor.to_owned(),
+                host: "localhost".to_owned(),
+                port: 0,
+                grpc_port: 0,
+                specification: ExecutorSpecification::default(),
+                os_info: Default::default(),
+            },
+            partition_stats: PartitionStats::default(),
+            file_id: Some(0),
+            is_sort_shuffle: false,
+        }
+    }
+
+    /// A stage reads both its job's own shuffle output and a cache. Losing the
+    /// executor holding only the job's own output is ordinary recovery: the
+    /// stage rolls back, turning its cache reader back into a placeholder too,
+    /// and re-resolves with the reader restored from its registered input. A
+    /// late fetch failure for the cache, whose build stage id is the same as the
+    /// job's own input's, resets nothing. The job succeeds.
+    #[tokio::test]
+    async fn losing_own_shuffle_output_restores_the_cache_reader() -> Result<()> {
+        /// The own input's stage id, which the cache's build stage shares.
+        const OWN_INPUT: usize = 2;
+        fn cache_reader_of(plan: &Arc<dyn ExecutionPlan>) -> Option<&ShuffleReaderExec> {
+            plan.downcast_ref::<ShuffleReaderExec>()
+                .filter(|reader| is_external_stage_id(reader.stage_id))
+                .or_else(|| plan.children().into_iter().find_map(cache_reader_of))
+        }
+        // An aggregation (the job's own stages) unioned with a cache read.
+        let ctx = SessionContext::new_with_config(
+            SessionConfig::new().with_target_partitions(2),
+        );
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("gmv", DataType::UInt64, false),
+        ]);
+        let logical = scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)?
+            .aggregate(vec![col("id")], vec![sum(col("gmv"))])?
+            .build()?;
+        let aggregate = ctx
+            .state()
+            .create_physical_plan(&ctx.state().optimize(&logical)?)
+            .await?;
+        let reader = ShuffleReaderExec::try_new(
+            EXTERNAL_STAGE_ID_BASE,
+            vec![vec![external_location(OWN_INPUT, 0, "executor-cache")]],
+            aggregate.schema(),
+            Partitioning::UnknownPartitioning(1),
+        )?;
+        let plan = UnionExec::try_new(vec![aggregate, Arc::new(reader)])?;
+        let mut graph = StaticExecutionGraph::new(
+            "localhost:50050",
+            &JobId::new("job"),
+            "",
+            "session",
+            plan,
+            0,
+            Arc::new(SessionConfig::new_with_ballista()),
+            &mut DefaultDistributedPlanner::new(),
+            None,
+        )?;
+        let (reading, own_input) = graph
+            .stages
+            .iter()
+            .find_map(|(id, stage)| match stage {
+                ExecutionStage::UnResolved(s) if cache_reader_of(&s.plan).is_some() => {
+                    let own = s.inputs.keys().find(|i| !is_external_stage_id(**i));
+                    Some((*id, *own?))
+                }
+                _ => None,
+            })
+            .expect("a stage reads the cache and its own input");
+        assert_eq!(own_input, OWN_INPUT);
+
+        // The job's own stages complete on executor 1, then a task of the stage
+        // reading both their output and the cache starts on executor 2.
+        revive_graph_and_complete_next_stage(&mut graph)?;
+        revive_graph_and_complete_next_stage(&mut graph)?;
+        graph.revive();
+        let executor2 = mock_executor("executor-id2".to_string());
+        let late_task = graph.pop_next_task(&executor2.id)?.unwrap();
+
+        // Executor 1 holds only the job's own output: ordinary recovery.
+        assert!(!graph.reads_external_data_on("executor-id1"));
+        graph.reset_stages_on_lost_executor("executor-id1")?;
+        let ExecutionStage::UnResolved(stage) = &graph.stages[&reading] else {
+            panic!("the stage reading the cache rolls back");
+        };
+        assert!(
+            cache_reader_of(&stage.plan).is_none(),
+            "its reader is a placeholder"
+        );
+
+        // The own input re-runs, one task on the cache's executor. The late
+        // task then fails fetching the cache, under the own input's stage id:
+        // the own task's output there is kept, not re-run.
+        revive_graph_and_complete_next_stage(&mut graph)?;
+        graph.revive();
+        let cache_executor = mock_executor("executor-cache".to_string());
+        let own_task = graph.pop_next_task(&cache_executor.id)?.unwrap();
+        let done = mock_completed_task(own_task, &cache_executor.id);
+        graph.update_task_status(&cache_executor, vec![done], 1, 1)?;
+        let pending = |graph: &StaticExecutionGraph| match &graph.stages[&own_input] {
+            ExecutionStage::Running(stage) => stage.available_tasks(),
+            _ => panic!("the own input is running"),
+        };
+        let before = pending(&graph);
+        let failed = mock_failed_task(
+            late_task,
+            wrapped_fetch_failed_task(&cache_executor.id, own_input, 0),
+        );
+        graph.update_task_status(&executor2, vec![failed], 1, 1)?;
+        assert_eq!(pending(&graph), before, "no own task re-runs");
+
+        drain_tasks(&mut graph)?;
+        assert!(graph.is_successful());
+        let ExecutionStage::Successful(stage) = &graph.stages[&reading] else {
+            panic!("the stage reading the cache succeeds");
+        };
+        let reader = cache_reader_of(&stage.plan).expect("the cache reader is restored");
+        assert!(
+            reader
+                .partition
+                .iter()
+                .flatten()
+                .all(|location| location.executor_meta.id == "executor-cache")
+        );
+        Ok(())
+    }
+
+    /// A stage reads its own stage 1, run on executor 1, and a cache built in
+    /// another job's stage `cache_stage`. A failed fetch naming a cache location
+    /// fails the job cleanly, even under a stage id of the job's own, and stage 1
+    /// is not re-run. One naming only the job's own output, from an executor that
+    /// also holds cache data, re-runs stage 1 as usual.
+    #[rstest::rstest]
+    #[case::cache_lost_under_a_colliding_stage_id("executor-id2", 1, 0, true)]
+    #[case::own_output_lost_on_the_cache_executor("executor-id1", 7, 3, false)]
+    #[tokio::test]
+    async fn a_failed_fetch_fails_the_job_only_for_cache_data(
+        #[case] cache_executor: &str,
+        #[case] cache_stage: usize,
+        #[case] cache_partition: usize,
+        #[case] cache_lost: bool,
+    ) -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let mut agg_graph = test_aggregation_plan(4).await;
+        revive_graph_and_complete_next_stage(&mut agg_graph)?;
+        agg_graph.revive();
+        let Some(ExecutionStage::Running(stage)) = agg_graph.stages.get_mut(&2) else {
+            panic!("stage 2 should be running");
+        };
+        let location = external_location(cache_stage, cache_partition, cache_executor);
+        let mut output = StageOutput::new();
+        output.partition_locations.insert(0, vec![location]);
+        output.complete = true;
+        stage.inputs.insert(EXTERNAL_STAGE_ID_BASE, output);
+
+        // A stage 2 task fails to fetch partition 0 of stage 1 from the cache's
+        // executor.
+        let task = agg_graph.pop_next_task(&executor1.id)?.unwrap();
+        let failed =
+            mock_failed_task(task, wrapped_fetch_failed_task(cache_executor, 1, 0));
+        let events = agg_graph.update_task_status(&executor1, vec![failed], 4, 4)?;
+
+        let job_failure = events.iter().find_map(|event| match event {
+            QueryStageSchedulerEvent::JobRunningFailed { fail_message, .. } => {
+                Some(fail_message)
+            }
+            _ => None,
+        });
+        assert_eq!(job_failure.is_some(), cache_lost, "{events:?}");
+        assert!(job_failure.is_none_or(|message| message.contains(CACHE_DATA_LOST)));
+        let stage1_kept = matches!(
+            agg_graph.stages.get(&1),
+            Some(ExecutionStage::Successful(_))
+        );
+        assert_eq!(
+            stage1_kept, cache_lost,
+            "stage 1 re-runs only for its own loss"
+        );
         Ok(())
     }
 }
