@@ -1734,7 +1734,7 @@ dependencies = [
  "prost-types",
  "pyo3",
  "pyo3-async-runtimes",
- "pyo3-build-config",
+ "pyo3-build-config 0.29.3",
  "pyo3-log",
  "serde_json",
  "tokio",
@@ -3134,7 +3134,7 @@ dependencies = [
  "datafusion-python",
  "log",
  "pyo3",
- "pyo3-build-config",
+ "pyo3-build-config 0.30.1",
  "pyo3-log",
  "tokio",
  "tonic",
@@ -3149,7 +3149,7 @@ dependencies = [
  "libc",
  "once_cell",
  "portable-atomic",
- "pyo3-build-config",
+ "pyo3-build-config 0.29.3",
  "pyo3-ffi",
  "pyo3-macros",
 ]
@@ -3178,13 +3178,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyo3-build-config"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70130e2b6dd1ee589a8788026a429561ca5c40fa7a2fa7914c2282eddae24700"
+dependencies = [
+ "target-lexicon",
+]
+
+[[package]]
 name = "pyo3-ffi"
 version = "0.29.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfc0b8e19df29aad7086cf977bb0c2a2f143e30567eb113e9cf72b62ca698330"
 dependencies = [
  "libc",
- "pyo3-build-config",
+ "pyo3-build-config 0.29.3",
 ]
 
 [[package]]
