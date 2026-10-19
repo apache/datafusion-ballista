@@ -52,7 +52,8 @@ pub enum SubmitPlan {
 /// is running or has failed to plan. A scheduler that is shutting down counts
 /// these as work still in progress, so it doesn't conclude it is idle while a
 /// job is between being accepted and being registered. Cloning shares the same
-/// admission, which ends when the last clone is dropped.
+/// admission, which ends when the last clone is dropped. Get one from
+/// [`SchedulerServer::admit`](crate::scheduler_server::SchedulerServer::admit).
 #[derive(Clone, Debug)]
 pub struct Admission {
     /// Counted until dropped.

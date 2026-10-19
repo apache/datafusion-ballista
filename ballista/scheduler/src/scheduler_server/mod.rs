@@ -334,10 +334,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 
     /// Admits a job submission, or refuses it if the scheduler is shutting
-    /// down. The count goes up before the flag is checked, and
+    /// down. The [`Admission`] belongs in the
+    /// [`JobQueued`](QueryStageSchedulerEvent::JobQueued) event for the job, and
+    /// ends when the job is running or has failed to plan.
+    /// [`submit_plan`](Self::submit_plan) does this, so callers only need it to
+    /// build that event themselves.
+    ///
+    /// The count goes up before the flag is checked, and
     /// [`start_draining`](Self::start_draining) sets the flag before anyone
     /// reads the count, so a submission is either refused or counted.
-    pub(crate) fn admit(&self) -> Result<Admission> {
+    pub fn admit(&self) -> Result<Admission> {
         let admission = Admission::new(&self.admissions);
         if self.is_draining() {
             return Err(BallistaError::General(SHUTTING_DOWN.to_owned()));
