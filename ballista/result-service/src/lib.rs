@@ -91,8 +91,13 @@ impl Default for ResultServiceConfig {
 
 /// Serves results until `shutdown` completes, then refuses new connections and
 /// gives in-flight result streams up to
-/// [`ResultServiceConfig::graceful_shutdown_timeout`] to finish.
-pub async fn serve(config: ResultServiceConfig, shutdown: impl Future) -> Result<()> {
+/// [`ResultServiceConfig::graceful_shutdown_timeout`] to finish. `shutdown` is
+/// called again once that has started, and a second signal ends it at once
+/// with an error. [`shutdown_signal`] is one to pass.
+pub async fn serve<Signal: Future>(
+    config: ResultServiceConfig,
+    shutdown: impl FnMut() -> Signal,
+) -> Result<()> {
     let backend = ForwardingBackend::new(
         config.grpc_max_decoding_message_size,
         config.grpc_max_encoding_message_size,
@@ -122,12 +127,12 @@ pub async fn serve(config: ResultServiceConfig, shutdown: impl Future) -> Result
 }
 
 /// [`serve`] from an already-bound listener, with any backend.
-async fn serve_incoming<B: ResultBackend>(
+async fn serve_incoming<B: ResultBackend, Signal: Future>(
     backend: B,
     config: &ResultServiceConfig,
     metrics: Arc<dyn ResultMetricsCollector>,
     incoming: TcpIncoming,
-    shutdown: impl Future,
+    shutdown: impl FnMut() -> Signal,
 ) -> Result<()> {
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
     // tonic keeps its listener open until every connection has closed, so a
@@ -300,8 +305,20 @@ mod tests {
                 &config,
                 Arc::new(NoopMetricsCollector),
                 incoming,
-                async {
-                    let _ = shutdown_rx.await;
+                // Signals once, when the test says so.
+                {
+                    let mut shutdown_rx = Some(shutdown_rx);
+                    move || {
+                        let shutdown_rx = shutdown_rx.take();
+                        async move {
+                            match shutdown_rx {
+                                Some(rx) => {
+                                    let _ = rx.await;
+                                }
+                                None => std::future::pending().await,
+                            }
+                        }
+                    }
                 },
             )
             .await

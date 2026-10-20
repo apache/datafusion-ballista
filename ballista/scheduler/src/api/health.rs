@@ -81,7 +81,7 @@ pub(crate) async fn healthz() -> Response {
         tag = "health",
         responses(
             (status = 200, description = "Scheduler is ready to accept queries", content_type = "text/plain", body = String),
-            (status = 503, description = "Scheduler is not ready (insufficient executors)", content_type = "text/plain", body = String)
+            (status = 503, description = "Scheduler is not ready (insufficient executors, or shutting down)", content_type = "text/plain", body = String)
         )
     )
 )]

@@ -155,8 +155,8 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     config: Arc<SchedulerConfig>,
     /// generates job ids
     generator: Arc<dyn JobIdGenerator>,
-    /// Broadcasts the shutdown signal to background tasks and, via
-    /// [`shutdown_signal`](Self::shutdown_signal), to the serving future.
+    /// Broadcasts the shutdown signal to the dead-executor reaper and, via
+    /// [`subscribe_for_shutdown`](Self::subscribe_for_shutdown), to the serving future.
     shutdown_tx: broadcast::Sender<()>,
     /// Set once the scheduler is shutting down: it keeps serving the jobs it
     /// has, but takes no new ones and reports itself not ready.
@@ -283,11 +283,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// sent waits forever rather than resolving immediately. Every current
     /// caller subscribes at startup, well before shutdown, so this isn't a
     /// live bug, but it's a sharp edge for future callers.
-    pub fn shutdown_signal(&self) -> Shutdown {
+    pub fn subscribe_for_shutdown(&self) -> Shutdown {
         Shutdown::new(self.shutdown_tx.subscribe())
     }
 
-    /// Signals background tasks and the serving future to shut down gracefully.
+    /// Signals the dead-executor reaper and the serving future to shut down
+    /// gracefully. The event loop and the other background tasks keep running
+    /// until the process exits.
     ///
     /// Safe to call more than once: later calls broadcast again, which every
     /// current receiver simply ignores once it has already seen one signal.
@@ -328,9 +330,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
     /// Returns the number of jobs that are being submitted, queued or running.
     ///
-    /// A job moves from being admitted, to pending, to running, and is counted
-    /// in the later stage before it leaves the earlier one. The stages are read
-    /// in that order, so a job moving between them is seen in at least one.
+    /// A job is admitted, then pending, then running, and the stages are read in
+    /// that order. The step from pending to running isn't atomic: a job leaves
+    /// `queued_jobs` before it enters the active job cache, so for a moment the
+    /// pending and running counts miss it. Only its [`Admission`], which lasts
+    /// until planning has registered it as running, covers that gap and the one
+    /// between admission and the pending count.
     pub fn active_job_number(&self) -> usize {
         self.admissions.load(Ordering::SeqCst)
             + self.pending_job_number()
@@ -338,16 +343,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 
     /// Admits a job submission, or refuses it if the scheduler is shutting
-    /// down. The [`Admission`] belongs in the
+    /// down. [`submit_plan`](Self::submit_plan) puts the [`Admission`] in the
     /// [`JobQueued`](QueryStageSchedulerEvent::JobQueued) event for the job, and
-    /// ends when the job is running or has failed to plan.
-    /// [`submit_plan`](Self::submit_plan) does this, so callers only need it to
-    /// build that event themselves.
+    /// it ends when the job is running or has failed to plan.
     ///
     /// The count goes up before the flag is checked, and
     /// [`start_draining`](Self::start_draining) sets the flag before anyone
     /// reads the count, so a submission is either refused or counted.
-    pub fn admit(&self) -> Result<Admission> {
+    pub(crate) fn admit(&self) -> Result<Admission> {
         let admission = Admission::new(&self.admissions);
         if self.is_draining() {
             return Err(shutting_down());
@@ -506,7 +509,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     fn expire_dead_executors(&self) -> Result<tokio::task::JoinHandle<()>> {
         let state = self.state.clone();
         let event_sender = self.query_stage_event_loop.get_sender()?;
-        let mut shutdown = self.shutdown_signal();
+        let mut shutdown = self.subscribe_for_shutdown();
         let handle = tokio::task::spawn(async move {
             loop {
                 let expired_executors = state.executor_manager.get_expired_executors();
@@ -668,9 +671,10 @@ mod test {
     use crate::scheduler_server::{SchedulerServer, timestamp_millis};
 
     use crate::test_utils::{
-        ExplodingTableProvider, RejectingTaskLauncher, SchedulerTest, TaskRunnerFn,
-        TestMetricsCollector, assert_completed_event, assert_failed_event,
-        assert_no_submitted_event, assert_submitted_event, test_cluster_context,
+        ExplodingTableProvider, PanickingTableProvider, RejectingTaskLauncher,
+        SchedulerTest, TaskRunnerFn, TestMetricsCollector, assert_completed_event,
+        assert_failed_event, assert_no_submitted_event, assert_submitted_event,
+        test_cluster_context,
     };
 
     #[tokio::test]
@@ -698,14 +702,14 @@ mod test {
         Ok(())
     }
 
-    /// `trigger_shutdown` must both resolve outstanding `shutdown_signal`
+    /// `trigger_shutdown` must both resolve outstanding `subscribe_for_shutdown`
     /// handles and stop the dead-executor reaper loop it starts as part of
     /// `init`, rather than leaving it looping until process exit.
     #[tokio::test]
     async fn trigger_shutdown_stops_the_dead_executor_reaper() -> Result<()> {
         let scheduler = test_scheduler(TaskSchedulingPolicy::PushStaged).await?;
 
-        let mut shutdown = scheduler.shutdown_signal();
+        let mut shutdown = scheduler.subscribe_for_shutdown();
         assert!(!shutdown.is_shutdown());
 
         // A second reaper, independent of the one `init` already started, so
@@ -716,7 +720,7 @@ mod test {
 
         tokio::time::timeout(Duration::from_secs(5), shutdown.recv())
             .await
-            .expect("shutdown_signal should resolve promptly after trigger_shutdown");
+            .expect("the subscription should resolve promptly after trigger_shutdown");
 
         tokio::time::timeout(Duration::from_secs(5), reaper)
             .await
@@ -1213,7 +1217,7 @@ mod test {
     /// A submission is paused after it was admitted and before its job is
     /// registered, so no job is visible yet. Draining starts meanwhile. The
     /// scheduler must not count itself idle until the submission is done.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_admitted_submission_keeps_the_scheduler_busy() -> Result<()> {
         let scheduler = scheduler_that_is_ready_without_executors().await?;
 
@@ -1359,6 +1363,57 @@ mod test {
 
         assert!(successful_job.is_none());
 
+        Ok(())
+    }
+
+    // A panic while planning must fail the job like any other planning error, and
+    // release the job's admission so a draining scheduler can go idle.
+    #[tokio::test]
+    async fn a_panic_while_planning_fails_the_job() -> Result<()> {
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            4,
+            1,
+            None,
+        )
+        .await?;
+
+        let ctx = test.ctx().await?;
+        ctx.register_table("panic", Arc::new(PanickingTableProvider))?;
+        let plan = ctx
+            .sql("SELECT * FROM panic")
+            .await?
+            .into_optimized_plan()?;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        // Without the fix the job never leaves the queue, so don't wait forever.
+        let (status, job_id) = tokio::time::timeout(
+            Duration::from_secs(10),
+            test.run_with_subscriber("", &plan, Some(tx)),
+        )
+        .await
+        .expect("a panic while planning must fail the job")?;
+
+        let Some(job_status::Status::Failed(failed)) = &status.status else {
+            panic!("Expected job status to be failed but it was {status:?}");
+        };
+        assert!(
+            failed.error.contains("PanickingTableProvider just panics!"),
+            "unexpected error: {}",
+            failed.error
+        );
+        assert_no_submitted_event(&job_id, &metrics_collector);
+        assert_failed_event(&job_id, &metrics_collector);
+        assert_eq!(test.active_job_number(), 0);
+
+        let subscriber_status = rx.recv().await.expect("subscriber must be notified");
+        assert!(matches!(
+            subscriber_status.status,
+            Some(job_status::Status::Failed(_))
+        ));
         Ok(())
     }
 

@@ -35,6 +35,7 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, metrics};
 use futures::StreamExt;
 use log::{error, info};
+use std::any::Any;
 use std::borrow::Cow;
 use std::future::Future;
 use std::io::BufWriter;
@@ -566,6 +567,35 @@ pub async fn wait_until_idle(active: impl Fn() -> usize) {
     }
 }
 
+/// Calls a stop function once, either when asked to or, failing that, when
+/// dropped, so a future that is abandoned still stops its server.
+struct Stopper<S: FnMut()> {
+    stop: S,
+    stopped: bool,
+}
+
+impl<S: FnMut()> Stopper<S> {
+    fn new(stop: S) -> Self {
+        Self {
+            stop,
+            stopped: false,
+        }
+    }
+
+    fn stop(&mut self) {
+        if !self.stopped {
+            self.stopped = true;
+            (self.stop)();
+        }
+    }
+}
+
+impl<S: FnMut()> Drop for Stopper<S> {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 /// Runs `serve` until it ends or `shutdown` completes, then winds it down
 /// within `bound`:
 ///
@@ -576,28 +606,33 @@ pub async fn wait_until_idle(active: impl Fn() -> usize) {
 /// 2. `stop` tells the server to stop accepting connections, and `serve` gets
 ///    the rest of `bound` to finish its in-flight requests.
 ///
-/// `stop` also runs if `serve` ends first, or if `bound` elapses, so the
-/// component's background tasks are stopped on every path. It must be safe to
-/// call more than once. A timeout is an error, see [`drain_or_time_out`].
-pub async fn serve_until_shutdown<E, Idle>(
+/// `shutdown` is called again once the wind-down has started, and a second
+/// signal ends it at once with an error.
+///
+/// `stop` runs once, however the call ends: when `serve` ends first, when
+/// `bound` elapses, on a second signal, and when the future is dropped before
+/// it finishes. A timeout is an error, see [`drain_or_time_out`].
+pub async fn serve_until_shutdown<E, Idle, Signal>(
     serve: impl Future<Output = std::result::Result<(), E>>,
-    shutdown: impl Future,
+    mut shutdown: impl FnMut() -> Signal,
     begin_drain: impl FnOnce() -> Idle,
-    mut stop: impl FnMut(),
+    stop: impl FnMut(),
     bound: Duration,
 ) -> Result<()>
 where
     Idle: Future<Output = ()>,
+    Signal: Future,
     BallistaError: From<E>,
 {
+    let mut stop = Stopper::new(stop);
     tokio::pin!(serve);
 
     tokio::select! {
         result = &mut serve => {
-            stop();
+            stop.stop();
             return result.map_err(BallistaError::from);
         }
-        _ = shutdown => {}
+        _ = shutdown() => {}
     }
 
     let idle = begin_drain();
@@ -606,13 +641,25 @@ where
             result = &mut serve => return result,
             () = idle => {}
         }
-        stop();
+        stop.stop();
         serve.await
     };
-    let outcome = drain_or_time_out(wind_down, bound).await;
-    // Reached after a timeout too, when `wind_down` may never have stopped it.
-    stop();
-    outcome?.map_err(BallistaError::from)
+    let outcome = tokio::select! {
+        outcome = drain_or_time_out(wind_down, bound) => Some(outcome),
+        _ = shutdown() => None,
+    };
+    // Reached after a timeout or a second signal too, when `wind_down` may
+    // never have stopped the server.
+    stop.stop();
+    match outcome {
+        Some(outcome) => outcome?.map_err(BallistaError::from),
+        None => {
+            log::warn!("Received a second shutdown signal; stopping now");
+            Err(BallistaError::General(
+                "shutdown cut short by a second signal".to_string(),
+            ))
+        }
+    }
 }
 
 /// A signal that asks the process to shut down.
@@ -634,11 +681,18 @@ impl std::fmt::Display for ShutdownSignal {
 }
 
 /// Completes when the platform asks the process to terminate: SIGTERM on Unix,
-/// and Ctrl-Break, closing the console or a system shutdown on Windows. Other
-/// platforms never complete.
+/// and Ctrl-Break or closing the console on Windows. Other platforms never
+/// complete.
 ///
 /// This is what `docker stop` and the Kubernetes kubelet send. Fails if the
 /// signal can't be listened for.
+///
+/// On Windows the process is only notified of the close, and Windows ends a
+/// console process about 5 seconds after that, even if it is still shutting
+/// down. A system shutdown notifies only services, which receive it as a
+/// control request rather than a console event, so it doesn't complete this
+/// future for a console process, although the console-shutdown event is
+/// listened for in case it is delivered.
 pub async fn terminate_signal() -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -687,6 +741,19 @@ pub async fn shutdown_signal() -> ShutdownSignal {
     };
     info!("Received {signal}, shutting down");
     signal
+}
+
+/// Extract a human-readable message from a `catch_unwind` panic payload.
+/// `panic!("literal")` yields `&'static str`; `panic!("{x}")` yields
+/// `String`. Anything else falls back to a placeholder.
+pub fn panic_payload_message(payload: Box<dyn Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
 }
 
 #[cfg(test)]
@@ -976,12 +1043,26 @@ mod tests {
         }
     }
 
+    /// A shutdown that signals once, like a user pressing Ctrl-C once.
+    fn one_signal() -> impl FnMut() -> futures::future::BoxFuture<'static, ()> {
+        let mut calls = 0;
+        move || {
+            calls += 1;
+            let first = calls == 1;
+            Box::pin(async move {
+                if !first {
+                    std::future::pending::<()>().await
+                }
+            })
+        }
+    }
+
     #[tokio::test]
     async fn a_failing_server_is_stopped_and_its_error_returned() {
         let events = Events::default();
         let result = serve_until_shutdown(
             async { Err::<(), _>(BallistaError::General("bind failed".to_string())) },
-            std::future::pending::<()>(),
+            std::future::pending::<()>,
             || async { events.record("drain") },
             || events.record("stop"),
             Duration::from_secs(10),
@@ -1004,7 +1085,7 @@ mod tests {
         };
         let result = serve_until_shutdown(
             server,
-            async {},
+            one_signal(),
             || async {
                 events.record("drain started");
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1031,7 +1112,7 @@ mod tests {
         let events = Events::default();
         let result = serve_until_shutdown(
             std::future::pending::<std::result::Result<(), BallistaError>>(),
-            async {},
+            one_signal(),
             std::future::pending::<()>,
             || events.record("stop"),
             Duration::from_millis(50),
@@ -1040,6 +1121,57 @@ mod tests {
 
         assert!(
             matches!(&result, Err(BallistaError::General(m)) if m.contains("timed out")),
+            "{result:?}"
+        );
+        assert_eq!(events.all(), vec!["stop"]);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_future_stops_the_server() {
+        let events = Events::default();
+        let mut call = Box::pin(serve_until_shutdown(
+            std::future::pending::<std::result::Result<(), BallistaError>>(),
+            std::future::pending::<()>,
+            || async {},
+            || events.record("stop"),
+            Duration::from_secs(10),
+        ));
+        assert!(futures::poll!(call.as_mut()).is_pending());
+        assert!(events.all().is_empty(), "nothing has asked it to stop yet");
+
+        drop(call);
+
+        assert_eq!(events.all(), vec!["stop"]);
+    }
+
+    #[tokio::test]
+    async fn a_second_signal_cuts_the_drain_short() {
+        let events = Events::default();
+        let signals = std::sync::atomic::AtomicUsize::new(0);
+        // The first signal is there at once, the second a moment later.
+        let shutdown = || {
+            let nth = signals.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move {
+                if nth > 0 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            serve_until_shutdown(
+                std::future::pending::<std::result::Result<(), BallistaError>>(),
+                shutdown,
+                std::future::pending::<()>,
+                || events.record("stop"),
+                Duration::from_secs(60),
+            ),
+        )
+        .await
+        .expect("the second signal must not wait for the bound");
+
+        assert!(
+            matches!(&result, Err(BallistaError::General(m)) if m.contains("second signal")),
             "{result:?}"
         );
         assert_eq!(events.all(), vec!["stop"]);

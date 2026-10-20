@@ -36,13 +36,14 @@ use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
-use ballista_core::utils::{serve_until_shutdown, shutdown_signal, wait_until_idle};
+use ballista_core::utils::{serve_until_shutdown, wait_until_idle};
 use datafusion::DATAFUSION_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use http::{HeaderName, HeaderValue, StatusCode};
 use log::info;
+use std::future::Future;
 use std::time::Duration;
 use std::{net::SocketAddr, sync::Arc};
 use tonic::service::RoutesBuilder;
@@ -137,7 +138,7 @@ pub async fn start_grpc_service_with_listener<
     listener: tokio::net::TcpListener,
     scheduler: SchedulerServer<T, U>,
 ) -> ballista_core::error::Result<()> {
-    let mut shutdown = scheduler.shutdown_signal();
+    let mut shutdown = scheduler.subscribe_for_shutdown();
     let config = scheduler.state.config.clone();
     let scheduler_grpc_server = SchedulerGrpcServer::new(scheduler.clone())
         .max_encoding_message_size(config.grpc_server_max_encoding_message_size as usize)
@@ -264,19 +265,44 @@ pub async fn start_grpc_service_with_listener<
 
 /// Creates scheduler and exposes it as grpc service
 ///
-/// Method is a helper method which calls [create_scheduler] and [start_grpc_service]
+/// Method is a helper method which calls [create_scheduler] and [start_grpc_service].
 ///
-/// On SIGTERM/Ctrl-C, the scheduler stops taking new jobs and fails `/readyz`
-/// while it keeps serving executors and clients, so the jobs it has can finish.
-/// Then it stops accepting connections and waits for in-flight requests and
-/// streams (including the embedded Flight proxy, when enabled) to drain. The
-/// whole shutdown is bounded by
-/// [`SchedulerConfig::graceful_shutdown_timeout_seconds`], so a stalled job or
-/// client can't hang it forever.
+/// It serves until the server fails or the future is dropped, and doesn't handle
+/// signals. Use [`start_server_with_shutdown`] to stop it gracefully.
 pub async fn start_server(
     cluster: BallistaCluster,
     address: SocketAddr,
     config: Arc<SchedulerConfig>,
+) -> ballista_core::error::Result<()> {
+    start_server_with_shutdown(cluster, address, config, std::future::pending::<()>).await
+}
+
+/// Like [`start_server`], but shuts the scheduler down gracefully when `shutdown`
+/// completes, for example [`ballista_core::utils::shutdown_signal`].
+///
+/// The scheduler stops taking new jobs and fails `/readyz`, while it keeps
+/// serving executors and clients so the jobs it has can finish. Then it stops
+/// accepting connections and waits for in-flight requests and streams
+/// (including the embedded Flight proxy, when enabled) to drain. The whole
+/// shutdown is bounded by [`SchedulerConfig::graceful_shutdown_timeout_seconds`],
+/// so a stalled job or client can't hang it forever, and a second `shutdown`
+/// ends it at once with an error.
+///
+/// # Results fetched through the scheduler
+///
+/// Once the scheduler has no jobs left it closes its connections. A result
+/// fetch through the deprecated embedded Flight proxy or Flight SQL that is
+/// still running, or has not started yet, can then be cut off, and a client that
+/// has not yet asked about a job that finished during the shutdown cannot learn
+/// of it, because a job's status is only kept by the scheduler that ran it.
+/// Fetches through the result service are not affected. A second scheduler
+/// behind the same Service serves proxy and Flight SQL partition fetches, whose
+/// tickets carry everything needed to fetch the partition.
+pub async fn start_server_with_shutdown<Signal: Future>(
+    cluster: BallistaCluster,
+    address: SocketAddr,
+    config: Arc<SchedulerConfig>,
+    shutdown: impl FnMut() -> Signal,
 ) -> ballista_core::error::Result<()> {
     info!(
         "Ballista Scheduler v{BALLISTA_VERSION} (DataFusion v{DATAFUSION_VERSION}) listening on {address:?}"
@@ -288,7 +314,7 @@ pub async fn start_server(
 
     serve_until_shutdown(
         start_grpc_service(address, scheduler.clone()),
-        shutdown_signal(),
+        shutdown,
         || {
             // Executors and clients are still served, so the jobs it has can
             // finish; new ones are refused and `/readyz` reports not ready.
@@ -368,7 +394,7 @@ mod tests {
     /// `.with_graceful_shutdown(...)` finish on its own: this is exactly the
     /// unbounded wait that requires callers of this future (see
     /// [`start_server`]) to bound it with [`tokio::time::timeout`].
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn graceful_shutdown_waits_forever_on_a_stalled_request() {
         let (entered_tx, entered_rx) = oneshot::channel();
         let entered_tx = Arc::new(Mutex::new(Some(entered_tx)));

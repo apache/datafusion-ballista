@@ -107,7 +107,7 @@ let config = ResultServiceConfig {
     override_create_grpc_client_endpoint: Some(endpoint_override),
     ..Default::default()
 };
-serve(config, shutdown_signal()).await?;
+serve(config, shutdown_signal).await?;
 ```
 
 The connections are only encrypted in a build with one of tonic's TLS features, as in the

@@ -272,11 +272,12 @@ pub struct Config {
         help = "Grace period, in seconds, to wait for an executor to (re)register after the last executor is lost before failing running jobs. Prevents jobs from hanging forever when every executor dies, while still tolerating a transient total loss (e.g. a rolling restart). Must be >= the executor heartbeat interval, or an executor removed by a transient task-launch failure may not re-register before this elapses; defaults to --executor-timeout-seconds (which is always longer than the heartbeat interval). Set to 0 to fail as soon as the loss is observed."
     )]
     pub no_executors_grace_period_seconds: Option<u64>,
-    /// Minimum number of registered executors before /readyz returns 200
+    /// Minimum number of registered executors before /readyz returns 200. It
+    /// returns 503 while the scheduler is shutting down, whatever the count.
     #[arg(
         long,
         default_value_t = 1,
-        help = "Minimum number of registered executors before the scheduler's /readyz probe returns 200. Set to 0 to always report ready."
+        help = "Minimum number of registered executors before the scheduler's /readyz probe returns 200. Set to 0 to report ready regardless of executors. /readyz returns 503 while the scheduler is shutting down."
     )]
     pub min_ready_executors: usize,
     /// Number of failures attempts before task is considered failed
@@ -433,7 +434,8 @@ pub struct SchedulerConfig {
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
     /// Whether to use TLS when connecting to executors (for flight proxy)
     pub use_tls: bool,
-    /// Minimum number of registered executors before /readyz returns 200
+    /// Minimum number of registered executors before /readyz returns 200. It
+    /// returns 503 while the scheduler is shutting down, whatever the count.
     pub min_ready_executors: usize,
     /// Number of failures attempts before task is considered failed
     pub task_max_failures: usize,

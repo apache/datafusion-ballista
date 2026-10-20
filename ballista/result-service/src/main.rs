@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
             ..Default::default()
         },
-        shutdown_signal(),
+        shutdown_signal,
     )
     .await?;
     Ok(())
