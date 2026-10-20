@@ -355,6 +355,18 @@ streams the rest of `--graceful-shutdown-timeout-seconds`, and exits. Jobs still
 running when that time passes are lost, because the scheduler keeps its state in
 memory.
 
+Results fetched through the scheduler are cut off when it closes its
+connections. The embedded Flight proxy (deprecated) and Flight SQL both relay
+partitions through it, so a fetch that is running, or has not started, at that
+point fails. The tickets carry everything needed to fetch the partition, so with
+two or more schedulers behind the client-facing Service, another one can serve
+the same fetch; with a single scheduler none can until its pod is back. Two
+things stay with the scheduler that ran the job: the job's status, so a client
+that hasn't learned of a job finishing during the shutdown can't learn it from
+another scheduler, and the Flight SQL results the scheduler computed itself.
+Results served by the result service don't involve the scheduler and aren't
+affected.
+
 The time limit defaults to 25 seconds, which fits inside the 30 seconds
 Kubernetes gives a pod by default. If your jobs can run longer, raise it, and
 set the pod's `terminationGracePeriodSeconds` above it, as the scheduler
@@ -410,7 +422,13 @@ their connection and re-register through `ballista-scheduler-registration`,
 which is what makes the incoming pod Ready. With `maxUnavailable: 0` the
 outgoing pod cannot be retired until the incoming one is Ready, and it cannot
 become Ready while the executors are still attached to the pod it is replacing.
-The cost is a short window with no scheduler, so queries in flight fail.
+
+The cost is a window with no Ready scheduler. The outgoing pod keeps its
+executors attached while it drains, so the incoming pod is not Ready until the
+outgoing one exits. That takes as long as its active jobs need, up to the 5-second
+`preStop` sleep plus `--graceful-shutdown-timeout-seconds` (45 in the manifest
+above). New jobs are refused with `Unavailable` meanwhile, and jobs still running
+when the time passes are lost.
 
 This is not `type: Recreate`. With `replicas: 3` Kubernetes still rolls one
 scheduler at a time and keeps the other two serving.
