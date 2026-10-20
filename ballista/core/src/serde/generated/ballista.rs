@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -71,7 +71,33 @@ pub mod ballista_physical_plan_node {
         PrefixMerge(super::PrefixMergeExecNode),
         #[prost(message, tag = "15")]
         RangeShuffleWriter(super::RangeShuffleWriterExecNode),
+        #[prost(message, tag = "16")]
+        DistributedQuery(super::DistributedQueryExecNode),
+        #[prost(message, tag = "17")]
+        DistributedExplainAnalyze(super::DistributedExplainAnalyzeExecNode),
     }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DistributedQueryExecNode {
+    #[prost(string, tag = "1")]
+    pub scheduler_url: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub logical_plan: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub session_id: ::prost::alloc::string::String,
+}
+/// Wraps a DistributedQueryExec (its single input) and fetches the job
+/// metrics from the scheduler once the query has completed.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DistributedExplainAnalyzeExecNode {
+    #[prost(string, tag = "1")]
+    pub scheduler_url: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
+    #[prost(bool, tag = "3")]
+    pub verbose: bool,
 }
 /// Value-range router over N locally-sorted overlapping input partitions.
 /// Redistributes them into K range-disjoint output partitions where each

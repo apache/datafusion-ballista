@@ -72,6 +72,16 @@ impl<T: 'static + AsLogicalPlan> DistributedExplainAnalyzeExec<T> {
         }
     }
 
+    /// Returns the scheduler URL used to fetch job metrics.
+    pub fn scheduler_url(&self) -> &str {
+        &self.scheduler_url
+    }
+
+    /// Returns true if verbose metrics are requested.
+    pub fn verbose(&self) -> bool {
+        self.verbose
+    }
+
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
         PlanProperties::new(
             EquivalenceProperties::new(schema),
