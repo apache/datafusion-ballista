@@ -355,17 +355,13 @@ streams the rest of `--graceful-shutdown-timeout-seconds`, and exits. Jobs still
 running when that time passes are lost, because the scheduler keeps its state in
 memory.
 
-Results fetched through the scheduler are cut off when it closes its
-connections. The embedded Flight proxy (deprecated) and Flight SQL both relay
-partitions through it, so a fetch that is running, or has not started, at that
-point fails. The tickets carry everything needed to fetch the partition, so with
-two or more schedulers behind the client-facing Service, another one can serve
-the same fetch; with a single scheduler none can until its pod is back. Two
-things stay with the scheduler that ran the job: the job's status, so a client
-that hasn't learned of a job finishing during the shutdown can't learn it from
-another scheduler, and the Flight SQL results the scheduler computed itself.
-Results served by the result service don't involve the scheduler and aren't
-affected.
+Once the scheduler has no jobs left, it closes its connections, including those
+of result fetches through the embedded Flight proxy (deprecated) and Flight SQL.
+The tickets carry everything needed to fetch the partition, so with two or more
+schedulers behind the client-facing Service, another one serves such a fetch.
+The result service doesn't involve the scheduler at all. A job's status, and the
+Flight SQL results the scheduler computed itself, are kept only by the
+scheduler that ran the job.
 
 The time limit defaults to 25 seconds, which fits inside the 30 seconds
 Kubernetes gives a pod by default. If your jobs can run longer, raise it, and

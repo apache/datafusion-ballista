@@ -288,16 +288,14 @@ pub async fn start_server(
 /// so a stalled job or client can't hang it forever, and a second `shutdown`
 /// ends it at once with an error.
 ///
-/// # Results fetched through the scheduler
+/// # Results
 ///
-/// Once the scheduler has no jobs left it closes its connections. A result
-/// fetch through the deprecated embedded Flight proxy or Flight SQL that is
-/// still running, or has not started yet, can then be cut off, and a client that
-/// has not yet asked about a job that finished during the shutdown cannot learn
-/// of it, because a job's status is only kept by the scheduler that ran it.
-/// Fetches through the result service are not affected. A second scheduler
-/// behind the same Service serves proxy and Flight SQL partition fetches, whose
-/// tickets carry everything needed to fetch the partition.
+/// Once the scheduler has no jobs left it closes its connections, including
+/// those of result fetches through the deprecated embedded Flight proxy or
+/// Flight SQL. Other schedulers behind the same Service serve such fetches,
+/// because the tickets carry everything needed to fetch the partition, and the
+/// result service doesn't involve the scheduler at all. A job's status is kept
+/// only by the scheduler that ran it.
 pub async fn start_server_with_shutdown<Signal: Future>(
     cluster: BallistaCluster,
     address: SocketAddr,
