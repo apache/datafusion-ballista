@@ -15,29 +15,29 @@
 # specific language governing permissions and limitations
 # under the License.
 
-try:
-    import importlib.metadata as importlib_metadata
-except ImportError:
-    import importlib_metadata
+
+import importlib.metadata as importlib_metadata
 
 from ._internal_ballista import (
+    BallistaConfigExtension,
     BallistaScheduler,
     BallistaExecutor,
     setup_test_cluster,
 )
 from .extension import (
+    BallistaSessionConfig,
     BallistaSessionContext,
-    DistributedDataFrame,
     ExecutionPlanVisualization,
 )
 
 __version__ = importlib_metadata.version(__name__)
 
 __all__ = [
+    "BallistaConfigExtension",
     "setup_test_cluster",
     "BallistaScheduler",
     "BallistaExecutor",
+    "BallistaSessionConfig",
     "BallistaSessionContext",
-    "DistributedDataFrame",
     "ExecutionPlanVisualization",
 ]

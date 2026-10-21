@@ -16,346 +16,18 @@
 # under the License.
 
 from datafusion import (
+    RuntimeEnvBuilder,
     SessionConfig,
     SessionContext,
-    DataFrame,
-    ParquetWriterOptions,
-    DataFrameWriteOptions,
 )
-from datafusion.dataframe import Compression
-from typing import Dict, List, Union, Optional, Callable
+from typing import Dict, Optional, Union
 import warnings
 
-from ._internal_ballista import create_ballista_data_frame
-from ._internal_ballista import ParquetColumnOptions as ParquetColumnOptionsInternal
-from ._internal_ballista import ParquetWriterOptions as ParquetWriterOptionsInternal
+from ._internal_ballista import BallistaConfigExtension
+from ._internal_ballista import ballista_datafusion_config_defaults
+from ._internal_ballista import with_ballista_query_planner
 
-import pathlib
-
-# class used to redefine DataFrame object
-# intercepting execution methods and methods
-# which returns `DataFrame`
-EXECUTION_METHODS = [
-    "collect",
-    "collect_partitioned",
-    "show",
-    "count",
-    "to_arrow_table",
-    "to_pandas",
-    "to_polars",
-]
-
-
-class RedefiningDataFrameMeta(type):
-    def __new__(cls, name, bases, attrs):
-        # wrapper function intercept all execution functions
-        # replacing ordinary DataFrame with Ballista data frame
-        def __wrap_dataframe_execution(func):
-            def method_wrapper(*args, **kwargs):
-                slf, *argz = args
-                df = slf._to_internal_df()
-
-                return getattr(df, func)(*argz, **kwargs)
-
-            return method_wrapper
-
-        # wrapper function intercepts all methods which
-        # return DataFrame and wraps DataFrame with DistributedDataFrame
-        def __wrap_dataframe_result(func):
-            def method_wrapper(*args, **kwargs):
-                address = args[0].address
-                session_id = args[0].session_id
-                df = func(*args, **kwargs)
-                return DistributedDataFrame(df, session_id, address)
-
-            return method_wrapper
-
-        for base_name, base_value in bases[0].__dict__.items():
-            if (
-                callable(base_value)
-                and not base_name.startswith("__")
-                and base_value.__annotations__.get("return") == DataFrame.__name__
-            ):
-                #
-                # functions which return DataFrame are redefined
-                # to return DistributedDataFrame
-                #
-                attrs[base_name] = __wrap_dataframe_result(base_value)
-
-        # Wrap execution methods to route through _to_internal_df() so they
-        # execute on the Ballista cluster rather than locally. Skip any method
-        # already explicitly defined on the subclass.
-        for func in EXECUTION_METHODS:
-            if func not in attrs:
-                attrs[func] = __wrap_dataframe_execution(func)
-
-        return super().__new__(cls, name, bases, attrs)
-
-
-class RedefiningSessionContextMeta(type):
-    def __new__(cls, name, bases, attrs):
-        def __wrap_dataframe_result(func):
-            def method_wrapper(*args, **kwargs):
-                ctx = args[0]
-                df = func(*args, **kwargs)
-                return DistributedDataFrame(
-                    df,
-                    ctx.session_id,
-                    ctx.address,
-                    ctx.cluster_config,
-                )
-
-            return method_wrapper
-
-        for base_name, base_value in bases[0].__dict__.items():
-            if (
-                callable(base_value)
-                and not base_name.startswith("__")
-                and base_value.__annotations__.get("return") == DataFrame.__name__
-            ):
-                #
-                # functions which return DataFrame are redefined
-                # to return DistributedDataFrame
-                #
-                attrs[base_name] = __wrap_dataframe_result(base_value)
-
-        return super().__new__(cls, name, bases, attrs)
-
-
-# main difference between this class and DataFrame is that
-# operations which would execute logical plan will
-# serialize it and invoke ballista client to execute it
-#
-# this class keeps reference to remote ballista
-class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
-    def __init__(
-        self,
-        df: DataFrame,
-        session_id: str,
-        address: str,
-        cluster_config: Optional[Dict[str, str]] = None,
-    ):
-        super().__init__(df.df)
-        self.address = address
-        self.session_id = session_id
-        self.cluster_config = cluster_config
-
-    #
-    # this will create a ballista dataframe, which has ballista
-    # session context, and ballista planner.
-    #
-    def _to_internal_df(self):
-        blob_plan = self.optimized_logical_plan().to_bytes()
-        df = create_ballista_data_frame(
-            blob_plan,
-            self.address,
-            self.session_id,
-            self.cluster_config,
-        )
-        return df
-
-    def write_json(
-        self, path, write_options: Union[DataFrameWriteOptions, None] = None
-    ):
-        df = self._to_internal_df()
-        df.write_json(path, None)
-
-    def write_csv(
-        self,
-        path,
-        with_header=False,
-        write_options: Union[DataFrameWriteOptions, None] = None,
-    ):
-        df = self._to_internal_df()
-        df.write_csv(path, with_header, None)
-
-    def write_parquet_with_options(
-        self,
-        path: str,
-        options: ParquetWriterOptions,
-        write_options: Union[DataFrameWriteOptions, None] = None,
-    ):
-        options_internal = ParquetWriterOptionsInternal(
-            options.data_pagesize_limit,
-            options.write_batch_size,
-            options.writer_version,
-            options.skip_arrow_metadata,
-            options.compression,
-            options.dictionary_enabled,
-            options.dictionary_page_size_limit,
-            options.statistics_enabled,
-            options.max_row_group_size,
-            options.created_by,
-            options.column_index_truncate_length,
-            options.statistics_truncate_length,
-            options.data_page_row_count_limit,
-            options.encoding,
-            options.bloom_filter_on_write,
-            options.bloom_filter_fpp,
-            options.bloom_filter_ndv,
-            options.allow_single_file_parallelism,
-            options.maximum_parallel_row_group_writers,
-            options.maximum_buffered_record_batches_per_stream,
-        )
-
-        column_specific_options_internal = {}
-        for column, opts in (options.column_specific_options or {}).items():
-            column_specific_options_internal[column] = ParquetColumnOptionsInternal(
-                bloom_filter_enabled=opts.bloom_filter_enabled,
-                encoding=opts.encoding,
-                dictionary_enabled=opts.dictionary_enabled,
-                compression=opts.compression,
-                statistics_enabled=opts.statistics_enabled,
-                bloom_filter_fpp=opts.bloom_filter_fpp,
-                bloom_filter_ndv=opts.bloom_filter_ndv,
-            )
-
-        # raw_write_options = (
-        #     write_options._raw_write_options if write_options is not None else None
-        # )
-
-        df = self._to_internal_df()
-
-        df.write_parquet_with_options(
-            str(path), options_internal, column_specific_options_internal, None
-        )
-
-    def write_parquet(
-        self,
-        path: Union[str, pathlib.Path],
-        compression: Union[str, Compression, ParquetWriterOptions] = Compression.ZSTD,
-        compression_level: Union[int, None] = None,
-        write_options: Union[DataFrameWriteOptions, None] = None,
-    ) -> None:
-        if isinstance(compression, ParquetWriterOptions):
-            if compression_level is not None:
-                msg = "compression_level should be None when using ParquetWriterOptions"
-                raise ValueError(msg)
-            self.write_parquet_with_options(path, compression)
-            return
-
-        if isinstance(compression, str):
-            compression = Compression.from_str(compression)
-
-        if (
-            compression in {Compression.GZIP, Compression.BROTLI, Compression.ZSTD}
-            and compression_level is None
-        ):
-            compression_level = compression.get_default_level()
-        df = self._to_internal_df()
-        df.write_parquet(str(path), compression.value, compression_level, None)
-
-    def explain_visual(self, analyze: bool = False) -> "ExecutionPlanVisualization":
-        """
-        Generate a visual representation of the execution plan.
-
-        This method creates an SVG visualization of the query execution plan,
-        which can be displayed directly in Jupyter notebooks.
-
-        Args:
-            analyze: If True, includes runtime statistics from actual execution.
-
-        Returns:
-            ExecutionPlanVisualization: An object that renders as SVG in Jupyter.
-
-        Example:
-            >>> df = ctx.sql("SELECT * FROM orders WHERE amount > 100")
-            >>> df.explain_visual()  # Displays SVG in notebook
-            >>> viz = df.explain_visual(analyze=True)
-            >>> viz.save("plan.svg")  # Save to file
-        """
-        # Get the execution plan as a string representation
-        # Note: explain() prints but doesn't return a string, so we use logical_plan()
-        try:
-            plan = self.logical_plan()
-            plan_str = plan.display_indent()
-        except Exception:
-            # Fallback if logical_plan() fails
-            plan_str = "Unable to retrieve execution plan"
-        return ExecutionPlanVisualization(plan_str, analyze=analyze)
-
-    def collect_with_progress(
-        self,
-        callback: Optional[Callable] = None,
-        poll_interval: float = 0.5,
-    ):
-        """
-        Collect results with progress indication.
-
-        For long-running queries, this method provides progress updates
-        through a callback function or displays a progress bar in Jupyter.
-
-        Args:
-            callback: Optional function to call with progress updates.
-                     Signature: callback(status: str, progress: float)
-            poll_interval: How often to check progress (seconds).
-
-        Returns:
-            The collected result batches.
-
-        Example:
-            >>> def my_callback(status, progress):
-            ...     print(f"{status}: {progress:.1%}")
-            >>> batches = df.collect_with_progress(callback=my_callback)
-        """
-        import threading
-        import time
-
-        result = [None]
-        error = [None]
-        done = threading.Event()
-
-        def execute():
-            try:
-                result[0] = self.collect()
-            except Exception as e:
-                error[0] = e
-            finally:
-                done.set()
-
-        thread = threading.Thread(target=execute)
-        thread.start()
-
-        # Check if we're in a Jupyter environment
-        try:
-            from IPython.display import clear_output
-            from IPython.core.getipython import get_ipython
-
-            in_jupyter = get_ipython() is not None
-        except (ImportError, AttributeError):
-            in_jupyter = False
-
-        start_time = time.time()
-
-        if in_jupyter and callback is None:
-            # Display a simple progress indicator
-            try:
-                while not done.wait(timeout=poll_interval):
-                    elapsed = time.time() - start_time
-                    clear_output(wait=True)
-                    print(f"⏳ Query executing... ({elapsed:.1f}s elapsed)")
-
-                clear_output(wait=True)
-                elapsed = time.time() - start_time
-                print(f"✓ Query completed in {elapsed:.1f}s")
-            except Exception:
-                pass  # Ignore display errors
-        elif callback is not None:
-            while not done.wait(timeout=poll_interval):
-                elapsed = time.time() - start_time
-                callback(f"Executing ({elapsed:.1f}s)", -1.0)  # -1 means indeterminate
-
-            elapsed = time.time() - start_time
-            callback(f"Completed in {elapsed:.1f}s", 1.0)
-        else:
-            done.wait()
-
-        thread.join()
-
-        if error[0] is not None:
-            raise error[0]
-
-        return result[0]
+ConfigValue = Union[str, int, float, bool]
 
 
 class ExecutionPlanVisualization:
@@ -531,80 +203,443 @@ class ExecutionPlanVisualization:
         return f"ExecutionPlanVisualization(analyze={self.analyze})\n{self.plan_str}"
 
 
-class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextMeta):
+def BallistaSessionContext(
+    address: str = "df://localhost:50050",
+    config: Optional[
+        Union["BallistaSessionConfig", SessionConfig, Dict[str, ConfigValue]]
+    ] = None,
+    runtime: Optional[RuntimeEnvBuilder] = None,
+) -> SessionContext:
     """
-    A session context for connecting to and querying a Ballista cluster.
+    Create a DataFusion ``SessionContext`` that executes queries on a Ballista cluster.
 
-    This class extends DataFusion's SessionContext to work with distributed
-    Ballista clusters, automatically routing query execution to the cluster
-    while maintaining API compatibility with local DataFusion usage.
+    The returned object is a regular ``datafusion.SessionContext``, so the whole
+    DataFusion Python API (``sql``, ``read_parquet``, ``register_*``, DataFrame
+    operations, ...) is available. Planning happens locally; physical plans are
+    sent to the Ballista scheduler at ``address`` for distributed execution.
 
-    Example:
+    Args:
+        address: Ballista scheduler URL. Defaults to ``"df://localhost:50050"``.
+        config: Session configuration, either a ``BallistaSessionConfig``, a
+            ``SessionConfig`` or a dictionary of ``datafusion.*`` and
+            ``ballista.*`` options with ``str``, ``int``, ``float`` or ``bool``
+            values. It is used for local planning and propagated to the
+            scheduler-side session. DataFusion options which Ballista does not
+            support are overridden with Ballista defaults, see
+            ``BallistaSessionConfig``.
+        runtime: Optional runtime environment used by the local session.
+
+    Returns:
+        A ``SessionContext`` configured with the Ballista query planner.
+
+    Raises:
+        ValueError: If a ``config`` key does not start with ``datafusion.`` or
+            ``ballista.``, or is an unknown ``ballista.*`` key.
+
+    Examples:
+        Connect to a scheduler and run SQL:
+
         >>> from ballista import BallistaSessionContext
         >>> ctx = BallistaSessionContext("df://localhost:50050")
-        >>> df = ctx.sql("SELECT * FROM my_table LIMIT 10")
-        >>> df.show()
+        >>> ctx.register_parquet("t", "./testdata/test.parquet")
+        >>> ctx.sql("SELECT count(*) FROM t").show()
 
-    To override DataFusion / Ballista session settings on the cluster
-    (e.g. the number of target partitions used by the scheduler):
+        Use the DataFrame API:
+
+        >>> from datafusion import col, lit
+        >>> df = ctx.read_parquet("./testdata/test.parquet")
+        >>> batches = df.filter(col("id") > lit(4)).limit(5).collect()
+
+        Configure session settings with a dictionary:
 
         >>> ctx = BallistaSessionContext(
         ...     "df://localhost:50050",
-        ...     cluster_config={"datafusion.execution.target_partitions": "256"},
+        ...     config={
+        ...         "datafusion.execution.target_partitions": 16,
+        ...         "ballista.job.name": "daily report",
+        ...     },
         ... )
 
-    For Jupyter notebook users:
-        >>> %load_ext ballista.jupyter
-        >>> %ballista connect df://localhost:50050
-        >>> %sql SELECT * FROM my_table
+        Configure Ballista specific settings, such as job name shown in the
+        scheduler UI, or adaptive query planning, with ``BallistaSessionConfig``:
+
+        >>> from ballista import BallistaSessionConfig
+        >>> ctx = BallistaSessionContext(
+        ...     "df://localhost:50050",
+        ...     config=BallistaSessionConfig()
+        ...     .with_job_name("daily report")
+        ...     .with_adaptive_query_planner(True)
+        ...     .with_broadcast_join_threshold_bytes(10 * 1024 * 1024)
+        ...     .set("datafusion.execution.target_partitions", 16),
+        ... )
+    """
+    if not isinstance(config, BallistaSessionConfig):
+        config = BallistaSessionConfig(config)
+
+    source_ctx = SessionContext(config.build(), runtime)
+    return with_ballista_query_planner(source_ctx, address)
+
+
+# DataFusion options overridden by Ballista, mirrors
+# `SessionConfigExt::ballista_restricted_configuration` in ballista-core
+#
+# value is `True` if option is restricted and cant be overridden,
+# if value is `False` if users can override it using dict parameter
+# in dictionary.
+#
+# TODO: At the moment values are duplicated,
+_BALLISTA_RESTRICTED_DATAFUSION_OPTIONS: Dict[str, bool] = {
+    "datafusion.optimizer.enable_round_robin_repartition": True,
+    "datafusion.execution.parquet.schema_force_view_types": False,
+    "datafusion.execution.target_partitions": False,
+    "datafusion.sql_parser.map_string_types_to_utf8view": False,
+    "datafusion.optimizer.hash_join_single_partition_threshold": False,
+    "datafusion.optimizer.hash_join_single_partition_threshold_rows": False,
+    "datafusion.optimizer.prefer_hash_join": True,
+    "datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery": True,
+    "datafusion.optimizer.enable_dynamic_filter_pushdown": True,
+}
+
+
+def _config_value_to_str(value: ConfigValue) -> str:
+    # `str(True)` is "True", config parsers expect lowercase
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+class BallistaSessionConfig:
+    """
+    Builder for a Ballista-ready DataFusion ``SessionConfig``.
+
+    Mirrors Rust ``BallistaConfig``: typed ``with_*`` setters for Ballista
+    options, plus ``set`` for any ``datafusion.*`` or ``ballista.*`` option.
+    ``build`` produces a ``SessionConfig`` with Ballista defaults applied and
+    ``BallistaConfigExtension`` registered.
+
+    DataFusion options which Ballista overrides are set to Ballista defaults:
+    restricted options are always overridden, non-restricted options are kept
+    only when set with ``set`` or a dict.
+    Options inside a passed ``SessionConfig`` can not be inspected, so all of
+    them are overridden with Ballista defaults.
+
+    Args:
+        config: Initial configuration, either a ``SessionConfig`` or a dictionary
+            of ``datafusion.*`` and ``ballista.*`` options.
+
+    Examples:
+        >>> from ballista import BallistaSessionConfig
+        >>> config = (
+        ...     BallistaSessionConfig({"datafusion.execution.target_partitions": 8})
+        ...     .with_job_name("daily report")
+        ...     .with_adaptive_query_planner(True)
+        ...     .set("ballista.shuffle.compression.codec", "zstd")
+        ...     .build()
+        ... )
     """
 
     def __init__(
         self,
-        address: str,
-        config=None,
-        runtime=None,
-        cluster_config: Optional[Dict[str, str]] = None,
+        config: Optional[Union[SessionConfig, Dict[str, ConfigValue]]] = None,
     ):
-        self.cluster_config = (
-            {str(k): str(v) for k, v in cluster_config.items()}
-            if cluster_config is not None
-            else None
-        )
-        # Apply overrides to the local SessionContext too: some settings
-        # (e.g. datafusion.execution.listing_table_factory_infer_partitions)
-        # are consulted during local table registration / planning, before
-        # the plan is shipped to the scheduler. Ballista-namespaced keys
-        # are not understood by the local SessionConfig and are forwarded
-        # to the scheduler only.
-        if self.cluster_config:
-            if config is None:
-                config = SessionConfig()
-            for key, value in self.cluster_config.items():
-                if key.startswith("ballista."):
+        self._base: Optional[SessionConfig] = None
+        self._datafusion_options: Dict[str, str] = {}
+        self._ballista_settings: Dict[str, str] = {}
+
+        if isinstance(config, SessionConfig):
+            self._base = config
+        elif config is not None:
+            for key, value in config.items():
+                self.set(key, value)
+
+    def set(self, key: str, value: ConfigValue) -> "BallistaSessionConfig":
+        """
+        Set a ``datafusion.*`` or ``ballista.*`` option.
+
+        Raises:
+            ValueError: If the key has an unsupported prefix, or is an unknown
+                ``ballista.*`` key.
+        """
+        value = _config_value_to_str(value)
+        if key.startswith("ballista."):
+            # validates the key, values are not validated by ballista
+            BallistaConfigExtension({key: value})
+            self._ballista_settings[key] = value
+        elif key.startswith("datafusion."):
+            self._datafusion_options[key] = value
+        else:
+            raise ValueError(
+                f"unsupported configuration key: {key}, "
+                "expected `datafusion.` or `ballista.` prefix"
+            )
+        return self
+
+    def build(self) -> SessionConfig:
+        """Produce a ``SessionConfig`` with ``BallistaConfigExtension`` registered."""
+        config = self._base if self._base is not None else SessionConfig()
+        for key, value in self._datafusion_options.items():
+            config = config.set(key, value)
+
+        ballista_settings = dict(self._ballista_settings)
+        for key, value in ballista_datafusion_config_defaults().items():
+            if (
+                key.startswith("datafusion.")
+                and key in _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS
+            ):
+                restricted = _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS[key]
+                # keep user value for options which are not restricted
+                if not restricted and key in self._datafusion_options:
                     continue
                 config = config.set(key, value)
-        super().__init__(config, runtime)
-        self.address = address
-        self.session_id_internal = super().session_id()
+            elif key.startswith("ballista."):
+                ballista_settings.setdefault(key, value)
 
-    @property
-    def session_id(self):
-        return self.session_id_internal
+        return config.with_extension(BallistaConfigExtension(ballista_settings))
 
-    def get_tables(self) -> Optional[dict[str, List[str]]]:
-        """Get tables and their respective schemas (in terms of database schema)."""
-        try:
-            catalog = self.catalog()
-            schema_names = list(catalog.schema_names())
-            if schema_names:
-                tables_info = {}
-                for schema_name in schema_names:
-                    tables_info[schema_name] = list(
-                        catalog.schema(name=schema_name).table_names()
-                    )
-                return tables_info
-        except (AttributeError, NotImplementedError) as e:
-            warnings.warn(f"Could not retrieve tables from catalog: {e}")
-            pass
-        return {}
+    # job
+
+    def with_job_name(self, job_name: str) -> "BallistaSessionConfig":
+        """Job name displayed in the scheduler UI."""
+        return self.set("ballista.job.name", job_name)
+
+    def with_standalone_parallelism(self, parallelism: int) -> "BallistaSessionConfig":
+        """Parallelism of the standalone cluster."""
+        return self.set("ballista.standalone.parallelism", parallelism)
+
+    def with_cache_noop(self, enabled: bool) -> "BallistaSessionConfig":
+        """Disable the default cache extension node."""
+        return self.set("ballista.cache.noop", enabled)
+
+    # shuffle reader
+
+    def with_shuffle_reader_maximum_concurrent_requests(
+        self, max_requests: int
+    ) -> "BallistaSessionConfig":
+        """Maximum concurrent shuffle read requests."""
+        return self.set("ballista.shuffle.max_concurrent_read_requests", max_requests)
+
+    def with_shuffle_reader_force_remote_read(
+        self, enabled: bool
+    ) -> "BallistaSessionConfig":
+        """Force remote reads even for local partitions."""
+        return self.set("ballista.shuffle.force_remote_read", enabled)
+
+    def with_shuffle_reader_remote_prefer_flight(
+        self, enabled: bool
+    ) -> "BallistaSessionConfig":
+        """Prefer Flight protocol for remote shuffle reads."""
+        return self.set("ballista.shuffle.remote_read_prefer_flight", enabled)
+
+    def with_shuffle_reader_max_bytes_in_flight(
+        self, max_bytes: int
+    ) -> "BallistaSessionConfig":
+        """Reduce-side in-flight bytes budget."""
+        return self.set("ballista.shuffle.reader.max_bytes_in_flight", max_bytes)
+
+    def with_shuffle_reader_max_blocks_in_flight_per_address(
+        self, max_blocks: int
+    ) -> "BallistaSessionConfig":
+        """Per-address in-flight block cap."""
+        return self.set(
+            "ballista.shuffle.reader.max_blocks_in_flight_per_address", max_blocks
+        )
+
+    def with_shuffle_reader_default_block_size_bytes(
+        self, block_size: int
+    ) -> "BallistaSessionConfig":
+        """Assumed block size when partition statistics lack a byte count."""
+        return self.set("ballista.shuffle.reader.default_block_size_bytes", block_size)
+
+    # shuffle writer
+
+    def with_shuffle_sort_based_batch_size(
+        self, batch_size: int
+    ) -> "BallistaSessionConfig":
+        """Sort shuffle target batch size in rows."""
+        return self.set("ballista.shuffle.sort_based.batch_size", batch_size)
+
+    def with_shuffle_writer_channel_capacity(
+        self, capacity: int
+    ) -> "BallistaSessionConfig":
+        """Shuffle writer bounded-channel capacity."""
+        return self.set("ballista.shuffle.writer_channel_capacity", capacity)
+
+    def with_shuffle_sort_based_memory_limit_per_task_bytes(
+        self, limit_bytes: int
+    ) -> "BallistaSessionConfig":
+        """Per-task buffered bytes at which the sort shuffle writer spills, ``0`` disables."""
+        return self.set(
+            "ballista.shuffle.sort_based.memory_limit_per_task_bytes", limit_bytes
+        )
+
+    def with_shuffle_compression_codec(self, codec: str) -> "BallistaSessionConfig":
+        """Shuffle compression codec: ``none``, ``lz4`` or ``zstd``."""
+        return self.set("ballista.shuffle.compression.codec", codec)
+
+    # grpc client
+
+    def with_grpc_client_initial_connection_window_size(
+        self, size: int
+    ) -> "BallistaSessionConfig":
+        """HTTP/2 initial connection-level flow-control window."""
+        return self.set("ballista.client.initial_connection_window_size", size)
+
+    def with_grpc_client_initial_stream_window_size(
+        self, size: int
+    ) -> "BallistaSessionConfig":
+        """HTTP/2 initial stream-level flow-control window."""
+        return self.set("ballista.client.initial_stream_window_size", size)
+
+    def with_grpc_client_max_message_size(self, size: int) -> "BallistaSessionConfig":
+        """Maximum gRPC message size."""
+        return self.set("ballista.client.grpc_max_message_size", size)
+
+    def with_grpc_client_connect_timeout_seconds(
+        self, seconds: int
+    ) -> "BallistaSessionConfig":
+        """gRPC client connection timeout in seconds."""
+        return self.set("ballista.client.grpc_connect_timeout_seconds", seconds)
+
+    def with_grpc_client_timeout_seconds(self, seconds: int) -> "BallistaSessionConfig":
+        """gRPC client request timeout in seconds."""
+        return self.set("ballista.client.grpc_timeout_seconds", seconds)
+
+    def with_grpc_client_tcp_keepalive_seconds(
+        self, seconds: int
+    ) -> "BallistaSessionConfig":
+        """TCP keep-alive interval for gRPC clients in seconds."""
+        return self.set("ballista.client.grpc_tcp_keepalive_seconds", seconds)
+
+    def with_grpc_client_http2_keepalive_interval_seconds(
+        self, seconds: int
+    ) -> "BallistaSessionConfig":
+        """HTTP/2 keep-alive interval for gRPC clients in seconds."""
+        return self.set(
+            "ballista.client.grpc_http2_keepalive_interval_seconds", seconds
+        )
+
+    # client
+
+    def with_client_pull(self, enabled: bool) -> "BallistaSessionConfig":
+        """Use pull (``True``) or push job tracking strategy."""
+        return self.set("ballista.client.pull", enabled)
+
+    def with_use_tls(self, enabled: bool) -> "BallistaSessionConfig":
+        """Use TLS connection to the cluster."""
+        return self.set("ballista.client.use_tls", enabled)
+
+    def with_io_retries_times(self, retries: int) -> "BallistaSessionConfig":
+        """Number of retries for client IO operations."""
+        return self.set("ballista.client.io_retries_times", retries)
+
+    def with_io_retry_wait_time_ms(self, wait_ms: int) -> "BallistaSessionConfig":
+        """Wait time in milliseconds between client IO retries."""
+        return self.set("ballista.client.io_retry_wait_time_ms", wait_ms)
+
+    # planner
+
+    def with_adaptive_query_planner(self, enabled: bool) -> "BallistaSessionConfig":
+        """Enable adaptive query planning."""
+        return self.set("ballista.planner.adaptive.enabled", enabled)
+
+    def with_adaptive_join_enabled(self, enabled: bool) -> "BallistaSessionConfig":
+        """Enable the AQE dynamic join selection rule."""
+        return self.set("ballista.planner.adaptive_join.enabled", enabled)
+
+    def with_coalesce_enabled(self, enabled: bool) -> "BallistaSessionConfig":
+        """Enable the AQE coalesce shuffle partitions rule."""
+        return self.set("ballista.planner.coalesce.enabled", enabled)
+
+    def with_coalesce_target_partition_bytes(
+        self, target_bytes: int
+    ) -> "BallistaSessionConfig":
+        """Target post-coalesce partition size in bytes."""
+        return self.set(
+            "ballista.planner.coalesce.target_partition_bytes", target_bytes
+        )
+
+    def with_coalesce_small_partition_factor(
+        self, factor: float
+    ) -> "BallistaSessionConfig":
+        """Small partition merge factor."""
+        return self.set("ballista.planner.coalesce.small_partition_factor", factor)
+
+    def with_coalesce_merged_partition_factor(
+        self, factor: float
+    ) -> "BallistaSessionConfig":
+        """Merged partition early-flush factor."""
+        return self.set("ballista.planner.coalesce.merged_partition_factor", factor)
+
+    def with_propagate_empty_enabled(self, enabled: bool) -> "BallistaSessionConfig":
+        """Enable the AQE propagate empty exec rule."""
+        return self.set("ballista.planner.propagate_empty.enabled", enabled)
+
+    def with_parallel_window_enabled(self, enabled: bool) -> "BallistaSessionConfig":
+        """Enable the AQE parallel window rule."""
+        return self.set("ballista.planner.parallel_window.enabled", enabled)
+
+    # optimizer
+
+    def with_broadcast_join_threshold_bytes(
+        self, threshold_bytes: int
+    ) -> "BallistaSessionConfig":
+        """Byte threshold below which a join side is broadcast, ``0`` disables."""
+        return self.set(
+            "ballista.optimizer.broadcast_join_threshold_bytes", threshold_bytes
+        )
+
+    def with_broadcast_join_threshold_rows(
+        self, threshold_rows: int
+    ) -> "BallistaSessionConfig":
+        """Row threshold below which a join side is broadcast, ``0`` disables."""
+        return self.set(
+            "ballista.optimizer.broadcast_join_threshold_rows", threshold_rows
+        )
+
+    def with_hash_join_max_build_partition_bytes(
+        self, max_bytes: int
+    ) -> "BallistaSessionConfig":
+        """Maximum hash join build partition bytes under AQE, ``0`` disables."""
+        return self.set(
+            "ballista.optimizer.hash_join_max_build_partition_bytes", max_bytes
+        )
+
+    def with_stage_build_side(self, enabled: bool) -> "BallistaSessionConfig":
+        """Stage a join's build side as its own shuffle under AQE."""
+        return self.set("ballista.optimizer.stage_build_side", enabled)
+
+    def with_stage_build_side_min_probe_ratio(
+        self, ratio: int
+    ) -> "BallistaSessionConfig":
+        """Minimal probe to build side ratio for staging the build side."""
+        return self.set("ballista.optimizer.stage_build_side_min_probe_ratio", ratio)
+
+    def with_stage_build_side_max_estimate_multiple(
+        self, multiple: int
+    ) -> "BallistaSessionConfig":
+        """Maximal estimated build side multiple of broadcast threshold to stage."""
+        return self.set(
+            "ballista.optimizer.stage_build_side_max_estimate_multiple", multiple
+        )
+
+    def with_not_in_subquery_rewrite(self, enabled: bool) -> "BallistaSessionConfig":
+        """Rewrite uncorrelated ``NOT IN (subquery)`` into an anti join."""
+        return self.set("ballista.optimizer.not_in_subquery_rewrite", enabled)
+
+    def with_balance_scan_file_groups(self, enabled: bool) -> "BallistaSessionConfig":
+        """Prune scan files by statistics and balance scan file groups."""
+        return self.set("ballista.optimizer.balance_scan_file_groups", enabled)
+
+    # scheduler
+
+    def with_max_partitions_per_task(
+        self, max_partitions: int
+    ) -> "BallistaSessionConfig":
+        """Scheduler per-task partition slice cap."""
+        return self.set("ballista.scheduler.max_partitions_per_task", max_partitions)
+
+    def with_share_file_statistics_cache(
+        self, enabled: bool
+    ) -> "BallistaSessionConfig":
+        """Plan jobs with the scheduler-wide file statistics cache."""
+        return self.set("ballista.scheduler.share_file_statistics_cache", enabled)
