@@ -44,7 +44,7 @@ ballista = { workspace = true, features = ["standalone"], optional = true }
 datafusion = { workspace = true, optional = true }
 datafusion-cli = { workspace = true, optional = true }
 mimalloc = { workspace = true, optional = true }
-rustyline = { version = "18.0.0", optional = true }
+rustyline = { version = "19.0.0", optional = true }
 
 # TUI/web shared deps
 ballista-api-types = { workspace = true, optional = true }

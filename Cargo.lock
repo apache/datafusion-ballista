@@ -1103,7 +1103,7 @@ dependencies = [
  "ratatui",
  "ratzilla",
  "reqwest 0.13.5",
- "rustyline",
+ "rustyline 19.0.0",
  "serde",
  "serde_json",
  "tokio",
@@ -2383,7 +2383,7 @@ dependencies = [
  "parking_lot",
  "parquet",
  "regex",
- "rustyline",
+ "rustyline 18.0.1",
  "tokio",
  "url",
 ]
@@ -6305,6 +6305,26 @@ checksum = "53f6a737db68eb1a8ccff86b584b2fc13eca6a7bb6f78ebc7c529547e3ab9684"
 dependencies = [
  "bitflags 2.13.1",
  "cfg-if",
+ "clipboard-win",
+ "home",
+ "libc",
+ "log",
+ "memchr",
+ "nix 0.31.3",
+ "radix_trie",
+ "unicode-segmentation",
+ "unicode-width 0.2.2",
+ "utf8parse",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rustyline"
+version = "19.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56e1d6bd81c2d5feafd2419138df9183c45a10a492c4e873b8b0acb8eb2b549e"
+dependencies = [
+ "bitflags 2.13.1",
  "clipboard-win",
  "home",
  "libc",
