@@ -24,6 +24,7 @@ mod common;
 mod iceberg_nodes {
     use std::sync::Arc;
 
+    use ballista_iceberg::{IcebergLogicalCodec, IcebergPhysicalCodec};
     use datafusion::assert_batches_eq;
     use datafusion::catalog::TableProvider;
     use datafusion::common::{Result, TableReference};
@@ -37,7 +38,6 @@ mod iceberg_nodes {
     use datafusion_proto::physical_plan::{
         DefaultPhysicalProtoConverter, PhysicalExtensionCodec,
     };
-    use iceberg_ballista::{IcebergLogicalCodec, IcebergPhysicalCodec};
     use iceberg_datafusion::IcebergStaticTableProvider;
     use iceberg_datafusion::read::IcebergDataSource;
 
@@ -161,6 +161,7 @@ mod iceberg_nodes {
 mod other_nodes {
     use std::sync::Arc;
 
+    use ballista_iceberg::{IcebergLogicalCodec, IcebergPhysicalCodec};
     use datafusion::arrow::datatypes::Schema;
     use datafusion::catalog::TableProvider;
     use datafusion::common::{Result, TableReference};
@@ -174,7 +175,6 @@ mod other_nodes {
         DefaultPhysicalProtoConverter, PhysicalExtensionCodec,
         PhysicalProtoConverterExtension,
     };
-    use iceberg_ballista::{IcebergLogicalCodec, IcebergPhysicalCodec};
 
     /// An inner codec that encodes anything as `inner`, and decodes only that.
     #[derive(Debug)]
@@ -289,16 +289,16 @@ mod other_nodes {
 
         assert_eq!(
             decode(b""),
-            "Execution error: empty iceberg-ballista codec buffer"
+            "Execution error: empty ballista-iceberg codec buffer"
         );
         assert_eq!(
             decode(b"\x07inner"),
-            "Execution error: unknown iceberg-ballista codec tag 7: was the plan \
-             encoded by another version of iceberg-ballista?"
+            "Execution error: unknown ballista-iceberg codec tag 7: was the plan \
+             encoded by another version of ballista-iceberg?"
         );
         assert_eq!(
             decode(b"\x01inner"),
-            "Execution error: invalid iceberg-ballista payload: expected value at line 1 \
+            "Execution error: invalid ballista-iceberg payload: expected value at line 1 \
              column 1"
         );
     }

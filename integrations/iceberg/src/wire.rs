@@ -35,10 +35,10 @@ use tokio::runtime::{Handle, RuntimeFlavor};
 /// a table's runtime, which must outlive the table, and a codec's caller may not.
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
-        .thread_name("iceberg-ballista")
+        .thread_name("ballista-iceberg")
         .enable_all()
         .build()
-        .expect("failed to build the iceberg-ballista runtime")
+        .expect("failed to build the ballista-iceberg runtime")
 });
 
 /// Runs `fut` on [`RUNTIME`] and waits for it, from the synchronous codec API.
@@ -190,13 +190,13 @@ pub(crate) fn decode<T: DeserializeOwned>(
     match buf.split_first() {
         Some((&TAG_ICEBERG, rest)) => serde_json::from_slice(rest)
             .map(Frame::Iceberg)
-            .map_err(|e| exec_datafusion_err!("invalid iceberg-ballista payload: {e}")),
+            .map_err(|e| exec_datafusion_err!("invalid ballista-iceberg payload: {e}")),
         Some((&TAG_DELEGATED, rest)) => Ok(Frame::Delegated(rest)),
         Some((tag, _)) => exec_err!(
-            "unknown iceberg-ballista codec tag {tag}: was the plan encoded by \
-             another version of iceberg-ballista?"
+            "unknown ballista-iceberg codec tag {tag}: was the plan encoded by \
+             another version of ballista-iceberg?"
         ),
-        None => exec_err!("empty iceberg-ballista codec buffer"),
+        None => exec_err!("empty ballista-iceberg codec buffer"),
     }
 }
 

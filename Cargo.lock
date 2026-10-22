@@ -1359,6 +1359,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "ballista-iceberg"
+version = "55.0.0"
+dependencies = [
+ "arrow-schema",
+ "async-trait",
+ "ballista",
+ "ballista-core",
+ "datafusion",
+ "datafusion-proto",
+ "futures",
+ "iceberg",
+ "iceberg-catalog-rest",
+ "iceberg-datafusion",
+ "iceberg-storage-opendal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "testcontainers",
+ "tokio",
+]
+
+[[package]]
 name = "ballista-result-service"
 version = "55.0.0"
 dependencies = [
@@ -4424,28 +4446,6 @@ dependencies = [
  "uuid",
  "zeroize",
  "zstd",
-]
-
-[[package]]
-name = "iceberg-ballista"
-version = "55.0.0"
-dependencies = [
- "arrow-schema",
- "async-trait",
- "ballista",
- "ballista-core",
- "datafusion",
- "datafusion-proto",
- "futures",
- "iceberg",
- "iceberg-catalog-rest",
- "iceberg-datafusion",
- "iceberg-storage-opendal",
- "serde",
- "serde_json",
- "tempfile",
- "testcontainers",
- "tokio",
 ]
 
 [[package]]

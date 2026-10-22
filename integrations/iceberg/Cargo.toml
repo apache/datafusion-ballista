@@ -16,8 +16,8 @@
 # under the License.
 
 [package]
-name = "iceberg-ballista"
-description = "Apache Iceberg table scans for Ballista"
+name = "ballista-iceberg"
+description = "Apache Iceberg support for Ballista"
 license = { workspace = true }
 version = { workspace = true }
 homepage = { workspace = true }

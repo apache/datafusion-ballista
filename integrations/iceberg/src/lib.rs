@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Apache Iceberg table scans for Ballista.
+//! Apache Iceberg support for Ballista.
 //!
 //! Ballista sends plans between nodes as bytes, so these codecs send each Iceberg
 //! table and scan as one version of the table, which any node can rebuild
@@ -31,7 +31,7 @@
 //! # use ballista::prelude::{SessionConfigExt, SessionContextExt};
 //! # use datafusion::execution::SessionStateBuilder;
 //! # use datafusion::prelude::{SessionConfig, SessionContext};
-//! # use iceberg_ballista::register_iceberg_codecs;
+//! # use ballista_iceberg::register_iceberg_codecs;
 //! # use iceberg_datafusion::IcebergCatalogProvider;
 //! # async fn example(catalog: Arc<dyn iceberg::Catalog>) -> datafusion::error::Result<()> {
 //! let state = SessionStateBuilder::new()

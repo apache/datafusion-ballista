@@ -27,6 +27,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
+use ballista_iceberg::register_iceberg_codecs;
 use datafusion::assert_batches_eq;
 use datafusion::error::Result;
 use datafusion::execution::SessionStateBuilder;
@@ -36,7 +37,6 @@ use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use iceberg::table::Table;
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation, TableIdent};
-use iceberg_ballista::register_iceberg_codecs;
 use iceberg_datafusion::{
     IcebergCatalogProvider, IcebergCatalogTableProvider, IcebergStaticTableProvider,
 };

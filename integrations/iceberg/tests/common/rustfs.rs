@@ -47,9 +47,9 @@ impl RestCatalog {
     pub async fn start() -> Self {
         // Docker names are global, and tests run concurrently.
         let suffix = unique_suffix();
-        let network = format!("iceberg-ballista-{suffix}");
+        let network = format!("ballista-iceberg-{suffix}");
         // Also the hostname the catalog reaches RustFS on.
-        let s3_host = format!("iceberg-ballista-rustfs-{suffix}");
+        let s3_host = format!("ballista-iceberg-rustfs-{suffix}");
 
         let s3 = GenericImage::new("rustfs/rustfs", "1.0.0")
             .with_exposed_port(S3_PORT.tcp())

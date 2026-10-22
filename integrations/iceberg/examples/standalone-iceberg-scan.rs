@@ -21,13 +21,14 @@
 //! nothing running:
 //!
 //! ```text
-//! cargo run -p iceberg-ballista --example standalone-iceberg-scan
+//! cargo run -p ballista-iceberg --example standalone-iceberg-scan
 //! ```
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
+use ballista_iceberg::register_iceberg_codecs;
 use datafusion::common::Result;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -35,7 +36,6 @@ use iceberg::io::LocalFsStorageFactory;
 use iceberg::memory::{MEMORY_CATALOG_WAREHOUSE, MemoryCatalogBuilder};
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableCreation};
-use iceberg_ballista::register_iceberg_codecs;
 use iceberg_datafusion::{
     IcebergCatalogTableProvider, IcebergStaticTableProvider, to_datafusion_error,
 };

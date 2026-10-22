@@ -19,7 +19,7 @@
 
 # Apache Iceberg
 
-The `iceberg-ballista` crate (`integrations/iceberg`) lets Ballista scan
+The `ballista-iceberg` crate (`integrations/iceberg`) lets Ballista scan
 [Apache Iceberg](https://iceberg.apache.org/) tables. On top of
 [iceberg-datafusion](https://github.com/apache/datafusion-iceberg), it adds the
 codecs that send Iceberg tables and scans between the client, the scheduler and
@@ -38,7 +38,7 @@ use std::sync::Arc;
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use iceberg_ballista::register_iceberg_codecs;
+use ballista_iceberg::register_iceberg_codecs;
 use iceberg_datafusion::IcebergCatalogProvider;
 
 let state = SessionStateBuilder::new()
@@ -61,7 +61,7 @@ The example registers both on a table in a temporary local warehouse, and shows
 a commit reaching the live table but not the static one:
 
 ```shell
-cargo run -p iceberg-ballista --example standalone-iceberg-scan
+cargo run -p ballista-iceberg --example standalone-iceberg-scan
 ```
 
 ## How it works
@@ -104,5 +104,5 @@ configuration.
   `FileIO` includes them, so the links between client, scheduler and executors
   must be trusted.
 - **Only standalone mode is tested.** A separately deployed scheduler and
-  executors must link `iceberg-ballista` and register the codecs too (see
+  executors must link `ballista-iceberg` and register the codecs too (see
   [Extending Components](extending-components.md)).
