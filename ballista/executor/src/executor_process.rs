@@ -337,10 +337,12 @@ pub struct ExecutorProcessConfig {
     /// Fraction (0.0, 1.0] of the detected host/cgroup memory limit used for the
     /// auto memory pool when `memory_pool_size` is `None`.
     pub memory_pool_fraction: f64,
-    /// Maximum number of sessions whose shared base runtime env is retained on
-    /// the executor (LRU). Sharing reuses object-store clients and the Parquet
-    /// footer cache across a session's tasks and queries. `0` disables caching
-    /// and builds a fresh runtime per task.
+    /// Maximum number of (session, config fingerprint) entries whose shared
+    /// base runtime env is retained on the executor (LRU). Sharing reuses
+    /// object-store clients and the Parquet footer cache across a session's
+    /// tasks and queries; a session that changes its extension config
+    /// mid-session uses one entry per distinct fingerprint. `0` disables
+    /// caching and builds a fresh runtime per task.
     pub session_runtime_cache_capacity: usize,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
