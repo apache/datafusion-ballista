@@ -30,6 +30,7 @@ members = [
     "benchmarks",
     "chaos-testing",
     "examples",
+    "integrations/iceberg",
 ]
 resolver = "3"
 
@@ -65,6 +66,13 @@ datafusion-functions-aggregate-common = "55"
 datafusion-proto = "55"
 datafusion-proto-common = "55"
 datafusion-substrait = "55"
+
+# Not released yet. Keep `iceberg` at the revision iceberg-datafusion's own
+# workspace pins, so cargo resolves a single iceberg crate.
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+iceberg-datafusion = { git = "https://github.com/apache/datafusion-iceberg", rev = "b641e5ebe9e92967499ae7e440ba10d7797712df" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
 
 ctor = { version = "1.0" }
 insta = "1.47"
