@@ -188,6 +188,229 @@ fn broadcast_build_side_pays_off(
         && probe.properties().partitioning.partition_count() > 1
 }
 
+/// Rebuilds `plan` on top of new `left` and `right` children, recomputing
+/// its properties.
+fn with_children(
+    plan: Arc<dyn ExecutionPlan>,
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+    plan.replace_children(
+        vec![left, right],
+        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+    )
+}
+
+impl SelectJoinRule {
+    /// Whether `join` should have its inputs swapped so that the smaller side
+    /// builds. Null-aware joins are never swapped.
+    fn should_swap(join: &HashJoinExec) -> datafusion::common::Result<bool> {
+        Ok(!join.null_aware
+            && Self::supports_swap_join_order(join.left.as_ref(), join.right.as_ref())?)
+    }
+
+    /// Converts `plan`, which has to be an `ExchangeExec`, into a broadcast
+    /// exchange. `side` only names the join input in the error message.
+    fn broadcast_exchange(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        side: &str,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let exchange = plan.downcast_ref::<ExchangeExec>().ok_or_else(|| {
+            DataFusionError::Execution(format!(
+                "ExchangeExec is expected at this point ({side})"
+            ))
+        })?;
+        Ok(Arc::new(exchange.to_broadcast(self.plan_id())))
+    }
+
+    /// Picks the join for a resolved `DynamicJoinSelectionExec` (`node`).
+    /// Any other node, or a dynamic join whose inputs are not resolved yet, is
+    /// left untouched.
+    fn select_join(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        config: &datafusion::config::ConfigOptions,
+    ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        let Some(dynamic_join) = node.downcast_ref::<DynamicJoinSelectionExec>() else {
+            return Ok(Transformed::no(node));
+        };
+        if !dynamic_join.upstream_resolved() {
+            return Ok(Transformed::no(node));
+        }
+
+        let plan = match dynamic_join.to_actual_join(config)? {
+            JoinSelectionAction::LateCollectLeft(hash_join_exec) => {
+                self.late_collect_left(hash_join_exec)?
+            }
+            JoinSelectionAction::CollectLeft(hash_join_exec) => {
+                self.collect_left(hash_join_exec, config)?
+            }
+            JoinSelectionAction::StageBuildSide { build_is_right } => {
+                self.stage_build_side(&node, dynamic_join, build_is_right, config)?
+            }
+            JoinSelectionAction::Repartition(dynamic_join) => {
+                self.repartition(dynamic_join, config)?
+            }
+            JoinSelectionAction::Hash(hash_join_exec) => Self::hash(hash_join_exec)?,
+            JoinSelectionAction::Sort(sort_merge_join_exec) => sort_merge_join_exec,
+        };
+        Ok(Transformed::yes(plan))
+    }
+
+    /// Broadcasts the build side of a join whose inputs are both exchanges
+    /// already (added beforehand), swapping the inputs first when the right
+    /// side is the smaller one.
+    fn late_collect_left(
+        &self,
+        hash_join_exec: Arc<HashJoinExec>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        if Self::should_swap(&hash_join_exec)? {
+            let left = hash_join_exec.left.clone();
+            let right = self.broadcast_exchange(&hash_join_exec.right, "right")?;
+            let join = with_children(hash_join_exec, left, right)?;
+            let join =
+                join.downcast_ref::<HashJoinExec>()
+                    .ok_or(DataFusionError::Execution(
+                        "HashJoinExec is expected at this point (right)".to_owned(),
+                    ))?;
+            join.swap_inputs(PartitionMode::CollectLeft)
+        } else {
+            let left = self.broadcast_exchange(&hash_join_exec.left, "left")?;
+            let right = hash_join_exec.right.clone();
+            with_children(hash_join_exec, left, right)
+        }
+    }
+
+    /// Plans a `CollectLeft` join, swapping the inputs when the right side is
+    /// the smaller one, then decides how each `CollectLeft` build side in the
+    /// result is collected.
+    fn collect_left(
+        &self,
+        hash_join_exec: Arc<HashJoinExec>,
+        config: &datafusion::config::ConfigOptions,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let plan: Arc<dyn ExecutionPlan> = if Self::should_swap(&hash_join_exec)? {
+            hash_join_exec.swap_inputs(PartitionMode::CollectLeft)?
+        } else {
+            hash_join_exec
+        };
+
+        Ok(plan
+            .transform_up(|p| self.collect_build_side(p, config))?
+            .data)
+    }
+
+    /// For a `CollectLeft` hash join, reads a data source build side as a
+    /// single partition, or otherwise gives the build side its own broadcast
+    /// stage when that pays off. Any other node is left untouched.
+    fn collect_build_side(
+        &self,
+        p: Arc<dyn ExecutionPlan>,
+        config: &datafusion::config::ConfigOptions,
+    ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        let Some(hash_join) = p.downcast_ref::<HashJoinExec>() else {
+            return Ok(Transformed::no(p));
+        };
+        if !matches!(hash_join.partition_mode(), PartitionMode::CollectLeft) {
+            return Ok(Transformed::no(p));
+        }
+
+        if let Some(data_source) = hash_join.left.downcast_ref::<DataSourceExec>()
+            && let Ok(Some(left)) = data_source.repartitioned(1, config)
+        {
+            let right = hash_join.right.clone();
+            return Ok(Transformed::yes(with_children(p, left, right)?));
+        }
+
+        // Broadcasting the build side buys nothing when the probe has a single
+        // partition.
+        if !broadcast_build_side_pays_off(
+            hash_join.left.as_ref(),
+            hash_join.right.as_ref(),
+        ) {
+            return Ok(Transformed::no(p));
+        }
+
+        let left: Arc<dyn ExecutionPlan> =
+            if let Some(exchange) = hash_join.left.downcast_ref::<ExchangeExec>() {
+                Arc::new(exchange.to_broadcast(self.plan_id()))
+            } else {
+                Arc::new(ExchangeExec::new_broadcast(
+                    hash_join.left.clone(),
+                    None,
+                    self.plan_id(),
+                ))
+            };
+        let right = hash_join.right.clone();
+        Ok(Transformed::yes(with_children(p, left, right)?))
+    }
+
+    /// Puts an exchange on the build side only. The probe side is left as it
+    /// is, so no stage is created for it and nothing of it is shuffled until
+    /// the join is decided for real.
+    fn stage_build_side(
+        &self,
+        node: &Arc<dyn ExecutionPlan>,
+        dynamic_join: &DynamicJoinSelectionExec,
+        build_is_right: bool,
+        config: &datafusion::config::ConfigOptions,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let (left_key, right_key) =
+            join_key_partitioning(dynamic_join, config.execution.target_partitions);
+
+        let (left, right): (Arc<dyn ExecutionPlan>, Arc<dyn ExecutionPlan>) =
+            if build_is_right {
+                (
+                    dynamic_join.left.clone(),
+                    Arc::new(ExchangeExec::new(
+                        dynamic_join.right.clone(),
+                        Some(right_key),
+                        self.plan_id(),
+                    )),
+                )
+            } else {
+                (
+                    Arc::new(ExchangeExec::new(
+                        dynamic_join.left.clone(),
+                        Some(left_key),
+                        self.plan_id(),
+                    )),
+                    dynamic_join.right.clone(),
+                )
+            };
+
+        with_children(Arc::clone(node), left, right)
+    }
+
+    /// Co-partitions both inputs of the join on its keys.
+    fn repartition(
+        &self,
+        dynamic_join: Arc<DynamicJoinSelectionExec>,
+        config: &datafusion::config::ConfigOptions,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let (left_key, right_key) =
+            join_key_partitioning(&dynamic_join, config.execution.target_partitions);
+
+        let left = self.ensure_exchange(dynamic_join.left.clone(), left_key);
+        let right = self.ensure_exchange(dynamic_join.right.clone(), right_key);
+
+        with_children(dynamic_join, left, right)
+    }
+
+    /// Plans a partitioned hash join, swapping the inputs when the right side
+    /// is the smaller one.
+    fn hash(
+        hash_join_exec: Arc<HashJoinExec>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        if Self::should_swap(&hash_join_exec)? {
+            hash_join_exec.swap_inputs(*hash_join_exec.partition_mode())
+        } else {
+            Ok(hash_join_exec)
+        }
+    }
+}
+
 impl PhysicalOptimizerRule for SelectJoinRule {
     fn optimize(
         &self,
@@ -199,239 +422,14 @@ impl PhysicalOptimizerRule for SelectJoinRule {
             .get::<BallistaConfig>()
             .cloned()
             .unwrap_or_default();
-        if bc.adaptive_join_enabled() {
-            let result = plan.transform_up(|node| {
-                if let Some(dynamic_join) =
-                    node.downcast_ref::<DynamicJoinSelectionExec>()
-                {
-                    if dynamic_join.upstream_resolved() {
-                        match dynamic_join.to_actual_join(config)? {
-                            // at this point we know there are two exchanges
-                            // as we added them beforehand
-                            JoinSelectionAction::LateCollectLeft(hash_join_exec) => {
-                                if !hash_join_exec.null_aware
-                                    && Self::supports_swap_join_order(
-                                        hash_join_exec.left.as_ref(),
-                                        hash_join_exec.right.as_ref(),
-                                    )?
-                                {
-                                    let left = hash_join_exec.left.clone();
-                                    let right = hash_join_exec.right.clone();
-
-                                    let right = right
-                                    .downcast_ref::<ExchangeExec>()
-                                    .ok_or(DataFusionError::Execution(
-                                        "ExchangeExec is expected at this point (right)"
-                                            .to_owned(),
-                                    ))?
-                                    .to_broadcast(self.plan_id());
-                                    let right = Arc::new(right);
-
-                                    let join = hash_join_exec.replace_children(
-                                        vec![left, right],
-                                        ReplaceChildrenOptions::new(
-                                            ChildrenPropertiesMode::Recompute,
-                                        ),
-                                    )?;
-
-                                    let join = join
-                                        .downcast_ref::<HashJoinExec>()
-                                        .ok_or(DataFusionError::Execution(
-                                        "HashJoinExec is expected at this point (right)"
-                                            .to_owned(),
-                                    ))?;
-                                    let join =
-                                        join.swap_inputs(PartitionMode::CollectLeft)?;
-                                    Ok(Transformed::yes(join))
-                                } else {
-                                    let left = hash_join_exec
-                                    .left
-                                    .downcast_ref::<ExchangeExec>()
-                                    .ok_or(DataFusionError::Execution(
-                                        "ExchangeExec is expected at this point (left)"
-                                            .to_owned(),
-                                    ))?
-                                    .to_broadcast(self.plan_id());
-                                    let left = Arc::new(left);
-
-                                    let right = hash_join_exec.right.clone();
-
-                                    let join = hash_join_exec.replace_children(
-                                        vec![left, right],
-                                        ReplaceChildrenOptions::new(
-                                            ChildrenPropertiesMode::Recompute,
-                                        ),
-                                    )?;
-                                    Ok(Transformed::yes(join))
-                                }
-                            }
-
-                            JoinSelectionAction::CollectLeft(hash_join_exec) => {
-                                let plan = if !hash_join_exec.null_aware
-                                    && Self::supports_swap_join_order(
-                                        hash_join_exec.left.as_ref(),
-                                        hash_join_exec.right.as_ref(),
-                                    )? {
-                                    hash_join_exec
-                                        .swap_inputs(PartitionMode::CollectLeft)?
-                                } else {
-                                    hash_join_exec
-                                };
-
-                                let exec = plan.transform_up(|p| {
-                                    if let Some(hash_join) =
-                                        p.downcast_ref::<HashJoinExec>()
-                                        && matches!(
-                                            hash_join.partition_mode(),
-                                            PartitionMode::CollectLeft
-                                        )
-                                    {
-                                        if let Some(data_source) = hash_join
-                                            .left
-                                            .downcast_ref::<DataSourceExec>(
-                                        ) && let Ok(Some(left)) =
-                                            data_source.repartitioned(1, config)
-                                        {
-                                            let right = hash_join.right.clone();
-                                            let p = p.replace_children(
-                                                vec![left, right],
-                                                ReplaceChildrenOptions::new(
-                                                    ChildrenPropertiesMode::Recompute,
-                                                ),
-                                            )?;
-                                            Ok(Transformed::yes(p))
-                                        } else if broadcast_build_side_pays_off(
-                                            hash_join.left.as_ref(),
-                                            hash_join.right.as_ref(),
-                                        ) {
-                                            // Broadcasting the build side buys
-                                            // nothing when the probe has a single
-                                            // partition.
-                                            let left = if let Some(exchange) = hash_join
-                                                .left
-                                                .downcast_ref::<ExchangeExec>()
-                                            {
-                                                Arc::new(
-                                                    exchange.to_broadcast(self.plan_id()),
-                                                )
-                                            } else {
-                                                Arc::new(ExchangeExec::new_broadcast(
-                                                    hash_join.left.clone(),
-                                                    None,
-                                                    self.plan_id(),
-                                                ))
-                                            };
-                                            let right = hash_join.right.clone();
-                                            let p = p.replace_children(
-                                                vec![left, right],
-                                                ReplaceChildrenOptions::new(
-                                                    ChildrenPropertiesMode::Recompute,
-                                                ),
-                                            )?;
-                                            Ok(Transformed::yes(p))
-                                        } else {
-                                            Ok(Transformed::no(p))
-                                        }
-                                    } else {
-                                        Ok(Transformed::no(p))
-                                    }
-                                })?;
-
-                                Ok(Transformed::yes(exec.data))
-                            }
-                            JoinSelectionAction::StageBuildSide { build_is_right } => {
-                                // Only the build side gets an exchange. The
-                                // probe side is left as it is, so no stage is
-                                // created for it and nothing of it is shuffled
-                                // until the join is decided for real.
-                                let (left_key, right_key) = join_key_partitioning(
-                                    dynamic_join,
-                                    config.execution.target_partitions,
-                                );
-
-                                let children = if build_is_right {
-                                    vec![
-                                        dynamic_join.left.clone(),
-                                        Arc::new(ExchangeExec::new(
-                                            dynamic_join.right.clone(),
-                                            Some(right_key),
-                                            self.plan_id(),
-                                        ))
-                                            as Arc<dyn ExecutionPlan>,
-                                    ]
-                                } else {
-                                    vec![
-                                        Arc::new(ExchangeExec::new(
-                                            dynamic_join.left.clone(),
-                                            Some(left_key),
-                                            self.plan_id(),
-                                        ))
-                                            as Arc<dyn ExecutionPlan>,
-                                        dynamic_join.right.clone(),
-                                    ]
-                                };
-
-                                let staged = Arc::clone(&node).replace_children(
-                                    children,
-                                    ReplaceChildrenOptions::new(
-                                        ChildrenPropertiesMode::Recompute,
-                                    ),
-                                )?;
-
-                                Ok(Transformed::yes(staged))
-                            }
-                            JoinSelectionAction::Repartition(dynamic_join) => {
-                                let (left_key, right_key) = join_key_partitioning(
-                                    &dynamic_join,
-                                    config.execution.target_partitions,
-                                );
-
-                                let left = self
-                                    .ensure_exchange(dynamic_join.left.clone(), left_key);
-                                let right = self.ensure_exchange(
-                                    dynamic_join.right.clone(),
-                                    right_key,
-                                );
-
-                                let dynamic_join = dynamic_join.replace_children(
-                                    vec![left, right],
-                                    ReplaceChildrenOptions::new(
-                                        ChildrenPropertiesMode::Recompute,
-                                    ),
-                                )?;
-
-                                Ok(Transformed::yes(dynamic_join))
-                            }
-                            JoinSelectionAction::Hash(hash_join_exec) => {
-                                let hash_join_exec = if !hash_join_exec.null_aware
-                                    && Self::supports_swap_join_order(
-                                        hash_join_exec.left.as_ref(),
-                                        hash_join_exec.right.as_ref(),
-                                    )? {
-                                    hash_join_exec
-                                        .swap_inputs(*hash_join_exec.partition_mode())?
-                                } else {
-                                    hash_join_exec
-                                };
-
-                                Ok(Transformed::yes(hash_join_exec))
-                            }
-                            JoinSelectionAction::Sort(sort_merge_join_exec) => {
-                                Ok(Transformed::yes(sort_merge_join_exec))
-                            }
-                        }
-                    } else {
-                        Ok(Transformed::no(node))
-                    }
-                } else {
-                    Ok(Transformed::no(node))
-                }
-            })?;
-            Ok(result.data)
-        } else {
+        if !bc.adaptive_join_enabled() {
             // disabled using configuration
-            Ok(plan)
+            return Ok(plan);
         }
+
+        Ok(plan
+            .transform_up(|node| self.select_join(node, config))?
+            .data)
     }
 
     fn name(&self) -> &str {
