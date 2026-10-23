@@ -22,13 +22,11 @@
 //! heartbeat communication, and status reporting.
 
 use ballista_core::BALLISTA_VERSION;
-use memory_stats::memory_stats;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use sysinfo::{MemoryRefreshKind, System};
 use tokio::sync::mpsc;
 
 use log::{debug, error, info, warn};
@@ -335,20 +333,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     ///
     /// Returns `true` iff any scheduler acknowledged the heartbeat.
     async fn heartbeat(&self) -> bool {
-        let status = if TERMINATING.load(Ordering::Acquire) {
-            executor_status::Status::Terminating(String::default())
-        } else {
-            executor_status::Status::Active(String::default())
-        };
-
-        let heartbeat_params = HeartBeatParams {
-            executor_id: self.executor.metadata.id.clone(),
-            metrics: self.get_executor_metrics(),
-            status: Some(ExecutorStatus {
-                status: Some(status),
-            }),
-            metadata: Some(self.executor.metadata.clone()),
-        };
+        let heartbeat_params =
+            heartbeat_params(&self.executor, self.metric_collection_policy);
         let mut scheduler = self.scheduler_to_register.clone();
         match scheduler
             .heart_beat_from_executor(heartbeat_params.clone())
@@ -541,136 +527,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .await;
             }
         };
-    }
-
-    /// Getting executor's metrics
-    fn get_executor_metrics(&self) -> Vec<ExecutorMetric> {
-        let mut metrics = self.get_host_and_process_metrics();
-        metrics.extend(heartbeat_memory_metrics(
-            self.metric_collection_policy,
-            self.executor.memory_metrics(),
-        ));
-        metrics
-    }
-
-    /// Host and process memory, as selected by the metric collection policy.
-    fn get_host_and_process_metrics(&self) -> Vec<ExecutorMetric> {
-        match self.metric_collection_policy {
-            ExecutorMetricCollectionPolicy::SystemOnly => {
-                let mut executor_system = System::new_all();
-                executor_system
-                    .refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
-
-                let system_metrics = vec![
-                    ExecutorMetric {
-                        metric: Some(executor_metric::Metric::TotalMemory(
-                            executor_system.total_memory(),
-                        )),
-                    },
-                    ExecutorMetric {
-                        metric: Some(executor_metric::Metric::AvailableMemory(
-                            executor_system.available_memory(),
-                        )),
-                    },
-                    ExecutorMetric {
-                        metric: Some(executor_metric::Metric::UsedMemory(
-                            executor_system.used_memory(),
-                        )),
-                    },
-                ];
-                system_metrics
-            }
-            ExecutorMetricCollectionPolicy::ProcessOnly => {
-                if let Some(usage) = memory_stats() {
-                    let process_metrics = vec![
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::ProcPhysicalMemory(
-                                usage.physical_mem as u64,
-                            )),
-                        },
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::ProcVirtualMemory(
-                                usage.virtual_mem as u64,
-                            )),
-                        },
-                    ];
-                    process_metrics
-                } else {
-                    warn!("Could not get current process memory usage!");
-                    let process_metrics: Vec<ExecutorMetric> = vec![];
-                    process_metrics
-                }
-            }
-            ExecutorMetricCollectionPolicy::SystemAndProcess => {
-                if let Some(usage) = memory_stats() {
-                    let mut process_metrics = vec![
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::ProcPhysicalMemory(
-                                usage.physical_mem as u64,
-                            )),
-                        },
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::ProcVirtualMemory(
-                                usage.virtual_mem as u64,
-                            )),
-                        },
-                    ];
-                    let mut executor_system = System::new_all();
-                    executor_system.refresh_memory_specifics(
-                        MemoryRefreshKind::nothing().with_ram(),
-                    );
-
-                    let system_metrics = vec![
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::TotalMemory(
-                                executor_system.total_memory(),
-                            )),
-                        },
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::AvailableMemory(
-                                executor_system.available_memory(),
-                            )),
-                        },
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::UsedMemory(
-                                executor_system.used_memory(),
-                            )),
-                        },
-                    ];
-                    process_metrics.extend(system_metrics);
-
-                    process_metrics
-                } else {
-                    warn!(
-                        "Could not get current process memory usage! Defauling to system-wide metrics"
-                    );
-                    let mut executor_system = System::new_all();
-                    executor_system.refresh_memory_specifics(
-                        MemoryRefreshKind::nothing().with_ram(),
-                    );
-
-                    let system_metrics = vec![
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::TotalMemory(
-                                executor_system.total_memory(),
-                            )),
-                        },
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::AvailableMemory(
-                                executor_system.available_memory(),
-                            )),
-                        },
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::UsedMemory(
-                                executor_system.used_memory(),
-                            )),
-                        },
-                    ];
-                    system_metrics
-                }
-            }
-            ExecutorMetricCollectionPolicy::Off => vec![],
-        }
     }
 }
 
@@ -1034,6 +890,39 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
 
         Ok(Response::new(RemoveJobDataResult {}))
     }
+}
+
+/// The heartbeat an executor sends to the scheduler, whether it schedules by
+/// push or by pull: its status and its metrics, as selected by the policy.
+pub(crate) fn heartbeat_params(
+    executor: &Executor,
+    policy: ExecutorMetricCollectionPolicy,
+) -> HeartBeatParams {
+    let status = if TERMINATING.load(Ordering::Acquire) {
+        executor_status::Status::Terminating(String::default())
+    } else {
+        executor_status::Status::Active(String::default())
+    };
+
+    HeartBeatParams {
+        executor_id: executor.metadata.id.clone(),
+        metrics: executor_metrics(policy, executor.memory_metrics()),
+        status: Some(ExecutorStatus {
+            status: Some(status),
+        }),
+        metadata: Some(executor.metadata.clone()),
+    }
+}
+
+/// The metrics an executor sends in a heartbeat: host or process memory, as
+/// selected by the policy, and the executor's memory metrics.
+fn executor_metrics(
+    policy: ExecutorMetricCollectionPolicy,
+    memory_metrics: Option<&ExecutorMemoryMetrics>,
+) -> Vec<ExecutorMetric> {
+    let mut metrics = policy.collect();
+    metrics.extend(heartbeat_memory_metrics(policy, memory_metrics));
+    metrics
 }
 
 /// The executor's memory metrics to send in a heartbeat. These are process
