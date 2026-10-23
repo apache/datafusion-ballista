@@ -264,6 +264,10 @@ impl TestClusterBuilder {
                 self.no_executors_grace_seconds.to_string(),
             )
             .env(
+                "CHAOS_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS",
+                self.graceful_shutdown_timeout_seconds.to_string(),
+            )
+            .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
             )
@@ -730,6 +734,47 @@ impl TestCluster {
         kill(Pid::from_raw(pid as i32), Signal::SIGKILL).map_err(|e| e.to_string())?;
         let _ = self.executors[index].child.wait();
         Ok(())
+    }
+
+    /// Request graceful shutdown of the scheduler without waiting, so a client
+    /// can keep streaming.
+    pub fn terminate_scheduler(&self) -> Result<(), String> {
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+
+        let pid = self.scheduler.id();
+        kill(Pid::from_raw(pid as i32), Signal::SIGTERM).map_err(|e| e.to_string())
+    }
+
+    /// Block until the scheduler's `/readyz` fails, which it does as soon as it
+    /// starts draining after SIGTERM. New jobs are refused from then on.
+    pub async fn await_scheduler_not_ready(&self) -> Result<(), String> {
+        let url = format!("{}/readyz", self.rest_url());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(response) = self.client.get(&url).send().await
+                && response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(format!("scheduler stayed ready\n{}", self.log_tails()));
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    pub async fn await_scheduler_exit(&mut self) -> Result<ExitStatus, String> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(status) = self.scheduler.try_wait().map_err(|e| e.to_string())? {
+                return Ok(status);
+            }
+            if Instant::now() > deadline {
+                return Err(format!("scheduler did not exit\n{}", self.log_tails()));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     /// Request graceful shutdown without waiting, so a client can keep streaming.

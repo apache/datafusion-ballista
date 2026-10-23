@@ -254,6 +254,17 @@ pub struct Config {
         help = "Interval, in seconds, to check expired or dead executors."
     )]
     pub expire_dead_executor_interval_seconds: u64,
+    /// Bound, in seconds, on how long the scheduler takes to shut down after a
+    /// shutdown signal: first to let its active jobs finish while taking no new
+    /// ones, then to drain in-flight requests and embedded Flight-proxy result
+    /// streams. It exits with an error if the bound passes first (0 = wait as
+    /// long as it takes).
+    #[arg(
+        long,
+        default_value_t = 25,
+        help = "Time in seconds the scheduler takes to shut down after a shutdown signal (SIGTERM/Ctrl-C): first to let active jobs finish while taking no new ones, then to drain in-flight requests and embedded Flight-proxy result streams. It exits with an error if the time passes first; 0 waits as long as it takes. Keep this below your orchestrator's termination grace period (e.g. Kubernetes' default terminationGracePeriodSeconds=30) so this timeout can fire before a SIGKILL does, and long enough for your jobs."
+    )]
+    pub graceful_shutdown_timeout_seconds: u64,
     /// Grace period in seconds to wait for an executor to (re)appear after the
     /// cluster has lost its last executor before failing the running jobs.
     #[arg(
@@ -261,11 +272,12 @@ pub struct Config {
         help = "Grace period, in seconds, to wait for an executor to (re)register after the last executor is lost before failing running jobs. Prevents jobs from hanging forever when every executor dies, while still tolerating a transient total loss (e.g. a rolling restart). Must be >= the executor heartbeat interval, or an executor removed by a transient task-launch failure may not re-register before this elapses; defaults to --executor-timeout-seconds (which is always longer than the heartbeat interval). Set to 0 to fail as soon as the loss is observed."
     )]
     pub no_executors_grace_period_seconds: Option<u64>,
-    /// Minimum number of registered executors before /readyz returns 200
+    /// Minimum number of registered executors before /readyz returns 200. It
+    /// returns 503 while the scheduler is shutting down, whatever the count.
     #[arg(
         long,
         default_value_t = 1,
-        help = "Minimum number of registered executors before the scheduler's /readyz probe returns 200. Set to 0 to always report ready."
+        help = "Minimum number of registered executors before the scheduler's /readyz probe returns 200. Set to 0 to report ready regardless of executors. /readyz returns 503 while the scheduler is shutting down."
     )]
     pub min_ready_executors: usize,
     /// Number of failures attempts before task is considered failed
@@ -392,6 +404,12 @@ pub struct SchedulerConfig {
     pub executor_timeout_seconds: u64,
     /// The interval to check expired or dead executors
     pub expire_dead_executor_interval_seconds: u64,
+    /// Bound, in seconds, on how long the scheduler takes to shut down after a
+    /// shutdown signal: first to let its active jobs finish while taking no new
+    /// ones, then to drain in-flight requests and embedded Flight-proxy result
+    /// streams. It exits with an error if the bound passes first (0 = wait as
+    /// long as it takes).
+    pub graceful_shutdown_timeout_seconds: u64,
     /// Grace period in seconds to wait for an executor to (re)register after the
     /// cluster has lost its last executor before failing the running jobs. This
     /// bounds the otherwise-unbounded wait so that a total executor loss fails
@@ -416,7 +434,8 @@ pub struct SchedulerConfig {
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
     /// Whether to use TLS when connecting to executors (for flight proxy)
     pub use_tls: bool,
-    /// Minimum number of registered executors before /readyz returns 200
+    /// Minimum number of registered executors before /readyz returns 200. It
+    /// returns 503 while the scheduler is shutting down, whatever the count.
     pub min_ready_executors: usize,
     /// Number of failures attempts before task is considered failed
     pub task_max_failures: usize,
@@ -484,6 +503,7 @@ impl Default for SchedulerConfig {
             grpc_client_max_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
+            graceful_shutdown_timeout_seconds: 25,
             // Defaults to `executor_timeout_seconds` so the grace is always >=
             // the executor heartbeat interval (see the field doc).
             no_executors_grace_period_seconds: 180,
@@ -645,6 +665,17 @@ impl SchedulerConfig {
         interval_seconds: u64,
     ) -> Self {
         self.finished_job_state_clean_up_interval_seconds = interval_seconds;
+        self
+    }
+
+    /// Sets the bound on how long the scheduler takes to shut down: to let its
+    /// active jobs finish, then to drain in-flight requests and embedded
+    /// Flight-proxy result streams.
+    pub fn with_graceful_shutdown_timeout_seconds(
+        mut self,
+        graceful_shutdown_timeout_seconds: u64,
+    ) -> Self {
+        self.graceful_shutdown_timeout_seconds = graceful_shutdown_timeout_seconds;
         self
     }
 
@@ -919,6 +950,7 @@ impl TryFrom<Config> for SchedulerConfig {
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
                 .expire_dead_executor_interval_seconds,
+            graceful_shutdown_timeout_seconds: opt.graceful_shutdown_timeout_seconds,
             // Default to the executor-liveness timeout when unset, so the grace
             // is always >= the executor heartbeat interval and a transiently
             // removed but healthy executor can re-register before it elapses.
@@ -970,6 +1002,22 @@ mod tests {
             "grace {} must be >= executor_timeout {}",
             cfg.no_executors_grace_period_seconds,
             cfg.executor_timeout_seconds,
+        );
+    }
+
+    /// The scheduler waits for whole jobs, so it gets longer than the executor and
+    /// the result service. It stays under the 30 seconds that Kubernetes allows a
+    /// pod by default, so the time limit passes before the kubelet's SIGKILL.
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn graceful_shutdown_timeout_defaults_to_25_seconds_on_the_cli_and_in_code() {
+        use clap::Parser;
+        let from_cli =
+            SchedulerConfig::try_from(Config::parse_from(["scheduler"])).unwrap();
+        assert_eq!(from_cli.graceful_shutdown_timeout_seconds, 25);
+        assert_eq!(
+            SchedulerConfig::default().graceful_shutdown_timeout_seconds,
+            25
         );
     }
 

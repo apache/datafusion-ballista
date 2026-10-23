@@ -460,7 +460,15 @@ fn invalid_ticket(e: impl std::fmt::Display) -> Status {
 
 fn query_failed(e: BallistaError) -> Status {
     // Keep the job's error in the message, so the client sees why it failed.
-    Status::internal(format!("query execution failed: {e}"))
+    match e {
+        // A refusal that is already a status, such as `Unavailable` from a
+        // scheduler that is shutting down, keeps its code.
+        BallistaError::GrpcError(status) => Status::new(
+            status.code(),
+            format!("query execution failed: {}", status.message()),
+        ),
+        e => Status::internal(format!("query execution failed: {e}")),
+    }
 }
 
 fn encode_schema(schema: &Schema) -> Result<Vec<u8>, Status> {
@@ -815,6 +823,27 @@ fn prepared_handle(bytes: &[u8]) -> Result<String, Status> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn a_refusal_that_is_a_status_keeps_its_code() {
+        let refusal = BallistaError::GrpcError(Box::new(Status::unavailable(
+            "the scheduler is shutting down",
+        )));
+        let status = query_failed(refusal);
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert!(
+            status.message().contains("the scheduler is shutting down"),
+            "{}",
+            status.message()
+        );
+    }
+
+    #[test]
+    fn other_failures_are_internal() {
+        let status = query_failed(BallistaError::General("boom".to_string()));
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert!(status.message().contains("boom"), "{}", status.message());
+    }
 
     #[test]
     fn bearer_token_is_read_case_insensitively() {
