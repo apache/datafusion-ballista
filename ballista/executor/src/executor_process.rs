@@ -669,11 +669,9 @@ async fn start_executor_process_inner(
         // this feature was added to support docker-compose so that we can have the executor
         // wait for the scheduler to start, or at least run for 10 seconds before failing so
         // that docker-compose's restart policy will restart the container.
-        let start_time = Instant::now().elapsed().as_secs();
+        let deadline = Instant::now() + Duration::from_secs(connect_timeout);
         let mut x = None;
-        while x.is_none()
-            && Instant::now().elapsed().as_secs() - start_time < connect_timeout
-        {
+        while x.is_none() && Instant::now() < deadline {
             match create_grpc_client_endpoint(scheduler_url.clone(), Some(&grpc_config)) {
                 Ok(mut endpoint) => {
                     if let Some(ref override_fn) =
@@ -1286,6 +1284,36 @@ mod tests {
         assert_eq!(
             metadata.ballista_protocol_version,
             BALLISTA_PROTOCOL_VERSION
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_connect_timeout_is_honoured() {
+        // Reserve a port and release it, so nothing listens there.
+        let scheduler_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port,
+            scheduler_connect_timeout_seconds: 1,
+            ..ExecutorProcessConfig::default()
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::start_executor_process(config),
+        )
+        .await
+        .expect("executor kept retrying past scheduler_connect_timeout_seconds");
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Timed out attempting to connect to scheduler"),
+            "unexpected error: {err}"
         );
     }
 
