@@ -175,6 +175,32 @@ impl ExchangeExec {
         )
     }
 
+    /// The inverse of [`Self::to_broadcast`]: the same stage read partitioned,
+    /// keeping this exchange's plan id so it replaces it in place.
+    ///
+    /// `None` when the stage was written with a partition count other than its
+    /// input's, as when a stage that ran as a hash shuffle is later broadcast:
+    /// reading it partitioned would drop or misplace locations.
+    pub fn to_partitioned(&self) -> Option<Self> {
+        let input_partitions = self.input.output_partitioning().partition_count();
+        if let Some(written) = self.shuffle_partitions.lock().as_ref()
+            && written.len() != input_partitions
+        {
+            return None;
+        }
+        Some(Self::new_with_details(
+            self.input.clone(),
+            self.partitioning.clone(),
+            self.plan_id,
+            self.stage_id.clone(),
+            self.shuffle_partitions.clone(),
+            self.coalesce.clone(),
+            self.range_repartition_routing.clone(),
+            false,
+            self.inactive_stage,
+        ))
+    }
+
     /// Creates a new `ExchangeExec` with explicitly-provided stage ID and
     /// partition storage. Used by the AQE rule infrastructure to construct
     /// exchanges that share atomic state with the enclosing `AdaptivePlanner`.
