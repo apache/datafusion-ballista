@@ -53,7 +53,7 @@ use datafusion::physical_plan::{
 use log::debug;
 
 use crate::physical_optimizer::join_selection::{
-    collect_left_broadcast_safe, should_swap_join_order,
+    should_swap_join_order,
 };
 use crate::state::task_builder::restrict_plan_to_partitions;
 
@@ -466,7 +466,7 @@ impl DefaultDistributedPlanner {
             // Broadcasting is only correct for probe-driven join types. If the
             // join type is not broadcast-safe, demote it back to a partitioned
             // (shuffle) join. Correctness guard, independent of the threshold.
-            if !collect_left_broadcast_safe(*hash_join.join_type()) {
+            if hash_join.join_type().emits_build_side_rows() {
                 debug!(
                     "broadcast check: demoting DataFusion-promoted CollectLeft join with unsafe join_type={:?} to Partitioned",
                     hash_join.join_type(),
@@ -550,7 +550,7 @@ impl DefaultDistributedPlanner {
         } else {
             *hash_join.join_type()
         };
-        if !collect_left_broadcast_safe(promoted_join_type) {
+        if promoted_join_type.emits_build_side_rows() {
             debug!(
                 "broadcast check: join type {promoted_join_type:?} is not broadcast-safe, skipping promotion"
             );
@@ -1596,7 +1596,6 @@ order by
     #[tokio::test]
     async fn distributed_broadcast_only_promotes_safe_join_types()
     -> Result<(), BallistaError> {
-        use crate::physical_optimizer::join_selection::collect_left_broadcast_safe;
         use datafusion::physical_plan::joins::PartitionMode;
 
         let sqls = [
@@ -1631,7 +1630,7 @@ order by
                         && *hj.partition_mode() == PartitionMode::CollectLeft
                     {
                         assert!(
-                            collect_left_broadcast_safe(*hj.join_type()),
+                            !hj.join_type().emits_build_side_rows(),
                             "unsafe CollectLeft join_type={:?} promoted for `{sql}`",
                             hj.join_type()
                         );

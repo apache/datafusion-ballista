@@ -41,7 +41,6 @@ use datafusion::{
 use log::debug;
 use std::sync::Arc;
 
-use crate::physical_optimizer::join_selection::collect_left_broadcast_safe;
 use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::optimizer_rule::join_selection::SelectJoinRule;
 
@@ -353,7 +352,7 @@ impl DynamicJoinSelectionExec {
         }
 
         let partition_mode = if self.null_aware
-            || (under_threshold && collect_left_broadcast_safe(build_side_join_type))
+            || (under_threshold && !build_side_join_type.emits_build_side_rows())
         {
             PartitionMode::CollectLeft
         } else {
@@ -664,7 +663,7 @@ fn requires_build_staging(
     // Measuring can only change the decision if `CollectLeft` is reachable at
     // all, and that is a property of the post-swap join type alone: no size
     // makes a `Full`, or a left-sided semi/anti/outer, join broadcastable.
-    if !collect_left_broadcast_safe(build_side_join_type) {
+    if build_side_join_type.emits_build_side_rows() {
         return false;
     }
 
@@ -1136,10 +1135,10 @@ mod tests {
                 let action = actual_join_for(join_type, 100, 100, prefer_hash_join);
                 assert_eq!(
                     is_collected(&action),
-                    collect_left_broadcast_safe(join_type),
+                    !join_type.emits_build_side_rows(),
                     "join_type {join_type:?} (prefer_hash_join={prefer_hash_join}): collected={}, expected safe={}",
                     is_collected(&action),
-                    collect_left_broadcast_safe(join_type),
+                    !join_type.emits_build_side_rows(),
                 );
             }
         }
@@ -1417,7 +1416,7 @@ mod tests {
     // Staging pays off only where `CollectLeft` is reachable, which is a
     // property of the post-swap join type alone. The left side is the smaller
     // one here, so `supports_swap_join_order` is false and the post-swap type
-    // equals the declared one, making `collect_left_broadcast_safe` the oracle.
+    // equals the declared one, making `JoinType::emits_build_side_rows` the oracle.
     // Looping all ten means a join type added to DataFusion cannot slip through
     // untested — which two hand-partitioned lists would have let it do.
     #[test]
@@ -1437,7 +1436,7 @@ mod tests {
             let action = q8_shaped_action(join_type, true);
             assert_eq!(
                 matches!(action, JoinSelectionAction::StageBuildSide { .. }),
-                collect_left_broadcast_safe(join_type),
+                !join_type.emits_build_side_rows(),
                 "join_type {join_type:?}: staging must follow broadcast safety",
             );
         }
