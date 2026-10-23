@@ -44,12 +44,18 @@ use ballista_core::serde::scheduler::{
 use ballista_core::serde::{BallistaCodec, protobuf};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::DataFusionError;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::{TableProvider, TableType};
+use datafusion::execution::TaskContext;
 use datafusion::execution::context::{SessionConfig, SessionContext};
 use datafusion::functions_aggregate::{count::count, sum::sum};
 use datafusion::logical_expr::{Expr, LogicalPlan, SortExpr};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    SendableRecordBatchStream,
+};
 use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
@@ -1264,4 +1270,70 @@ pub fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
         )]));
     }
     DataSourceExec::from_data_source(builder.build())
+}
+
+/// Wraps a plan and fails every attempt to rewrite its children, so tests can
+/// force the plan rewrites done by stage transitions (resolve, rollback) to fail.
+#[derive(Debug)]
+pub struct FailingPlanRewriteExec {
+    input: Arc<dyn ExecutionPlan>,
+}
+
+impl DisplayAs for FailingPlanRewriteExec {
+    fn fmt_as(
+        &self,
+        _t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        write!(f, "FailingPlanRewriteExec")
+    }
+}
+
+impl ExecutionPlan for FailingPlanRewriteExec {
+    fn name(&self) -> &str {
+        "FailingPlanRewriteExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        self.input.properties()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn PhysicalExpr>,
+        ) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        Err(DataFusionError::Internal(
+            "forced plan rewrite failure".to_owned(),
+        ))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        self.input.execute(partition, context)
+    }
+}
+
+/// Wraps `plan` in a [`FailingPlanRewriteExec`] in place and returns the new plan.
+pub fn fail_plan_rewrites(plan: &mut Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let failing_plan: Arc<dyn ExecutionPlan> = Arc::new(FailingPlanRewriteExec {
+        input: Arc::clone(plan),
+    });
+    *plan = Arc::clone(&failing_plan);
+    failing_plan
 }
