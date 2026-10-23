@@ -492,8 +492,6 @@ dependencies = [
 [[package]]
 name = "ballista"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fe31e72b2eea5984249924d00c76ab6d1482d390aed65b830fc2e1ba751424d"
 dependencies = [
  "async-trait",
  "ballista-core",
@@ -508,8 +506,6 @@ dependencies = [
 [[package]]
 name = "ballista-core"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a090511fa9b3661dbf17444ecbbf5efcd11793e140ddd7fe2fb85f2de88f561"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -538,8 +534,6 @@ dependencies = [
 [[package]]
 name = "ballista-executor"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "403cdac6a4e822e6025348f4f7e43765ba0ca176ca1f225888a9eeb90b9c66ce"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -568,8 +562,6 @@ dependencies = [
 [[package]]
 name = "ballista-scheduler"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "845bb1c2c763ae2b50ecfd9debdfe8e092d13a4fefe84c20e9262bb191a1f1e7"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -1714,7 +1706,8 @@ dependencies = [
 [[package]]
 name = "datafusion-python"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-python.git?tag=55.0.0-rc1#a2882b9fcfe2a366ded6c94f6d50057b69bd8889"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd9ee29752f669b1e59cd2285edf7516cf3a3628630d3590f58114b84875c485"
 dependencies = [
  "arrow",
  "arrow-select",
@@ -1745,7 +1738,8 @@ dependencies = [
 [[package]]
 name = "datafusion-python-util"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-python.git?tag=55.0.0-rc1#a2882b9fcfe2a366ded6c94f6d50057b69bd8889"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9e9dce6d3ebdc38352c45a026e2d012fa5428713eb065829f70ef71ca817b69"
 dependencies = [
  "arrow",
  "datafusion",
@@ -2249,9 +2243,9 @@ dependencies = [
 
 [[package]]
 name = "hyper-rustls"
-version = "0.27.9"
+version = "0.27.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
+checksum = "dfa8e654703247911e29c23fbeaa261834bd9bb74efba2f9acddc37bfb127f53"
 dependencies = [
  "http",
  "hyper",
@@ -2438,9 +2432,9 @@ dependencies = [
 
 [[package]]
 name = "ipnet"
-version = "2.12.0"
+version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
 name = "itertools"
@@ -2630,9 +2624,9 @@ dependencies = [
 
 [[package]]
 name = "lru-slab"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
+checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "lz4_flex"
@@ -3125,19 +3119,25 @@ dependencies = [
 name = "pyballista"
 version = "55.0.0"
 dependencies = [
+ "async-ffi",
+ "async-trait",
  "ballista",
  "ballista-core",
  "ballista-executor",
  "ballista-scheduler",
  "datafusion",
+ "datafusion-ffi",
  "datafusion-proto",
  "datafusion-python",
  "log",
+ "prost",
  "pyo3",
  "pyo3-build-config",
  "pyo3-log",
+ "stabby",
  "tokio",
  "tonic",
+ "url",
 ]
 
 [[package]]
@@ -3234,9 +3234,9 @@ dependencies = [
 
 [[package]]
 name = "quinn"
-version = "0.11.11"
+version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c1a41e437b6bbd489372cd4971de128e85c855f56c57f283d20ff016cf7c0a8"
+checksum = "4051e23e9185c255a7e33ef59cdbca87a22d359052eecd22fc6b901fb37d9d11"
 dependencies = [
  "bytes",
  "cfg_aliases",
@@ -3254,9 +3254,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.16"
+version = "0.11.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f4bfc015262b9df63c8845072ce59068853ff5872180c2ce2f13038b970e560"
+checksum = "0e750cca55fe4f0439a15d0bb529da9651e79993e8e72c61a899a36d462befbe"
 dependencies = [
  "bytes",
  "getrandom 0.4.3",
@@ -3276,9 +3276,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-udp"
-version = "0.5.15"
+version = "0.5.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35a133f956daabe89a61a685c2649f13d82d5aa4bd5d12d1277e1072a21c0694"
+checksum = "af66907df18639dcf4db56ca65490cabc4b27a97dbadd96f2926cca73298f016"
 dependencies = [
  "cfg_aliases",
  "libc",
@@ -3508,9 +3508,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",
@@ -3522,9 +3522,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-native-certs"
-version = "0.8.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
+checksum = "4a073f5dc7469f984c52ad2752b63b0807745133b6de880b7b64c1ac4c48aec4"
 dependencies = [
  "openssl-probe",
  "rustls-pki-types",
@@ -3534,9 +3534,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-pki-types"
-version = "1.15.0"
+version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "764899a24af3980067ee14bc143654f297b22eaebfe3c7b6b211920a5a59b046"
+checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
 dependencies = [
  "web-time",
  "zeroize",
@@ -3576,9 +3576,9 @@ dependencies = [
 
 [[package]]
 name = "schannel"
-version = "0.1.29"
+version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
+checksum = "9cb23c424d8ee841bb4d813677ca237e2a610067d594fec130f87d6093495ab5"
 dependencies = [
  "windows-sys 0.61.2",
 ]
@@ -3989,18 +3989,9 @@ dependencies = [
 
 [[package]]
 name = "tinyvec"
-version = "1.12.0"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb4ebadaa0af04fab11ae01eb5f9fdb5f9c5b875506e210e71c07873528baa7f"
-dependencies = [
- "tinyvec_macros",
-]
-
-[[package]]
-name = "tinyvec_macros"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
@@ -4032,9 +4023,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-rustls"
-version = "0.26.4"
+version = "0.26.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
+checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
 dependencies = [
  "rustls",
  "tokio",
@@ -4786,9 +4777,9 @@ dependencies = [
 
 [[package]]
 name = "zeroize"
-version = "1.9.0"
+version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zerotrie"

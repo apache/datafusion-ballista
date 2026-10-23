@@ -1,6 +1,5 @@
 datafusion==55.0.0
-pyarrow
+pyarrow>=16.0.0;python_version<'3.14'
+pyarrow>=22.0.0;python_version>='3.14'
 pytest
 maturin>=1.8.0,<2.0.0
-cloudpickle
-pandas

@@ -22,12 +22,14 @@ from ballista import BallistaSessionContext
 # BallistaSessionContext replaces SessionContext
 # from datafusion import SessionContext
 import datafusion
-from datafusion import col, lit, DataFrame, ParquetWriterOptions
+from datafusion import col, lit, udf, DataFrame, ParquetWriterOptions
 from datafusion import functions as f
+import pyarrow as pa
 
 # this is helper to setup test
 # ballista cluster
 host, port = setup_test_cluster()
+
 # %%
 # checking ballista version, it should match with datafusion version
 ballista.__version__, datafusion.__version__
@@ -74,4 +76,19 @@ df.write_parquet_with_options(
 )
 # %%
 df.write_parquet("../target/b.parquet")
+# %%
+# python udfs are serialized with the plan and run on executors
+
+
+def is_null(array: pa.Array) -> pa.Array:
+    return array.is_null()
+
+
+is_null_udf = udf(is_null, [pa.int64()], pa.bool_(), "stable", name="is_null_udf")
+
+# %%
+df.select(col("bigint_col"), is_null_udf(col("bigint_col")).alias("n")).show()
+# %%
+ctx.register_udf(is_null_udf)
+ctx.sql("select bigint_col, is_null_udf(bigint_col) as n from t").show()
 # %%
