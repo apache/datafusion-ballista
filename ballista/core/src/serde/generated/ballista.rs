@@ -479,6 +479,17 @@ pub struct RangeShuffleReaderExecNode {
     /// partition wants; the consuming RangeFilterExec still does the exact trim.
     #[prost(message, repeated, tag = "6")]
     pub bounds: ::prost::alloc::vec::Vec<RangeBound>,
+    /// The consuming ROWS frame's PRECEDING count. Present only when a rank halo
+    /// widened `bounds`, and what lets the reader re-run the scheduler's walk
+    /// against its sources' indexes, which are per message rather than per file.
+    #[prost(uint64, optional, tag = "7")]
+    pub halo_rows: ::core::option::Option<u64>,
+    /// Each output partition's own cut range, before any halo widened it. One
+    /// per output partition, alongside `bounds`, and present only with
+    /// `halo_rows`: the rank walk counts back from the lower end, and a task
+    /// holding a slice of the partitions cannot read it off a neighbour.
+    #[prost(message, repeated, tag = "8")]
+    pub cut_bounds: ::prost::alloc::vec::Vec<RangeBound>,
 }
 /// CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
 /// Empty when no coalesce is applied (the optional field on the parent message is absent).

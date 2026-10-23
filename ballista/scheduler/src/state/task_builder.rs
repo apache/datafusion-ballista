@@ -314,7 +314,9 @@ fn select_output_partitions(
         ) else {
             return Ok(None);
         };
-        let restricted = restricted.with_fetch_limit(reader.fetch());
+        let restricted = restricted
+            .with_fetch_limit(reader.fetch())
+            .with_halo_rows(reader.halo_rows());
         // Bounds are per output partition, so they follow the same slice the
         // locations did. Dropping them here would leave the task reading its
         // sources whole — right answer, none of the saving.
@@ -330,6 +332,18 @@ fn select_output_partitions(
                 restricted
             }
             None => restricted,
+        };
+        // The cut ranges follow the same slice. Losing them would leave a
+        // task's partitions with no rank to walk back from, which is the
+        // coarse bound and the whole halo along with it.
+        let kept_cut_bounds = reader.cut_bounds().map(|cut_bounds| {
+            indices
+                .iter()
+                .filter_map(|&p| cut_bounds.get(p).cloned())
+                .collect()
+        });
+        let Ok(restricted) = restricted.with_cut_bounds(kept_cut_bounds) else {
+            return Ok(None);
         };
         return Ok(Some(Arc::new(restricted)));
     }
