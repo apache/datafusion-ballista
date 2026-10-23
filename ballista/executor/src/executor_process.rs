@@ -652,9 +652,9 @@ async fn start_executor_process_inner(
         // this feature was added to support docker-compose so that we can have the executor
         // wait for the scheduler to start, or at least run for 10 seconds before failing so
         // that docker-compose's restart policy will restart the container.
-        let start_time = Instant::now();
+        let deadline = Instant::now() + Duration::from_secs(connect_timeout);
         let mut x = None;
-        while x.is_none() && start_time.elapsed() < Duration::from_secs(connect_timeout) {
+        while x.is_none() && Instant::now() < deadline {
             match create_grpc_client_endpoint(scheduler_url.clone(), Some(&grpc_config)) {
                 Ok(mut endpoint) => {
                     if let Some(ref override_fn) =
