@@ -66,11 +66,7 @@ pub struct BallistaClient {
 impl BallistaClient {
     fn encode_action(action: &Action) -> BResult<Vec<u8>> {
         let serialized_action: protobuf::Action = action.to_owned().try_into()?;
-        let mut buf = Vec::with_capacity(serialized_action.encoded_len());
-        serialized_action
-            .encode(&mut buf)
-            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
-        Ok(buf)
+        Ok(serialized_action.encode_to_vec())
     }
 
     async fn retry_io<T, F, Fut>(&self, mut op: F) -> Result<T, Status>
@@ -78,6 +74,8 @@ impl BallistaClient {
         F: FnMut(FlightServiceClient<Channel>) -> Fut,
         Fut: Future<Output = Result<T, Status>>,
     {
+        // io_retries_times counts total attempts; 0 can come from config or from
+        // u16-to-u8 truncation, so always make at least one attempt.
         let attempts = self.io_retries_times.max(1);
         let mut attempt = 0;
 
@@ -697,13 +695,37 @@ mod tests {
         let error = client
             .retry_io(move |_| {
                 observed.fetch_add(1, Ordering::Relaxed);
-                async { Err::<(), _>(tonic::Status::unavailable("offline")) }
+                async { Err::<(), _>(tonic::Status::unknown("offline")) }
             })
             .await
             .unwrap_err();
 
-        assert_eq!(error.code(), tonic::Code::Unavailable);
+        assert_eq!(error.code(), tonic::Code::Unknown);
+        assert_eq!(error.message(), "offline");
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_io_returns_last_unknown_error_after_retries_are_exhausted() {
+        let mut client = BallistaClient::new_for_test("localhost", 50050);
+        client.io_retries_times = 3;
+        client.io_retry_wait_time_ms = 0;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&attempts);
+
+        let error = client
+            .retry_io(move |_| {
+                let attempt = observed.fetch_add(1, Ordering::Relaxed) + 1;
+                async move {
+                    Err::<(), _>(tonic::Status::unknown(format!("attempt {attempt}")))
+                }
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), tonic::Code::Unknown);
+        assert_eq!(error.message(), "attempt 3");
+        assert_eq!(attempts.load(Ordering::Relaxed), 3);
     }
 
     #[tokio::test]
@@ -749,6 +771,7 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert_eq!(error.message(), "bad");
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
     }
 
