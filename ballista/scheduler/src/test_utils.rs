@@ -53,7 +53,7 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
-use crate::cluster::{BallistaCluster, JobStateEventStream};
+use crate::cluster::{BallistaCluster, CacheState, JobStateEventStream};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{
@@ -495,6 +495,32 @@ impl SchedulerTest {
             status_receiver: Some(status_receiver),
             unreachable_executors: Arc::default(),
         })
+    }
+
+    /// Switches the session's adaptive query planner on or off. The harness pins
+    /// it off; tests of behaviour that must hold under the default planner turn
+    /// it back on.
+    pub fn set_adaptive_planner(&mut self, enabled: bool) {
+        self.session_config = self
+            .session_config
+            .clone()
+            .with_ballista_adaptive_query_planner(enabled);
+    }
+
+    /// Whether `job`'s execution graph is active, which is when the
+    /// scheduler's event handlers (for example, on executor loss) see it. A
+    /// job's status turns `Running` just before this.
+    pub fn is_active(&self, job_id: &JobId) -> bool {
+        self.scheduler
+            .state
+            .task_manager
+            .get_active_execution_graph(job_id)
+            .is_some()
+    }
+
+    /// Returns the scheduler's cache registry.
+    pub fn cache_state(&self) -> Arc<dyn CacheState> {
+        self.scheduler.state.cache_state.clone()
     }
 
     /// Returns the number of pending jobs.

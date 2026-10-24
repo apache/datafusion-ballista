@@ -67,6 +67,8 @@ macro_rules! assert_plan {
     }};
 }
 
+/// Reading a materialized `DataFrame::cache()` back into a query.
+pub mod cache;
 /// Client utilities for connecting to Ballista schedulers.
 pub mod client;
 /// Connection pool for reusing `BallistaClient` instances across requests.

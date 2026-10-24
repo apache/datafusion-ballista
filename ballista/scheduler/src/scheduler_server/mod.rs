@@ -36,9 +36,12 @@ use ferroid::generator::AtomicSnowflakeGenerator;
 use ferroid::id::SnowflakeMastodonId;
 use ferroid::time::MonotonicClock;
 
+use crate::cache::strip_caches;
 use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
+use ballista_core::cache::contains_extension;
+use ballista_core::extension::BallistaCacheNode;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use log::{debug, info, warn};
 
@@ -93,7 +96,7 @@ pub trait JobIdGenerator: Sync + Send {
 
 /// A monotonically increasing sortable snowflake job id generator
 /// which does not capture machine id as part result.
-struct DefaultJobGenerator {
+pub(crate) struct DefaultJobGenerator {
     generator: AtomicSnowflakeGenerator<SnowflakeMastodonId, MonotonicClock>,
 }
 
@@ -228,10 +231,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             query_stage_scheduler.clone(),
         );
 
-        let generator = config
-            .job_id_generator
-            .clone()
-            .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
+        // The state's generator, which also names cache build jobs.
+        let generator = state.job_id_generator.clone();
 
         info!("Scheduler id: {scheduler_id}");
         info!("Scheduler callback endpoint: {scheduler_endpoint}");
@@ -323,6 +324,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 
     /// Shared entry point for logical and physical submissions.
+    ///
+    /// A plan holding `DataFrame::cache()` nodes returns the read job's id at
+    /// once; its caches are built as jobs of their own.
     pub async fn submit_plan(
         &self,
         job_name: &str,
@@ -331,6 +335,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<JobId> {
         log::debug!("Received submit request for job {job_name}");
+
+        // Caches run inline if disabled, and are never built for EXPLAIN.
+        let rewritten = match plan {
+            SubmitPlan::Logical(logical)
+                if contains_extension::<BallistaCacheNode>(logical) =>
+            {
+                if self.state.config.disable_dataframe_cache {
+                    Some(SubmitPlan::Logical(strip_caches(logical)?))
+                } else if matches!(logical, LogicalPlan::Explain(_)) {
+                    Some(SubmitPlan::Logical(
+                        self.state.explain_cache_plan(logical).await?,
+                    ))
+                } else {
+                    let sender = self.query_stage_event_loop.get_sender()?;
+                    return self
+                        .state
+                        .submit_cache_plan(&sender, job_name, ctx, logical, subscriber)
+                        .await;
+                }
+            }
+            _ => None,
+        };
+        let plan = rewritten.as_ref().unwrap_or(plan);
+
         let job_id: JobId = self.generator.next_id().await.into();
         self.query_stage_event_loop
             .get_sender()?

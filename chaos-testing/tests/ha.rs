@@ -31,6 +31,10 @@ mod common;
 use ballista::prelude::SessionConfigExt;
 use chaos_testing::fixture::{Fixture, LARGE_RESULT_ROWS};
 use common::ChaosRun;
+use datafusion::arrow::util::pretty::pretty_format_batches;
+use datafusion::functions_aggregate::expr_fn::{count, sum};
+use datafusion::logical_expr::JoinType;
+use datafusion::prelude::{col, lit};
 use futures::TryStreamExt;
 use rstest::rstest;
 use std::sync::Arc;
@@ -470,4 +474,107 @@ async fn final_results_survive_sigterm() {
     })
     .await
     .expect("query and shutdown must not hang");
+}
+
+/// Scenario I: SIGKILL the executor holding a `DataFrame::cache()`, then query it.
+///
+/// As in Scenario E, the kill lands after the data is written and before the
+/// stage reading it starts, with a 60s executor timeout so the scheduler still
+/// lists the dead executor: the query hits the cache, and its read must fail.
+/// The read job cannot re-run another job's output, so it must fail with a clear
+/// error instead of hanging, under both planners; the cache is dropped, so the
+/// next query rebuilds it and returns the baseline result.
+#[rstest]
+#[case::aqe_off(false)]
+#[case::aqe_on(true)]
+#[tokio::test]
+async fn executor_holding_a_cache_killed_before_it_is_read_fails_cleanly(
+    #[case] aqe: bool,
+) {
+    let mut run = ChaosRun::start_with(aqe, 2, 60).await;
+    let expected = run.local_baseline().await;
+    run.sql("SET ballista.cache.noop = false")
+        .await
+        .expect("enable DataFrame::cache()");
+
+    let ctx = run.clone_ctx();
+    let cached = ctx
+        .sql("SELECT key, value FROM facts ORDER BY key, value")
+        .await
+        .unwrap()
+        .cache()
+        .await
+        .unwrap();
+    let before = run.cluster.job_ids().await.unwrap();
+    cached.clone().count().await.expect("build the cache");
+
+    // The first action runs a build job, then a job reading it.
+    let first: Vec<String> = run
+        .cluster
+        .job_ids()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|id| !before.contains(id))
+        .collect();
+    assert_eq!(first.len(), 2, "the first action must build, then read");
+    let build_job = &first[0];
+    let victim = run
+        .cluster
+        .executor_with_final_output(build_job)
+        .unwrap_or_else(|| panic!("no executor holds the cache of job {build_job}"));
+    run.cluster
+        .kill_executor(victim)
+        .unwrap_or_else(|e| panic!("kill executor {victim}: {e}"));
+
+    // The baseline query, over the cache instead of `facts`.
+    let over_cache = || {
+        let cached = cached.clone();
+        let ctx = ctx.clone();
+        async move {
+            cached
+                .join(
+                    ctx.table("dims").await?,
+                    JoinType::Inner,
+                    &["key"],
+                    &["key"],
+                    None,
+                )?
+                .aggregate(
+                    vec![col("name")],
+                    vec![count(lit(1)).alias("n"), sum(col("value")).alias("total")],
+                )?
+                .sort(vec![col("name").sort(true, false)])?
+                .collect()
+                .await
+        }
+    };
+
+    let known = run.cluster.job_ids().await.unwrap();
+    let result = match timeout(Duration::from_secs(120), over_cache()).await {
+        Ok(result) => result,
+        Err(_) => {
+            let jobs = run.cluster.job_ids().await.unwrap();
+            let read_job = jobs.iter().find(|id| !known.contains(id)).unwrap();
+            panic!(
+                "query must not hang after the cache is lost\n{}",
+                run.cluster.diagnostics(read_job).await
+            )
+        }
+    };
+    let err = result.expect_err("losing the cache's data must fail the query");
+    assert!(
+        err.to_string().contains("lost DataFrame::cache() data"),
+        "failure should name the lost cache data, got: {err}"
+    );
+
+    let batches = timeout(Duration::from_secs(120), over_cache())
+        .await
+        .expect("the retry must not hang")
+        .expect("the retry must rebuild the cache");
+    assert_eq!(
+        pretty_format_batches(&batches).unwrap().to_string(),
+        expected,
+        "the retry must return the baseline result"
+    );
 }

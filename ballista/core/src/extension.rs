@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::cache::CacheReadQueryPlanner;
 use crate::config::{
     BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES,
     BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
@@ -73,6 +74,25 @@ pub fn ballista_aggregate_functions() -> Vec<Arc<AggregateUDF>> {
 /// Returns window functions for Ballista (DataFusion defaults)
 pub fn ballista_window_functions() -> Vec<Arc<WindowUDF>> {
     all_default_window_functions()
+}
+
+/// Lets a scheduler session plan `DataFrame::cache()` reads.
+pub trait SessionStateBuilderExt {
+    /// Installs [CacheReadQueryPlanner], so the session can plan a
+    /// `DataFrame::cache()` read, unless a query planner is already set: a
+    /// planner the builder's author chose is kept, and that author adds
+    /// [CacheReadPlanner](crate::cache::CacheReadPlanner) to it instead, for
+    /// example with [CacheReadQueryPlanner::with_extension_planners].
+    fn with_cache_read_planner(self) -> Self;
+}
+
+impl SessionStateBuilderExt for SessionStateBuilder {
+    fn with_cache_read_planner(mut self) -> Self {
+        if self.query_planner().is_some() {
+            return self;
+        }
+        self.with_query_planner(Arc::new(CacheReadQueryPlanner::new()))
+    }
 }
 
 /// Provides methods which adapt [SessionState]

@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::udf::{chaos_delay_udf, chaos_fail_udf};
+use ballista_core::extension::SessionStateBuilderExt;
 use ballista_core::registry::BallistaFunctionRegistry;
 use datafusion::execution::FunctionRegistry;
 use datafusion::execution::session_state::{SessionState, SessionStateBuilder};
@@ -50,9 +51,12 @@ pub fn chaos_function_registry() -> Arc<BallistaFunctionRegistry> {
 pub fn chaos_session_state(
     config: SessionConfig,
 ) -> datafusion::error::Result<SessionState> {
+    // The cache planner lets this scheduler plan `DataFrame::cache()` reads; it
+    // plans every other plan exactly as DataFusion's default planner does.
     let mut state = SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
+        .with_cache_read_planner()
         .build();
 
     for udf in [chaos_fail_udf(), chaos_delay_udf()] {
