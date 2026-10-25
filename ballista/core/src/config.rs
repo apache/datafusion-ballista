@@ -153,6 +153,13 @@ pub const BALLISTA_STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE: &str =
 pub const BALLISTA_NOT_IN_SUBQUERY_REWRITE: &str =
     "ballista.optimizer.not_in_subquery_rewrite";
 
+/// Configuration key controlling whether scan files are pruned by statistics
+/// during planning and the surviving files are spread evenly over the scan's
+/// file groups. Enabled by default; set to `false` to leave file groups as
+/// DataFusion built them.
+pub const BALLISTA_BALANCE_SCAN_FILE_GROUPS: &str =
+    "ballista.optimizer.balance_scan_file_groups";
+
 /// Configuration key to enable AQE coalesce-shuffle-partitions rule.
 /// Disabled by default — opt in when the workload benefits from larger
 /// downstream tasks more than from preserved parallelism.
@@ -360,6 +367,16 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          optimization. The rewrite avoids DataFusion's null-aware hash join, \
                          which Ballista must otherwise execute in a single task. Set to false \
                          to keep the null-aware join and its single-task lowering.".to_string(),
+                         DataType::Boolean,
+                         Some("true".to_string())),
+        ConfigEntry::new(BALLISTA_BALANCE_SCAN_FILE_GROUPS.to_string(),
+                         "Prunes scan files using their Parquet statistics while planning and \
+                         deals the remaining files round-robin over the scan's file groups. \
+                         DataFusion builds file groups before any predicate is applied, so when \
+                         files are clustered by the filtered column (for example a date range \
+                         over date-partitioned files) the files that survive pruning land in a \
+                         few neighbouring groups and only those tasks have work to do. Set to \
+                         false to keep the file groups as DataFusion built them.".to_string(),
                          DataType::Boolean,
                          Some("true".to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
@@ -804,6 +821,12 @@ impl BallistaConfig {
     /// optimization, avoiding the single-task null-aware hash join.
     pub fn not_in_subquery_rewrite_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_NOT_IN_SUBQUERY_REWRITE)
+    }
+
+    /// Whether scan files are pruned by statistics during planning and the
+    /// surviving files are spread evenly over the scan's file groups.
+    pub fn balance_scan_file_groups_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_BALANCE_SCAN_FILE_GROUPS)
     }
 
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.

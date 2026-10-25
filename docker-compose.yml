@@ -66,6 +66,8 @@ services:
       dockerfile: dev/docker/ballista-benchmarks.Dockerfile
       context: .
     command: ["/bin/bash", "-c", "sleep infinity"]
+    # An init process, so `sleep` stops on SIGTERM instead of waiting for SIGKILL.
+    init: true
     environment:
       - RUST_LOG=info
     volumes:

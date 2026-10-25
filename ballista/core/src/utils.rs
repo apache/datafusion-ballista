@@ -18,8 +18,11 @@
 use crate::config::BallistaConfig;
 use crate::error::{BallistaError, Result};
 use crate::extension::SessionConfigExt;
+use crate::serde::protobuf::KeyValuePair;
 use crate::serde::scheduler::PartitionStats;
 
+use datafusion::arrow::array::{ArrayRef, AsArray, GenericByteViewArray};
+use datafusion::arrow::datatypes::ByteViewType;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::ipc::writer::StreamWriter;
@@ -31,7 +34,8 @@ use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, metrics};
 use futures::StreamExt;
-use log::error;
+use log::{error, info};
+use std::borrow::Cow;
 use std::io::BufWriter;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -192,6 +196,50 @@ pub fn create_write_options(
         })
 }
 
+/// Compacts `Utf8View` / `BinaryView` columns whose data buffers hold more
+/// than twice the bytes their views reference.
+///
+/// The IPC writer serializes every data buffer of a view array, including
+/// bytes no view points at. Operators such as TopK, `SortPreservingMergeExec`
+/// and `LIMIT` can emit a few rows that still reference the data buffers of
+/// every batch those rows came from, so writing them as is can turn a 20-row
+/// result into tens of MB. Dense columns are left alone, because compacting
+/// them would copy every string to save at most half the bytes. Arrow's
+/// `BatchCoalescer` uses the same threshold before copying strings.
+pub(crate) fn compact_sparse_view_columns(batch: RecordBatch) -> Result<RecordBatch> {
+    let mut compacted = false;
+    let columns: Vec<ArrayRef> = batch
+        .columns()
+        .iter()
+        .map(|c| -> ArrayRef {
+            if let Some(a) = c.as_string_view_opt()
+                && is_sparse(a)
+            {
+                compacted = true;
+                Arc::new(a.gc())
+            } else if let Some(a) = c.as_binary_view_opt()
+                && is_sparse(a)
+            {
+                compacted = true;
+                Arc::new(a.gc())
+            } else {
+                Arc::clone(c)
+            }
+        })
+        .collect();
+    if !compacted {
+        return Ok(batch);
+    }
+    Ok(RecordBatch::try_new(batch.schema(), columns)?)
+}
+
+/// Whether a view array's data buffers hold more than twice the bytes its
+/// views reference.
+fn is_sparse<T: ByteViewType + ?Sized>(array: &GenericByteViewArray<T>) -> bool {
+    let buffered: usize = array.data_buffers().iter().map(|b| b.len()).sum();
+    buffered > 2 * array.total_buffer_bytes_used()
+}
+
 /// Stream data to disk in Arrow IPC format.
 ///
 /// Batches are read from the async stream and forwarded through a bounded
@@ -223,7 +271,7 @@ pub async fn write_stream_to_disk(
 
         while let Some(batch) = rx.blocking_recv() {
             let timer = write_metric.timer();
-            writer.write(&batch)?;
+            writer.write(&compact_sparse_view_columns(batch)?)?;
             timer.done();
         }
         let timer = write_metric.timer();
@@ -415,9 +463,207 @@ pub fn get_current_time() -> u128 {
         .as_millis()
 }
 
+/// Base marker used in place of a configuration value that may be a secret.
+///
+/// Logged redactions also include the original value's byte length.
+pub const REDACTED: &str = "<redacted>";
+
+/// Parts of a configuration key that mark its value as a possible secret.
+const SENSITIVE_KEY_PARTS: [&str; 6] = [
+    "secret",
+    "password",
+    "token",
+    "credential",
+    "api_key",
+    "private_key",
+];
+
+/// Returns `value` as it may appear in a log line: unchanged, or a redaction
+/// marker containing its byte length if `key` looks like it names a secret.
+///
+/// Session configuration travels as plain key/value pairs, including config
+/// extensions Ballista knows nothing about, so the key name is all there is to
+/// go on. A key is sensitive if it contains `secret`, `password`, `token`,
+/// `credential`, `api_key` or `private_key`, ignoring case.
+pub fn redact_config_value<'a>(key: &str, value: &'a str) -> Cow<'a, str> {
+    let key = key.to_ascii_lowercase();
+    if SENSITIVE_KEY_PARTS.iter().any(|part| key.contains(part)) {
+        Cow::Owned(format!("<redacted (length: {})>", value.len()))
+    } else {
+        Cow::Borrowed(value)
+    }
+}
+
+/// Copies `pairs` for logging, with the values of sensitive keys replaced as
+/// [`redact_config_value`] describes.
+pub fn redact_key_value_pairs(pairs: &[KeyValuePair]) -> Vec<KeyValuePair> {
+    pairs
+        .iter()
+        .map(|KeyValuePair { key, value }| KeyValuePair {
+            key: key.clone(),
+            value: value
+                .as_deref()
+                .map(|value| redact_config_value(key, value).to_string()),
+        })
+        .collect()
+}
+
+/// Completes on Ctrl-C, or on SIGTERM where the platform has it.
+///
+/// If a signal cannot be listened for, that branch never completes, rather than
+/// signalling a shutdown at startup.
+pub async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            error!("failed to listen for Ctrl-C: {e}");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            Err(e) => {
+                error!("failed to listen for SIGTERM: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => info!("Received Ctrl-C, shutting down"),
+        () = terminate => info!("Received SIGTERM, shutting down"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::array::{BinaryViewArray, StringViewArray};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+    /// Strings too long to be inlined in their views, so every value lives in
+    /// a data buffer.
+    fn long_strings(n: usize) -> StringViewArray {
+        StringViewArray::from_iter_values(
+            (0..n).map(|i| format!("a string too long to inline {i:04}")),
+        )
+    }
+
+    fn data_buffer_bytes<T: ByteViewType + ?Sized>(
+        array: &GenericByteViewArray<T>,
+    ) -> usize {
+        array.data_buffers().iter().map(|b| b.len()).sum()
+    }
+
+    #[test]
+    fn compacts_sparse_view_columns() {
+        let binaries = BinaryViewArray::from_iter_values(
+            (0..1000).map(|i| format!("a value too long to inline {i:04}").into_bytes()),
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("s", DataType::Utf8View, false),
+            Field::new("b", DataType::BinaryView, false),
+        ]));
+        // 2 rows backed by data buffers that hold all 1000 values
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(long_strings(1000)), Arc::new(binaries)],
+        )
+        .unwrap()
+        .slice(10, 2);
+
+        let compacted = compact_sparse_view_columns(batch.clone()).unwrap();
+
+        assert_eq!(compacted, batch);
+        assert_eq!(
+            data_buffer_bytes(compacted.column(0).as_string_view()),
+            batch.column(0).as_string_view().total_buffer_bytes_used()
+        );
+        assert_eq!(
+            data_buffer_bytes(compacted.column(1).as_binary_view()),
+            batch.column(1).as_binary_view().total_buffer_bytes_used()
+        );
+    }
+
+    #[test]
+    fn leaves_dense_view_columns_alone() {
+        let strings: ArrayRef = Arc::new(long_strings(1000));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Utf8View,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::clone(&strings)]).unwrap();
+
+        let result = compact_sparse_view_columns(batch).unwrap();
+
+        assert!(
+            Arc::ptr_eq(result.column(0), &strings),
+            "a dense column must not be copied"
+        );
+    }
+
+    #[test]
+    fn redacts_values_of_sensitive_keys() {
+        for key in [
+            "s3.secret_access_key",
+            "s3.session_token",
+            "secret_access_key",
+            "custom.db_password",
+            "custom.CLIENT_SECRET",
+            "custom.credential.option.jwt",
+            "custom.api_key",
+            "custom.private_key",
+        ] {
+            assert_eq!(
+                redact_config_value(key, "value"),
+                "<redacted (length: 5)>",
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_values_of_other_keys() {
+        for key in [
+            "s3.access_key_id",
+            "s3.region",
+            "ballista.job.name",
+            "datafusion.execution.target_partitions",
+        ] {
+            assert_eq!(redact_config_value(key, "value"), "value", "{key}");
+        }
+    }
+
+    #[test]
+    fn redacts_key_value_pairs_without_changing_keys_or_unset_values() {
+        let pair = |key: &str, value: Option<&str>| KeyValuePair {
+            key: key.to_string(),
+            value: value.map(str::to_string),
+        };
+
+        let redacted = redact_key_value_pairs(&[
+            pair("s3.secret_access_key", Some("SECRET")),
+            pair("s3.session_token", None),
+            pair("s3.region", Some("us-east-1")),
+        ]);
+
+        assert_eq!(
+            redacted,
+            vec![
+                pair("s3.secret_access_key", Some("<redacted (length: 6)>")),
+                pair("s3.session_token", None),
+                pair("s3.region", Some("us-east-1")),
+            ]
+        );
+    }
 
     #[test]
     fn test_grpc_client_config_from_ballista_config() {

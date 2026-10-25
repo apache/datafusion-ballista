@@ -18,6 +18,7 @@
 //! Ballista Executor Process
 
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -40,7 +41,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::{fs, time};
 
-use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool};
+use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool, TrackConsumersPool};
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::prelude::SessionConfig;
 
@@ -70,8 +71,8 @@ use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
 use crate::executor::{Executor, TasksDrainedFuture};
 use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
-use crate::metrics::ExecutorMetricCollectionPolicy;
 use crate::metrics::LoggingMetricsCollector;
+use crate::metrics::{ExecutorMemoryMetrics, ExecutorMetricCollectionPolicy};
 use crate::runtime_cache::{
     DefaultSessionRuntimeCache, MemoryPoolPolicy, SessionRuntimeCache,
 };
@@ -213,11 +214,19 @@ fn detect_pool(budget: MemoryBudget) -> ResolvedPool {
     }
 }
 
+/// How many of a task's largest memory consumers a `ResourcesExhausted` error
+/// lists. Matches DataFusion's default for `RuntimeEnvBuilder::with_memory_limit`.
+const TOP_MEMORY_CONSUMERS: NonZeroUsize = NonZeroUsize::new(5).unwrap();
+
 /// Builds a per-task memory-pool policy: each task's runtime is rebuilt from the
 /// shared base env with a fresh [`FairSpillPool`] of size
 /// `total_bytes / vcores`. The base env's disk manager, cache manager,
 /// and object-store registry are preserved via
 /// [`RuntimeEnvBuilder::from_runtime_env`].
+///
+/// The pool is wrapped in a [`TrackConsumersPool`], so when a reservation is
+/// refused the `ResourcesExhausted` error names the task's largest memory
+/// consumers, as DataFusion does for `RuntimeEnvBuilder::with_memory_limit`.
 ///
 /// Returns an error if the per-task share would be zero (i.e. `total_bytes <
 /// vcores`).
@@ -239,7 +248,10 @@ fn memory_pool_policy(
             // single-vcore share it uses; a 4-partition task gets 4×,
             // matching the parallelism DataFusion will actually drive.
             let size = per_vcore.saturating_mul(vcores_consumed.max(1) as usize);
-            let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(size));
+            let pool: Arc<dyn MemoryPool> = Arc::new(TrackConsumersPool::new(
+                FairSpillPool::new(size),
+                TOP_MEMORY_CONSUMERS,
+            ));
             RuntimeEnvBuilder::from_runtime_env(&base)
                 .with_memory_pool(pool)
                 .build_arc()
@@ -251,6 +263,17 @@ fn memory_pool_policy(
 /// default unbounded pool). Used when `--memory-pool-size` is unset.
 fn identity_pool_policy() -> MemoryPoolPolicy {
     Arc::new(|base, _config, _vcores| Ok(base))
+}
+
+fn observe_memory_pools(
+    policy: MemoryPoolPolicy,
+    metrics: ExecutorMemoryMetrics,
+) -> MemoryPoolPolicy {
+    Arc::new(move |base, config, vcores_consumed| {
+        let runtime = policy(base, config, vcores_consumed)?;
+        metrics.register(&runtime.memory_pool);
+        Ok(runtime)
+    })
 }
 
 /// Configuration for the executor process.
@@ -275,6 +298,9 @@ pub struct ExecutorProcessConfig {
     pub scheduler_port: u16,
     /// Timeout in seconds for establishing scheduler connection.
     pub scheduler_connect_timeout_seconds: u16,
+    /// Maximum time in seconds for scheduler notification, task and Flight draining,
+    /// and shuffle cleanup after shutdown is requested. `0` waits indefinitely.
+    pub graceful_shutdown_timeout_seconds: u64,
     /// Virtual cores advertised by this executor to the scheduler.
     pub vcores: usize,
     /// Task scheduling policy (pull-staged or push-staged).
@@ -380,6 +406,7 @@ impl Default for ExecutorProcessConfig {
             scheduler_host: "localhost".into(),
             scheduler_port: 50050,
             scheduler_connect_timeout_seconds: 0,
+            graceful_shutdown_timeout_seconds: 10,
             vcores: std::thread::available_parallelism().unwrap().get(),
             task_scheduling_policy: Default::default(),
             log_dir: None,
@@ -423,6 +450,24 @@ impl Default for ExecutorProcessConfig {
 /// (SIGTERM, Ctrl+C, or stop request from scheduler).
 pub async fn start_executor_process(
     opt: Arc<ExecutorProcessConfig>,
+) -> ballista_core::error::Result<()> {
+    start_executor_process_inner(opt, None).await
+}
+
+/// Starts an executor and exposes its resolved pool budget and live reservations.
+///
+/// Like [`start_executor_process`], this runs until shutdown. Metrics are observational:
+/// they do not wrap memory pools, change their limits, or retain completed task runtimes.
+pub async fn start_executor_process_with_memory_metrics(
+    opt: Arc<ExecutorProcessConfig>,
+    memory_metrics: ExecutorMemoryMetrics,
+) -> ballista_core::error::Result<()> {
+    start_executor_process_inner(opt, Some(memory_metrics)).await
+}
+
+async fn start_executor_process_inner(
+    opt: Arc<ExecutorProcessConfig>,
+    memory_metrics: Option<ExecutorMemoryMetrics>,
 ) -> ballista_core::error::Result<()> {
     opt.validate()?;
 
@@ -486,6 +531,9 @@ pub async fn start_executor_process(
     let pool_policy: MemoryPoolPolicy =
         match detect_pool(memory_budget_from_cli(opt.memory_pool_size, fraction)) {
             ResolvedPool::Bounded { bytes, source } => {
+                if let Some(metrics) = &memory_metrics {
+                    metrics.set_pool_size(Some(bytes));
+                }
                 let per_vcore = bytes / vcores as u64;
                 let source_desc = match source {
                     PoolSource::Configured => {
@@ -507,6 +555,9 @@ pub async fn start_executor_process(
                 memory_pool_policy(bytes, vcores)?
             }
             ResolvedPool::Unbounded(reason) => {
+                if let Some(metrics) = &memory_metrics {
+                    metrics.set_pool_size(None);
+                }
                 match reason {
                     UnboundedReason::Explicit => {
                         info!("Executor memory pool: unbounded (--memory-pool-size 0)")
@@ -519,6 +570,12 @@ pub async fn start_executor_process(
                 identity_pool_policy()
             }
         };
+
+    let pool_policy = if let Some(metrics) = memory_metrics.clone() {
+        observe_memory_pools(pool_policy, metrics)
+    } else {
+        pool_policy
+    };
 
     // Combined producer preserving the current per-task behavior: build a fresh
     // base env, then apply the pool policy. Used by `Executor::produce_runtime`
@@ -579,7 +636,8 @@ pub async fn start_executor_process(
                 }
             }),
         )
-        .with_session_runtime_cache(Some(session_runtime_cache)),
+        .with_session_runtime_cache(Some(session_runtime_cache))
+        .with_memory_metrics(memory_metrics),
     );
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
@@ -673,10 +731,12 @@ pub async fn start_executor_process(
     // Graceful shutdown notification
     let shutdown_notification = ShutdownNotifier::new();
     let flight_work_dir = work_dir.clone();
+    let clean_job_data_on_shutdown = opt.job_data_clean_up_interval_seconds > 0;
 
-    if opt.job_data_clean_up_interval_seconds > 0 {
+    if clean_job_data_on_shutdown {
         let mut interval_time =
             time::interval(Duration::from_secs(opt.job_data_clean_up_interval_seconds));
+        let cleaner_work_dir = work_dir.clone();
 
         let mut shuffle_cleaner_shutdown = shutdown_notification.subscribe_for_shutdown();
         let shuffle_cleaner_complete = shutdown_notification.shutdown_complete_tx.clone();
@@ -686,18 +746,12 @@ pub async fn start_executor_process(
             while !shuffle_cleaner_shutdown.is_shutdown() {
                 tokio::select! {
                     _ = interval_time.tick() => {
-                            if let Err(e) = clean_shuffle_data_loop(&work_dir, job_data_ttl_seconds).await
+                            if let Err(e) = clean_shuffle_data_loop(&cleaner_work_dir, job_data_ttl_seconds).await
                         {
                             error!("Ballista executor fail to clean_shuffle_data {e:?}")
                         }
                         },
                     _ = shuffle_cleaner_shutdown.recv() => {
-                        if let Err(e) = clean_all_shuffle_data(&work_dir).await
-                        {
-                            error!("Ballista executor fail to clean_shuffle_data {e:?}")
-                        } else {
-                            info!("Shuffle data cleaned.");
-                        }
                         drop(shuffle_cleaner_complete);
                         return;
                     }
@@ -739,14 +793,21 @@ pub async fn start_executor_process(
             );
         }
         _ => {
-            service_handlers.push(tokio::spawn(execution_loop::poll_loop(
+            let poll_loop = execution_loop::poll_loop(
                 scheduler.clone(),
                 executor.clone(),
                 default_codec,
                 None, // poll_now_notify
                 None, // free_vcores: use internal semaphore
                 health,
-            )));
+            );
+            let mut poll_shutdown = shutdown_notification.subscribe_for_shutdown();
+            service_handlers.push(tokio::spawn(async move {
+                tokio::select! {
+                    result = poll_loop => result,
+                    _ = poll_shutdown.recv() => Ok(()),
+                }
+            }));
         }
     };
     let shutdown = shutdown_notification.subscribe_for_shutdown();
@@ -806,57 +867,86 @@ pub async fn start_executor_process(
     info!("setting executor to TERMINATING status");
     TERMINATING.store(true, Ordering::Release);
 
-    if notify_scheduler {
-        // Send a heartbeat to update status of executor to `Fenced`. This should signal to the
-        // scheduler to no longer schedule tasks on this executor
-        if let Err(error) = scheduler
-            .heart_beat_from_executor(HeartBeatParams {
-                executor_id: executor_id.clone(),
-                metrics: vec![],
-                status: Some(ExecutorStatus {
-                    status: Some(Status::Terminating(String::default())),
-                }),
-                metadata: Some(executor_meta),
-            })
-            .await
-        {
-            error!("error sending heartbeat with fenced status: {error:?}");
-        }
-
-        // TODO we probably don't need a separate rpc call for this....
-        if let Err(error) = scheduler
-            .executor_stopped(ExecutorStoppedParams {
-                executor_id,
-                reason: stop_reason,
-            })
-            .await
-        {
-            error!("ExecutorStopped grpc failed: {error:?}");
-        }
-
-        // Wait for tasks to drain
-        tasks_drained.await;
-    }
-
-    // Extract the `shutdown_complete` receiver and transmitter
-    // explicitly drop `shutdown_transmitter`. This is important, as the
-    // `.await` below would otherwise never complete.
     let ShutdownNotifier {
         mut shutdown_complete_rx,
         shutdown_complete_tx,
         notify_shutdown,
-        ..
     } = shutdown_notification;
 
-    // When `notify_shutdown` is dropped, all components which have `subscribe`d will
-    // receive the shutdown signal and can exit
-    let _ = notify_shutdown.send(());
-    drop(notify_shutdown);
-    // Drop final `Sender` so the `Receiver` below can complete
-    drop(shutdown_complete_tx);
+    let graceful_shutdown = async {
+        if notify_scheduler {
+            // Send a heartbeat to update status of executor to `Fenced`. This should signal to the
+            // scheduler to no longer schedule tasks on this executor
+            if let Err(error) = scheduler
+                .heart_beat_from_executor(HeartBeatParams {
+                    executor_id: executor_id.clone(),
+                    metrics: vec![],
+                    status: Some(ExecutorStatus {
+                        status: Some(Status::Terminating(String::default())),
+                    }),
+                    metadata: Some(executor_meta),
+                })
+                .await
+            {
+                error!("error sending heartbeat with fenced status: {error:?}");
+            }
 
-    // Wait for all related components to finish the shutdown processing.
-    let _ = shutdown_complete_rx.recv().await;
+            // TODO we probably don't need a separate rpc call for this....
+            if let Err(error) = scheduler
+                .executor_stopped(ExecutorStoppedParams {
+                    executor_id,
+                    reason: stop_reason,
+                })
+                .await
+            {
+                error!("ExecutorStopped grpc failed: {error:?}");
+            }
+
+            // Wait for tasks to drain
+            tasks_drained.await;
+        }
+
+        // Signal all subscribed components to shut down.
+        let _ = notify_shutdown.send(());
+        // Drop final `Sender` so the `Receiver` below can complete
+        drop(shutdown_complete_tx);
+
+        // Wait for all related components to finish the shutdown processing.
+        let _ = shutdown_complete_rx.recv().await;
+        // Drain the servers, including Flight, before removing their shuffle data.
+        while !service_handlers.is_empty() {
+            if let Err(error) = check_services(&mut service_handlers).await {
+                error!("Executor service failed during shutdown: {error:?}");
+            }
+        }
+        if clean_job_data_on_shutdown {
+            if let Err(e) = clean_all_shuffle_data(&work_dir).await {
+                error!("Ballista executor fail to clean_shuffle_data {e:?}")
+            } else {
+                info!("Shuffle data cleaned.");
+            }
+        }
+    };
+
+    let shutdown_timeout = Duration::from_secs(opt.graceful_shutdown_timeout_seconds);
+    if shutdown_timeout.is_zero() {
+        graceful_shutdown.await;
+    } else if time::timeout(shutdown_timeout, graceful_shutdown)
+        .await
+        .is_err()
+    {
+        let message = format!(
+            "Executor graceful shutdown timed out after {} seconds",
+            shutdown_timeout.as_secs()
+        );
+        warn!("{message}; aborting remaining services");
+        // A scheduler RPC or task drain may have timed out before broadcasting shutdown.
+        let _ = notify_shutdown.send(());
+        for service in &service_handlers {
+            service.abort();
+        }
+        return Err(BallistaError::General(message));
+    }
     info!("Executor stopped.");
     Ok(())
 }
@@ -1358,10 +1448,92 @@ mod tests {
 #[cfg(test)]
 mod memory_pool_tests {
     use super::*;
-    use datafusion::execution::memory_pool::MemoryLimit;
+    use datafusion::execution::memory_pool::{
+        GreedyMemoryPool, MemoryConsumer, MemoryLimit,
+    };
     use datafusion::execution::object_store::DefaultObjectStoreRegistry;
     use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
     use std::sync::Arc;
+
+    #[test]
+    fn observes_per_task_pools_without_changing_their_limits() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(Some(8192));
+        let policy =
+            observe_memory_pools(memory_pool_policy(8192, 8).unwrap(), metrics.clone());
+        let base = Arc::new(RuntimeEnv::default());
+        let first = policy(base.clone(), &SessionConfig::new(), 1).unwrap();
+        let second = policy(base, &SessionConfig::new(), 4).unwrap();
+        assert!(first.memory_pool.is::<TrackConsumersPool<FairSpillPool>>());
+        assert!(matches!(
+            first.memory_pool.memory_limit(),
+            MemoryLimit::Finite(1024)
+        ));
+        assert!(matches!(
+            second.memory_pool.memory_limit(),
+            MemoryLimit::Finite(4096)
+        ));
+        let first_reservation = MemoryConsumer::new("first").register(&first.memory_pool);
+        let second_reservation =
+            MemoryConsumer::new("second").register(&second.memory_pool);
+        first_reservation.try_grow(128).unwrap();
+        second_reservation.try_grow(256).unwrap();
+        let usage = metrics.snapshot().unwrap();
+        assert_eq!(usage.pool_size, Some(8192));
+        assert_eq!(usage.reserved, 384);
+        assert_eq!(usage.pool_count, 2);
+        drop(first_reservation);
+        drop(second_reservation);
+        drop(first);
+        drop(second);
+        assert_eq!(metrics.snapshot().unwrap().pool_count, 0);
+    }
+
+    #[test]
+    fn observes_custom_shared_pool_without_wrapping_or_double_counting() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(None);
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1024));
+        let base = RuntimeEnvBuilder::new()
+            .with_memory_pool(pool.clone())
+            .build_arc()
+            .unwrap();
+        let policy = observe_memory_pools(identity_pool_policy(), metrics.clone());
+        let first = policy(base.clone(), &SessionConfig::new(), 1).unwrap();
+        let second = policy(base.clone(), &SessionConfig::new(), 4).unwrap();
+        assert!(Arc::ptr_eq(&first, &base));
+        assert!(Arc::ptr_eq(&second, &base));
+        assert!(first.memory_pool.is::<GreedyMemoryPool>());
+        let reservation = MemoryConsumer::new("custom").register(&pool);
+        reservation.try_grow(128).unwrap();
+        assert_eq!(metrics.snapshot().unwrap().reserved, 128);
+        assert_eq!(metrics.snapshot().unwrap().pool_count, 1);
+        assert_eq!(metrics.snapshot().unwrap().pool_size, None);
+    }
+
+    #[test]
+    fn observes_cached_session_task_pools_without_retaining_them() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(Some(8192));
+        let policy =
+            observe_memory_pools(memory_pool_policy(8192, 8).unwrap(), metrics.clone());
+        let cache = DefaultSessionRuntimeCache::new(
+            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default()))),
+            policy,
+            2,
+        );
+        let config = SessionConfig::new();
+        let first = cache.produce_runtime("session", &config, 1).unwrap();
+        let second = cache.produce_runtime("session", &config, 4).unwrap();
+        assert_eq!(metrics.snapshot().unwrap().pool_count, 2);
+        let reservation = MemoryConsumer::new("cached").register(&second.memory_pool);
+        reservation.try_grow(256).unwrap();
+        assert_eq!(metrics.snapshot().unwrap().reserved, 256);
+        drop(reservation);
+        drop(first);
+        drop(second);
+        assert_eq!(metrics.snapshot().unwrap().pool_count, 0);
+    }
 
     #[test]
     fn returns_error_when_total_smaller_than_vcores() {
@@ -1395,6 +1567,22 @@ mod memory_pool_tests {
             MemoryLimit::Infinite => panic!("expected Finite, got Infinite"),
             MemoryLimit::Unknown => panic!("expected Finite, got Unknown"),
         }
+    }
+
+    #[test]
+    fn exhausted_memory_error_names_the_largest_consumers() {
+        let policy = memory_pool_policy(1024, 1).unwrap();
+        let env =
+            policy(Arc::new(RuntimeEnv::default()), &SessionConfig::new(), 1).unwrap();
+
+        let build = MemoryConsumer::new("HashJoinInput").register(&env.memory_pool);
+        build.try_grow(1000).unwrap();
+        // 1000 + 100 bytes doesn't fit the 1024-byte pool, so the sorter is refused.
+        let sort = MemoryConsumer::new("ExternalSorter").register(&env.memory_pool);
+        let err = sort.try_grow(100).unwrap_err().to_string();
+
+        // FairSpillPool's own error only names the consumer that was refused.
+        assert!(err.contains("HashJoinInput"), "{err}");
     }
 
     #[test]

@@ -39,6 +39,7 @@ static COLLECTOR: OnceCell<Arc<dyn SchedulerMetricsCollector>> = OnceCell::new()
 /// *job_submitted_total* - Counter of submitted jobs
 /// *pending_task_queue_size* - Number of pending tasks
 pub struct PrometheusMetricsCollector {
+    registry: Registry,
     execution_time: Histogram,
     planning_time: Histogram,
     failed: Counter,
@@ -117,6 +118,7 @@ impl PrometheusMetricsCollector {
         })?;
 
         Ok(Self {
+            registry: registry.clone(),
             execution_time,
             planning_time,
             failed,
@@ -167,12 +169,33 @@ impl SchedulerMetricsCollector for PrometheusMetricsCollector {
     fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>> {
         let encoder = TextEncoder::new();
 
-        let metric_families = prometheus::gather();
+        let metric_families = self.registry.gather();
         let mut buffer = vec![];
         encoder.encode(&metric_families, &mut buffer).map_err(|e| {
             BallistaError::Internal(format!("Error encoding prometheus metrics: {e:?}"))
         })?;
 
         Ok(Some((buffer, encoder.format_type().to_owned())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gather_metrics_uses_provided_registry() -> Result<()> {
+        let registry = Registry::new();
+        let collector = PrometheusMetricsCollector::new(&registry)?;
+        collector.record_submitted(&JobId::new("job"), 0, 10);
+        collector.set_pending_tasks_queue_size(3);
+
+        let (buffer, content_type) = collector.gather_metrics()?.unwrap();
+        let text = String::from_utf8(buffer).unwrap();
+
+        assert!(content_type.starts_with("text/plain"));
+        assert!(text.contains("job_submitted_total 1"), "{text}");
+        assert!(text.contains("pending_task_queue_size 3"), "{text}");
+        Ok(())
     }
 }

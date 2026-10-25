@@ -104,6 +104,9 @@ pub struct Config {
         help = "How long to try connecting to scheduler before failing. Set to zero to fail after first attempt."
     )]
     pub scheduler_connect_timeout_seconds: u16,
+    /// Maximum time in seconds for executor graceful shutdown (0 = wait indefinitely).
+    #[arg(long, default_value_t = 10)]
+    pub graceful_shutdown_timeout_seconds: u64,
     /// Directory for storing temporary shuffle data and IPC files.
     #[arg(long, help = "Directory for temporary IPC files")]
     pub work_dir: Option<String>,
@@ -264,6 +267,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             scheduler_host: opt.scheduler_host,
             scheduler_port: opt.scheduler_port,
             scheduler_connect_timeout_seconds: opt.scheduler_connect_timeout_seconds,
+            graceful_shutdown_timeout_seconds: opt.graceful_shutdown_timeout_seconds,
             vcores,
             task_scheduling_policy: opt.task_scheduling_policy,
             work_dir: opt.work_dir,

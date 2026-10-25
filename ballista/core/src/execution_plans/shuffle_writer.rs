@@ -1045,7 +1045,10 @@ mod tests {
     use super::*;
     use crate::error::BallistaError;
     use crate::execution_plans::ChaosExec;
-    use datafusion::arrow::array::{StringArray, StructArray, UInt32Array, UInt64Array};
+    use datafusion::arrow::array::{
+        AsArray, StringArray, StringViewArray, StructArray, UInt32Array, UInt64Array,
+    };
+    use datafusion::arrow::ipc::reader::StreamReader;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -1244,6 +1247,54 @@ mod tests {
             "expected the input plan's hash partitioning:\n{hashed}"
         );
 
+        Ok(())
+    }
+
+    /// TopK, SortPreservingMergeExec and LIMIT can emit a few rows that still
+    /// hold the data buffers of every row they were taken from. The IPC writer
+    /// serializes whole data buffers, so the file has to be written from
+    /// compacted columns.
+    #[tokio::test]
+    async fn writes_only_referenced_view_bytes() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Utf8View,
+            false,
+        )]));
+        let strings = StringViewArray::from_iter_values(
+            (0..1000).map(|i| format!("a string too long to inline {i:04}")),
+        );
+        // 2 rows backed by a data buffer that holds all 1000 strings
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(strings)])?.slice(10, 2);
+        let input = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+            &[vec![batch.clone()]],
+            schema,
+            None,
+        )?)));
+        let work_dir = TempDir::new()?;
+        let query_stage = Arc::new(ShuffleWriterExec::try_new(
+            JobId::new("jobViews"),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_owned(),
+        )?);
+
+        let summaries = drive_all_partitions(query_stage, task_ctx).await?;
+        let path = summaries[0].column(1).as_string::<i32>().value(0);
+        let read_back = StreamReader::try_new(std::fs::File::open(path)?, None)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        assert_eq!(read_back, vec![batch.clone()]);
+        let written = read_back[0].column(0).as_string_view();
+        let written_bytes: usize = written.data_buffers().iter().map(|b| b.len()).sum();
+        assert_eq!(
+            written_bytes,
+            batch.column(0).as_string_view().total_buffer_bytes_used()
+        );
         Ok(())
     }
 

@@ -57,7 +57,6 @@ Table of content
    user-guide/metrics
    user-guide/faq
    user-guide/extending-components
-   user-guide/spark-compatible-functions
    user-guide/extensions-example
 
 .. toctree::
@@ -80,10 +79,11 @@ Table of content
 
    contributors-guide/architecture
    contributors-guide/shuffle
+   contributors-guide/dataframe-cache
    contributors-guide/code-organization
    contributors-guide/user-personas
    contributors-guide/development
-   contributors-guide/benchmarking
+   contributors-guide/benchmarking/index
    Source code <https://github.com/apache/datafusion-ballista/>
 
 .. _toc.community:
