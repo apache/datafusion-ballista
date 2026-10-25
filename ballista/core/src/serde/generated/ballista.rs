@@ -997,7 +997,7 @@ pub struct ExecutorHeartbeat {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorMetric {
     /// TODO add more metrics
-    #[prost(oneof = "executor_metric::Metric", tags = "1, 2, 3, 4, 5, 6, 7")]
+    #[prost(oneof = "executor_metric::Metric", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
     pub metric: ::core::option::Option<executor_metric::Metric>,
 }
 /// Nested message and enum types in `ExecutorMetric`.
@@ -1019,6 +1019,18 @@ pub mod executor_metric {
         PeakPhysicalMemory(u64),
         #[prost(uint64, tag = "7")]
         PeakVirtualMemory(u64),
+        /// Bytes currently reserved across the memory pools of the executor's
+        /// running tasks.
+        #[prost(uint64, tag = "8")]
+        MemoryPoolReserved(u64),
+        /// The executor's total memory pool budget, in bytes. Absent when the
+        /// pool is unbounded.
+        #[prost(uint64, tag = "9")]
+        MemoryPoolSize(u64),
+        /// Outstanding bytes allocated by the executor process, as counted by its
+        /// global allocator. Includes memory the pools do not track.
+        #[prost(uint64, tag = "10")]
+        AllocatedMemory(u64),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

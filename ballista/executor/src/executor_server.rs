@@ -67,7 +67,7 @@ use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::executor_process::{ExecutorProcessConfig, remove_job_data};
 use crate::health::ExecutorHealth;
-use crate::metrics::ExecutorMetricCollectionPolicy;
+use crate::metrics::{ExecutorMemoryMetrics, ExecutorMetricCollectionPolicy};
 use crate::shutdown::ShutdownNotifier;
 use crate::{TaskCompletionExtras, TaskExecutionTimes, as_task_status};
 
@@ -545,6 +545,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
     /// Getting executor's metrics
     fn get_executor_metrics(&self) -> Vec<ExecutorMetric> {
+        let mut metrics = self.get_host_and_process_metrics();
+        metrics.extend(heartbeat_memory_metrics(
+            self.metric_collection_policy,
+            self.executor.memory_metrics(),
+        ));
+        metrics
+    }
+
+    /// Host and process memory, as selected by the metric collection policy.
+    fn get_host_and_process_metrics(&self) -> Vec<ExecutorMetric> {
         match self.metric_collection_policy {
             ExecutorMetricCollectionPolicy::SystemOnly => {
                 let mut executor_system = System::new_all();
@@ -1026,5 +1036,115 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
     }
 }
 
+/// The executor's memory metrics to send in a heartbeat. These are process
+/// metrics, so they're only sent when the policy collects process metrics and
+/// the executor was started with memory metrics.
+fn heartbeat_memory_metrics(
+    policy: ExecutorMetricCollectionPolicy,
+    metrics: Option<&ExecutorMemoryMetrics>,
+) -> Vec<ExecutorMetric> {
+    match (policy, metrics) {
+        (
+            ExecutorMetricCollectionPolicy::ProcessOnly
+            | ExecutorMetricCollectionPolicy::SystemAndProcess,
+            Some(metrics),
+        ) => executor_memory_metrics(metrics),
+        _ => vec![],
+    }
+}
+
+/// Converts a snapshot of executor-wide memory usage into heartbeat metrics.
+///
+/// Reports nothing until the executor has resolved its memory pool. The pool
+/// capacity is left out when the pool is unbounded, and allocated bytes when
+/// the process's allocator doesn't count them.
+fn executor_memory_metrics(metrics: &ExecutorMemoryMetrics) -> Vec<ExecutorMetric> {
+    let Some(usage) = metrics.snapshot() else {
+        return vec![];
+    };
+    let mut values = vec![executor_metric::Metric::MemoryPoolReserved(
+        usage.reserved as u64,
+    )];
+    if let Some(capacity) = usage.pool_size {
+        values.push(executor_metric::Metric::MemoryPoolSize(capacity));
+    }
+    if let Some(allocated) = metrics.allocated_bytes() {
+        values.push(executor_metric::Metric::AllocatedMemory(allocated as u64));
+    }
+    values
+        .into_iter()
+        .map(|metric| ExecutorMetric {
+            metric: Some(metric),
+        })
+        .collect()
+}
+
 #[cfg(test)]
-mod test {}
+mod test {
+    use super::*;
+    use datafusion::execution::memory_pool::{FairSpillPool, MemoryConsumer, MemoryPool};
+
+    fn values(metrics: Vec<ExecutorMetric>) -> Vec<executor_metric::Metric> {
+        metrics.into_iter().filter_map(|m| m.metric).collect()
+    }
+
+    #[test]
+    fn reports_nothing_before_the_pool_is_initialized() {
+        let metrics = ExecutorMemoryMetrics::default();
+        assert!(executor_memory_metrics(&metrics).is_empty());
+    }
+
+    #[test]
+    fn reports_reserved_pool_size_and_allocated_bytes() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(Some(4096));
+        metrics.set_allocated_bytes_source(|| 12_345);
+        let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(4096));
+        metrics.register(&pool);
+        let reservation = MemoryConsumer::new("r").register(&pool);
+        reservation.try_grow(1000).unwrap();
+
+        assert_eq!(
+            values(executor_memory_metrics(&metrics)),
+            vec![
+                executor_metric::Metric::MemoryPoolReserved(1000),
+                executor_metric::Metric::MemoryPoolSize(4096),
+                executor_metric::Metric::AllocatedMemory(12_345),
+            ]
+        );
+    }
+
+    #[test]
+    fn sends_memory_metrics_only_when_collecting_process_metrics() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(Some(4096));
+
+        for policy in [
+            ExecutorMetricCollectionPolicy::ProcessOnly,
+            ExecutorMetricCollectionPolicy::SystemAndProcess,
+        ] {
+            assert_eq!(heartbeat_memory_metrics(policy, Some(&metrics)).len(), 2);
+        }
+        for policy in [
+            ExecutorMetricCollectionPolicy::SystemOnly,
+            ExecutorMetricCollectionPolicy::Off,
+        ] {
+            assert!(heartbeat_memory_metrics(policy, Some(&metrics)).is_empty());
+        }
+        assert!(
+            heartbeat_memory_metrics(ExecutorMetricCollectionPolicy::ProcessOnly, None)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn omits_pool_size_when_unbounded_and_allocated_without_a_source() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(None);
+
+        assert_eq!(
+            values(executor_memory_metrics(&metrics)),
+            vec![executor_metric::Metric::MemoryPoolReserved(0)]
+        );
+    }
+}

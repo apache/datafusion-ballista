@@ -102,6 +102,8 @@ pub mod serde;
 pub mod serving;
 /// Quantile sketching of a fixed-width `ORDER BY` key, NULLs included.
 pub mod sort_key;
+/// Shared test and benchmark fixtures, such as the TPC-H table schemas.
+pub mod test_utils;
 /// General utility functions for Ballista operations.
 pub mod utils;
 /// Version checks between Ballista clients and schedulers.

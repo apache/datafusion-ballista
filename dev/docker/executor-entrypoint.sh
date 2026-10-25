@@ -21,4 +21,5 @@ set -e
 
 mkdir -p /work
 
-/root/ballista-executor "$@"
+# exec, so SIGTERM reaches the executor and starts its drain.
+exec /root/ballista-executor "$@"

@@ -87,6 +87,9 @@ pub enum ExecutorMetricResponse {
     ProcVirtualMemory(u64),
     PeakPhysicalMemory(u64),
     PeakVirtualMemory(u64),
+    MemoryPoolReserved(u64),
+    MemoryPoolSize(u64),
+    AllocatedMemory(u64),
 }
 
 impl ExecutorMetricResponse {
@@ -99,6 +102,9 @@ impl ExecutorMetricResponse {
             Metric::ProcVirtualMemory(v) => Self::ProcVirtualMemory(v),
             Metric::PeakPhysicalMemory(v) => Self::PeakPhysicalMemory(v),
             Metric::PeakVirtualMemory(v) => Self::PeakVirtualMemory(v),
+            Metric::MemoryPoolReserved(v) => Self::MemoryPoolReserved(v),
+            Metric::MemoryPoolSize(v) => Self::MemoryPoolSize(v),
+            Metric::AllocatedMemory(v) => Self::AllocatedMemory(v),
         })
     }
 }
@@ -686,6 +692,32 @@ pub async fn get_job_config<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The executor memory metrics' JSON names are part of the REST contract.
+    #[test]
+    fn executor_memory_metrics_serialize_with_stable_names() {
+        use ballista_core::serde::protobuf::ExecutorMetric;
+
+        let json = |metric| {
+            let response = ExecutorMetricResponse::from_proto(ExecutorMetric {
+                metric: Some(metric),
+            })
+            .unwrap();
+            serde_json::to_value(response).unwrap()
+        };
+        assert_eq!(
+            json(Metric::MemoryPoolReserved(1)),
+            serde_json::json!({"type": "memory_pool_reserved", "value": 1})
+        );
+        assert_eq!(
+            json(Metric::MemoryPoolSize(2)),
+            serde_json::json!({"type": "memory_pool_size", "value": 2})
+        );
+        assert_eq!(
+            json(Metric::AllocatedMemory(3)),
+            serde_json::json!({"type": "allocated_memory", "value": 3})
+        );
+    }
 
     #[tokio::test]
     // Still covers the deprecated embedded-proxy flag until it is removed.

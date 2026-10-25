@@ -21,8 +21,8 @@ use crate::execution_engine::DefaultExecutionEngine;
 use crate::execution_engine::ExecutionEngine;
 use crate::execution_engine::QueryStageExecutor;
 use crate::execution_loop::any_to_string;
-use crate::metrics::ExecutorMetricsCollector;
 use crate::metrics::LoggingMetricsCollector;
+use crate::metrics::{ExecutorMemoryMetrics, ExecutorMetricsCollector};
 use crate::runtime_cache::SessionRuntimeCache;
 use ballista_core::ConfigProducer;
 use ballista_core::JobId;
@@ -106,6 +106,10 @@ pub struct Executor {
     /// `produce_runtime_for_session` reuses read-side state across a session's
     /// tasks; when `None`, each task builds a runtime from `runtime_producer`.
     session_runtime_cache: Option<Arc<dyn SessionRuntimeCache>>,
+
+    /// Executor-wide memory usage, sampled for heartbeats. Set when the
+    /// executor was started with memory metrics enabled.
+    memory_metrics: Option<ExecutorMemoryMetrics>,
 }
 
 impl Executor {
@@ -155,6 +159,7 @@ impl Executor {
             tasks_drained_waker: Default::default(),
             execution_engine,
             session_runtime_cache: None,
+            memory_metrics: None,
         }
     }
     /// Creates new Executor with default `ExecutionEngine`.
@@ -180,6 +185,7 @@ impl Executor {
             tasks_drained_waker: Default::default(),
             execution_engine: Arc::new(DefaultExecutionEngine::new()),
             session_runtime_cache: None,
+            memory_metrics: None,
         }
     }
 }
@@ -207,6 +213,22 @@ impl Executor {
     ) -> Self {
         self.session_runtime_cache = cache;
         self
+    }
+
+    /// Attaches (or clears) the executor-wide memory metrics reported in
+    /// heartbeats. It should be the same handle the memory pool policy
+    /// registers task pools with.
+    pub(crate) fn with_memory_metrics(
+        mut self,
+        metrics: Option<ExecutorMemoryMetrics>,
+    ) -> Self {
+        self.memory_metrics = metrics;
+        self
+    }
+
+    /// The executor-wide memory metrics, when memory metrics are enabled.
+    pub(crate) fn memory_metrics(&self) -> Option<&ExecutorMemoryMetrics> {
+        self.memory_metrics.as_ref()
     }
 
     /// Produces the runtime for a task, reusing the session's shared read-side

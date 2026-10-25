@@ -47,6 +47,7 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "sync", "time", "net", "signal"] }
 
 [dev-dependencies]
+futures = { workspace = true }
 rstest = { workspace = true }
 
 [lib]
