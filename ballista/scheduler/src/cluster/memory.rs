@@ -202,15 +202,10 @@ impl ClusterState for InMemoryClusterState {
             }
         }
 
-        //
-        // pull based executor sends `save_executor_metadata`
-        // with all requests, not `ExecutorHeartbeat`, to make it consistent
-        // with push based, registering `ExecutorHeartbeat` every time.
-        // Status and metrics come from the executor's own periodic heartbeats;
-        // a poll refreshes the timestamp but keeps the last status, metrics
-        // and peaks. It updates the entry in place so a heartbeat saved
+        // A poll refreshes the heartbeat timestamp and keeps the last status,
+        // metrics and peaks; see the `ClusterState::save_executor_metadata`
+        // docs. The entry is updated in place so a heartbeat saved
         // concurrently isn't overwritten.
-        //
         let timestamp = timestamp_secs();
         self.heartbeats
             .entry(executor_id.clone())
