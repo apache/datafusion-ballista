@@ -484,6 +484,10 @@ involved here — this is the plain ADBC driver talking to the cluster:</p>
 <p><code class="docutils literal notranslate"><span class="pre">fetch_arrow_table()</span></code> reads every partition the scheduler advertised, so the
 result arrives as Arrow the whole way from the executors — no row-by-row
 conversion.</p>
+<p>A runnable version of this, including cluster setup, is in
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/examples/python/adbc_flight_sql.py"><code class="docutils literal notranslate"><span class="pre">examples/python/adbc_flight_sql.py</span></code></a>. For something larger,
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/benchmarks/tpch_adbc.py"><code class="docutils literal notranslate"><span class="pre">benchmarks/tpch_adbc.py</span></code></a> runs all 22 TPC-H queries over the same
+path.</p>
 <section id="introspection">
 <h3>Introspection<a class="headerlink" href="#introspection" title="Link to this heading">#</a></h3>
 <p>The driver’s metadata calls are answered from the scheduler’s real DataFusion
