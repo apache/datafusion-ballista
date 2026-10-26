@@ -220,8 +220,7 @@ def BallistaSessionContext(
     Args:
         address: Ballista scheduler URL, for example ``"df://localhost:50050"``.
         config: Local session configuration, either a ``SessionConfig`` or a
-            dictionary of ``datafusion.*`` options. It is used for local planning
-            only and is not propagated to the cluster. DataFusion options which
+            dictionary of ``datafusion.*`` options. DataFusion options which
             Ballista does not support are overridden with Ballista defaults.
         runtime: Optional runtime environment used by the local session.
         cluster_config: Options applied to the local session and propagated to
