@@ -527,6 +527,17 @@ the auto-sized pool uses; it accepts a value in <code class="docutils literal no
 <code class="docutils literal notranslate"><span class="pre">0.70</span></code>. It is ignored when <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code> is set.</p>
 <p>Because operators spill to disk rather than fail, make sure the executor’s
 <code class="docutils literal notranslate"><span class="pre">--work-dir</span></code> has enough scratch space to absorb spills under memory pressure.</p>
+<p>DataFusion caps spill files at 100 GB per runtime by default, and a query that
+spills more fails with “The used disk space during the spilling process has
+exceeded the allowable limit”. Large sorts and sort-merge joins can exceed this
+at high scale factors. Raise the cap with <code class="docutils literal notranslate"><span class="pre">--max-temp-directory-size</span></code>, which
+takes the same size values as <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code>:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>ballista-executor<span class="w"> </span>--memory-pool-size<span class="w"> </span>48GB<span class="w"> </span>--max-temp-directory-size<span class="w"> </span>1TB
+</pre></div>
+</div>
+<p>The limit applies to each session’s runtime on the executor, shared by that
+session’s tasks. Setting <code class="docutils literal notranslate"><span class="pre">datafusion.runtime.max_temp_directory_size</span></code> on the
+client has no effect on executors.</p>
 </section>
 <section id="join-strategy">
 <h2>Join Strategy<a class="headerlink" href="#join-strategy" title="Link to this heading">#</a></h2>
