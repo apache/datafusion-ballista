@@ -443,6 +443,10 @@ impl AdaptiveExecutionGraph {
 
             // Range-repartition stages need overlap-based remap of their partitions
             let maybe_stage = self.stages.get(&stage_id);
+            let column_statistics = match maybe_stage {
+                Some(ExecutionStage::Running(stage)) => stage.output_column_stats(),
+                _ => Vec::new(),
+            };
             let partitions = if let Some(ExecutionStage::Running(stage)) = maybe_stage
                 && let Some(routing_expr) = repartition_routing_expr(stage.plan.as_ref())?
                 && let Some(routing) = Self::repartition_routing(stage, routing_expr)?
@@ -480,8 +484,11 @@ impl AdaptiveExecutionGraph {
             } else {
                 partitions
             };
-            self.planner
-                .resolve_stage_partitions(stage_id, partitions.clone())?;
+            self.planner.resolve_stage_partitions(
+                stage_id,
+                partitions.clone(),
+                column_statistics,
+            )?;
 
             let (runnable, stages_to_cancel) = self.planner.actionable_stages()?;
 

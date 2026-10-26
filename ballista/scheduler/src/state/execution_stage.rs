@@ -669,6 +669,25 @@ impl RunningStage {
             warn!("The metrics for stage {} should not be none", self.stage_id);
             vec![]
         });
+
+        SuccessfulStage {
+            stage_id: self.stage_id,
+            stage_attempt_num: self.stage_attempt_num,
+            partitions: self.partitions,
+            output_links: self.output_links.clone(),
+            inputs: self.inputs.clone(),
+            plan: self.plan.clone(),
+            task_infos,
+            stage_metrics,
+            session_config: self.session_config.clone(),
+            output_column_stats: self.output_column_stats(),
+        }
+    }
+
+    /// Per-column statistics over everything the stage's successful tasks
+    /// wrote, one entry per output-schema column. `null_count` is `Exact` only
+    /// when every successful task reported that column.
+    pub fn output_column_stats(&self) -> Vec<ColumnStatistics> {
         let num_columns = self.plan.schema().fields().len();
         let mut output_column_stats = vec![
             ColumnStatistics {
@@ -697,19 +716,7 @@ impl RunningStage {
                 }
             }
         }
-
-        SuccessfulStage {
-            stage_id: self.stage_id,
-            stage_attempt_num: self.stage_attempt_num,
-            partitions: self.partitions,
-            output_links: self.output_links.clone(),
-            inputs: self.inputs.clone(),
-            plan: self.plan.clone(),
-            task_infos,
-            stage_metrics,
-            session_config: self.session_config.clone(),
-            output_column_stats,
-        }
+        output_column_stats
     }
 
     /// Converts this running stage to a failed stage. Still-running tasks are recorded

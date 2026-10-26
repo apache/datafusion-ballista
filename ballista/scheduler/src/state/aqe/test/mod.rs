@@ -21,6 +21,8 @@ mod alter_stages;
 mod broadcast_thresholds;
 /// Functional tests for the CoalescePartitionsRule end-to-end through the planner
 mod coalesce_rule;
+/// Stage column statistics carried onto the stage's exchange
+mod column_statistics;
 /// Job-failure lifecycle tests for the adaptive graph
 mod job_failure;
 /// covers join selection tests

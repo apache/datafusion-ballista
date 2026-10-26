@@ -32,7 +32,7 @@ use ballista_core::JobId;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
-use datafusion::common::{HashMap, exec_err};
+use datafusion::common::{ColumnStatistics, HashMap, exec_err};
 use datafusion::error::DataFusionError;
 #[cfg(test)]
 use datafusion::execution::config::SessionConfig;
@@ -341,12 +341,23 @@ impl AdaptivePlanner {
         Ok(stage_output)
     }
 
-    /// Save the given partition list on the stage's ExchangeExec and trigger a replan.
+    /// Save the given partition list and the stage's per-column output
+    /// statistics on the stage's ExchangeExec, and trigger a replan.
     pub fn resolve_stage_partitions(
         &mut self,
         stage_id: usize,
         partitions: Vec<Vec<PartitionLocation>>,
+        column_statistics: Vec<ColumnStatistics>,
     ) -> common::Result<()> {
+        // Before the partitions: resolving them replans, and the replan should
+        // already see the statistics.
+        if let Some(exchange) = self
+            .runnable_stage_cache
+            .get(&stage_id)
+            .and_then(|stage| stage.downcast_ref::<ExchangeExec>())
+        {
+            exchange.resolve_column_statistics(column_statistics);
+        }
         self.finalise_stage_internal(stage_id, partitions)
     }
 

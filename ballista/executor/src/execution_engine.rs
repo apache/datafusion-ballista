@@ -426,21 +426,20 @@ impl QueryStageExecutor for DefaultQueryStageExec {
     }
 
     fn collect_column_stats(&self) -> Vec<TaskColumnStats> {
-        // Only the sort writer stashes per-column null counts during its drain
-        // loop; the passthrough/range paths report none for now.
-        match &self.shuffle_writer {
-            ShuffleWriterVariant::Sort(writer) => writer
-                .column_null_counts()
-                .into_iter()
-                .enumerate()
-                .map(|(column, null_count)| TaskColumnStats {
-                    column: column as u32,
-                    null_count,
-                    sketches: vec![],
-                })
-                .collect(),
-            _ => vec![],
-        }
+        let null_counts = match &self.shuffle_writer {
+            ShuffleWriterVariant::Passthrough(writer) => writer.column_null_counts(),
+            ShuffleWriterVariant::Range(writer) => writer.column_null_counts(),
+            ShuffleWriterVariant::Sort(writer) => writer.column_null_counts(),
+        };
+        null_counts
+            .into_iter()
+            .enumerate()
+            .map(|(column, null_count)| TaskColumnStats {
+                column: column as u32,
+                null_count,
+                sketches: vec![],
+            })
+            .collect()
     }
 }
 

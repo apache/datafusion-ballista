@@ -44,8 +44,8 @@ use crate::JobId;
 use crate::error::BallistaError;
 use crate::execution_plans::create_shuffle_path;
 use crate::execution_plans::shuffle_writer::{
-    ShuffleWriteMetrics, WriterState, collect_window_state_operators, result_schema,
-    run_coordinator, summaries_to_batch,
+    ColumnNullCounts, ShuffleWriteMetrics, WriterState, collect_window_state_operators,
+    result_schema, run_coordinator, summaries_to_batch,
 };
 use crate::execution_plans::shuffle_writer_trait::ShuffleWriter;
 use crate::execution_plans::{ObservedWindowState, PartitionedBoundedWindowAggExec};
@@ -112,6 +112,8 @@ pub struct RangeShuffleWriterExec {
     /// clone produced by `with_new_children` participates in the same
     /// coordinator.
     state: Arc<Mutex<WriterState>>,
+    /// Null counts of the rows this task wrote, shared with clones.
+    column_null_counts: ColumnNullCounts,
 }
 
 impl Clone for RangeShuffleWriterExec {
@@ -126,6 +128,7 @@ impl Clone for RangeShuffleWriterExec {
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             state: self.state.clone(),
+            column_null_counts: self.column_null_counts.clone(),
         }
     }
 }
@@ -187,6 +190,7 @@ impl RangeShuffleWriterExec {
                 initialized: false,
                 handoffs: (0..output_partition_count).map(|_| None).collect(),
             })),
+            column_null_counts: ColumnNullCounts::default(),
         })
     }
 
@@ -200,6 +204,12 @@ impl RangeShuffleWriterExec {
     /// Task id (append-order slot within the stage) this writer is bound to.
     pub fn task_id(&self) -> usize {
         self.task_id
+    }
+
+    /// Per-column null counts over all rows this task wrote, one per column
+    /// of the output schema. Empty until the task has written.
+    pub fn column_null_counts(&self) -> Vec<u64> {
+        self.column_null_counts.get()
     }
 
     /// Drain every window-state collector in this stage, keyed by the global
@@ -254,12 +264,14 @@ impl RangeShuffleWriterExec {
         let task_id = self.task_id;
         let plan = self.plan.clone();
         let metrics = self.metrics.clone();
+        let null_counts = self.column_null_counts.clone();
 
         async move {
             let now = Instant::now();
             let config = context.session_config().ballista_config();
             let compression_type = config.shuffle_compression_codec()?;
             let channel_capacity = config.shuffle_writer_channel_capacity();
+            null_counts.reset(plan.schema().fields().len());
 
             let num_partitions =
                 plan.properties().output_partitioning().partition_count();
@@ -287,7 +299,8 @@ impl RangeShuffleWriterExec {
 
                 debug!("Writing range shuffle results to {path:?}");
 
-                let stream = plan.execute(global_partition, context.clone())?;
+                let stream =
+                    null_counts.count(plan.execute(global_partition, context.clone())?);
                 let index_schema = index_schema.clone();
                 let ordering = self.ordering.clone();
                 handles.spawn(async move {
@@ -643,6 +656,27 @@ mod tests {
         for handle in handles {
             handle.await.unwrap();
         }
+    }
+
+    // A written column with no nulls reports an exact zero, so the scheduler
+    // can tell it from a column that was never counted.
+    #[tokio::test]
+    async fn reports_a_null_count_per_written_column() {
+        let work_dir = TempDir::new().unwrap();
+        let writer = Arc::new(
+            RangeShuffleWriterExec::try_new(
+                JobId::new("job"),
+                1,
+                input_plan(),
+                work_dir.path().to_str().unwrap().to_owned(),
+            )
+            .unwrap(),
+        );
+        assert!(writer.column_null_counts().is_empty());
+
+        drive(writer.clone(), SessionContext::new().task_ctx()).await;
+
+        assert_eq!(writer.column_null_counts(), vec![0, 0]);
     }
 
     /// The writer's output has to come back through the reader that will
