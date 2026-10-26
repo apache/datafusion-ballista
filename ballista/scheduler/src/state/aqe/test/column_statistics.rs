@@ -22,10 +22,11 @@ use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::stats_table::{estimated_statistics, sized_statistics};
 use crate::state::aqe::test::{
-    MB, ballista_ctx, mock_partitions_with_size, narrow_schema, register_stats_table,
+    MB, ballista_ctx, mock_partitions_with_size, narrow_schema, null_count_statistics,
+    register_stats_table,
 };
+use datafusion::common::Statistics;
 use datafusion::common::stats::Precision;
-use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::physical_plan::{ExecutionPlan, StatisticsArgs};
 use std::sync::Arc;
@@ -80,18 +81,11 @@ async fn completed_stage_column_statistics_reach_its_exchange() {
     let (stages, _) = planner.actionable_stages().unwrap();
     assert_eq!(1, stages.unwrap().len());
 
-    let reported: Vec<ColumnStatistics> = [7, 0]
-        .into_iter()
-        .map(|nulls| ColumnStatistics {
-            null_count: Precision::Exact(nulls),
-            ..ColumnStatistics::new_unknown()
-        })
-        .collect();
     planner
         .resolve_stage_partitions(
             0,
             mock_partitions_with_size(1_000_000, (200 * MB) as u64),
-            reported,
+            null_count_statistics(&[7, 0]),
         )
         .unwrap();
 

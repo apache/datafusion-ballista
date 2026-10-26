@@ -37,6 +37,7 @@ mod stage_build_side;
 /// A table whose statistics are declared rather than measured
 mod stats_table;
 
+use crate::state::aqe::planner::AdaptivePlanner;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
@@ -45,12 +46,25 @@ use ballista_core::serde::scheduler::{
 use datafusion::arrow::array::{Int32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::TableProvider;
-use datafusion::common::Statistics;
+use datafusion::common::stats::Precision;
+use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::datasource::MemTable;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use stats_table::StatsTable;
 use std::sync::Arc;
+
+impl AdaptivePlanner {
+    /// Resolves a finished stage with its partitions alone, for tests that
+    /// don't exercise column statistics.
+    pub(super) fn finalise_stage_internal(
+        &mut self,
+        stage_id: usize,
+        partitions: Vec<Vec<PartitionLocation>>,
+    ) -> datafusion::common::Result<()> {
+        self.finalise_stage(stage_id, partitions, None)
+    }
+}
 
 /// One mebibyte, for declaring fixture sizes.
 pub(crate) const MB: usize = 1024 * 1024;
@@ -119,6 +133,14 @@ pub(crate) fn mock_partitions_with_size(
         is_sort_shuffle: false,
     };
     vec![vec![location]]
+}
+
+/// Column statistics carrying only the given exact null counts.
+pub(crate) fn null_count_statistics(null_counts: &[usize]) -> Vec<ColumnStatistics> {
+    null_counts
+        .iter()
+        .map(|&n| ColumnStatistics::new_unknown().with_null_count(Precision::Exact(n)))
+        .collect()
 }
 
 pub(crate) fn mock_partitions_with_statistics_no_data() -> Vec<Vec<PartitionLocation>> {

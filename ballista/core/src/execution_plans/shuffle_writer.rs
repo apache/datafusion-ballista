@@ -54,9 +54,12 @@ use datafusion::physical_plan::metrics::{
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics, StatisticsArgs, statistics::ChildStats,
+    RecordBatchStream, SendableRecordBatchStream, Statistics, StatisticsArgs,
+    statistics::ChildStats,
 };
-use futures::TryStreamExt;
+use futures::{Stream, StreamExt, TryStreamExt};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -250,33 +253,20 @@ impl ColumnNullCounts {
         }
     }
 
-    /// Wraps `stream` so every batch it yields is added to these counts.
+    /// Wraps `stream` so the nulls in every batch it yields are added to these
+    /// counts. Each stream counts on its own and adds its total when dropped,
+    /// so the partitions a task drains concurrently don't share a lock per
+    /// batch.
     pub(crate) fn count(
         &self,
         stream: SendableRecordBatchStream,
     ) -> SendableRecordBatchStream {
-        let counts = self.clone();
-        let schema = stream.schema();
-        Box::pin(RecordBatchStreamAdapter::new(
-            schema,
-            stream.inspect_ok(move |batch| counts.add(batch)),
-        ))
-    }
-
-    fn add(&self, batch: &RecordBatch) {
-        // Counted before taking the lock, which every partition the task
-        // drains shares: for dictionary, union and run-end encoded arrays the
-        // count is a pass over the values.
-        let batch_counts: Vec<u64> = batch
-            .columns()
-            .iter()
-            .map(|column| column.logical_null_count() as u64)
-            .collect();
-        if let Ok(mut counts) = self.0.lock() {
-            for (slot, n) in counts.iter_mut().zip(batch_counts) {
-                *slot += n;
-            }
-        }
+        let num_columns = stream.schema().fields().len();
+        Box::pin(NullCountingStream {
+            input: stream,
+            counts: vec![0; num_columns],
+            total: self.clone(),
+        })
     }
 
     /// The counts, one per column of the written schema.
@@ -285,6 +275,44 @@ impl ColumnNullCounts {
             .lock()
             .map(|counts| counts.clone())
             .unwrap_or_default()
+    }
+}
+
+/// See [`ColumnNullCounts::count`].
+struct NullCountingStream {
+    input: SendableRecordBatchStream,
+    counts: Vec<u64>,
+    total: ColumnNullCounts,
+}
+
+impl Stream for NullCountingStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let poll = this.input.poll_next_unpin(cx);
+        if let Poll::Ready(Some(Ok(batch))) = &poll {
+            for (slot, column) in this.counts.iter_mut().zip(batch.columns()) {
+                *slot += column.logical_null_count() as u64;
+            }
+        }
+        poll
+    }
+}
+
+impl RecordBatchStream for NullCountingStream {
+    fn schema(&self) -> SchemaRef {
+        self.input.schema()
+    }
+}
+
+impl Drop for NullCountingStream {
+    fn drop(&mut self) {
+        if let Ok(mut total) = self.total.0.lock() {
+            for (slot, n) in total.iter_mut().zip(&self.counts) {
+                *slot += n;
+            }
+        }
     }
 }
 

@@ -238,10 +238,13 @@ impl AdaptivePlanner {
         Ok(())
     }
 
-    pub(super) fn finalise_stage_internal(
+    /// Resolves a finished stage's exchange with its partitions and, when
+    /// given, the per-column statistics of its output, then replans.
+    pub(super) fn finalise_stage(
         &mut self,
         stage_id: usize,
         partitions: Vec<Vec<PartitionLocation>>,
+        column_statistics: Option<Vec<ColumnStatistics>>,
     ) -> common::Result<()> {
         // stage has finished, stage partitions should be resolved,
         // and it has to be removed from active stages cache.
@@ -259,6 +262,9 @@ impl AdaptivePlanner {
                 )
             }) {
             Some((Some(stage), None)) => {
+                if let Some(column_statistics) = column_statistics {
+                    stage.resolve_column_statistics(column_statistics);
+                }
                 stage.resolve_shuffle_partitions(partitions);
                 self.replan_stages()?;
                 Ok(())
@@ -349,16 +355,7 @@ impl AdaptivePlanner {
         partitions: Vec<Vec<PartitionLocation>>,
         column_statistics: Vec<ColumnStatistics>,
     ) -> common::Result<()> {
-        // Before the partitions: resolving them replans, and the replan should
-        // already see the statistics.
-        if let Some(exchange) = self
-            .runnable_stage_cache
-            .get(&stage_id)
-            .and_then(|stage| stage.downcast_ref::<ExchangeExec>())
-        {
-            exchange.resolve_column_statistics(column_statistics);
-        }
-        self.finalise_stage_internal(stage_id, partitions)
+        self.finalise_stage(stage_id, partitions, Some(column_statistics))
     }
 
     /// Replans the stages by applying physical optimizations.

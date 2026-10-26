@@ -643,10 +643,7 @@ mod column_statistics_tests {
     //! The stage's per-column output statistics parked on `ExchangeExec`, and
     //! what `partition_statistics` reports from them.
     use super::*;
-    use ballista_core::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId, PartitionStats,
-    };
+    use crate::state::aqe::test::{mock_partitions_with_size, null_count_statistics};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::stats::Precision;
     use datafusion::physical_plan::StatisticsArgs;
@@ -661,38 +658,6 @@ mod column_statistics_tests {
         ]))))
     }
 
-    fn location(partition_id: usize, rows: u64) -> PartitionLocation {
-        PartitionLocation {
-            map_partition_id: 0,
-            partition_id: PartitionId {
-                job_id: "job".into(),
-                stage_id: 0,
-                partition_id,
-            },
-            executor_meta: ExecutorMetadata {
-                id: "".to_string(),
-                host: "".to_string(),
-                port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default().with_vcores(0),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
-            partition_stats: PartitionStats::new(Some(rows), None, Some(rows * 8)),
-            file_id: None,
-            is_sort_shuffle: false,
-        }
-    }
-
-    fn null_counts(counts: &[usize]) -> Vec<ColumnStatistics> {
-        counts
-            .iter()
-            .map(|&n| ColumnStatistics {
-                null_count: Precision::Exact(n),
-                ..ColumnStatistics::new_unknown()
-            })
-            .collect()
-    }
-
     /// An exchange over two partitions of 10 and 20 rows whose stage reported
     /// the given column statistics.
     fn resolved(columns: Vec<ColumnStatistics>) -> Arc<ExchangeExec> {
@@ -702,10 +667,13 @@ mod column_statistics_tests {
             0,
         ));
         exchange.resolve_column_statistics(columns);
-        exchange.resolve_shuffle_partitions(vec![
-            vec![location(0, 10)],
-            vec![location(1, 20)],
-        ]);
+        exchange.resolve_shuffle_partitions(
+            [
+                mock_partitions_with_size(10, 80),
+                mock_partitions_with_size(20, 160),
+            ]
+            .concat(),
+        );
         exchange
     }
 
@@ -721,7 +689,7 @@ mod column_statistics_tests {
 
     #[test]
     fn reports_the_stage_column_statistics_for_the_whole_exchange() {
-        let stats = stats_of(resolved(null_counts(&[3, 0])).as_ref(), None);
+        let stats = stats_of(resolved(null_count_statistics(&[3, 0])).as_ref(), None);
 
         assert_eq!(stats.num_rows, Precision::Exact(30));
         assert_eq!(null_count_of(&stats, 0), Precision::Exact(3));
@@ -731,14 +699,14 @@ mod column_statistics_tests {
     // A stage total says nothing about how the nulls fell across partitions.
     #[test]
     fn leaves_a_single_partition_column_statistics_unknown() {
-        let stats = stats_of(resolved(null_counts(&[3, 0])).as_ref(), Some(1));
+        let stats = stats_of(resolved(null_count_statistics(&[3, 0])).as_ref(), Some(1));
 
         assert_eq!(null_count_of(&stats, 0), Precision::Absent);
     }
 
     #[test]
     fn ignores_column_statistics_that_do_not_match_the_schema() {
-        let stats = stats_of(resolved(null_counts(&[3])).as_ref(), None);
+        let stats = stats_of(resolved(null_count_statistics(&[3])).as_ref(), None);
 
         assert_eq!(stats.column_statistics.len(), 2);
         assert_eq!(null_count_of(&stats, 0), Precision::Absent);
@@ -747,7 +715,7 @@ mod column_statistics_tests {
     #[test]
     fn unresolved_exchange_has_unknown_column_statistics() {
         let exchange = ExchangeExec::new(source(), None, 0);
-        exchange.resolve_column_statistics(null_counts(&[3, 0]));
+        exchange.resolve_column_statistics(null_count_statistics(&[3, 0]));
 
         let stats = stats_of(&exchange, None);
         assert_eq!(null_count_of(&stats, 0), Precision::Absent);
@@ -757,7 +725,7 @@ mod column_statistics_tests {
     // broadcasts with `to_broadcast`; both must keep the statistics.
     #[test]
     fn rebuilt_and_broadcast_exchanges_keep_the_column_statistics() {
-        let exchange = resolved(null_counts(&[3, 0]));
+        let exchange = resolved(null_count_statistics(&[3, 0]));
 
         let rebuilt = Arc::clone(&exchange)
             .replace_children(
