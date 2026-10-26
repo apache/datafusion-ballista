@@ -68,7 +68,7 @@ jobs:
       matrix:
         include:
           - label: "AQE off"
-            planner_args: ""
+            planner_args: "-c ballista.planner.adaptive.enabled=false"
             slug: "aqe-off"
           - label: "AQE on"
             planner_args: "-c ballista.planner.adaptive.enabled=true"
