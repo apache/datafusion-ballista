@@ -474,6 +474,23 @@ implementation of partition fetches. A <code class="docutils literal notranslate
 Ballista action is reported with the gRPC status <code class="docutils literal notranslate"><span class="pre">InvalidArgument</span></code> everywhere;
 executors used to report it as <code class="docutils literal notranslate"><span class="pre">Internal</span></code>.</p>
 </section>
+<section id="pull-staged-executors-no-longer-run-more-partitions-than-they-have-vcores">
+<h4>Pull-staged executors no longer run more partitions than they have vcores<a class="headerlink" href="#pull-staged-executors-no-longer-run-more-partitions-than-they-have-vcores" title="Link to this heading">#</a></h4>
+<p>Under pull-staged scheduling (<code class="docutils literal notranslate"><span class="pre">--scheduler-policy</span> <span class="pre">pull-staged</span></code> on the scheduler,
+<code class="docutils literal notranslate"><span class="pre">--task-scheduling-policy</span> <span class="pre">pull-staged</span></code> on executors), which standalone mode also
+uses, an executor counted each task as one vcore however many partitions the
+task held. With <code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code> at its default of
+<code class="docutils literal notranslate"><span class="pre">0</span></code>, an idle 8-vcore executor could take an 8-partition task, still report 7
+vcores free, and be handed another task on its next poll. It could end up
+running several times more partitions than it has vcores, with per-task memory
+pools that added up to more than its memory budget, while executors that polled
+later could get no work.</p>
+<p>An executor now holds a task’s vcores until the task finishes, as with
+push-staged scheduling. That includes the vcores of partitions that finish
+early, so a straggler partition leaves them idle. Set
+<code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code> to a positive value to dispatch
+smaller tasks, which release their vcores sooner.</p>
+</section>
 </section>
 <section id="python-client-changes">
 <h3>Python client changes<a class="headerlink" href="#python-client-changes" title="Link to this heading">#</a></h3>
@@ -661,6 +678,7 @@ unchanged.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#behavior-changes">Behavior changes</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#containers-stop-on-sigterm">Containers stop on SIGTERM</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#undecodable-fetch-tickets-are-rejected-as-invalidargument">Undecodable fetch tickets are rejected as <code class="docutils literal notranslate"><span class="pre">InvalidArgument</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#pull-staged-executors-no-longer-run-more-partitions-than-they-have-vcores">Pull-staged executors no longer run more partitions than they have vcores</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#python-client-changes">Python client changes</a><ul class="nav section-nav flex-column">
