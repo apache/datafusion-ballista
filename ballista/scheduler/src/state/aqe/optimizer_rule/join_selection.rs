@@ -716,13 +716,14 @@ mod tests {
             .optimize(dynamic_plan, config.options())
             .unwrap();
 
-        assert_plan!(resolved.as_ref(), @ r"
+        assert_plan!(resolved.as_ref(), @ "
         ProjectionExec: expr=[id@0 as id]
-          HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)]
-            ProjectionExec: expr=[id@0 as id]
-              HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)]
-                DataSourceExec: partitions=1, partition_sizes=[1]
-                DataSourceExec: partitions=1, partition_sizes=[1]
+          DynamicJoinSelectionExec: plan_id=1, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+            ExchangeExec: partitioning=Hash([id@0], 28), plan_id=0, stage_id=pending, stage_resolved=false
+              ProjectionExec: expr=[id@0 as id]
+                HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)]
+                  DataSourceExec: partitions=1, partition_sizes=[1]
+                  DataSourceExec: partitions=1, partition_sizes=[1]
             DataSourceExec: partitions=1, partition_sizes=[1]
         ");
     }
