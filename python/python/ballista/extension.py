@@ -270,7 +270,18 @@ def BallistaSessionContext(
         ...     .with_job_name("daily report")
         ...     .with_adaptive_query_planner(True)
         ...     .with_broadcast_join_threshold_bytes(10 * 1024 * 1024)
-        ...     .set("datafusion.execution.target_partitions", 16),
+        ...     .set("datafusion.execution.batch_size", 8192),
+        ... )
+
+        Set the number of partitions to match cluster capacity
+        (``executors * vcores_per_executor``). Ballista defaults
+        ``datafusion.execution.target_partitions`` to ``16``, a value set in a
+        passed ``SessionConfig`` is overridden, so use
+        ``with_target_partitions`` or a dict instead:
+
+        >>> ctx = BallistaSessionContext(
+        ...     "df://localhost:50050",
+        ...     config=BallistaSessionConfig().with_target_partitions(32),
         ... )
     """
     if not isinstance(config, BallistaSessionConfig):
@@ -323,6 +334,10 @@ class BallistaSessionConfig:
     Options inside a passed ``SessionConfig`` can not be inspected, so all of
     them are overridden with Ballista defaults.
 
+    For example ``datafusion.execution.target_partitions`` defaults to ``16``,
+    change it with ``with_target_partitions``, ``set`` or a dict, not with
+    ``SessionConfig.with_target_partitions``.
+
     Args:
         config: Initial configuration, either a ``SessionConfig`` or a dictionary
             of ``datafusion.*`` and ``ballista.*`` options.
@@ -330,7 +345,8 @@ class BallistaSessionConfig:
     Examples:
         >>> from ballista import BallistaSessionConfig
         >>> config = (
-        ...     BallistaSessionConfig({"datafusion.execution.target_partitions": 8})
+        ...     BallistaSessionConfig({"datafusion.execution.batch_size": 8192})
+        ...     .with_target_partitions(32)
         ...     .with_job_name("daily report")
         ...     .with_adaptive_query_planner(True)
         ...     .set("ballista.shuffle.compression.codec", "zstd")
@@ -395,6 +411,12 @@ class BallistaSessionConfig:
                 ballista_settings.setdefault(key, value)
 
         return config.with_extension(BallistaConfigExtension(ballista_settings))
+
+    # datafusion
+
+    def with_target_partitions(self, target_partitions: int) -> "BallistaSessionConfig":
+        """Number of partitions for query execution, overrides Ballista default."""
+        return self.set("datafusion.execution.target_partitions", target_partitions)
 
     # job
 
