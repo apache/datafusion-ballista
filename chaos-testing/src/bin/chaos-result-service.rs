@@ -41,7 +41,7 @@ async fn main() -> ballista_core::error::Result<()> {
             bind_address,
             ..Default::default()
         },
-        shutdown_signal(),
+        shutdown_signal,
     )
     .await
 }

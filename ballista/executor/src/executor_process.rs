@@ -36,7 +36,6 @@ use log::{error, info, warn};
 use sysinfo::{Disks, MemoryRefreshKind, System};
 use tempfile::TempDir;
 use tokio::fs::DirEntry;
-use tokio::signal;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::{fs, time};
@@ -59,13 +58,14 @@ use ballista_core::serde::{
 };
 use ballista_core::utils::{
     GrpcClientConfig, GrpcServerConfig, create_grpc_client_endpoint, create_grpc_server,
-    default_config_producer, get_time_before,
+    default_config_producer, drain_or_time_out, get_time_before, shutdown_signal,
 };
 use ballista_core::{
     BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer,
     ids::new_instance_id,
 };
 
+use crate::ArrowFlightServerProvider;
 use crate::client_pool::DefaultBallistaClientPool;
 use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
 use crate::executor::{Executor, TasksDrainedFuture};
@@ -78,7 +78,6 @@ use crate::runtime_cache::{
 };
 use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
-use crate::{ArrowFlightServerProvider, terminate};
 use crate::{execution_loop, executor_server};
 
 /// Default fraction of the detected memory limit handed to the pool when
@@ -894,15 +893,8 @@ async fn start_executor_process_inner(
             info!("{msg:?}");
             (true, msg)
         },
-        _ = signal::ctrl_c() => {
-            let msg = "executor received ctrl-c event.".to_string();
-             info!("{msg:?}");
-            (true, msg)
-        },
-        _ = terminate::sig_term() => {
-            let msg = "executor received terminate signal.".to_string();
-             info!("{msg:?}");
-            (true, msg)
+        signal = shutdown_signal() => {
+            (true, format!("executor received {signal}."))
         },
         _ = stop_recv.recv() => {
             (false, "".to_string())
@@ -975,23 +967,14 @@ async fn start_executor_process_inner(
     };
 
     let shutdown_timeout = Duration::from_secs(opt.graceful_shutdown_timeout_seconds);
-    if shutdown_timeout.is_zero() {
-        graceful_shutdown.await;
-    } else if time::timeout(shutdown_timeout, graceful_shutdown)
-        .await
-        .is_err()
-    {
-        let message = format!(
-            "Executor graceful shutdown timed out after {} seconds",
-            shutdown_timeout.as_secs()
-        );
-        warn!("{message}; aborting remaining services");
+    if let Err(timed_out) = drain_or_time_out(graceful_shutdown, shutdown_timeout).await {
+        warn!("aborting remaining services");
         // A scheduler RPC or task drain may have timed out before broadcasting shutdown.
         let _ = notify_shutdown.send(());
         for service in &service_handlers {
             service.abort();
         }
-        return Err(BallistaError::General(message));
+        return Err(timed_out.into());
     }
     info!("Executor stopped.");
     Ok(())
