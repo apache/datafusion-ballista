@@ -225,13 +225,15 @@ pub struct Config {
         help = "Fraction (0-1] of detected memory for the auto pool. Default 0.70. Ignored if --memory-pool-size is set."
     )]
     pub memory_pool_fraction: f64,
-    /// Maximum number of sessions whose shared runtime state (object-store
-    /// clients, Parquet footer cache) is retained on the executor (LRU). `0`
-    /// disables caching.
+    /// Maximum number of (session, config fingerprint) entries whose shared
+    /// runtime state (object-store clients, Parquet footer cache) is retained
+    /// on the executor (LRU). A session that changes its extension config
+    /// mid-session uses one entry per distinct fingerprint. `0` disables
+    /// caching.
     #[arg(
         long,
         default_value_t = 16,
-        help = "Max number of sessions whose shared runtime state (object-store clients, Parquet footer cache) is retained on the executor (LRU). 0 disables caching."
+        help = "Max number of (session, config fingerprint) entries whose shared runtime state (object-store clients, Parquet footer cache) is retained on the executor (LRU). A session that changes its extension config mid-session uses one entry per distinct fingerprint. 0 disables caching."
     )]
     pub session_runtime_cache_capacity: usize,
     /// Number of seconds an established client connection is cached while idle
