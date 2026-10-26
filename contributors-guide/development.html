@@ -548,6 +548,40 @@ maturin<span class="w"> </span>develop<span class="w"> </span>--release<span cla
 <li><p>Running load tests</p></li>
 </ul>
 </section>
+<section id="merge-queue-and-the-tpc-suites-in-ci">
+<h2>Merge queue and the TPC suites in CI<a class="headerlink" href="#merge-queue-and-the-tpc-suites-in-ci" title="Link to this heading">#</a></h2>
+<p>Pull requests to <code class="docutils literal notranslate"><span class="pre">main</span></code> are merged through GitHub’s merge queue. The queue builds the exact tree that will land
+and only merges it if the required checks pass, so a PR does not need to be rebased and re-tested by hand.
+Use “Merge when ready” (auto-merge) to queue a PR before its checks have finished.</p>
+<p>The TPC-H SF10 and TPC-DS SF1 suites are slow, so they run in the queue rather than on every PR:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Event</p></th>
+<th class="head"><p>TPC-H / TPC-DS</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Pull request</p></td>
+<td><p>Only if the PR has the <code class="docutils literal notranslate"><span class="pre">run-tpch</span></code> and/or <code class="docutils literal notranslate"><span class="pre">run-tpcds</span></code> label</p></td>
+</tr>
+<tr class="row-odd"><td><p>Merge queue</p></td>
+<td><p>Both, whenever the change touches code or build files (docs-only changes skip)</p></td>
+</tr>
+<tr class="row-even"><td><p>Push to <code class="docutils literal notranslate"><span class="pre">main</span></code></p></td>
+<td><p>Not run; the queue already tested that tree. Only the build caches are refreshed</p></td>
+</tr>
+<tr class="row-odd"><td><p>Manual</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">workflow_dispatch</span></code> on the <code class="docutils literal notranslate"><span class="pre">TPC-H</span> <span class="pre">SF10</span></code> and <code class="docutils literal notranslate"><span class="pre">TPC-DS</span> <span class="pre">SF1</span></code> workflows</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Apply a label to get early feedback on a change that could affect query results or plans, such as planner,
+shuffle or scheduler work. Applying the label runs the suite immediately without blocking anything. The label also
+makes the suite run on every later push, and those runs do block the PR. If a suite fails in the queue the PR is
+removed from it, so a failure there is worth reproducing with the label before re-queueing.</p>
+<p>The single required status check is <code class="docutils literal notranslate"><span class="pre">TPC</span> <span class="pre">Required</span> <span class="pre">Checks</span></code> from <code class="docutils literal notranslate"><span class="pre">.github/workflows/tpc.yml</span></code>.</p>
+</section>
 <section id="datafusion-dependency">
 <h2>DataFusion dependency<a class="headerlink" href="#datafusion-dependency" title="Link to this heading">#</a></h2>
 <p>Between releases, <code class="docutils literal notranslate"><span class="pre">main</span></code> depends on a pinned git revision of
@@ -663,6 +697,7 @@ complete for the next release.</p>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#merge-queue-and-the-tpc-suites-in-ci">Merge queue and the TPC suites in CI</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#datafusion-dependency">DataFusion dependency</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrade-notes">Upgrade notes</a></li>
 </ul>
