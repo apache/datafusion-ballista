@@ -582,7 +582,7 @@ scheduler with <code class="docutils literal notranslate"><span class="pre">--di
 </tr>
 <tr class="row-odd"><td><p>/readyz</p></td>
 <td><p>GET</p></td>
-<td><p>Readiness. <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code> once at least <code class="docutils literal notranslate"><span class="pre">--min-ready-executors</span></code> executors are registered.</p></td>
+<td><p>Readiness. <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code> once at least <code class="docutils literal notranslate"><span class="pre">--min-ready-executors</span></code> executors are registered, and <code class="docutils literal notranslate"><span class="pre">503</span></code> while the scheduler is shutting down.</p></td>
 </tr>
 </tbody>
 </table>

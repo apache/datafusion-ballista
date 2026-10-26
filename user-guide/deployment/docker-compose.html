@@ -432,6 +432,20 @@ ballista-executor_1<span class="w">   </span><span class="p">|</span><span class
 </div>
 <p>The scheduler listens on port 50050 and this is the port that clients will need to connect to.</p>
 </section>
+<section id="stop-the-cluster">
+<h2>Stop the Cluster<a class="headerlink" href="#stop-the-cluster" title="Link to this heading">#</a></h2>
+<p>Stop the scheduler first, so that its active jobs can finish while the executors
+are still running:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker-compose<span class="w"> </span>stop<span class="w"> </span>ballista-scheduler
+docker-compose<span class="w"> </span>down
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">docker-compose</span> <span class="pre">down</span></code> alone stops the executors first, because they depend on
+the scheduler, so a job that is still running loses its executors before the
+scheduler can finish it. The scheduler waits for its active jobs for up to 25
+seconds by default (<code class="docutils literal notranslate"><span class="pre">--graceful-shutdown-timeout-seconds</span></code>), and
+<code class="docutils literal notranslate"><span class="pre">docker-compose.yml</span></code> gives it 30 seconds before Docker kills it.</p>
+</section>
 <section id="connect-from-the-ballista-cli">
 <h2>Connect from the Ballista CLI<a class="headerlink" href="#connect-from-the-ballista-cli" title="Link to this heading">#</a></h2>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>run<span class="w"> </span>--network<span class="o">=</span>host<span class="w"> </span>-it<span class="w"> </span>apache/datafusion-ballista-cli:latest<span class="w"> </span>--host<span class="w"> </span>localhost<span class="w"> </span>--port<span class="w"> </span><span class="m">50050</span>
@@ -489,6 +503,7 @@ ballista-executor_1<span class="w">   </span><span class="p">|</span><span class
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-docker-images">Build Docker Images</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#start-a-cluster">Start a Cluster</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stop-the-cluster">Stop the Cluster</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connect-from-the-ballista-cli">Connect from the Ballista CLI</a></li>
 </ul>
   </nav></div>

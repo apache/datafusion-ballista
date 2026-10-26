@@ -456,15 +456,42 @@ embedded proxy</p></li>
 <p>The images’ entrypoints now <code class="docutils literal notranslate"><span class="pre">exec</span></code> their binaries, and each binary handles
 SIGTERM, so <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">stop</span></code> and pod termination reach the Ballista process.
 Before, the signal never did, and containers waited out their grace period to
-be killed.</p>
+be killed. On Windows, Ctrl-Break and closing the console also start the
+shutdown, but Windows ends a console process about 5 seconds after its console
+closes, so a longer drain is cut short.</p>
 <ul class="simple">
-<li><p>Executors now drain their running tasks before exiting. If tasks can run
-longer than 30 seconds, raise the executor pods’
-<code class="docutils literal notranslate"><span class="pre">terminationGracePeriodSeconds</span></code> and the scheduler’s
-<code class="docutils literal notranslate"><span class="pre">--executor-termination-grace-period</span></code> to match.</p></li>
-<li><p>The scheduler exits on SIGTERM or Ctrl-C, without draining its connections.</p></li>
+<li><p>Executors now drain their running tasks before exiting, for up to
+<code class="docutils literal notranslate"><span class="pre">--graceful-shutdown-timeout-seconds</span></code> (10 by default). See
+<a class="reference internal" href="../user-guide/deployment/kubernetes.html#stopping-executors"><span class="std std-ref">Stopping executors</span></a>
+for tasks that run longer.</p></li>
+<li><p>The scheduler no longer exits at once on SIGTERM or Ctrl-C. It refuses new
+jobs with <code class="docutils literal notranslate"><span class="pre">Unavailable</span></code>, over gRPC and Flight SQL alike, lets its active jobs
+finish, and then drains its connections, all within
+<code class="docutils literal notranslate"><span class="pre">--graceful-shutdown-timeout-seconds</span></code> (25 by default). A second signal ends
+the shutdown at once, with an error. See
+<a class="reference internal" href="../user-guide/deployment/kubernetes.html#stopping-the-scheduler"><span class="std std-ref">Stopping the scheduler</span></a>
+for how to size it and for how results fetched through the scheduler are
+served.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SchedulerConfig</span></code> gains a <code class="docutils literal notranslate"><span class="pre">graceful_shutdown_timeout_seconds</span></code> field, so a
+struct literal that doesn’t end in <code class="docutils literal notranslate"><span class="pre">..Default::default()</span></code> needs to set it.
+The public <code class="docutils literal notranslate"><span class="pre">QueryStageSchedulerEvent::JobQueued</span></code> gains an <code class="docutils literal notranslate"><span class="pre">admission</span></code> field.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">scheduler_process::start_server_with_shutdown</span></code> serves until the future that
+its <code class="docutils literal notranslate"><span class="pre">shutdown</span></code> argument returns completes, then shuts down as above; the
+binaries pass <code class="docutils literal notranslate"><span class="pre">ballista_core::utils::shutdown_signal</span></code>. <code class="docutils literal notranslate"><span class="pre">start_server</span></code> is
+unchanged and doesn’t handle signals.</p></li>
+<li><p>The scheduler, the executor and the result service share one shutdown
+contract. After <code class="docutils literal notranslate"><span class="pre">--graceful-shutdown-timeout-seconds</span></code> they stop waiting and
+exit with an error, and <code class="docutils literal notranslate"><span class="pre">0</span></code> waits as long as the drain takes. The result
+service used to exit at once for <code class="docutils literal notranslate"><span class="pre">0</span></code>, and to exit successfully on a timeout.</p></li>
 <li><p>The CLI exits on SIGTERM.</p></li>
-<li><p>The standalone image stops its executor first, then its scheduler.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ballista_executor::terminate::sig_term</span></code> is deprecated. Use
+<code class="docutils literal notranslate"><span class="pre">ballista_core::utils::terminate_signal</span></code>, or <code class="docutils literal notranslate"><span class="pre">shutdown_signal</span></code> for Ctrl-C as
+well.</p></li>
+<li><p>The standalone image stops its scheduler first, so that its active jobs can
+finish while the executor keeps running their tasks, and then its executor.
+The scheduler’s drain can outlast <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">stop</span></code>’s default of 10 seconds, so
+pass <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">stop</span> <span class="pre">-t</span></code> a time above <code class="docutils literal notranslate"><span class="pre">--graceful-shutdown-timeout-seconds</span></code>, 25 by
+default.</p></li>
 </ul>
 </section>
 <section id="undecodable-fetch-tickets-are-rejected-as-invalidargument">

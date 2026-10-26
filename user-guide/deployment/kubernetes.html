@@ -552,10 +552,23 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <span class="w">        </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-scheduler</span>
 <span class="w">        </span><span class="nt">ballista-cluster</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista</span>
 <span class="w">    </span><span class="nt">spec</span><span class="p">:</span>
+<span class="w">      </span><span class="c1"># Leaves 10s of headroom after the preStop sleep (5s) and the shutdown</span>
+<span class="w">      </span><span class="c1"># bound (45s).</span>
+<span class="w">      </span><span class="nt">terminationGracePeriodSeconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
 <span class="w">      </span><span class="nt">containers</span><span class="p">:</span>
 <span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-scheduler</span>
 <span class="w">          </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;your-repo&gt;/datafusion-ballista-scheduler:latest</span>
-<span class="w">          </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"--bind-port=50050"</span><span class="p p-Indicator">]</span>
+<span class="w">          </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"--bind-port=50050"</span>
+<span class="w">            </span><span class="c1"># After SIGTERM, refuse new jobs and give the active ones, then</span>
+<span class="w">            </span><span class="c1"># in-flight requests, up to 45s to finish.</span>
+<span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"--graceful-shutdown-timeout-seconds=45"</span>
+<span class="w">          </span><span class="nt">lifecycle</span><span class="p">:</span>
+<span class="w">            </span><span class="c1"># Keeps accepting connections until the Service stops routing to</span>
+<span class="w">            </span><span class="c1"># the pod, as for the result service below.</span>
+<span class="w">            </span><span class="nt">preStop</span><span class="p">:</span>
+<span class="w">              </span><span class="nt">sleep</span><span class="p">:</span>
+<span class="w">                </span><span class="nt">seconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
 <span class="w">          </span><span class="nt">ports</span><span class="p">:</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">containerPort</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50050</span>
 <span class="w">              </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">flight</span>
@@ -675,7 +688,8 @@ scheduler connectivity — a flapping scheduler would then take the whole
 executor fleet down with it in a restart cascade.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">/readyz</span></code></strong> — readiness. Returns <code class="docutils literal notranslate"><span class="pre">200</span> <span class="pre">OK</span></code> when the pod is prepared to
 accept traffic (scheduler: at least <code class="docutils literal notranslate"><span class="pre">--min-ready-executors</span></code> executors
-registered; executor: last heartbeat to the scheduler succeeded).
+registered and not shutting down; executor: last heartbeat to the scheduler
+succeeded).
 A failing <code class="docutils literal notranslate"><span class="pre">/readyz</span></code> removes the pod from <code class="docutils literal notranslate"><span class="pre">Service</span></code> endpoints but does
 <strong>not</strong> trigger a restart, so it is safe to gate on cluster state.</p></li>
 </ul>
@@ -695,9 +709,33 @@ executor↔scheduler wire format. Most releases will not bump it.</p>
 </section>
 <section id="stopping-executors">
 <h3>Stopping executors<a class="headerlink" href="#stopping-executors" title="Link to this heading">#</a></h3>
-<p>Executors finish their running tasks before exiting on SIGTERM. If tasks can run longer than 30
-seconds, raise the executor pods’ <code class="docutils literal notranslate"><span class="pre">terminationGracePeriodSeconds</span></code> and the scheduler’s
-<code class="docutils literal notranslate"><span class="pre">--executor-termination-grace-period</span></code> to match.</p>
+<p>Executors finish their running tasks before exiting on SIGTERM, for up to
+<code class="docutils literal notranslate"><span class="pre">--graceful-shutdown-timeout-seconds</span></code> (10 by default). After that they abort and exit with an error.
+If tasks can run longer, raise that limit, set the executor pods’ <code class="docutils literal notranslate"><span class="pre">terminationGracePeriodSeconds</span></code>
+above it, and raise the scheduler’s <code class="docutils literal notranslate"><span class="pre">--executor-termination-grace-period</span></code> (30 by default) to at
+least the same, so the scheduler doesn’t count a draining executor as lost.</p>
+</section>
+<section id="stopping-the-scheduler">
+<h3>Stopping the scheduler<a class="headerlink" href="#stopping-the-scheduler" title="Link to this heading">#</a></h3>
+<p>On SIGTERM the scheduler fails <code class="docutils literal notranslate"><span class="pre">/readyz</span></code> and refuses new jobs with
+<code class="docutils literal notranslate"><span class="pre">Unavailable</span></code>, while it keeps serving executors and clients so the jobs it has
+can finish. It then closes its connections, gives in-flight requests and result
+streams the rest of <code class="docutils literal notranslate"><span class="pre">--graceful-shutdown-timeout-seconds</span></code>, and exits. Jobs still
+running when that time passes are lost, because the scheduler keeps its state in
+memory.</p>
+<p>Once the scheduler has no jobs left, it closes its connections, including those
+of result fetches through the embedded Flight proxy (deprecated) and Flight SQL.
+The tickets carry everything needed to fetch the partition, so with two or more
+schedulers behind the client-facing Service, another one serves such a fetch.
+The result service doesn’t involve the scheduler at all. A job’s status, and the
+Flight SQL results the scheduler computed itself, are kept only by the
+scheduler that ran the job.</p>
+<p>The time limit defaults to 25 seconds, which fits inside the 30 seconds
+Kubernetes gives a pod by default. If your jobs can run longer, raise it, and
+set the pod’s <code class="docutils literal notranslate"><span class="pre">terminationGracePeriodSeconds</span></code> above it, as the scheduler
+manifest above does with 45 and 60 seconds. The grace period also covers the
+5-second <code class="docutils literal notranslate"><span class="pre">preStop</span></code> sleep, which is why the manifest leaves 10 seconds of
+headroom.</p>
 </section>
 <section id="rolling-both-deployments-together">
 <h3>Rolling both Deployments together<a class="headerlink" href="#rolling-both-deployments-together" title="Link to this heading">#</a></h3>
@@ -756,8 +794,13 @@ mismatched pairs never exchange work, so they cannot corrupt state.</p>
 their connection and re-register through <code class="docutils literal notranslate"><span class="pre">ballista-scheduler-registration</span></code>,
 which is what makes the incoming pod Ready. With <code class="docutils literal notranslate"><span class="pre">maxUnavailable:</span> <span class="pre">0</span></code> the
 outgoing pod cannot be retired until the incoming one is Ready, and it cannot
-become Ready while the executors are still attached to the pod it is replacing.
-The cost is a short window with no scheduler, so queries in flight fail.</p>
+become Ready while the executors are still attached to the pod it is replacing.</p>
+<p>The cost is a window with no Ready scheduler. The outgoing pod keeps its
+executors attached while it drains, so the incoming pod is not Ready until the
+outgoing one exits. That takes as long as its active jobs need, up to the 5-second
+<code class="docutils literal notranslate"><span class="pre">preStop</span></code> sleep plus <code class="docutils literal notranslate"><span class="pre">--graceful-shutdown-timeout-seconds</span></code> (45 in the manifest
+above). New jobs are refused with <code class="docutils literal notranslate"><span class="pre">Unavailable</span></code> meanwhile, and jobs still running
+when the time passes are lost.</p>
 <p>This is not <code class="docutils literal notranslate"><span class="pre">type:</span> <span class="pre">Recreate</span></code>. With <code class="docutils literal notranslate"><span class="pre">replicas:</span> <span class="pre">3</span></code> Kubernetes still rolls one
 scheduler at a time and keeps the other two serving.</p>
 <p>Set <code class="docutils literal notranslate"><span class="pre">--min-ready-executors=0</span></code> if you want the scheduler to advertise readiness
@@ -1092,6 +1135,7 @@ scale the executors.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#health-probes-and-rolling-upgrades">Health Probes and Rolling Upgrades</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#protocol-version-and-forced-upgrades">Protocol version and forced upgrades</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stopping-executors">Stopping executors</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stopping-the-scheduler">Stopping the scheduler</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rolling-both-deployments-together">Rolling both Deployments together</a></li>
 </ul>
 </li>
