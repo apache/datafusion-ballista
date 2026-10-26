@@ -261,9 +261,11 @@ fn memory_pool_policy(
 
 /// Wraps `producer` so every runtime it builds writes spill files under
 /// `spill_dir`, keeping the runtime's memory pool, caches and object stores.
-/// The executor's default runtime already spills under its work dir; this lets
-/// a custom producer, such as the standalone binary's S3-enabled runtime, do
-/// the same.
+/// The runtime gets a new disk manager with DataFusion's default settings, so
+/// any other disk settings the producer made are not carried over. The
+/// executor's default runtime already spills under its work dir; this lets a
+/// custom producer, such as the standalone binary's S3-enabled runtime, do the
+/// same.
 pub fn with_spill_dir(producer: RuntimeProducer, spill_dir: String) -> RuntimeProducer {
     Arc::new(move |config: &SessionConfig| {
         let runtime_env = producer(config)?;

@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::client::BallistaClient;
-use crate::client_pool::BallistaClientPool;
+use crate::client_pool::{BallistaClientPool, PooledClient};
 use crate::error::BallistaError;
 use crate::execution_plans::range_filter::WidenedBound;
 use crate::execution_plans::range_shuffle::{
@@ -707,6 +707,44 @@ impl RecordBatchStream for GovernedStream {
     }
 }
 
+/// A remote partition stream that keeps its pooled connection checked out until
+/// the stream is dropped.
+///
+/// Remote streams are read lazily, so a stream the consumer has not reached yet
+/// holds its unread data in the connection's HTTP/2 flow-control window. If the
+/// connection went back to the pool as soon as the stream opened, the next
+/// fetch could multiplex onto it, and enough waiting streams could fill the
+/// window and starve the stream the consumer is reading. Holding the lease
+/// keeps each pooled connection to one open stream. A connection whose stream
+/// fails is discarded rather than reused.
+struct LeasedStream {
+    inner: SendableRecordBatchStream,
+    lease: Option<PooledClient>,
+}
+
+impl Stream for LeasedStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let item = self.inner.poll_next_unpin(cx);
+        if let Poll::Ready(Some(Err(_))) = &item
+            && let Some(lease) = self.lease.take()
+        {
+            lease.discard();
+        }
+        item
+    }
+}
+
+impl RecordBatchStream for LeasedStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+}
+
 /// Splits the provided partition locations into local and remote partitions.
 /// Local partitions are read directly from local Arrow IPC files,
 /// while remote partitions are fetched using the Arrow Flight client.
@@ -801,9 +839,9 @@ fn send_fetch_partitions(
     //   * an addr semaphore — 1 permit (per-address in-flight cap)
     // All three are held for the lifetime of the returned stream (see
     // GovernedStream), so budget is released only when the body is fully
-    // consumed. Because total in-flight bytes stay <= the sized h2 window, the
-    // governor — not the 64 KB transport window — is the binding backpressure,
-    // which is what makes multiplexing over few connections safe.
+    // consumed. Bodies stream as the consumer reads them, and each open stream
+    // keeps its pooled connection to itself (see LeasedStream), so a stream
+    // waiting to be read cannot starve another stream's flow-control window.
     let byte_sem = Arc::new(Semaphore::new(byte_permits_cap(max_bytes)));
     let req_sem = Arc::new(Semaphore::new(max_reqs.max(1)));
     let addr_sems: Arc<std::sync::Mutex<HashMap<String, Arc<Semaphore>>>> =
@@ -1096,13 +1134,19 @@ pub(crate) async fn fetch_partition_remote(
                 other => other,
             })?;
 
-        let result = pooled
+        match pooled
             .fetch_partition(&metadata.id, partition_id, file_id, layout, prefer_flight)
-            .await;
-        if result.is_err() {
-            pooled.discard();
+            .await
+        {
+            Ok(stream) => Ok(Box::pin(LeasedStream {
+                inner: stream,
+                lease: Some(pooled),
+            })),
+            Err(e) => {
+                pooled.discard();
+                Err(e)
+            }
         }
-        result
     } else {
         // TODO for shuffle client connections, we should avoid creating new connections again and again.
         // And we should also avoid to keep alive too many connections for long time.
@@ -2644,6 +2688,66 @@ mod governor_tests {
             }
             other => panic!("expected FetchFailed, got {other:?}"),
         }
+    }
+
+    /// A [`LeasedStream`] over `items`, plus a counter of how many times its
+    /// pooled connection was returned to the pool.
+    fn leased_stream(
+        items: Vec<Result<RecordBatch>>,
+    ) -> (LeasedStream, Arc<std::sync::atomic::AtomicUsize>) {
+        use crate::client::BallistaClient;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let returned = Arc::new(AtomicUsize::new(0));
+        let lease = {
+            let returned = returned.clone();
+            PooledClient::new(
+                BallistaClient::new_for_test("executor_1", 7070),
+                Box::new(move |_| {
+                    returned.fetch_add(1, Ordering::SeqCst);
+                }),
+            )
+        };
+        let inner = Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            futures::stream::iter(items),
+        )) as SendableRecordBatchStream;
+        let stream = LeasedStream {
+            inner,
+            lease: Some(lease),
+        };
+        (stream, returned)
+    }
+
+    #[tokio::test]
+    async fn leased_stream_returns_connection_only_when_dropped() {
+        use std::sync::atomic::Ordering;
+        let schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let (mut stream, returned) =
+            leased_stream(vec![Ok(int_batch(&schema, 1)), Ok(int_batch(&schema, 2))]);
+
+        stream.next().await.unwrap().unwrap();
+        stream.next().await.unwrap().unwrap();
+        assert!(stream.next().await.is_none());
+        // Still checked out: no other fetch can share the connection yet.
+        assert_eq!(returned.load(Ordering::SeqCst), 0);
+
+        drop(stream);
+        assert_eq!(returned.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn leased_stream_discards_connection_after_error() {
+        use std::sync::atomic::Ordering;
+        let (mut stream, returned) = leased_stream(vec![Err(
+            DataFusionError::Execution("connection reset".to_string()),
+        )]);
+
+        assert!(stream.next().await.unwrap().is_err());
+        drop(stream);
+        assert_eq!(returned.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
