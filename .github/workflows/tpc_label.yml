@@ -1,0 +1,54 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Runs a suite the moment its label is applied to an open pull request, without
+# a new push: `run-tpch` runs TPC-H and `run-tpcds` runs TPC-DS. The pipeline
+# is tpc.yml itself; it reads the `labeled` action from the event context,
+# which a called workflow shares with its caller, and runs only what the new
+# label gates.
+#
+# This is a separate workflow, and not a `labeled` type on tpc.yml's own
+# `pull_request` trigger, because of how GitHub treats two runs of one
+# workflow at the same commit: it evaluates the pull request's required checks
+# against only one of them. A pull request opened with a label already applied
+# fires `opened` and `labeled` together, and if the label run is the one
+# picked, `TPC Required Checks` can show as "Expected" forever and the merge
+# queue never accepts the pull request. Runs of this workflow get their own
+# check suite, and every check in it is nested under the calling job's name, so
+# none can publish the required name or hide the commit run's verdict.
+#
+# The consequence is that a label run is early feedback and not a gate: the
+# merge queue is what enforces the suites.
+
+name: TPC benchmarks (label run)
+
+permissions:
+  contents: read
+
+# No `concurrency` here. tpc.yml declares its own group, keyed on this
+# workflow's name and the label, and the same group on the caller as well
+# would deadlock the two against each other.
+on:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  tpc:
+    name: Label run
+    # Any other label (a bot or a committer tagging the PR) is not for us.
+    if: github.event.label.name == 'run-tpch' || github.event.label.name == 'run-tpcds'
+    uses: ./.github/workflows/tpc.yml
