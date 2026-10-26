@@ -98,9 +98,9 @@ const HEARTBEAT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// is intentional: the semaphore acts as an execution throttle, not a
 /// reservation system.
 ///
-/// **Semaphore sizing**: if the provided semaphore allows more concurrent
-/// tasks than the executor's thread pool has threads, excess admitted tasks
-/// will queue behind running ones. The caller is responsible for sizing the
+/// **Semaphore sizing**: if the provided semaphore has more permits than the
+/// executor's thread pool has threads, the partitions admitted beyond that will
+/// queue behind running ones. The caller is responsible for sizing the
 /// semaphore appropriately for their thread pool. The loop takes the permits
 /// available when it starts as the semaphore's size, and never holds more than
 /// that many for one task.
@@ -137,8 +137,8 @@ where
         free_vcores.available_permits() > 0,
         "free_vcores semaphore must have at least one permit; passing a closed or zero-permit semaphore would deadlock the poll loop"
     );
-    // The semaphore's size, read before this loop starts any task. No task is
-    // charged more than this, however many vcores the scheduler claims for it.
+    // The semaphore's size, read before this loop starts a task. At least 1, as
+    // asserted above.
     let total_vcores = u32::try_from(free_vcores.available_permits()).unwrap_or(u32::MAX);
 
     let (task_status_sender, mut task_status_receiver) =
@@ -217,29 +217,10 @@ where
                 for task in tasks {
                     let task_status_sender = task_status_sender.clone();
 
-                    // Acquire a permit for each vcore the scheduler charged the
-                    // task, to be held until it finishes. The scheduler sizes
-                    // tasks to the free vcores reported above, so holding fewer
-                    // would leave vcores that are in use looking free to the next
-                    // poll. At least one permit, as a scheduler that predates
-                    // `vcores_consumed` sends 0. At most the semaphore's size,
-                    // as waiting for more would never end, stalling the loop and
-                    // with it the heartbeat.
-                    let permits = task.vcores_consumed.clamp(1, total_vcores);
-                    if permits < task.vcores_consumed {
-                        warn!(
-                            "Task [TID {}/{}.{}/{}.{}] was charged {} vcores but the executor has {total_vcores}, holding {permits}",
-                            task.job_id,
-                            task.stage_id,
-                            task.stage_attempt_num,
-                            task.task_id,
-                            task.task_attempt_num,
-                            task.vcores_consumed,
-                        );
-                    }
+                    // Hold the task's vcores until it finishes.
                     let permit = free_vcores
                         .clone()
-                        .acquire_many_owned(permits)
+                        .acquire_many_owned(task_permits(&task, total_vcores))
                         .await
                         .map_err(|_| {
                             BallistaError::Internal("vcore semaphore closed".to_string())
@@ -328,6 +309,28 @@ where
             }
         }
     }
+}
+
+/// Permits a task holds while it runs: one per vcore the scheduler charged for
+/// it, so that the free count `poll_loop` reports is the vcores not in use.
+///
+/// At least 1, as a scheduler that predates `vcores_consumed` sends 0. At most
+/// `total_vcores`: waiting for more permits than the semaphore holds never
+/// ends, which would stall the loop and with it the heartbeat.
+fn task_permits(task: &TaskDefinition, total_vcores: u32) -> u32 {
+    let permits = task.vcores_consumed.clamp(1, total_vcores);
+    if permits < task.vcores_consumed {
+        warn!(
+            "Task [TID {}/{}.{}/{}.{}] was charged {} vcores but the executor has {total_vcores}, holding {permits}",
+            task.job_id,
+            task.stage_id,
+            task.stage_attempt_num,
+            task.task_id,
+            task.task_attempt_num,
+            task.vcores_consumed,
+        );
+    }
+    permits
 }
 
 /// Tries to get meaningful description from panic-error.
@@ -535,7 +538,6 @@ mod tests {
     use ballista_core::RuntimeProducer;
     use ballista_core::registry::BallistaFunctionRegistry;
     use ballista_core::serde::BallistaCodec;
-    use ballista_core::serde::protobuf::executor_resource::Resource;
     use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
     use ballista_core::serde::protobuf::scheduler_grpc_server::{
         SchedulerGrpc, SchedulerGrpcServer,
@@ -543,40 +545,43 @@ mod tests {
     use ballista_core::serde::protobuf::{
         CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
         CreateUpdateSessionParams, CreateUpdateSessionResult, ExecuteQueryParams,
-        ExecuteQueryResult, ExecutorRegistration, ExecutorResource,
-        ExecutorSpecification, ExecutorStoppedParams, ExecutorStoppedResult,
-        GetJobMetricsParams, GetJobMetricsResult, GetJobStatusParams, GetJobStatusResult,
-        HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
-        RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
-        RemoveSessionResult, ShuffleWritePartition, TaskDefinition,
+        ExecuteQueryResult, ExecutorRegistration, ExecutorStoppedParams,
+        ExecutorStoppedResult, GetJobMetricsParams, GetJobMetricsResult,
+        GetJobStatusParams, GetJobStatusResult, HeartBeatParams, HeartBeatResult,
+        PollWorkParams, PollWorkResult, RegisterExecutorParams, RegisterExecutorResult,
+        RemoveSessionParams, RemoveSessionResult, ShuffleWritePartition, TaskDefinition,
         UpdateTaskStatusParams, UpdateTaskStatusResult,
     };
+    use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::utils::default_config_producer;
     use datafusion::arrow::datatypes::Schema;
     use datafusion::error::Result;
     use datafusion::execution::context::TaskContext;
+    use datafusion::execution::runtime_env::RuntimeEnv;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::metrics::MetricsSet;
-    use datafusion::prelude::{SessionConfig, SessionContext};
-    use datafusion_proto::physical_plan::AsExecutionPlan;
-    use datafusion_proto::protobuf::PhysicalPlanNode;
-    use futures::Stream;
+    use datafusion::prelude::SessionConfig;
+    use datafusion_proto::bytes::physical_plan_to_bytes;
     use parking_lot::Mutex;
     use std::fmt::{self, Display};
-    use std::pin::Pin;
     use std::sync::Arc;
     use std::time::Duration;
-    use tempfile::TempDir;
     use tokio::sync::{Notify, Semaphore};
+    use tonic::codegen::BoxStream;
     use tonic::{Request, Response, Status};
+
+    /// Vcores of the executor under test.
+    const VCORES: usize = 8;
 
     /// How long to wait for something the test expects to happen. Only
     /// reached when it doesn't.
     const TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Execution engine whose tasks announce that they started and then run
-    /// until released, so a test can look at the executor mid-task.
+    /// until released, so a test can look at the executor mid-task. It is its
+    /// own query stage: the tasks it creates share its two signals.
+    #[derive(Clone, Debug, Default)]
     struct BlockingEngine {
         started: Arc<Notify>,
         release: Arc<Notify>,
@@ -593,27 +598,18 @@ mod tests {
             _work_dir: &str,
             _config: &SessionConfig,
         ) -> Result<Arc<dyn QueryStageExecutor>> {
-            Ok(Arc::new(BlockingStage {
-                started: self.started.clone(),
-                release: self.release.clone(),
-            }))
+            Ok(Arc::new(self.clone()))
         }
     }
 
-    #[derive(Debug)]
-    struct BlockingStage {
-        started: Arc<Notify>,
-        release: Arc<Notify>,
-    }
-
-    impl Display for BlockingStage {
+    impl Display for BlockingEngine {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "BlockingStage")
+            write!(f, "BlockingEngine")
         }
     }
 
     #[async_trait::async_trait]
-    impl QueryStageExecutor for BlockingStage {
+    impl QueryStageExecutor for BlockingEngine {
         async fn execute_query_stage(
             &self,
             _task_id: usize,
@@ -642,11 +638,7 @@ mod tests {
 
     #[tonic::async_trait]
     impl SchedulerGrpc for MockScheduler {
-        type ExecuteQueryPushStream = Pin<
-            Box<
-                dyn Stream<Item = std::result::Result<GetJobStatusResult, Status>> + Send,
-            >,
-        >;
+        type ExecuteQueryPushStream = BoxStream<GetJobStatusResult>;
 
         async fn poll_work(
             &self,
@@ -746,66 +738,53 @@ mod tests {
     /// A task the scheduler charged `vcores_consumed` vcores for, with a plan
     /// the executor can decode.
     fn task_definition(vcores_consumed: u32) -> TaskDefinition {
-        let codec = BallistaCodec::default();
         let plan: Arc<dyn ExecutionPlan> =
             Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
-        let mut plan_buf = vec![];
-        PhysicalPlanNode::try_from_physical_plan(plan, codec.physical_extension_codec())
-            .expect("encoding the plan")
-            .try_encode(&mut plan_buf)
-            .expect("encoding the plan");
-
         TaskDefinition {
-            job_id: "job".to_string(),
-            stage_id: 1,
-            session_id: "session".to_string(),
-            plan: plan_buf,
-            global_output_partition_ids: (0..vcores_consumed).collect(),
+            plan: physical_plan_to_bytes(plan)
+                .expect("encoding the plan")
+                .to_vec(),
             vcores_consumed,
             ..Default::default()
         }
     }
 
-    /// Runs the poll loop of an idle `vcores`-vcore executor against a scheduler
-    /// that hands it one task charged `vcores_consumed` vcores. Returns how many
-    /// vcores were free while that task ran, after checking that the task gives
-    /// them all back once it finishes.
-    async fn free_vcores_while_task_runs(vcores: usize, vcores_consumed: u32) -> usize {
-        let work_dir = TempDir::new().unwrap();
-        let started = Arc::new(Notify::new());
-        let release = Arc::new(Notify::new());
-
-        let runtime_env = SessionContext::new().runtime_env().clone();
+    /// Runs the poll loop of an idle `VCORES`-vcore executor against a scheduler
+    /// that hands it one task charged `vcores_consumed` vcores, and asserts that
+    /// `expected_free` vcores were free while that task ran. Also checks that
+    /// the task gives them all back once it finishes.
+    async fn assert_free_vcores_while_task_runs(
+        vcores_consumed: usize,
+        expected_free: usize,
+    ) {
+        let engine = BlockingEngine::default();
         let runtime_producer: RuntimeProducer =
-            Arc::new(move |_| Ok(runtime_env.clone()));
+            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
         let executor = Arc::new(Executor::new(
             ExecutorRegistration {
                 id: "executor".to_string(),
-                specification: Some(ExecutorSpecification {
-                    resources: vec![ExecutorResource {
-                        resource: Some(Resource::Vcores(vcores as u32)),
-                    }],
-                }),
+                specification: Some(
+                    ExecutorSpecification::default()
+                        .with_vcores(VCORES as u32)
+                        .into(),
+                ),
                 ..Default::default()
             },
-            work_dir.path().to_str().unwrap(),
+            "",
             runtime_producer,
             Arc::new(default_config_producer),
             Arc::new(BallistaFunctionRegistry::default()),
             Arc::new(LoggingMetricsCollector::default()),
-            vcores,
-            Arc::new(BlockingEngine {
-                started: started.clone(),
-                release: release.clone(),
-            }),
+            VCORES,
+            Arc::new(engine.clone()),
         ));
 
         let scheduler =
             SchedulerGrpcClient::new(SchedulerGrpcServer::new(MockScheduler {
-                task: Mutex::new(Some(task_definition(vcores_consumed))),
+                task: Mutex::new(Some(task_definition(vcores_consumed as u32))),
             }));
-        let free_vcores = Arc::new(Semaphore::new(vcores));
-        let poll_loop = tokio::spawn(poll_loop(
+        let free_vcores = Arc::new(Semaphore::new(VCORES));
+        let handle = tokio::spawn(poll_loop(
             scheduler,
             executor,
             BallistaCodec::default(),
@@ -814,22 +793,24 @@ mod tests {
             ExecutorHealth::new(),
         ));
 
-        tokio::time::timeout(TIMEOUT, started.notified())
+        tokio::time::timeout(TIMEOUT, engine.started.notified())
             .await
             .expect("the task never started; the poll loop is stuck acquiring vcores");
         let free_while_running = free_vcores.available_permits();
 
-        release.notify_one();
-        tokio::time::timeout(TIMEOUT, async {
-            while free_vcores.available_permits() != vcores {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the finished task never gave its vcores back");
+        engine.release.notify_one();
+        // All the vcores can be taken at once only after the task gives its own back.
+        let _all_back =
+            tokio::time::timeout(TIMEOUT, free_vcores.acquire_many(VCORES as u32))
+                .await
+                .expect("the finished task never gave its vcores back")
+                .unwrap();
 
-        poll_loop.abort();
-        free_while_running
+        handle.abort();
+        assert_eq!(
+            free_while_running, expected_free,
+            "vcores free while a task charged {vcores_consumed} runs on {VCORES} vcores"
+        );
     }
 
     #[tokio::test]
@@ -837,22 +818,22 @@ mod tests {
         // The scheduler fills an idle executor's free vcores with a single task.
         // If that task held one permit, the executor would report the rest as
         // free and be handed more work than it has vcores for.
-        assert_eq!(free_vcores_while_task_runs(8, 8).await, 0);
-        assert_eq!(free_vcores_while_task_runs(8, 3).await, 5);
+        assert_free_vcores_while_task_runs(VCORES, 0).await;
+        assert_free_vcores_while_task_runs(3, VCORES - 3).await;
     }
 
     #[tokio::test]
     async fn task_holds_at_least_one_permit() {
         // A collapse stage is charged one vcore however many partitions it packs,
         // and a scheduler that predates `vcores_consumed` sends 0.
-        assert_eq!(free_vcores_while_task_runs(8, 1).await, 7);
-        assert_eq!(free_vcores_while_task_runs(8, 0).await, 7);
+        assert_free_vcores_while_task_runs(1, VCORES - 1).await;
+        assert_free_vcores_while_task_runs(0, VCORES - 1).await;
     }
 
     #[tokio::test]
     async fn task_never_waits_for_more_permits_than_the_executor_has() {
         // Waiting for permits that don't exist would stall the loop for good,
         // and with it the executor's heartbeat.
-        assert_eq!(free_vcores_while_task_runs(8, 100).await, 0);
+        assert_free_vcores_while_task_runs(10 * VCORES, 0).await;
     }
 }
