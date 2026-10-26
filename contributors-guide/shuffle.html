@@ -655,13 +655,12 @@ gets the latency win where capacity allows and degrades to today’s behavior
 where it does not (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1151">#1151</a>, <a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2003">#2003</a>).</p></li>
 <li><p><strong>In-memory shuffle.</strong> Small intermediates are written and read back through
 the filesystem regardless of size. Keeping them in a bounded in-memory buffer,
-spilling to files only once the buffer is exceeded, would remove most of the
-write amplification for short queries while leaving the durable path in place
-for the ones that need it. This looks like the largest single win available:
-simply pointing <code class="docutils literal notranslate"><span class="pre">work_dir</span></code> at a RAM disk large enough to hold the whole
-shuffle already recovers a large share of the TPC-H gap against a pipelined
-engine, which says the cost being paid there is the filesystem round trip
-rather than the barrier itself (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2318">#2318</a>).</p></li>
+spilling to files only once the buffer is exceeded, would remove that write
+amplification for short queries while leaving the durable path in place for
+the ones that need it. How much it buys is still open. A prototype that kept
+sort-shuffle output in memory measured neutral at a 1 GiB budget and about 5%
+faster at 12 GiB on TPC-H SF10, but the passthrough writer, including every
+query’s final stage, still went through files (<a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2317">#2317</a>, <a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2318">#2318</a>).</p></li>
 <li><p><strong>A cheaper shuffle format.</strong> The write side currently produces a file per
 output partition per task and a metadata round-trip per partition, which is a
 lot of small files and small reads at high partition counts. Writing one
