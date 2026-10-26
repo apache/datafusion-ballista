@@ -459,21 +459,17 @@ queries run unchanged.
 
 ### Skip list
 
-Some queries are excluded from the gate. These are listed in the `SKIP` const
-near the top of `benchmarks/src/bin/tpcds.rs`, as `(query_id, reason)` pairs,
-grouped by cause: queries whose distributed result diverges from DataFusion
-(tracked as bugs), queries that are non-deterministic under `LIMIT`/`ORDER BY`
-ties, and queries whose `tpcgen-cli` schema column names differ from the
-DataFusion query text. A default run (no `--query`) executes `1..=99` minus
-`SKIP`.
+Queries can be excluded from the gate by listing them in the `SKIP` const near
+the top of `benchmarks/src/bin/tpcds.rs`, as `(query_id, reason)` pairs. The
+list is currently empty, so a default run (no `--query`) executes all 99
+queries. Results that differ only in the order of rows tied under `ORDER BY`
+are accepted rather than skipped.
 
 ### CI
 
 `.github/workflows/tpcds.yml` runs the SF1 suite against a local
 scheduler + executor on every push/PR touching `ballista/**` or
-`benchmarks/**`, under the default (static) planner. The adaptive planner
-(AQE on) is not gated yet — it currently fails many TPC-DS queries with an
-`EmptyExec invalid partition` assertion (issue #2047); re-enable an AQE-on run
-once that is fixed.
+`benchmarks/**`, under the adaptive planner (AQE), with one leg at one
+partition per task and one at up to four partitions per task.
 
 [1]: http://www.tpc.org/tpch/

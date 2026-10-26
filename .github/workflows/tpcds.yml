@@ -56,7 +56,7 @@ on:
 
 jobs:
   tpcds-sf1:
-    name: TPC-DS SF1 (static planner, ${{ matrix.label }})
+    name: TPC-DS SF1 (adaptive planner, ${{ matrix.label }})
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
@@ -119,20 +119,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          # This matrix leg runs the suite under the default (static) planner at
-          # one task-packing setting. The tpcds binary internally loops all
-          # non-skipped queries and exits non-zero on any failure, so a single
-          # invocation covers the whole suite. The other leg runs in parallel.
-          #
-          # Coverage for the adaptive planner (AQE on) is being added
-          # separately; it currently fails on pre-existing bugs.
-          echo "::group::[static planner, ${{ matrix.label }}] TPC-DS suite"
+          # This matrix leg runs the suite under the adaptive planner (AQE) at
+          # one task-packing setting. AQE is the default, but it is set
+          # explicitly so the job label stays true if the default changes. The
+          # tpcds binary internally loops all non-skipped queries and exits
+          # non-zero on any failure, so a single invocation covers the whole
+          # suite. The other leg runs in parallel.
+          echo "::group::[adaptive planner, ${{ matrix.label }}] TPC-DS suite"
           ./target/tpch-ci/tpcds \
             --host 127.0.0.1 --port 50050 \
             --path "$DATA_DIR" \
             --partitions 16 \
             --verify \
             -c datafusion.optimizer.prefer_hash_join=false \
+            -c ballista.planner.adaptive.enabled=true \
             ${{ matrix.task_args }}
           echo "::endgroup::"
 
