@@ -259,6 +259,20 @@ fn memory_pool_policy(
     ))
 }
 
+/// Wraps `producer` so every runtime it builds writes spill files under
+/// `spill_dir`, keeping the runtime's memory pool, caches and object stores.
+/// The executor's default runtime already spills under its work dir; this lets
+/// a custom producer, such as the standalone binary's S3-enabled runtime, do
+/// the same.
+pub fn with_spill_dir(producer: RuntimeProducer, spill_dir: String) -> RuntimeProducer {
+    Arc::new(move |config: &SessionConfig| {
+        let runtime_env = producer(config)?;
+        RuntimeEnvBuilder::from_runtime_env(&runtime_env)
+            .with_temp_file_path(spill_dir.clone())
+            .build_arc()
+    })
+}
+
 /// Wraps `producer` so every runtime it builds limits spill files to
 /// `max_temp_directory_size` bytes of disk. Applied on top of the producer,
 /// rather than inside it, so a custom `override_runtime_producer` gets the
@@ -1819,5 +1833,39 @@ mod spill_limit_tests {
         let producer = with_max_temp_directory_size(producer, 1024);
         let runtime = producer(&SessionConfig::new()).unwrap();
         assert_eq!(runtime.disk_manager.max_temp_directory_size(), 1024);
+    }
+
+    #[test]
+    fn spill_dir_relocates_spills_and_keeps_runtime_state() {
+        let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(1 << 20));
+        let base = RuntimeEnvBuilder::new()
+            .with_memory_pool(pool)
+            .build_arc()
+            .unwrap();
+        let producer: RuntimeProducer = {
+            let base = base.clone();
+            Arc::new(move |_: &SessionConfig| Ok(base.clone()))
+        };
+        // The base runtime spills to the OS temp dir.
+        assert!(base.disk_manager.temp_dir_paths().is_empty());
+
+        let work_dir = TempDir::new().unwrap();
+        let spill_dir = work_dir.path().to_str().unwrap().to_string();
+        let producer =
+            with_max_temp_directory_size(with_spill_dir(producer, spill_dir), 2048);
+        let runtime = producer(&SessionConfig::new()).unwrap();
+
+        let paths = runtime.disk_manager.temp_dir_paths();
+        assert!(!paths.is_empty());
+        assert!(
+            paths.iter().all(|p| p.starts_with(work_dir.path())),
+            "{paths:?}"
+        );
+        assert_eq!(runtime.disk_manager.max_temp_directory_size(), 2048);
+        assert!(Arc::ptr_eq(&runtime.memory_pool, &base.memory_pool));
+        assert!(Arc::ptr_eq(
+            &runtime.object_store_registry,
+            &base.object_store_registry
+        ));
     }
 }
