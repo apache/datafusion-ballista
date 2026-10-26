@@ -475,6 +475,134 @@ Ballista action is reported with the gRPC status <code class="docutils literal n
 executors used to report it as <code class="docutils literal notranslate"><span class="pre">Internal</span></code>.</p>
 </section>
 </section>
+<section id="python-client-changes">
+<h3>Python client changes<a class="headerlink" href="#python-client-changes" title="Link to this heading">#</a></h3>
+<section id="summary">
+<h4>Summary<a class="headerlink" href="#summary" title="Link to this heading">#</a></h4>
+<ul class="simple">
+<li><p>The Ballista Python client now plugs into DataFusion Python natively. It
+registers a custom query planner on a standard <code class="docutils literal notranslate"><span class="pre">datafusion.SessionContext</span></code>,
+instead of wrapping DataFusion classes.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DistributedDataFrame</span></code> and the metaclasses that wrapped <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code> and
+<code class="docutils literal notranslate"><span class="pre">DataFrame</span></code> are removed. Queries return a plain <code class="docutils literal notranslate"><span class="pre">datafusion.DataFrame</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> is now a factory function that returns a
+<code class="docutils literal notranslate"><span class="pre">datafusion.SessionContext</span></code>, not a class.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">explain_visual</span></code> and <code class="docutils literal notranslate"><span class="pre">collect_with_progress</span></code> are no longer <code class="docutils literal notranslate"><span class="pre">DataFrame</span></code>
+methods. They are functions in <code class="docutils literal notranslate"><span class="pre">ballista.jupyter</span></code>.</p></li>
+<li><p>Ballista settings are registered as a DataFusion config extension, exposed as
+<code class="docutils literal notranslate"><span class="pre">BallistaConfigExtension</span></code>.</p></li>
+</ul>
+</section>
+<section id="datafusion-python-is-supported-natively">
+<h4>DataFusion Python is supported natively<a class="headerlink" href="#datafusion-python-is-supported-natively" title="Link to this heading">#</a></h4>
+<p>Earlier releases subclassed <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code> and <code class="docutils literal notranslate"><span class="pre">DataFrame</span></code>. Every method that
+executed a plan was intercepted, the logical plan was serialized, and the plan
+was resubmitted through a separate, Ballista-backed session. Methods the wrapper
+did not know about ran locally, and every execution created a new Ballista
+session.</p>
+<p>In <code class="docutils literal notranslate"><span class="pre">56.0.0</span></code>, <code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> installs a Ballista query planner and
+extension codecs on a standard DataFusion Python <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code>, using
+DataFusion’s FFI. DataFusion plans each query as usual, and the planner sends
+the physical plan to the scheduler. Any operation that executes a plan runs on
+the cluster, including <code class="docutils literal notranslate"><span class="pre">collect</span></code>, <code class="docutils literal notranslate"><span class="pre">show</span></code>, <code class="docutils literal notranslate"><span class="pre">to_pandas</span></code>, <code class="docutils literal notranslate"><span class="pre">write_parquet</span></code> and
+<code class="docutils literal notranslate"><span class="pre">EXPLAIN</span> <span class="pre">ANALYZE</span></code>. No wrapper is involved.</p>
+</section>
+<section id="distributeddataframe-is-removed">
+<h4><code class="docutils literal notranslate"><span class="pre">DistributedDataFrame</span></code> is removed<a class="headerlink" href="#distributeddataframe-is-removed" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">ballista.DistributedDataFrame</span></code> no longer exists, and <code class="docutils literal notranslate"><span class="pre">ballista.extension</span></code> no
+longer exports it. <code class="docutils literal notranslate"><span class="pre">ctx.sql(...)</span></code>, <code class="docutils literal notranslate"><span class="pre">ctx.read_parquet(...)</span></code> and the other
+context methods return a regular <code class="docutils literal notranslate"><span class="pre">datafusion.DataFrame</span></code>.</p>
+<p><strong>Action required:</strong> remove imports of <code class="docutils literal notranslate"><span class="pre">DistributedDataFrame</span></code>, and replace type
+hints and <code class="docutils literal notranslate"><span class="pre">isinstance</span></code> checks with <code class="docutils literal notranslate"><span class="pre">datafusion.DataFrame</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># before</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">DistributedDataFrame</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="n">df</span><span class="p">:</span> <span class="n">DistributedDataFrame</span><span class="p">):</span> <span class="o">...</span>
+
+<span class="c1"># after</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">datafusion</span><span class="w"> </span><span class="kn">import</span> <span class="n">DataFrame</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="n">df</span><span class="p">:</span> <span class="n">DataFrame</span><span class="p">):</span> <span class="o">...</span>
+</pre></div>
+</div>
+</section>
+<section id="ballistasessioncontext-is-a-factory-function">
+<h4><code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> is a factory function<a class="headerlink" href="#ballistasessioncontext-is-a-factory-function" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> keeps its name and call signature, so existing code
+that creates a context does not change:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionContext</span>
+
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="s2">"df://localhost:50050"</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>It is now a function that returns a <code class="docutils literal notranslate"><span class="pre">datafusion.SessionContext</span></code>. It is not a
+class. Code that depends on it being a class breaks:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">isinstance(ctx,</span> <span class="pre">BallistaSessionContext)</span></code> raises <code class="docutils literal notranslate"><span class="pre">TypeError</span></code>. Use
+<code class="docutils literal notranslate"><span class="pre">isinstance(ctx,</span> <span class="pre">datafusion.SessionContext)</span></code>.</p></li>
+<li><p>Subclassing <code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> is no longer possible. Create a context
+and pass it to your own code, or wrap it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ctx.session_id</span></code> is no longer a property. Call <code class="docutils literal notranslate"><span class="pre">ctx.session_id()</span></code>, as on any
+DataFusion <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code>.</p></li>
+<li><p>The <code class="docutils literal notranslate"><span class="pre">ctx.address</span></code> and <code class="docutils literal notranslate"><span class="pre">ctx.cluster_config</span></code> attributes are removed.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ctx.get_tables()</span></code> is removed. Use the DataFusion catalog API, for example
+<code class="docutils literal notranslate"><span class="pre">ctx.catalog().schema(&quot;public&quot;).table_names()</span></code>.</p></li>
+</ul>
+</section>
+<section id="configuration-changes">
+<h4>Configuration changes<a class="headerlink" href="#configuration-changes" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">cluster_config</span></code> values can now be <code class="docutils literal notranslate"><span class="pre">str</span></code>, <code class="docutils literal notranslate"><span class="pre">int</span></code>, <code class="docutils literal notranslate"><span class="pre">float</span></code> or <code class="docutils literal notranslate"><span class="pre">bool</span></code>. Booleans
+are converted to <code class="docutils literal notranslate"><span class="pre">&quot;true&quot;</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;false&quot;</span></code>. Keys must start with <code class="docutils literal notranslate"><span class="pre">datafusion.</span></code> or
+<code class="docutils literal notranslate"><span class="pre">ballista.</span></code>. Any other key raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span>
+    <span class="s2">"df://localhost:50050"</span><span class="p">,</span>
+    <span class="n">cluster_config</span><span class="o">=</span><span class="p">{</span>
+        <span class="s2">"datafusion.execution.target_partitions"</span><span class="p">:</span> <span class="mi">16</span><span class="p">,</span>
+        <span class="s2">"ballista.job.name"</span><span class="p">:</span> <span class="s2">"daily report"</span><span class="p">,</span>
+        <span class="s2">"ballista.planner.adaptive.enabled"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="p">},</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>Ballista settings are registered on the session as a DataFusion config
+extension, available as <code class="docutils literal notranslate"><span class="pre">ballista.BallistaConfigExtension</span></code>. As a result,
+<code class="docutils literal notranslate"><span class="pre">ballista.*</span></code> keys appear in <code class="docutils literal notranslate"><span class="pre">information_schema.df_settings</span></code> and can be changed
+with SQL <code class="docutils literal notranslate"><span class="pre">SET</span></code>, for example <code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">ballista.job.name</span> <span class="pre">=</span> <span class="pre">'nightly'</span></code>.</p>
+<p>The local session now starts from Ballista’s DataFusion defaults, the same
+defaults the scheduler uses. Some DataFusion options are restricted by Ballista
+(for example <code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.prefer_hash_join</span></code> and
+<code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.enable_round_robin_repartition</span></code>). These options are
+always set to the Ballista value, even if you set them in <code class="docutils literal notranslate"><span class="pre">config</span></code>. Other
+Ballista defaults, such as
+<code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.hash_join_single_partition_threshold</span></code>, can still be
+overridden when <code class="docutils literal notranslate"><span class="pre">config</span></code> is passed as a dictionary.</p>
+</section>
+</section>
+<section id="jupyter-support-changes">
+<h3>Jupyter support changes<a class="headerlink" href="#jupyter-support-changes" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">DataFrame.explain_visual()</span></code> and <code class="docutils literal notranslate"><span class="pre">DataFrame.collect_with_progress()</span></code> were
+methods of <code class="docutils literal notranslate"><span class="pre">DistributedDataFrame</span></code> and are removed with it. They are now
+functions in <code class="docutils literal notranslate"><span class="pre">ballista.jupyter</span></code> that take the DataFrame as their first argument:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista.jupyter</span><span class="w"> </span><span class="kn">import</span> <span class="n">collect_with_progress</span><span class="p">,</span> <span class="n">explain_visual</span>
+
+<span class="n">df</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"SELECT * FROM orders WHERE amount &gt; 100"</span><span class="p">)</span>
+
+<span class="c1"># before: df.explain_visual()</span>
+<span class="n">explain_visual</span><span class="p">(</span><span class="n">df</span><span class="p">)</span>
+<span class="n">explain_visual</span><span class="p">(</span><span class="n">df</span><span class="p">,</span> <span class="n">analyze</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">"plan.svg"</span><span class="p">)</span>
+
+<span class="c1"># before: df.collect_with_progress()</span>
+<span class="n">batches</span> <span class="o">=</span> <span class="n">collect_with_progress</span><span class="p">(</span><span class="n">df</span><span class="p">)</span>
+<span class="n">batches</span> <span class="o">=</span> <span class="n">collect_with_progress</span><span class="p">(</span><span class="n">df</span><span class="p">,</span> <span class="n">callback</span><span class="o">=</span><span class="k">lambda</span> <span class="n">status</span><span class="p">,</span> <span class="n">progress</span><span class="p">:</span> <span class="nb">print</span><span class="p">(</span><span class="n">status</span><span class="p">))</span>
+</pre></div>
+</div>
+<p>The parameters and return values are unchanged.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">%sql</span></code> magic returns a <code class="docutils literal notranslate"><span class="pre">datafusion.DataFrame</span></code> instead of a
+<code class="docutils literal notranslate"><span class="pre">DistributedDataFrame</span></code>. <code class="docutils literal notranslate"><span class="pre">%ballista</span> <span class="pre">tables</span></code> uses the DataFusion catalog
+directly, since <code class="docutils literal notranslate"><span class="pre">ctx.get_tables()</span></code> is removed. <code class="docutils literal notranslate"><span class="pre">%ballista</span> <span class="pre">status</span></code> shows the
+session id from <code class="docutils literal notranslate"><span class="pre">ctx.session_id()</span></code>. The magic commands themselves are
+unchanged.</p>
+</section>
 </section>
 </section>
 
@@ -535,6 +663,15 @@ executors used to report it as <code class="docutils literal notranslate"><span 
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#undecodable-fetch-tickets-are-rejected-as-invalidargument">Undecodable fetch tickets are rejected as <code class="docutils literal notranslate"><span class="pre">InvalidArgument</span></code></a></li>
 </ul>
 </li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#python-client-changes">Python client changes</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#summary">Summary</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#datafusion-python-is-supported-natively">DataFusion Python is supported natively</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#distributeddataframe-is-removed"><code class="docutils literal notranslate"><span class="pre">DistributedDataFrame</span></code> is removed</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#ballistasessioncontext-is-a-factory-function"><code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> is a factory function</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration-changes">Configuration changes</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#jupyter-support-changes">Jupyter support changes</a></li>
 </ul>
 </li>
 </ul>
