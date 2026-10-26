@@ -56,7 +56,7 @@ on:
 
 jobs:
   tpcds-sf1:
-    name: TPC-DS SF1 (adaptive planner, ${{ matrix.label }})
+    name: TPC-DS SF1 (${{ matrix.planner }} planner, ${{ matrix.label }})
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
@@ -65,21 +65,36 @@ jobs:
     # sitting for hours with no useful signal.
     timeout-minutes: 45
     strategy:
-      # One red leg must not cancel the other; the two task-packing modes are
-      # independent signals.
+      # One red leg must not cancel the others; each planner and task-packing
+      # combination is an independent signal.
       fail-fast: false
       matrix:
+        # Both planners, each at both task-packing settings. The planner is
+        # always set explicitly so the job label stays true if the default
+        # changes.
+        #
+        # 4 partitions per task rather than a larger cap because the scheduler
+        # clamps the slice to the executor's free vcores
+        # (`budget.vcores.min(cap)`), and the executor runs with `--vcores 4`.
+        # A higher cap would be unreachable and the label would overstate what
+        # is covered.
         include:
-          - label: "1 partition per task"
-            task_args: ""
-            slug: "mpt1"
-          # 4 rather than a larger cap because the scheduler clamps the slice to
-          # the executor's free vcores (`budget.vcores.min(cap)`), and the
-          # executor runs with `--vcores 4`. A higher cap would be unreachable
-          # and the label would overstate what is covered.
-          - label: "4 partitions per task"
-            task_args: "-c ballista.scheduler.max_partitions_per_task=4"
-            slug: "mpt4"
+          - planner: "static"
+            label: "1 partition per task"
+            extra_args: "-c ballista.planner.adaptive.enabled=false"
+            slug: "static-mpt1"
+          - planner: "static"
+            label: "4 partitions per task"
+            extra_args: "-c ballista.planner.adaptive.enabled=false -c ballista.scheduler.max_partitions_per_task=4"
+            slug: "static-mpt4"
+          - planner: "adaptive"
+            label: "1 partition per task"
+            extra_args: "-c ballista.planner.adaptive.enabled=true"
+            slug: "aqe-mpt1"
+          - planner: "adaptive"
+            label: "4 partitions per task"
+            extra_args: "-c ballista.planner.adaptive.enabled=true -c ballista.scheduler.max_partitions_per_task=4"
+            slug: "aqe-mpt4"
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -119,21 +134,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          # This matrix leg runs the suite under the adaptive planner (AQE) at
-          # one task-packing setting. AQE is the default, but it is set
-          # explicitly so the job label stays true if the default changes. The
-          # tpcds binary internally loops all non-skipped queries and exits
-          # non-zero on any failure, so a single invocation covers the whole
-          # suite. The other leg runs in parallel.
-          echo "::group::[adaptive planner, ${{ matrix.label }}] TPC-DS suite"
+          # This matrix leg runs the suite under one planner at one
+          # task-packing setting. The tpcds binary internally loops all
+          # non-skipped queries and exits non-zero on any failure, so a single
+          # invocation covers the whole suite. The other legs run in parallel.
+          echo "::group::[${{ matrix.planner }} planner, ${{ matrix.label }}] TPC-DS suite"
           ./target/tpch-ci/tpcds \
             --host 127.0.0.1 --port 50050 \
             --path "$DATA_DIR" \
             --partitions 16 \
             --verify \
             -c datafusion.optimizer.prefer_hash_join=false \
-            -c ballista.planner.adaptive.enabled=true \
-            ${{ matrix.task_args }}
+            ${{ matrix.extra_args }}
           echo "::endgroup::"
 
       - name: Stop Ballista cluster

@@ -469,7 +469,7 @@ are accepted rather than skipped.
 
 `.github/workflows/tpcds.yml` runs the SF1 suite against a local
 scheduler + executor on every push/PR touching `ballista/**` or
-`benchmarks/**`, under the adaptive planner (AQE), with one leg at one
-partition per task and one at up to four partitions per task.
+`benchmarks/**`. It runs four legs: the static planner and the adaptive planner
+(AQE), each at one partition per task and at up to four partitions per task.
 
 [1]: http://www.tpc.org/tpch/
