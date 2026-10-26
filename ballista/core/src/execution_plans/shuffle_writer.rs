@@ -264,9 +264,17 @@ impl ColumnNullCounts {
     }
 
     fn add(&self, batch: &RecordBatch) {
+        // Counted before taking the lock, which every partition the task
+        // drains shares: for dictionary, union and run-end encoded arrays the
+        // count is a pass over the values.
+        let batch_counts: Vec<u64> = batch
+            .columns()
+            .iter()
+            .map(|column| column.logical_null_count() as u64)
+            .collect();
         if let Ok(mut counts) = self.0.lock() {
-            for (slot, column) in counts.iter_mut().zip(batch.columns()) {
-                *slot += column.logical_null_count() as u64;
+            for (slot, n) in counts.iter_mut().zip(batch_counts) {
+                *slot += n;
             }
         }
     }

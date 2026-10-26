@@ -257,8 +257,8 @@ impl ExchangeExec {
     }
 
     /// Stores the per-column statistics the stage reported for its output, one
-    /// entry per column of this exchange's schema. Call before
-    /// [`Self::resolve_shuffle_partitions`], so the replan it triggers sees them.
+    /// entry per column of this exchange's schema. They are reported only once
+    /// the shuffle partitions are resolved too.
     pub fn resolve_column_statistics(&self, column_statistics: Vec<ColumnStatistics>) {
         self.column_statistics.lock().replace(column_statistics);
     }
