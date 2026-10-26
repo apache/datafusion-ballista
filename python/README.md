@@ -83,7 +83,7 @@ ctx = BallistaSessionContext(
     "df://localhost:50050",
     config=BallistaSessionConfig()
     .with_job_name("daily report")
-    .set("datafusion.execution.target_partitions", 256),
+    .with_target_partitions(256),
 )
 ```
 

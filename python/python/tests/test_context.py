@@ -210,6 +210,20 @@ def test_ballista_session_config(cluster):
     assert result.to_pydict() == {"c": [8]}
 
 
+def test_with_target_partitions(cluster):
+    (address, port) = cluster
+    config = BallistaSessionConfig().with_target_partitions(3)
+    ctx = BallistaSessionContext(address=f"df://{address}:{port}", config=config)
+    ctx.register_parquet("t", TEST_PARQUET)
+    result = to_table(
+        ctx.sql("EXPLAIN ANALYZE SELECT bool_col, count(*) FROM t GROUP BY bool_col")
+    )
+
+    plan = "\n".join(result.column("plan").to_pylist())
+    # final aggregation stage runs with configured number of partitions
+    assert "SuccessfulStage[stage_id=1, partitions=3]" in plan
+
+
 def test_sql_explain_analyze(ctx):
     ctx.register_parquet("t", TEST_PARQUET)
     result = to_table(

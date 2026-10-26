@@ -110,6 +110,15 @@ def test_target_partitions_overridden_by_set_on_session_config():
     assert settings["datafusion.execution.batch_size"] == "1234"
 
 
+def test_with_target_partitions():
+    config = BallistaSessionConfig()
+    assert config.with_target_partitions(3) is config
+
+    settings = _settings(config.build())
+
+    assert settings["datafusion.execution.target_partitions"] == "3"
+
+
 def test_dict_keeps_non_restricted_options():
     key = "datafusion.sql_parser.map_string_types_to_utf8view"
     assert not _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS[key]
