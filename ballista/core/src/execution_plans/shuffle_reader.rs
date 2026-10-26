@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::client::BallistaClient;
-use crate::client_pool::{BallistaClientPool, PooledClient};
+use crate::client_pool::BallistaClientPool;
 use crate::error::BallistaError;
 use crate::execution_plans::range_filter::WidenedBound;
 use crate::execution_plans::range_shuffle::{
@@ -707,44 +707,6 @@ impl RecordBatchStream for GovernedStream {
     }
 }
 
-/// A remote partition stream that keeps its pooled connection checked out until
-/// the stream is dropped.
-///
-/// Remote streams are read lazily, so a stream the consumer has not reached yet
-/// holds its unread data in the connection's HTTP/2 flow-control window. If the
-/// connection went back to the pool as soon as the stream opened, the next
-/// fetch could multiplex onto it, and enough waiting streams could fill the
-/// window and starve the stream the consumer is reading. Holding the lease
-/// keeps each pooled connection to one open stream. A connection whose stream
-/// fails is discarded rather than reused.
-struct LeasedStream {
-    inner: SendableRecordBatchStream,
-    lease: Option<PooledClient>,
-}
-
-impl Stream for LeasedStream {
-    type Item = Result<RecordBatch>;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        let item = self.inner.poll_next_unpin(cx);
-        if let Poll::Ready(Some(Err(_))) = &item
-            && let Some(lease) = self.lease.take()
-        {
-            lease.discard();
-        }
-        item
-    }
-}
-
-impl RecordBatchStream for LeasedStream {
-    fn schema(&self) -> SchemaRef {
-        self.inner.schema()
-    }
-}
-
 /// Splits the provided partition locations into local and remote partitions.
 /// Local partitions are read directly from local Arrow IPC files,
 /// while remote partitions are fetched using the Arrow Flight client.
@@ -840,7 +802,7 @@ fn send_fetch_partitions(
     // All three are held for the lifetime of the returned stream (see
     // GovernedStream), so budget is released only when the body is fully
     // consumed. Bodies stream as the consumer reads them, and each open stream
-    // keeps its pooled connection to itself (see LeasedStream), so a stream
+    // keeps its pooled connection to itself (see PooledClient::lease_stream), so a stream
     // waiting to be read cannot starve another stream's flow-control window.
     let byte_sem = Arc::new(Semaphore::new(byte_permits_cap(max_bytes)));
     let req_sem = Arc::new(Semaphore::new(max_reqs.max(1)));
@@ -952,7 +914,7 @@ fn send_fetch_partitions(
             }
             .map(|(stream, first)| {
                 Box::pin(GovernedStream::new(
-                    remote_body_stream(&p, stream, first, decoded_bytes),
+                    remote_body_stream(p, stream, first, decoded_bytes),
                     byte_permit,
                     req_permit,
                     addr_permit,
@@ -1066,13 +1028,12 @@ async fn open_remote_partition(
 /// duplicate batches, so it is reported as `FetchFailed` and fails the task;
 /// the scheduler then re-runs it.
 fn remote_body_stream(
-    location: &PartitionLocation,
+    location: PartitionLocation,
     stream: SendableRecordBatchStream,
     first: Option<RecordBatch>,
     decoded_bytes: metrics::Count,
 ) -> SendableRecordBatchStream {
     let schema = stream.schema();
-    let location = location.clone();
     let rest =
         stream.map_err(move |e| fetch_failed(&location, e.to_string()).into_datafusion());
     let body = futures::stream::iter(first.map(Ok))
@@ -1138,10 +1099,7 @@ pub(crate) async fn fetch_partition_remote(
             .fetch_partition(&metadata.id, partition_id, file_id, layout, prefer_flight)
             .await
         {
-            Ok(stream) => Ok(Box::pin(LeasedStream {
-                inner: stream,
-                lease: Some(pooled),
-            })),
+            Ok(stream) => Ok(pooled.lease_stream(stream)),
             Err(e) => {
                 pooled.discard();
                 Err(e)
@@ -1200,11 +1158,13 @@ pub(crate) async fn fetch_range_remote(
             )
             .await
             .map_err(|error| as_fetch_failed(metadata, partition_id, error))?;
-        let result = fetch_ranges_with(&mut pooled, location, bound, schema).await;
-        if result.is_err() {
-            pooled.discard();
+        match fetch_ranges_with(&mut pooled, location, bound, schema).await {
+            Ok(stream) => Ok(pooled.lease_stream(stream)),
+            Err(e) => {
+                pooled.discard();
+                Err(e)
+            }
         }
-        result
     } else {
         let mut client = new_ballista_client(
             metadata.host.as_str(),
@@ -2616,30 +2576,35 @@ mod governor_tests {
         }
     }
 
-    fn int_batch(schema: &SchemaRef, value: i32) -> RecordBatch {
+    fn int_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
+    }
+
+    fn int_batch(value: i32) -> RecordBatch {
         RecordBatch::try_new(
-            schema.clone(),
+            int_schema(),
             vec![Arc::new(Int32Array::from(vec![value; 1024]))],
         )
         .unwrap()
     }
 
+    fn batch_stream(
+        batches: impl Stream<Item = Result<RecordBatch>> + Send + 'static,
+    ) -> SendableRecordBatchStream {
+        Box::pin(RecordBatchStreamAdapter::new(int_schema(), batches))
+    }
+
     #[tokio::test]
     async fn remote_body_stream_pulls_batches_on_demand() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let schema: SchemaRef =
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let pulled = Arc::new(AtomicUsize::new(0));
-        let inner = {
-            let schema = schema.clone();
+        let mut stream = batch_stream({
             let pulled = pulled.clone();
             futures::stream::iter(0..4).map(move |i| {
                 pulled.fetch_add(1, Ordering::SeqCst);
-                Ok(int_batch(&schema, i))
+                Ok(int_batch(i))
             })
-        };
-        let mut stream = Box::pin(RecordBatchStreamAdapter::new(schema.clone(), inner))
-            as SendableRecordBatchStream;
+        });
 
         // Opening a fetch receives only its first batch.
         let first = stream.next().await.transpose().unwrap();
@@ -2647,7 +2612,7 @@ mod governor_tests {
 
         let decoded_bytes = metrics::Count::new();
         let mut body =
-            remote_body_stream(&remote_location(), stream, first, decoded_bytes.clone());
+            remote_body_stream(remote_location(), stream, first, decoded_bytes.clone());
         assert_eq!(pulled.load(Ordering::SeqCst), 1);
 
         // The first batch is served without reading further, and each later
@@ -2655,7 +2620,7 @@ mod governor_tests {
         let mut expected_bytes = 0;
         for i in 0..4 {
             let batch = body.next().await.unwrap().unwrap();
-            assert_eq!(batch, int_batch(&schema, i));
+            assert_eq!(batch, int_batch(i));
             assert_eq!(pulled.load(Ordering::SeqCst), i as usize + 1);
             expected_bytes += batch.get_array_memory_size();
         }
@@ -2665,18 +2630,14 @@ mod governor_tests {
 
     #[tokio::test]
     async fn remote_body_stream_reports_mid_body_error_as_fetch_failed() {
-        let schema: SchemaRef =
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        let inner = futures::stream::iter(vec![
-            Ok(int_batch(&schema, 1)),
+        let mut stream = batch_stream(futures::stream::iter(vec![
+            Ok(int_batch(1)),
             Err(DataFusionError::Execution("connection reset".to_string())),
-        ]);
-        let mut stream = Box::pin(RecordBatchStreamAdapter::new(schema.clone(), inner))
-            as SendableRecordBatchStream;
+        ]));
         let first = stream.next().await.transpose().unwrap();
 
         let mut body =
-            remote_body_stream(&remote_location(), stream, first, metrics::Count::new());
+            remote_body_stream(remote_location(), stream, first, metrics::Count::new());
         let err = utils::collect_stream(&mut body).await.unwrap_err();
 
         match err {
@@ -2688,66 +2649,6 @@ mod governor_tests {
             }
             other => panic!("expected FetchFailed, got {other:?}"),
         }
-    }
-
-    /// A [`LeasedStream`] over `items`, plus a counter of how many times its
-    /// pooled connection was returned to the pool.
-    fn leased_stream(
-        items: Vec<Result<RecordBatch>>,
-    ) -> (LeasedStream, Arc<std::sync::atomic::AtomicUsize>) {
-        use crate::client::BallistaClient;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let schema: SchemaRef =
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        let returned = Arc::new(AtomicUsize::new(0));
-        let lease = {
-            let returned = returned.clone();
-            PooledClient::new(
-                BallistaClient::new_for_test("executor_1", 7070),
-                Box::new(move |_| {
-                    returned.fetch_add(1, Ordering::SeqCst);
-                }),
-            )
-        };
-        let inner = Box::pin(RecordBatchStreamAdapter::new(
-            schema,
-            futures::stream::iter(items),
-        )) as SendableRecordBatchStream;
-        let stream = LeasedStream {
-            inner,
-            lease: Some(lease),
-        };
-        (stream, returned)
-    }
-
-    #[tokio::test]
-    async fn leased_stream_returns_connection_only_when_dropped() {
-        use std::sync::atomic::Ordering;
-        let schema: SchemaRef =
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        let (mut stream, returned) =
-            leased_stream(vec![Ok(int_batch(&schema, 1)), Ok(int_batch(&schema, 2))]);
-
-        stream.next().await.unwrap().unwrap();
-        stream.next().await.unwrap().unwrap();
-        assert!(stream.next().await.is_none());
-        // Still checked out: no other fetch can share the connection yet.
-        assert_eq!(returned.load(Ordering::SeqCst), 0);
-
-        drop(stream);
-        assert_eq!(returned.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn leased_stream_discards_connection_after_error() {
-        use std::sync::atomic::Ordering;
-        let (mut stream, returned) = leased_stream(vec![Err(
-            DataFusionError::Execution("connection reset".to_string()),
-        )]);
-
-        assert!(stream.next().await.unwrap().is_err());
-        drop(stream);
-        assert_eq!(returned.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

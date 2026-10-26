@@ -21,9 +21,15 @@ use crate::client::BallistaClient;
 use crate::error::Result;
 use crate::extension::BallistaConfigGrpcEndpoint;
 use crate::utils::GrpcClientConfig;
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
+use futures::{Stream, StreamExt};
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -81,6 +87,55 @@ impl PooledClient {
     pub fn discard(mut self) {
         self.return_fn = None;
     }
+
+    /// Keep this connection checked out until `stream`, opened on it, is
+    /// dropped; if the stream fails, the connection is discarded instead of
+    /// returned.
+    ///
+    /// Releasing the connection as soon as a stream opens would let the next
+    /// caller multiplex onto it. A stream that is read lazily holds its unread
+    /// data in the connection's HTTP/2 flow-control window, so enough waiting
+    /// streams on one connection can starve the stream being read. Leasing
+    /// keeps each pooled connection to one open stream.
+    pub fn lease_stream(
+        self,
+        stream: SendableRecordBatchStream,
+    ) -> SendableRecordBatchStream {
+        Box::pin(LeasedStream {
+            inner: stream,
+            lease: Some(self),
+        })
+    }
+}
+
+/// A stream that holds the [PooledClient] it was opened on; see
+/// [PooledClient::lease_stream].
+struct LeasedStream {
+    inner: SendableRecordBatchStream,
+    lease: Option<PooledClient>,
+}
+
+impl Stream for LeasedStream {
+    type Item = datafusion::error::Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let item = self.inner.poll_next_unpin(cx);
+        if let Poll::Ready(Some(Err(_))) = &item
+            && let Some(lease) = self.lease.take()
+        {
+            lease.discard();
+        }
+        item
+    }
+}
+
+impl RecordBatchStream for LeasedStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
 }
 
 impl Deref for PooledClient {
@@ -102,5 +157,69 @@ impl Drop for PooledClient {
             let client = self.client.clone();
             f(client);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::arrow::array::Int32Array;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::error::DataFusionError;
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A stream of `items` leased on a pooled connection, plus a count of how
+    /// many times that connection was returned to the pool.
+    fn leased_stream(
+        items: Vec<datafusion::error::Result<RecordBatch>>,
+    ) -> (SendableRecordBatchStream, Arc<AtomicUsize>) {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let returned = Arc::new(AtomicUsize::new(0));
+        let lease = {
+            let returned = returned.clone();
+            PooledClient::new(
+                BallistaClient::new_for_test("executor_1", 7070),
+                Box::new(move |_| {
+                    returned.fetch_add(1, Ordering::SeqCst);
+                }),
+            )
+        };
+        let stream = Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            futures::stream::iter(items),
+        ));
+        (lease.lease_stream(stream), returned)
+    }
+
+    fn batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))])
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn leased_stream_returns_connection_only_when_dropped() {
+        let (mut stream, returned) = leased_stream(vec![Ok(batch()), Ok(batch())]);
+
+        stream.next().await.unwrap().unwrap();
+        stream.next().await.unwrap().unwrap();
+        assert!(stream.next().await.is_none());
+        // Still checked out: no other fetch can share the connection yet.
+        assert_eq!(returned.load(Ordering::SeqCst), 0);
+
+        drop(stream);
+        assert_eq!(returned.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn leased_stream_discards_connection_after_error() {
+        let (mut stream, returned) = leased_stream(vec![Err(
+            DataFusionError::Execution("connection reset".to_string()),
+        )]);
+
+        assert!(stream.next().await.unwrap().is_err());
+        drop(stream);
+        assert_eq!(returned.load(Ordering::SeqCst), 0);
     }
 }
