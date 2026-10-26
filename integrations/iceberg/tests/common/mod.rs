@@ -27,7 +27,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
-use ballista_iceberg::register_iceberg_codecs;
+use ballista_iceberg::register_iceberg;
 use datafusion::assert_batches_eq;
 use datafusion::error::Result;
 use datafusion::execution::SessionStateBuilder;
@@ -112,10 +112,10 @@ pub async fn assert_standalone_scans(catalog: Arc<dyn Catalog>) -> Result<()> {
     let first = insert(&catalog, "(1, 'a'), (2, NULL)").await;
 
     let state = SessionStateBuilder::new()
-        .with_config(register_iceberg_codecs(SessionConfig::new_with_ballista()))
+        .with_config(SessionConfig::new_with_ballista())
         .with_default_features()
         .build();
-    let ctx = SessionContext::standalone_with_state(state).await?;
+    let ctx = SessionContext::standalone_with_state(register_iceberg(state)).await?;
     let mount = IcebergCatalogProvider::try_new(catalog.clone()).await?;
     ctx.register_catalog("iceberg", Arc::new(mount));
     let v1 = IcebergStaticTableProvider::try_new_from_table(first).await?;

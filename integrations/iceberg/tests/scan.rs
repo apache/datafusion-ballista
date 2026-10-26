@@ -23,8 +23,7 @@ mod common;
 mod standalone {
     use crate::common::{assert_standalone_scans, memory_catalog};
 
-    // Multi-threaded: sending a query loads its catalog-backed tables.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn should_scan_latest_and_older_versions() -> datafusion::error::Result<()> {
         let dir = tempfile::tempdir()?;
         assert_standalone_scans(memory_catalog(dir.path()).await).await

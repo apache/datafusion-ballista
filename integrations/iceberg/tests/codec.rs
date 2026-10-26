@@ -24,16 +24,18 @@ mod common;
 mod iceberg_nodes {
     use std::sync::Arc;
 
-    use ballista_iceberg::{IcebergLogicalCodec, IcebergPhysicalCodec};
+    use ballista_iceberg::{IcebergLogicalCodec, IcebergPhysicalCodec, register_iceberg};
     use datafusion::assert_batches_eq;
     use datafusion::catalog::TableProvider;
     use datafusion::common::{Result, TableReference};
     use datafusion::datasource::source::DataSourceExec;
-    use datafusion::execution::TaskContext;
-    use datafusion::logical_expr::dml::InsertOp;
-    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::{collect, displayable};
     use datafusion::prelude::{SessionContext, col, lit};
+    use datafusion_proto::bytes::{
+        logical_plan_from_bytes_with_extension_codec,
+        logical_plan_to_bytes_with_extension_codec,
+    };
     use datafusion_proto::logical_plan::LogicalExtensionCodec;
     use datafusion_proto::physical_plan::{
         DefaultPhysicalProtoConverter, PhysicalExtensionCodec,
@@ -84,43 +86,34 @@ mod iceberg_nodes {
         Ok(())
     }
 
-    // Multi-threaded: encoding a catalog-backed table loads it.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn should_pin_catalog_table_when_encoded() -> Result<()> {
+    #[tokio::test]
+    async fn should_pin_catalog_tables_when_planned() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let catalog = memory_catalog(dir.path()).await;
-        let provider = catalog_table(&catalog).await;
-        let schema = provider.schema();
+        let state = SessionStateBuilder::new().with_default_features().build();
+        let ctx = SessionContext::new_with_state(register_iceberg(state));
+        ctx.register_table("t", Arc::new(catalog_table(&catalog).await))?;
         let codec = IcebergLogicalCodec::default();
-        let table = TableReference::bare("t");
+        let send = async |sql: &str| {
+            let plan = ctx.state().create_logical_plan(sql).await?;
+            logical_plan_to_bytes_with_extension_codec(&plan, &codec)
+        };
 
         let pinned = insert(&catalog, "(1, 'a')").await;
-        let mut buf = Vec::new();
-        codec.try_encode_table_provider(&table, Arc::new(provider), &mut buf)?;
+        let select = send("SELECT a.id, b.name FROM t a CROSS JOIN t b").await?;
+        let insert_c = send("INSERT INTO t VALUES (3, 'c')").await?;
         insert(&catalog, "(2, 'b')").await;
         // Decoding uses the metadata the client sent, not the file.
         std::fs::remove_file(pinned.metadata_location().unwrap())?;
-        let decoded = codec.try_decode_table_provider(
-            &buf,
-            &table,
-            schema.clone(),
-            &TaskContext::default(),
-        )?;
 
-        let ctx = SessionContext::new();
-        let input = Arc::new(EmptyExec::new(schema));
-        let err = decoded
-            .insert_into(&ctx.state(), input, InsertOp::Append)
-            .await
-            .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "This feature is not implemented: INSERT INTO an Iceberg table isn't \
-             supported on Ballista yet"
-        );
-
-        ctx.register_table("t", decoded)?;
-        let result = ctx.sql("SELECT * FROM t").await?.collect().await?;
+        let run = async |bytes: &[u8]| {
+            let plan = logical_plan_from_bytes_with_extension_codec(
+                bytes,
+                &ctx.task_ctx(),
+                &codec,
+            )?;
+            ctx.execute_logical_plan(plan).await?.collect().await
+        };
         let expected = [
             "+----+------+",
             "| id | name |",
@@ -128,13 +121,18 @@ mod iceberg_nodes {
             "| 1  | a    |",
             "+----+------+",
         ];
-        assert_batches_eq!(expected, &result);
+        assert_batches_eq!(expected, &run(&select).await?);
+        assert_eq!(
+            run(&insert_c).await.unwrap_err().to_string(),
+            "This feature is not implemented: INSERT INTO an Iceberg table isn't \
+             supported on Ballista yet"
+        );
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn should_refuse_catalog_table_on_single_threaded_runtime() -> Result<()> {
+    async fn should_refuse_unpinned_catalog_table() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let provider = catalog_table(&memory_catalog(dir.path()).await).await;
 
@@ -147,10 +145,8 @@ mod iceberg_nodes {
             .unwrap_err();
         assert_eq!(
             err.to_string(),
-            "Execution error: Iceberg table t is catalog-backed, so sending the query \
-             loads it, which can hang on a single-threaded tokio runtime; run the \
-             client on a multi-threaded runtime, or register the table as an \
-             IcebergStaticTableProvider"
+            "Execution error: Iceberg table t is catalog-backed but wasn't pinned to \
+             a version: build the client's session with ballista_iceberg::register_iceberg"
         );
 
         Ok(())

@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
-use ballista_iceberg::register_iceberg_codecs;
+use ballista_iceberg::register_iceberg;
 use datafusion::common::Result;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -94,12 +94,12 @@ async fn main() -> Result<()> {
     };
     insert("(1, 'Paris'), (2, 'Oslo')").await?;
 
-    // Start standalone Ballista with the Iceberg codecs.
+    // Start standalone Ballista with Iceberg support.
     let state = SessionStateBuilder::new()
-        .with_config(register_iceberg_codecs(SessionConfig::new_with_ballista()))
+        .with_config(SessionConfig::new_with_ballista())
         .with_default_features()
         .build();
-    let ctx = SessionContext::standalone_with_state(state).await?;
+    let ctx = SessionContext::standalone_with_state(register_iceberg(state)).await?;
     ctx.register_table("trips", trips.clone())?;
 
     // A static table always reads the version it was made from: time travel.

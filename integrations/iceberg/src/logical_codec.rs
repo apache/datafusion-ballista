@@ -19,30 +19,20 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use ballista_core::serde::BallistaLogicalExtensionCodec;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::catalog::{Session, TableProvider};
-use datafusion::common::{Result, TableReference, exec_err, not_impl_err};
-use datafusion::datasource::TableType;
+use datafusion::catalog::TableProvider;
+use datafusion::common::{Result, TableReference, exec_err};
 use datafusion::datasource::file_format::FileFormatFactory;
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
-use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::{
-    AggregateUDF, Expr, Extension, HigherOrderUDF, LogicalPlan, ScalarUDF,
-    TableProviderFilterPushDown, WindowUDF,
+    AggregateUDF, Extension, HigherOrderUDF, LogicalPlan, ScalarUDF, WindowUDF,
 };
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
-use iceberg::table::Table;
-use iceberg_datafusion::read::IcebergDataSource;
-use iceberg_datafusion::{
-    IcebergCatalogTableProvider, IcebergStaticTableProvider, to_datafusion_error,
-};
+use iceberg_datafusion::{IcebergCatalogTableProvider, IcebergStaticTableProvider};
 use serde::{Deserialize, Serialize};
-use tokio::runtime::{Handle, RuntimeFlavor};
 
+use crate::catalog::PinnedTable;
 use crate::wire::{self, Frame, TAG_DELEGATED, TableWire};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -51,61 +41,11 @@ struct ProviderWire {
     snapshot_id: Option<i64>,
 }
 
-/// The scheduler's side of an Iceberg table: one version of it, read with the
-/// schema the client planned against.
-#[derive(Debug)]
-struct PinnedTable {
-    table: Table,
-    snapshot_id: Option<i64>,
-    schema: SchemaRef,
-}
-
-#[async_trait]
-impl TableProvider for PinnedTable {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::Base
-    }
-
-    async fn scan(
-        &self,
-        _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
-        limit: Option<usize>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let source = IcebergDataSource::builder(self.table.clone(), self.schema.clone())
-            .with_snapshot_id(self.snapshot_id)
-            .with_projection(projection)
-            .with_filters(filters)
-            .with_fetch(limit)
-            .build()?;
-        Ok(DataSourceExec::from_data_source(source))
-    }
-
-    fn supports_filters_pushdown(
-        &self,
-        filters: &[&Expr],
-    ) -> Result<Vec<TableProviderFilterPushDown>> {
-        Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
-    }
-
-    async fn insert_into(
-        &self,
-        _state: &dyn Session,
-        _input: Arc<dyn ExecutionPlan>,
-        _insert_op: InsertOp,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        not_impl_err!("INSERT INTO an Iceberg table isn't supported on Ballista yet")
-    }
-}
-
 /// A [`LogicalExtensionCodec`] for [`IcebergStaticTableProvider`] and
-/// [`IcebergCatalogTableProvider`] that delegates everything else to an inner
-/// codec.
+/// catalog-backed tables pinned by [`register_iceberg`] that delegates
+/// everything else to an inner codec.
+///
+/// [`register_iceberg`]: crate::register_iceberg
 #[derive(Debug)]
 pub struct IcebergLogicalCodec {
     inner: Arc<dyn LogicalExtensionCodec>,
@@ -173,28 +113,16 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                 table: TableWire::with_metadata(provider.table())?,
                 snapshot_id: provider.snapshot_id(),
             }
-        } else if let Some(provider) = node.downcast_ref::<IcebergCatalogTableProvider>()
-        {
-            // Loading blocks this thread, and a REST catalog's pooled
-            // connections may need this thread's runtime to answer.
-            if let Ok(RuntimeFlavor::CurrentThread) =
-                Handle::try_current().map(|handle| handle.runtime_flavor())
-            {
-                return exec_err!(
-                    "Iceberg table {table_ref} is catalog-backed, so sending the query \
-                     loads it, which can hang on a single-threaded tokio runtime; run \
-                     the client on a multi-threaded runtime, or register the table as \
-                     an IcebergStaticTableProvider"
-                );
-            }
-            let catalog = provider.catalog().clone();
-            let ident = provider.table_ident().clone();
-            let table = wire::block_on(async move { catalog.load_table(&ident).await })?
-                .map_err(to_datafusion_error)?;
+        } else if let Some(pinned) = node.downcast_ref::<PinnedTable>() {
             ProviderWire {
-                table: TableWire::with_metadata(&table)?,
-                snapshot_id: None,
+                table: TableWire::with_metadata(&pinned.table)?,
+                snapshot_id: pinned.snapshot_id,
             }
+        } else if node.is::<IcebergCatalogTableProvider>() {
+            return exec_err!(
+                "Iceberg table {table_ref} is catalog-backed but wasn't pinned to a \
+                 version: build the client's session with ballista_iceberg::register_iceberg"
+            );
         } else {
             buf.push(TAG_DELEGATED);
             return self.inner.try_encode_table_provider(table_ref, node, buf);

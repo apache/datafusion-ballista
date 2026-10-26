@@ -30,7 +30,7 @@ iceberg-datafusion and iceberg-rust, and needs Rust 1.95.
 
 ## Usage
 
-Register the codecs on the session config, then mount an Iceberg catalog:
+Ready the session with `register_iceberg`, then mount an Iceberg catalog:
 
 ```rust
 use std::sync::Arc;
@@ -38,14 +38,14 @@ use std::sync::Arc;
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use ballista_iceberg::register_iceberg_codecs;
+use ballista_iceberg::register_iceberg;
 use iceberg_datafusion::IcebergCatalogProvider;
 
 let state = SessionStateBuilder::new()
-    .with_config(register_iceberg_codecs(SessionConfig::new_with_ballista()))
+    .with_config(SessionConfig::new_with_ballista())
     .with_default_features()
     .build();
-let ctx = SessionContext::standalone_with_state(state).await?;
+let ctx = SessionContext::standalone_with_state(register_iceberg(state)).await?;
 
 ctx.register_catalog("rest", Arc::new(IcebergCatalogProvider::try_new(catalog).await?));
 ctx.sql("SELECT * FROM rest.ns.t").await?.show().await?;
@@ -71,9 +71,11 @@ the executors, as bytes. The codecs replace each live Iceberg table with one
 version of it: the location of its metadata file and its serialized `FileIO`.
 Metadata files never change, so every node rebuilds exactly that version.
 
-- **A catalog-backed table** is sent as the version its catalog serves when the
-  client sends the query. Each query asks again, so each reads the latest
-  version.
+- **A catalog-backed table** is pinned to the version its catalog serves when
+  the client plans the query. DataFusion looks up each table a query names
+  once, so every scan of it, such as each side of a self-join, reads that
+  version, and each new query reads the latest one. A `DataFrame` planned once
+  and run twice reads the same version both times.
 - **A static table** is sent as the version it holds.
 - **A scan** is sent as the version the scheduler planned it against.
 
@@ -86,13 +88,6 @@ configuration.
 
 ## Limitations
 
-- **A table read twice in one query can see two versions.** Each scan of a
-  catalog-backed table, such as each side of a self-join, asks the catalog
-  separately, so a commit that lands in between is seen by only one of them.
-- **Catalog-backed tables need a multi-threaded client runtime.** Sending a
-  query loads them while blocking the calling thread, which can hang a
-  single-threaded tokio runtime (`#[tokio::test]`'s default), so there it fails
-  with an error. Static tables work on either.
 - **Reads only.** `INSERT INTO` an Iceberg table fails with "isn't supported
   on Ballista yet".
 - **No metadata tables.** Tables such as `t$snapshots` can't be sent to the
@@ -104,5 +99,6 @@ configuration.
   `FileIO` includes them, so the links between client, scheduler and executors
   must be trusted.
 - **Only standalone mode is tested.** A separately deployed scheduler and
-  executors must link `ballista-iceberg` and register the codecs too (see
+  executors must link `ballista-iceberg` and register the codecs with
+  `register_iceberg_codecs` (see
   [Extending Components](extending-components.md)).

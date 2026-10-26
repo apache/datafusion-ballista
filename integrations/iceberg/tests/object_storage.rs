@@ -29,7 +29,7 @@ mod standalone {
     use crate::common::rustfs::RestCatalog;
     use crate::common::{assert_standalone_scans, create_table};
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn should_scan_s3_tables_through_a_rest_catalog()
     -> datafusion::error::Result<()> {
         let rest = RestCatalog::start().await;
