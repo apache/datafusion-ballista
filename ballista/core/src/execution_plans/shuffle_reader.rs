@@ -737,7 +737,8 @@ pub(crate) fn local_remote_read_split(
 /// cost, not wall-clock.
 #[derive(Debug, Clone)]
 struct ShuffleReadMetrics {
-    /// Wall-time fetching remote partitions (Arrow-Flight fetch + buffering).
+    /// Wall-time opening remote partition fetches and receiving their first
+    /// batch, including retries. The rest of each body streams to the consumer.
     fetch_time: metrics::Time,
     /// Wall-time opening node-local shuffle files.
     local_read_time: metrics::Time,
@@ -901,7 +902,7 @@ fn send_fetch_partitions(
                 let _fetch_timer = read_metrics.fetch_time.timer();
                 with_retry(outer_retries, io_wait, is_retriable_fetch_error, || {
                     attempts += 1;
-                    fetch_partition_buffered(
+                    open_remote_partition(
                         &p,
                         client_grpc_config.clone(),
                         prefer_flight,
@@ -911,12 +912,9 @@ fn send_fetch_partitions(
                 })
                 .await
             }
-            .map(|(schema, batches)| {
-                let bytes: usize =
-                    batches.iter().map(|b| b.get_array_memory_size()).sum();
-                decoded_bytes.add(bytes);
+            .map(|(stream, first)| {
                 Box::pin(GovernedStream::new(
-                    buffered_stream(schema, batches),
+                    remote_body_stream(&p, stream, first, decoded_bytes),
                     byte_permit,
                     req_permit,
                     addr_permit,
@@ -937,11 +935,11 @@ fn send_fetch_partitions(
 }
 
 /// Retry an idempotent async operation up to `retries` times after the initial
-/// attempt, sleeping `wait_ms` between tries. Shuffle partition fetches are
-/// idempotent (the server re-reads the file), so a transport error — including
-/// one mid-body — can be recovered by refetching the whole partition. Only
-/// errors accepted by `should_retry` are retried; anything else is returned
-/// immediately on the first failure.
+/// attempt, sleeping `wait_ms` between tries. Opening a shuffle partition fetch
+/// is idempotent (the server re-reads the file), so a transport error before
+/// any batch has been yielded downstream can be recovered by fetching again.
+/// Only errors accepted by `should_retry` are retried; anything else is
+/// returned immediately on the first failure.
 async fn with_retry<T, F, Fut>(
     retries: u8,
     wait_ms: u64,
@@ -982,23 +980,32 @@ fn is_retriable_fetch_error(e: &BallistaError) -> bool {
     )
 }
 
-/// Fetch a remote partition and buffer its entire body into memory, turning the
-/// open-ended stream into a discrete, refetchable unit. Buffering is what makes
-/// a mid-body transport failure retriable without emitting duplicate batches
-/// downstream. The governor charges each block its compressed (serialized) size,
-/// so the byte budget bounds concurrent in-flight **wire** bytes — which is the
-/// quantity the h2 window must accommodate. The decoded in-memory footprint is
-/// larger by the Arrow/compression expansion ratio, so peak buffered RAM exceeds
-/// the byte budget by that factor. Bounding decoded memory precisely is the
-/// deferred disk-spill work.
-async fn fetch_partition_buffered(
+/// A shuffle fetch failure for `location`, which the scheduler turns into a
+/// re-run of the map stage that produced it.
+fn fetch_failed(location: &PartitionLocation, desc: String) -> BallistaError {
+    BallistaError::FetchFailed(
+        location.executor_meta.id.clone(),
+        location.partition_id.stage_id,
+        location.partition_id.partition_id,
+        desc,
+    )
+}
+
+/// Open a remote partition and receive its first batch.
+///
+/// This is the retriable part of a fetch: nothing has been yielded downstream
+/// yet, so a failure to connect, or a transport error before the first batch
+/// arrives, can be recovered by fetching again. The rest of the body is
+/// streamed by [`remote_body_stream`] and never buffered, because a partition
+/// can be far larger than the memory available to hold it (#2656).
+async fn open_remote_partition(
     location: &PartitionLocation,
     config: Arc<GrpcClientConfig>,
     prefer_flight: bool,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
-) -> result::Result<(SchemaRef, Vec<RecordBatch>), BallistaError> {
-    let stream = fetch_partition_remote(
+) -> result::Result<(SendableRecordBatchStream, Option<RecordBatch>), BallistaError> {
+    let mut stream = fetch_partition_remote(
         location,
         config,
         prefer_flight,
@@ -1006,29 +1013,34 @@ async fn fetch_partition_buffered(
         client_pool,
     )
     .await?;
-    let schema = stream.schema();
-    let metadata = &location.executor_meta;
-    let partition_id = &location.partition_id;
-    let batches = stream.try_collect::<Vec<_>>().await.map_err(|e| {
-        BallistaError::FetchFailed(
-            metadata.id.clone(),
-            partition_id.stage_id,
-            partition_id.partition_id,
-            e.to_string(),
-        )
-    })?;
-    Ok((schema, batches))
+    let first = stream
+        .next()
+        .await
+        .transpose()
+        .map_err(|e| fetch_failed(location, e.to_string()))?;
+    Ok((stream, first))
 }
 
-/// Build an in-memory `SendableRecordBatchStream` from already-buffered batches.
-fn buffered_stream(
-    schema: SchemaRef,
-    batches: Vec<RecordBatch>,
+/// Stream the body of a remote partition opened by [`open_remote_partition`]:
+/// its first batch, then the remaining batches as the consumer pulls them.
+///
+/// A failure after the first batch cannot be retried here without yielding
+/// duplicate batches, so it is reported as `FetchFailed` and fails the task;
+/// the scheduler then re-runs it.
+fn remote_body_stream(
+    location: &PartitionLocation,
+    stream: SendableRecordBatchStream,
+    first: Option<RecordBatch>,
+    decoded_bytes: metrics::Count,
 ) -> SendableRecordBatchStream {
-    Box::pin(RecordBatchStreamAdapter::new(
-        schema,
-        futures::stream::iter(batches.into_iter().map(Ok)),
-    ))
+    let schema = stream.schema();
+    let location = location.clone();
+    let rest =
+        stream.map_err(move |e| fetch_failed(&location, e.to_string()).into_datafusion());
+    let body = futures::stream::iter(first.map(Ok))
+        .chain(rest)
+        .inspect_ok(move |batch| decoded_bytes.add(batch.get_array_memory_size()));
+    Box::pin(RecordBatchStreamAdapter::new(schema, body))
 }
 
 async fn new_ballista_client(
@@ -2487,6 +2499,12 @@ mod tests {
 #[cfg(test)]
 mod governor_tests {
     use super::*;
+    use crate::serde::scheduler::{
+        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+        PartitionId,
+    };
+    use crate::utils;
+    use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 
@@ -2530,6 +2548,102 @@ mod governor_tests {
         assert_eq!(byte_sem.available_permits(), 100);
         assert_eq!(req_sem.available_permits(), 4);
         assert_eq!(addr_sem.available_permits(), 2);
+    }
+
+    fn remote_location() -> PartitionLocation {
+        PartitionLocation {
+            map_partition_id: 0,
+            partition_id: PartitionId {
+                job_id: "test_job".into(),
+                stage_id: 3,
+                partition_id: 5,
+            },
+            executor_meta: ExecutorMetadata {
+                id: "executor_1".to_string(),
+                host: "executor_1".to_string(),
+                port: 7070,
+                grpc_port: 8080,
+                specification: ExecutorSpecification::default().with_vcores(1),
+                os_info: ExecutorOperatingSystemSpecification::default(),
+            },
+            partition_stats: Default::default(),
+            file_id: None,
+            is_sort_shuffle: false,
+        }
+    }
+
+    fn int_batch(schema: &SchemaRef, value: i32) -> RecordBatch {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![value; 1024]))],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn remote_body_stream_pulls_batches_on_demand() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let pulled = Arc::new(AtomicUsize::new(0));
+        let inner = {
+            let schema = schema.clone();
+            let pulled = pulled.clone();
+            futures::stream::iter(0..4).map(move |i| {
+                pulled.fetch_add(1, Ordering::SeqCst);
+                Ok(int_batch(&schema, i))
+            })
+        };
+        let mut stream = Box::pin(RecordBatchStreamAdapter::new(schema.clone(), inner))
+            as SendableRecordBatchStream;
+
+        // Opening a fetch receives only its first batch.
+        let first = stream.next().await.transpose().unwrap();
+        assert_eq!(pulled.load(Ordering::SeqCst), 1);
+
+        let decoded_bytes = metrics::Count::new();
+        let mut body =
+            remote_body_stream(&remote_location(), stream, first, decoded_bytes.clone());
+        assert_eq!(pulled.load(Ordering::SeqCst), 1);
+
+        // The first batch is served without reading further, and each later
+        // batch is read from the wire only when the consumer asks for it.
+        let mut expected_bytes = 0;
+        for i in 0..4 {
+            let batch = body.next().await.unwrap().unwrap();
+            assert_eq!(batch, int_batch(&schema, i));
+            assert_eq!(pulled.load(Ordering::SeqCst), i as usize + 1);
+            expected_bytes += batch.get_array_memory_size();
+        }
+        assert!(body.next().await.is_none());
+        assert_eq!(decoded_bytes.value(), expected_bytes);
+    }
+
+    #[tokio::test]
+    async fn remote_body_stream_reports_mid_body_error_as_fetch_failed() {
+        let schema: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let inner = futures::stream::iter(vec![
+            Ok(int_batch(&schema, 1)),
+            Err(DataFusionError::Execution("connection reset".to_string())),
+        ]);
+        let mut stream = Box::pin(RecordBatchStreamAdapter::new(schema.clone(), inner))
+            as SendableRecordBatchStream;
+        let first = stream.next().await.transpose().unwrap();
+
+        let mut body =
+            remote_body_stream(&remote_location(), stream, first, metrics::Count::new());
+        let err = utils::collect_stream(&mut body).await.unwrap_err();
+
+        match err {
+            BallistaError::FetchFailed(executor_id, stage_id, partition_id, desc) => {
+                assert_eq!(executor_id, "executor_1");
+                assert_eq!(stage_id, 3);
+                assert_eq!(partition_id, 5);
+                assert!(desc.contains("connection reset"), "{desc}");
+            }
+            other => panic!("expected FetchFailed, got {other:?}"),
+        }
     }
 
     #[tokio::test]

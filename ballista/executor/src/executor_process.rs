@@ -259,6 +259,24 @@ fn memory_pool_policy(
     ))
 }
 
+/// Wraps `producer` so every runtime it builds limits spill files to
+/// `max_temp_directory_size` bytes of disk. Applied on top of the producer,
+/// rather than inside it, so a custom `override_runtime_producer` gets the
+/// same limit. Each base runtime has its own disk manager, so the limit is per
+/// session runtime (shared by that session's tasks).
+fn with_max_temp_directory_size(
+    producer: RuntimeProducer,
+    max_temp_directory_size: u64,
+) -> RuntimeProducer {
+    Arc::new(move |config: &SessionConfig| {
+        let runtime_env = producer(config)?;
+        runtime_env
+            .disk_manager
+            .set_max_temp_directory_size(max_temp_directory_size)?;
+        Ok(runtime_env)
+    })
+}
+
 /// A no-op policy: the task uses the shared base env unchanged (DataFusion's
 /// default unbounded pool). Used when `--memory-pool-size` is unset.
 fn identity_pool_policy() -> MemoryPoolPolicy {
@@ -337,6 +355,10 @@ pub struct ExecutorProcessConfig {
     /// Fraction (0.0, 1.0] of the detected host/cgroup memory limit used for the
     /// auto memory pool when `memory_pool_size` is `None`.
     pub memory_pool_fraction: f64,
+    /// Maximum disk space spill files may use, applied to every runtime the
+    /// executor produces (including one from `override_runtime_producer`), so
+    /// per session runtime. When `None`, DataFusion's default limit applies.
+    pub max_temp_directory_size: Option<u64>,
     /// Maximum number of sessions whose shared base runtime env is retained on
     /// the executor (LRU). Sharing reuses object-store clients and the Parquet
     /// footer cache across a session's tasks and queries. `0` disables caching
@@ -423,6 +445,7 @@ impl Default for ExecutorProcessConfig {
             metric_collection_policy: ExecutorMetricCollectionPolicy::default(),
             memory_pool_size: None,
             memory_pool_fraction: DEFAULT_MEMORY_POOL_FRACTION,
+            max_temp_directory_size: None,
             session_runtime_cache_capacity: 16,
             override_execution_engine: None,
             override_function_registry: None,
@@ -526,6 +549,13 @@ async fn start_executor_process_inner(
                 Ok(Arc::new(runtime_env))
             })
         });
+    let base_runtime_producer = match opt.max_temp_directory_size {
+        Some(size) => {
+            info!("Executor spill disk limit: {}", bytesize::ByteSize::b(size));
+            with_max_temp_directory_size(base_runtime_producer, size)
+        }
+        None => base_runtime_producer,
+    };
 
     let fraction = opt.memory_pool_fraction;
     let pool_policy: MemoryPoolPolicy =
@@ -1763,5 +1793,31 @@ mod memory_pool_tests {
     fn cgroup_absent_returns_none() {
         let dir = tempdir().unwrap();
         assert_eq!(read_cgroup_memory_limit(dir.path()), None);
+    }
+}
+
+#[cfg(test)]
+mod spill_limit_tests {
+    use super::*;
+    use datafusion::execution::disk_manager::DEFAULT_MAX_TEMP_DIRECTORY_SIZE;
+
+    #[test]
+    fn applies_spill_limit_to_custom_runtime_producer() {
+        let work_dir = TempDir::new().unwrap();
+        let path = work_dir.path().to_path_buf();
+        let producer: RuntimeProducer = Arc::new(move |_: &SessionConfig| {
+            RuntimeEnvBuilder::new()
+                .with_temp_file_path(path.clone())
+                .build_arc()
+        });
+        let unlimited = producer(&SessionConfig::new()).unwrap();
+        assert_eq!(
+            unlimited.disk_manager.max_temp_directory_size(),
+            DEFAULT_MAX_TEMP_DIRECTORY_SIZE
+        );
+
+        let producer = with_max_temp_directory_size(producer, 1024);
+        let runtime = producer(&SessionConfig::new()).unwrap();
+        assert_eq!(runtime.disk_manager.max_temp_directory_size(), 1024);
     }
 }

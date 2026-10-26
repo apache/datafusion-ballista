@@ -148,6 +148,20 @@ the auto-sized pool uses; it accepts a value in `(0.0, 1.0]` and defaults to
 Because operators spill to disk rather than fail, make sure the executor's
 `--work-dir` has enough scratch space to absorb spills under memory pressure.
 
+DataFusion caps spill files at 100 GB per runtime by default, and a query that
+spills more fails with "The used disk space during the spilling process has
+exceeded the allowable limit". Large sorts and sort-merge joins can exceed this
+at high scale factors. Raise the cap with `--max-temp-directory-size`, which
+takes the same size values as `--memory-pool-size`:
+
+```sh
+ballista-executor --memory-pool-size 48GB --max-temp-directory-size 1TB
+```
+
+The limit applies to each session's runtime on the executor, shared by that
+session's tasks. Setting `datafusion.runtime.max_temp_directory_size` on the
+client has no effect on executors.
+
 ## Join Strategy
 
 How Ballista picks a join depends on whether adaptive query execution is on.
