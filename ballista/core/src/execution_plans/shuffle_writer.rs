@@ -35,7 +35,10 @@ use crate::execution_plans::{
 use crate::extension::SessionConfigExt;
 use crate::utils;
 
-use crate::serde::protobuf::ShuffleWritePartition;
+use crate::hll::HyperLogLog;
+use crate::serde::protobuf::{
+    ColumnSketch, ShuffleWritePartition, SketchType, TaskColumnStats,
+};
 use crate::serde::scheduler::PartitionStats;
 use datafusion::arrow::array::{
     ArrayBuilder, ArrayRef, StringBuilder, StructBuilder, UInt32Builder, UInt64Builder,
@@ -46,6 +49,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
@@ -239,78 +243,164 @@ pub(crate) struct WriterState {
         Vec<Option<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>>>,
 }
 
-/// Per-column logical null counts over everything a writer wrote. Clones share
-/// the counts, so the executor can read them from its copy of the writer once
-/// the task has finished.
+/// Per-column statistics over everything a writer wrote: a logical null count
+/// for every column, plus a HyperLogLog distinct-count sketch for the columns
+/// chosen by [`sketched_columns`]. Clones share the totals, so the executor can
+/// read them from its copy of the writer once the task has finished.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct ColumnNullCounts(Arc<Mutex<Vec<u64>>>);
+pub(crate) struct ColumnStatsCollector(Arc<Mutex<ColumnStatsTotals>>);
 
-impl ColumnNullCounts {
-    /// Zeroes the counts and sizes them for `num_columns` columns.
-    pub(crate) fn reset(&self, num_columns: usize) {
-        if let Ok(mut counts) = self.0.lock() {
-            *counts = vec![0; num_columns];
+#[derive(Debug, Default)]
+struct ColumnStatsTotals {
+    null_counts: Vec<u64>,
+    /// `(column index, sketch)` for each sketched column.
+    sketches: Vec<(usize, HyperLogLog)>,
+}
+
+/// The columns a writer sketches: the plain column references among the hash
+/// partitioning expressions, which are the join and grouping keys downstream
+/// of the shuffle. Nothing is sketched for other partitionings or when
+/// `enabled` is false.
+pub(crate) fn sketched_columns(partitioning: &Partitioning, enabled: bool) -> Vec<usize> {
+    let Partitioning::Hash(exprs, _) = partitioning else {
+        return vec![];
+    };
+    if !enabled {
+        return vec![];
+    }
+    let mut columns: Vec<usize> = exprs
+        .iter()
+        .filter_map(|expr| expr.downcast_ref::<Column>().map(Column::index))
+        .collect();
+    columns.sort_unstable();
+    columns.dedup();
+    columns
+}
+
+impl ColumnStatsCollector {
+    /// Clears the totals and sizes them for `num_columns` columns, sketching
+    /// the ones in `sketched`.
+    pub(crate) fn reset(&self, num_columns: usize, sketched: &[usize]) {
+        if let Ok(mut totals) = self.0.lock() {
+            *totals = ColumnStatsTotals {
+                null_counts: vec![0; num_columns],
+                sketches: sketched
+                    .iter()
+                    .map(|&column| (column, HyperLogLog::new()))
+                    .collect(),
+            };
         }
     }
 
-    /// Wraps `stream` so the nulls in every batch it yields are added to these
-    /// counts. Each stream counts on its own and adds its total when dropped,
-    /// so the partitions a task drains concurrently don't share a lock per
-    /// batch.
+    /// Wraps `stream` so every batch it yields is added to these totals. Each
+    /// stream counts on its own and adds its totals when dropped, so the
+    /// partitions a task drains concurrently don't share a lock per batch.
     pub(crate) fn count(
         &self,
         stream: SendableRecordBatchStream,
     ) -> SendableRecordBatchStream {
         let num_columns = stream.schema().fields().len();
-        Box::pin(NullCountingStream {
+        let sketches = self
+            .0
+            .lock()
+            .map(|totals| {
+                totals
+                    .sketches
+                    .iter()
+                    .map(|(column, _)| (*column, HyperLogLog::new()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Box::pin(ColumnStatsStream {
             input: stream,
-            counts: vec![0; num_columns],
+            null_counts: vec![0; num_columns],
+            sketches,
+            hashes: Vec::new(),
             total: self.clone(),
         })
     }
 
-    /// The counts, one per column of the written schema.
-    pub(crate) fn get(&self) -> Vec<u64> {
+    /// The null counts, one per column of the written schema.
+    pub(crate) fn null_counts(&self) -> Vec<u64> {
         self.0
             .lock()
-            .map(|counts| counts.clone())
+            .map(|totals| totals.null_counts.clone())
             .unwrap_or_default()
+    }
+
+    /// The totals in the form the executor reports to the scheduler: one
+    /// entry per column, with an HLL sketch on each sketched column.
+    pub(crate) fn task_column_stats(&self) -> Vec<TaskColumnStats> {
+        let Ok(totals) = self.0.lock() else {
+            return vec![];
+        };
+        let mut stats: Vec<TaskColumnStats> = totals
+            .null_counts
+            .iter()
+            .enumerate()
+            .map(|(column, &null_count)| TaskColumnStats {
+                column: column as u32,
+                null_count,
+                sketches: vec![],
+            })
+            .collect();
+        for (column, sketch) in &totals.sketches {
+            if let Some(entry) = stats.get_mut(*column) {
+                entry.sketches.push(ColumnSketch {
+                    r#type: SketchType::Hll as i32,
+                    data: sketch.as_bytes().to_vec(),
+                });
+            }
+        }
+        stats
     }
 }
 
-/// See [`ColumnNullCounts::count`].
-struct NullCountingStream {
+/// See [`ColumnStatsCollector::count`].
+struct ColumnStatsStream {
     input: SendableRecordBatchStream,
-    counts: Vec<u64>,
-    total: ColumnNullCounts,
+    null_counts: Vec<u64>,
+    sketches: Vec<(usize, HyperLogLog)>,
+    /// Scratch space for hashing a column.
+    hashes: Vec<u64>,
+    total: ColumnStatsCollector,
 }
 
-impl Stream for NullCountingStream {
+impl Stream for ColumnStatsStream {
     type Item = Result<RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         let poll = this.input.poll_next_unpin(cx);
         if let Poll::Ready(Some(Ok(batch))) = &poll {
-            for (slot, column) in this.counts.iter_mut().zip(batch.columns()) {
+            for (slot, column) in this.null_counts.iter_mut().zip(batch.columns()) {
                 *slot += column.logical_null_count() as u64;
+            }
+            for (column, sketch) in this.sketches.iter_mut() {
+                if let Err(e) = sketch.update(batch.column(*column), &mut this.hashes) {
+                    return Poll::Ready(Some(Err(e)));
+                }
             }
         }
         poll
     }
 }
 
-impl RecordBatchStream for NullCountingStream {
+impl RecordBatchStream for ColumnStatsStream {
     fn schema(&self) -> SchemaRef {
         self.input.schema()
     }
 }
 
-impl Drop for NullCountingStream {
+impl Drop for ColumnStatsStream {
     fn drop(&mut self) {
         if let Ok(mut total) = self.total.0.lock() {
-            for (slot, n) in total.iter_mut().zip(&self.counts) {
+            for (slot, n) in total.null_counts.iter_mut().zip(&self.null_counts) {
                 *slot += n;
+            }
+            for ((_, slot), (_, sketch)) in total.sketches.iter_mut().zip(&self.sketches)
+            {
+                slot.merge(sketch);
             }
         }
     }
@@ -449,8 +539,8 @@ pub struct ShuffleWriterExec {
     /// clone of the writer produced by `with_new_children` participates in
     /// the same coordinator.
     state: Arc<Mutex<WriterState>>,
-    /// Null counts of the rows this task wrote, shared with clones.
-    column_null_counts: ColumnNullCounts,
+    /// Statistics of the rows this task wrote, shared with clones.
+    column_stats: ColumnStatsCollector,
 }
 
 impl Clone for ShuffleWriterExec {
@@ -465,7 +555,7 @@ impl Clone for ShuffleWriterExec {
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             state: self.state.clone(),
-            column_null_counts: self.column_null_counts.clone(),
+            column_stats: self.column_stats.clone(),
         }
     }
 }
@@ -555,7 +645,7 @@ impl ShuffleWriterExec {
                 initialized: false,
                 handoffs: (0..output_partition_count).map(|_| None).collect(),
             })),
-            column_null_counts: ColumnNullCounts::default(),
+            column_stats: ColumnStatsCollector::default(),
         })
     }
 
@@ -596,7 +686,14 @@ impl ShuffleWriterExec {
     /// Per-column null counts over all rows this task wrote, one per column
     /// of the output schema. Empty until the task has written.
     pub fn column_null_counts(&self) -> Vec<u64> {
-        self.column_null_counts.get()
+        self.column_stats.null_counts()
+    }
+
+    /// Per-column statistics over all rows this task wrote, as reported to
+    /// the scheduler: a null count for every column and an HLL sketch for
+    /// each hash-partitioning key column. Empty until the task has written.
+    pub fn column_stats(&self) -> Vec<TaskColumnStats> {
+        self.column_stats.task_column_stats()
     }
 
     /// Drain every window-state collector in this stage, translating each
@@ -651,14 +748,20 @@ impl ShuffleWriterExec {
         let partition_map =
             walk_child_partition_mapping(&plan, &self.global_output_partition_ids);
         let metrics = self.metrics.clone();
-        let null_counts = self.column_null_counts.clone();
+        let column_stats = self.column_stats.clone();
 
         async move {
             let now = Instant::now();
             let config = context.session_config().ballista_config();
             let compression_type = config.shuffle_compression_codec()?;
             let channel_capacity = config.shuffle_writer_channel_capacity();
-            null_counts.reset(plan.schema().fields().len());
+            column_stats.reset(
+                plan.schema().fields().len(),
+                &sketched_columns(
+                    plan.properties().output_partitioning(),
+                    config.shuffle_collect_distinct_counts(),
+                ),
+            );
 
             // Passthrough shuffle: drain each of the child's output
             // partitions into its own file. All K must drain
@@ -693,7 +796,7 @@ impl ShuffleWriterExec {
 
                 debug!("Writing results to {path:?}");
 
-                let mut stream = null_counts
+                let mut stream = column_stats
                     .count(plan.execute(local_input_partition, context.clone())?);
                 handles.spawn(async move {
                     let stats = utils::write_stream_to_disk(
@@ -1449,6 +1552,22 @@ mod tests {
         Ok(())
     }
 
+    // Only plain column references among hash keys are sketched, once each.
+    #[test]
+    fn sketched_columns_are_the_hash_key_columns() {
+        use datafusion::physical_expr::expressions::{BinaryExpr, lit};
+        let b: Arc<dyn PhysicalExpr> = Arc::new(Column::new("b", 1));
+        let a_plus_one: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("a", 0)),
+            datafusion::logical_expr::Operator::Plus,
+            lit(1),
+        ));
+        let hash = Partitioning::Hash(vec![b.clone(), a_plus_one, b], 4);
+        assert_eq!(sketched_columns(&hash, true), vec![1]);
+        assert!(sketched_columns(&hash, false).is_empty());
+        assert!(sketched_columns(&Partitioning::RoundRobinBatch(4), true).is_empty());
+    }
+
     // Null counts are summed over every partition the task drains, per column
     // of the written schema.
     #[tokio::test]
@@ -1483,6 +1602,51 @@ mod tests {
         drive_all_partitions(writer.clone(), SessionContext::new().task_ctx()).await?;
 
         assert_eq!(writer.column_null_counts(), vec![6, 3]);
+        Ok(())
+    }
+
+    // A passthrough writer over a hash repartition sketches the hash key, and
+    // the sketch counts distinct values across every partition it drained.
+    #[tokio::test]
+    async fn column_stats_sketch_the_child_hash_key() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, false),
+            Field::new("b", DataType::UInt32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values((0..1000).map(|i| i % 100))),
+                Arc::new(UInt32Array::from_iter_values(0..1000)),
+            ],
+        )?;
+        let source = Arc::new(DataSourceExec::new(Arc::new(
+            MemorySourceConfig::try_new(&[vec![batch]], schema, None)?,
+        )));
+        let input = Arc::new(RepartitionExec::try_new(
+            source,
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
+        )?);
+
+        let work_dir = TempDir::new()?;
+        let writer = Arc::new(ShuffleWriterExec::try_new(
+            JobId::new("jobOne"),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_owned(),
+        )?);
+        drive_all_partitions(writer.clone(), SessionContext::new().task_ctx()).await?;
+
+        let stats = writer.column_stats();
+        assert_eq!(stats.len(), 2);
+        let [sketch] = stats[0].sketches.as_slice() else {
+            panic!("expected one sketch on the hash key, got {:?}", stats[0]);
+        };
+        let distinct = crate::hll::HyperLogLog::from_bytes(&sketch.data)
+            .unwrap()
+            .count();
+        assert!((95..=105).contains(&distinct), "estimated {distinct}");
+        assert!(stats[1].sketches.is_empty());
         Ok(())
     }
 

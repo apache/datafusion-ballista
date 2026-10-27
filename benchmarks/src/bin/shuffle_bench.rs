@@ -35,9 +35,11 @@
 //!   --partitions 200
 //! ```
 
+use ballista_core::config::BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS;
 use ballista_core::execution_plans::sort_shuffle::{
     SortShuffleConfig, SortShuffleWriterExec,
 };
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::utils;
 use clap::Parser;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
@@ -109,6 +111,10 @@ struct Args {
     /// Concurrent shuffle tasks to simulate executor parallelism.
     #[arg(long, default_value_t = 1)]
     vcores: usize,
+
+    /// Sketch the distinct counts of the hash key columns while writing.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    collect_distinct_counts: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -215,7 +221,12 @@ async fn execute_shuffle_write(
         runtime_builder = runtime_builder.with_memory_limit(mem_limit, 1.0);
     }
     let runtime_env = Arc::new(runtime_builder.build()?);
-    let config = SessionConfig::new().with_batch_size(args.batch_size);
+    let config = SessionConfig::new_with_ballista()
+        .with_batch_size(args.batch_size)
+        .set_bool(
+            BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS,
+            args.collect_distinct_counts,
+        );
     let ctx = SessionContext::new_with_config_rt(config, runtime_env);
 
     let mut df = ctx

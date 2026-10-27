@@ -83,6 +83,8 @@ pub mod execution_plans;
 pub mod extension;
 /// Arrow Flight service which proxies partition fetches to executors.
 pub mod flight_proxy_service;
+/// HyperLogLog distinct-count sketch for shuffle output columns.
+pub mod hll;
 /// Strongly-typed string identifiers (job ids, job names, ...).
 pub mod ids;
 /// KLL quantile sketch (Karnin-Lang-Liberty), generic over `Ord` items.

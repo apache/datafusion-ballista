@@ -203,6 +203,10 @@ pub const BALLISTA_CHAOS_EXECUTION_SEED: &str = "ballista.testing.chaos_executio
 /// Configuration key for the compression codec used in the shuffle write process
 /// Valid values are: none, lz4, zstd
 pub const BALLISTA_SHUFFLE_COMPRESSION_CODEC: &str = "ballista.shuffle.compression.codec";
+/// Configuration key controlling whether shuffle writers sketch the distinct
+/// counts of their hash-partitioning key columns for the adaptive planner.
+pub const BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS: &str =
+    "ballista.shuffle.collect_distinct_counts";
 
 /// Configuration key for the scheduler's per-task partition-slice cap.
 pub const BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK: &str =
@@ -492,6 +496,16 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             Some("lz4".to_string()),
         ),
         ConfigEntry::new(
+            BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS.to_string(),
+            "Sketch the approximate distinct count of each hash-partitioning key \
+             column with HyperLogLog while writing shuffle output, so the adaptive \
+             planner can estimate join cardinalities downstream of the shuffle. \
+             Costs hashing every key value on the write path and 4 KiB per key \
+             column in each task's status update.".to_string(),
+            DataType::Boolean,
+            Some(true.to_string()),
+        ),
+        ConfigEntry::new(
             BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK.to_string(),
             "Upper bound on the number of input partitions packed into a single \
              task's `partition_slice`. `0` (default) means unbounded — the \
@@ -765,6 +779,12 @@ impl BallistaConfig {
     /// Returns the target batch size for sort-based shuffle.
     pub fn shuffle_sort_based_batch_size(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
+    }
+
+    /// Returns whether shuffle writers sketch the distinct counts of their
+    /// hash-partitioning key columns.
+    pub fn shuffle_collect_distinct_counts(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS)
     }
 
     /// Returns the bounded-channel capacity for the shuffle writer I/O bridge.

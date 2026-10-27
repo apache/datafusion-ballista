@@ -44,13 +44,13 @@ use crate::JobId;
 use crate::error::BallistaError;
 use crate::execution_plans::create_shuffle_path;
 use crate::execution_plans::shuffle_writer::{
-    ColumnNullCounts, ShuffleWriteMetrics, WriterState, collect_window_state_operators,
-    result_schema, run_coordinator, summaries_to_batch,
+    ColumnStatsCollector, ShuffleWriteMetrics, WriterState,
+    collect_window_state_operators, result_schema, run_coordinator, summaries_to_batch,
 };
 use crate::execution_plans::shuffle_writer_trait::ShuffleWriter;
 use crate::execution_plans::{ObservedWindowState, PartitionedBoundedWindowAggExec};
 use crate::extension::SessionConfigExt;
-use crate::serde::protobuf::ShuffleWritePartition;
+use crate::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
 
 use super::index::{KeyCollector, index_path, index_schema, write_index_file};
 use super::ipc_file::write_stream_to_ipc_file;
@@ -112,8 +112,8 @@ pub struct RangeShuffleWriterExec {
     /// clone produced by `with_new_children` participates in the same
     /// coordinator.
     state: Arc<Mutex<WriterState>>,
-    /// Null counts of the rows this task wrote, shared with clones.
-    column_null_counts: ColumnNullCounts,
+    /// Statistics of the rows this task wrote, shared with clones.
+    column_stats: ColumnStatsCollector,
 }
 
 impl Clone for RangeShuffleWriterExec {
@@ -128,7 +128,7 @@ impl Clone for RangeShuffleWriterExec {
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             state: self.state.clone(),
-            column_null_counts: self.column_null_counts.clone(),
+            column_stats: self.column_stats.clone(),
         }
     }
 }
@@ -190,7 +190,7 @@ impl RangeShuffleWriterExec {
                 initialized: false,
                 handoffs: (0..output_partition_count).map(|_| None).collect(),
             })),
-            column_null_counts: ColumnNullCounts::default(),
+            column_stats: ColumnStatsCollector::default(),
         })
     }
 
@@ -209,7 +209,15 @@ impl RangeShuffleWriterExec {
     /// Per-column null counts over all rows this task wrote, one per column
     /// of the output schema. Empty until the task has written.
     pub fn column_null_counts(&self) -> Vec<u64> {
-        self.column_null_counts.get()
+        self.column_stats.null_counts()
+    }
+
+    /// Per-column statistics over all rows this task wrote, as reported to
+    /// the scheduler: a null count for every column. Range partitioning has
+    /// no hash keys, so no column is sketched. Empty until the task has
+    /// written.
+    pub fn column_stats(&self) -> Vec<TaskColumnStats> {
+        self.column_stats.task_column_stats()
     }
 
     /// Drain every window-state collector in this stage, keyed by the global
@@ -264,14 +272,15 @@ impl RangeShuffleWriterExec {
         let task_id = self.task_id;
         let plan = self.plan.clone();
         let metrics = self.metrics.clone();
-        let null_counts = self.column_null_counts.clone();
+        let column_stats = self.column_stats.clone();
 
         async move {
             let now = Instant::now();
             let config = context.session_config().ballista_config();
             let compression_type = config.shuffle_compression_codec()?;
             let channel_capacity = config.shuffle_writer_channel_capacity();
-            null_counts.reset(plan.schema().fields().len());
+            // Range partitioning has no hash keys, so nothing is sketched.
+            column_stats.reset(plan.schema().fields().len(), &[]);
 
             let num_partitions =
                 plan.properties().output_partitioning().partition_count();
@@ -300,7 +309,7 @@ impl RangeShuffleWriterExec {
                 debug!("Writing range shuffle results to {path:?}");
 
                 let stream =
-                    null_counts.count(plan.execute(global_partition, context.clone())?);
+                    column_stats.count(plan.execute(global_partition, context.clone())?);
                 let index_schema = index_schema.clone();
                 let ordering = self.ordering.clone();
                 handles.spawn(async move {
