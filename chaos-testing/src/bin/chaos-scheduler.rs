@@ -21,9 +21,10 @@
 //! Mirrors `examples/examples/custom-scheduler.rs`.
 
 use ballista_core::error::BallistaError;
+use ballista_core::utils::shutdown_signal;
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::SchedulerConfig;
-use ballista_scheduler::scheduler_process::start_server;
+use ballista_scheduler::scheduler_process::start_server_with_shutdown;
 use chaos_testing::registry::chaos_session_state;
 use std::net::AddrParseError;
 use std::sync::Arc;
@@ -68,6 +69,10 @@ async fn main() -> ballista_core::error::Result<()> {
             "CHAOS_NO_EXECUTORS_GRACE_SECONDS",
             1,
         ),
+        graceful_shutdown_timeout_seconds: env_parsed(
+            "CHAOS_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS",
+            25,
+        ),
         // The deprecated embedded proxy, for the harness's proxy fetch mode.
         enable_embedded_flight_proxy: env_parsed("CHAOS_EMBEDDED_FLIGHT_PROXY", false),
         // The harness's result service, for its result-service fetch mode.
@@ -84,5 +89,5 @@ async fn main() -> ballista_core::error::Result<()> {
         .map_err(|e: AddrParseError| BallistaError::Configuration(e.to_string()))?;
 
     let cluster = BallistaCluster::new_from_config(&config).await?;
-    start_server(cluster, addr, Arc::new(config)).await
+    start_server_with_shutdown(cluster, addr, Arc::new(config), shutdown_signal).await
 }

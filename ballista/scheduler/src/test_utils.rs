@@ -101,6 +101,32 @@ impl TableProvider for ExplodingTableProvider {
     }
 }
 
+/// A table whose scan panics, for planning that fails by panicking rather than
+/// by returning an error.
+#[derive(Debug)]
+pub struct PanickingTableProvider;
+
+#[async_trait::async_trait]
+impl TableProvider for PanickingTableProvider {
+    fn schema(&self) -> SchemaRef {
+        Arc::new(Schema::empty())
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _ctx: &dyn Session,
+        _projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        panic!("PanickingTableProvider just panics!")
+    }
+}
+
 /// Utility for running some async check multiple times to verify a condition. It will run the check
 /// at the specified interval up to a maximum of the specified iterations.
 pub async fn await_condition<Fut: Future<Output = Result<bool>>, F: Fn() -> Fut>(
@@ -505,6 +531,11 @@ impl SchedulerTest {
     /// Returns the number of running jobs.
     pub fn running_job_number(&self) -> usize {
         self.scheduler.running_job_number()
+    }
+
+    /// Returns the number of jobs being submitted, pending or running.
+    pub fn active_job_number(&self) -> usize {
+        self.scheduler.active_job_number()
     }
 
     /// Returns job state events from the underlying scheduler.
