@@ -846,6 +846,47 @@ mod test {
         Ok(())
     }
 
+    // Pipelined execution is not wired into the scheduler yet, so a session
+    // that asks for it must be refused rather than planned as blocking.
+    #[tokio::test]
+    async fn test_pipelined_execution_mode_is_rejected() -> Result<()> {
+        let scheduler = test_scheduler(TaskSchedulingPolicy::PushStaged).await?;
+
+        let config = SessionConfig::new_with_ballista()
+            .set_str(ballista_core::config::BALLISTA_EXECUTION_MODE, "pipelined");
+        let ctx = scheduler
+            .state
+            .session_manager
+            .create_or_update_session("session_id", &config)
+            .await?;
+
+        let job_id: JobId = "pipelined_job".into();
+        scheduler
+            .state
+            .task_manager
+            .queue_job(&job_id, "", timestamp_millis())?;
+
+        let err = scheduler
+            .state
+            .task_manager
+            .submit_job(&job_id, "", ctx, &test_plan(), 0, None)
+            .await
+            .expect_err("a pipelined job should be rejected");
+        assert!(
+            err.to_string().contains("pipelined is not supported yet"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            scheduler
+                .state
+                .task_manager
+                .get_active_execution_graph(&job_id)
+                .is_none()
+        );
+
+        Ok(())
+    }
+
     // Verify a job can be submitted as an already-built physical plan.
     #[tokio::test]
     async fn test_submit_physical_plan() -> Result<()> {

@@ -58,10 +58,11 @@ use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
     BufferExec, BufferMode, ChaosExec, CoalescePlan, FinalizedPartitionState, InputOrder,
     OrderedRangeRepartitionExec, PartitionGroup, PartitionedBoundedWindowAggExec,
-    PerPartitionFilterExec, PrefixMergeExec, RangeFilterExec, RangeShuffleReaderExec,
-    RangeShuffleWriterExec, RuntimeStatsExec, ScalarOp, ShuffleReaderExec,
-    ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
-    UnresolvedShuffleExec, WindowApply,
+    PerPartitionFilterExec, PipelinedShuffleReaderExec, PipelinedShuffleWriterExec,
+    PrefixMergeExec, RangeFilterExec, RangeShuffleReaderExec, RangeShuffleWriterExec,
+    RuntimeStatsExec, ScalarOp, ShuffleReaderExec, ShuffleWriterExec,
+    SortShuffleWriterExec, UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
+    WindowApply,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -666,6 +667,67 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     config,
                 )?))
             }
+            PhysicalPlanType::PipelinedShuffleWriter(writer) => {
+                let input = inputs[0].clone();
+                let partitioning = parse_protobuf_hash_partitioning(
+                    writer.output_partitioning.as_ref(),
+                    &decode_ctx,
+                    input.schema().as_ref(),
+                    &converter,
+                )?;
+                Ok(Arc::new(PipelinedShuffleWriterExec::try_new(
+                    writer.job_id.clone().into(),
+                    writer.stage_id as usize,
+                    input,
+                    partitioning,
+                    writer.broadcast,
+                )?))
+            }
+            PhysicalPlanType::PipelinedShuffleReader(reader) => {
+                let stage_id = reader.stage_id as usize;
+                let schema: SchemaRef = Arc::new(convert_required!(reader.schema)?);
+                let partition = reader
+                    .partition
+                    .iter()
+                    .map(|p| {
+                        p.location
+                            .iter()
+                            .map(|l| {
+                                l.clone().try_into().map_err(|e| {
+                                    DataFusionError::Internal(format!(
+                                        "Fail to get pipelined partition location due to {e:?}"
+                                    ))
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .collect::<Result<Vec<_>, DataFusionError>>()?;
+                let exec = if reader.broadcast {
+                    let locations = partition.into_iter().next().ok_or_else(|| {
+                        proto_error(
+                            "broadcast PipelinedShuffleReaderExec: expected exactly one partition",
+                        )
+                    })?;
+                    PipelinedShuffleReaderExec::try_new_broadcast(
+                        stage_id, locations, schema,
+                    )?
+                } else {
+                    let partitioning = parse_protobuf_partitioning(
+                        reader.partitioning.as_ref(),
+                        &decode_ctx,
+                        schema.as_ref(),
+                        &converter,
+                    )?
+                    .ok_or_else(|| proto_error("missing required partitioning field"))?;
+                    PipelinedShuffleReaderExec::try_new(
+                        stage_id,
+                        partition,
+                        schema,
+                        partitioning,
+                    )?
+                };
+                Ok(Arc::new(exec))
+            }
             PhysicalPlanType::ShuffleReader(shuffle_reader) => {
                 let stage_id = shuffle_reader.stage_id as usize;
                 let schema: SchemaRef =
@@ -1146,6 +1208,78 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode sort shuffle writer execution plan: {e:?}"
+                ))
+            })?;
+
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<PipelinedShuffleWriterExec>() {
+            let output_partitioning = match exec.shuffle_output_partitioning() {
+                Some(Partitioning::Hash(exprs, partition_count)) => {
+                    Some(datafusion_proto::protobuf::PhysicalHashRepartition {
+                        hash_expr: exprs
+                            .iter()
+                            .map(|expr| {
+                                datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
+                                    &expr.clone(),
+                                    self.default_codec.as_ref(),
+                                )
+                            })
+                            .collect::<Result<Vec<_>, DataFusionError>>()?,
+                        partition_count: *partition_count as u64,
+                    })
+                }
+                Some(other) => {
+                    return Err(DataFusionError::Internal(format!(
+                        "PipelinedShuffleWriterExec requires Hash partitioning, got: {other:?}"
+                    )));
+                }
+                None => None,
+            };
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::PipelinedShuffleWriter(
+                    protobuf::PipelinedShuffleWriterExecNode {
+                        job_id: exec.job_id().to_string(),
+                        stage_id: exec.stage_id() as u32,
+                        output_partitioning,
+                        broadcast: exec.broadcast(),
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode pipelined shuffle writer execution plan: {e:?}"
+                ))
+            })?;
+
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<PipelinedShuffleReaderExec>() {
+            let partition = exec
+                .partition
+                .iter()
+                .map(|locations| protobuf::PipelinedReaderPartition {
+                    location: locations.iter().cloned().map(Into::into).collect(),
+                })
+                .collect();
+            let converter = DefaultPhysicalProtoConverter {};
+            let partitioning = serialize_partitioning(
+                &exec.properties().partitioning,
+                self.default_codec.as_ref(),
+                &converter,
+            )?;
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::PipelinedShuffleReader(
+                    protobuf::PipelinedShuffleReaderExecNode {
+                        partition,
+                        schema: Some(exec.schema().as_ref().try_into()?),
+                        stage_id: exec.stage_id as u32,
+                        partitioning: Some(partitioning),
+                        broadcast: exec.broadcast,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode pipelined shuffle reader execution plan: {e:?}"
                 ))
             })?;
 
@@ -1694,6 +1828,112 @@ mod test {
             decoded_exec.coalesce.is_none(),
             "absent coalesce field must decode to None (codec inertness)"
         );
+    }
+
+    fn pipelined_location(
+        task_id: usize,
+        partition: usize,
+    ) -> crate::serde::scheduler::PipelinedPartitionLocation {
+        use crate::serde::scheduler::{
+            ExecutorMetadata, ExecutorOperatingSystemSpecification,
+            ExecutorSpecification, PartitionId, PipelinedPartitionLocation,
+        };
+        PipelinedPartitionLocation {
+            partition_id: PartitionId::new(&"job".into(), 2, partition),
+            task_id,
+            executor_meta: ExecutorMetadata {
+                id: format!("executor-{task_id}"),
+                host: "host".to_owned(),
+                port: 50051,
+                grpc_port: 50052,
+                specification: ExecutorSpecification::default(),
+                os_info: ExecutorOperatingSystemSpecification::default(),
+            },
+        }
+    }
+
+    fn roundtrip_plan(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(plan.clone(), &mut buf, &DefaultPhysicalProtoConverter {})
+            .unwrap();
+        let ctx = SessionContext::new().task_ctx();
+        let inputs: Vec<Arc<dyn ExecutionPlan>> =
+            plan.children().into_iter().cloned().collect();
+        codec
+            .try_decode(&buf, &inputs, &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_pipelined_shuffle_writer_exec_roundtrip() {
+        let schema = create_test_schema();
+        let input: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::empty::EmptyExec::new(schema.clone()),
+        );
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 4);
+
+        for (partitioning, broadcast) in [(Some(partitioning), false), (None, true)] {
+            let writer = PipelinedShuffleWriterExec::try_new(
+                "job".into(),
+                3,
+                input.clone(),
+                partitioning.clone(),
+                broadcast,
+            )
+            .unwrap();
+            let decoded = roundtrip_plan(Arc::new(writer));
+            let decoded = decoded
+                .downcast_ref::<PipelinedShuffleWriterExec>()
+                .expect("Expected PipelinedShuffleWriterExec");
+            assert_eq!(decoded.job_id().as_str(), "job");
+            assert_eq!(decoded.stage_id(), 3);
+            assert_eq!(decoded.shuffle_output_partitioning(), partitioning.as_ref());
+            assert_eq!(decoded.broadcast(), broadcast);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pipelined_shuffle_reader_exec_roundtrip() {
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 2);
+        let partition = vec![
+            vec![pipelined_location(0, 0), pipelined_location(1, 0)],
+            vec![pipelined_location(0, 1), pipelined_location(1, 1)],
+        ];
+
+        let reader = PipelinedShuffleReaderExec::try_new(
+            2,
+            partition.clone(),
+            schema.clone(),
+            partitioning.clone(),
+        )
+        .unwrap();
+        let decoded = roundtrip_plan(Arc::new(reader));
+        let decoded = decoded
+            .downcast_ref::<PipelinedShuffleReaderExec>()
+            .expect("Expected PipelinedShuffleReaderExec");
+        assert_eq!(decoded.stage_id, 2);
+        assert_eq!(decoded.partition, partition);
+        assert!(!decoded.broadcast);
+        assert_eq!(&decoded.properties().partitioning, &partitioning);
+        assert_eq!(decoded.schema().as_ref(), schema.as_ref());
+
+        let broadcast = PipelinedShuffleReaderExec::try_new_broadcast(
+            2,
+            partition.concat(),
+            schema.clone(),
+        )
+        .unwrap();
+        let decoded = roundtrip_plan(Arc::new(broadcast));
+        let decoded = decoded
+            .downcast_ref::<PipelinedShuffleReaderExec>()
+            .expect("Expected PipelinedShuffleReaderExec");
+        assert!(decoded.broadcast);
+        assert_eq!(decoded.partition, vec![partition.concat()]);
     }
 
     #[tokio::test]

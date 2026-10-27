@@ -21,7 +21,8 @@ use crate::error::{BallistaError, Result as BResult};
 use crate::extension::BallistaConfigGrpcEndpoint;
 use crate::serde::protobuf;
 use crate::serde::scheduler::{
-    Action, ByteRange, PartitionId, ShuffleFileKind, ShuffleLayout,
+    Action, ByteRange, PartitionId, PipelinedPartitionLocation, ShuffleFileKind,
+    ShuffleLayout,
 };
 use crate::utils::create_grpc_client_endpoint;
 use arrow_flight;
@@ -252,6 +253,62 @@ impl BallistaClient {
         };
 
         result.map_err(|error| Self::as_fetch_failed(executor_id, partition_id, error))
+    }
+
+    /// Streams one output partition of a running pipelined producer task.
+    ///
+    /// Unlike a shuffle fetch this is never retried: the producer hands the
+    /// partition to a single reader and cannot replay it, so a request that
+    /// fails partway fails the query. The executor waits a bounded time for
+    /// the producer task to start before it sends anything.
+    pub async fn fetch_pipelined_partition(
+        &mut self,
+        location: &PipelinedPartitionLocation,
+        registration_timeout: std::time::Duration,
+    ) -> BResult<SendableRecordBatchStream> {
+        let action = Action::FetchPipelinedPartition {
+            job_id: location.partition_id.job_id.clone(),
+            stage_id: location.partition_id.stage_id,
+            task_id: location.task_id,
+            partition_id: location.partition_id.partition_id,
+            host: location.executor_meta.host.clone(),
+            port: location.executor_meta.port,
+            registration_timeout_ms: registration_timeout.as_millis() as u64,
+        };
+        let serialized_action: protobuf::Action = action.try_into()?;
+        let mut buf: Vec<u8> = Vec::with_capacity(serialized_action.encoded_len());
+        serialized_action
+            .encode(&mut buf)
+            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
+
+        let request = tonic::Request::new(Ticket { ticket: buf.into() });
+        let mut stream = self
+            .flight_client
+            .do_get(request)
+            .await
+            .map_err(|e| {
+                BallistaError::GrpcActionError(format!(
+                    "failed to stream pipelined partition {:?} of task {}: {e}",
+                    location.partition_id, location.task_id
+                ))
+            })?
+            .into_inner();
+        match stream.message().await {
+            Ok(Some(flight_data)) => {
+                let schema = Arc::new(Schema::try_from(&flight_data)?);
+                Ok(Box::pin(FlightDataStream::new(stream, schema)))
+            }
+            Ok(None) => Err(BallistaError::GrpcActionError(format!(
+                "no schema received for pipelined partition {:?} of task {}",
+                location.partition_id, location.task_id
+            ))),
+            Err(e) => Err(BallistaError::GrpcActionError(format!(
+                "failed to stream pipelined partition {:?} of task {}: {}",
+                location.partition_id,
+                location.task_id,
+                e.message()
+            ))),
+        }
     }
 
     /// Report a transport failure as a partition fetch failure, which is what

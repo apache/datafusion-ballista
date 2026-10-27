@@ -27,6 +27,7 @@ use crate::state::execution_graph::{
 };
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::task_builder::restrict_plan_to_partitions;
+use ballista_core::config::ExecutionMode;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::execution_plans::compute_global_output_partition_ids;
@@ -271,6 +272,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let mut planner = DefaultDistributedPlanner::new();
         let session_state = ctx.state();
         let session_config = session_state.config();
+
+        if session_config.ballista_config().execution_mode()? == ExecutionMode::Pipelined
+        {
+            return Err(BallistaError::NotImplemented(
+                "ballista.execution.mode = pipelined is not supported yet".to_owned(),
+            ));
+        }
 
         let mut graph = match plan {
             SubmitPlan::Logical(logical_plan) => {

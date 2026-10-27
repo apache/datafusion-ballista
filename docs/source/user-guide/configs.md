@@ -165,6 +165,24 @@ explanation of the sort-based shuffle writer.
 
 <!-- END GENERATED CONFIG REFERENCE -->
 
+## Pipelined Execution Settings
+
+These session-level keys select and tune the experimental pipelined execution
+mode, in which every task of a job is placed up front and stages stream data
+to each other instead of exchanging shuffle files. The scheduler does not run
+pipelined jobs yet.
+
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.execution.,ballista.pipelined. -->
+
+<!-- prettier-ignore -->
+| key                                             | type   | default  | description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ----------------------------------------------- | ------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ballista.execution.mode                         | Utf8   | blocking | How a job's stages exchange data. `blocking` runs stages one after another and passes data between them through shuffle files. `pipelined` (experimental) places every task of the job up front and streams record batches between stages over Arrow Flight. It has lower latency, but a failed task fails the job instead of being retried, and a job waits until it can reserve the vcores of its widest stage all at once. `pipelined` requires push-staged scheduling, and the scheduler does not run it yet. |
+| ballista.pipelined.queue_capacity               | UInt64 | 2        | Number of batches each output partition of a pipelined stage buffers before its producer waits for the consumer to read. Higher values smooth out bursty consumers at the cost of memory.                                                                                                                                                                                                                                                                                                                         |
+| ballista.pipelined.registration_timeout_seconds | UInt64 | 60       | How long either side of a pipelined exchange waits for the other before failing the query: a consumer for its producer task to start, and a producer whose output queue is full for a consumer to open it. All tasks of a pipelined job are launched together, so either can be first.                                                                                                                                                                                                                            |
+
+<!-- END GENERATED CONFIG REFERENCE -->
+
 ## Testing and Fault Injection
 
 These settings drive chaos-monkey fault injection and exist for robustness
