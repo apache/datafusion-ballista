@@ -253,7 +253,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string()))
             .with_doc_default("number of available CPU cores"),
         ConfigEntry::new(BALLISTA_CACHE_NOOP.to_string(),
-                         "Disable default cache node extension".to_string(),
+                         "When true (the default), DataFrame::cache() does nothing. When false, the first action on a cached DataFrame materializes it in the cluster, and later actions read it back instead of recomputing it".to_string(),
                          DataType::Boolean,
                          Some((true).to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_READER_MAX_REQUESTS.to_string(),

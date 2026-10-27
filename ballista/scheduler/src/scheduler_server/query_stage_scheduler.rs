@@ -567,12 +567,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.state.revive_offers(event_sender).await?;
             }
             QueryStageSchedulerEvent::ExecutorLost(executor_id, _) => {
-                match self
-                    .state
-                    .task_manager
-                    .executor_lost_with_cache_loss(&executor_id)
-                    .await
-                {
+                match self.state.task_manager.executor_lost(&executor_id).await {
                     Ok((tasks, lost_cache)) => {
                         if !tasks.is_empty()
                             && let Err(e) = self

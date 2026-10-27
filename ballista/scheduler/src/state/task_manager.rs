@@ -821,16 +821,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Handles executor loss by resetting affected tasks and stages.
     ///
-    /// Returns a list of running tasks that need to be cancelled.
-    pub async fn executor_lost(&self, executor_id: &str) -> Result<Vec<RunningTaskInfo>> {
-        Ok(self.executor_lost_with_cache_loss(executor_id).await?.0)
-    }
-
-    /// As [`executor_lost`](Self::executor_lost), also returning the jobs that
-    /// lost cache data with the executor, with when they were queued. Their
-    /// graphs cannot re-run another job's output, so they are not reset; the
-    /// caller fails them.
-    pub(crate) async fn executor_lost_with_cache_loss(
+    /// Returns the running tasks that need to be cancelled, and the jobs that
+    /// lost `DataFrame::cache()` data with the executor, with when they were
+    /// queued. Their graphs cannot re-run another job's output, so they are
+    /// not reset; the caller must fail them.
+    pub async fn executor_lost(
         &self,
         executor_id: &str,
     ) -> Result<(Vec<RunningTaskInfo>, Vec<(JobId, u64)>)> {

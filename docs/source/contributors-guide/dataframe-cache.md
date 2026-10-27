@@ -28,8 +28,10 @@ Ballista already has — shuffle files, the shuffle reader, and stage recovery �
 rather than adding a cache store or a recovery path of its own.
 
 The cache is a **hint, not a correctness dependency**: a cached node keeps its
-subplan (lineage), so lost cache data is recomputed — never a wrong or missing
-answer.
+subplan (lineage), so lost cache data is recomputed, never a wrong or partial
+answer. In this PR a query that loses it mid-run fails with a clear error and
+the retry rebuilds the cache; rebuild-and-resume is next
+([Recovery](#recovery)).
 
 ## End-to-end flow
 
