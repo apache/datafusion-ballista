@@ -46,6 +46,21 @@ The gRPC message-size ceiling is raised from the 16 MiB default to 128 MiB;
 some SF1000 physical plans (Q11, Q21, Q22) encode above 16 MiB and hit
 `OutOfRange` errors otherwise.
 
+## Pipelined mode
+
+The pipelined column differs from the blocking column in these settings only:
+
+| Flag / config key                                         | Value                                           |
+| --------------------------------------------------------- | ----------------------------------------------- |
+| `ballista-scheduler --scheduler-policy`                   | `push-staged` (required by pipelined execution) |
+| `ballista-executor --task-scheduling-policy`              | `push-staged`                                   |
+| `ballista.execution.mode` (session, `tpch -c` on the CLI) | `pipelined`                                     |
+
+Pipelined jobs are planned statically, so AQE does not apply to them, and
+they write no shuffle files. All other `ballista.pipelined.*` settings are
+left at their defaults. A failed task fails the whole job: pipelined jobs do
+not retry tasks.
+
 ## Reproducing
 
 Bring up the cluster (one scheduler, N executors), then run the suite from a
@@ -77,3 +92,7 @@ cargo run --release --bin tpch -- benchmark ballista \
 
 The runner sets `target_partitions` from `--partitions` and enables
 `collect_statistics`; everything else is left at its default.
+
+For the pipelined column, start the scheduler with `--scheduler-policy
+push-staged` and the executors with `--task-scheduling-policy push-staged`,
+and add `-c ballista.execution.mode=pipelined` to the runner command.
