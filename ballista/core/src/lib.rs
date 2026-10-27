@@ -104,6 +104,8 @@ pub mod serving;
 pub mod shutdown;
 /// Quantile sketching of a fixed-width `ORDER BY` key, NULLs included.
 pub mod sort_key;
+/// Provider-owned storage grouping for distributed joins.
+pub mod storage_partitioning;
 /// Shared test and benchmark fixtures, such as the TPC-H table schemas.
 pub mod test_utils;
 /// General utility functions for Ballista operations.

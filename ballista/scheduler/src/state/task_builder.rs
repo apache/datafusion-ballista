@@ -268,6 +268,9 @@ fn select_output_partitions(
         let partitioning = match reader.properties().output_partitioning() {
             Partitioning::Hash(exprs, _) => Partitioning::Hash(exprs.clone(), kept.len()),
             Partitioning::RoundRobinBatch(_) => Partitioning::RoundRobinBatch(kept.len()),
+            Partitioning::Grouped(grouped) => {
+                ballista_core::storage_partitioning::select_groups(grouped, indices)?
+            }
             Partitioning::UnknownPartitioning(_) => {
                 Partitioning::UnknownPartitioning(kept.len())
             }

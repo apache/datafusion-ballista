@@ -204,6 +204,10 @@ pub const BALLISTA_CHAOS_EXECUTION_SEED: &str = "ballista.testing.chaos_executio
 /// Valid values are: none, lz4, zstd
 pub const BALLISTA_SHUFFLE_COMPRESSION_CODEC: &str = "ballista.shuffle.compression.codec";
 
+/// Enable joins that use provider-declared storage groups.
+pub const BALLISTA_STORAGE_PARTITION_JOIN: &str =
+    "ballista.optimizer.storage_partition_join";
+
 /// Configuration key for the scheduler's per-task partition-slice cap.
 pub const BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK: &str =
     "ballista.scheduler.max_partitions_per_task";
@@ -220,6 +224,9 @@ use std::sync::LazyLock;
 
 static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(|| {
     let entries = vec![
+        ConfigEntry::new(BALLISTA_STORAGE_PARTITION_JOIN.to_string(),
+                         "Use provider-declared storage groups for compatible joins.".to_string(),
+                         DataType::Boolean, Some(false.to_string())),
         ConfigEntry::new(BALLISTA_JOB_NAME.to_string(),
                          "Sets the job name that will appear in the web user interface for any submitted jobs".to_string(),
                          DataType::Utf8, None),
@@ -821,6 +828,11 @@ impl BallistaConfig {
     /// optimization, avoiding the single-task null-aware hash join.
     pub fn not_in_subquery_rewrite_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_NOT_IN_SUBQUERY_REWRITE)
+    }
+
+    /// Whether provider-declared storage groups may satisfy join distribution.
+    pub fn storage_partition_join_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_STORAGE_PARTITION_JOIN)
     }
 
     /// Whether scan files are pruned by statistics during planning and the

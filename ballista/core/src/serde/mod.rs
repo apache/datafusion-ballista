@@ -304,6 +304,17 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         schema: datafusion::arrow::datatypes::SchemaRef,
         ctx: &TaskContext,
     ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
+        if let Some(payload) = buf.strip_prefix(crate::storage_partitioning::MANIFEST_TAG)
+        {
+            let manifest = serde_json::from_slice(payload).map_err(|e| {
+                DataFusionError::Plan(format!("Invalid bucket manifest: {e}"))
+            })?;
+            return Ok(Arc::new(
+                crate::storage_partitioning::BucketedParquetTable::try_new(
+                    schema, manifest,
+                )?,
+            ));
+        }
         self.default_codec
             .try_decode_table_provider(buf, table_ref, schema, ctx)
     }
@@ -314,6 +325,16 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         node: Arc<dyn datafusion::catalog::TableProvider>,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
+        if let Some(provider) =
+            node.downcast_ref::<crate::storage_partitioning::BucketedParquetTable>()
+        {
+            let payload = serde_json::to_vec(provider.manifest()).map_err(|e| {
+                DataFusionError::Plan(format!("Cannot encode bucket manifest: {e}"))
+            })?;
+            buf.extend_from_slice(crate::storage_partitioning::MANIFEST_TAG);
+            buf.extend_from_slice(&payload);
+            return Ok(());
+        }
         self.default_codec
             .try_encode_table_provider(table_ref, node, buf)
     }
