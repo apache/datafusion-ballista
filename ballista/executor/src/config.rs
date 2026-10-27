@@ -104,6 +104,9 @@ pub struct Config {
         help = "How long to try connecting to scheduler before failing. Set to zero to fail after first attempt."
     )]
     pub scheduler_connect_timeout_seconds: u16,
+    /// Maximum time in seconds for executor graceful shutdown (0 = wait indefinitely).
+    #[arg(long, default_value_t = 10)]
+    pub graceful_shutdown_timeout_seconds: u64,
     /// Directory for storing temporary shuffle data and IPC files.
     #[arg(long, help = "Directory for temporary IPC files")]
     pub work_dir: Option<String>,
@@ -222,6 +225,15 @@ pub struct Config {
         help = "Fraction (0-1] of detected memory for the auto pool. Default 0.70. Ignored if --memory-pool-size is set."
     )]
     pub memory_pool_fraction: f64,
+    /// Maximum disk space spill files may use, per session runtime (shared by
+    /// that session's tasks). When unset, DataFusion's default (100 GB)
+    /// applies. Accepts the same values as `--memory-pool-size`.
+    #[arg(
+        long,
+        value_parser = parse_memory_pool_size,
+        help = "Max disk space for spill files per session runtime (e.g. \"1TB\"). Unset = DataFusion default (100GB)."
+    )]
+    pub max_temp_directory_size: Option<u64>,
     /// Maximum number of sessions whose shared runtime state (object-store
     /// clients, Parquet footer cache) is retained on the executor (LRU). `0`
     /// disables caching.
@@ -264,6 +276,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             scheduler_host: opt.scheduler_host,
             scheduler_port: opt.scheduler_port,
             scheduler_connect_timeout_seconds: opt.scheduler_connect_timeout_seconds,
+            graceful_shutdown_timeout_seconds: opt.graceful_shutdown_timeout_seconds,
             vcores,
             task_scheduling_policy: opt.task_scheduling_policy,
             work_dir: opt.work_dir,
@@ -279,6 +292,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             metric_collection_policy: opt.metric_collection_policy,
             memory_pool_size: opt.memory_pool_size,
             memory_pool_fraction: opt.memory_pool_fraction,
+            max_temp_directory_size: opt.max_temp_directory_size,
             session_runtime_cache_capacity: opt.session_runtime_cache_capacity,
             override_execution_engine: None,
             override_function_registry: None,

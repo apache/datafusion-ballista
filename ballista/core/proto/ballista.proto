@@ -61,7 +61,24 @@ message BallistaPhysicalPlanNode {
     RangeFilterExecNode range_filter = 13;
     PrefixMergeExecNode prefix_merge = 14;
     RangeShuffleWriterExecNode range_shuffle_writer = 15;
+    DistributedQueryExecNode distributed_query = 16;
+    DistributedExplainAnalyzeExecNode distributed_explain_analyze = 17;
   }
+}
+
+message DistributedQueryExecNode {
+  string scheduler_url = 1;
+  repeated KeyValuePair settings = 2;
+  bytes logical_plan = 3;
+  string session_id = 4;
+}
+
+// Wraps a DistributedQueryExec (its single input) and fetches the job
+// metrics from the scheduler once the query has completed.
+message DistributedExplainAnalyzeExecNode {
+  string scheduler_url = 1;
+  datafusion_common.Schema schema = 2;
+  bool verbose = 3;
 }
 
 // Value-range router over N locally-sorted overlapping input partitions.
@@ -748,6 +765,15 @@ message ExecutorMetric {
     uint64 proc_virtual_memory = 5;
     uint64 peak_physical_memory = 6;
     uint64 peak_virtual_memory = 7;
+    // Bytes currently reserved across the memory pools of the executor's
+    // running tasks.
+    uint64 memory_pool_reserved = 8;
+    // The executor's total memory pool budget, in bytes. Absent when the
+    // pool is unbounded.
+    uint64 memory_pool_size = 9;
+    // Outstanding bytes allocated by the executor process, as counted by its
+    // global allocator. Includes memory the pools do not track.
+    uint64 allocated_memory = 10;
   }
 }
 

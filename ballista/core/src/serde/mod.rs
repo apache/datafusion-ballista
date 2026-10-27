@@ -1044,6 +1044,18 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     input.clone(),
                 )?))
             }
+            // DistributedQuery is only serialized and deserialized in ballista python.
+            // It is not supposed to be serialized by native ballista codec.
+            PhysicalPlanType::DistributedQuery(_) => Err(DataFusionError::Internal(
+                "DistributedQueryExec is only supported by PyBallistaPhysicalExtensionCodec"
+                    .to_string(),
+            )),
+            PhysicalPlanType::DistributedExplainAnalyze(_) => {
+                Err(DataFusionError::Internal(
+                    "DistributedExplainAnalyzeExec is only supported by PyBallistaPhysicalExtensionCodec"
+                        .to_string(),
+                ))
+            }
         }
     }
 

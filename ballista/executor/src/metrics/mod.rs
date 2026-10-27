@@ -34,11 +34,15 @@ pub struct ExecutorMemoryMetrics {
     inner: Arc<Mutex<MemoryMetricsState>>,
 }
 
+/// Reads a process's outstanding allocated bytes.
+type AllocatedBytesSource = Arc<dyn Fn() -> usize + Send + Sync>;
+
 #[derive(Default)]
 struct MemoryMetricsState {
     initialized: bool,
     pool_size: Option<u64>,
     pools: Vec<Weak<dyn MemoryPool>>,
+    allocated_bytes: Option<AllocatedBytesSource>,
 }
 
 /// A point-in-time view of executor memory pool usage.
@@ -67,6 +71,24 @@ impl ExecutorMemoryMetrics {
         if !state.pools.iter().any(|pool| pool.ptr_eq(&reference)) {
             state.pools.push(reference);
         }
+    }
+
+    /// Sets where [`Self::allocated_bytes`] reads the process's outstanding
+    /// allocated bytes from, such as
+    /// [`crate::alloc_accounting::current_balance`]. Only set it when the
+    /// process's global allocator actually does that accounting.
+    pub fn set_allocated_bytes_source(
+        &self,
+        source: impl Fn() -> usize + Send + Sync + 'static,
+    ) {
+        self.inner.lock().allocated_bytes = Some(Arc::new(source));
+    }
+
+    /// Outstanding allocated bytes in the process, or `None` when no source
+    /// was set with [`Self::set_allocated_bytes_source`].
+    pub fn allocated_bytes(&self) -> Option<usize> {
+        let source = self.inner.lock().allocated_bytes.clone();
+        source.map(|source| source())
     }
 
     /// Samples the resolved budget and current pool reservations.

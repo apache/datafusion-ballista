@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -71,7 +71,33 @@ pub mod ballista_physical_plan_node {
         PrefixMerge(super::PrefixMergeExecNode),
         #[prost(message, tag = "15")]
         RangeShuffleWriter(super::RangeShuffleWriterExecNode),
+        #[prost(message, tag = "16")]
+        DistributedQuery(super::DistributedQueryExecNode),
+        #[prost(message, tag = "17")]
+        DistributedExplainAnalyze(super::DistributedExplainAnalyzeExecNode),
     }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DistributedQueryExecNode {
+    #[prost(string, tag = "1")]
+    pub scheduler_url: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub logical_plan: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub session_id: ::prost::alloc::string::String,
+}
+/// Wraps a DistributedQueryExec (its single input) and fetches the job
+/// metrics from the scheduler once the query has completed.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DistributedExplainAnalyzeExecNode {
+    #[prost(string, tag = "1")]
+    pub scheduler_url: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
+    #[prost(bool, tag = "3")]
+    pub verbose: bool,
 }
 /// Value-range router over N locally-sorted overlapping input partitions.
 /// Redistributes them into K range-disjoint output partitions where each
@@ -997,7 +1023,7 @@ pub struct ExecutorHeartbeat {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorMetric {
     /// TODO add more metrics
-    #[prost(oneof = "executor_metric::Metric", tags = "1, 2, 3, 4, 5, 6, 7")]
+    #[prost(oneof = "executor_metric::Metric", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
     pub metric: ::core::option::Option<executor_metric::Metric>,
 }
 /// Nested message and enum types in `ExecutorMetric`.
@@ -1019,6 +1045,18 @@ pub mod executor_metric {
         PeakPhysicalMemory(u64),
         #[prost(uint64, tag = "7")]
         PeakVirtualMemory(u64),
+        /// Bytes currently reserved across the memory pools of the executor's
+        /// running tasks.
+        #[prost(uint64, tag = "8")]
+        MemoryPoolReserved(u64),
+        /// The executor's total memory pool budget, in bytes. Absent when the
+        /// pool is unbounded.
+        #[prost(uint64, tag = "9")]
+        MemoryPoolSize(u64),
+        /// Outstanding bytes allocated by the executor process, as counted by its
+        /// global allocator. Includes memory the pools do not track.
+        #[prost(uint64, tag = "10")]
+        AllocatedMemory(u64),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

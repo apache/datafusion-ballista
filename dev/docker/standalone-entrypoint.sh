@@ -19,11 +19,35 @@
 
 set -e
 
-echo "Starting for scheduler..."
+# On SIGTERM or SIGINT, stop the scheduler first. It finishes the jobs it has
+# before it exits, so the executor must keep running their tasks until then.
+# Then stop the executor, which has nothing left to drain. Exit with the
+# scheduler's status if it failed, for example by running out of its shutdown
+# time limit, and otherwise with the executor's.
+stop() {
+  kill -TERM "$scheduler" 2>/dev/null || true
+  wait "$scheduler" || scheduler_status=$?
+  if [[ -n "${executor:-}" ]]; then
+    kill -TERM "$executor" 2>/dev/null || true
+    wait "$executor" || executor_status=$?
+  fi
+  exit "${scheduler_status:-${executor_status:-0}}"
+}
+
+echo "Starting scheduler"
 /root/ballista-scheduler &
-while ! nc -z 127.0.0.1 50050; do
+scheduler=$!
+trap stop TERM INT
+
+until (echo >/dev/tcp/127.0.0.1/50050) 2>/dev/null; do
+  if ! kill -0 "$scheduler" 2>/dev/null; then
+    echo "Scheduler exited before it started listening" >&2
+    exit 1
+  fi
   sleep 1
 done
 
 echo "Starting executor"
-/root/ballista-executor
+/root/ballista-executor &
+executor=$!
+wait "$executor"

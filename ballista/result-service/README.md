@@ -79,13 +79,13 @@ The gateway must forward gRPC (HTTP/2) to the replicas, for example with a Gatew
 
 ## Options
 
-| Flag                                  | Default    | Meaning                                                             |
-| ------------------------------------- | ---------- | ------------------------------------------------------------------- |
-| `--bind-host`                         | `0.0.0.0`  | Host/IP the Flight service binds to                                 |
-| `--bind-port`                         | `50055`    | Port the Flight service, health probes and metrics bind to          |
-| `--grpc-max-decoding-message-size`    | `16777216` | Max gRPC message size decoded                                       |
-| `--grpc-max-encoding-message-size`    | `16777216` | Max gRPC message size encoded                                       |
-| `--graceful-shutdown-timeout-seconds` | `10`       | Time in-flight result streams get to finish after SIGTERM or Ctrl-C |
+| Flag                                  | Default    | Meaning                                                                            |
+| ------------------------------------- | ---------- | ---------------------------------------------------------------------------------- |
+| `--bind-host`                         | `0.0.0.0`  | Host/IP the Flight service binds to                                                |
+| `--bind-port`                         | `50055`    | Port the Flight service, health probes and metrics bind to                         |
+| `--grpc-max-decoding-message-size`    | `16777216` | Max gRPC message size decoded                                                      |
+| `--grpc-max-encoding-message-size`    | `16777216` | Max gRPC message size encoded                                                      |
+| `--graceful-shutdown-timeout-seconds` | `10`       | Time in-flight result streams get to finish after SIGTERM or Ctrl-C (0 = no limit) |
 
 Set `RUST_LOG=ballista_core::serving=debug` to log each forwarded fetch.
 
@@ -107,7 +107,7 @@ let config = ResultServiceConfig {
     override_create_grpc_client_endpoint: Some(endpoint_override),
     ..Default::default()
 };
-serve(config, shutdown_signal()).await?;
+serve(config, shutdown_signal).await?;
 ```
 
 The connections are only encrypted in a build with one of tonic's TLS features, as in the
