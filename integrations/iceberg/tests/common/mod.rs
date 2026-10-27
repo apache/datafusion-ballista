@@ -17,6 +17,7 @@
 
 //! Helpers shared by the integration tests.
 
+// Each test file compiles this module separately and uses only some of it.
 #![allow(dead_code)]
 
 #[cfg(feature = "testcontainers")]

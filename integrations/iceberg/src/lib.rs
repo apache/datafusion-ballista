@@ -64,7 +64,6 @@ mod wire;
 use std::sync::Arc;
 
 use ballista_core::extension::SessionConfigExt;
-use ballista_core::utils::default_session_builder;
 use datafusion::catalog::CatalogProvider;
 use datafusion::common::Result;
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -98,19 +97,22 @@ pub fn register_iceberg(mut state: SessionState) -> SessionState {
         .build()
 }
 
-/// Builds a scheduler's sessions with `catalogs` mounted and readied with
-/// [`register_iceberg`], for queries the scheduler plans itself: those from
-/// Flight SQL clients, which hold no catalog of their own.
+/// Wraps a scheduler's session builder, `base`, so its sessions have
+/// `catalogs` mounted and are readied with [`register_iceberg`], for queries
+/// the scheduler plans itself: those from Flight SQL clients, which hold no
+/// catalog of their own. Pass `ballista_core::utils::default_session_builder`
+/// as `base` if the scheduler has no session builder of its own.
 ///
-/// Pass it to `SchedulerConfig::with_override_session_builder`. The scheduler
-/// and executors also need the Iceberg codecs, set as their
+/// Pass the result to `SchedulerConfig::with_override_session_builder`. The
+/// scheduler and executors also need the Iceberg codecs, set as their
 /// `override_logical_codec` and `override_physical_codec`.
 pub fn iceberg_session_builder(
+    base: impl Fn(SessionConfig) -> Result<SessionState> + Send + Sync + 'static,
     catalogs: impl IntoIterator<Item = (String, Arc<dyn CatalogProvider>)>,
 ) -> impl Fn(SessionConfig) -> Result<SessionState> + Send + Sync + 'static {
     let catalogs: Vec<_> = catalogs.into_iter().collect();
     move |config| {
-        let state = register_iceberg(default_session_builder(config)?);
+        let state = register_iceberg(base(config)?);
         for (name, catalog) in &catalogs {
             state
                 .catalog_list()

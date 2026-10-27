@@ -68,19 +68,20 @@ cargo run -p ballista-iceberg --example standalone-iceberg-scan
 
 Flight SQL clients (JDBC, ADBC, BI tools) send SQL to the scheduler, which plans
 it, so they hold no catalog. To let them query Iceberg tables, mount catalogs
-on the scheduler with `iceberg_session_builder`, and give the scheduler and
-executors the Iceberg codecs:
+on the scheduler with `iceberg_session_builder`, which wraps the scheduler's
+session builder, and give the scheduler and executors the Iceberg codecs:
 
 ```rust
+use ballista_core::utils::default_session_builder;
 use ballista_iceberg::{IcebergLogicalCodec, IcebergPhysicalCodec, iceberg_session_builder};
 
 let rest = IcebergCatalogProvider::try_new(catalog).await?;
 let mut config = SchedulerConfig::default()
     .with_flight_sql(true)
-    .with_override_session_builder(Arc::new(iceberg_session_builder([(
-        "rest".to_string(),
-        Arc::new(rest) as _,
-    )])));
+    .with_override_session_builder(Arc::new(iceberg_session_builder(
+        default_session_builder,
+        [("rest".to_string(), Arc::new(rest) as _)],
+    )));
 config.override_logical_codec = Some(Arc::new(IcebergLogicalCodec::default()));
 config.override_physical_codec = Some(Arc::new(IcebergPhysicalCodec::default()));
 ```
