@@ -97,21 +97,25 @@ pub fn register_iceberg(mut state: SessionState) -> SessionState {
         .build()
 }
 
+/// A scheduler's session builder, the shape `SchedulerConfig` stores.
+pub type SessionBuilder =
+    Arc<dyn Fn(SessionConfig) -> Result<SessionState> + Send + Sync>;
+
 /// Wraps a scheduler's session builder, `base`, so its sessions have
 /// `catalogs` mounted and are readied with [`register_iceberg`], for queries
 /// the scheduler plans itself: those from Flight SQL clients, which hold no
-/// catalog of their own. Pass `ballista_core::utils::default_session_builder`
-/// as `base` if the scheduler has no session builder of its own.
+/// catalog of their own. Pass `Arc::new(default_session_builder)` as `base` if
+/// the scheduler has no session builder of its own.
 ///
 /// Pass the result to `SchedulerConfig::with_override_session_builder`. The
 /// scheduler and executors also need the Iceberg codecs, set as their
 /// `override_logical_codec` and `override_physical_codec`.
 pub fn iceberg_session_builder(
-    base: impl Fn(SessionConfig) -> Result<SessionState> + Send + Sync + 'static,
+    base: SessionBuilder,
     catalogs: impl IntoIterator<Item = (String, Arc<dyn CatalogProvider>)>,
-) -> impl Fn(SessionConfig) -> Result<SessionState> + Send + Sync + 'static {
+) -> SessionBuilder {
     let catalogs: Vec<_> = catalogs.into_iter().collect();
-    move |config| {
+    Arc::new(move |config| {
         let state = register_iceberg(base(config)?);
         for (name, catalog) in &catalogs {
             state
@@ -119,5 +123,5 @@ pub fn iceberg_session_builder(
                 .register_catalog(name.clone(), catalog.clone());
         }
         Ok(state)
-    }
+    })
 }

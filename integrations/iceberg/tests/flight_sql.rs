@@ -97,7 +97,7 @@ mod flight_sql {
         };
         let cluster = BallistaCluster::new_memory(
             "localhost:50050",
-            Arc::new(iceberg_session_builder(default_session_builder, catalogs)),
+            iceberg_session_builder(Arc::new(default_session_builder), catalogs),
             Arc::new(default_config_producer),
         );
         let config = SchedulerConfig::default()
