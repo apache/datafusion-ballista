@@ -55,21 +55,20 @@ use tonic::{Code, Status, Streaming};
 /// Whether `status` reports that the connection failed, rather than an
 /// answer the server sent.
 ///
-/// tonic reports a connection-level failure (a reset, a refused connection,
-/// a broken pipe, a GOAWAY) as an `Unknown` status whose source is its
-/// transport error, and a stream the server refused for lack of capacity as
-/// `Unavailable`. Both mean the request never reached the service.
+/// A status the server sent arrives in trailers and has no source. One tonic
+/// made from a connection-level failure (a reset, a refused connection, a
+/// broken pipe, a connection closed under a queued request) has its
+/// transport error as the source, under a code that depends on where the
+/// failure surfaced: `Unknown` for a failed write, `Cancelled` for a request
+/// the closing connection dropped. A stream the server refused for lack of
+/// capacity is `Unavailable`. All of them mean the request never reached the
+/// service.
 fn is_transport_failure(status: &Status) -> bool {
-    match status.code() {
-        Code::Unavailable => true,
-        Code::Unknown => {
-            status
-                .source()
-                .is_some_and(|source| source.is::<tonic::transport::Error>())
-                || status.message() == "transport error"
-        }
-        _ => false,
-    }
+    status
+        .source()
+        .is_some_and(|source| source.is::<tonic::transport::Error>())
+        || status.code() == Code::Unavailable
+        || (status.code() == Code::Unknown && status.message() == "transport error")
 }
 
 /// Client for interacting with Ballista executors.

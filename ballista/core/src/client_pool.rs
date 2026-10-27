@@ -29,6 +29,7 @@ use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 
 // ---------------------------------------------------------------------------
@@ -49,9 +50,83 @@ pub trait BallistaClientPool: Send + Sync + Debug {
         customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     ) -> Result<PooledClient>;
 
+    /// A client on the connection to `(host, port, config)` that every caller
+    /// shares.
+    ///
+    /// Unlike [`acquire`](Self::acquire), nothing is checked out: any number
+    /// of callers hold the connection at once and multiplex their streams
+    /// over it, and it stays open until one of them
+    /// [discards](SharedClient::discard) it. This is what the pipelined
+    /// reader uses, so that an executor keeps one connection to each other
+    /// executor instead of one per stream.
+    ///
+    /// The default opens a connection per call, closed when its last client
+    /// is dropped. A pool that keeps one connection per key overrides it.
+    async fn shared(
+        &self,
+        host: &str,
+        port: u16,
+        config: &GrpcClientConfig,
+        customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    ) -> Result<Arc<SharedClient>> {
+        let pooled = self.acquire(host, port, config, customize_endpoint).await?;
+        let client = (*pooled).clone();
+        pooled.discard();
+        Ok(Arc::new(SharedClient::new(client, Box::new(|| {}))))
+    }
+
     /// Remove all idle clients that have been sitting unused longer than the
     /// configured idle timeout.
     async fn evict_idle(&self);
+}
+
+// ---------------------------------------------------------------------------
+// SharedClient
+// ---------------------------------------------------------------------------
+
+/// A [BallistaClient] on a connection that any number of callers use at once.
+///
+/// Returned by [`BallistaClientPool::shared`]. Clients taken from it share
+/// the connection, so dropping them does not close it; the pool keeps it
+/// until it is [discarded](Self::discard).
+pub struct SharedClient {
+    client: BallistaClient,
+    /// Drops the connection from its pool. Invoked at most once.
+    discard: Box<dyn Fn() + Send + Sync>,
+    discarded: AtomicBool,
+}
+
+impl SharedClient {
+    /// A shared client whose `discard` closure drops it from its pool.
+    pub fn new(client: BallistaClient, discard: Box<dyn Fn() + Send + Sync>) -> Self {
+        Self {
+            client,
+            discard,
+            discarded: AtomicBool::new(false),
+        }
+    }
+
+    /// A client on the shared connection.
+    pub fn client(&self) -> BallistaClient {
+        self.client.clone()
+    }
+
+    /// Drops the connection from its pool, after a failure that suggests it
+    /// is gone, so that the next caller opens a new one. Callers already on
+    /// it keep it until they are done.
+    pub fn discard(&self) {
+        if !self.discarded.swap(true, Ordering::AcqRel) {
+            (self.discard)();
+        }
+    }
+}
+
+impl Debug for SharedClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedClient")
+            .field("discarded", &self.discarded.load(Ordering::Acquire))
+            .finish()
+    }
 }
 
 // ---------------------------------------------------------------------------

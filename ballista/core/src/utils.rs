@@ -409,6 +409,12 @@ where
 pub fn create_grpc_server(config: &GrpcServerConfig) -> Server {
     Server::builder()
         .timeout(Duration::from_secs(config.timeout_seconds))
+        // No limit on the streams a connection carries. Pipelined readers
+        // multiplex the streams of every task on an executor over one
+        // connection to each producer executor, and a stream the client had
+        // to queue behind a limit would leave its producer blocked on a full
+        // queue.
+        .max_concurrent_streams(None)
         // Disable Nagle's Algorithm since we don't want packets to wait
         .tcp_nodelay(true)
         .tcp_keepalive(Some(Duration::from_secs(config.tcp_keepalive_seconds)))

@@ -28,16 +28,22 @@
 //!
 //! A optional background tokio task evicts idle connections that have not been used
 //! within the configured `idle_timeout`.
+//!
+//! Besides the checked-out clients, the pool keeps one shared connection per
+//! `(host, port, config)` for `BallistaClientPool::shared`. Any number of
+//! callers multiplex over it, and it lives until a caller discards it after
+//! a failure, or the pool is dropped.
 
 use ballista_core::client::BallistaClient;
-use ballista_core::client_pool::{BallistaClientPool, PooledClient};
+use ballista_core::client_pool::{BallistaClientPool, PooledClient, SharedClient};
 use ballista_core::error::Result;
 use ballista_core::extension::BallistaConfigGrpcEndpoint;
 use ballista_core::utils::GrpcClientConfig;
 use dashmap::DashMap;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -49,11 +55,26 @@ struct IdleEntry {
     idle_since: Instant,
 }
 
-type IdleMap = DashMap<(String, u16, GrpcClientConfig), VecDeque<IdleEntry>>;
+type PoolKey = (String, u16, GrpcClientConfig);
+
+type IdleMap = DashMap<PoolKey, VecDeque<IdleEntry>>;
+
+/// The shared connection for one key, and the lock that serializes opening
+/// it. The generation tells a discard from an older connection apart from
+/// the one that replaced it.
+#[derive(Default)]
+struct SharedSlot {
+    connecting: tokio::sync::Mutex<()>,
+    connection: Mutex<Option<(u64, Arc<SharedClient>)>>,
+}
+
+type SharedMap = DashMap<PoolKey, Arc<SharedSlot>>;
 
 struct Inner {
     idle: IdleMap,
     idle_timeout: Duration,
+    shared: SharedMap,
+    generations: AtomicU64,
 }
 
 /// Default pool implementation.
@@ -91,6 +112,8 @@ impl DefaultBallistaClientPool {
         let inner = Arc::new(Inner {
             idle: DashMap::new(),
             idle_timeout,
+            shared: DashMap::new(),
+            generations: AtomicU64::new(0),
         });
 
         let weak: Weak<Inner> = Arc::downgrade(&inner);
@@ -210,6 +233,57 @@ impl BallistaClientPool for DefaultBallistaClientPool {
         ))
     }
 
+    async fn shared(
+        &self,
+        host: &str,
+        port: u16,
+        config: &GrpcClientConfig,
+        customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    ) -> Result<Arc<SharedClient>> {
+        let key = (host.to_string(), port, config.clone());
+        let slot = self.inner.shared.entry(key).or_default().clone();
+
+        // Held while connecting, so a burst of callers waits for the one
+        // connection instead of each opening its own.
+        let _connecting = slot.connecting.lock().await;
+        if let Some((_, client)) = &*slot.connection.lock().unwrap() {
+            return Ok(client.clone());
+        }
+
+        log::debug!(
+            "client connection pool - opening shared connection - host:{host}, port:{port}"
+        );
+        let client = BallistaClient::try_new(
+            host,
+            port,
+            config.max_message_size,
+            config.use_tls,
+            customize_endpoint,
+            config.io_retries_times,
+            config.io_retry_wait_time_ms,
+            config.initial_connection_window_size,
+            config.initial_stream_window_size,
+        )
+        .await?;
+
+        let generation = self.inner.generations.fetch_add(1, Ordering::Relaxed);
+        // Weak, since the slot holds the client that holds this closure.
+        let weak_slot = Arc::downgrade(&slot);
+        let shared = Arc::new(SharedClient::new(
+            client,
+            Box::new(move || {
+                if let Some(slot) = weak_slot.upgrade() {
+                    let mut connection = slot.connection.lock().unwrap();
+                    if connection.as_ref().is_some_and(|(g, _)| *g == generation) {
+                        *connection = None;
+                    }
+                }
+            }),
+        ));
+        *slot.connection.lock().unwrap() = Some((generation, shared.clone()));
+        Ok(shared)
+    }
+
     async fn evict_idle(&self) {
         evict(&self.inner.idle, self.inner.idle_timeout);
     }
@@ -309,6 +383,58 @@ mod tests {
         assert_eq!(pool.idle_count(), 0);
         drop(guard);
         assert_eq!(pool.idle_count(), 1);
+    }
+
+    /// Serves a Flight service on a port of its own, for clients that
+    /// connect eagerly.
+    async fn serve_flight() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let work_dir = std::env::temp_dir().to_string_lossy().into_owned();
+        tokio::spawn(
+            ballista_core::utils::create_grpc_server(&Default::default())
+                .add_service(
+                    arrow_flight::flight_service_server::FlightServiceServer::new(
+                        crate::flight_service::BallistaFlightService::new(work_dir),
+                    ),
+                )
+                .serve_with_incoming(tonic::transport::server::TcpIncoming::from(
+                    listener,
+                )),
+        );
+        port
+    }
+
+    /// Every caller of `shared` for one key gets the same connection, a
+    /// different configuration gets another, and a discarded connection is
+    /// replaced by the next call.
+    #[tokio::test]
+    async fn shared_connection_is_one_per_key_until_discarded() {
+        let port = serve_flight().await;
+        let pool = make_pool(Duration::from_secs(60));
+        let config = GrpcClientConfig::default();
+
+        let first = pool.shared("127.0.0.1", port, &config, None).await.unwrap();
+        let again = pool.shared("127.0.0.1", port, &config, None).await.unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+
+        let other_config = GrpcClientConfig {
+            initial_stream_window_size: 65_535,
+            ..config.clone()
+        };
+        let other = pool
+            .shared("127.0.0.1", port, &other_config, None)
+            .await
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first, &other));
+
+        first.discard();
+        let replacement = pool.shared("127.0.0.1", port, &config, None).await.unwrap();
+        assert!(!Arc::ptr_eq(&first, &replacement));
+        assert!(Arc::ptr_eq(
+            &replacement,
+            &pool.shared("127.0.0.1", port, &config, None).await.unwrap()
+        ));
     }
 
     /// Calling `discard()` must close the connection instead of returning it.

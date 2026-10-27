@@ -18,14 +18,10 @@
 //! [`PipelinedShuffleReaderExec`]: the leaf of a pipelined stage that streams
 //! its input from the producer tasks of an upstream stage while they run.
 
-use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 use std::time::Duration;
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
@@ -36,16 +32,14 @@ use datafusion::physical_plan::metrics::{
 use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    RecordBatchStream, SendableRecordBatchStream, Statistics,
+    SendableRecordBatchStream, Statistics,
 };
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use log::{debug, warn};
-use parking_lot::Mutex;
-use tokio::sync::Mutex as AsyncMutex;
 
 use super::registry::{PipelinedRegistry, ProducerKey};
-use crate::client::BallistaClient;
-use crate::client_pool::{BallistaClientPool, PooledClient};
+use crate::client_pool::BallistaClientPool;
+use crate::config::{BallistaConfig, HTTP2_MAX_WINDOW_BYTES};
 use crate::error::BallistaError;
 use crate::execution_plans::shuffle_reader::new_ballista_client;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
@@ -62,10 +56,11 @@ use crate::utils::GrpcClientConfig;
 /// partition whose consumer is in turn waiting on another producer.
 ///
 /// A producer on the same executor is read straight from the executor's
-/// [`PipelinedRegistry`]; any other is read over Arrow Flight. Opening a
-/// remote stream is retried if the connection fails before the producer's
-/// executor has answered. A stream that has started is not: it cannot be
-/// resumed, so a broken one fails the query.
+/// [`PipelinedRegistry`]; any other is read over Arrow Flight, on the one
+/// connection the executor's client pool keeps to that producer's executor.
+/// Opening a remote stream is retried if the connection fails before the
+/// producer's executor has answered. A stream that has started is not: it
+/// cannot be resumed, so a broken one fails the query.
 #[derive(Debug, Clone)]
 pub struct PipelinedShuffleReaderExec {
     /// The producer stage.
@@ -286,7 +281,6 @@ impl ExecutionPlan for PipelinedShuffleReaderExec {
         let ballista_config = config.ballista_config();
         let timeout = ballista_config.pipelined_registration_timeout();
         let force_remote = config.ballista_shuffle_reader_force_remote_read();
-        let grpc_config = Arc::new(GrpcClientConfig::from(&ballista_config));
         let customize_endpoint = config.ballista_override_create_grpc_client_endpoint();
         let output_rows = MetricBuilder::new(&self.metrics).output_rows(partition);
         let local_streams =
@@ -304,33 +298,23 @@ impl ExecutionPlan for PipelinedShuffleReaderExec {
             self.schema.clone(),
             locations.len().max(2),
         );
-        // Remote streams to the same executor share a connection; see
-        // `SharedConnection` for why that is safe here.
-        let mut connections: HashMap<(String, u16), Vec<Arc<ConnectionSlot>>> =
-            HashMap::new();
-        let mut streams_per_executor: HashMap<(String, u16), usize> = HashMap::new();
+        // Remote streams go over the connection the executor's pool keeps to
+        // each producer executor, with windows sized so that sharing it is
+        // safe; see `shared_connection_config`.
+        let grpc_config = Arc::new(shared_connection_config(
+            &GrpcClientConfig::from(&ballista_config),
+            &ballista_config,
+        ));
         for location in locations {
             let tx = builder.tx();
             let local = registry.clone().filter(|r| {
                 !force_remote && r.executor_id() == location.executor_meta.id
             });
-            let connection = if local.is_some() {
+            if local.is_some() {
                 local_streams.add(1);
-                None
             } else {
                 remote_streams.add(1);
-                let key = (
-                    location.executor_meta.host.clone(),
-                    location.executor_meta.port,
-                );
-                let count = streams_per_executor.entry(key.clone()).or_default();
-                let slots = connections.entry(key).or_default();
-                if count.is_multiple_of(MAX_STREAMS_PER_CONNECTION) {
-                    slots.push(Arc::new(ConnectionSlot::new()));
-                }
-                *count += 1;
-                slots.last().cloned()
-            };
+            }
             let grpc_config = grpc_config.clone();
             let customize_endpoint = customize_endpoint.clone();
             let client_pool = self.client_pool.clone();
@@ -351,8 +335,7 @@ impl ExecutionPlan for PipelinedShuffleReaderExec {
                     None => open_remote(
                         &location,
                         timeout,
-                        connection.expect("remote stream has a connection slot"),
-                        grpc_config,
+                        &grpc_config,
                         customize_endpoint,
                         client_pool,
                     )
@@ -389,116 +372,46 @@ impl ExecutionPlan for PipelinedShuffleReaderExec {
     }
 }
 
-/// The most streams one reader partition multiplexes onto a connection. A
-/// server that limits concurrent streams makes the client queue any stream
-/// over the limit, and a queued stream leaves its producer blocked on a full
-/// queue, so this stays below common server limits (hyper's default is 200).
-const MAX_STREAMS_PER_CONNECTION: usize = 64;
-
-/// A connection to a producer executor, opened by the first stream that needs
-/// it and opened again by the next one after it fails.
-struct ConnectionSlot(AsyncMutex<Option<Arc<SharedConnection>>>);
-
-impl ConnectionSlot {
-    fn new() -> Self {
-        Self(AsyncMutex::new(None))
-    }
-
-    /// The slot's connection, opened with `connect` if it has none. The lock
-    /// is held while connecting, so the streams that share the slot wait for
-    /// one connection instead of each opening their own.
-    async fn get_or_connect(
-        &self,
-        connect: impl AsyncFnOnce()
-            -> std::result::Result<Arc<SharedConnection>, BallistaError>,
-    ) -> std::result::Result<Arc<SharedConnection>, BallistaError> {
-        let mut slot = self.0.lock().await;
-        if let Some(connection) = &*slot {
-            return Ok(connection.clone());
-        }
-        let connection = connect().await?;
-        *slot = Some(connection.clone());
-        Ok(connection)
-    }
-
-    /// Discards `failed` and empties the slot, so the next stream opens a new
-    /// connection. A connection another stream has already replaced is left
-    /// in place.
-    async fn forget(&self, failed: &Arc<SharedConnection>) {
-        failed.discard();
-        let mut slot = self.0.lock().await;
-        if slot.as_ref().is_some_and(|c| Arc::ptr_eq(c, failed)) {
-            *slot = None;
-        }
-    }
-}
-
-/// One connection to a producer executor, shared by the streams that one
-/// partition of a reader opens to it.
+/// The client configuration for the connection that the streams of every
+/// task on an executor share to one producer executor.
 ///
-/// Opening a connection per stream makes a wide job open a connection for
-/// every pair of producer and consumer tasks, enough to overflow the
-/// executors' listen queues. Multiplexing is safe within one reader partition,
-/// though not across readers: every stream here feeds the same output, so the
-/// streams are read or stalled together, and unread data on one cannot starve
-/// a stream that something else is waiting on.
-struct SharedConnection {
-    client: BallistaClient,
-    /// The pooled connection, returned to the pool when the last stream on it
-    /// is dropped, or discarded once any of them fails.
-    lease: Mutex<Option<PooledClient>>,
-}
-
-impl SharedConnection {
-    fn discard(&self) {
-        if let Some(lease) = self.lease.lock().take() {
-            lease.discard();
-        }
+/// A stream nobody is reading, such as a join's probe side while the build
+/// side loads, holds up to its stream window of unread data on the
+/// connection. If stalled streams could use up the connection window, they
+/// would starve the streams something is waiting on, and a job whose stalled
+/// streams wait on its starved ones would never finish. So the connection
+/// window is the largest HTTP/2 allows, and the stream window,
+/// `ballista.pipelined.stream_window_bytes`, is kept small: stalled streams
+/// then hold at most one window each, and the connection has room for
+/// `HTTP2_MAX_WINDOW_BYTES / stream window` of them before any starvation.
+///
+/// Differing from the blocking reader's configuration also keeps these
+/// connections apart from the ones the pool checks out one stream at a time.
+fn shared_connection_config(
+    grpc_config: &GrpcClientConfig,
+    ballista_config: &BallistaConfig,
+) -> GrpcClientConfig {
+    GrpcClientConfig {
+        initial_stream_window_size: ballista_config.pipelined_stream_window_bytes(),
+        initial_connection_window_size: HTTP2_MAX_WINDOW_BYTES,
+        ..grpc_config.clone()
     }
 }
 
-/// A stream that keeps its [`SharedConnection`] alive until it is dropped.
-struct SharedConnectionStream {
-    inner: SendableRecordBatchStream,
-    connection: Arc<SharedConnection>,
-}
-
-impl Stream for SharedConnectionStream {
-    type Item = Result<RecordBatch>;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        let item = self.inner.poll_next_unpin(cx);
-        if let Poll::Ready(Some(Err(_))) = &item {
-            self.connection.discard();
-        }
-        item
-    }
-}
-
-impl RecordBatchStream for SharedConnectionStream {
-    fn schema(&self) -> SchemaRef {
-        self.inner.schema()
-    }
-}
-
-/// Opens a producer's partition over Arrow Flight, on the connection in
-/// `slot`.
+/// Opens a producer's partition over Arrow Flight, on the shared connection
+/// to its executor.
 ///
 /// A failure of the connection before the producer's executor has answered
 /// is retried on a new connection, up to `io_retries_times` times with
-/// `io_retry_wait_time_ms` between attempts. A wide job opens its connections
-/// in one burst, and a listen queue that overflows under it delays some of
-/// them and, once the kernel falls back to SYN cookies, resets others as they
-/// start sending. A failure the executor answered is not retried: the
-/// producer may already have handed the partition to the failed stream.
+/// `io_retry_wait_time_ms` between attempts. A wide job opens its streams in
+/// one burst, and a listen queue that overflows under it delays some
+/// connections and, once the kernel falls back to SYN cookies, resets others
+/// as they start sending. A failure the executor answered is not retried:
+/// the producer may already have handed the partition to the failed stream.
 async fn open_remote(
     location: &PipelinedPartitionLocation,
     registration_timeout: Duration,
-    slot: Arc<ConnectionSlot>,
-    grpc_config: Arc<GrpcClientConfig>,
+    grpc_config: &GrpcClientConfig,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
 ) -> std::result::Result<SendableRecordBatchStream, BallistaError> {
@@ -509,8 +422,7 @@ async fn open_remote(
         let result = open_remote_once(
             location,
             registration_timeout,
-            &slot,
-            &grpc_config,
+            grpc_config,
             customize_endpoint.clone(),
             client_pool.clone(),
         )
@@ -533,49 +445,38 @@ async fn open_remote(
     }
 }
 
-/// One attempt at [`open_remote`]. A connection that fails is forgotten by
-/// its slot, so the streams still to open on it connect again.
+/// One attempt at [`open_remote`]. A shared connection that fails is
+/// discarded from the pool, so the next stream to open on it, here or in any
+/// other task, connects again.
 async fn open_remote_once(
     location: &PipelinedPartitionLocation,
     registration_timeout: Duration,
-    slot: &ConnectionSlot,
     grpc_config: &GrpcClientConfig,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
 ) -> std::result::Result<SendableRecordBatchStream, BallistaError> {
     let host = location.executor_meta.host.as_str();
     let port = location.executor_meta.port;
-    let connection = slot
-        .get_or_connect(async || {
-            let (client, lease) = match client_pool {
-                Some(pool) => {
-                    let pooled = pool
-                        .acquire(host, port, grpc_config, customize_endpoint)
-                        .await?;
-                    ((*pooled).clone(), Some(pooled))
-                }
-                None => (
-                    new_ballista_client(host, port, grpc_config, customize_endpoint)
-                        .await?,
-                    None,
-                ),
-            };
-            Ok(Arc::new(SharedConnection {
-                client,
-                lease: Mutex::new(lease),
-            }))
-        })
-        .await?;
-    // A clone of the client shares its connection.
-    let mut client = connection.client.clone();
-    match client
+    let (mut client, shared) = match client_pool {
+        Some(pool) => {
+            let shared = pool
+                .shared(host, port, grpc_config, customize_endpoint)
+                .await?;
+            (shared.client(), Some(shared))
+        }
+        // Without a pool, as when a custom execution engine runs the plan,
+        // each stream gets a connection of its own.
+        None => (
+            new_ballista_client(host, port, grpc_config, customize_endpoint).await?,
+            None,
+        ),
+    };
+    client
         .fetch_pipelined_partition(location, registration_timeout)
         .await
-    {
-        Ok(inner) => Ok(Box::pin(SharedConnectionStream { inner, connection })),
-        Err(e) => {
-            slot.forget(&connection).await;
-            Err(e)
-        }
-    }
+        .inspect_err(|e| {
+            if let (Some(shared), BallistaError::GrpcConnectionError(_)) = (&shared, e) {
+                shared.discard();
+            }
+        })
 }

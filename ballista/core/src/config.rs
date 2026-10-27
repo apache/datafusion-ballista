@@ -227,6 +227,18 @@ pub const BALLISTA_PIPELINED_QUEUE_CAPACITY: &str = "ballista.pipelined.queue_ca
 pub const BALLISTA_PIPELINED_REGISTRATION_TIMEOUT_SECONDS: &str =
     "ballista.pipelined.registration_timeout_seconds";
 
+/// Configuration key for the HTTP/2 stream window of the connections that
+/// pipelined readers share, in bytes.
+pub const BALLISTA_PIPELINED_STREAM_WINDOW_BYTES: &str =
+    "ballista.pipelined.stream_window_bytes";
+
+/// The largest flow-control window HTTP/2 allows, for a stream or a
+/// connection.
+pub const HTTP2_MAX_WINDOW_BYTES: u32 = (1 << 31) - 1;
+
+/// The smallest stream window HTTP/2 starts from.
+const HTTP2_DEFAULT_WINDOW_BYTES: u32 = 65_535;
+
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -561,6 +573,19 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                 .to_string(),
             DataType::UInt64,
             Some(60.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_PIPELINED_STREAM_WINDOW_BYTES.to_string(),
+            "HTTP/2 flow-control window, in bytes, of each stream a pipelined \
+             reader opens to another executor. The streams of every task on an \
+             executor share one connection to each producer executor, whose \
+             connection window is the largest HTTP/2 allows, so this bounds the \
+             data a stalled stream can hold, and a connection can carry \
+             2147483647 divided by this many streams before stalled streams could \
+             starve the rest. Between 65535 and 2147483647."
+                .to_string(),
+            DataType::UInt64,
+            Some((512 * 1024).to_string()),
         ),
     ];
     entries
@@ -932,6 +957,16 @@ impl BallistaConfig {
             self.get_usize_setting(BALLISTA_PIPELINED_REGISTRATION_TIMEOUT_SECONDS)
                 .max(1) as u64,
         )
+    }
+
+    /// Returns the HTTP/2 stream window, in bytes, of the connections that
+    /// pipelined readers share, clamped to what HTTP/2 allows.
+    pub fn pipelined_stream_window_bytes(&self) -> u32 {
+        self.get_usize_setting(BALLISTA_PIPELINED_STREAM_WINDOW_BYTES)
+            .clamp(
+                HTTP2_DEFAULT_WINDOW_BYTES as usize,
+                HTTP2_MAX_WINDOW_BYTES as usize,
+            ) as u32
     }
 
     /// Returns the target post-coalesce partition byte size in bytes

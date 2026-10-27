@@ -42,6 +42,7 @@ use arrow_flight::{
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 
+use crate::client_pool::SharedClient;
 use crate::serving::BoxedFlightStream;
 
 use super::{PipelinedRegistry, PipelinedShuffleReaderExec, PipelinedShuffleWriterExec};
@@ -486,11 +487,14 @@ async fn restricting_a_broadcast_reader_keeps_every_location() {
     assert_eq!(restricted.partition, vec![locations]);
 }
 
-/// A pool that counts the connections it hands out per executor. Its clients
-/// point at a port nothing listens on, so every fetch fails.
+/// A pool that counts the connections it opens per executor. Like the
+/// executor's pool, it keeps one shared connection per executor until that is
+/// discarded. Its clients connect lazily, so one to a port nothing listens on
+/// fails at its first fetch.
 #[derive(Debug, Default)]
 struct CountingPool {
     acquired: parking_lot::Mutex<BTreeMap<u16, usize>>,
+    shared: Arc<parking_lot::Mutex<BTreeMap<u16, Arc<SharedClient>>>>,
 }
 
 #[async_trait::async_trait]
@@ -509,6 +513,28 @@ impl crate::client_pool::BallistaClientPool for CountingPool {
         ))
     }
 
+    async fn shared(
+        &self,
+        host: &str,
+        port: u16,
+        _config: &crate::utils::GrpcClientConfig,
+        _customize_endpoint: Option<Arc<crate::extension::BallistaConfigGrpcEndpoint>>,
+    ) -> crate::error::Result<Arc<SharedClient>> {
+        if let Some(client) = self.shared.lock().get(&port) {
+            return Ok(client.clone());
+        }
+        *self.acquired.lock().entry(port).or_default() += 1;
+        let shared = self.shared.clone();
+        let client = Arc::new(SharedClient::new(
+            crate::client::BallistaClient::new_for_test(host, port),
+            Box::new(move || {
+                shared.lock().remove(&port);
+            }),
+        ));
+        self.shared.lock().insert(port, client.clone());
+        Ok(client)
+    }
+
     async fn evict_idle(&self) {}
 }
 
@@ -521,7 +547,7 @@ fn unused_port() -> u16 {
 }
 
 #[tokio::test]
-async fn remote_streams_to_one_executor_share_a_connection() {
+async fn remote_streams_to_one_executor_share_one_connection() {
     let (port_a, port_b) = (unused_port(), unused_port());
     let remote = |task_id: usize, port: u16| {
         let mut location = location(task_id, 0);
@@ -530,8 +556,8 @@ async fn remote_streams_to_one_executor_share_a_connection() {
         location.executor_meta.port = port;
         location
     };
-    // 130 producer tasks on one executor need three connections at 64 streams
-    // each; two on another executor need one.
+    // 130 producer tasks on one executor and two on another: one connection
+    // to each executor, however many streams it carries.
     let mut locations: Vec<_> = (0..130).map(|t| remote(t, port_a)).collect();
     locations.extend((130..132).map(|t| remote(t, port_b)));
     let pool = Arc::new(CountingPool::default());
@@ -545,7 +571,8 @@ async fn remote_streams_to_one_executor_share_a_connection() {
     .with_client_pool(pool.clone());
 
     // Nothing listens on either port, so each open fails as a connection
-    // failure; with no retries, each slot connects exactly once.
+    // failure and discards the shared connection; with no retries, nothing
+    // reconnects.
     let results: Vec<_> = reader
         .execute(0, remote_task_ctx(0, 0))
         .unwrap()
@@ -554,7 +581,7 @@ async fn remote_streams_to_one_executor_share_a_connection() {
     assert!(results.iter().all(|r| r.is_err()));
     assert_eq!(
         *pool.acquired.lock(),
-        BTreeMap::from([(port_a, 3), (port_b, 1)])
+        BTreeMap::from([(port_a, 1), (port_b, 1)])
     );
 }
 
