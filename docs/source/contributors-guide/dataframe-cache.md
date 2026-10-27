@@ -181,7 +181,9 @@ pin.
 **Validate-on-read** enforces "never read from a dead executor": whenever a
 cache is resolved into a read (when a query is submitted, and again before a held query runs), a location on an
 executor that is not live turns the hit into a miss, and the dead entry is
-dropped. Invalidation is **whole-entry** — a cache is rebuilt in full, never
+dropped. A dropped entry's build data is deleted after the usual delay for a
+finished job's data (`finished_job_data_clean_up_interval_seconds`), which lets
+a query still reading it finish. Invalidation is **whole-entry** — a cache is rebuilt in full, never
 served with missing partitions (see
 [Per-partition recovery](#per-partition-recovery)).
 
@@ -271,8 +273,9 @@ rebuilds only the lost partitions, the reading stage still re-runs:
 5. **Recovery, part 2** — rebuild-and-resume for a running job
    ([Recovery](#recovery)).
 6. **Locality** — place read tasks where partitions live ([#2319]).
-7. **Session teardown + unpin** — wire `remove_session`, delete unpinned
-   shuffle files, and sweep entries on executor loss (`invalidate_executor`).
+7. **Session teardown** — wire `remove_session` and sweep entries on executor
+   loss (`invalidate_executor`), deleting their build data as invalidation
+   does.
 8. **Eviction** — TTL / size cap / idle-session expiry.
 9. **Per-partition recovery** — rebuild only lost partitions of narrow,
    deterministic subplans; later, pinned intermediates for subplans with a

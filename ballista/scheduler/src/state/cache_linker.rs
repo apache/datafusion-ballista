@@ -367,9 +367,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 }
                 // Drop only the build seen here; another submission may have
                 // replaced it already.
-                self.cache_state
-                    .invalidate_if(key, &cache.materializing_job)
-                    .await?;
+                self.invalidate_build(key, &cache.materializing_job).await?;
             }
 
             if let Some(in_flight) = self.cache_state.pending_job(key).await? {
@@ -533,8 +531,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         {
             for read in reads {
                 if let Err(e) = self
-                    .cache_state
-                    .invalidate_if(&read.key, &read.materializing_job)
+                    .invalidate_build(&read.key, &read.materializing_job)
                     .await
                 {
                     warn!("failed to drop lost cache {:?}: {e:?}", read.key);
@@ -699,6 +696,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         for job in jobs {
             self.fail_pending(job, reason, sender).await;
         }
+    }
+
+    /// Drops `key`'s entry while it is still `materializing_job`'s, and cleans up
+    /// that build's data after the usual delay for a finished job's data, which
+    /// lets a job still reading it finish.
+    async fn invalidate_build(
+        &self,
+        key: &CacheKey,
+        materializing_job: &JobId,
+    ) -> Result<()> {
+        if self
+            .cache_state
+            .invalidate_if(key, materializing_job)
+            .await?
+            .is_some()
+        {
+            self.executor_manager.clean_up_job_data_delayed(
+                materializing_job.clone(),
+                self.config.finished_job_data_clean_up_interval_seconds,
+            );
+        }
+        Ok(())
     }
 
     async fn release_claim(&self, key: &CacheKey, job_id: &JobId) {

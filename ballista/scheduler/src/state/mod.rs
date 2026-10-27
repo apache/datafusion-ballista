@@ -460,7 +460,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
     /// Reclaim a finished job's shuffle data and schedule state cleanup. A job
     /// backing a cache (recorded by [`on_job_terminal`](Self::on_job_terminal)
-    /// before this runs) keeps its final-stage data; unpinning is future work.
+    /// before this runs) keeps its final-stage data until the entry is
+    /// invalidated.
     pub(crate) async fn clean_up_successful_job(
         &self,
         job_id: JobId,
