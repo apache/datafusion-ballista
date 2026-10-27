@@ -36,7 +36,6 @@ use log::{error, info, warn};
 use sysinfo::{Disks, MemoryRefreshKind, System};
 use tempfile::TempDir;
 use tokio::fs::DirEntry;
-use tokio::signal;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::{fs, time};
@@ -59,13 +58,14 @@ use ballista_core::serde::{
 };
 use ballista_core::utils::{
     GrpcClientConfig, GrpcServerConfig, create_grpc_client_endpoint, create_grpc_server,
-    default_config_producer, get_time_before,
+    default_config_producer, drain_or_time_out, get_time_before, shutdown_signal,
 };
 use ballista_core::{
     BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer,
     ids::new_instance_id,
 };
 
+use crate::ArrowFlightServerProvider;
 use crate::client_pool::DefaultBallistaClientPool;
 use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
 use crate::executor::{Executor, TasksDrainedFuture};
@@ -78,7 +78,6 @@ use crate::runtime_cache::{
 };
 use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
-use crate::{ArrowFlightServerProvider, terminate};
 use crate::{execution_loop, executor_server};
 
 /// Default fraction of the detected memory limit handed to the pool when
@@ -259,6 +258,40 @@ fn memory_pool_policy(
     ))
 }
 
+/// Wraps `producer` so every runtime it builds writes spill files under
+/// `spill_dir`, keeping the runtime's memory pool, caches and object stores.
+/// The runtime gets a new disk manager with DataFusion's default settings, so
+/// any other disk settings the producer made are not carried over. The
+/// executor's default runtime already spills under its work dir; this lets a
+/// custom producer, such as the standalone binary's S3-enabled runtime, do the
+/// same.
+pub fn with_spill_dir(producer: RuntimeProducer, spill_dir: String) -> RuntimeProducer {
+    Arc::new(move |config: &SessionConfig| {
+        let runtime_env = producer(config)?;
+        RuntimeEnvBuilder::from_runtime_env(&runtime_env)
+            .with_temp_file_path(spill_dir.clone())
+            .build_arc()
+    })
+}
+
+/// Wraps `producer` so every runtime it builds limits spill files to
+/// `max_temp_directory_size` bytes of disk. Applied on top of the producer,
+/// rather than inside it, so a custom `override_runtime_producer` gets the
+/// same limit. Each base runtime has its own disk manager, so the limit is per
+/// session runtime (shared by that session's tasks).
+fn with_max_temp_directory_size(
+    producer: RuntimeProducer,
+    max_temp_directory_size: u64,
+) -> RuntimeProducer {
+    Arc::new(move |config: &SessionConfig| {
+        let runtime_env = producer(config)?;
+        runtime_env
+            .disk_manager
+            .set_max_temp_directory_size(max_temp_directory_size)?;
+        Ok(runtime_env)
+    })
+}
+
 /// A no-op policy: the task uses the shared base env unchanged (DataFusion's
 /// default unbounded pool). Used when `--memory-pool-size` is unset.
 fn identity_pool_policy() -> MemoryPoolPolicy {
@@ -337,6 +370,10 @@ pub struct ExecutorProcessConfig {
     /// Fraction (0.0, 1.0] of the detected host/cgroup memory limit used for the
     /// auto memory pool when `memory_pool_size` is `None`.
     pub memory_pool_fraction: f64,
+    /// Maximum disk space spill files may use, applied to every runtime the
+    /// executor produces (including one from `override_runtime_producer`), so
+    /// per session runtime. When `None`, DataFusion's default limit applies.
+    pub max_temp_directory_size: Option<u64>,
     /// Maximum number of sessions whose shared base runtime env is retained on
     /// the executor (LRU). Sharing reuses object-store clients and the Parquet
     /// footer cache across a session's tasks and queries. `0` disables caching
@@ -423,6 +460,7 @@ impl Default for ExecutorProcessConfig {
             metric_collection_policy: ExecutorMetricCollectionPolicy::default(),
             memory_pool_size: None,
             memory_pool_fraction: DEFAULT_MEMORY_POOL_FRACTION,
+            max_temp_directory_size: None,
             session_runtime_cache_capacity: 16,
             override_execution_engine: None,
             override_function_registry: None,
@@ -526,6 +564,13 @@ async fn start_executor_process_inner(
                 Ok(Arc::new(runtime_env))
             })
         });
+    let base_runtime_producer = match opt.max_temp_directory_size {
+        Some(size) => {
+            info!("Executor spill disk limit: {}", bytesize::ByteSize::b(size));
+            with_max_temp_directory_size(base_runtime_producer, size)
+        }
+        None => base_runtime_producer,
+    };
 
     let fraction = opt.memory_pool_fraction;
     let pool_policy: MemoryPoolPolicy =
@@ -848,15 +893,8 @@ async fn start_executor_process_inner(
             info!("{msg:?}");
             (true, msg)
         },
-        _ = signal::ctrl_c() => {
-            let msg = "executor received ctrl-c event.".to_string();
-             info!("{msg:?}");
-            (true, msg)
-        },
-        _ = terminate::sig_term() => {
-            let msg = "executor received terminate signal.".to_string();
-             info!("{msg:?}");
-            (true, msg)
+        signal = shutdown_signal() => {
+            (true, format!("executor received {signal}."))
         },
         _ = stop_recv.recv() => {
             (false, "".to_string())
@@ -929,23 +967,14 @@ async fn start_executor_process_inner(
     };
 
     let shutdown_timeout = Duration::from_secs(opt.graceful_shutdown_timeout_seconds);
-    if shutdown_timeout.is_zero() {
-        graceful_shutdown.await;
-    } else if time::timeout(shutdown_timeout, graceful_shutdown)
-        .await
-        .is_err()
-    {
-        let message = format!(
-            "Executor graceful shutdown timed out after {} seconds",
-            shutdown_timeout.as_secs()
-        );
-        warn!("{message}; aborting remaining services");
+    if let Err(timed_out) = drain_or_time_out(graceful_shutdown, shutdown_timeout).await {
+        warn!("aborting remaining services");
         // A scheduler RPC or task drain may have timed out before broadcasting shutdown.
         let _ = notify_shutdown.send(());
         for service in &service_handlers {
             service.abort();
         }
-        return Err(BallistaError::General(message));
+        return Err(timed_out.into());
     }
     info!("Executor stopped.");
     Ok(())
@@ -1763,5 +1792,65 @@ mod memory_pool_tests {
     fn cgroup_absent_returns_none() {
         let dir = tempdir().unwrap();
         assert_eq!(read_cgroup_memory_limit(dir.path()), None);
+    }
+}
+
+#[cfg(test)]
+mod spill_limit_tests {
+    use super::*;
+    use datafusion::execution::disk_manager::DEFAULT_MAX_TEMP_DIRECTORY_SIZE;
+
+    #[test]
+    fn applies_spill_limit_to_custom_runtime_producer() {
+        let work_dir = TempDir::new().unwrap();
+        let path = work_dir.path().to_path_buf();
+        let producer: RuntimeProducer = Arc::new(move |_: &SessionConfig| {
+            RuntimeEnvBuilder::new()
+                .with_temp_file_path(path.clone())
+                .build_arc()
+        });
+        let unlimited = producer(&SessionConfig::new()).unwrap();
+        assert_eq!(
+            unlimited.disk_manager.max_temp_directory_size(),
+            DEFAULT_MAX_TEMP_DIRECTORY_SIZE
+        );
+
+        let producer = with_max_temp_directory_size(producer, 1024);
+        let runtime = producer(&SessionConfig::new()).unwrap();
+        assert_eq!(runtime.disk_manager.max_temp_directory_size(), 1024);
+    }
+
+    #[test]
+    fn spill_dir_relocates_spills_and_keeps_runtime_state() {
+        let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(1 << 20));
+        let base = RuntimeEnvBuilder::new()
+            .with_memory_pool(pool)
+            .build_arc()
+            .unwrap();
+        let producer: RuntimeProducer = {
+            let base = base.clone();
+            Arc::new(move |_: &SessionConfig| Ok(base.clone()))
+        };
+        // The base runtime spills to the OS temp dir.
+        assert!(base.disk_manager.temp_dir_paths().is_empty());
+
+        let work_dir = TempDir::new().unwrap();
+        let spill_dir = work_dir.path().to_str().unwrap().to_string();
+        let producer =
+            with_max_temp_directory_size(with_spill_dir(producer, spill_dir), 2048);
+        let runtime = producer(&SessionConfig::new()).unwrap();
+
+        let paths = runtime.disk_manager.temp_dir_paths();
+        assert!(!paths.is_empty());
+        assert!(
+            paths.iter().all(|p| p.starts_with(work_dir.path())),
+            "{paths:?}"
+        );
+        assert_eq!(runtime.disk_manager.max_temp_directory_size(), 2048);
+        assert!(Arc::ptr_eq(&runtime.memory_pool, &base.memory_pool));
+        assert!(Arc::ptr_eq(
+            &runtime.object_store_registry,
+            &base.object_store_registry
+        ));
     }
 }

@@ -19,16 +19,19 @@
 
 set -e
 
-# On SIGTERM or SIGINT, stop the executor first, so it drains while the
-# scheduler it reports to is still up, then stop the scheduler.
+# On SIGTERM or SIGINT, stop the scheduler first. It finishes the jobs it has
+# before it exits, so the executor must keep running their tasks until then.
+# Then stop the executor, which has nothing left to drain. Exit with the
+# scheduler's status if it failed, for example by running out of its shutdown
+# time limit, and otherwise with the executor's.
 stop() {
+  kill -TERM "$scheduler" 2>/dev/null || true
+  wait "$scheduler" || scheduler_status=$?
   if [[ -n "${executor:-}" ]]; then
     kill -TERM "$executor" 2>/dev/null || true
-    wait "$executor" || status=$?
+    wait "$executor" || executor_status=$?
   fi
-  kill -TERM "$scheduler" 2>/dev/null || true
-  wait "$scheduler" || true
-  exit "${status:-0}"
+  exit "${scheduler_status:-${executor_status:-0}}"
 }
 
 echo "Starting scheduler"
