@@ -64,6 +64,31 @@ a commit reaching the live table but not the static one:
 cargo run -p ballista-iceberg --example standalone-iceberg-scan
 ```
 
+## SQL clients
+
+Flight SQL clients (JDBC, ADBC, BI tools) send SQL to the scheduler, which plans
+it, so they hold no catalog. To let them query Iceberg tables, mount catalogs
+on the scheduler with `iceberg_session_builder`, and give the scheduler and
+executors the Iceberg codecs:
+
+```rust
+use ballista_iceberg::{IcebergLogicalCodec, IcebergPhysicalCodec, iceberg_session_builder};
+
+let rest = IcebergCatalogProvider::try_new(catalog).await?;
+let mut config = SchedulerConfig::default()
+    .with_flight_sql(true)
+    .with_override_session_builder(Arc::new(iceberg_session_builder([(
+        "rest".to_string(),
+        Arc::new(rest) as _,
+    )])));
+config.override_logical_codec = Some(Arc::new(IcebergLogicalCodec::default()));
+config.override_physical_codec = Some(Arc::new(IcebergPhysicalCodec::default()));
+```
+
+Executors set the same two codecs on their `ExecutorProcessConfig`. A client can
+then run `SELECT * FROM rest.ns.t`. Tables are pinned the same way as on the
+client, while the scheduler plans the query.
+
 ## How it works
 
 Ballista sends the client's plan to the scheduler, and each stage's plan to
@@ -74,8 +99,7 @@ Metadata files never change, so every node rebuilds exactly that version.
 - **A catalog-backed table** is pinned to the version its catalog serves when
   the client plans the query. DataFusion looks up each table a query names
   once, so every scan of it, such as each side of a self-join, reads that
-  version, and each new query reads the latest one. A `DataFrame` planned once
-  and run twice reads the same version both times.
+  version, and each new query reads the latest one.
 - **A static table** is sent as the version it holds.
 - **A scan** is sent as the version the scheduler planned it against.
 
@@ -83,8 +107,8 @@ Tables sent from the client also carry the metadata itself, so the scheduler
 needn't read the file. Scans sent to executors carry only the location, which
 keeps each task's plan small.
 
-Only the client talks to a catalog; the scheduler and executors need no catalog
-configuration.
+Only the node that plans a query talks to a catalog: the client, or the
+scheduler for SQL clients. Executors never need catalog configuration.
 
 ## Limitations
 
@@ -98,7 +122,16 @@ configuration.
 - **Storage credentials travel in plain text.** Each table's serialized
   `FileIO` includes them, so the links between client, scheduler and executors
   must be trusted.
-- **Only standalone mode is tested.** A separately deployed scheduler and
-  executors must link `ballista-iceberg` and register the codecs with
-  `register_iceberg_codecs` (see
-  [Extending Components](extending-components.md)).
+- **A view keeps the version from when it was created.** DataFusion stores a
+  view as a planned query, and tables are pinned when a query is planned. The
+  same goes for a `DataFrame` or a Flight SQL prepared statement run more than
+  once: each run reads the version from when it was planned. To read newer
+  commits, recreate the view or plan the query again.
+- **A separately deployed scheduler and executors** must link
+  `ballista-iceberg` and set the Iceberg codecs as their
+  `override_logical_codec` and `override_physical_codec` (see
+  [Extending Components](extending-components.md)). The tests cover standalone
+  mode and an in-process scheduler serving Flight SQL.
+- **A mounted catalog lists its tables once.** `IcebergCatalogProvider` reads
+  the table names when it is built, so a table created afterwards isn't
+  visible until the catalog is mounted again.

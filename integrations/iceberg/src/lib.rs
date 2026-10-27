@@ -21,7 +21,8 @@
 //! table and scan as one version of the table, which any node can rebuild
 //! without a catalog. A catalog-backed table is sent as the version its catalog
 //! served when the query was planned, a static one as the version it holds.
-//! Only the client talks to a catalog.
+//! Only the node that plans a query talks to a catalog: the client, or, for
+//! Flight SQL clients, a scheduler built with [`iceberg_session_builder`].
 //!
 //! Storage comes from [`iceberg_storage_opendal`]: S3 and local files by
 //! default, other stores with its `opendal-*` features.
@@ -51,6 +52,8 @@
 //! - Reads only.
 //! - Each scan runs as a single task.
 //! - No metadata tables such as `t$snapshots`.
+//! - A view, or a `DataFrame` or prepared statement reused across runs, reads
+//!   the version from when it was planned.
 //! - Storage credentials travel in plain text.
 
 mod catalog;
@@ -61,6 +64,9 @@ mod wire;
 use std::sync::Arc;
 
 use ballista_core::extension::SessionConfigExt;
+use ballista_core::utils::default_session_builder;
+use datafusion::catalog::CatalogProvider;
+use datafusion::common::Result;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::prelude::SessionConfig;
 // Linked for the storage it registers; nothing here calls it.
@@ -73,24 +79,43 @@ pub use crate::physical_codec::IcebergPhysicalCodec;
 
 /// Readies a client's session for Iceberg: registers the codecs, and pins
 /// each catalog-backed table a query names to the version its catalog serves
-/// when the query is planned.
+/// when the query is planned. A session that is already ready is returned
+/// unchanged.
 pub fn register_iceberg(mut state: SessionState) -> SessionState {
-    *state.config_mut() = register_iceberg_codecs(state.config().clone());
+    if state.catalog_list().is::<PinningCatalogList>() {
+        return state;
+    }
+    let config = state.config_mut();
+    let logical = IcebergLogicalCodec::new(config.ballista_logical_extension_codec());
+    let physical = IcebergPhysicalCodec::new(config.ballista_physical_extension_codec());
+    *config = config
+        .clone()
+        .with_ballista_logical_extension_codec(Arc::new(logical))
+        .with_ballista_physical_extension_codec(Arc::new(physical));
     let catalogs = PinningCatalogList(state.catalog_list().clone());
     SessionStateBuilder::new_from_existing(state)
         .with_catalog_list(Arc::new(catalogs))
         .build()
 }
 
-/// Wraps `config`'s Ballista codecs in the Iceberg ones.
+/// Builds a scheduler's sessions with `catalogs` mounted and readied with
+/// [`register_iceberg`], for queries the scheduler plans itself: those from
+/// Flight SQL clients, which hold no catalog of their own.
 ///
-/// The client registers them with [`register_iceberg`]. In standalone mode the
-/// scheduler and executor share the client's config; a separately deployed
-/// scheduler and executors need this on their configs.
-pub fn register_iceberg_codecs(config: SessionConfig) -> SessionConfig {
-    let logical = IcebergLogicalCodec::new(config.ballista_logical_extension_codec());
-    let physical = IcebergPhysicalCodec::new(config.ballista_physical_extension_codec());
-    config
-        .with_ballista_logical_extension_codec(Arc::new(logical))
-        .with_ballista_physical_extension_codec(Arc::new(physical))
+/// Pass it to `SchedulerConfig::with_override_session_builder`. The scheduler
+/// and executors also need the Iceberg codecs, set as their
+/// `override_logical_codec` and `override_physical_codec`.
+pub fn iceberg_session_builder(
+    catalogs: impl IntoIterator<Item = (String, Arc<dyn CatalogProvider>)>,
+) -> impl Fn(SessionConfig) -> Result<SessionState> + Send + Sync + 'static {
+    let catalogs: Vec<_> = catalogs.into_iter().collect();
+    move |config| {
+        let state = register_iceberg(default_session_builder(config)?);
+        for (name, catalog) in &catalogs {
+            state
+                .catalog_list()
+                .register_catalog(name.clone(), catalog.clone());
+        }
+        Ok(state)
+    }
 }

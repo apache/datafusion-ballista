@@ -51,11 +51,15 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]
+arrow-flight = { workspace = true }
 ballista = { workspace = true, features = ["standalone"] }
+ballista-executor = { workspace = true }
+ballista-scheduler = { workspace = true, features = ["flight-sql"] }
 iceberg-catalog-rest = { workspace = true }
 tempfile = { workspace = true }
 testcontainers = { version = "0.28", features = ["http_wait_plain"] }
 tokio = { workspace = true, features = ["macros"] }
+tonic = { workspace = true }
 
 [features]
 # Tests that need docker.

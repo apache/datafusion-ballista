@@ -1362,10 +1362,13 @@ dependencies = [
 name = "ballista-iceberg"
 version = "55.0.0"
 dependencies = [
+ "arrow-flight",
  "arrow-schema",
  "async-trait",
  "ballista",
  "ballista-core",
+ "ballista-executor",
+ "ballista-scheduler",
  "datafusion",
  "datafusion-proto",
  "futures",
@@ -1378,6 +1381,7 @@ dependencies = [
  "tempfile",
  "testcontainers",
  "tokio",
+ "tonic",
 ]
 
 [[package]]
