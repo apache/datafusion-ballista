@@ -22,13 +22,14 @@ use std::sync::Arc;
 use ballista_core::serde::BallistaLogicalExtensionCodec;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
-use datafusion::common::{Result, TableReference, exec_err};
+use datafusion::common::{Result, TableReference, exec_err, not_impl_err};
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{
     AggregateUDF, Extension, HigherOrderUDF, LogicalPlan, ScalarUDF, WindowUDF,
 };
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
+use iceberg_datafusion::metadata::IcebergMetadataTableProvider;
 use iceberg_datafusion::{IcebergCatalogTableProvider, IcebergStaticTableProvider};
 use serde::{Deserialize, Serialize};
 
@@ -122,6 +123,10 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
             return exec_err!(
                 "Iceberg table {table_ref} is catalog-backed but wasn't pinned to a \
                  version: build the client's session with ballista_iceberg::register_iceberg"
+            );
+        } else if node.is::<IcebergMetadataTableProvider>() {
+            return not_impl_err!(
+                "Iceberg metadata table {table_ref} isn't supported on Ballista yet"
             );
         } else {
             buf.push(TAG_DELEGATED);

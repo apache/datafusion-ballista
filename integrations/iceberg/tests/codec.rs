@@ -40,7 +40,9 @@ mod iceberg_nodes {
     use datafusion_proto::physical_plan::{
         DefaultPhysicalProtoConverter, PhysicalExtensionCodec,
     };
+    use iceberg::inspect::MetadataTableType;
     use iceberg_datafusion::IcebergStaticTableProvider;
+    use iceberg_datafusion::metadata::IcebergMetadataTableProvider;
     use iceberg_datafusion::read::IcebergDataSource;
 
     use crate::common::{catalog_table, insert, memory_catalog};
@@ -132,21 +134,33 @@ mod iceberg_nodes {
     }
 
     #[tokio::test]
-    async fn should_refuse_unpinned_catalog_table() -> Result<()> {
+    async fn should_refuse_unpinned_and_metadata_tables() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let provider = catalog_table(&memory_catalog(dir.path()).await).await;
+        let catalog = memory_catalog(dir.path()).await;
+        let table = insert(&catalog, "(1, 'a')").await;
+        let encode = |provider: Arc<dyn TableProvider>| {
+            IcebergLogicalCodec::default()
+                .try_encode_table_provider(
+                    &TableReference::bare("t"),
+                    provider,
+                    &mut Vec::new(),
+                )
+                .unwrap_err()
+                .to_string()
+        };
 
-        let err = IcebergLogicalCodec::default()
-            .try_encode_table_provider(
-                &TableReference::bare("t"),
-                Arc::new(provider),
-                &mut Vec::new(),
-            )
-            .unwrap_err();
         assert_eq!(
-            err.to_string(),
+            encode(Arc::new(catalog_table(&catalog).await)),
             "Execution error: Iceberg table t is catalog-backed but wasn't pinned to \
              a version: build the client's session with ballista_iceberg::register_iceberg"
+        );
+        assert_eq!(
+            encode(Arc::new(IcebergMetadataTableProvider::new(
+                table,
+                MetadataTableType::Snapshots
+            ))),
+            "This feature is not implemented: Iceberg metadata table t isn't supported \
+             on Ballista yet"
         );
 
         Ok(())
