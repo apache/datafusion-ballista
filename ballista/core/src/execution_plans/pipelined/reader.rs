@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -38,9 +39,9 @@ use datafusion::physical_plan::{
     RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
 use futures::{Stream, StreamExt};
-use log::debug;
+use log::{debug, warn};
 use parking_lot::Mutex;
-use tokio::sync::OnceCell;
+use tokio::sync::Mutex as AsyncMutex;
 
 use super::registry::{PipelinedRegistry, ProducerKey};
 use crate::client::BallistaClient;
@@ -61,9 +62,10 @@ use crate::utils::GrpcClientConfig;
 /// partition whose consumer is in turn waiting on another producer.
 ///
 /// A producer on the same executor is read straight from the executor's
-/// [`PipelinedRegistry`]; any other is read over Arrow Flight. A broken stream
-/// fails the query: there is no retry, because a stream that has started
-/// cannot be resumed.
+/// [`PipelinedRegistry`]; any other is read over Arrow Flight. Opening a
+/// remote stream is retried if the connection fails before the producer's
+/// executor has answered. A stream that has started is not: it cannot be
+/// resumed, so a broken one fails the query.
 #[derive(Debug, Clone)]
 pub struct PipelinedShuffleReaderExec {
     /// The producer stage.
@@ -394,12 +396,40 @@ impl ExecutionPlan for PipelinedShuffleReaderExec {
 const MAX_STREAMS_PER_CONNECTION: usize = 64;
 
 /// A connection to a producer executor, opened by the first stream that needs
-/// it.
-struct ConnectionSlot(OnceCell<Arc<SharedConnection>>);
+/// it and opened again by the next one after it fails.
+struct ConnectionSlot(AsyncMutex<Option<Arc<SharedConnection>>>);
 
 impl ConnectionSlot {
     fn new() -> Self {
-        Self(OnceCell::new())
+        Self(AsyncMutex::new(None))
+    }
+
+    /// The slot's connection, opened with `connect` if it has none. The lock
+    /// is held while connecting, so the streams that share the slot wait for
+    /// one connection instead of each opening their own.
+    async fn get_or_connect(
+        &self,
+        connect: impl AsyncFnOnce()
+            -> std::result::Result<Arc<SharedConnection>, BallistaError>,
+    ) -> std::result::Result<Arc<SharedConnection>, BallistaError> {
+        let mut slot = self.0.lock().await;
+        if let Some(connection) = &*slot {
+            return Ok(connection.clone());
+        }
+        let connection = connect().await?;
+        *slot = Some(connection.clone());
+        Ok(connection)
+    }
+
+    /// Discards `failed` and empties the slot, so the next stream opens a new
+    /// connection. A connection another stream has already replaced is left
+    /// in place.
+    async fn forget(&self, failed: &Arc<SharedConnection>) {
+        failed.discard();
+        let mut slot = self.0.lock().await;
+        if slot.as_ref().is_some_and(|c| Arc::ptr_eq(c, failed)) {
+            *slot = None;
+        }
     }
 }
 
@@ -456,39 +486,86 @@ impl RecordBatchStream for SharedConnectionStream {
 
 /// Opens a producer's partition over Arrow Flight, on the connection in
 /// `slot`.
+///
+/// A failure of the connection before the producer's executor has answered
+/// is retried on a new connection, up to `io_retries_times` times with
+/// `io_retry_wait_time_ms` between attempts. A wide job opens its connections
+/// in one burst, and a listen queue that overflows under it delays some of
+/// them and, once the kernel falls back to SYN cookies, resets others as they
+/// start sending. A failure the executor answered is not retried: the
+/// producer may already have handed the partition to the failed stream.
 async fn open_remote(
     location: &PipelinedPartitionLocation,
-    registration_timeout: std::time::Duration,
+    registration_timeout: Duration,
     slot: Arc<ConnectionSlot>,
     grpc_config: Arc<GrpcClientConfig>,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    client_pool: Option<Arc<dyn BallistaClientPool>>,
+) -> std::result::Result<SendableRecordBatchStream, BallistaError> {
+    let retries = grpc_config.io_retries_times;
+    let wait = Duration::from_millis(grpc_config.io_retry_wait_time_ms);
+    let mut attempt = 0;
+    loop {
+        let result = open_remote_once(
+            location,
+            registration_timeout,
+            &slot,
+            &grpc_config,
+            customize_endpoint.clone(),
+            client_pool.clone(),
+        )
+        .await;
+        match result {
+            Err(e @ BallistaError::GrpcConnectionError(_)) if attempt < retries => {
+                attempt += 1;
+                warn!(
+                    "connection to {}:{} failed before pipelined partition {:?} of task {} \
+                     was open, retry {attempt} of {retries} in {wait:?}: {e}",
+                    location.executor_meta.host,
+                    location.executor_meta.port,
+                    location.partition_id,
+                    location.task_id
+                );
+                tokio::time::sleep(wait).await;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// One attempt at [`open_remote`]. A connection that fails is forgotten by
+/// its slot, so the streams still to open on it connect again.
+async fn open_remote_once(
+    location: &PipelinedPartitionLocation,
+    registration_timeout: Duration,
+    slot: &ConnectionSlot,
+    grpc_config: &GrpcClientConfig,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
 ) -> std::result::Result<SendableRecordBatchStream, BallistaError> {
     let host = location.executor_meta.host.as_str();
     let port = location.executor_meta.port;
     let connection = slot
-        .0
-        .get_or_try_init(|| async {
+        .get_or_connect(async || {
             let (client, lease) = match client_pool {
                 Some(pool) => {
                     let pooled = pool
-                        .acquire(host, port, &grpc_config, customize_endpoint)
+                        .acquire(host, port, grpc_config, customize_endpoint)
                         .await?;
                     ((*pooled).clone(), Some(pooled))
                 }
                 None => (
-                    new_ballista_client(host, port, &grpc_config, customize_endpoint)
+                    new_ballista_client(host, port, grpc_config, customize_endpoint)
                         .await?,
                     None,
                 ),
             };
-            Ok::<_, BallistaError>(Arc::new(SharedConnection {
+            Ok(Arc::new(SharedConnection {
                 client,
                 lease: Mutex::new(lease),
             }))
         })
-        .await?
-        .clone();
+        .await?;
     // A clone of the client shares its connection.
     let mut client = connection.client.clone();
     match client
@@ -497,7 +574,7 @@ async fn open_remote(
     {
         Ok(inner) => Ok(Box::pin(SharedConnectionStream { inner, connection })),
         Err(e) => {
-            connection.discard();
+            slot.forget(&connection).await;
             Err(e)
         }
     }

@@ -44,12 +44,33 @@ use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
 use log::{debug, warn};
 use std::collections::HashMap;
+use std::error::Error as _;
 use std::sync::Arc;
 use std::{
     convert::TryFrom,
     task::{Context, Poll},
 };
-use tonic::{Code, Streaming};
+use tonic::{Code, Status, Streaming};
+
+/// Whether `status` reports that the connection failed, rather than an
+/// answer the server sent.
+///
+/// tonic reports a connection-level failure (a reset, a refused connection,
+/// a broken pipe, a GOAWAY) as an `Unknown` status whose source is its
+/// transport error, and a stream the server refused for lack of capacity as
+/// `Unavailable`. Both mean the request never reached the service.
+fn is_transport_failure(status: &Status) -> bool {
+    match status.code() {
+        Code::Unavailable => true,
+        Code::Unknown => {
+            status
+                .source()
+                .is_some_and(|source| source.is::<tonic::transport::Error>())
+                || status.message() == "transport error"
+        }
+        _ => false,
+    }
+}
 
 /// Client for interacting with Ballista executors.
 #[derive(Clone)]
@@ -256,10 +277,15 @@ impl BallistaClient {
 
     /// Streams one output partition of a running pipelined producer task.
     ///
-    /// Unlike a shuffle fetch this is never retried: the producer hands the
-    /// partition to a single reader and cannot replay it, so a request that
-    /// fails partway fails the query. The executor waits a bounded time for
-    /// the producer task to start before it sends anything.
+    /// Unlike a shuffle fetch this is not retried here: the producer hands
+    /// the partition to a single reader and cannot replay it, so a stream
+    /// that fails partway fails the query. A failure of the connection
+    /// itself before the server has answered is reported as
+    /// [`BallistaError::GrpcConnectionError`], so the caller can open the
+    /// stream again on another connection; anything the server answered,
+    /// including the producer's own failure, is a
+    /// [`BallistaError::GrpcActionError`]. The executor waits a bounded time
+    /// for the producer task to start before it sends anything.
     pub async fn fetch_pipelined_partition(
         &mut self,
         location: &PipelinedPartitionLocation,
@@ -277,16 +303,22 @@ impl BallistaClient {
         let request = tonic::Request::new(Ticket {
             ticket: encode_protobuf(action)?.into(),
         });
+        let failed = |status: &Status| {
+            let message = format!(
+                "failed to stream pipelined partition {:?} of task {}: {status}",
+                location.partition_id, location.task_id
+            );
+            if is_transport_failure(status) {
+                BallistaError::GrpcConnectionError(message)
+            } else {
+                BallistaError::GrpcActionError(message)
+            }
+        };
         let mut stream = self
             .flight_client
             .do_get(request)
             .await
-            .map_err(|e| {
-                BallistaError::GrpcActionError(format!(
-                    "failed to stream pipelined partition {:?} of task {}: {e}",
-                    location.partition_id, location.task_id
-                ))
-            })?
+            .map_err(|e| failed(&e))?
             .into_inner();
         match stream.message().await {
             Ok(Some(flight_data)) => {
@@ -297,12 +329,7 @@ impl BallistaClient {
                 "no schema received for pipelined partition {:?} of task {}",
                 location.partition_id, location.task_id
             ))),
-            Err(e) => Err(BallistaError::GrpcActionError(format!(
-                "failed to stream pipelined partition {:?} of task {}: {}",
-                location.partition_id,
-                location.task_id,
-                e.message()
-            ))),
+            Err(e) => Err(failed(&e)),
         }
     }
 

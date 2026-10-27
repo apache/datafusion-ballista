@@ -31,9 +31,22 @@ use datafusion::physical_plan::expressions::col;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::{StreamExt, TryStreamExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::{Request, Response, Status, Streaming};
+
+use arrow_flight::flight_service_server::FlightServiceServer;
+use arrow_flight::utils::batches_to_flight_data;
+use arrow_flight::{
+    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
+    HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
+};
+
+use crate::serving::BoxedFlightStream;
 
 use super::{PipelinedRegistry, PipelinedShuffleReaderExec, PipelinedShuffleWriterExec};
 use crate::config::{
+    BALLISTA_CLIENT_IO_RETRIES_TIMES, BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS,
     BALLISTA_PIPELINED_QUEUE_CAPACITY, BALLISTA_PIPELINED_REGISTRATION_TIMEOUT_SECONDS,
 };
 use crate::execution_plans::ChaosExec;
@@ -78,6 +91,20 @@ fn task_ctx(queue_capacity: Option<usize>) -> Arc<TaskContext> {
             .set(BALLISTA_PIPELINED_QUEUE_CAPACITY, &capacity.to_string())
             .unwrap();
     }
+    SessionContext::new_with_config(config).task_ctx()
+}
+
+/// A context for remote reads that retries a failed stream open `retries`
+/// times, `wait_ms` apart.
+fn remote_task_ctx(retries: usize, wait_ms: u64) -> Arc<TaskContext> {
+    let mut config = SessionConfig::new_with_ballista();
+    let options = config.options_mut();
+    options
+        .set(BALLISTA_CLIENT_IO_RETRIES_TIMES, &retries.to_string())
+        .unwrap();
+    options
+        .set(BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS, &wait_ms.to_string())
+        .unwrap();
     SessionContext::new_with_config(config).task_ctx()
 }
 
@@ -517,10 +544,208 @@ async fn remote_streams_to_one_executor_share_a_connection() {
     .unwrap()
     .with_client_pool(pool.clone());
 
-    let results: Vec<_> = reader.execute(0, task_ctx(None)).unwrap().collect().await;
+    // Nothing listens on either port, so each open fails as a connection
+    // failure; with no retries, each slot connects exactly once.
+    let results: Vec<_> = reader
+        .execute(0, remote_task_ctx(0, 0))
+        .unwrap()
+        .collect()
+        .await;
     assert!(results.iter().all(|r| r.is_err()));
     assert_eq!(
         *pool.acquired.lock(),
         BTreeMap::from([(port_a, 3), (port_b, 1)])
     );
+}
+
+/// A Flight server whose `do_get` answers every ticket with `response`,
+/// either the batches of a partition or a failure.
+struct TestFlightService {
+    response: Result<Vec<RecordBatch>, String>,
+}
+
+#[tonic::async_trait]
+impl arrow_flight::flight_service_server::FlightService for TestFlightService {
+    type DoActionStream = BoxedFlightStream<arrow_flight::Result>;
+    type DoExchangeStream = BoxedFlightStream<FlightData>;
+    type DoGetStream = BoxedFlightStream<FlightData>;
+    type DoPutStream = BoxedFlightStream<PutResult>;
+    type HandshakeStream = BoxedFlightStream<HandshakeResponse>;
+    type ListActionsStream = BoxedFlightStream<ActionType>;
+    type ListFlightsStream = BoxedFlightStream<FlightInfo>;
+
+    async fn handshake(
+        &self,
+        _: Request<Streaming<HandshakeRequest>>,
+    ) -> Result<Response<Self::HandshakeStream>, Status> {
+        Err(Status::unimplemented("handshake"))
+    }
+
+    async fn list_flights(
+        &self,
+        _: Request<Criteria>,
+    ) -> Result<Response<Self::ListFlightsStream>, Status> {
+        Err(Status::unimplemented("list_flights"))
+    }
+
+    async fn get_flight_info(
+        &self,
+        _: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        Err(Status::unimplemented("get_flight_info"))
+    }
+
+    async fn poll_flight_info(
+        &self,
+        _: Request<FlightDescriptor>,
+    ) -> Result<Response<PollInfo>, Status> {
+        Err(Status::unimplemented("poll_flight_info"))
+    }
+
+    async fn get_schema(
+        &self,
+        _: Request<FlightDescriptor>,
+    ) -> Result<Response<SchemaResult>, Status> {
+        Err(Status::unimplemented("get_schema"))
+    }
+
+    async fn do_get(
+        &self,
+        _: Request<Ticket>,
+    ) -> Result<Response<Self::DoGetStream>, Status> {
+        match &self.response {
+            Ok(batches) => {
+                let data = batches_to_flight_data(&schema(), batches.clone())
+                    .map_err(|e| Status::internal(e.to_string()))?;
+                Ok(Response::new(Box::pin(futures::stream::iter(
+                    data.into_iter().map(Ok),
+                ))))
+            }
+            Err(message) => Err(Status::internal(message.clone())),
+        }
+    }
+
+    async fn do_put(
+        &self,
+        _: Request<Streaming<FlightData>>,
+    ) -> Result<Response<Self::DoPutStream>, Status> {
+        Err(Status::unimplemented("do_put"))
+    }
+
+    async fn do_exchange(
+        &self,
+        _: Request<Streaming<FlightData>>,
+    ) -> Result<Response<Self::DoExchangeStream>, Status> {
+        Err(Status::unimplemented("do_exchange"))
+    }
+
+    async fn do_action(
+        &self,
+        _: Request<Action>,
+    ) -> Result<Response<Self::DoActionStream>, Status> {
+        Err(Status::unimplemented("do_action"))
+    }
+
+    async fn list_actions(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<Self::ListActionsStream>, Status> {
+        Err(Status::unimplemented("list_actions"))
+    }
+}
+
+/// Serves `service` on a port of its own and returns the port.
+async fn serve_flight(service: TestFlightService) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(FlightServiceServer::new(service))
+            .serve_with_incoming(TcpListenerStream::new(listener)),
+    );
+    port
+}
+
+/// Listens on a port of its own and relays connections to `target`, except
+/// the first, which is reset as soon as it is accepted: what a client sees
+/// when a listen queue overflows and the kernel resets its half-open
+/// connection.
+async fn resetting_proxy(target: u16) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut accepted = 0;
+        while let Ok((mut client, _)) = listener.accept().await {
+            accepted += 1;
+            if accepted == 1 {
+                // Closing with a zero linger sends RST instead of FIN. tokio
+                // deprecates the setter because a nonzero linger blocks the
+                // thread on drop; a zero one closes at once.
+                #[allow(deprecated)]
+                client.set_linger(Some(Duration::ZERO)).unwrap();
+                drop(client);
+                continue;
+            }
+            tokio::spawn(async move {
+                let mut server = TcpStream::connect(("127.0.0.1", target)).await.unwrap();
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+            });
+        }
+    });
+    port
+}
+
+fn remote_location(port: u16) -> PipelinedPartitionLocation {
+    let mut location = location(0, 0);
+    location.executor_meta.id = format!("remote-{port}");
+    location.executor_meta.host = "127.0.0.1".to_owned();
+    location.executor_meta.port = port;
+    location
+}
+
+fn remote_reader(port: u16, pool: &Arc<CountingPool>) -> PipelinedShuffleReaderExec {
+    PipelinedShuffleReaderExec::try_new(
+        STAGE,
+        vec![vec![remote_location(port)]],
+        schema(),
+        Partitioning::UnknownPartitioning(1),
+    )
+    .unwrap()
+    .with_client_pool(pool.clone())
+}
+
+#[tokio::test]
+async fn remote_stream_open_is_retried_on_a_new_connection_after_a_reset() {
+    let server = serve_flight(TestFlightService {
+        response: Ok(vec![batch([1, 2, 3])]),
+    })
+    .await;
+    let port = resetting_proxy(server).await;
+    let pool = Arc::new(CountingPool::default());
+    let reader = remote_reader(port, &pool);
+
+    let batches = read_partition(&reader, 0, remote_task_ctx(3, 10))
+        .await
+        .unwrap();
+
+    assert_eq!(keys(&batches), vec![1, 2, 3]);
+    // The reset connection was discarded and a second one opened.
+    assert_eq!(*pool.acquired.lock(), BTreeMap::from([(port, 2)]));
+}
+
+#[tokio::test]
+async fn remote_stream_failure_the_server_answered_is_not_retried() {
+    let port = serve_flight(TestFlightService {
+        response: Err("producer failed".to_owned()),
+    })
+    .await;
+    let pool = Arc::new(CountingPool::default());
+    let reader = remote_reader(port, &pool);
+
+    let err = read_partition(&reader, 0, remote_task_ctx(3, 10))
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("producer failed"), "{err}");
+    assert_eq!(*pool.acquired.lock(), BTreeMap::from([(port, 1)]));
 }
