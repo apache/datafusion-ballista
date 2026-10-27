@@ -16,7 +16,7 @@
 // under the License.
 
 //! The writer and reader run against each other in-process, through the
-//! registry, so these tests need no sockets.
+//! registry, so apart from the connection-sharing test they need no sockets.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -457,4 +457,70 @@ async fn restricting_a_broadcast_reader_keeps_every_location() {
     let restricted = reader.with_partitions(&[3]).unwrap();
     assert!(restricted.broadcast);
     assert_eq!(restricted.partition, vec![locations]);
+}
+
+/// A pool that counts the connections it hands out per executor. Its clients
+/// point at a port nothing listens on, so every fetch fails.
+#[derive(Debug, Default)]
+struct CountingPool {
+    acquired: parking_lot::Mutex<BTreeMap<u16, usize>>,
+}
+
+#[async_trait::async_trait]
+impl crate::client_pool::BallistaClientPool for CountingPool {
+    async fn acquire(
+        &self,
+        host: &str,
+        port: u16,
+        _config: &crate::utils::GrpcClientConfig,
+        _customize_endpoint: Option<Arc<crate::extension::BallistaConfigGrpcEndpoint>>,
+    ) -> crate::error::Result<crate::client_pool::PooledClient> {
+        *self.acquired.lock().entry(port).or_default() += 1;
+        Ok(crate::client_pool::PooledClient::new(
+            crate::client::BallistaClient::new_for_test(host, port),
+            Box::new(|_| ()),
+        ))
+    }
+
+    async fn evict_idle(&self) {}
+}
+
+fn unused_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+#[tokio::test]
+async fn remote_streams_to_one_executor_share_a_connection() {
+    let (port_a, port_b) = (unused_port(), unused_port());
+    let remote = |task_id: usize, port: u16| {
+        let mut location = location(task_id, 0);
+        location.executor_meta.id = format!("remote-{port}");
+        location.executor_meta.host = "127.0.0.1".to_owned();
+        location.executor_meta.port = port;
+        location
+    };
+    // 130 producer tasks on one executor need three connections at 64 streams
+    // each; two on another executor need one.
+    let mut locations: Vec<_> = (0..130).map(|t| remote(t, port_a)).collect();
+    locations.extend((130..132).map(|t| remote(t, port_b)));
+    let pool = Arc::new(CountingPool::default());
+    let reader = PipelinedShuffleReaderExec::try_new(
+        STAGE,
+        vec![locations],
+        schema(),
+        Partitioning::UnknownPartitioning(1),
+    )
+    .unwrap()
+    .with_client_pool(pool.clone());
+
+    let results: Vec<_> = reader.execute(0, task_ctx(None)).unwrap().collect().await;
+    assert!(results.iter().all(|r| r.is_err()));
+    assert_eq!(
+        *pool.acquired.lock(),
+        BTreeMap::from([(port_a, 3), (port_b, 1)])
+    );
 }
