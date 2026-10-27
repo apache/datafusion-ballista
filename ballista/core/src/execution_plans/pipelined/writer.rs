@@ -148,13 +148,6 @@ impl PipelinedShuffleWriterExec {
         self
     }
 
-    /// Returns a copy that retains its outputs for replay to every consumer
-    /// task, as the producer of a broadcast exchange must.
-    pub fn with_broadcast(mut self, broadcast: bool) -> Self {
-        self.broadcast = broadcast;
-        self
-    }
-
     /// The job this stage belongs to.
     pub fn job_id(&self) -> &JobId {
         &self.job_id
@@ -163,11 +156,6 @@ impl PipelinedShuffleWriterExec {
     /// The stage this writer is the root of.
     pub fn stage_id(&self) -> usize {
         self.stage_id
-    }
-
-    /// The task this writer instance is bound to.
-    pub fn task_id(&self) -> usize {
-        self.task_id
     }
 
     /// `Some(Hash)` for a repartitioning stage, `None` for passthrough.
@@ -180,11 +168,12 @@ impl PipelinedShuffleWriterExec {
         self.broadcast
     }
 
-    /// For each local input partition, the global output partition it feeds.
-    /// `None` for hash outputs, which every input feeds.
-    fn passthrough_targets(&self) -> Option<Vec<usize>> {
-        if self.shuffle_output_partitioning.is_some() {
-            return None;
+    /// How rows reach the outputs: hashed into `n` partitions, or each local
+    /// input partition passed through to the global output partition it
+    /// maps to.
+    fn routing(&self) -> Routing {
+        if let Some(Partitioning::Hash(exprs, n)) = &self.shuffle_output_partitioning {
+            return Routing::Hash(exprs.clone(), *n);
         }
         let map =
             walk_child_partition_mapping(&self.plan, &self.global_output_partition_ids);
@@ -193,7 +182,7 @@ impl PipelinedShuffleWriterExec {
             .properties()
             .output_partitioning()
             .partition_count();
-        Some(
+        Routing::Passthrough(
             (0..inputs)
                 .map(|local| map.resolve(local) as usize)
                 .collect(),
@@ -202,18 +191,7 @@ impl PipelinedShuffleWriterExec {
 
     /// The global output partitions this task serves.
     pub fn output_partition_ids(&self) -> Vec<usize> {
-        match (
-            &self.shuffle_output_partitioning,
-            self.passthrough_targets(),
-        ) {
-            (Some(Partitioning::Hash(_, n)), _) => (0..*n).collect(),
-            (_, Some(mut targets)) => {
-                targets.sort_unstable();
-                targets.dedup();
-                targets
-            }
-            _ => vec![],
-        }
+        self.routing().output_partition_ids()
     }
 
     /// Runs the task: registers its outputs, drives every input partition
@@ -249,8 +227,9 @@ impl PipelinedShuffleWriterExec {
             .output_partitioning()
             .partition_count();
 
-        let output_ids = self.output_partition_ids();
-        let (outputs, mut sinks) = ProducerOutputs::new(
+        let routing = self.routing();
+        let output_ids = routing.output_partition_ids();
+        let (outputs, sinks) = ProducerOutputs::new(
             schema.clone(),
             output_ids.iter().copied(),
             self.broadcast,
@@ -268,27 +247,26 @@ impl PipelinedShuffleWriterExec {
             "pipelined producer {key} serving partitions {output_ids:?} from {num_inputs} inputs"
         );
 
-        let hashing = self.shuffle_output_partitioning.is_some();
+        let hashing = matches!(routing, Routing::Hash(..));
         let partitions: Arc<HashMap<usize, Output>> = Arc::new(
-            output_ids
-                .iter()
-                .map(|id| {
-                    let sink = sinks.remove(id).expect("a sink for every output");
+            sinks
+                .into_iter()
+                .map(|(id, sink)| {
                     let coalescer = hashing.then(|| {
                         Mutex::new(BatchCoalescer::new(schema.clone(), batch_size))
                     });
-                    (*id, Output::new(sink, coalescer))
+                    (id, Output::new(sink, coalescer))
                 })
                 .collect(),
         );
         let open = Arc::new(AtomicUsize::new(partitions.len()));
 
-        let result = self
-            .drive_inputs(num_inputs, &context, &partitions, &open)
-            .await;
-        let result = match result {
+        let result = match self
+            .drive_inputs(routing, num_inputs, &context, &partitions, &open)
+            .await
+        {
             Ok(()) => self.finish_outputs(&partitions, &open).await,
-            Err(e) => Err(e),
+            err => err,
         };
         if let Err(e) = result {
             outputs.fail(&e);
@@ -310,12 +288,12 @@ impl PipelinedShuffleWriterExec {
 
     async fn drive_inputs(
         &self,
+        routing: Routing,
         num_inputs: usize,
         context: &Arc<TaskContext>,
         partitions: &Arc<HashMap<usize, Output>>,
         open: &Arc<AtomicUsize>,
     ) -> Result<()> {
-        let targets = self.passthrough_targets();
         let mut tasks = JoinSet::new();
         for input in 0..num_inputs {
             let stream = self.plan.execute(input, context.clone())?;
@@ -324,8 +302,8 @@ impl PipelinedShuffleWriterExec {
             let send_wait =
                 MetricBuilder::new(&self.metrics).subset_time("send_wait_time", input);
             let input_rows = MetricBuilder::new(&self.metrics).output_rows(input);
-            match (&self.shuffle_output_partitioning, &targets) {
-                (Some(Partitioning::Hash(exprs, n)), _) => {
+            match &routing {
+                Routing::Hash(exprs, n) => {
                     let partitioner = BatchPartitioner::try_new(
                         Partitioning::Hash(exprs.clone(), *n),
                         MetricBuilder::new(&self.metrics)
@@ -342,30 +320,25 @@ impl PipelinedShuffleWriterExec {
                         input_rows,
                     ));
                 }
-                (_, Some(targets)) => {
-                    let target = targets[input];
+                Routing::Passthrough(targets) => {
                     tasks.spawn(drive_passthrough(
-                        stream, target, partitions, open, send_wait, input_rows,
-                    ));
-                }
-                _ => {
-                    return Err(DataFusionError::Internal(
-                        "PipelinedShuffleWriterExec has neither hash nor passthrough routing"
-                            .to_owned(),
+                        stream,
+                        targets[input],
+                        partitions,
+                        open,
+                        send_wait,
+                        input_rows,
                     ));
                 }
             }
         }
+        // Returning early drops `tasks`, which aborts the inputs still running.
         while let Some(joined) = tasks.join_next().await {
-            let result = joined.map_err(|e| {
+            joined.map_err(|e| {
                 DataFusionError::Execution(format!(
                     "pipelined writer input task failed: {e}"
                 ))
-            })?;
-            if let Err(e) = result {
-                tasks.abort_all();
-                return Err(e);
-            }
+            })??;
         }
         Ok(())
     }
@@ -395,6 +368,28 @@ impl PipelinedShuffleWriterExec {
         });
         futures::future::try_join_all(finishing).await?;
         Ok(())
+    }
+}
+
+/// How a writer routes rows to its output partitions.
+enum Routing {
+    /// Hash every input row into one of `n` outputs.
+    Hash(Vec<Arc<dyn PhysicalExpr>>, usize),
+    /// Send local input partition `i` whole to output `targets[i]`.
+    Passthrough(Vec<usize>),
+}
+
+impl Routing {
+    fn output_partition_ids(&self) -> Vec<usize> {
+        match self {
+            Routing::Hash(_, n) => (0..*n).collect(),
+            Routing::Passthrough(targets) => {
+                let mut ids = targets.clone();
+                ids.sort_unstable();
+                ids.dedup();
+                ids
+            }
+        }
     }
 }
 
@@ -469,10 +464,8 @@ async fn drive_hashed(
             continue;
         }
         input_rows.add(batch.num_rows());
-        let pieces = partitioner
-            .partition_iter(batch)?
-            .collect::<Result<Vec<_>>>()?;
-        for (partition, piece) in pieces {
+        for piece in partitioner.partition_iter(batch)? {
+            let (partition, piece) = piece?;
             let Some(output) = partitions.get(&partition) else {
                 return Err(DataFusionError::Internal(format!(
                     "hash partitioning produced partition {partition}, which this task does not serve"

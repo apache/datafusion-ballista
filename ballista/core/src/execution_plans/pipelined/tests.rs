@@ -447,3 +447,14 @@ async fn restricting_a_reader_keeps_only_the_task_slice() {
         2
     );
 }
+
+#[tokio::test]
+async fn restricting_a_broadcast_reader_keeps_every_location() {
+    let locations: Vec<_> = (0..4).map(|p| location(0, p)).collect();
+    let reader =
+        PipelinedShuffleReaderExec::try_new_broadcast(STAGE, locations.clone(), schema())
+            .unwrap();
+    let restricted = reader.with_partitions(&[3]).unwrap();
+    assert!(restricted.broadcast);
+    assert_eq!(restricted.partition, vec![locations]);
+}

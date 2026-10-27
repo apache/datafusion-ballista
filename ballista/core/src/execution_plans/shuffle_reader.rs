@@ -1042,7 +1042,7 @@ fn remote_body_stream(
     Box::pin(RecordBatchStreamAdapter::new(schema, body))
 }
 
-async fn new_ballista_client(
+pub(crate) async fn new_ballista_client(
     host: &str,
     port: u16,
     config: &GrpcClientConfig,

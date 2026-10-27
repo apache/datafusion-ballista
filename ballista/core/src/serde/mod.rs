@@ -132,6 +132,13 @@ impl ProstMessageExt for protobuf::Action {
     }
 }
 
+/// Encodes a Ballista action as protobuf bytes, the inverse of
+/// [`decode_protobuf`].
+pub fn encode_protobuf(action: BallistaAction) -> Result<Vec<u8>, BallistaError> {
+    let action: protobuf::Action = action.try_into()?;
+    Ok(action.encode_to_vec())
+}
+
 /// Decodes a Ballista action from protobuf bytes.
 pub fn decode_protobuf(bytes: &[u8]) -> Result<BallistaAction, BallistaError> {
     let mut buf = Cursor::new(bytes);

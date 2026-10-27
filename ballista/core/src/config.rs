@@ -546,7 +546,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             BALLISTA_PIPELINED_QUEUE_CAPACITY.to_string(),
             "Number of batches each output partition of a pipelined stage \
              buffers before its producer waits for the consumer to read. Higher \
-             values smooth out bursty consumers at the cost of memory."
+             values smooth out bursty consumers at the cost of memory. At least 1."
                 .to_string(),
             DataType::UInt64,
             Some(2.to_string()),
@@ -557,7 +557,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
              before failing the query: a consumer for its producer task to \
              start, and a producer whose output queue is full for a consumer \
              to open it. All tasks of a pipelined job are launched together, \
-             so either can be first."
+             so either can be first. At least 1."
                 .to_string(),
             DataType::UInt64,
             Some(60.to_string()),
@@ -925,11 +925,12 @@ impl BallistaConfig {
 
     /// Returns how long a pipelined consumer waits for its producer task to
     /// register, and a producer with a full queue for its consumer to open
-    /// it, before failing.
+    /// it, before failing. At least one second, since a zero timeout would
+    /// fail every exchange whose two sides do not start at the same instant.
     pub fn pipelined_registration_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(
             self.get_usize_setting(BALLISTA_PIPELINED_REGISTRATION_TIMEOUT_SECONDS)
-                as u64,
+                .max(1) as u64,
         )
     }
 

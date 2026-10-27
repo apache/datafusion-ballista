@@ -37,9 +37,9 @@ use futures::StreamExt;
 use log::debug;
 
 use super::registry::{PipelinedRegistry, ProducerKey};
-use crate::client::BallistaClient;
 use crate::client_pool::BallistaClientPool;
 use crate::error::BallistaError;
+use crate::execution_plans::shuffle_reader::new_ballista_client;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::scheduler::PipelinedPartitionLocation;
 use crate::utils::GrpcClientConfig;
@@ -152,7 +152,13 @@ impl PipelinedShuffleReaderExec {
     /// Returns a copy that reads only `partitions`, in that order, skipping
     /// any it does not have, as the shuffle reader does. Used to restrict a
     /// stage plan to one task's slice of partitions.
+    ///
+    /// A broadcast reader is returned unchanged: every consumer task reads all
+    /// of it, so slicing it would drop the payload.
     pub fn with_partitions(&self, partitions: &[usize]) -> Result<Self> {
+        if self.broadcast {
+            return Ok(self.clone());
+        }
         let selected: Vec<_> = partitions
             .iter()
             .filter_map(|p| self.partition.get(*p).cloned())
@@ -367,32 +373,26 @@ async fn open_remote(
     let host = location.executor_meta.host.as_str();
     let port = location.executor_meta.port;
     match client_pool {
+        // Keep the pooled connection checked out while the stream is read, as
+        // the shuffle reader does.
         Some(pool) => {
             let mut pooled = pool
                 .acquire(host, port, &grpc_config, customize_endpoint)
                 .await?;
-            let result = pooled
+            match pooled
                 .fetch_pipelined_partition(location, registration_timeout)
-                .await;
-            if result.is_err() {
-                pooled.discard();
+                .await
+            {
+                Ok(stream) => Ok(pooled.lease_stream(stream)),
+                Err(e) => {
+                    pooled.discard();
+                    Err(e)
+                }
             }
-            result
         }
         None => {
-            let mut client = BallistaClient::try_new(
-                host,
-                port,
-                grpc_config.max_message_size,
-                grpc_config.use_tls,
-                customize_endpoint,
-                grpc_config.io_retries_times,
-                grpc_config.io_retry_wait_time_ms,
-                grpc_config.initial_connection_window_size,
-                grpc_config.initial_stream_window_size,
-            )
-            .await?;
-            client
+            new_ballista_client(host, port, &grpc_config, customize_endpoint)
+                .await?
                 .fetch_pipelined_partition(location, registration_timeout)
                 .await
         }

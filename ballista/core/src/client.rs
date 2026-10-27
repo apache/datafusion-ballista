@@ -19,7 +19,7 @@
 
 use crate::error::{BallistaError, Result as BResult};
 use crate::extension::BallistaConfigGrpcEndpoint;
-use crate::serde::protobuf;
+use crate::serde::encode_protobuf;
 use crate::serde::scheduler::{
     Action, ByteRange, PartitionId, PipelinedPartitionLocation, ShuffleFileKind,
     ShuffleLayout,
@@ -43,11 +43,10 @@ use datafusion::error::Result;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
 use log::{debug, warn};
-use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::{
-    convert::{TryFrom, TryInto},
+    convert::TryFrom,
     task::{Context, Poll},
 };
 use tonic::{Code, Streaming};
@@ -275,13 +274,9 @@ impl BallistaClient {
             port: location.executor_meta.port,
             registration_timeout_ms: registration_timeout.as_millis() as u64,
         };
-        let serialized_action: protobuf::Action = action.try_into()?;
-        let mut buf: Vec<u8> = Vec::with_capacity(serialized_action.encoded_len());
-        serialized_action
-            .encode(&mut buf)
-            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
-
-        let request = tonic::Request::new(Ticket { ticket: buf.into() });
+        let request = tonic::Request::new(Ticket {
+            ticket: encode_protobuf(action)?.into(),
+        });
         let mut stream = self
             .flight_client
             .do_get(request)
@@ -350,13 +345,7 @@ impl BallistaClient {
         &mut self,
         action: &Action,
     ) -> BResult<SendableRecordBatchStream> {
-        let serialized_action: protobuf::Action = action.to_owned().try_into()?;
-
-        let mut buf: Vec<u8> = Vec::with_capacity(serialized_action.encoded_len());
-
-        serialized_action
-            .encode(&mut buf)
-            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
+        let buf = encode_protobuf(action.to_owned())?;
 
         let io_retries_times = self.io_retries_times;
         let io_retry_wait_time_ms = self.io_retry_wait_time_ms;
@@ -448,13 +437,7 @@ impl BallistaClient {
         action: &Action,
         header: Option<Vec<u8>>,
     ) -> BResult<SendableRecordBatchStream> {
-        let serialized_action: protobuf::Action = action.to_owned().try_into()?;
-
-        let mut buf: Vec<u8> = Vec::with_capacity(serialized_action.encoded_len());
-
-        serialized_action
-            .encode(&mut buf)
-            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
+        let buf = encode_protobuf(action.to_owned())?;
 
         let io_retries_times = self.io_retries_times;
         let io_retry_wait_time_ms = self.io_retry_wait_time_ms;
