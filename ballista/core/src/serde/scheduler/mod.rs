@@ -177,6 +177,12 @@ pub struct TaskKey {
     pub task_id: usize,
 }
 
+impl std::fmt::Display for TaskKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}/{}", self.job_id, self.stage_id, self.task_id)
+    }
+}
+
 impl PartitionId {
     /// Creates a new partition ID with the given job, stage, and partition identifiers.
     pub fn new(job_id: &JobId, stage_id: usize, partition_id: usize) -> Self {

@@ -409,7 +409,8 @@ where
 pub fn create_grpc_server(config: &GrpcServerConfig) -> Server {
     Server::builder()
         .timeout(Duration::from_secs(config.timeout_seconds))
-        // No limit on the streams a connection carries. Pipelined readers
+        // No limit on the streams a connection carries. This is tonic's
+        // default, made explicit because pipelined readers depend on it: they
         // multiplex the streams of every task on an executor over one
         // connection to each producer executor, and a stream the client had
         // to queue behind a limit would leave its producer blocked on a full

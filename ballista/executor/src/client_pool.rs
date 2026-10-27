@@ -243,8 +243,14 @@ impl BallistaClientPool for DefaultBallistaClientPool {
         let key = (host.to_string(), port, config.clone());
         let slot = self.inner.shared.entry(key).or_default().clone();
 
+        // The common case, a connection already open, takes no async lock.
+        if let Some((_, client)) = &*slot.connection.lock().unwrap() {
+            return Ok(client.clone());
+        }
         // Held while connecting, so a burst of callers waits for the one
-        // connection instead of each opening its own.
+        // connection instead of each opening its own. Checked again under
+        // it: the burst's first caller has connected by the time the rest
+        // get here.
         let _connecting = slot.connecting.lock().await;
         if let Some((_, client)) = &*slot.connection.lock().unwrap() {
             return Ok(client.clone());

@@ -32,7 +32,7 @@ pub mod registry;
 mod writer;
 
 pub use reader::PipelinedShuffleReaderExec;
-pub use registry::{OpenPartition, PipelinedRegistry, ProducerKey};
+pub use registry::{OpenPartition, PipelinedRegistry};
 pub use writer::PipelinedShuffleWriterExec;
 
 #[cfg(test)]

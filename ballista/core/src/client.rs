@@ -59,16 +59,23 @@ use tonic::{Code, Status, Streaming};
 /// made from a connection-level failure (a reset, a refused connection, a
 /// broken pipe, a connection closed under a queued request) has its
 /// transport error as the source, under a code that depends on where the
-/// failure surfaced: `Unknown` for a failed write, `Cancelled` for a request
-/// the closing connection dropped. A stream the server refused for lack of
-/// capacity is `Unavailable`. All of them mean the request never reached the
-/// service.
+/// failure surfaced: `Cancelled` for a request the closing connection
+/// dropped, `Unavailable` for a refused connection or a stream the server
+/// refused for lack of capacity. All of them mean the request never reached
+/// the service.
 fn is_transport_failure(status: &Status) -> bool {
     status
         .source()
         .is_some_and(|source| source.is::<tonic::transport::Error>())
-        || status.code() == Code::Unavailable
-        || (status.code() == Code::Unknown && status.message() == "transport error")
+}
+
+/// A `do_get` that produced no stream.
+struct DoGetError {
+    /// Whether the server had answered the request before it failed. A
+    /// failure before that is the connection's; one after it is the server's,
+    /// and the server may have acted on the request.
+    answered: bool,
+    status: Status,
 }
 
 /// Client for interacting with Ballista executors.
@@ -299,36 +306,55 @@ impl BallistaClient {
             port: location.executor_meta.port,
             registration_timeout_ms: registration_timeout.as_millis() as u64,
         };
+        let ticket = encode_protobuf(action)?;
+        self.do_get_stream(ticket)
+            .await
+            .map_err(|DoGetError { answered, status }| {
+                let message = format!(
+                    "failed to stream pipelined partition {:?} of task {}: {status}",
+                    location.partition_id, location.task_id
+                );
+                if !answered && is_transport_failure(&status) {
+                    BallistaError::GrpcConnectionError(message)
+                } else {
+                    BallistaError::GrpcActionError(message)
+                }
+            })
+    }
+
+    /// Sends one `do_get` for `ticket` and reads the schema message that
+    /// starts its response, returning the stream of record batches after it.
+    async fn do_get_stream(
+        &mut self,
+        ticket: Vec<u8>,
+    ) -> std::result::Result<SendableRecordBatchStream, DoGetError> {
         let request = tonic::Request::new(Ticket {
-            ticket: encode_protobuf(action)?.into(),
+            ticket: ticket.into(),
         });
-        let failed = |status: &Status| {
-            let message = format!(
-                "failed to stream pipelined partition {:?} of task {}: {status}",
-                location.partition_id, location.task_id
-            );
-            if is_transport_failure(status) {
-                BallistaError::GrpcConnectionError(message)
-            } else {
-                BallistaError::GrpcActionError(message)
-            }
-        };
         let mut stream = self
             .flight_client
             .do_get(request)
             .await
-            .map_err(|e| failed(&e))?
+            .map_err(|status| DoGetError {
+                answered: false,
+                status,
+            })?
             .into_inner();
-        match stream.message().await {
-            Ok(Some(flight_data)) => {
-                let schema = Arc::new(Schema::try_from(&flight_data)?);
-                Ok(Box::pin(FlightDataStream::new(stream, schema)))
+        let answered = |status| DoGetError {
+            answered: true,
+            status,
+        };
+        match stream.message().await.map_err(answered)? {
+            Some(flight_data) => {
+                let schema = Schema::try_from(&flight_data)
+                    .map_err(|e| answered(Status::internal(e.to_string())))?;
+                // All the remaining stream messages should be dictionary and
+                // record batches.
+                Ok(Box::pin(FlightDataStream::new(stream, Arc::new(schema))))
             }
-            Ok(None) => Err(BallistaError::GrpcActionError(format!(
-                "no schema received for pipelined partition {:?} of task {}",
-                location.partition_id, location.task_id
+            None => Err(answered(Status::internal(
+                "Did not receive schema batch from flight server",
             ))),
-            Err(e) => Err(failed(&e)),
         }
     }
 
@@ -386,52 +412,17 @@ impl BallistaClient {
                 .await;
             }
 
-            let request = tonic::Request::new(Ticket {
-                ticket: buf.clone().into(),
-            });
-            let result = self.flight_client.do_get(request).await;
-            let res = match result {
-                Ok(res) => res,
-                Err(ref err) => {
+            match self.do_get_stream(buf.clone()).await {
+                Ok(stream) => return Ok(stream),
+                Err(DoGetError { status, .. }) => {
                     // IO related error like connection timeout, reset... will warp with Code::Unknown
                     // This means IO related error will retry.
-                    if i == io_retries_times - 1 || err.code() != Code::Unknown {
-                        return BallistaError::GrpcActionError(format!(
-                            "{:?}",
-                            result.unwrap_err()
-                        ))
-                        .into();
+                    if i == io_retries_times - 1 || status.code() != Code::Unknown {
+                        return Err(BallistaError::GrpcActionError(format!(
+                            "{status:?}"
+                        )));
                     }
                     // retry request
-                    continue;
-                }
-            };
-
-            let mut stream = res.into_inner();
-
-            match stream.message().await {
-                Ok(res) => {
-                    return match res {
-                        Some(flight_data) => {
-                            let schema = Arc::new(Schema::try_from(&flight_data)?);
-
-                            // all the remaining stream messages should be dictionary and record batches
-                            Ok(Box::pin(FlightDataStream::new(stream, schema)))
-                        }
-                        None => Err(BallistaError::GrpcActionError(
-                            "Did not receive schema batch from flight server".to_string(),
-                        )),
-                    };
-                }
-                Err(e) => {
-                    if i == io_retries_times - 1 || e.code() != Code::Unknown {
-                        return BallistaError::GrpcActionError(format!(
-                            "{:?}",
-                            e.to_string()
-                        ))
-                        .into();
-                    }
-                    continue;
                 }
             }
         }

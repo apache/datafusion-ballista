@@ -940,7 +940,7 @@ fn send_fetch_partitions(
 /// any batch has been yielded downstream can be recovered by fetching again.
 /// Only errors accepted by `should_retry` are retried; anything else is
 /// returned immediately on the first failure.
-async fn with_retry<T, F, Fut>(
+pub(crate) async fn with_retry<T, F, Fut>(
     retries: u8,
     wait_ms: u64,
     should_retry: impl Fn(&BallistaError) -> bool,

@@ -35,15 +35,15 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream, Statistics,
 };
 use futures::StreamExt;
-use log::{debug, warn};
+use log::debug;
 
-use super::registry::{PipelinedRegistry, ProducerKey};
+use super::registry::PipelinedRegistry;
 use crate::client_pool::BallistaClientPool;
 use crate::config::{BallistaConfig, HTTP2_MAX_WINDOW_BYTES};
 use crate::error::BallistaError;
-use crate::execution_plans::shuffle_reader::new_ballista_client;
+use crate::execution_plans::shuffle_reader::{new_ballista_client, with_retry};
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
-use crate::serde::scheduler::PipelinedPartitionLocation;
+use crate::serde::scheduler::{PipelinedPartitionLocation, TaskKey};
 use crate::utils::GrpcClientConfig;
 
 /// The leaf of a stage in a pipelined job. Each output partition streams the
@@ -99,18 +99,18 @@ impl PipelinedShuffleReaderExec {
 
     /// Creates a broadcast reader: one output partition that streams every
     /// location.
-    pub fn try_new_broadcast(
+    pub fn new_broadcast(
         stage_id: usize,
         locations: Vec<PipelinedPartitionLocation>,
         schema: SchemaRef,
-    ) -> Result<Self> {
-        Ok(Self::new(
+    ) -> Self {
+        Self::new(
             stage_id,
             vec![locations],
             schema,
             Partitioning::UnknownPartitioning(1),
             true,
-        ))
+        )
     }
 
     fn new(
@@ -283,10 +283,10 @@ impl ExecutionPlan for PipelinedShuffleReaderExec {
         let force_remote = config.ballista_shuffle_reader_force_remote_read();
         let customize_endpoint = config.ballista_override_create_grpc_client_endpoint();
         let output_rows = MetricBuilder::new(&self.metrics).output_rows(partition);
-        let local_streams =
-            MetricBuilder::new(&self.metrics).counter("local_streams", partition);
-        let remote_streams =
-            MetricBuilder::new(&self.metrics).counter("remote_streams", partition);
+        let local_partitions =
+            MetricBuilder::new(&self.metrics).counter("local_partitions", partition);
+        let remote_partitions =
+            MetricBuilder::new(&self.metrics).counter("remote_partitions", partition);
 
         // Every producer is drained at once; see the type documentation for
         // why that is required.
@@ -311,9 +311,9 @@ impl ExecutionPlan for PipelinedShuffleReaderExec {
                 !force_remote && r.executor_id() == location.executor_meta.id
             });
             if local.is_some() {
-                local_streams.add(1);
+                local_partitions.add(1);
             } else {
-                remote_streams.add(1);
+                remote_partitions.add(1);
             }
             let grpc_config = grpc_config.clone();
             let customize_endpoint = customize_endpoint.clone();
@@ -322,8 +322,8 @@ impl ExecutionPlan for PipelinedShuffleReaderExec {
             builder.spawn(async move {
                 let mut stream = match local {
                     Some(registry) => {
-                        let key = ProducerKey {
-                            job_id: location.partition_id.job_id.to_string(),
+                        let key = TaskKey {
+                            job_id: location.partition_id.job_id.clone(),
                             stage_id: location.partition_id.stage_id,
                             task_id: location.task_id,
                         };
@@ -403,11 +403,12 @@ fn shared_connection_config(
 ///
 /// A failure of the connection before the producer's executor has answered
 /// is retried on a new connection, up to `io_retries_times` times with
-/// `io_retry_wait_time_ms` between attempts. A wide job opens its streams in
-/// one burst, and a listen queue that overflows under it delays some
-/// connections and, once the kernel falls back to SYN cookies, resets others
-/// as they start sending. A failure the executor answered is not retried:
-/// the producer may already have handed the partition to the failed stream.
+/// `io_retry_wait_time_ms` between attempts, as the blocking reader retries
+/// its fetches. A wide job opens its streams in one burst, and a listen
+/// queue that overflows under it delays some connections and, once the
+/// kernel falls back to SYN cookies, resets others as they start sending. A
+/// failure the executor answered is not retried: the producer may already
+/// have handed the partition to the failed stream.
 async fn open_remote(
     location: &PipelinedPartitionLocation,
     registration_timeout: Duration,
@@ -415,34 +416,21 @@ async fn open_remote(
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
 ) -> std::result::Result<SendableRecordBatchStream, BallistaError> {
-    let retries = grpc_config.io_retries_times;
-    let wait = Duration::from_millis(grpc_config.io_retry_wait_time_ms);
-    let mut attempt = 0;
-    loop {
-        let result = open_remote_once(
-            location,
-            registration_timeout,
-            grpc_config,
-            customize_endpoint.clone(),
-            client_pool.clone(),
-        )
-        .await;
-        match result {
-            Err(e @ BallistaError::GrpcConnectionError(_)) if attempt < retries => {
-                attempt += 1;
-                warn!(
-                    "connection to {}:{} failed before pipelined partition {:?} of task {} \
-                     was open, retry {attempt} of {retries} in {wait:?}: {e}",
-                    location.executor_meta.host,
-                    location.executor_meta.port,
-                    location.partition_id,
-                    location.task_id
-                );
-                tokio::time::sleep(wait).await;
-            }
-            result => return result,
-        }
-    }
+    with_retry(
+        grpc_config.io_retries_times,
+        grpc_config.io_retry_wait_time_ms,
+        |e| matches!(e, BallistaError::GrpcConnectionError(_)),
+        || {
+            open_remote_once(
+                location,
+                registration_timeout,
+                grpc_config,
+                customize_endpoint.clone(),
+                client_pool.clone(),
+            )
+        },
+    )
+    .await
 }
 
 /// One attempt at [`open_remote`]. A shared connection that fails is

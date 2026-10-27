@@ -26,6 +26,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::Extension;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion_proto::logical_plan::file_formats::{
     ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
@@ -130,6 +131,25 @@ impl ProstMessageExt for protobuf::Action {
             value: self.encode_to_vec().into(),
         }
     }
+}
+
+/// Encodes the `Hash` partitioning a shuffle writer applies to its output.
+fn serialize_hash_partitioning(
+    exprs: &[Arc<dyn PhysicalExpr>],
+    partition_count: usize,
+    codec: &dyn PhysicalExtensionCodec,
+) -> Result<datafusion_proto::protobuf::PhysicalHashRepartition, DataFusionError> {
+    Ok(datafusion_proto::protobuf::PhysicalHashRepartition {
+        hash_expr: exprs
+            .iter()
+            .map(|expr| {
+                datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
+                    expr, codec,
+                )
+            })
+            .collect::<Result<Vec<_>, DataFusionError>>()?,
+        partition_count: partition_count as u64,
+    })
 }
 
 /// Encodes a Ballista action as protobuf bytes, the inverse of
@@ -715,9 +735,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                             "broadcast PipelinedShuffleReaderExec: expected exactly one partition",
                         )
                     })?;
-                    PipelinedShuffleReaderExec::try_new_broadcast(
-                        stage_id, locations, schema,
-                    )?
+                    PipelinedShuffleReaderExec::new_broadcast(stage_id, locations, schema)
                 } else {
                     let partitioning = parse_protobuf_partitioning(
                         reader.partitioning.as_ref(),
@@ -1176,18 +1194,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         } else if let Some(exec) = node.downcast_ref::<SortShuffleWriterExec>() {
             let output_partitioning = match exec.shuffle_output_partitioning() {
                 Partitioning::Hash(exprs, partition_count) => {
-                    Some(datafusion_proto::protobuf::PhysicalHashRepartition {
-                        hash_expr: exprs
-                            .iter()
-                            .map(|expr| {
-                                datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
-                                    &expr.clone(),
-                                    self.default_codec.as_ref(),
-                                )
-                            })
-                            .collect::<Result<Vec<_>, DataFusionError>>()?,
-                        partition_count: *partition_count as u64,
-                    })
+                    Some(serialize_hash_partitioning(
+                        exprs,
+                        *partition_count,
+                        self.default_codec.as_ref(),
+                    )?)
                 }
                 other => {
                     return Err(DataFusionError::Internal(format!(
@@ -1222,18 +1233,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         } else if let Some(exec) = node.downcast_ref::<PipelinedShuffleWriterExec>() {
             let output_partitioning = match exec.shuffle_output_partitioning() {
                 Some(Partitioning::Hash(exprs, partition_count)) => {
-                    Some(datafusion_proto::protobuf::PhysicalHashRepartition {
-                        hash_expr: exprs
-                            .iter()
-                            .map(|expr| {
-                                datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
-                                    &expr.clone(),
-                                    self.default_codec.as_ref(),
-                                )
-                            })
-                            .collect::<Result<Vec<_>, DataFusionError>>()?,
-                        partition_count: *partition_count as u64,
-                    })
+                    Some(serialize_hash_partitioning(
+                        exprs,
+                        *partition_count,
+                        self.default_codec.as_ref(),
+                    )?)
                 }
                 Some(other) => {
                     return Err(DataFusionError::Internal(format!(
@@ -1929,12 +1933,11 @@ mod test {
         assert_eq!(&decoded.properties().partitioning, &partitioning);
         assert_eq!(decoded.schema().as_ref(), schema.as_ref());
 
-        let broadcast = PipelinedShuffleReaderExec::try_new_broadcast(
+        let broadcast = PipelinedShuffleReaderExec::new_broadcast(
             2,
             partition.concat(),
             schema.clone(),
-        )
-        .unwrap();
+        );
         let decoded = roundtrip_plan(Arc::new(broadcast));
         let decoded = decoded
             .downcast_ref::<PipelinedShuffleReaderExec>()

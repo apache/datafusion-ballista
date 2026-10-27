@@ -17,7 +17,6 @@
 
 //! [`PipelinedShuffleWriterExec`]: the root of a stage in a pipelined job.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -41,12 +40,13 @@ use futures::StreamExt;
 use log::debug;
 use tokio::task::JoinSet;
 
-use super::registry::{PartitionSink, PipelinedRegistry, ProducerKey, ProducerOutputs};
+use super::registry::{PartitionSink, PipelinedRegistry, ProducerOutputs};
 use crate::JobId;
 use crate::execution_plans::ShuffleWriter;
 use crate::execution_plans::shuffle_writer::walk_child_partition_mapping;
 use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::ShuffleWritePartition;
+use crate::serde::scheduler::TaskKey;
 
 /// The root of a stage in a pipelined job.
 ///
@@ -172,8 +172,10 @@ impl PipelinedShuffleWriterExec {
     /// input partition passed through to the global output partition it
     /// maps to.
     fn routing(&self) -> Routing {
-        if let Some(Partitioning::Hash(exprs, n)) = &self.shuffle_output_partitioning {
-            return Routing::Hash(exprs.clone(), *n);
+        if let Some(partitioning @ Partitioning::Hash(..)) =
+            &self.shuffle_output_partitioning
+        {
+            return Routing::Hash(partitioning.clone());
         }
         let map =
             walk_child_partition_mapping(&self.plan, &self.global_output_partition_ids);
@@ -187,11 +189,6 @@ impl PipelinedShuffleWriterExec {
                 .map(|local| map.resolve(local) as usize)
                 .collect(),
         )
-    }
-
-    /// The global output partitions this task serves.
-    pub fn output_partition_ids(&self) -> Vec<usize> {
-        self.routing().output_partition_ids()
     }
 
     /// Runs the task: registers its outputs, drives every input partition
@@ -229,7 +226,7 @@ impl PipelinedShuffleWriterExec {
 
         let routing = self.routing();
         let output_ids = routing.output_partition_ids();
-        let (outputs, sinks) = ProducerOutputs::new(
+        let (producer, sinks) = ProducerOutputs::new(
             schema.clone(),
             output_ids.iter().copied(),
             self.broadcast,
@@ -237,46 +234,37 @@ impl PipelinedShuffleWriterExec {
             compression,
             ballista_config.pipelined_registration_timeout(),
         );
-        let key = ProducerKey {
-            job_id: self.job_id.to_string(),
+        let key = TaskKey {
+            job_id: self.job_id.clone(),
             stage_id: self.stage_id,
             task_id: self.task_id,
         };
-        registry.register(key.clone(), outputs.clone())?;
+        registry.register(key.clone(), producer.clone())?;
         debug!(
             "pipelined producer {key} serving partitions {output_ids:?} from {num_inputs} inputs"
         );
 
-        let hashing = matches!(routing, Routing::Hash(..));
-        let partitions: Arc<HashMap<usize, Output>> = Arc::new(
-            sinks
-                .into_iter()
-                .map(|(id, sink)| {
-                    let coalescer = hashing.then(|| {
-                        Mutex::new(BatchCoalescer::new(schema.clone(), batch_size))
-                    });
-                    (id, Output::new(sink, coalescer))
-                })
-                .collect(),
-        );
-        let open = Arc::new(AtomicUsize::new(partitions.len()));
+        let coalesce =
+            matches!(routing, Routing::Hash(_)).then_some((schema, batch_size));
+        let outputs = Arc::new(Outputs::new(output_ids, sinks, coalesce));
 
         let result = match self
-            .drive_inputs(routing, num_inputs, &context, &partitions, &open)
+            .drive_inputs(routing, num_inputs, &context, &outputs)
             .await
         {
-            Ok(()) => self.finish_outputs(&partitions, &open).await,
+            Ok(()) => outputs.finish().await,
             err => err,
         };
         if let Err(e) = result {
-            outputs.fail(&e);
+            producer.fail(&e);
             return Err(e);
         }
 
-        Ok(partitions
+        Ok(outputs
+            .slots
             .iter()
-            .map(|(id, output)| ShuffleWritePartition {
-                partition_id: *id as u64,
+            .map(|output| ShuffleWritePartition {
+                partition_id: output.id as u64,
                 num_batches: output.batches.load(Ordering::Relaxed),
                 num_rows: output.rows.load(Ordering::Relaxed),
                 num_bytes: output.bytes.load(Ordering::Relaxed),
@@ -291,21 +279,19 @@ impl PipelinedShuffleWriterExec {
         routing: Routing,
         num_inputs: usize,
         context: &Arc<TaskContext>,
-        partitions: &Arc<HashMap<usize, Output>>,
-        open: &Arc<AtomicUsize>,
+        outputs: &Arc<Outputs>,
     ) -> Result<()> {
         let mut tasks = JoinSet::new();
         for input in 0..num_inputs {
             let stream = self.plan.execute(input, context.clone())?;
-            let partitions = partitions.clone();
-            let open = open.clone();
-            let send_wait =
-                MetricBuilder::new(&self.metrics).subset_time("send_wait_time", input);
+            let outputs = outputs.clone();
+            let write_time =
+                MetricBuilder::new(&self.metrics).subset_time("write_time", input);
             let input_rows = MetricBuilder::new(&self.metrics).output_rows(input);
             match &routing {
-                Routing::Hash(exprs, n) => {
+                Routing::Hash(partitioning) => {
                     let partitioner = BatchPartitioner::try_new(
-                        Partitioning::Hash(exprs.clone(), *n),
+                        partitioning.clone(),
                         MetricBuilder::new(&self.metrics)
                             .subset_time("repart_time", input),
                         input,
@@ -314,20 +300,15 @@ impl PipelinedShuffleWriterExec {
                     tasks.spawn(drive_hashed(
                         stream,
                         partitioner,
-                        partitions,
-                        open,
-                        send_wait,
+                        outputs,
+                        write_time,
                         input_rows,
                     ));
                 }
                 Routing::Passthrough(targets) => {
+                    let slot = outputs.slot_of(targets[input])?;
                     tasks.spawn(drive_passthrough(
-                        stream,
-                        targets[input],
-                        partitions,
-                        open,
-                        send_wait,
-                        input_rows,
+                        stream, slot, outputs, write_time, input_rows,
                     ));
                 }
             }
@@ -342,47 +323,21 @@ impl PipelinedShuffleWriterExec {
         }
         Ok(())
     }
-
-    /// Flushes the rows each hash output's coalescer still holds and sends
-    /// every output its end-of-stream marker.
-    ///
-    /// Outputs are finished concurrently: a full queue holds back only its own
-    /// partition's marker, not every partition after it.
-    async fn finish_outputs(
-        &self,
-        partitions: &HashMap<usize, Output>,
-        open: &AtomicUsize,
-    ) -> Result<()> {
-        let finishing = partitions.values().map(|output| async move {
-            if let Some(coalescer) = &output.coalescer {
-                let ready = {
-                    let mut coalescer = coalescer.lock().unwrap();
-                    coalescer.finish_buffered_batch()?;
-                    drain(&mut coalescer)
-                };
-                for batch in ready {
-                    output.send(batch, open).await?;
-                }
-            }
-            output.sink.finish().await
-        });
-        futures::future::try_join_all(finishing).await?;
-        Ok(())
-    }
 }
 
 /// How a writer routes rows to its output partitions.
 enum Routing {
-    /// Hash every input row into one of `n` outputs.
-    Hash(Vec<Arc<dyn PhysicalExpr>>, usize),
+    /// Hash every input row into one of the partitioning's outputs.
+    Hash(Partitioning),
     /// Send local input partition `i` whole to output `targets[i]`.
     Passthrough(Vec<usize>),
 }
 
 impl Routing {
+    /// The global output partitions this routing serves, in ascending order.
     fn output_partition_ids(&self) -> Vec<usize> {
         match self {
-            Routing::Hash(_, n) => (0..*n).collect(),
+            Routing::Hash(partitioning) => (0..partitioning.partition_count()).collect(),
             Routing::Passthrough(targets) => {
                 let mut ids = targets.clone();
                 ids.sort_unstable();
@@ -393,12 +348,116 @@ impl Routing {
     }
 }
 
+/// The task's output partitions while it runs, shared by every input it
+/// drives.
+struct Outputs {
+    /// One per output partition, in ascending partition order. For hash
+    /// routing the partitions are `0..n`, so a slot's index is its partition.
+    slots: Vec<Output>,
+    /// Hash routing only: the rows routed to each slot, coalesced back up to
+    /// the batch size before they are sent. Empty for passthrough, which
+    /// sends input batches as they are.
+    coalescers: Vec<Mutex<BatchCoalescer>>,
+    /// How many slots still have a consumer. At zero the writer can stop
+    /// reading input nobody wants.
+    open: AtomicUsize,
+}
+
+impl Outputs {
+    /// Pairs `ids` with their `sinks`, given in the same order. `coalesce`
+    /// gives the schema and batch size when the outputs are hashed into.
+    fn new(
+        ids: Vec<usize>,
+        sinks: Vec<PartitionSink>,
+        coalesce: Option<(SchemaRef, usize)>,
+    ) -> Self {
+        let slots: Vec<Output> = ids
+            .into_iter()
+            .zip(sinks)
+            .map(|(id, sink)| Output::new(id, sink))
+            .collect();
+        let coalescers = coalesce
+            .map(|(schema, batch_size)| {
+                slots
+                    .iter()
+                    .map(|_| Mutex::new(BatchCoalescer::new(schema.clone(), batch_size)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            open: AtomicUsize::new(slots.len()),
+            slots,
+            coalescers,
+        }
+    }
+
+    /// The slot serving global output partition `id`.
+    fn slot_of(&self, id: usize) -> Result<usize> {
+        self.slots
+            .binary_search_by_key(&id, |output| output.id)
+            .map_err(|_| {
+                DataFusionError::Internal(format!(
+                    "input mapped to output partition {id}, which this task does not serve"
+                ))
+            })
+    }
+
+    fn all_closed(&self) -> bool {
+        self.open.load(Ordering::Relaxed) == 0
+    }
+
+    /// Sends a batch to `output`, counting it. Once the consumer is gone the
+    /// output is closed and `open` counts down. Fails if the consumer never
+    /// opens the partition.
+    async fn send(&self, output: &Output, batch: RecordBatch) -> Result<()> {
+        if !output.is_open() {
+            return Ok(());
+        }
+        let rows = batch.num_rows() as u64;
+        let bytes = batch.get_array_memory_size() as u64;
+        if output.sink.send(batch).await? {
+            output.rows.fetch_add(rows, Ordering::Relaxed);
+            output.batches.fetch_add(1, Ordering::Relaxed);
+            output.bytes.fetch_add(bytes, Ordering::Relaxed);
+        } else if output.open.swap(false, Ordering::Relaxed) {
+            self.open.fetch_sub(1, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// Flushes the rows each coalescer still holds and sends every output
+    /// its end-of-stream marker.
+    ///
+    /// Outputs are finished concurrently: a full queue holds back only its own
+    /// partition's marker, not every partition after it.
+    async fn finish(&self) -> Result<()> {
+        let finishing = self
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(slot, output)| async move {
+                if let Some(coalescer) = self.coalescers.get(slot) {
+                    let ready = {
+                        let mut coalescer = coalescer.lock().unwrap();
+                        coalescer.finish_buffered_batch()?;
+                        drain(&mut coalescer)
+                    };
+                    for batch in ready {
+                        self.send(output, batch).await?;
+                    }
+                }
+                output.sink.finish().await
+            });
+        futures::future::try_join_all(finishing).await?;
+        Ok(())
+    }
+}
+
 /// One output partition while the task runs.
 struct Output {
+    /// The global output partition.
+    id: usize,
     sink: PartitionSink,
-    /// Hash outputs only: the rows routed here, coalesced back up to the
-    /// batch size before they are sent.
-    coalescer: Option<Mutex<BatchCoalescer>>,
     /// Cleared once the consumer has gone away.
     open: AtomicBool,
     rows: AtomicU64,
@@ -407,10 +466,10 @@ struct Output {
 }
 
 impl Output {
-    fn new(sink: PartitionSink, coalescer: Option<Mutex<BatchCoalescer>>) -> Self {
+    fn new(id: usize, sink: PartitionSink) -> Self {
         Self {
+            id,
             sink,
-            coalescer,
             open: AtomicBool::new(true),
             rows: AtomicU64::new(0),
             batches: AtomicU64::new(0),
@@ -420,25 +479,6 @@ impl Output {
 
     fn is_open(&self) -> bool {
         self.open.load(Ordering::Relaxed)
-    }
-
-    /// Sends a batch, counting it. Once the consumer is gone the partition is
-    /// closed, and `open` counts down so the writer can stop reading input
-    /// nobody wants. Fails if the consumer never opens the partition.
-    async fn send(&self, batch: RecordBatch, open: &AtomicUsize) -> Result<()> {
-        if !self.is_open() {
-            return Ok(());
-        }
-        let rows = batch.num_rows() as u64;
-        let bytes = batch.get_array_memory_size() as u64;
-        if self.sink.send(batch).await? {
-            self.rows.fetch_add(rows, Ordering::Relaxed);
-            self.batches.fetch_add(1, Ordering::Relaxed);
-            self.bytes.fetch_add(bytes, Ordering::Relaxed);
-        } else if self.open.swap(false, Ordering::Relaxed) {
-            open.fetch_sub(1, Ordering::Relaxed);
-        }
-        Ok(())
     }
 }
 
@@ -453,9 +493,8 @@ fn drain(coalescer: &mut BatchCoalescer) -> Vec<RecordBatch> {
 async fn drive_hashed(
     mut stream: SendableRecordBatchStream,
     mut partitioner: BatchPartitioner,
-    partitions: Arc<HashMap<usize, Output>>,
-    open: Arc<AtomicUsize>,
-    send_wait: metrics::Time,
+    outputs: Arc<Outputs>,
+    write_time: metrics::Time,
     input_rows: metrics::Count,
 ) -> Result<()> {
     while let Some(batch) = stream.next().await {
@@ -466,7 +505,10 @@ async fn drive_hashed(
         input_rows.add(batch.num_rows());
         for piece in partitioner.partition_iter(batch)? {
             let (partition, piece) = piece?;
-            let Some(output) = partitions.get(&partition) else {
+            let (Some(output), Some(coalescer)) = (
+                outputs.slots.get(partition),
+                outputs.coalescers.get(partition),
+            ) else {
                 return Err(DataFusionError::Internal(format!(
                     "hash partitioning produced partition {partition}, which this task does not serve"
                 )));
@@ -475,20 +517,16 @@ async fn drive_hashed(
                 continue;
             }
             let ready = {
-                let coalescer = output
-                    .coalescer
-                    .as_ref()
-                    .expect("hash outputs always coalesce");
                 let mut coalescer = coalescer.lock().unwrap();
                 coalescer.push_batch(piece)?;
                 drain(&mut coalescer)
             };
             for batch in ready {
-                let _timer = send_wait.timer();
-                output.send(batch, &open).await?;
+                let _timer = write_time.timer();
+                outputs.send(output, batch).await?;
             }
         }
-        if open.load(Ordering::Relaxed) == 0 {
+        if outputs.all_closed() {
             debug!("every consumer of this pipelined task has gone away; stopping");
             break;
         }
@@ -498,17 +536,12 @@ async fn drive_hashed(
 
 async fn drive_passthrough(
     mut stream: SendableRecordBatchStream,
-    target: usize,
-    partitions: Arc<HashMap<usize, Output>>,
-    open: Arc<AtomicUsize>,
-    send_wait: metrics::Time,
+    slot: usize,
+    outputs: Arc<Outputs>,
+    write_time: metrics::Time,
     input_rows: metrics::Count,
 ) -> Result<()> {
-    let Some(output) = partitions.get(&target) else {
-        return Err(DataFusionError::Internal(format!(
-            "passthrough input mapped to partition {target}, which this task does not serve"
-        )));
-    };
+    let output = &outputs.slots[slot];
     while let Some(batch) = stream.next().await {
         let batch = batch?;
         if batch.num_rows() == 0 {
@@ -516,8 +549,8 @@ async fn drive_passthrough(
         }
         input_rows.add(batch.num_rows());
         {
-            let _timer = send_wait.timer();
-            output.send(batch, &open).await?;
+            let _timer = write_time.timer();
+            outputs.send(output, batch).await?;
         }
         if !output.is_open() {
             break;

@@ -582,7 +582,9 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
              connection window is the largest HTTP/2 allows, so this bounds the \
              data a stalled stream can hold, and a connection can carry \
              2147483647 divided by this many streams before stalled streams could \
-             starve the rest. Between 65535 and 2147483647."
+             starve the rest. It also caps a stream's throughput at this many \
+             bytes per round trip, so raise it on high-latency links. Between \
+             65535 and 2147483647."
                 .to_string(),
             DataType::UInt64,
             Some((512 * 1024).to_string()),

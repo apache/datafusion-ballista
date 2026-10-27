@@ -50,7 +50,7 @@ use crate::config::{
     BALLISTA_CLIENT_IO_RETRIES_TIMES, BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS,
     BALLISTA_PIPELINED_QUEUE_CAPACITY, BALLISTA_PIPELINED_REGISTRATION_TIMEOUT_SECONDS,
 };
-use crate::execution_plans::ChaosExec;
+use crate::execution_plans::{ChaosExec, compute_global_output_partition_ids};
 use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
@@ -278,7 +278,12 @@ async fn passthrough_exchange_keeps_input_partitions_under_their_global_ids() {
         &registry,
     )
     .with_global_output_partition_ids(vec![4, 7]);
-    assert_eq!(writer.output_partition_ids(), vec![4, 7]);
+    // The scheduler names the task's outputs the same way.
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(writer.clone());
+    assert_eq!(
+        compute_global_output_partition_ids(&plan, &[4, 7]),
+        vec![4, 7]
+    );
 
     let reader = PipelinedShuffleReaderExec::try_new(
         STAGE,
@@ -313,12 +318,11 @@ async fn broadcast_outputs_replay_to_every_consumer_task() {
     // Two consumer tasks, each reading every partition in full.
     let readers: Vec<_> = (0..2)
         .map(|_| {
-            PipelinedShuffleReaderExec::try_new_broadcast(
+            PipelinedShuffleReaderExec::new_broadcast(
                 STAGE,
                 vec![location(0, 0), location(0, 1)],
                 schema(),
             )
-            .unwrap()
             .with_registry(registry.clone())
         })
         .collect();
@@ -480,8 +484,7 @@ async fn restricting_a_reader_keeps_only_the_task_slice() {
 async fn restricting_a_broadcast_reader_keeps_every_location() {
     let locations: Vec<_> = (0..4).map(|p| location(0, p)).collect();
     let reader =
-        PipelinedShuffleReaderExec::try_new_broadcast(STAGE, locations.clone(), schema())
-            .unwrap();
+        PipelinedShuffleReaderExec::new_broadcast(STAGE, locations.clone(), schema());
     let restricted = reader.with_partitions(&[3]).unwrap();
     assert!(restricted.broadcast);
     assert_eq!(restricted.partition, vec![locations]);
@@ -538,17 +541,12 @@ impl crate::client_pool::BallistaClientPool for CountingPool {
     async fn evict_idle(&self) {}
 }
 
-fn unused_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 #[tokio::test]
 async fn remote_streams_to_one_executor_share_one_connection() {
-    let (port_a, port_b) = (unused_port(), unused_port());
+    let (port_a, port_b) = (
+        resetting_listener(None).await,
+        resetting_listener(None).await,
+    );
     let remote = |task_id: usize, port: u16| {
         let mut location = location(task_id, 0);
         location.executor_meta.id = format!("remote-{port}");
@@ -570,7 +568,7 @@ async fn remote_streams_to_one_executor_share_one_connection() {
     .unwrap()
     .with_client_pool(pool.clone());
 
-    // Nothing listens on either port, so each open fails as a connection
+    // Both ports reset every connection, so each open fails as a connection
     // failure and discards the shared connection; with no retries, nothing
     // reconnects.
     let results: Vec<_> = reader
@@ -693,18 +691,21 @@ async fn serve_flight(service: TestFlightService) -> u16 {
     port
 }
 
-/// Listens on a port of its own and relays connections to `target`, except
-/// the first, which is reset as soon as it is accepted: what a client sees
-/// when a listen queue overflows and the kernel resets its half-open
-/// connection.
-async fn resetting_proxy(target: u16) -> u16 {
+/// Listens on a port of its own and resets each connection as soon as it is
+/// accepted: what a client sees when a listen queue overflows and the kernel
+/// resets its half-open connection. With `relay_to`, only the first
+/// connection is reset, and every later one is relayed to that port.
+///
+/// The listener stays open for the life of the test, so the port cannot be
+/// taken by anything else in the meantime.
+async fn resetting_listener(relay_to: Option<u16>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
         let mut accepted = 0;
         while let Ok((mut client, _)) = listener.accept().await {
             accepted += 1;
-            if accepted == 1 {
+            let (Some(target), false) = (relay_to, accepted == 1) else {
                 // Closing with a zero linger sends RST instead of FIN. tokio
                 // deprecates the setter because a nonzero linger blocks the
                 // thread on drop; a zero one closes at once.
@@ -712,7 +713,7 @@ async fn resetting_proxy(target: u16) -> u16 {
                 client.set_linger(Some(Duration::ZERO)).unwrap();
                 drop(client);
                 continue;
-            }
+            };
             tokio::spawn(async move {
                 let mut server = TcpStream::connect(("127.0.0.1", target)).await.unwrap();
                 let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
@@ -747,7 +748,7 @@ async fn remote_stream_open_is_retried_on_a_new_connection_after_a_reset() {
         response: Ok(vec![batch([1, 2, 3])]),
     })
     .await;
-    let port = resetting_proxy(server).await;
+    let port = resetting_listener(Some(server)).await;
     let pool = Arc::new(CountingPool::default());
     let reader = remote_reader(port, &pool);
 
