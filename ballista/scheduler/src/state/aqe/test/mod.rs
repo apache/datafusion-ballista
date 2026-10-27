@@ -37,7 +37,9 @@ mod stage_build_side;
 /// A table whose statistics are declared rather than measured
 mod stats_table;
 
-use crate::state::aqe::planner::AdaptivePlanner;
+use crate::state::aqe::execution_plan::ExchangeExec;
+use crate::state::aqe::planner::{AdaptivePlanner, RunnableStages};
+use ballista_core::JobId;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
@@ -49,12 +51,65 @@ use datafusion::catalog::TableProvider;
 use datafusion::common::stats::Precision;
 use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::datasource::MemTable;
+use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use stats_table::StatsTable;
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 impl AdaptivePlanner {
+    /// Creates an `AdaptivePlanner` over an already-built physical `plan`, with
+    /// the default physical optimizer rules.
+    pub(super) fn try_from_plan(
+        session_config: &SessionConfig,
+        plan: Arc<dyn ExecutionPlan>,
+        job_id: JobId,
+    ) -> datafusion::common::Result<Self> {
+        let plan_id_generator = Arc::new(AtomicUsize::new(0));
+        let state_builder = SessionStateBuilder::new_with_default_features()
+            .with_config(session_config.clone());
+        Self::try_new_with_optimizers(
+            state_builder,
+            plan,
+            job_id,
+            Self::default_optimizers(plan_id_generator),
+        )
+    }
+
+    /// The stages that can run now, or `None` if no more stages can run.
+    pub(super) fn runnable_stages(
+        &mut self,
+    ) -> datafusion::common::Result<RunnableStages> {
+        let (runnable_stages, _) = self.actionable_stages()?;
+        Ok(runnable_stages)
+    }
+
+    /// The stage ids of the runnable exchanges in the current plan, without
+    /// changing the planner's state.
+    pub(super) fn inspect_runnable_stages(
+        &self,
+    ) -> datafusion::common::Result<HashSet<usize>> {
+        let mut runnable_stages = Vec::new();
+        Self::find_runnable_exchanges(&self.plan, &mut runnable_stages);
+
+        runnable_stages
+            .into_iter()
+            .map(|exec| {
+                exec.downcast_ref::<ExchangeExec>()
+                    .ok_or_else(|| DataFusionError::Plan("ExchangeExec expected".into()))
+                    .map(|e| e.stage_id().unwrap())
+            })
+            .collect()
+    }
+
+    /// The current physical plan.
+    pub(super) fn current_plan(&self) -> &dyn ExecutionPlan {
+        self.plan.as_ref()
+    }
+
     /// Resolves a finished stage with its partitions alone, for tests that
     /// don't exercise column statistics.
     pub(super) fn finalise_stage_internal(

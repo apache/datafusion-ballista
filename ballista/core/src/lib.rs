@@ -102,6 +102,8 @@ pub mod registry;
 pub mod serde;
 /// Serves partition fetches over Arrow Flight.
 pub mod serving;
+/// Graceful shutdown coordination for long-running server components.
+pub mod shutdown;
 /// Quantile sketching of a fixed-width `ORDER BY` key, NULLs included.
 pub mod sort_key;
 /// Shared test and benchmark fixtures, such as the TPC-H table schemas.

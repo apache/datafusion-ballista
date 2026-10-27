@@ -45,10 +45,10 @@ struct Config {
     grpc_max_encoding_message_size: usize,
 
     /// Time in seconds to let in-flight result streams finish after a
-    /// shutdown signal (SIGTERM or Ctrl-C) before exiting anyway. Keep it below
+    /// shutdown signal (SIGTERM or Ctrl-C) before exiting with an error. Keep it below
     /// your orchestrator's termination grace period (Kubernetes'
     /// terminationGracePeriodSeconds, 30 by default), so this bound is reached
-    /// before a SIGKILL is.
+    /// before a SIGKILL is. 0 waits as long as it takes.
     #[arg(long, default_value_t = 10)]
     graceful_shutdown_timeout_seconds: u64,
 }
@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
             ..Default::default()
         },
-        shutdown_signal(),
+        shutdown_signal,
     )
     .await?;
     Ok(())
