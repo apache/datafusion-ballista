@@ -92,14 +92,16 @@ pub fn register_iceberg(mut state: SessionState) -> SessionState {
         .with_ballista_logical_extension_codec(Arc::new(logical))
         .with_ballista_physical_extension_codec(Arc::new(physical));
     let catalogs = PinningCatalogList(state.catalog_list().clone());
+    // `new_from_existing` would otherwise give the session a new ID.
+    let session_id = state.session_id().to_string();
     SessionStateBuilder::new_from_existing(state)
+        .with_session_id(session_id)
         .with_catalog_list(Arc::new(catalogs))
         .build()
 }
 
 /// A scheduler's session builder, the shape `SchedulerConfig` stores.
-pub type SessionBuilder =
-    Arc<dyn Fn(SessionConfig) -> Result<SessionState> + Send + Sync>;
+type SessionBuilder = Arc<dyn Fn(SessionConfig) -> Result<SessionState> + Send + Sync>;
 
 /// Wraps a scheduler's session builder, `base`, so its sessions have
 /// `catalogs` mounted and are readied with [`register_iceberg`], for queries

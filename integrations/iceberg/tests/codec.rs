@@ -133,6 +133,15 @@ mod iceberg_nodes {
         Ok(())
     }
 
+    #[test]
+    fn should_keep_the_session_id() {
+        let state = SessionStateBuilder::new()
+            .with_session_id("session_0".to_string())
+            .build();
+
+        assert_eq!(register_iceberg(state).session_id(), "session_0");
+    }
+
     #[tokio::test]
     async fn should_refuse_unpinned_and_metadata_tables() -> Result<()> {
         let dir = tempfile::tempdir()?;
