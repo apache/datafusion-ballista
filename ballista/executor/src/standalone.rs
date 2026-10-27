@@ -84,7 +84,11 @@ pub async fn new_standalone_executor_from_state(
 /// by accepting custom producers for session config, runtime environment,
 /// codec, and function registry.
 ///
-/// The executor binds to a random available port on localhost.
+/// The executor binds to a random available port on localhost. It polls the
+/// scheduler for work, unless `ballista.standalone.task_scheduling_policy` is
+/// `push-staged`: then it registers with the scheduler and takes the tasks the
+/// scheduler pushes to it, and expects a standalone scheduler started from the
+/// same configuration.
 pub async fn new_standalone_executor_from_builder(
     scheduler: SchedulerGrpcClient<Channel>,
     vcores: usize,
@@ -98,12 +102,31 @@ pub async fn new_standalone_executor_from_builder(
     let address = listener.local_addr()?;
     info!("Ballista v{BALLISTA_VERSION} Rust Executor listening on {address:?}");
 
+    let config = config_producer();
+    let max_message_size = config.ballista_grpc_client_max_message_size();
+    let push_staged = matches!(
+        config
+            .ballista_config()
+            .standalone_task_scheduling_policy()?,
+        ballista_core::config::TaskSchedulingPolicy::PushStaged
+    );
+
+    // A push-staged executor serves the scheduler's task launches on a gRPC
+    // port of its own, which `executor_server::startup` binds. Take a free one.
+    let grpc_port = if push_staged {
+        std::net::TcpListener::bind("127.0.0.1:0")?
+            .local_addr()?
+            .port()
+    } else {
+        // TODO Make it configurable
+        50020
+    };
+
     let executor_meta = ExecutorRegistration {
         id: new_instance_id(), // assign this executor a unique ID
         host: Some("localhost".to_string()),
         port: address.port() as u32,
-        // TODO Make it configurable
-        grpc_port: 50020,
+        grpc_port: grpc_port as u32,
         specification: Some(
             ExecutorSpecification::default()
                 .with_vcores(vcores as u32)
@@ -112,9 +135,6 @@ pub async fn new_standalone_executor_from_builder(
         os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
         ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
     };
-
-    let config = config_producer();
-    let max_message_size = config.ballista_grpc_client_max_message_size();
 
     let work_dir = TempDir::new()?.path().to_str().unwrap().to_string();
 
@@ -143,14 +163,46 @@ pub async fn new_standalone_executor_from_builder(
             )),
     );
 
-    tokio::spawn(execution_loop::poll_loop(
-        scheduler,
-        executor,
-        codec,
-        None,
-        None,
-        crate::health::ExecutorHealth::new(),
-    ));
+    if push_staged {
+        let process_config = crate::executor_process::ExecutorProcessConfig {
+            bind_host: "127.0.0.1".to_owned(),
+            port: address.port(),
+            grpc_port,
+            vcores,
+            task_scheduling_policy:
+                ballista_core::config::TaskSchedulingPolicy::PushStaged,
+            grpc_max_decoding_message_size: max_message_size as u32,
+            grpc_max_encoding_message_size: max_message_size as u32,
+            ..Default::default()
+        };
+        let shutdown = crate::shutdown::ShutdownNotifier::new();
+        let (stop_send, stop_receive) = tokio::sync::mpsc::channel::<bool>(10);
+        crate::executor_server::startup(
+            scheduler,
+            Arc::new(process_config),
+            executor,
+            codec,
+            stop_send,
+            &shutdown,
+            crate::health::ExecutorHealth::new(),
+        )
+        .await?;
+        // The executor's loops stop when the notifier or the stop channel is
+        // dropped, so keep both for the life of the runtime.
+        tokio::spawn(async move {
+            let _keep_alive = (shutdown, stop_receive);
+            futures::future::pending::<()>().await
+        });
+    } else {
+        tokio::spawn(execution_loop::poll_loop(
+            scheduler,
+            executor,
+            codec,
+            None,
+            None,
+            crate::health::ExecutorHealth::new(),
+        ));
+    }
     Ok(())
 }
 
