@@ -147,6 +147,12 @@ impl SchemaProvider for PinningSchema {
 
 /// One version of an Iceberg table, read with the schema the client planned
 /// against.
+///
+/// Not an [`IcebergStaticTableProvider`]: that derives its schema from the
+/// table, which may have evolved since planning, and is built asynchronously,
+/// which a codec's decode can't await.
+///
+/// [`IcebergStaticTableProvider`]: iceberg_datafusion::IcebergStaticTableProvider
 #[derive(Debug)]
 pub(crate) struct PinnedTable {
     pub(crate) table: Table,
