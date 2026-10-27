@@ -189,6 +189,7 @@ impl AdaptiveExecutionGraph {
                     queued_at,
                     started_at,
                     scheduler: scheduler_id.to_string(),
+                    pipelined_output_locations: vec![],
                 })),
             },
             queued_at,
@@ -1413,6 +1414,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                 queued_at: self.queued_at,
                 started_at: self.start_time,
                 ended_at: self.end_time,
+                pipelined_output_locations: vec![],
             })),
         };
 

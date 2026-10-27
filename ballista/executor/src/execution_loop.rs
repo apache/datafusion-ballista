@@ -202,6 +202,7 @@ where
                     let job_id = cleanup.job_id.clone().into();
                     let work_dir = executor.work_dir.clone();
                     let remove_stage_ids = cleanup.remove_stage_ids.clone();
+                    executor.remove_pipelined_job_data(&job_id, &remove_stage_ids);
 
                     // In poll-based cleanup, removing job data is fire-and-forget.
                     // Failures here do not affect task execution and are only logged.
@@ -375,7 +376,8 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         redact_key_value_pairs(&task.props)
     );
     let session_config = executor.produce_config();
-    let session_config = session_config.update_from_key_value_pair(&task.props);
+    let session_config = executor
+        .with_pipelined_registry(session_config.update_from_key_value_pair(&task.props));
 
     let task_scalar_functions = executor.function_registry.scalar_functions.clone();
     let task_aggregate_functions = executor.function_registry.aggregate_functions.clone();

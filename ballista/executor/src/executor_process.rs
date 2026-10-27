@@ -46,6 +46,7 @@ use datafusion::prelude::SessionConfig;
 
 use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
+use ballista_core::execution_plans::PipelinedRegistry;
 use ballista_core::extension::{EndpointOverrideFn, SessionConfigExt};
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::executor_status::Status;
@@ -864,6 +865,7 @@ async fn start_executor_process_inner(
             info!("Starting built-in arrow flight service");
             flight_server_task(
                 flight_work_dir,
+                executor.pipelined_registry().clone(),
                 address,
                 shutdown,
                 opt.grpc_max_encoding_message_size as usize,
@@ -984,6 +986,7 @@ async fn start_executor_process_inner(
 // Arrow flight service
 async fn flight_server_task(
     work_dir: String,
+    pipelined_registry: Arc<PipelinedRegistry>,
     address: SocketAddr,
     mut grpc_shutdown: Shutdown,
     max_encoding_message_size: usize,
@@ -1003,9 +1006,12 @@ async fn flight_server_task(
 
         let server_future = create_grpc_server(&grpc_server_config)
             .add_service(
-                FlightServiceServer::new(BallistaFlightService::new(work_dir))
-                    .max_decoding_message_size(max_decoding_message_size)
-                    .max_encoding_message_size(max_encoding_message_size),
+                FlightServiceServer::new(
+                    BallistaFlightService::new(work_dir)
+                        .with_pipelined_registry(pipelined_registry),
+                )
+                .max_decoding_message_size(max_decoding_message_size)
+                .max_encoding_message_size(max_encoding_message_size),
             )
             .serve_with_incoming_shutdown(incoming, grpc_shutdown.recv());
 

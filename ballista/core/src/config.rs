@@ -549,7 +549,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
              has lower latency, but a failed task fails the job instead of \
              being retried, and a job waits until it can reserve the vcores \
              of its widest stage all at once. `pipelined` requires push-staged \
-             scheduling, and the scheduler does not run it yet."
+             scheduling."
                 .to_string(),
             DataType::Utf8,
             Some(ExecutionMode::Blocking.to_string()),

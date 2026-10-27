@@ -156,6 +156,43 @@ pub async fn setup_test_cluster_with_state(session_state: SessionState) -> (Stri
     (host, addr.port())
 }
 
+/// Starts a scheduler and `executors` executors of `vcores` vcores each, all
+/// in this process and all from `session_state`.
+#[allow(dead_code)]
+pub async fn setup_test_cluster_with_executors(
+    session_state: &SessionState,
+    executors: usize,
+    vcores: usize,
+) -> (String, u16) {
+    let addr = ballista_scheduler::standalone::new_standalone_scheduler_from_state(
+        session_state,
+    )
+    .await
+    .expect("scheduler to be created");
+
+    let host = "localhost".to_string();
+
+    for _ in 0..executors {
+        let scheduler =
+            connect_to_scheduler(format!("http://{}:{}", host, addr.port())).await;
+        ballista_executor::new_standalone_executor_from_state(
+            scheduler,
+            vcores,
+            session_state,
+        )
+        .await
+        .expect("executor to be created");
+    }
+
+    log::info!(
+        "test scheduler with {executors} executors created at: {}:{}",
+        host,
+        addr.port()
+    );
+
+    (host, addr.port())
+}
+
 #[allow(dead_code)]
 pub async fn setup_test_cluster_with_builders(
     config_producer: ConfigProducer,

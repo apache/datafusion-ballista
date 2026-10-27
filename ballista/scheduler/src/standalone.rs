@@ -73,6 +73,12 @@ pub async fn new_standalone_scheduler_from_state(
 
 /// Creates a standalone scheduler with custom session builder, config producer, and codec.
 ///
+/// The scheduler waits for executors to poll it for work, unless the
+/// configuration asks for pipelined execution (`ballista.execution.mode =
+/// pipelined`), whose jobs must be placed all at once: then it pushes tasks to
+/// executors, which a standalone executor started from the same configuration
+/// supports.
+///
 /// Returns the socket address the scheduler is listening on.
 pub async fn new_standalone_scheduler_with_builder(
     session_builder: crate::scheduler_server::SessionBuilder,
@@ -80,20 +86,32 @@ pub async fn new_standalone_scheduler_with_builder(
     codec: BallistaCodec,
 ) -> Result<SocketAddr> {
     let config = config_producer();
+    let policy = if config.ballista_config().execution_mode()?
+        == ballista_core::config::ExecutionMode::Pipelined
+    {
+        ballista_core::config::TaskSchedulingPolicy::PushStaged
+    } else {
+        ballista_core::config::TaskSchedulingPolicy::PullStaged
+    };
+
+    // Let the OS assign a random, free port. Bound before the scheduler is
+    // built so the scheduler can advertise its real address: push-staged
+    // executors report task status to the endpoint each launch names.
+    let listener = TcpListener::bind("localhost:0").await?;
+    let addr = listener.local_addr()?;
+    let endpoint = format!("localhost:{}", addr.port());
 
     let cluster =
-        BallistaCluster::new_memory("localhost:50050", session_builder, config_producer);
+        BallistaCluster::new_memory(&endpoint, session_builder, config_producer);
 
     let metrics_collector = default_metrics_collector()?;
 
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
-            "localhost:50050".to_owned(),
+            endpoint,
             cluster,
             codec,
-            Arc::new(SchedulerConfig::default().with_scheduler_policy(
-                ballista_core::config::TaskSchedulingPolicy::PullStaged,
-            )),
+            Arc::new(SchedulerConfig::default().with_scheduler_policy(policy)),
             metrics_collector,
         );
 
@@ -102,9 +120,6 @@ pub async fn new_standalone_scheduler_with_builder(
         .max_decoding_message_size(config.ballista_grpc_client_max_message_size())
         .max_encoding_message_size(config.ballista_grpc_client_max_message_size());
 
-    // Let the OS assign a random, free port
-    let listener = TcpListener::bind("localhost:0").await?;
-    let addr = listener.local_addr()?;
     info!(
         "Ballista Scheduler v{BALLISTA_VERSION} (DataFusion v{DATAFUSION_VERSION}) listening on {addr:?}"
     );

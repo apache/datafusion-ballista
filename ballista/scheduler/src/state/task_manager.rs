@@ -26,8 +26,11 @@ use crate::state::execution_graph::{
     ExecutionGraphBox, RunningTaskInfo, StaticExecutionGraph, TaskDescription,
 };
 use crate::state::executor_manager::ExecutorManager;
+use crate::state::pipelined_graph::PipelinedExecutionGraph;
+use crate::state::pipelined_join_selection::{
+    PipelinedJoinSelection, create_pipelined_physical_plan,
+};
 use crate::state::task_builder::restrict_plan_to_partitions;
-use ballista_core::config::ExecutionMode;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::execution_plans::compute_global_output_partition_ids;
@@ -166,6 +169,15 @@ impl JobInfoCache {
     }
 }
 
+/// What losing an executor requires of the jobs that were using it.
+#[derive(Debug, Default)]
+pub struct ExecutorLostOutcome {
+    /// Running tasks to cancel, from stages rolled back for re-execution.
+    pub tasks_to_cancel: Vec<RunningTaskInfo>,
+    /// Jobs that must fail, with the reason and when they were queued.
+    pub failed_jobs: Vec<(JobId, String, u64)>,
+}
+
 /// Tracks stage state changes during task status updates.
 ///
 /// This struct is used internally to batch stage state transitions
@@ -272,15 +284,51 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let mut planner = DefaultDistributedPlanner::new();
         let session_state = ctx.state();
         let session_config = session_state.config();
-
-        if session_config.ballista_config().execution_mode()? == ExecutionMode::Pipelined
-        {
-            return Err(BallistaError::NotImplemented(
-                "ballista.execution.mode = pipelined is not supported yet".to_owned(),
-            ));
-        }
+        let pipelined = session_config.ballista_config().execution_mode()?
+            == ballista_core::config::ExecutionMode::Pipelined;
 
         let mut graph = match plan {
+            // A pipelined job plans with the static planner whatever the AQE
+            // setting: AQE plans a stage only once the stages it reads have
+            // finished, and a pipelined job runs them all at once.
+            SubmitPlan::Logical(logical_plan) if pipelined => {
+                debug!("Using the static query planner for pipelined job planning");
+                let session_config = Arc::new(ctx.copied_config());
+                let physical_plan =
+                    create_pipelined_physical_plan(&ctx.state(), logical_plan).await?;
+                let physical_plan = BalanceAndPruneFileGroups::new()
+                    .optimize(physical_plan, session_config.options())?;
+                let physical_plan =
+                    handle_explain_plan(job_id, &ctx, logical_plan, physical_plan)
+                        .await?;
+                Box::new(PipelinedExecutionGraph::new(
+                    &self.scheduler_id,
+                    job_id,
+                    job_name,
+                    &ctx.session_id(),
+                    physical_plan,
+                    queued_at,
+                    session_config,
+                    &mut planner,
+                    Some(logical_plan.display_indent().to_string()),
+                )?) as ExecutionGraphBox
+            }
+            SubmitPlan::Physical(physical_plan) if pipelined => {
+                let session_config = Arc::new(ctx.copied_config());
+                let physical_plan = PipelinedJoinSelection::new()
+                    .optimize(physical_plan.clone(), session_config.options())?;
+                Box::new(PipelinedExecutionGraph::new(
+                    &self.scheduler_id,
+                    job_id,
+                    job_name,
+                    &ctx.session_id(),
+                    physical_plan,
+                    queued_at,
+                    session_config,
+                    &mut planner,
+                    None,
+                )?) as ExecutionGraphBox
+            }
             SubmitPlan::Logical(logical_plan) => {
                 if session_config.ballista_adaptive_query_planner_enabled() {
                     debug!("Using adaptive query planner (AQE) for job planning");
@@ -624,27 +672,36 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Move a job from Active to Success and return the ids of its intermediate
-    /// (non-final) stages so their shuffle data can be reclaimed immediately.
-    /// Returns an empty vec if the job is not found or not successful.
-    pub(crate) async fn succeed_job(&self, job_id: &JobId) -> Result<Vec<u32>> {
+    /// (non-final) stages so their shuffle data can be reclaimed immediately,
+    /// along with any vcores the job held for its whole life (a pipelined
+    /// job's reservation), to be released.
+    /// Returns empty vecs if the job is not found or not successful.
+    pub(crate) async fn succeed_job(
+        &self,
+        job_id: &JobId,
+    ) -> Result<(Vec<u32>, Vec<ExecutorSlot>)> {
         debug!("Moving job {job_id} from Active to Success");
 
         if let Some(graph) = self.get_active_execution_graph(job_id) {
-            let (snapshot, intermediate_stage_ids) = {
-                let graph = graph.read().await;
+            let (snapshot, intermediate_stage_ids, reservation) = {
+                let mut graph = graph.write().await;
                 if !graph.is_successful() {
                     error!("Job {job_id} has not finished and cannot be completed");
-                    return Ok(vec![]);
+                    return Ok((vec![], vec![]));
                 }
+                let reservation = graph
+                    .as_pipelined_mut()
+                    .map(|graph| graph.take_reservation())
+                    .unwrap_or_default();
 
-                (graph.cloned(), graph.intermediate_stage_ids())
+                (graph.cloned(), graph.intermediate_stage_ids(), reservation)
             };
 
             self.persist_terminal_and_evict(job_id, &snapshot).await?;
-            Ok(intermediate_stage_ids)
+            Ok((intermediate_stage_ids, reservation))
         } else {
             warn!("Fail to find job {job_id} in the cache");
-            Ok(vec![])
+            Ok((vec![], vec![]))
         }
     }
 
@@ -670,15 +727,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             return Ok(0);
         };
 
-        let (running_tasks, pending_tasks, snapshot) = {
+        let (running_tasks, pending_tasks, snapshot, reservation) = {
             let mut guard = graph.write().await;
             let pending_tasks = guard.available_tasks();
             let running_tasks = guard.abort_running(failure_reason);
+            // A pipelined job holds its vcores for its whole life rather than
+            // per task, so they are released here instead of below.
+            let reservation = guard
+                .as_pipelined_mut()
+                .map(|graph| graph.take_reservation())
+                .unwrap_or_default();
             let snapshot = guard.cloned();
             if let Some(mut job_info) = self.active_job_cache.get_mut(job_id) {
                 job_info.status = snapshot.status().status.clone();
             }
-            (running_tasks, pending_tasks, snapshot)
+            (running_tasks, pending_tasks, snapshot, reservation)
         };
 
         // The vcores those tasks hold on their executors. Their terminal
@@ -691,6 +754,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             if let Some(vcores) = snapshot.task_vcores(task.stage_id, task.task_id) {
                 *freed.entry(task.executor_id.clone()).or_default() += vcores;
             }
+        }
+        for (executor_id, vcores) in reservation {
+            *freed.entry(executor_id).or_default() += vcores;
         }
         let freed_slots: Vec<ExecutorSlot> = freed.into_iter().collect();
 
@@ -754,23 +820,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Handles executor loss by resetting affected tasks and stages.
     ///
-    /// Returns a list of running tasks that need to be cancelled.
-    pub async fn executor_lost(&self, executor_id: &str) -> Result<Vec<RunningTaskInfo>> {
-        // Collect all the running task need to cancel when there are running stages rolled back.
-        let mut running_tasks_to_cancel: Vec<RunningTaskInfo> = vec![];
+    /// Returns the running tasks that need to be cancelled, and the jobs that
+    /// cannot survive the loss and must fail, with the reason. A pipelined
+    /// job is one: its tasks stream to each other, so there is nothing to
+    /// roll back to.
+    pub async fn executor_lost(&self, executor_id: &str) -> Result<ExecutorLostOutcome> {
+        let mut outcome = ExecutorLostOutcome::default();
 
-        {
-            for pairs in self.active_job_cache.iter() {
-                let (_job_id, job_info) = pairs.pair();
-                let mut graph = job_info.execution_graph.write().await;
-                let reset = graph.reset_stages_on_lost_executor(executor_id)?;
-                if !reset.0.is_empty() {
-                    running_tasks_to_cancel.extend(reset.1);
+        for pairs in self.active_job_cache.iter() {
+            let (job_id, job_info) = pairs.pair();
+            let mut graph = job_info.execution_graph.write().await;
+            if let Some(pipelined) = graph.as_pipelined_mut() {
+                if let Some(reason) = pipelined.lost_executor(executor_id) {
+                    let queued_at = match &graph.status().status {
+                        Some(job_status::Status::Running(running)) => running.queued_at,
+                        _ => 0,
+                    };
+                    outcome
+                        .failed_jobs
+                        .push((job_id.clone(), reason, queued_at));
                 }
+                continue;
+            }
+            let reset = graph.reset_stages_on_lost_executor(executor_id)?;
+            if !reset.0.is_empty() {
+                outcome.tasks_to_cancel.extend(reset.1);
             }
         }
 
-        Ok(running_tasks_to_cancel)
+        Ok(outcome)
     }
 
     /// Retrieves the number of available tasks for the given job.

@@ -528,6 +528,23 @@ impl SchedulerTest {
         self.scheduler.pending_job_number()
     }
 
+    /// Sets a session option for the jobs submitted from now on.
+    pub fn set_session_option(&mut self, key: &str, value: &str) -> Result<()> {
+        self.session_config.options_mut().set(key, value)?;
+        Ok(())
+    }
+
+    /// Free vcores, summed over the alive executors.
+    pub async fn free_vcores(&self) -> Result<u32> {
+        let (_, available) = self
+            .scheduler
+            .state
+            .executor_manager
+            .placement_candidates()
+            .await?;
+        Ok(available.iter().map(|a| a.vcores).sum())
+    }
+
     /// Returns the number of running jobs.
     pub fn running_job_number(&self) -> usize {
         self.scheduler.running_job_number()

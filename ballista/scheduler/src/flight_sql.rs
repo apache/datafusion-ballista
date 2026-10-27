@@ -24,7 +24,8 @@ use std::sync::Arc;
 
 use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
-use ballista_core::serde::protobuf::{JobStatus, SuccessfulJob, job_status};
+use ballista_core::extension::SessionConfigExt;
+use ballista_core::serde::protobuf::{JobStatus, RunningJob, SuccessfulJob, job_status};
 use ballista_flight_sql::backend::{QueryBackend, QueryResult};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::LogicalPlan;
@@ -70,6 +71,31 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryBackend
 
         while let Some(status) = statuses.recv().await {
             match status.status {
+                // A pipelined job streams its result while it runs, and cannot
+                // finish until the result is read, so hand it over as soon as
+                // its final stage is placed. One small enough to finish first
+                // still serves its result from the same places.
+                Some(job_status::Status::Running(RunningJob {
+                    pipelined_output_locations,
+                    ..
+                }))
+                | Some(job_status::Status::Successful(SuccessfulJob {
+                    pipelined_output_locations,
+                    ..
+                })) if !pipelined_output_locations.is_empty() => {
+                    let schema = self.result_schema(&job_id, &ctx, &plan).await?;
+                    return Ok(QueryResult {
+                        job_id: job_id.to_string(),
+                        schema,
+                        partitions: vec![],
+                        pipelined_partitions: pipelined_output_locations,
+                        pipelined_registration_timeout: ctx
+                            .state()
+                            .config()
+                            .ballista_config()
+                            .pipelined_registration_timeout(),
+                    });
+                }
                 Some(job_status::Status::Successful(SuccessfulJob {
                     partition_location,
                     ..
@@ -79,6 +105,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryBackend
                         job_id: job_id.to_string(),
                         schema,
                         partitions: partition_location,
+                        pipelined_partitions: vec![],
+                        pipelined_registration_timeout: Default::default(),
                     });
                 }
                 Some(job_status::Status::Failed(failed)) => {

@@ -30,7 +30,10 @@ use crate::state::session_manager::share_file_statistics_cache;
 use crate::state::task_manager::JobInfoCache;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::Result;
-use ballista_core::execution_plans::{RangeShuffleReaderExec, ShuffleReaderExec};
+use ballista_core::execution_plans::{
+    PipelinedShuffleReaderExec, RangeShuffleReaderExec, ShuffleReaderExec,
+    UnresolvedShuffleExec,
+};
 use ballista_core::serde::protobuf::{
     AvailableVcores, ExecutorHeartbeat, JobStatus, job_status,
 };
@@ -212,6 +215,26 @@ pub trait ClusterState: Send + Sync + 'static {
     ///
     /// This operation is atomic: either all vcores are released or none are.
     async fn unbind_tasks(&self, executor_slots: Vec<ExecutorSlot>) -> Result<()>;
+
+    /// Returns the free vcores of every executor, restricted to `executors`
+    /// when given. A snapshot: binding may change it at any moment.
+    ///
+    /// Used to place a pipelined job, all of whose tasks must run at once.
+    /// The default reports no free vcores, so a backend that does not
+    /// implement it never places a pipelined job.
+    async fn available_vcores(
+        &self,
+        _executors: Option<&HashSet<String>>,
+    ) -> Result<Vec<AvailableVcores>> {
+        Ok(vec![])
+    }
+
+    /// Takes the given vcores from their executors all at once, or none at
+    /// all if any executor no longer has enough free. Returns whether the
+    /// reservation was made. Release it with [`Self::unbind_tasks`].
+    async fn reserve_vcores(&self, _reservation: &[ExecutorSlot]) -> Result<bool> {
+        Ok(false)
+    }
 
     /// Registers a new executor in the cluster.
     async fn register_executor(
@@ -485,10 +508,14 @@ pub trait CacheState: Send + Sync + 'static {
 /// "stop at any stage boundary"; if new stage-boundary operators appear, add
 /// them here (or, better, get `ExecutionPlan` upstream to expose an
 /// `is_stage_boundary()` property so we don't keep enumerating).
-fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bool {
+pub(crate) fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bool {
     fn walk(node: &Arc<dyn ExecutionPlan>) -> bool {
+        // A pipelined job is placed before its readers are resolved, so an
+        // unresolved reader is a stage boundary too.
         if node.downcast_ref::<ShuffleReaderExec>().is_some()
             || node.downcast_ref::<RangeShuffleReaderExec>().is_some()
+            || node.downcast_ref::<PipelinedShuffleReaderExec>().is_some()
+            || node.downcast_ref::<UnresolvedShuffleExec>().is_some()
         {
             return false;
         }
