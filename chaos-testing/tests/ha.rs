@@ -564,3 +564,54 @@ async fn scheduler_finishes_its_running_job_before_exiting() {
 
     assert!(run.cluster.await_scheduler_exit().await.unwrap().success());
 }
+
+/// Scenario K: a stage loses its input after some of its tasks finished.
+///
+/// `chaos_delay` in `HAVING` slows each final-aggregate task after its fetch, so
+/// the kill of a map-side executor lands once some of them have pushed output
+/// to the sorted merge. The rest fail to fetch, the stage re-runs every task,
+/// and the merge must not read the earlier attempt's output as well. As in
+/// Scenario E, a 60s executor timeout makes the loss a fetch failure. Static
+/// planner only: the adaptive graph fails such a job instead of re-running it.
+#[tokio::test]
+async fn stage_losing_input_after_partial_success_is_recovered() {
+    let mut run = ChaosRun::start_with(false, 2, 60).await;
+    let expected = run.local_sql(Fixture::partial_reduce_query()).await;
+    run.sql("SET datafusion.execution.target_partitions = 16")
+        .await
+        .expect("set target partitions");
+
+    let sql = Fixture::partial_reduce_chaos_query("chaos_delay(COUNT(*) > 0, 300)");
+    let query = tokio::spawn({
+        let ctx = run.clone_ctx();
+        async move { ctx.sql(&sql).await?.collect().await }
+    });
+
+    // Static planning: stage 1 is the partial aggregate, stage 2 the final one.
+    let job_id = run.cluster.running_job_id().await.expect("job must appear");
+    run.cluster
+        .await_stage_task_successful(&job_id, 2)
+        .await
+        .expect("a final-aggregate task must succeed before the kill");
+    let victim = run
+        .cluster
+        .executor_with_shuffle_output(&job_id, 1)
+        .expect("an executor must hold map output");
+    run.cluster.kill_executor(victim).expect("kill executor");
+
+    let batches = match tokio::time::timeout(Duration::from_secs(180), query).await {
+        Ok(result) => result.expect("query task must not panic"),
+        Err(_) => panic!(
+            "query must not hang\n{}",
+            run.cluster.diagnostics(&job_id).await
+        ),
+    }
+    .unwrap_or_else(|e| panic!("query must recover: {e}"));
+    assert_eq!(
+        datafusion::arrow::util::pretty::pretty_format_batches(&batches)
+            .unwrap()
+            .to_string(),
+        expected,
+        "a re-run stage must not add its earlier attempt's output"
+    );
+}

@@ -639,6 +639,16 @@ impl TestCluster {
         crate::rest::await_any_stage_running(&self.client, &self.rest_url(), job_id).await
     }
 
+    /// Block until `stage_id` has at least one task in state Successful.
+    pub async fn await_stage_task_successful(
+        &self,
+        job_id: &str,
+        stage_id: usize,
+    ) -> Result<(), String> {
+        self.await_stage_task_state(job_id, stage_id, "Successful")
+            .await
+    }
+
     /// Block until every task in `stage_id` is Successful.
     pub async fn await_stage_successful(
         &self,
@@ -839,7 +849,8 @@ impl TestCluster {
         }
     }
 
-    fn executor_with_shuffle_output(
+    /// The index of an executor holding shuffle output of `stage_id`.
+    pub fn executor_with_shuffle_output(
         &self,
         job_id: &str,
         stage_id: usize,
