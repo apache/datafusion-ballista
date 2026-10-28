@@ -754,65 +754,31 @@ impl ExecutionPlan for ShuffleWriterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let schema = result_schema();
-
-        let mut state = self.state.lock().map_err(|_| {
+        let mut guard = self.state.lock().map_err(|_| {
             DataFusionError::Internal("ShuffleWriterExec state mutex poisoned".to_owned())
         })?;
+        let state = &mut *guard;
+        let rx = take_handoff(
+            "ShuffleWriterExec",
+            &mut state.initialized,
+            &mut state.handoffs,
+            partition,
+            |senders| {
+                let writer = self.clone();
+                tokio::spawn(async move {
+                    run_coordinator(writer.execute_shuffle_write(context), senders).await;
+                });
+            },
+        )?;
+        drop(guard);
 
-        if !state.initialized {
-            state.initialized = true;
-            let k = state.handoffs.len();
-            let mut senders: Vec<oneshot::Sender<Result<Vec<ShuffleWritePartition>>>> =
-                Vec::with_capacity(k);
-            for slot in state.handoffs.iter_mut() {
-                let (tx, rx) = oneshot::channel();
-                senders.push(tx);
-                *slot = Some(rx);
-            }
-            let writer = self.clone();
-            let ctx = context.clone();
-            tokio::spawn(async move {
-                run_coordinator(writer.execute_shuffle_write(ctx), senders).await;
-            });
-        }
-
-        let rx = state
-            .handoffs
-            .get_mut(partition)
-            .and_then(Option::take)
-            .ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "ShuffleWriterExec: execute({partition}) called twice or out of range (have {} partitions)",
-                    state.handoffs.len()
-                ))
-            })?;
-        drop(state);
-
-        let work_dir = self.work_dir.clone();
-        let job_id = self.job_id.clone();
-        let stage_id = self.stage_id;
-        let schema_captured = schema.clone();
-
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            schema,
-            futures::stream::once(async move {
-                let summaries = rx.await.map_err(|_| {
-                    DataFusionError::Internal(
-                        "ShuffleWriterExec coordinator dropped without sending"
-                            .to_owned(),
-                    )
-                })??;
-                summaries_to_batch(
-                    summaries,
-                    schema_captured,
-                    &work_dir,
-                    &job_id,
-                    stage_id,
-                )
-            })
-            .try_flatten(),
-        )))
+        Ok(handoff_stream(
+            "ShuffleWriterExec",
+            rx,
+            self.work_dir.clone(),
+            self.job_id.clone(),
+            self.stage_id,
+        ))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -863,7 +829,7 @@ impl ShuffleWriter for ShuffleWriterExec {
 /// sent to the scheduler. Shared between `ShuffleWriterExec` and
 /// `SortShuffleWriterExec` so the executor can drive both via the same
 /// `execute(N)` contract.
-pub(crate) fn result_schema() -> SchemaRef {
+fn result_schema() -> SchemaRef {
     let stats = PartitionStats::default();
     Arc::new(Schema::new(vec![
         Field::new("partition", DataType::UInt32, false),
@@ -927,12 +893,72 @@ pub(crate) async fn run_coordinator<F>(
     }
 }
 
+/// Takes the handoff receiver for `partition`. The first call creates one
+/// oneshot per output partition and passes the senders to
+/// `spawn_coordinator`. `name` is the calling exec, used in the error for a
+/// repeated or out-of-range partition.
+pub(crate) fn take_handoff(
+    name: &str,
+    initialized: &mut bool,
+    handoffs: &mut [Option<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>>],
+    partition: usize,
+    spawn_coordinator: impl FnOnce(Vec<oneshot::Sender<Result<Vec<ShuffleWritePartition>>>>),
+) -> Result<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>> {
+    if !*initialized {
+        *initialized = true;
+        let mut senders: Vec<oneshot::Sender<Result<Vec<ShuffleWritePartition>>>> =
+            Vec::with_capacity(handoffs.len());
+        for slot in handoffs.iter_mut() {
+            let (tx, rx) = oneshot::channel();
+            senders.push(tx);
+            *slot = Some(rx);
+        }
+        spawn_coordinator(senders);
+    }
+
+    let k = handoffs.len();
+    handoffs
+        .get_mut(partition)
+        .and_then(Option::take)
+        .ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "{name}: execute({partition}) called twice or out of range (have {k} partitions)"
+            ))
+        })
+}
+
+/// Wraps a receiver from [`take_handoff`] in the metadata stream returned by
+/// `execute(N)`.
+pub(crate) fn handoff_stream(
+    name: &'static str,
+    rx: oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>,
+    work_dir: String,
+    job_id: JobId,
+    stage_id: usize,
+) -> SendableRecordBatchStream {
+    let schema = result_schema();
+    let schema_captured = schema.clone();
+
+    Box::pin(RecordBatchStreamAdapter::new(
+        schema,
+        futures::stream::once(async move {
+            let summaries = rx.await.map_err(|_| {
+                DataFusionError::Internal(format!(
+                    "{name} coordinator dropped without sending"
+                ))
+            })??;
+            summaries_to_batch(summaries, schema_captured, &work_dir, &job_id, stage_id)
+        })
+        .try_flatten(),
+    ))
+}
+
 /// Build a metadata `MemoryStream` describing the files a single output
 /// partition was written to (produced by the coordinator via oneshot). One
 /// row per summary — sort-based writers put multiple summaries in a single
 /// slot (one per input file the task drained), passthrough / hash writers put
 /// at most one.
-pub(crate) fn summaries_to_batch(
+fn summaries_to_batch(
     summaries: Vec<ShuffleWritePartition>,
     schema: SchemaRef,
     work_dir: &str,
@@ -1328,6 +1354,35 @@ mod tests {
         for result in results {
             let err = result.expect_err("expected injected write failure");
             assert_shared_structural_error(&err);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn execute_same_partition_twice_or_out_of_range_errors() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let work_dir = TempDir::new()?;
+        let query_stage = Arc::new(ShuffleWriterExec::try_new(
+            JobId::new("jobTwice"),
+            1,
+            create_input_plan()?,
+            work_dir.path().to_str().unwrap().to_owned(),
+        )?);
+        drive_all_partitions(query_stage.clone(), task_ctx.clone()).await?;
+
+        for partition in [0, 2] {
+            let err = match query_stage.execute(partition, task_ctx.clone()) {
+                Ok(_) => panic!("execute({partition}) must error"),
+                Err(err) => err,
+            };
+            assert!(
+                err.to_string().contains(&format!(
+                    "ShuffleWriterExec: execute({partition}) called twice or out of range (have 2 partitions)"
+                )),
+                "error should name the exec and the invariant, got: {err}"
+            );
         }
         Ok(())
     }
