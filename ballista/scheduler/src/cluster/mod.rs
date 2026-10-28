@@ -446,9 +446,12 @@ pub trait CacheState: Send + Sync + 'static {
         locations: Vec<Vec<PartitionLocation>>,
     ) -> Result<CompleteOutcome>;
 
+    /// The job materializing `key`, if it is pending.
+    async fn pending_job(&self, key: &CacheKey) -> Result<Option<JobId>>;
+
     /// Drops a pending claim for `key` owned by `job_id` (materialization job
-    /// failed/cancelled). Returns whether a claim was removed. Future PRs call
-    /// this from the `JobRunningFailed` handler.
+    /// failed/cancelled). Returns whether a claim was removed. Called from the
+    /// job failure and cancel handlers.
     async fn abort_materialization(&self, key: &CacheKey, job_id: &JobId)
     -> Result<bool>;
 
@@ -456,6 +459,14 @@ pub trait CacheState: Send + Sync + 'static {
     /// miss. Returns the removed materialized entry (if any) so the caller can
     /// unpin its shuffle data.
     async fn invalidate(&self, key: &CacheKey) -> Result<Option<MaterializedCache>>;
+
+    /// Invalidates `key` only while it is still `materializing_job`'s,
+    /// atomically: use it when acting on an entry seen earlier.
+    async fn invalidate_if(
+        &self,
+        key: &CacheKey,
+        materializing_job: &JobId,
+    ) -> Result<Option<MaterializedCache>>;
 
     /// Invalidates every entry holding a partition on `executor_id` (the
     /// executor-loss policy) and returns the removed entries so the caller can
@@ -474,8 +485,8 @@ pub trait CacheState: Send + Sync + 'static {
     ) -> Result<Vec<(CacheKey, MaterializedCache)>>;
 
     /// Returns the `(job_id, stage_id)` shuffle stages that must be pinned past
-    /// normal cleanup because they back a cache entry. Consumed by the pinning
-    /// layer (future PR).
+    /// normal cleanup because they back a cache entry. Consumed by job-data
+    /// cleanup, which skips these stages.
     async fn pinned_stages(&self) -> Result<HashSet<(JobId, usize)>>;
 }
 

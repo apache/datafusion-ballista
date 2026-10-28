@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+use crate::cache::is_external_stage_id;
 use crate::physical_optimizer::file_group_balance::BalanceAndPruneFileGroups;
 use crate::physical_optimizer::filter_pushdown::FilterPushdown;
 use crate::state::aqe::adapter::BallistaAdapter;
@@ -417,6 +418,7 @@ impl AdaptivePlanner {
                 match exec.downcast_ref::<ExchangeExec>() {
                     Some(exchange) if exchange.inactive_stage => continue,
                     Some(exchange) if exchange.stage_id().is_none() => {
+                        debug_assert!(!is_external_stage_id(self.stage_id_generator));
                         exchange.set_stage_id(self.stage_id_generator);
                         // keeping stage in stage cache
                         // so we can process updates
@@ -447,6 +449,7 @@ impl AdaptivePlanner {
                 // previously
                 Ok(Some(vec![self.plan.clone()]))
             } else {
+                debug_assert!(!is_external_stage_id(self.stage_id_generator));
                 root.set_stage_id(self.stage_id_generator);
                 root.set_final_plan();
                 // keeping stage in stage cache

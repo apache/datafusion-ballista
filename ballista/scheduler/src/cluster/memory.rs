@@ -581,6 +581,18 @@ impl CacheState for InMemoryCacheState {
             .complete_materialization(key, job_id, schema, locations))
     }
 
+    async fn pending_job(&self, key: &CacheKey) -> Result<Option<JobId>> {
+        Ok(self.registry.pending_job(key))
+    }
+
+    async fn invalidate_if(
+        &self,
+        key: &CacheKey,
+        materializing_job: &JobId,
+    ) -> Result<Option<MaterializedCache>> {
+        Ok(self.registry.invalidate_if(key, materializing_job))
+    }
+
     async fn abort_materialization(
         &self,
         key: &CacheKey,

@@ -30,6 +30,7 @@ use ballista_core::utils::panic_payload_message;
 use futures::FutureExt;
 use tokio::sync::mpsc::error::TrySendError;
 
+use crate::cache::CACHE_DATA_LOST;
 use crate::config::{SchedulerConfig, WorkAvailableReason};
 use crate::metrics::SchedulerMetricsCollector;
 use crate::scheduler_server::timestamp_millis;
@@ -43,6 +44,7 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::event_log;
 
 use crate::state::SchedulerState;
+use crate::state::cache_linker::JobEnd;
 
 pub(crate) struct QueryStageScheduler<
     T: 'static + AsLogicalPlan,
@@ -417,6 +419,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job {job_id} failed: {fail_message}");
+                // Release a cache claim this job owned and fail what waited on it.
+                self.state
+                    .on_job_terminal(
+                        &job_id,
+                        JobEnd::Failed(&fail_message),
+                        &event_sender,
+                    )
+                    .await;
                 if let Err(e) = self
                     .state
                     .task_manager
@@ -437,6 +447,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_completed(&job_id, queued_at, completed_at);
 
                 info!("Job finished successfully: [{job_id}]");
+                // Record a cache this job built while its graph is active, and
+                // before cleanup, so its pin is in place.
+                self.state
+                    .on_job_terminal(&job_id, JobEnd::Finished, &event_sender)
+                    .await;
                 let intermediate_stage_ids =
                     match self.state.task_manager.succeed_job(&job_id).await {
                         Ok(ids) => ids,
@@ -448,7 +463,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         }
                     };
                 self.state
-                    .clean_up_successful_job(job_id, intermediate_stage_ids);
+                    .clean_up_successful_job(job_id, intermediate_stage_ids)
+                    .await;
             }
             QueryStageSchedulerEvent::JobRunningFailed {
                 job_id,
@@ -460,6 +476,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job failed: [{job_id}]");
+                // Release a cache claim this job owned and fail what waited on it.
+                self.state
+                    .on_job_terminal(
+                        &job_id,
+                        JobEnd::Failed(&fail_message),
+                        &event_sender,
+                    )
+                    .await;
                 if let Err(e) = self.abort_job(&job_id, fail_message).await {
                     error!("Fail to abort job {job_id} due to {e:?}");
                 }
@@ -489,6 +513,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 if let Err(e) = self.abort_job(&job_id, "Cancelled".to_owned()).await {
                     error!("Fail to cancel job {job_id} due to {e:?}");
                 }
+                // A held job was never submitted, so `abort_job` cannot end it.
+                self.state
+                    .on_job_terminal(&job_id, JobEnd::Cancelled, &event_sender)
+                    .await;
                 self.state.clean_up_failed_job(job_id);
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
@@ -540,7 +568,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
             QueryStageSchedulerEvent::ExecutorLost(executor_id, _) => {
                 match self.state.task_manager.executor_lost(&executor_id).await {
-                    Ok(tasks) => {
+                    Ok((tasks, lost_cache)) => {
                         if !tasks.is_empty()
                             && let Err(e) = self
                                 .state
@@ -553,6 +581,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         if self.state.config.is_push_staged_scheduling() {
                             event_sender
                                 .post_event(QueryStageSchedulerEvent::ReviveOffers)
+                                .await?;
+                        }
+                        // Cache data is another job's output, which a job's
+                        // graph cannot re-run: fail the jobs that lost it.
+                        for (job_id, queued_at) in lost_cache {
+                            event_sender
+                                .post_event(QueryStageSchedulerEvent::JobRunningFailed {
+                                    fail_message: format!(
+                                        "Job {job_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
+                                    ),
+                                    job_id,
+                                    queued_at,
+                                    failed_at: timestamp_millis(),
+                                })
                                 .await?;
                         }
                     }
