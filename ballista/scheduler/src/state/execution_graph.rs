@@ -654,6 +654,26 @@ impl StaticExecutionGraph {
         Ok((reset_stage, all_running_tasks))
     }
 
+    /// Discard the outputs a rolled-back stage's finished tasks already pushed
+    /// to its output links (or, for a final stage, to the job's output). The
+    /// stage re-runs every task, so keeping them would produce those
+    /// partitions twice.
+    fn discard_stage_outputs(&mut self, stage_id: usize, output_links: &[usize]) {
+        if output_links.is_empty() {
+            self.output_locations
+                .retain(|loc| loc.partition_id.stage_id != stage_id);
+        }
+        for link in output_links {
+            if let Some(ExecutionStage::UnResolved(linked_stage)) =
+                self.stages.get_mut(link)
+                && let Some(stage_output) = linked_stage.inputs.get_mut(&stage_id)
+            {
+                stage_output.partition_locations.clear();
+                stage_output.complete = false;
+            }
+        }
+    }
+
     /// Clear the stage failure count for this stage if the stage is finally success
     fn clear_stage_failure(&mut self, stage_id: usize) {
         self.failed_stage_attempts.remove(&stage_id);
@@ -1371,9 +1391,11 @@ impl ExecutionGraph for StaticExecutionGraph {
                     executor_id,
                 })
                 .collect();
+            let output_links = stage.output_links.clone();
             let unresolved_stage = stage.to_unresolved(failure_reasons)?;
             self.stages
                 .insert(stage_id, ExecutionStage::UnResolved(unresolved_stage));
+            self.discard_stage_outputs(stage_id, &output_links);
             Ok(running_tasks)
         } else {
             warn!(
@@ -1855,6 +1877,7 @@ mod test {
         test_coalesce_plan, test_join_plan, test_two_aggregations_plan,
         test_union_all_plan, test_union_plan,
     };
+    use ballista_core::serde::scheduler::PartitionLocation;
 
     #[derive(Debug)]
     struct FailingPlanRewriteExec {
@@ -2634,6 +2657,60 @@ mod test {
         Ok(())
     }
 
+    /// A stage rolled back after one of its tasks succeeded re-runs every task,
+    /// so it must drop that task's output: each final partition appears once.
+    #[tokio::test]
+    async fn test_rollback_discards_partial_final_outputs() -> Result<()> {
+        let executor2 = mock_executor("executor-id2".to_string());
+        let mut agg_graph = test_aggregation_plan(4).await;
+        revive_graph_and_complete_next_stage(&mut agg_graph)?;
+
+        // One final-stage task succeeds, another fails to fetch its input.
+        let ok = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let lost = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let statuses = vec![
+            mock_completed_task(ok, &executor2.id),
+            mock_failed_task(lost, wrapped_fetch_failed_task("executor-id1", 1, 0)),
+        ];
+        agg_graph.update_task_status(&executor2, statuses, 4, 4)?;
+
+        drain_tasks(&mut agg_graph)?;
+        assert!(agg_graph.is_successful());
+        assert_eq!(
+            location_keys(&agg_graph.output_locations()),
+            [(0, 0), (0, 1), (0, 2), (0, 3)]
+        );
+        Ok(())
+    }
+
+    /// The same for a stage feeding another, rolled back on executor loss: the
+    /// downstream stage reads each map partition once.
+    #[tokio::test]
+    async fn test_rollback_discards_partial_stage_outputs() -> Result<()> {
+        let executor2 = mock_executor("executor-id2".to_string());
+        let mut agg_graph = test_two_aggregations_plan(4).await;
+        revive_graph_and_complete_next_stage(&mut agg_graph)?;
+
+        // One Stage 2 task succeeds, then the executor holding its input is lost.
+        let ok = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let statuses = vec![mock_completed_task(ok, &executor2.id)];
+        agg_graph.update_task_status(&executor2, statuses, 4, 4)?;
+        agg_graph.reset_stages_on_lost_executor("executor-id1")?;
+
+        drain_tasks(&mut agg_graph)?;
+        assert!(agg_graph.is_successful());
+        let Some(ExecutionStage::Successful(stage3)) = agg_graph.stages.get(&3) else {
+            panic!("Stage 3 should be successful");
+        };
+        assert_eq!(
+            location_keys(stage3.inputs[&2].partition_locations.values().flatten()),
+            (0..4)
+                .flat_map(|p| (0..4).map(move |m| (p, m)))
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_many_fetch_failures_in_one_stage() -> Result<()> {
         let executor1 = mock_executor("executor-id1".to_string());
@@ -3256,6 +3333,18 @@ mod test {
             .into_datafusion(),
         ));
         FailedTask::from(err)
+    }
+
+    /// `(output partition, map partition)` of each location, sorted.
+    fn location_keys<'a>(
+        locations: impl IntoIterator<Item = &'a PartitionLocation>,
+    ) -> Vec<(usize, usize)> {
+        let mut keys = locations
+            .into_iter()
+            .map(|l| (l.partition_id.partition_id, l.map_partition_id))
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
     }
 
     fn drain_tasks(graph: &mut dyn ExecutionGraph) -> Result<()> {

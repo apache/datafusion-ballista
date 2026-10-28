@@ -63,7 +63,53 @@ message BallistaPhysicalPlanNode {
     RangeShuffleWriterExecNode range_shuffle_writer = 15;
     DistributedQueryExecNode distributed_query = 16;
     DistributedExplainAnalyzeExecNode distributed_explain_analyze = 17;
+    PipelinedShuffleWriterExecNode pipelined_shuffle_writer = 18;
+    PipelinedShuffleReaderExecNode pipelined_shuffle_reader = 19;
   }
+}
+
+// Root of a stage in a pipelined job. Instead of writing shuffle files, it
+// routes its input into bounded in-memory queues that consumer tasks stream
+// from over Arrow Flight while the stage runs. The child plan is plumbed by
+// the framework as `inputs[0]`.
+message PipelinedShuffleWriterExecNode {
+  string job_id = 1;
+  uint32 stage_id = 2;
+  // Hash repartitioning of the output. Absent for a passthrough stage, which
+  // keeps its input partitioning.
+  datafusion.PhysicalHashRepartition output_partitioning = 3;
+  // Every consumer task reads every output partition in full (the build side
+  // of a broadcast join), so outputs are retained for replay rather than
+  // handed to a single reader.
+  bool broadcast = 4;
+}
+
+// Leaf of a stage in a pipelined job that streams its input from the producer
+// tasks of an upstream stage while they run.
+message PipelinedShuffleReaderExecNode {
+  // One entry per output partition: the producer tasks to stream it from.
+  repeated PipelinedReaderPartition partition = 1;
+  datafusion_common.Schema schema = 2;
+  // The producer stage
+  uint32 stage_id = 3;
+  datafusion.Partitioning partitioning = 4;
+  // A single logical output partition that streams every partition of every
+  // producer task.
+  bool broadcast = 5;
+}
+
+message PipelinedReaderPartition {
+  repeated PipelinedPartitionLocation location = 1;
+}
+
+// Where a producer task of a pipelined stage serves one of its output
+// partitions while it runs.
+message PipelinedPartitionLocation {
+  // Job, producer stage and global output partition.
+  PartitionId partition_id = 1;
+  // The producer task within its stage.
+  uint32 task_id = 2;
+  ExecutorMetadata executor_meta = 3;
 }
 
 message DistributedQueryExecNode {
@@ -522,6 +568,8 @@ message Action {
   oneof ActionType {
     // Fetch a partition from an executor
     FetchPartition fetch_partition = 3;
+    // Stream a partition from a running pipelined producer task
+    FetchPipelinedPartition fetch_pipelined_partition = 4;
   }
 
   // configuration settings
@@ -598,6 +646,21 @@ message FetchPartition {
   // shape, which reads as data-vs-index once a file_kind exists beside it.
   reserved 8;
   reserved "is_sort_shuffle";
+}
+
+// Stream one output partition of a running pipelined producer task. The
+// executor waits a bounded time for the task to start if it has not yet.
+message FetchPipelinedPartition {
+  string job_id = 1;
+  uint32 stage_id = 2;
+  uint32 task_id = 3;
+  uint32 partition_id = 4;
+  // The executor serving the partition, for proxies that forward the request.
+  string host = 5;
+  uint32 port = 6;
+  // How long the executor waits for the producer task to start, from the
+  // consumer's session. Zero uses the executor's default.
+  uint64 registration_timeout_ms = 7;
 }
 
 message PartitionLocation {

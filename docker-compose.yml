@@ -32,6 +32,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    # Longer than the scheduler's --graceful-shutdown-timeout-seconds (25 by
+    # default), so a drain isn't cut short by SIGKILL.
+    stop_grace_period: 30s
     restart: "no"
 
   ballista-executor:

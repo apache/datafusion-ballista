@@ -175,10 +175,23 @@ spec:
         app: ballista-scheduler
         ballista-cluster: ballista
     spec:
+      # Leaves 10s of headroom after the preStop sleep (5s) and the shutdown
+      # bound (45s).
+      terminationGracePeriodSeconds: 60
       containers:
         - name: ballista-scheduler
           image: <your-repo>/datafusion-ballista-scheduler:latest
-          args: ["--bind-port=50050"]
+          args:
+            - "--bind-port=50050"
+            # After SIGTERM, refuse new jobs and give the active ones, then
+            # in-flight requests, up to 45s to finish.
+            - "--graceful-shutdown-timeout-seconds=45"
+          lifecycle:
+            # Keeps accepting connections until the Service stops routing to
+            # the pod, as for the result service below.
+            preStop:
+              sleep:
+                seconds: 5
           ports:
             - containerPort: 50050
               name: flight
@@ -304,7 +317,8 @@ Both the scheduler and executor expose two Kubernetes-style HTTP probe endpoints
   executor fleet down with it in a restart cascade.
 - **`/readyz`** — readiness. Returns `200 OK` when the pod is prepared to
   accept traffic (scheduler: at least `--min-ready-executors` executors
-  registered; executor: last heartbeat to the scheduler succeeded).
+  registered and not shutting down; executor: last heartbeat to the scheduler
+  succeeded).
   A failing `/readyz` removes the pod from `Service` endpoints but does
   **not** trigger a restart, so it is safe to gate on cluster state.
 
@@ -326,9 +340,35 @@ executor↔scheduler wire format. Most releases will not bump it.
 
 ### Stopping executors
 
-Executors finish their running tasks before exiting on SIGTERM. If tasks can run longer than 30
-seconds, raise the executor pods' `terminationGracePeriodSeconds` and the scheduler's
-`--executor-termination-grace-period` to match.
+Executors finish their running tasks before exiting on SIGTERM, for up to
+`--graceful-shutdown-timeout-seconds` (10 by default). After that they abort and exit with an error.
+If tasks can run longer, raise that limit, set the executor pods' `terminationGracePeriodSeconds`
+above it, and raise the scheduler's `--executor-termination-grace-period` (30 by default) to at
+least the same, so the scheduler doesn't count a draining executor as lost.
+
+### Stopping the scheduler
+
+On SIGTERM the scheduler fails `/readyz` and refuses new jobs with
+`Unavailable`, while it keeps serving executors and clients so the jobs it has
+can finish. It then closes its connections, gives in-flight requests and result
+streams the rest of `--graceful-shutdown-timeout-seconds`, and exits. Jobs still
+running when that time passes are lost, because the scheduler keeps its state in
+memory.
+
+Once the scheduler has no jobs left, it closes its connections, including those
+of result fetches through the embedded Flight proxy (deprecated) and Flight SQL.
+The tickets carry everything needed to fetch the partition, so with two or more
+schedulers behind the client-facing Service, another one serves such a fetch.
+The result service doesn't involve the scheduler at all. A job's status, and the
+Flight SQL results the scheduler computed itself, are kept only by the
+scheduler that ran the job.
+
+The time limit defaults to 25 seconds, which fits inside the 30 seconds
+Kubernetes gives a pod by default. If your jobs can run longer, raise it, and
+set the pod's `terminationGracePeriodSeconds` above it, as the scheduler
+manifest above does with 45 and 60 seconds. The grace period also covers the
+5-second `preStop` sleep, which is why the manifest leaves 10 seconds of
+headroom.
 
 ### Rolling both Deployments together
 
@@ -378,7 +418,13 @@ their connection and re-register through `ballista-scheduler-registration`,
 which is what makes the incoming pod Ready. With `maxUnavailable: 0` the
 outgoing pod cannot be retired until the incoming one is Ready, and it cannot
 become Ready while the executors are still attached to the pod it is replacing.
-The cost is a short window with no scheduler, so queries in flight fail.
+
+The cost is a window with no Ready scheduler. The outgoing pod keeps its
+executors attached while it drains, so the incoming pod is not Ready until the
+outgoing one exits. That takes as long as its active jobs need, up to the 5-second
+`preStop` sleep plus `--graceful-shutdown-timeout-seconds` (45 in the manifest
+above). New jobs are refused with `Unavailable` meanwhile, and jobs still running
+when the time passes are lost.
 
 This is not `type: Recreate`. With `replicas: 3` Kubernetes still rolls one
 scheduler at a time and keeps the other two serving.
