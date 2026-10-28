@@ -41,9 +41,10 @@ use ballista_core::extension::{BallistaConfigGrpcEndpoint, EndpointOverrideFn};
 use ballista_core::serving::{ForwardingBackend, ResultBackend, ServingFlightService};
 use ballista_core::utils::{
     GrpcServerConfig, create_grpc_server, create_grpc_server_incoming,
+    serve_until_shutdown,
 };
 use futures::{Stream, StreamExt};
-use log::{info, warn};
+use log::info;
 use tokio::sync::oneshot;
 use tonic::service::Routes;
 use tonic::transport::server::{Router, TcpIncoming};
@@ -62,7 +63,7 @@ pub struct ResultServiceConfig {
     /// Maximum gRPC message size, in bytes, the service encodes.
     pub grpc_max_encoding_message_size: usize,
     /// Time to let in-flight result streams finish after the shutdown signal
-    /// before stopping anyway.
+    /// before stopping with an error. Zero waits as long as it takes.
     pub graceful_shutdown_timeout: Duration,
     /// Connect to executors with `https://` URLs. The connections are only
     /// encrypted in a build with one of tonic's TLS features, typically with
@@ -90,10 +91,12 @@ impl Default for ResultServiceConfig {
 
 /// Serves results until `shutdown` completes, then refuses new connections and
 /// gives in-flight result streams up to
-/// [`ResultServiceConfig::graceful_shutdown_timeout`] to finish.
-pub async fn serve(
+/// [`ResultServiceConfig::graceful_shutdown_timeout`] to finish. `shutdown` is
+/// called again once that has started, and a second signal ends it at once
+/// with an error. [`shutdown_signal`] is one to pass.
+pub async fn serve<Signal: Future>(
     config: ResultServiceConfig,
-    shutdown: impl Future<Output = ()>,
+    shutdown: impl FnMut() -> Signal,
 ) -> Result<()> {
     let backend = ForwardingBackend::new(
         config.grpc_max_decoding_message_size,
@@ -124,12 +127,12 @@ pub async fn serve(
 }
 
 /// [`serve`] from an already-bound listener, with any backend.
-async fn serve_incoming<B: ResultBackend>(
+async fn serve_incoming<B: ResultBackend, Signal: Future>(
     backend: B,
     config: &ResultServiceConfig,
     metrics: Arc<dyn ResultMetricsCollector>,
     incoming: TcpIncoming,
-    shutdown: impl Future<Output = ()>,
+    shutdown: impl FnMut() -> Signal,
 ) -> Result<()> {
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
     // tonic keeps its listener open until every connection has closed, so a
@@ -141,24 +144,23 @@ async fn serve_incoming<B: ResultBackend>(
         until_stopped(incoming, stop_rx),
         std::future::pending(),
     );
-    tokio::pin!(server);
 
-    // Serve until the shutdown signal, unless the server fails first.
-    tokio::select! {
-        result = &mut server => {
-            result.map_err(BallistaError::TonicError)?;
-            info!("Ballista Result Service stopped");
-            return Ok(());
-        }
-        () = shutdown => {}
-    }
-
-    // Refuse new connections, then give in-flight streams a bounded time to
-    // finish.
-    let _ = stop_tx.send(());
-    drain_or_time_out(server, config.graceful_shutdown_timeout)
-        .await
-        .map_err(BallistaError::TonicError)?;
+    // On shutdown there is nothing to finish before the server stops taking
+    // connections: it refuses new ones, and gives its in-flight streams the
+    // bound to finish.
+    let mut stop_tx = Some(stop_tx);
+    serve_until_shutdown(
+        server,
+        shutdown,
+        || std::future::ready(()),
+        || {
+            if let Some(stop_tx) = stop_tx.take() {
+                let _ = stop_tx.send(());
+            }
+        },
+        config.graceful_shutdown_timeout,
+    )
+    .await?;
 
     info!("Ballista Result Service stopped");
     Ok(())
@@ -198,25 +200,6 @@ fn server<B: ResultBackend>(
         // Health probes and metrics scrapers use HTTP/1.1.
         .accept_http1(true)
         .add_routes(Routes::from(routes))
-}
-
-/// Waits for the shutting-down `server` to finish its in-flight streams, but no
-/// longer than `bound`, after which the streams still running are abandoned.
-async fn drain_or_time_out<E>(
-    server: impl Future<Output = std::result::Result<(), E>>,
-    bound: Duration,
-) -> std::result::Result<(), E> {
-    match tokio::time::timeout(bound, server).await {
-        Ok(result) => result,
-        Err(_) => {
-            warn!(
-                "Graceful shutdown timed out after {}s; exiting with result \
-                 streams still in flight",
-                bound.as_secs()
-            );
-            Ok(())
-        }
-    }
 }
 
 #[cfg(test)]
@@ -322,8 +305,20 @@ mod tests {
                 &config,
                 Arc::new(NoopMetricsCollector),
                 incoming,
-                async {
-                    let _ = shutdown_rx.await;
+                // Signals once, when the test says so.
+                {
+                    let mut shutdown_rx = Some(shutdown_rx);
+                    move || {
+                        let shutdown_rx = shutdown_rx.take();
+                        async move {
+                            match shutdown_rx {
+                                Some(rx) => {
+                                    let _ = rx.await;
+                                }
+                                None => std::future::pending().await,
+                            }
+                        }
+                    }
                 },
             )
             .await
@@ -355,26 +350,5 @@ mod tests {
             .expect("the drain must finish once the open stream has")
             .unwrap()
             .unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_stalled_drain_gives_up_once_the_bound_elapses() {
-        let result: std::result::Result<(), String> =
-            drain_or_time_out(std::future::pending(), Duration::from_millis(50)).await;
-        assert!(result.is_ok(), "must give up after the bound, not hang");
-    }
-
-    #[tokio::test]
-    async fn a_finished_drain_passes_its_result_through() {
-        let ok: std::result::Result<(), String> =
-            drain_or_time_out(async { Ok(()) }, Duration::from_secs(10)).await;
-        assert!(ok.is_ok());
-
-        let failed = drain_or_time_out(
-            async { Err::<(), _>("server failed".to_string()) },
-            Duration::from_secs(10),
-        )
-        .await;
-        assert_eq!(failed, Err("server failed".to_string()));
     }
 }

@@ -19,9 +19,10 @@
 
 use crate::error::{BallistaError, Result as BResult};
 use crate::extension::BallistaConfigGrpcEndpoint;
-use crate::serde::protobuf;
+use crate::serde::encode_protobuf;
 use crate::serde::scheduler::{
-    Action, ByteRange, PartitionId, ShuffleFileKind, ShuffleLayout,
+    Action, ByteRange, PartitionId, PipelinedPartitionLocation, ShuffleFileKind,
+    ShuffleLayout,
 };
 use crate::utils::create_grpc_client_endpoint;
 use arrow_flight;
@@ -42,14 +43,40 @@ use datafusion::error::Result;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
 use log::{debug, warn};
-use prost::Message;
 use std::collections::HashMap;
+use std::error::Error as _;
 use std::sync::Arc;
 use std::{
-    convert::{TryFrom, TryInto},
+    convert::TryFrom,
     task::{Context, Poll},
 };
-use tonic::{Code, Streaming};
+use tonic::{Code, Status, Streaming};
+
+/// Whether `status` reports that the connection failed, rather than an
+/// answer the server sent.
+///
+/// A status the server sent arrives in trailers and has no source. One tonic
+/// made from a connection-level failure (a reset, a refused connection, a
+/// broken pipe, a connection closed under a queued request) has its
+/// transport error as the source, under a code that depends on where the
+/// failure surfaced: `Cancelled` for a request the closing connection
+/// dropped, `Unavailable` for a refused connection or a stream the server
+/// refused for lack of capacity. All of them mean the request never reached
+/// the service.
+fn is_transport_failure(status: &Status) -> bool {
+    status
+        .source()
+        .is_some_and(|source| source.is::<tonic::transport::Error>())
+}
+
+/// A `do_get` that produced no stream.
+struct DoGetError {
+    /// Whether the server had answered the request before it failed. A
+    /// failure before that is the connection's; one after it is the server's,
+    /// and the server may have acted on the request.
+    answered: bool,
+    status: Status,
+}
 
 /// Client for interacting with Ballista executors.
 #[derive(Clone)]
@@ -254,6 +281,83 @@ impl BallistaClient {
         result.map_err(|error| Self::as_fetch_failed(executor_id, partition_id, error))
     }
 
+    /// Streams one output partition of a running pipelined producer task.
+    ///
+    /// Unlike a shuffle fetch this is not retried here: the producer hands
+    /// the partition to a single reader and cannot replay it, so a stream
+    /// that fails partway fails the query. A failure of the connection
+    /// itself before the server has answered is reported as
+    /// [`BallistaError::GrpcConnectionError`], so the caller can open the
+    /// stream again on another connection; anything the server answered,
+    /// including the producer's own failure, is a
+    /// [`BallistaError::GrpcActionError`]. The executor waits a bounded time
+    /// for the producer task to start before it sends anything.
+    pub async fn fetch_pipelined_partition(
+        &mut self,
+        location: &PipelinedPartitionLocation,
+        registration_timeout: std::time::Duration,
+    ) -> BResult<SendableRecordBatchStream> {
+        let action = Action::FetchPipelinedPartition {
+            job_id: location.partition_id.job_id.clone(),
+            stage_id: location.partition_id.stage_id,
+            task_id: location.task_id,
+            partition_id: location.partition_id.partition_id,
+            host: location.executor_meta.host.clone(),
+            port: location.executor_meta.port,
+            registration_timeout_ms: registration_timeout.as_millis() as u64,
+        };
+        let ticket = encode_protobuf(action)?;
+        self.do_get_stream(ticket)
+            .await
+            .map_err(|DoGetError { answered, status }| {
+                let message = format!(
+                    "failed to stream pipelined partition {:?} of task {}: {status}",
+                    location.partition_id, location.task_id
+                );
+                if !answered && is_transport_failure(&status) {
+                    BallistaError::GrpcConnectionError(message)
+                } else {
+                    BallistaError::GrpcActionError(message)
+                }
+            })
+    }
+
+    /// Sends one `do_get` for `ticket` and reads the schema message that
+    /// starts its response, returning the stream of record batches after it.
+    async fn do_get_stream(
+        &mut self,
+        ticket: Vec<u8>,
+    ) -> std::result::Result<SendableRecordBatchStream, DoGetError> {
+        let request = tonic::Request::new(Ticket {
+            ticket: ticket.into(),
+        });
+        let mut stream = self
+            .flight_client
+            .do_get(request)
+            .await
+            .map_err(|status| DoGetError {
+                answered: false,
+                status,
+            })?
+            .into_inner();
+        let answered = |status| DoGetError {
+            answered: true,
+            status,
+        };
+        match stream.message().await.map_err(answered)? {
+            Some(flight_data) => {
+                let schema = Schema::try_from(&flight_data)
+                    .map_err(|e| answered(Status::internal(e.to_string())))?;
+                // All the remaining stream messages should be dictionary and
+                // record batches.
+                Ok(Box::pin(FlightDataStream::new(stream, Arc::new(schema))))
+            }
+            None => Err(answered(Status::internal(
+                "Did not receive schema batch from flight server",
+            ))),
+        }
+    }
+
     /// Report a transport failure as a partition fetch failure, which is what
     /// lets the scheduler retry the task rather than fail the query.
     fn as_fetch_failed(
@@ -293,13 +397,7 @@ impl BallistaClient {
         &mut self,
         action: &Action,
     ) -> BResult<SendableRecordBatchStream> {
-        let serialized_action: protobuf::Action = action.to_owned().try_into()?;
-
-        let mut buf: Vec<u8> = Vec::with_capacity(serialized_action.encoded_len());
-
-        serialized_action
-            .encode(&mut buf)
-            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
+        let buf = encode_protobuf(action.to_owned())?;
 
         let io_retries_times = self.io_retries_times;
         let io_retry_wait_time_ms = self.io_retry_wait_time_ms;
@@ -314,52 +412,17 @@ impl BallistaClient {
                 .await;
             }
 
-            let request = tonic::Request::new(Ticket {
-                ticket: buf.clone().into(),
-            });
-            let result = self.flight_client.do_get(request).await;
-            let res = match result {
-                Ok(res) => res,
-                Err(ref err) => {
+            match self.do_get_stream(buf.clone()).await {
+                Ok(stream) => return Ok(stream),
+                Err(DoGetError { status, .. }) => {
                     // IO related error like connection timeout, reset... will warp with Code::Unknown
                     // This means IO related error will retry.
-                    if i == io_retries_times - 1 || err.code() != Code::Unknown {
-                        return BallistaError::GrpcActionError(format!(
-                            "{:?}",
-                            result.unwrap_err()
-                        ))
-                        .into();
+                    if i == io_retries_times - 1 || status.code() != Code::Unknown {
+                        return Err(BallistaError::GrpcActionError(format!(
+                            "{status:?}"
+                        )));
                     }
                     // retry request
-                    continue;
-                }
-            };
-
-            let mut stream = res.into_inner();
-
-            match stream.message().await {
-                Ok(res) => {
-                    return match res {
-                        Some(flight_data) => {
-                            let schema = Arc::new(Schema::try_from(&flight_data)?);
-
-                            // all the remaining stream messages should be dictionary and record batches
-                            Ok(Box::pin(FlightDataStream::new(stream, schema)))
-                        }
-                        None => Err(BallistaError::GrpcActionError(
-                            "Did not receive schema batch from flight server".to_string(),
-                        )),
-                    };
-                }
-                Err(e) => {
-                    if i == io_retries_times - 1 || e.code() != Code::Unknown {
-                        return BallistaError::GrpcActionError(format!(
-                            "{:?}",
-                            e.to_string()
-                        ))
-                        .into();
-                    }
-                    continue;
                 }
             }
         }
@@ -391,13 +454,7 @@ impl BallistaClient {
         action: &Action,
         header: Option<Vec<u8>>,
     ) -> BResult<SendableRecordBatchStream> {
-        let serialized_action: protobuf::Action = action.to_owned().try_into()?;
-
-        let mut buf: Vec<u8> = Vec::with_capacity(serialized_action.encoded_len());
-
-        serialized_action
-            .encode(&mut buf)
-            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
+        let buf = encode_protobuf(action.to_owned())?;
 
         let io_retries_times = self.io_retries_times;
         let io_retry_wait_time_ms = self.io_retry_wait_time_ms;

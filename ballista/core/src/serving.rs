@@ -214,6 +214,9 @@ impl ResultBackend for ForwardingBackend {
         match &action {
             BallistaAction::FetchPartition {
                 host, port, job_id, ..
+            }
+            | BallistaAction::FetchPipelinedPartition {
+                host, port, job_id, ..
             } => {
                 debug!("Fetching results for job id: {job_id} from {host}:{port}");
                 let mut client = get_flight_client(
