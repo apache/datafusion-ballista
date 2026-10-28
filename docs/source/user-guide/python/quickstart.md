@@ -51,12 +51,14 @@ ctx = BallistaSessionContext(f"df://{host}:{port}")
 ### Target Partitions
 
 Set `datafusion.execution.target_partitions` to match your cluster capacity
-(`executors × vcores_per_executor`) by passing `cluster_config` to the
-constructor. The default inherits from DataFusion and is based on the client's CPU
-count, which is far too low for distributed execution:
+(`executors × vcores_per_executor`) by passing `config` to the
+constructor. Ballista sets the default to `16`, regardless of the client's CPU
+count. A value set in a passed DataFusion `SessionConfig` is overridden with
+the default, use `BallistaSessionConfig.with_target_partitions` or a dictionary
+instead:
 
 ```python
-from ballista import BallistaSessionContext
+from ballista import BallistaSessionConfig, BallistaSessionContext
 
 executors = 4
 vcores = 8
@@ -64,16 +66,21 @@ target_partitions = executors * vcores
 
 ctx = BallistaSessionContext(
     "df://localhost:50050",
-    cluster_config={
-        "datafusion.execution.target_partitions": str(target_partitions),
-    },
+    config=BallistaSessionConfig().with_target_partitions(target_partitions),
+)
+
+# or
+ctx = BallistaSessionContext(
+    "df://localhost:50050",
+    config={"datafusion.execution.target_partitions": target_partitions},
 )
 ```
 
-`cluster_config` is propagated to the scheduler-side session for distributed planning
-and execution, and is also applied to the local context so settings consulted during
-table registration (e.g. `datafusion.execution.listing_table_factory_infer_partitions`)
-take effect before the plan is shipped.
+`config` can also be a dictionary of `datafusion.*` and `ballista.*` options, or a
+DataFusion `SessionConfig`. It is applied to the local context, so settings consulted
+during table registration (e.g. `datafusion.execution.listing_table_factory_infer_partitions`)
+take effect before the plan is shipped, and it is propagated to the scheduler-side
+session for distributed planning and execution.
 
 This controls how many parallel tasks the scheduler creates per stage. Setting it too
 low leaves executor capacity idle; setting it too high creates unnecessary scheduling
