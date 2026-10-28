@@ -771,6 +771,33 @@ distributed planner if you hit one of these. See
 tracking epic and ongoing work.</p>
 </section>
 </section>
+<section id="caching-dataframes">
+<h2>Caching DataFrames<a class="headerlink" href="#caching-dataframes" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">DataFrame::cache()</span></code> does nothing by default (<code class="docutils literal notranslate"><span class="pre">ballista.cache.noop</span> <span class="pre">=</span> <span class="pre">true</span></code>).
+With it turned off, the first action on a cached DataFrame runs the cached part
+as a job of its own and keeps its output on the executors; later actions in the
+same session read that output instead of recomputing it.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"SET ballista.cache.noop = false"</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">cached</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span><span class="p">.</span><span class="n">table</span><span class="p">(</span><span class="s">"t"</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">.</span><span class="n">filter</span><span class="p">(</span><span class="n">col</span><span class="p">(</span><span class="s">"x"</span><span class="p">).</span><span class="n">gt</span><span class="p">(</span><span class="n">lit</span><span class="p">(</span><span class="mi">5</span><span class="p">)))</span><span class="o">?</span><span class="p">.</span><span class="n">cache</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="n">cached</span><span class="p">.</span><span class="n">clone</span><span class="p">().</span><span class="n">count</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span><span class="w"> </span><span class="c1">// builds the cache, then reads it</span>
+<span class="n">cached</span><span class="p">.</span><span class="n">collect</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span><span class="w">       </span><span class="c1">// reads it</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Cached data is shuffle output on the executors. If a query loses part of it
+(an executor holding it is lost, or a fetch from it fails), the query fails
+with “lost DataFrame::cache() data; retry the query”, and the retry rebuilds
+the cache.</p></li>
+<li><p>Cached data is not evicted yet: it is kept until it is found lost, so cache
+only what you reuse.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">EXPLAIN</span></code> of a cached DataFrame never builds it.</p></li>
+<li><p>An operator can turn caching off for the whole cluster with the scheduler’s
+<code class="docutils literal notranslate"><span class="pre">--disable-dataframe-cache</span></code> flag; cached DataFrames are then computed as part
+of each query.</p></li>
+</ul>
+<p>See the <a class="reference internal" href="../contributors-guide/dataframe-cache.html"><span class="std std-doc">DataFrame cache design</span></a> for
+how it works.</p>
+</section>
 <section id="push-based-vs-pull-based-task-scheduling">
 <h2>Push-based vs Pull-based Task Scheduling<a class="headerlink" href="#push-based-vs-pull-based-task-scheduling" title="Link to this heading">#</a></h2>
 <p>Ballista supports both push-based and pull-based task scheduling. It is recommended that you try both to determine
@@ -867,6 +894,7 @@ processes. Both processes must be configured with the same policy. The default i
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#current-limitations">Current limitations</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#caching-dataframes">Caching DataFrames</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#push-based-vs-pull-based-task-scheduling">Push-based vs Pull-based Task Scheduling</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#viewing-query-plans-and-metrics">Viewing Query Plans and Metrics</a></li>
 </ul>

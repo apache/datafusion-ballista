@@ -408,197 +408,266 @@
 <section id="goal">
 <h2>Goal<a class="headerlink" href="#goal" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">df.cache()</span></code> marks a DataFrame to be <strong>computed once and reused</strong> by later
-actions instead of recomputed. In Ballista a cached dataset is <strong>shuffle output
-that is kept (pinned) past normal job cleanup, plus a scheduler-side record of
-where that output lives</strong>. It reuses the native <a class="reference internal" href="shuffle.html"><span class="std std-doc">blocking shuffle</span></a>
-as its storage and transport — no separate cache store, no new wire format, and
-the read-back is an ordinary <code class="docutils literal notranslate"><span class="pre">ShuffleReaderExec</span></code>.</p>
+actions. In Ballista a cached dataset is <strong>shuffle output kept (pinned) past job
+cleanup, plus a scheduler-side record of where it lives</strong>. It reuses what
+Ballista already has — shuffle files, the shuffle reader, and stage recovery —
+rather than adding a cache store or a recovery path of its own.</p>
 <p>The cache is a <strong>hint, not a correctness dependency</strong>: a cached node keeps its
-input subplan (lineage), so lost cache data is simply recomputed — never a wrong
-or missing answer.</p>
-</section>
-<section id="the-model">
-<h2>The model<a class="headerlink" href="#the-model" title="Link to this heading">#</a></h2>
-<p>In the <strong>logical plan</strong>, a cached dataset is a <code class="docutils literal notranslate"><span class="pre">BallistaCacheNode</span></code> wrapping the
-subplan to cache. Materialized, it has two pieces:</p>
-<ol class="arabic simple">
-<li><p><strong>Pinned shuffle output</strong> — the cached subplan runs as its own job; its final
-stage’s shuffle files (<code class="docutils literal notranslate"><span class="pre">{work_dir}/{job_id}/{stage_id}/…</span></code>) survive job cleanup.</p></li>
-<li><p><strong>A cross-job registry</strong> — scheduler state (the <code class="docutils literal notranslate"><span class="pre">CacheState</span></code> trait, in-memory
-<code class="docutils literal notranslate"><span class="pre">InMemoryCacheState</span></code> over <code class="docutils literal notranslate"><span class="pre">CacheRegistry</span></code>) mapping a cache key to the schema
-and <code class="docutils literal notranslate"><span class="pre">PartitionLocation</span></code>s of that output, so a <em>different</em> job can read it.</p></li>
-</ol>
-<p>A registry is needed because Ballista materializes the cache in a separate
-distributed <strong>job</strong>: the mapping from a cache to its shuffle output must outlive
-that job and be visible to other jobs, so the scheduler owns it explicitly.</p>
-<p><strong>Keying:</strong> <code class="docutils literal notranslate"><span class="pre">(session_id,</span> <span class="pre">cache_id)</span></code>, where <code class="docutils literal notranslate"><span class="pre">cache_id</span></code> is a per-<code class="docutils literal notranslate"><span class="pre">cache()</span></code>-call
-UUID in the <code class="docutils literal notranslate"><span class="pre">BallistaCacheNode</span></code>. Reuse happens whenever a submitted plan still
-contains that node (same <code class="docutils literal notranslate"><span class="pre">cache_id</span></code>) — the cached DataFrame reused directly or
-built upon. Dedup across <em>different</em> plans with equal content is deferred.</p>
+subplan (lineage), so lost cache data is recomputed, never a wrong or partial
+answer. In this PR a query that loses it mid-run fails with a clear error and
+the retry rebuilds the cache; rebuild-and-resume is next
+(<a class="reference internal" href="#recovery"><span class="xref myst">Recovery</span></a>).</p>
 </section>
 <section id="end-to-end-flow">
 <h2>End-to-end flow<a class="headerlink" href="#end-to-end-flow" title="Link to this heading">#</a></h2>
-<p>Three roles: the <strong>client</strong> holds the plan, the <strong>scheduler</strong> owns planning and
-the registry, and the <strong>executors</strong> run tasks and hold the shuffle files.</p>
-<p><code class="docutils literal notranslate"><span class="pre">df.cache()</span></code> is lazy: it returns a DataFrame whose <strong>logical plan</strong> is wrapped in
-a <code class="docutils literal notranslate"><span class="pre">BallistaCacheNode</span></code> with a fresh <code class="docutils literal notranslate"><span class="pre">cache_id</span></code> — nothing executes yet. Reuse is
-keyed on that <code class="docutils literal notranslate"><span class="pre">cache_id</span></code>: any plan later submitted that still contains the node —
-the same cached DataFrame, or a query built on top of it — resolves to the same
-<strong>cache entry</strong> (the registry’s record of the materialized output). Calling
-<code class="docutils literal notranslate"><span class="pre">df.cache()</span></code> again mints a new <code class="docutils literal notranslate"><span class="pre">cache_id</span></code>.</p>
-<p>Miss and hit are not separate stories — they <strong>converge</strong>: a miss materializes
-and then reads the pinned output, while a hit does the same read and skips the
-materialize.</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>                     df.cache()                 client; lazy — wraps the logical
-                         │                       plan in BallistaCacheNode
-                         ▼                       {cache_id, session_id, input}
-            submit a plan carrying the node      client ──► scheduler
-                         │
-                         ▼
-             lookup((session_id, cache_id))      scheduler
-                         │
-            ┌────────────┴─────────────┐
-          MISS                        HIT
-            │                          │
-            ▼                          ▼
-   begin_materialization        validate locations
-   run `input` as its own       against live executors
-   job (two-job split, #1993)   (any dead ⇒ re-MISS)
-   → executors write the                │
-     pinned shuffle files               │
-            │                           │
-            ▼                           │
-   complete_materialization             │
-   → Materialized (fresh locs)          │
-            │                           │
-            └────────────┬──────────────┘
-                         ▼
-        lower BallistaCacheNode ──► physical ShuffleReaderExec,
-        reading the pinned output served by the executors
-                         │
-                         ▼
-                   results ──► client
+<p><code class="docutils literal notranslate"><span class="pre">df.cache()</span></code> is lazy: it wraps the DataFrame’s logical plan in a
+<code class="docutils literal notranslate"><span class="pre">BallistaCacheNode</span></code> with a fresh <code class="docutils literal notranslate"><span class="pre">cache_id</span></code> (a per-call UUID). Any plan later
+submitted that still contains the node — the cached DataFrame itself, or a query
+built on it — uses the same cache, keyed by <code class="docutils literal notranslate"><span class="pre">(session_id,</span> <span class="pre">cache_id)</span></code>.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span> df.cache() → plan wrapped in BallistaCacheNode{cache_id, input}    client, lazy
+      │ action, e.g. collect()
+      ▼
+ lookup (session_id, cache_id); locations on live executors?         scheduler
+      │
+      ├─ MISS (cold) → build job runs `input` → pinned shuffle output
+      │                 query job held (Queued; its id returned at once)
+      │                 build done → record locations, pin the stage
+      │                                       │
+      └─ HIT (warm) ──────────────────────────┤
+                                              ▼
+        cache node → scan of its shuffle output → ShuffleReaderExec,
+        a complete input of the stage reading it
+                                              ▼
+                     query job runs → results to the client
 </pre></div>
 </div>
-<p><strong>Cold path — first action (miss → materialize):</strong></p>
-<ol class="arabic simple">
-<li><p>The client submits a plan containing <code class="docutils literal notranslate"><span class="pre">BallistaCacheNode{cache_id,</span> <span class="pre">session_id,</span> <span class="pre">input}</span></code>.</p></li>
-<li><p>The scheduler forms <code class="docutils literal notranslate"><span class="pre">key</span> <span class="pre">=</span> <span class="pre">(session_id,</span> <span class="pre">cache_id)</span></code> and calls <code class="docutils literal notranslate"><span class="pre">lookup(key)</span></code> → miss.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">begin_materialization(key,</span> <span class="pre">job)</span></code> claims the key; the scheduler runs <code class="docutils literal notranslate"><span class="pre">input</span></code>
-as its <strong>own job</strong> (a logical-plan rewrite that splits the query into two
-jobs, see #1993), writing pinned shuffle output on the executors.</p></li>
-<li><p>On that job’s <code class="docutils literal notranslate"><span class="pre">JobFinished</span></code>, <code class="docutils literal notranslate"><span class="pre">complete_materialization(key,</span> <span class="pre">job,</span> <span class="pre">schema,</span> <span class="pre">locations)</span></code> records the output → the cache entry becomes <code class="docutils literal notranslate"><span class="pre">Materialized</span></code>.</p></li>
-<li><p>The outer query reads that output and returns results — so the first action
-both materializes and reads back.</p></li>
-</ol>
-<p><strong>Warm path — later action (hit → read-back):</strong></p>
-<ol class="arabic simple">
-<li><p>The client submits a plan that still carries the same <code class="docutils literal notranslate"><span class="pre">cache_id</span></code>.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">lookup(key)</span></code> → hit. Its locations are validated against the live-executor
-set; a dead location downgrades the hit to a miss (see <a class="reference internal" href="#invalidation"><span class="xref myst">Invalidation</span></a>).</p></li>
-<li><p>The scheduler lowers the <code class="docutils literal notranslate"><span class="pre">BallistaCacheNode</span></code> to a <strong>physical</strong>
-<code class="docutils literal notranslate"><span class="pre">ShuffleReaderExec</span></code> over the recorded locations — the same mechanism stages
-use to read each other — so <code class="docutils literal notranslate"><span class="pre">input</span></code> is never planned or executed.</p></li>
-<li><p>Results return with no materialization job.</p></li>
-</ol>
-<p><strong>Ordering &amp; concurrency.</strong> Within one action the read is sequenced after the
-create: the read’s <code class="docutils literal notranslate"><span class="pre">ShuffleReaderExec</span></code> needs the recorded locations, so the
-scheduler resolves it only on the create job’s <code class="docutils literal notranslate"><span class="pre">JobFinished</span></code> — event-driven, no
-polling. A <em>concurrent</em> action that finds the key
-<code class="docutils literal notranslate"><span class="pre">Pending</span></code> (<code class="docutils literal notranslate"><span class="pre">begin_materialization</span></code> → <code class="docutils literal notranslate"><span class="pre">AlreadyPending</span></code>) must either wait for that
-materialization or fall back to computing the subplan inline; the exact policy —
-wait-and-notify vs. poll vs. inline, and releasing waiters if the job aborts — is
-an open question.</p>
+<ul class="simple">
+<li><p><strong>Cold path.</strong> The first action claims the cache and runs its subplan as its
+own <strong>build job</strong>, writing pinned shuffle output. The query becomes a second
+job, held without blocking until the build finishes; then it reads the output.
+The first action both builds and reads.</p></li>
+<li><p><strong>Warm path.</strong> A later action finds the cache built on live executors, so the
+cache node becomes a read and the subplan is never planned or run. A location
+on a dead executor turns the hit into a miss.</p></li>
+<li><p><strong>Both</strong> paths end the same way: the read is an ordinary <code class="docutils literal notranslate"><span class="pre">ShuffleReaderExec</span></code>,
+registered as an input of the stage reading it (see
+<a class="reference internal" href="#the-read-job-and-external-inputs"><span class="xref myst">The read job</span></a>), so Ballista’s own rollback
+restores it like any other input. Losing the cache’s data mid-query fails the
+query cleanly for now; rebuild-and-resume is the next step (see
+<a class="reference internal" href="#recovery"><span class="xref myst">Recovery</span></a>).</p></li>
+</ul>
+<p>A query waits on every build it needs, so independent caches build <strong>in
+parallel</strong>, a cache built on another builds <strong>after</strong> it, and a query that finds
+a cache already being built waits on that build. A build that fails or is
+cancelled fails the queries waiting on it. A cache that hits hides its subplan:
+caches nested inside it are not looked up. Before the held query runs, its caches
+are checked again, so one that went stale while it waited is rebuilt first.</p>
 </section>
-<section id="registry-lifecycle">
-<h2>Registry lifecycle<a class="headerlink" href="#registry-lifecycle" title="Link to this heading">#</a></h2>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  (absent) --begin--&gt; Pending{job} --complete(job)--&gt; Materialized
+<section id="the-read-job-and-external-inputs">
+<h2>The read job and external inputs<a class="headerlink" href="#the-read-job-and-external-inputs" title="Link to this heading">#</a></h2>
+<p>Before the query job is planned, each cache node becomes a read with an
+<strong>external id</strong>:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>logical    Projection [c0 AS t.id, …]               back to the cached names
+             TableScan ballista_cache_read_N [c0, …] scan of the cache's output
+physical   ShuffleReaderExec(stage_id = id, …)      an ordinary shuffle read
+graph      stage.inputs[id] = locations, complete   the read is a stage input
+</pre></div>
+</div>
+<p>The scan is an ordinary <code class="docutils literal notranslate"><span class="pre">TableScan</span></code> whose provider returns the
+<code class="docutils literal notranslate"><span class="pre">ShuffleReaderExec</span></code> (with a projection to the scan’s names), so every query
+planner plans it and a session needs nothing installed to read caches. Its
+columns are positional (<code class="docutils literal notranslate"><span class="pre">c0</span></code>, <code class="docutils literal notranslate"><span class="pre">c1</span></code>, …) because a table has one qualifier and
+unique names, which a cached frame (a join, say) need not have; the projection
+above restores the cached qualifiers and names, typed as the build job wrote
+them.</p>
+<p>The id comes from a reserved stage-id range (<code class="docutils literal notranslate"><span class="pre">EXTERNAL_STAGE_ID_BASE</span></code>, 2³⁰),
+because a stage’s inputs are keyed by stage id: the read must not collide with
+the job’s own stages, and two reads of one cache are two inputs. Ids are per job;
+executors find data from the locations, not the id.</p>
+<p>The entry is complete from the start, so it never delays the stage; it is there
+so a rollback (for example, after the job loses one of its own shuffle outputs)
+restores the reader. For each running job the scheduler also records which
+builds it read, to drop them if the job loses their data.</p>
+</section>
+<section id="recovery">
+<h2>Recovery<a class="headerlink" href="#recovery" title="Link to this heading">#</a></h2>
+<p><strong>In this PR: fail cleanly, rebuild on retry.</strong> When a fetch of cache data
+fails, or the scheduler loses an executor holding cache data that an unfinished
+stage reads, the job fails with “lost DataFrame::cache() data; retry the query”,
+under both planners. A failed fetch is cache data when it names one of the
+stage’s registered cache locations (executor, build stage, partition), so a
+failed fetch of the job’s own output from the same executor is recovered as
+usual, and the check holds even when the cache’s build stage shares an id with
+one of the job’s own stages.
+The builds the job read are dropped, so the retry rebuilds them (validate-on-read
+already does that for caches on dead executors).</p>
+<p><strong>Next: rebuild and resume</strong> (follow-up PR). The graph reports the lost input
+instead of failing, and the scheduler rebuilds the cache and resumes the stage:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span> query job running; a stage reads cache c1
+      │ fetch failure, or an executor holding c1's data is lost
+      ▼
+ stage rolls back (Ballista's own rollback — the read is a stage input)
+      ▼
+ ExternalInputLost(job, id)        the graph cannot re-run another job's output
+      ▼
+ read record (job, id) → c1, subplan, lost build
+ drop the lost build; rebuild c1 (or wait on a rebuild in flight)
+      ▼
+ rebuild done → ExternalInputReady(job, id, new locations)
+      ▼
+ stage resolves and re-runs → results to the client
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>A failed fetch is reported under the reader’s stage id — the external id for a
+cache read — so the graph knows exactly which input was lost.</p></li>
+<li><p>Readers that lose the same cache share one rebuild. A rebuild may have a
+different partition count; the reader declares unknown partitioning, so the
+new partitions are folded into the old count.</p></li>
+<li><p>Retries count towards <code class="docutils literal notranslate"><span class="pre">stage_max_failures</span></code>, like any stage’s. If the rebuild
+fails, the job fails with the reason.</p></li>
+<li><p>The cache is rebuilt in full and the reading stage re-runs; the job keeps its
+other stages. See <a class="reference internal" href="#per-partition-recovery"><span class="xref myst">Per-partition recovery</span></a>.</p></li>
+<li><p>The adaptive planner cannot yet re-resolve a stage it rolls back (for any
+job), so under it a job that loses cache data still fails cleanly.</p></li>
+</ul>
+</section>
+<section id="registry-and-pinning">
+<h2>Registry and pinning<a class="headerlink" href="#registry-and-pinning" title="Link to this heading">#</a></h2>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>  (absent) --begin--&gt; Pending{job} --complete(job)--&gt; Materialized{job, schema, locations}
                       Pending{job} --abort(job)-----&gt; (absent)
                       Materialized --invalidate------&gt; (absent)
 </pre></div>
 </div>
-<p>The contract is safe against the out-of-order events a distributed scheduler
-produces (a completion callback racing invalidation, teardown, or a re-claim):</p>
+<p>The registry is safe against the out-of-order events a distributed scheduler
+produces:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">begin_materialization</span></code> atomically gives one job the claim.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">complete_materialization</span></code> promotes <strong>only</strong> a <code class="docutils literal notranslate"><span class="pre">Pending</span></code> entry owned by that
-job (duplicate completions are idempotent); anything else is <code class="docutils literal notranslate"><span class="pre">Stale</span></code>, so a
-late completion cannot resurrect a removed entry or overwrite a newer claim.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">abort_materialization</span></code> clears a failed job’s pending claim.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">invalidate</span></code> / <code class="docutils literal notranslate"><span class="pre">invalidate_executor</span></code> / <code class="docutils literal notranslate"><span class="pre">remove_session</span></code> remove entries and
-<strong>return them</strong> so the caller can unpin the shuffle files (Ballista deletes
-explicitly — there is no reclaimer).</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">pinned_stages()</span></code> lists the <code class="docutils literal notranslate"><span class="pre">(job_id,</span> <span class="pre">stage_id)</span></code> stages to protect from cleanup.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">begin_materialization</span></code> gives one job the claim; a concurrent miss gets
+<code class="docutils literal notranslate"><span class="pre">AlreadyPending</span></code> and waits on that job (<code class="docutils literal notranslate"><span class="pre">pending_job</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">complete_materialization</span></code> promotes only the claim owned by that job;
+anything else is <code class="docutils literal notranslate"><span class="pre">Stale</span></code>, so a late completion cannot resurrect a removed
+entry or overwrite a newer claim.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">abort_materialization</span></code> clears a failed job’s claim.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">invalidate_if(key,</span> <span class="pre">job)</span></code> removes an entry only while it is still <code class="docutils literal notranslate"><span class="pre">job</span></code>’s, so
+acting on an entry seen earlier never drops a newer claim.</p></li>
+<li><p>Removals return the removed entries, so a caller can unpin their files.</p></li>
 </ul>
-</section>
-<section id="pinning">
-<h2>Pinning<a class="headerlink" href="#pinning" title="Link to this heading">#</a></h2>
-<p>Shuffle output is normally reclaimed after a job finishes. A cached stage must
-be exempted, so job-data cleanup consults <code class="docutils literal notranslate"><span class="pre">pinned_stages()</span></code> and skips those
-stage dirs. Pins are per-<code class="docutils literal notranslate"><span class="pre">(job_id,</span> <span class="pre">stage_id)</span></code> because shuffle data is stored and
-deleted per stage, and a cached stage is often an <em>intermediate</em> stage (reaped
-immediately on job success) that a job-level pin could not protect.</p>
+<p>The build job’s <code class="docutils literal notranslate"><span class="pre">JobFinished</span></code> handler records the entry <strong>before</strong> cleanup runs,
+and cleanup skips the stages in <code class="docutils literal notranslate"><span class="pre">pinned_stages()</span></code>, so cleanup cannot race the
+pin.</p>
 </section>
 <section id="invalidation">
 <h2>Invalidation<a class="headerlink" href="#invalidation" title="Link to this heading">#</a></h2>
-<p>An entry is removed when its data is no longer trustworthy or needed:</p>
-<ul class="simple">
-<li><p><strong>Executor loss</strong> (<code class="docutils literal notranslate"><span class="pre">invalidate_executor</span></code>) — any materialized entry with a
-partition on the lost executor is dropped.</p></li>
-<li><p><strong>Session teardown</strong> (<code class="docutils literal notranslate"><span class="pre">remove_session</span></code>) — all of a session’s entries are
-dropped.</p></li>
-<li><p><strong>Explicit / eviction</strong> (<code class="docutils literal notranslate"><span class="pre">invalidate</span></code>) — a single entry is dropped (used by
-the future eviction sweeper).</p></li>
-</ul>
-<p>Invalidation is <strong>whole-entry</strong>: the entire cache is dropped and re-materialized
-in full on the next access — we never serve a cache with missing partitions
-(per-partition rebuild is a future optimization). Because a cached node keeps its
-lineage, invalidation always degrades to a recompute, never a wrong answer.</p>
-<p>Each removal <strong>returns the removed entries</strong> so the caller can unpin and delete
-their shuffle files — Ballista has no background reclaimer, so cleanup is
-explicit. A removed entry’s next <code class="docutils literal notranslate"><span class="pre">lookup</span></code> is a miss, which re-triggers
-materialization.</p>
-<blockquote>
-<div><p><strong>Executor loss during materialization (executor-loss follow-up).</strong> If an
-executor is lost after the cached stage finishes but before its job completes,
-<code class="docutils literal notranslate"><span class="pre">complete_materialization</span></code> can record a now-dead location (the in-graph
-recovery only rebuilds output an unfinished stage still reads). The fix is
-<strong>validate-on-read</strong>: on a hit the planner checks locations against the
-live-executor set and, if any is dead, treats it as a miss and <code class="docutils literal notranslate"><span class="pre">invalidate</span></code>s
-it — enforcing “never read from a dead executor” under all timings.</p>
-</div></blockquote>
+<p><strong>Validate-on-read</strong> enforces “never read from a dead executor”: whenever a
+cache is resolved into a read (when a query is submitted, and again before a held query runs), a location on an
+executor that is not live turns the hit into a miss, and the dead entry is
+dropped. A dropped entry’s build data is deleted after the usual delay for a
+finished job’s data (<code class="docutils literal notranslate"><span class="pre">finished_job_data_clean_up_interval_seconds</span></code>), which lets
+a query still reading it finish. Invalidation is <strong>whole-entry</strong> — a cache is rebuilt in full, never
+served with missing partitions (see
+<a class="reference internal" href="#per-partition-recovery"><span class="xref myst">Per-partition recovery</span></a>).</p>
+<p><code class="docutils literal notranslate"><span class="pre">invalidate_executor</span></code> (on executor loss) and <code class="docutils literal notranslate"><span class="pre">remove_session</span></code> (on session
+teardown) exist in the registry but are not called yet; until then a dead entry
+is dropped when it is next read, or when a query loses its data.</p>
 </section>
-<section id="durability-reconciliation">
-<h2>Durability &amp; reconciliation<a class="headerlink" href="#durability-reconciliation" title="Link to this heading">#</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">CacheState</span></code> is a pluggable backend; the in-memory one loses entries on scheduler
-restart (caches become orphaned files, reclaimed by cleanup), and a durable
-backend can persist and rehydrate them — an optional efficiency extension. A
-stale or missing location is caught by validate-on-read (executor gone) or the
-<code class="docutils literal notranslate"><span class="pre">ShuffleReader</span></code> fetch-failure path (file gone) and degrades to re-materialization.</p>
+<section id="planning-configuration">
+<h2>Planning &amp; configuration<a class="headerlink" href="#planning-configuration" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Planner.</strong> Nothing to install: a cache read is a table scan, which any
+session’s query planner plans, including a custom <code class="docutils literal notranslate"><span class="pre">override_session_builder</span></code>
+and a scheduler created from a user’s state.</p></li>
+<li><p><strong>Storage.</strong> Pinned shuffle output; for other media see
+<a class="reference internal" href="#extension-points"><span class="xref myst">Extension points</span></a>.</p></li>
+<li><p><strong>Turning caching off.</strong> <code class="docutils literal notranslate"><span class="pre">ballista.cache.noop</span></code> (a session setting, on by
+default) makes <code class="docutils literal notranslate"><span class="pre">cache()</span></code> a no-op. An operator can turn caching off for the
+cluster with <code class="docutils literal notranslate"><span class="pre">--disable-dataframe-cache</span></code> (<code class="docutils literal notranslate"><span class="pre">SchedulerConfig::disable_dataframe_cache</span></code>):
+cache nodes then run inline.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">EXPLAIN</span></code></strong> never materializes: a built cache is shown as its read, any
+other as its subplan. <code class="docutils literal notranslate"><span class="pre">EXPLAIN</span> <span class="pre">ANALYZE</span></code> runs the query, so it materializes.</p></li>
+</ul>
+</section>
+<section id="durability-limits">
+<h2>Durability &amp; limits<a class="headerlink" href="#durability-limits" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Scheduler restart.</strong> The in-memory registry loses its entries; caches are
+rebuilt on next use, and their old files stay until executor cleanup. A
+durable <code class="docutils literal notranslate"><span class="pre">CacheState</span></code> backend could persist the entries.</p></li>
+<li><p><strong>Ordering.</strong> A cache read declares no output ordering, so operators above a
+sorted cache may reorder it — as with DataFusion’s own <code class="docutils literal notranslate"><span class="pre">DataFrame::cache()</span></code>.</p></li>
+<li><p><strong>Executor work-dir cleanup.</strong> If enabled (<code class="docutils literal notranslate"><span class="pre">job_data_clean_up_interval_seconds</span></code>),
+an executor deletes job dirs untouched for <code class="docutils literal notranslate"><span class="pre">job_data_ttl_seconds</span></code>, pinned
+caches included; the next read fails and drops the cache, and a retry
+rebuilds it.</p></li>
+<li><p><strong>Mid-query loss.</strong> Losing cache data mid-query fails the job (see
+<a class="reference internal" href="#recovery"><span class="xref myst">Recovery</span></a>).</p></li>
+</ul>
+</section>
+<section id="extension-points">
+<h2>Extension points<a class="headerlink" href="#extension-points" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Other storage media</strong> (e.g. memory with disk spill): the scheduler side
+deals only in <code class="docutils literal notranslate"><span class="pre">PartitionLocation</span></code>s, so a medium plugs in on the executors:
+<code class="docutils literal notranslate"><span class="pre">override_execution_engine</span></code> writes the build stage into the store and
+<code class="docutils literal notranslate"><span class="pre">override_arrow_flight_service</span></code> serves it, while <code class="docutils literal notranslate"><span class="pre">ShuffleReaderExec</span></code> reads it
+back by location. Evicted data surfaces as a failed fetch, handled like lost
+cache data. Still needed then: a marker identifying the build stage,
+memory release on cleanup, and read locality (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2319">#2319</a>) for zero-copy reads.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">CacheState</span></code></strong>: the registry backend; a durable or shared one would keep
+entries across scheduler restarts.</p></li>
+<li><p><strong>External stage inputs</strong>: a stage input produced by another job is generic
+in the execution graph; a cache is the first producer, reusing another job’s
+shuffle output could be another.</p></li>
+</ul>
 </section>
 <section id="future-work">
 <h2>Future work<a class="headerlink" href="#future-work" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><strong>Eviction:</strong> entries today leave only via invalidation/executor-loss/session
-teardown, so a long-running scheduler accumulates cache data. Planned: a TTL /
-size-cap sweeper (via <code class="docutils literal notranslate"><span class="pre">invalidate</span></code>) and/or idle-session expiry (via
-<code class="docutils literal notranslate"><span class="pre">remove_session</span></code>), using the removal-returns-entries contract above.</p></li>
-<li><p><strong>Locality:</strong> place read-back tasks on the executor holding each partition
+<li><p><strong>Eviction:</strong> entries leave today only when found dead, so a long-running
+scheduler accumulates cache data. Planned: a TTL / size-cap sweeper and
+idle-session expiry, using the removal-returns-entries contract.</p></li>
+<li><p><strong>Locality:</strong> place read tasks on the executor holding each partition
 (<code class="docutils literal notranslate"><span class="pre">TaskDistributionPolicy::Custom</span></code>), Flight fetch as fallback (see <a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2319">#2319</a>).</p></li>
 </ul>
+<section id="per-partition-recovery">
+<h3>Per-partition recovery<a class="headerlink" href="#per-partition-recovery" title="Link to this heading">#</a></h3>
+<p>Ballista re-runs a lost map output per partition: a successful producer stage
+re-runs only the tasks whose output was on the lost executor
+(<code class="docutils literal notranslate"><span class="pre">SuccessfulStage::reset_tasks</span></code>, <code class="docutils literal notranslate"><span class="pre">rerun_successful_stage</span></code>), while a consumer
+stage re-runs in full. The cache can follow the same split — the build side
+rebuilds only the lost partitions, the reading stage still re-runs:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span> Materialized → Partial{missing} → partial build of missing partitions
+              → merge locations → ExternalInputReady
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><strong>Narrow subplans</strong> (no shuffle in the build’s final stage): restrict the
+subplan to the missing partitions (<code class="docutils literal notranslate"><span class="pre">restrict_plan_to_partitions</span></code>).</p></li>
+<li><p><strong>Subplans with a shuffle:</strong> the cleaned-up upstream stages re-run in full,
+unless intermediate outputs are pinned too.</p></li>
+<li><p><strong>Determinism:</strong> only plans that give partition <code class="docutils literal notranslate"><span class="pre">j</span></code> the same rows on every
+run qualify; anything else falls back to the whole rebuild.</p></li>
+</ul>
+</section>
 </section>
 <section id="implementation-plan">
 <h2>Implementation plan<a class="headerlink" href="#implementation-plan" title="Link to this heading">#</a></h2>
 <ol class="arabic simple">
 <li><p><strong>Registry</strong> (done) — <code class="docutils literal notranslate"><span class="pre">CacheRegistry</span></code> + <code class="docutils literal notranslate"><span class="pre">CacheState</span></code>/<code class="docutils literal notranslate"><span class="pre">InMemoryCacheState</span></code>.</p></li>
-<li><p><strong>Materialize-on-miss + read-back</strong> — wire <code class="docutils literal notranslate"><span class="pre">lookup</span></code>/<code class="docutils literal notranslate"><span class="pre">begin</span></code>/<code class="docutils literal notranslate"><span class="pre">complete</span></code>/<code class="docutils literal notranslate"><span class="pre">abort</span></code>
-into planning and the job handlers; builds on the two-job rewrite in <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/1993">#1993</a>.</p></li>
-<li><p><strong>Pinning</strong> — teach job-data cleanup to honor <code class="docutils literal notranslate"><span class="pre">pinned_stages()</span></code>.</p></li>
-<li><p><strong>Locality</strong> — place read-back tasks where partitions live (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2319">#2319</a>).</p></li>
-<li><p><strong>Executor-loss invalidation + session teardown</strong> — wire
-<code class="docutils literal notranslate"><span class="pre">invalidate_executor</span></code> / <code class="docutils literal notranslate"><span class="pre">remove_session</span></code> and the unpin path, add
-validate-on-read on the hit path, and enable an end-to-end no-recompute test.</p></li>
+<li><p><strong>Materialize + read-back</strong> (done) — two jobs linked without blocking;
+builds on the two-job rewrite in <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/1993">#1993</a>.</p></li>
+<li><p><strong>Pinning</strong> (done) — job-data cleanup honours <code class="docutils literal notranslate"><span class="pre">pinned_stages()</span></code>.</p></li>
+<li><p><strong>Recovery, part 1</strong> (done) — validate-on-read, re-checking a held query’s
+caches, and failing cleanly when a running query loses cache data.</p></li>
+<li><p><strong>Recovery, part 2</strong> — rebuild-and-resume for a running job
+(<a class="reference internal" href="#recovery"><span class="xref myst">Recovery</span></a>).</p></li>
+<li><p><strong>Locality</strong> — place read tasks where partitions live (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2319">#2319</a>).</p></li>
+<li><p><strong>Session teardown</strong> — wire <code class="docutils literal notranslate"><span class="pre">remove_session</span></code> and sweep entries on executor
+loss (<code class="docutils literal notranslate"><span class="pre">invalidate_executor</span></code>), deleting their build data as invalidation
+does.</p></li>
 <li><p><strong>Eviction</strong> — TTL / size cap / idle-session expiry.</p></li>
+<li><p><strong>Per-partition recovery</strong> — rebuild only lost partitions of narrow,
+deterministic subplans; later, pinned intermediates for subplans with a
+shuffle.</p></li>
 </ol>
 </section>
 </section>
@@ -651,13 +720,18 @@ validate-on-read on the hit path, and enable an end-to-end no-recompute test.</p
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#goal">Goal</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-model">The model</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#end-to-end-flow">End-to-end flow</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#registry-lifecycle">Registry lifecycle</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pinning">Pinning</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-read-job-and-external-inputs">The read job and external inputs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#recovery">Recovery</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#registry-and-pinning">Registry and pinning</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#invalidation">Invalidation</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#durability-reconciliation">Durability &amp; reconciliation</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#future-work">Future work</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#planning-configuration">Planning &amp; configuration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#durability-limits">Durability &amp; limits</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#extension-points">Extension points</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#future-work">Future work</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#per-partition-recovery">Per-partition recovery</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#implementation-plan">Implementation plan</a></li>
 </ul>
   </nav></div>

@@ -527,6 +527,16 @@ smaller tasks, which release their vcores sooner.</p>
 writer’s internal row buffer, is no longer exported. It had no use outside the
 writer. Code that used it directly should use <code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExec</span></code> instead.</p>
 </section>
+<section id="taskmanager-executor-lost-also-returns-jobs-that-lost-cached-data">
+<h4><code class="docutils literal notranslate"><span class="pre">TaskManager::executor_lost</span></code> also returns jobs that lost cached data<a class="headerlink" href="#taskmanager-executor-lost-also-returns-jobs-that-lost-cached-data" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">ballista_scheduler::state::task_manager::TaskManager::executor_lost</span></code> now returns
+<code class="docutils literal notranslate"><span class="pre">(Vec&lt;RunningTaskInfo&gt;,</span> <span class="pre">Vec&lt;(JobId,</span> <span class="pre">u64)&gt;)</span></code> instead of <code class="docutils literal notranslate"><span class="pre">Vec&lt;RunningTaskInfo&gt;</span></code>.
+The second element lists the jobs that lost <code class="docutils literal notranslate"><span class="pre">DataFrame::cache()</span></code> data with the
+executor, with when each was queued. Their graphs are not reset, because they
+cannot re-run another job’s output, so a caller must fail them (the scheduler
+posts <code class="docutils literal notranslate"><span class="pre">JobRunningFailed</span></code>). A caller that only needs the tasks to cancel can take
+the first element.</p>
+</section>
 </section>
 <section id="python-client-changes">
 <h3>Python client changes<a class="headerlink" href="#python-client-changes" title="Link to this heading">#</a></h3>
@@ -719,6 +729,7 @@ unchanged.</p>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-shuffle-bufferedbatches-is-no-longer-public"><code class="docutils literal notranslate"><span class="pre">sort_shuffle::BufferedBatches</span></code> is no longer public</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#taskmanager-executor-lost-also-returns-jobs-that-lost-cached-data"><code class="docutils literal notranslate"><span class="pre">TaskManager::executor_lost</span></code> also returns jobs that lost cached data</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#python-client-changes">Python client changes</a><ul class="nav section-nav flex-column">

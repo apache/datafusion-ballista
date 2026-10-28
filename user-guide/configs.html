@@ -489,7 +489,7 @@ standard DataFusion settings.</p>
 <tr class="row-even"><td><p>ballista.cache.noop</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
-<td><p>Disable default cache node extension</p></td>
+<td><p>When true (the default), DataFrame::cache() does nothing. When false, the first action on a cached DataFrame materializes it in the cluster, and later actions read it back instead of recomputing it</p></td>
 </tr>
 <tr class="row-odd"><td><p>ballista.client.grpc_connect_timeout_seconds</p></td>
 <td><p>UInt64</p></td>
