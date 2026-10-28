@@ -21,40 +21,29 @@ permissions:
   contents: read
   packages: write
 
+# Building the images means a full release build of the scheduler, executor
+# and result service, which takes around 45 minutes. Pull requests only run it
+# when the Docker artifacts change. The nightly run catches Rust changes that
+# break the image build (for example a renamed binary) before a release tag
+# depends on it.
 on:
   pull_request:
     paths:
-      - "ballista/**"
-      - "ballista-cli/**"
-      - "benchmarks/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
       - "dev/docker/**"
       - "dev/build-ballista-docker.sh"
+      - "dev/build-ballista-executables.sh"
+      - "dev/build-set-env.sh"
       - ".github/workflows/docker.yml"
-      # docs-only changes cannot affect this job; exclusions are applied last
-      - "!**/*.md"
   push:
-    branches: ["main"]
     # The script below performs stricter validation before publishing. This
     # filter also excludes the separately released python-* tags.
     tags: ["[0-9]*"]
-    paths:
-      - "ballista/**"
-      - "ballista-cli/**"
-      - "benchmarks/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "dev/docker/**"
-      - "dev/build-ballista-docker.sh"
-      - ".github/workflows/docker.yml"
-      # docs-only changes cannot affect this job; exclusions are applied last
-      - "!**/*.md"
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  group: ${{ github.repository }}-${{ github.head_ref || github.ref }}-${{ github.workflow }}
   cancel-in-progress: true
 
 jobs:
