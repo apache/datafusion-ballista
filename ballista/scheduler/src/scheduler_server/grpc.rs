@@ -499,14 +499,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             let job_id = self
                 .submit_plan(&job_name, session_ctx, &plan, Some(subscriber))
                 .await
-                .map_err(|e| {
-                    let msg =
-                        format!("Failed to send JobQueued event for {job_name}: {e:?}");
-
-                    error!("{msg}");
-
-                    Status::internal(msg)
-                })?;
+                .map_err(|e| self.submit_error(&job_name, e))?;
 
             debug!(
                 "execution query (PUSH) job submitted - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}"
@@ -575,13 +568,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             let job_id = self
                 .submit_plan(&job_name, session_ctx, &plan, None)
                 .await
-                .map_err(|e| {
-                    let msg =
-                        format!("Failed to send JobQueued event for {job_name}: {e:?}");
-                    error!("{msg}");
-
-                    Status::internal(msg)
-                })?;
+                .map_err(|e| self.submit_error(&job_name, e))?;
 
             info!(
                 "execution query, job submitted - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}"
@@ -831,6 +818,20 @@ fn extract_connect_info<T>(request: &Request<T>) -> Option<ConnectInfo<SocketAdd
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
+    /// The status for a job that couldn't be submitted. A refusal that already
+    /// is a status, such as `Unavailable` while the scheduler is shutting down,
+    /// keeps its code, so a client knows to submit elsewhere.
+    fn submit_error(&self, job_name: &str, e: BallistaError) -> Status {
+        match e {
+            BallistaError::GrpcError(status) => *status,
+            e => {
+                let msg = format!("Failed to send JobQueued event for {job_name}: {e:?}");
+                error!("{msg}");
+                Status::internal(msg)
+            }
+        }
+    }
+
     async fn create_context(
         &self,
         settings: &[KeyValuePair],
@@ -909,6 +910,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// Where clients should fetch result partitions from over Arrow Flight,
     /// advertised in job-status responses. An explicitly advertised endpoint
     /// wins over the embedded proxy, so a load balancer can front it.
+    #[allow(deprecated)]
     fn flight_proxy_config(&self) -> Option<FlightProxy> {
         let config = &self.state.config;
         match config
@@ -1433,6 +1435,8 @@ mod test {
     }
 
     #[tokio::test]
+    // Still covers the deprecated embedded-proxy flag until it is removed.
+    #[allow(deprecated)]
     async fn flight_proxy_config_reflects_explicit_flag_and_endpoint() {
         use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
 
@@ -1544,6 +1548,24 @@ mod test {
             .metadata()
             .get("ballista-version")
             .and_then(|v| v.to_str().ok())
+    }
+
+    #[tokio::test]
+    async fn execute_query_is_unavailable_while_the_scheduler_drains()
+    -> Result<(), BallistaError> {
+        let scheduler = test_scheduler().await?;
+        scheduler.start_draining();
+
+        let request = job_submission(select_one().await, BALLISTA_VERSION);
+        let status = scheduler.execute_query(request).await.unwrap_err();
+
+        assert_eq!(status.code(), Code::Unavailable);
+        assert!(
+            status.message().contains("shutting down"),
+            "{}",
+            status.message()
+        );
+        Ok(())
     }
 
     #[tokio::test]

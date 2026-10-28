@@ -392,7 +392,7 @@ pub mod metrics;
 /// Session-scoped cache of shared executor runtime environments.
 pub mod runtime_cache;
 /// Graceful shutdown coordination for executor components.
-pub mod shutdown;
+pub use ballista_core::shutdown;
 /// Signal handling for process termination.
 pub mod terminate;
 

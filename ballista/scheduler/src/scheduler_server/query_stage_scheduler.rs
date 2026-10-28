@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -25,6 +26,8 @@ use log::{debug, error, info, trace, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
+use ballista_core::utils::panic_payload_message;
+use futures::FutureExt;
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::config::{SchedulerConfig, WorkAvailableReason};
@@ -298,6 +301,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 plan,
                 queued_at,
                 subscriber,
+                admission,
             } => {
                 info!("Job queued: [{job_id}]");
 
@@ -312,17 +316,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 let state = self.state.clone();
                 tokio::spawn(async move {
-                    let event = if let Err(e) = state
-                        .submit_job(
-                            &job_id,
-                            &job_name,
-                            session_ctx,
-                            &plan,
-                            queued_at,
-                            subscriber.clone(),
-                        )
-                        .await
-                    {
+                    // Held until planning has registered the job as running, or
+                    // has failed.
+                    let _admission = admission;
+                    // Planning runs user code (table providers, optimizer
+                    // rules), and a panic must fail the job rather than strand
+                    // it as queued, which would also keep a draining scheduler
+                    // from ever going idle.
+                    let planned = AssertUnwindSafe(state.submit_job(
+                        &job_id,
+                        &job_name,
+                        session_ctx,
+                        &plan,
+                        queued_at,
+                        subscriber.clone(),
+                    ))
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|payload| {
+                        Err(BallistaError::Internal(format!(
+                            "planning panicked: {}",
+                            panic_payload_message(payload)
+                        )))
+                    });
+                    let event = if let Err(e) = planned {
                         let error = e.to_string();
                         let fail_message = format!("Error planning job {job_id}: {e:?}");
 
@@ -489,8 +506,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     let vcores_freed = self
                         .state
                         .task_manager
-                        .sum_vcores_for_statuses(&tasks_status)
-                        .await;
+                        .take_vcores_for_statuses(&executor_id, &tasks_status);
                     self.state
                         .executor_manager
                         .unbind_tasks(vec![(executor_id.clone(), vcores_freed)])

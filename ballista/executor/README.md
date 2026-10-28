@@ -66,6 +66,15 @@ they explicitly wrap it with `ballista_executor::alloc_accounting::AccountingAll
 logging is only started by the standalone binary. Embedders can opt into pool metrics through
 `start_executor_process_with_memory_metrics` without installing the accounting allocator.
 
+Executors started this way also send these figures to the scheduler in push-mode heartbeats, as
+the `memory_pool_reserved`, `memory_pool_size` and `allocated_memory` metrics in
+`GET /api/executors` and `GET /api/executor/{executor_id}`. They are process metrics, so they're
+sent when the metrics collection policy is `proc` (the default) or `all`. `memory_pool_size` is
+left out when the pool is unbounded. Allocated bytes are only sent when a source is set with
+`ExecutorMemoryMetrics::set_allocated_bytes_source`, as the standalone binary does with
+`alloc_accounting::current_balance`. Pull-mode executors report no heartbeat metrics
+(`poll_work` carries none), so none of these appear for them.
+
 ## Using it as a library
 
 `ExecutorProcessConfig` carries the same override hooks as the scheduler, so an embedder can supply
