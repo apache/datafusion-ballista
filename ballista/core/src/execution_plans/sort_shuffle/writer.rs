@@ -33,7 +33,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
-use super::super::shuffle_writer::{result_schema, summaries_to_batch};
+use super::super::shuffle_writer::{handoff_stream, take_handoff};
 use super::super::shuffle_writer_trait::ShuffleWriter;
 use super::buffer::BufferedBatches;
 use super::config::SortShuffleConfig;
@@ -61,13 +61,12 @@ use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 use datafusion::physical_plan::repartition::REPARTITION_RANDOM_STATE;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream, Statistics, StatisticsArgs, apply_expression_roots,
     displayable, statistics::ChildStats,
 };
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use log::{debug, warn};
 
 /// Result of finalizing shuffle output: (data_path, index_path, partition_write_stats)
@@ -1021,67 +1020,33 @@ impl ExecutionPlan for SortShuffleWriterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let schema = result_schema();
-
-        let mut state = self.state.lock().map_err(|_| {
+        let mut guard = self.state.lock().map_err(|_| {
             DataFusionError::Internal(
                 "SortShuffleWriterExec state mutex poisoned".to_owned(),
             )
         })?;
+        let state = &mut *guard;
+        let rx = take_handoff(
+            "SortShuffleWriterExec",
+            &mut state.initialized,
+            &mut state.handoffs,
+            partition,
+            |senders| {
+                let writer = self.clone();
+                tokio::spawn(async move {
+                    run_coordinator(writer, context, senders).await;
+                });
+            },
+        )?;
+        drop(guard);
 
-        if !state.initialized {
-            state.initialized = true;
-            let k = state.handoffs.len();
-            let mut senders: Vec<oneshot::Sender<Result<Vec<ShuffleWritePartition>>>> =
-                Vec::with_capacity(k);
-            for slot in state.handoffs.iter_mut() {
-                let (tx, rx) = oneshot::channel();
-                senders.push(tx);
-                *slot = Some(rx);
-            }
-            let writer = self.clone();
-            let ctx = context.clone();
-            tokio::spawn(async move {
-                run_coordinator(writer, ctx, senders).await;
-            });
-        }
-
-        let rx = state
-            .handoffs
-            .get_mut(partition)
-            .and_then(Option::take)
-            .ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "SortShuffleWriterExec: execute({partition}) called twice or out of range (have {} partitions)",
-                    state.handoffs.len()
-                ))
-            })?;
-        drop(state);
-
-        let work_dir = self.work_dir.clone();
-        let job_id = self.job_id.clone();
-        let stage_id = self.stage_id;
-        let schema_captured = schema.clone();
-
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            schema,
-            futures::stream::once(async move {
-                let summaries = rx.await.map_err(|_| {
-                    DataFusionError::Internal(
-                        "SortShuffleWriterExec coordinator dropped without sending"
-                            .to_owned(),
-                    )
-                })??;
-                summaries_to_batch(
-                    summaries,
-                    schema_captured,
-                    &work_dir,
-                    &job_id,
-                    stage_id,
-                )
-            })
-            .try_flatten(),
-        )))
+        Ok(handoff_stream(
+            "SortShuffleWriterExec",
+            rx,
+            self.work_dir.clone(),
+            self.job_id.clone(),
+            self.stage_id,
+        ))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -1427,6 +1392,7 @@ mod tests {
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::prelude::SessionContext;
+    use futures::TryStreamExt;
     use tempfile::TempDir;
 
     fn create_test_input() -> Result<Arc<dyn ExecutionPlan>> {
