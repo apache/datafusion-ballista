@@ -69,20 +69,28 @@ cargo run --release --example remote-dataframe
 
 Source: [`examples/examples/remote-dataframe.rs`](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/remote-dataframe.rs)
 
-### Distributed datafusion-spark example
+### Arrow Flight SQL / Python ADBC
 
-The scheduler and executor binaries must be built with the `spark-compat` feature enabled for this
-example.
-
-```bash
-cargo build --release --features spark-compat
-```
+Generic SQL clients can talk to the cluster directly, with no Ballista client
+library. Build a scheduler with the (non-default) Flight SQL frontend and start
+it with `--flight-sql`:
 
 ```bash
-cargo run --release --example remote-spark-functions --features="ballista-core/spark-compat"
+cargo build --release -p ballista-scheduler --features flight-sql
+RUST_LOG=info ./target/release/ballista-scheduler --flight-sql
+RUST_LOG=info ./target/release/ballista-executor -c 4 -p 50051
 ```
 
-Source: [`examples/examples/remote-spark-functions.rs`](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/remote-spark-functions.rs)
+Then query it from Python over ADBC:
+
+```bash
+pip install adbc-driver-flightsql pyarrow
+python examples/python/adbc_flight_sql.py
+```
+
+See [`python/adbc_flight_sql.py`](python/adbc_flight_sql.py) and the
+[Arrow Flight SQL user guide](../docs/source/user-guide/flightsql.md). Note that
+a scheduler started this way performs no authentication.
 
 ## All examples
 
@@ -96,7 +104,6 @@ including those not walked through above. Run each from this directory.
 | `standalone-substrait.rs`      | nothing, runs in-process                                                           | `cargo run --example standalone-substrait --features="ballista-scheduler/substrait"` |
 | `remote-sql.rs`                | a running cluster                                                                  | `cargo run --example remote-sql`                                                     |
 | `remote-dataframe.rs`          | a running cluster                                                                  | `cargo run --example remote-dataframe`                                               |
-| `remote-spark-functions.rs`    | a cluster built with `spark-compat`                                                | `cargo run --example remote-spark-functions --features="ballista-core/spark-compat"` |
 | `custom-scheduler.rs`          | nothing                                                                            | `cargo run --example custom-scheduler`                                               |
 | `custom-executor.rs`           | `custom-scheduler`                                                                 | `cargo run --example custom-executor`                                                |
 | `custom-client.rs`             | `custom-scheduler`, `custom-executor`, and MinIO (see the file)                    | `cargo run --example custom-client`                                                  |

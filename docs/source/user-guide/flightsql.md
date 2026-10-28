@@ -111,6 +111,11 @@ print(table)
 result arrives as Arrow the whole way from the executors — no row-by-row
 conversion.
 
+A runnable version of this, including cluster setup, is in
+[`examples/python/adbc_flight_sql.py`][example]. For something larger,
+[`benchmarks/tpch_adbc.py`][tpch] runs all 22 TPC-H queries over the same
+path.
+
 ### Introspection
 
 The driver's metadata calls are answered from the scheduler's real DataFusion
@@ -239,3 +244,5 @@ These are known gaps, tracked in [#2298]:
 [adbc]: https://arrow.apache.org/adbc/
 [arrow flight sql jdbc driver]: https://central.sonatype.com/artifact/org.apache.arrow/flight-sql-jdbc-driver
 [#2298]: https://github.com/apache/datafusion-ballista/issues/2298
+[example]: https://github.com/apache/datafusion-ballista/blob/main/examples/python/adbc_flight_sql.py
+[tpch]: https://github.com/apache/datafusion-ballista/blob/main/benchmarks/tpch_adbc.py

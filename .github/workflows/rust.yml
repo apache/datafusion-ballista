@@ -72,7 +72,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: cargo check
         run: |
           # Adding `--locked` here to assert that the `Cargo.lock` file is up to
@@ -91,13 +91,13 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Run tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
           # The Flight SQL frontend is a non-default feature; enable it here so
           # its end-to-end tests are not compiled away.
-          cargo test --profile ci --features=testcontainers,ballista-scheduler/flight-sql
+          cargo test --profile ci --features=testcontainers,ballista-scheduler/flight-sql,ballista-result-service/prometheus-metrics
 
   # Run `cargo doc` to ensure the rustdoc is clean
   rustdoc:
@@ -108,7 +108,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Run cargo doc
         run: ci/scripts/rust_docs.sh
 
@@ -123,7 +123,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Try to compile when `--no-default-features` is selected
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -140,7 +140,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Run Ballista tests
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
@@ -157,7 +157,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Run tests
         shell: bash
         run: |
@@ -176,7 +176,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Verify that benchmark queries return expected results
         run: |
           cargo test --package ballista-benchmarks --profile release-nonlto --features=ci --locked -- --test-threads=1
@@ -191,7 +191,7 @@ jobs:
           rustup toolchain install stable
           rustup default stable
           rustup component add rustfmt
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Run
         run: ci/scripts/rust_fmt.sh
 
@@ -208,7 +208,7 @@ jobs:
           fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Run clippy
         run: ci/scripts/rust_clippy.sh
 
@@ -227,9 +227,9 @@ jobs:
         run: |
           rustup toolchain install stable
           rustup default stable
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Install taplo
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: taplo-cli@0.10.0
 
@@ -247,7 +247,7 @@ jobs:
         with:
           fetch-depth: 1
       - name: Install cargo-machete
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-machete@0.9.2
 
@@ -269,7 +269,7 @@ jobs:
         run: |
           rustup toolchain install stable
           rustup default stable
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Check vendored DataFusion proto matches pinned crate
         run: ci/scripts/rust_proto_check.sh
 
@@ -288,7 +288,7 @@ jobs:
         run: |
           rustup toolchain install stable
           rustup default stable
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Check generated config docs match the config registry
         run: ci/scripts/rust_config_docs_check.sh
 

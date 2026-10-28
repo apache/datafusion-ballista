@@ -256,7 +256,10 @@ async fn select_produces_one_endpoint_per_partition_with_no_location() {
             host,
             port,
             ..
-        } = action;
+        } = action
+        else {
+            panic!("expected a FetchPartition action, got {action:?}");
+        };
         assert_eq!(job_id.to_string(), JOB_ID);
         assert_eq!(stage_id, 3);
         assert_eq!(host, "executor-host");

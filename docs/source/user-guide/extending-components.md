@@ -36,7 +36,7 @@ Ballista scheduler can be tuned using `SchedulerConfig` which supports overridin
 
 ## Example: Custom Object Store Integration
 
-Extending basic building blocks will be demonstrated by integrating S3 object store. For this, new `ObjectStoreRegistry` and `S3Options` will be provided. `ObjectStoreRegistry` creates new `ObjectStore` instances configured using `S3Options`.
+Extending basic building blocks will be demonstrated by integrating S3 object store. For this, new `ObjectStoreRegistry` and `S3Options` will be provided. `ObjectStoreRegistry` creates `ObjectStore` instances configured using `S3Options`, and caches them so that scans of the same bucket with the same options share one store.
 
 For this specific task `config producer`, `runtime producer` and `session builder` have to be provided, and client, scheduler and executor need to be configured.
 

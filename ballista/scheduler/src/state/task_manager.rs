@@ -17,6 +17,7 @@
 
 use crate::cluster::{BoundTask, ExecutorSlot, JobState, JobStateEventStream};
 use crate::config::SchedulerConfig;
+use crate::physical_optimizer::file_group_balance::BalanceAndPruneFileGroups;
 use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::aqe::AdaptiveExecutionGraph;
@@ -27,6 +28,7 @@ use crate::state::execution_graph::{
 use crate::state::execution_stage::ExecutionStage;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::task_builder::restrict_plan_to_partitions;
+use ballista_core::config::ExecutionMode;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::execution_plans::compute_global_output_partition_ids;
@@ -42,6 +44,7 @@ use dashmap::DashMap;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -279,6 +282,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let session_state = ctx.state();
         let session_config = session_state.config();
 
+        if session_config.ballista_config().execution_mode()? == ExecutionMode::Pipelined
+        {
+            return Err(BallistaError::NotImplemented(
+                "ballista.execution.mode = pipelined is not supported yet".to_owned(),
+            ));
+        }
+
         let mut graph = match plan {
             SubmitPlan::Logical(logical_plan) => {
                 if session_config.ballista_adaptive_query_planner_enabled() {
@@ -300,6 +310,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
                     let physical_plan =
                         ctx.state().create_physical_plan(logical_plan).await?;
+                    let physical_plan = BalanceAndPruneFileGroups::new()
+                        .optimize(physical_plan, session_config.options())?;
                     let physical_plan =
                         handle_explain_plan(job_id, &ctx, logical_plan, physical_plan)
                             .await?;

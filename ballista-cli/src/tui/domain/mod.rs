@@ -30,7 +30,6 @@ pub struct SchedulerState {
     pub keda_support: bool,
     pub prometheus_support: bool,
     pub graphviz_support: bool,
-    pub spark_support: bool,
     pub scheduling_policy: String,
 }
 

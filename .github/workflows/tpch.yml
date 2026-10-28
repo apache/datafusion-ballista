@@ -20,38 +20,12 @@ name: TPC-H SF10
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
-  cancel-in-progress: true
-
+# Not triggered directly by pull requests or pushes: tpc.yml decides when this
+# runs (merge queue, labelled pull requests, manual) and gates on its result.
+# There is deliberately no `concurrency` block; the caller owns it, and the same
+# group on both would deadlock the two against each other.
 on:
-  push:
-    branches: [ "main" ]
-    paths:
-      - "ballista/**"
-      - "benchmarks/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - ".github/workflows/tpch.yml"
-      - ".github/actions/setup-builder/**"
-      - ".github/actions/setup-benchmark-builder/**"
-      - "ci/scripts/ballista_cluster.sh"
-      # docs-only changes cannot affect this job; exclusions are applied last
-      - "!**/*.md"
-  pull_request:
-    paths:
-      - "ballista/**"
-      - "benchmarks/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - ".github/workflows/tpch.yml"
-      - ".github/actions/setup-builder/**"
-      - ".github/actions/setup-benchmark-builder/**"
-      - "ci/scripts/ballista_cluster.sh"
-      # docs-only changes cannot affect this job; exclusions are applied last
-      - "!**/*.md"
+  workflow_call:
   workflow_dispatch:
 
 jobs:
@@ -89,7 +63,7 @@ jobs:
           shared-key: tpch-sf10
 
       - name: Install tpchgen-cli
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: tpchgen-cli@2.0.2
 

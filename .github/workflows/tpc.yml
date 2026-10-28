@@ -1,0 +1,231 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Decides when the TPC-H and TPC-DS suites run, and reports one verdict for them.
+#
+# Merging goes through GitHub's merge queue (see `rulesets` in `.asf.yaml`), so
+# these suites are tiered:
+#
+#   pull_request  they do not run, unless the PR carries `run-tpch` and/or
+#                 `run-tpcds`. A labelled PR re-runs the suite on every push.
+#   merge_group   the authoritative gate. Both suites run against the merge
+#                 result whenever the entry touches something that can affect
+#                 them (see the filter in `changes` below).
+#   push to main  nothing is tested, since the queue already tested the tree
+#                 that landed. Only the build caches are refreshed, because a
+#                 cache saved on the queue's throwaway branch is deleted with it
+#                 and pull requests and the queue restore from main's.
+#
+# Applying a label to an open PR runs that suite straight away without a new
+# push; that goes through tpc_label.yml, see there for why it is separate.
+#
+# `TPC Required Checks` is the only required status context for these suites.
+# The suites cannot be required directly: on a PR that has no label they are
+# skipped, and a skipped job reports under a different name than a run one.
+# Careful when renaming it: a required context that never reports blocks every
+# merge to main, including the merge that would fix `.asf.yaml`.
+
+name: TPC benchmarks
+
+permissions:
+  contents: read
+
+# Label runs reach this file through tpc_label.yml, so `github.workflow`
+# already separates them from the commit run; keying on the label name as well
+# keeps two different labels from cancelling each other. Every other run is
+# keyed on its event name, so a new push still supersedes its predecessor.
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || github.event_name }}
+  cancel-in-progress: true
+
+# No `labeled` type here: tpc_label.yml handles it and calls this file through
+# `workflow_call`. When one workflow runs twice at the same commit, GitHub
+# evaluates the required check against only one of the two runs, and a
+# cancelled or skipped one can leave `TPC Required Checks` unreported.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_call:
+  merge_group:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      tpch: ${{ steps.compute.outputs.tpch }}
+      tpcds: ${{ steps.compute.outputs.tpcds }}
+      warm_cache: ${{ steps.compute.outputs.warm_cache }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          # Need history to diff the queue entry and the push against their base.
+          fetch-depth: 0
+
+      - name: Compute outputs
+        id: compute
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          MQ_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MQ_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Reads changed file names on stdin. Keep in step with the inputs of
+          # the suites: the crates, the benchmark runner and its cluster
+          # script, the build setup, and these workflow files. Docs-only
+          # changes cannot affect them.
+          relevant() {
+            grep -v '\.md$' | grep -Eq '^(ballista/|benchmarks/|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|ci/scripts/ballista_cluster\.sh$|\.github/actions/setup-(builder|benchmark-builder)/|\.github/workflows/(tpc|tpc_label|tpch|tpcds)\.yml$)'
+          }
+
+          tpch=false
+          tpcds=false
+          warm_cache=false
+
+          case "$EVENT_NAME" in
+            workflow_dispatch)
+              tpch=true
+              tpcds=true
+              ;;
+            pull_request)
+              if [[ "$EVENT_ACTION" == "labeled" ]]; then
+                # Only the suite the new label gates. The other label, if
+                # present, already had its own run when it was applied.
+                [[ "$LABEL_NAME" == "run-tpch" ]] && tpch=true
+                [[ "$LABEL_NAME" == "run-tpcds" ]] && tpcds=true
+              else
+                # A label is an explicit request, so it ignores the path filter.
+                jq -e 'index("run-tpch")' <<<"$PR_LABELS" >/dev/null && tpch=true
+                jq -e 'index("run-tpcds")' <<<"$PR_LABELS" >/dev/null && tpcds=true
+              fi
+              ;;
+            merge_group)
+              # base_sha is the queue commit of the entry ahead of this one, and
+              # main only for the entry at the front, so this covers this
+              # entry's own changes. The entries ahead were diffed by their own
+              # runs; ALLGREEN in the ruleset is what makes that enough.
+              if git diff --name-only "$MQ_BASE_SHA"..."$MQ_HEAD_SHA" | relevant; then
+                tpch=true
+                tpcds=true
+              fi
+              ;;
+            push)
+              # First push to a branch has an all-zero before sha.
+              if [[ "$PUSH_BEFORE" =~ ^0+$ ]] || git diff --name-only "$PUSH_BEFORE".."$PUSH_AFTER" | relevant; then
+                warm_cache=true
+              fi
+              ;;
+          esac
+
+          {
+            echo "tpch=$tpch"
+            echo "tpcds=$tpcds"
+            echo "warm_cache=$warm_cache"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  tpch:
+    name: TPC-H
+    needs: changes
+    if: needs.changes.outputs.tpch == 'true'
+    uses: ./.github/workflows/tpch.yml
+
+  tpcds:
+    name: TPC-DS
+    needs: changes
+    if: needs.changes.outputs.tpcds == 'true'
+    uses: ./.github/workflows/tpcds.yml
+
+  # Only builds, so the cache the suites restore from main stays warm. The keys
+  # are the `shared-key` each suite passes to the same action.
+  warm-cache:
+    name: Refresh build cache (${{ matrix.shared-key }})
+    needs: changes
+    if: needs.changes.outputs.warm_cache == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shared-key: [ "tpch-sf10", "tpcds-sf1" ]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Setup toolchain and build Ballista binaries
+        uses: ./.github/actions/setup-benchmark-builder
+        with:
+          shared-key: ${{ matrix.shared-key }}
+
+  # The one required status check. Always runs and always reports, so a pull
+  # request that skips the suites still gets a verdict.
+  required:
+    name: TPC Required Checks
+    needs: [ changes, tpch, tpcds, warm-cache ]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          TPCH_EXPECTED: ${{ needs.changes.outputs.tpch }}
+          TPCH_RESULT: ${{ needs.tpch.result }}
+          TPCDS_EXPECTED: ${{ needs.changes.outputs.tpcds }}
+          TPCDS_RESULT: ${{ needs.tpcds.result }}
+          WARM_CACHE_EXPECTED: ${{ needs.changes.outputs.warm_cache }}
+          WARM_CACHE_RESULT: ${{ needs.warm-cache.result }}
+        run: |
+          set -euo pipefail
+          status=0
+
+          if [[ "$CHANGES_RESULT" != "success" ]]; then
+            echo "::error::Detect changes: $CHANGES_RESULT"
+            exit 1
+          fi
+
+          # A job that should have run must have succeeded. One that should not
+          # have run must not have run at all. `skipped` would otherwise pass
+          # for a job that was meant to gate.
+          check() {
+            local name=$1 expected=$2 result=$3
+            if [[ "$expected" == "true" && "$result" != "success" ]]; then
+              echo "::error::$name was required but finished as: $result"
+              status=1
+            elif [[ "$expected" != "true" && "$result" != "skipped" ]]; then
+              echo "::error::$name was not required but finished as: $result"
+              status=1
+            else
+              echo "$name: $result"
+            fi
+          }
+
+          check "TPC-H" "$TPCH_EXPECTED" "$TPCH_RESULT"
+          check "TPC-DS" "$TPCDS_EXPECTED" "$TPCDS_RESULT"
+          check "Refresh build cache" "$WARM_CACHE_EXPECTED" "$WARM_CACHE_RESULT"
+          exit "$status"
