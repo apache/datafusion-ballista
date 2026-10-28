@@ -30,12 +30,16 @@ release. See the
 ## Creating a SessionContext
 
 > [!IMPORTANT]
-> Current approach is to support datafusion python API, there are know limitations of current approach,
-> with some cases producing errors.
 >
-> We are trying to come up with the best approach to support ballista python interface.
+> Ballista supports the DataFusion Python API natively: `BallistaSessionContext`
+> returns a standard `datafusion.SessionContext` and queries created from it
+> are executed on the Ballista cluster.
 >
-> More details could be found at [#1142](https://github.com/apache/datafusion-ballista/issues/1142)
+> Some features are still being worked on, such as support for Python UDFs
+> and custom extension codecs. See the known limitations below.
+>
+> Progress has been tracked at [#2618](https://github.com/apache/datafusion-ballista/issues/2618)
+>
 
 Creates a new context which connects to a Ballista scheduler process.
 
@@ -95,7 +99,8 @@ Check [DataFusion python](https://datafusion.apache.org/python/) provides more e
 
 PyBallista provides first-class Jupyter notebook support with SQL magic commands and rich HTML rendering.
 
-### Install Jupyter extras first:
+### Install Jupyter extras first
+
 ```bash
 pip install "ballista[jupyter]"
 ```
@@ -161,22 +166,37 @@ SELECT * FROM orders WHERE status = 'pending'
 Visualize query execution plans directly in notebooks:
 
 ```python
+from ballista.jupyter import explain_visual
+
 df = ctx.sql("SELECT * FROM orders WHERE amount > 100")
-df.explain_visual()  # Displays SVG visualization
+explain_visual(df)  # Displays SVG visualization
 
 # With runtime statistics
-df.explain_visual(analyze=True)
+explain_visual(df, analyze=True)
 ```
 
 > **Note:** Full SVG visualization requires graphviz to be installed (`brew install graphviz` on macOS).
 
 ### Progress Indicators
 
-For long-running queries, use `collect_with_progress()` to see execution status:
+For long-running queries, use `collect_with_progress()` to see execution status.
+In Jupyter it displays elapsed time while the query runs:
 
 ```python
+from ballista.jupyter import collect_with_progress
+
 df = ctx.sql("SELECT * FROM large_table")
-batches = df.collect_with_progress()
+batches = collect_with_progress(df)
+```
+
+Outside Jupyter, or to handle progress yourself, pass a callback:
+
+```python
+def my_callback(status: str, progress: float):
+    # progress is -1.0 while running, 1.0 when completed
+    print(f"{status}: {progress}")
+
+batches = collect_with_progress(df, callback=my_callback, poll_interval=1.0)
 ```
 
 ### Example Notebooks
