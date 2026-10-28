@@ -72,7 +72,7 @@ pub trait BallistaClientPool: Send + Sync + Debug {
         let pooled = self.acquire(host, port, config, customize_endpoint).await?;
         let client = (*pooled).clone();
         pooled.discard();
-        Ok(Arc::new(SharedClient::new(client, Box::new(|| {}))))
+        Ok(Arc::new(SharedClient::new(client)))
     }
 
     /// Remove all idle clients that have been sitting unused longer than the
@@ -91,17 +91,14 @@ pub trait BallistaClientPool: Send + Sync + Debug {
 /// until it is [discarded](Self::discard).
 pub struct SharedClient {
     client: BallistaClient,
-    /// Drops the connection from its pool. Invoked at most once.
-    discard: Box<dyn Fn() + Send + Sync>,
     discarded: AtomicBool,
 }
 
 impl SharedClient {
-    /// A shared client whose `discard` closure drops it from its pool.
-    pub fn new(client: BallistaClient, discard: Box<dyn Fn() + Send + Sync>) -> Self {
+    /// A shared client on `client`'s connection.
+    pub fn new(client: BallistaClient) -> Self {
         Self {
             client,
-            discard,
             discarded: AtomicBool::new(false),
         }
     }
@@ -111,20 +108,23 @@ impl SharedClient {
         self.client.clone()
     }
 
-    /// Drops the connection from its pool, after a failure that suggests it
-    /// is gone, so that the next caller opens a new one. Callers already on
+    /// Marks the connection as gone, after a failure that suggests it is, so
+    /// that the pool opens a new one for the next caller. Callers already on
     /// it keep it until they are done.
     pub fn discard(&self) {
-        if !self.discarded.swap(true, Ordering::AcqRel) {
-            (self.discard)();
-        }
+        self.discarded.store(true, Ordering::Release);
+    }
+
+    /// Whether a caller has [discarded](Self::discard) the connection.
+    pub fn is_discarded(&self) -> bool {
+        self.discarded.load(Ordering::Acquire)
     }
 }
 
 impl Debug for SharedClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedClient")
-            .field("discarded", &self.discarded.load(Ordering::Acquire))
+            .field("discarded", &self.is_discarded())
             .finish()
     }
 }

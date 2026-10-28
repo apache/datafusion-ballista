@@ -38,7 +38,7 @@ use futures::StreamExt;
 use log::debug;
 
 use super::registry::PipelinedRegistry;
-use crate::client_pool::BallistaClientPool;
+use crate::client_pool::{BallistaClientPool, SharedClient};
 use crate::config::{BallistaConfig, HTTP2_MAX_WINDOW_BYTES};
 use crate::error::BallistaError;
 use crate::execution_plans::shuffle_reader::{new_ballista_client, with_retry};
@@ -73,7 +73,6 @@ pub struct PipelinedShuffleReaderExec {
     pub broadcast: bool,
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
-    registry: Option<Arc<PipelinedRegistry>>,
     client_pool: Option<Arc<dyn BallistaClientPool>>,
 }
 
@@ -133,17 +132,8 @@ impl PipelinedShuffleReaderExec {
             broadcast,
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
-            registry: None,
             client_pool: None,
         }
-    }
-
-    /// The executor's registry, for reading co-located producers directly.
-    /// When unset, the reader uses the one the executor attaches to the task's
-    /// session configuration.
-    pub fn with_registry(mut self, registry: Arc<PipelinedRegistry>) -> Self {
-        self.registry = Some(registry);
-        self
     }
 
     /// The pool remote reads take their Flight clients from. Set by the
@@ -191,7 +181,6 @@ impl PipelinedShuffleReaderExec {
             partitioning,
             false,
         );
-        reader.registry = self.registry.clone();
         reader.client_pool = self.client_pool.clone();
         Ok(reader)
     }
@@ -289,11 +278,9 @@ impl ExecutionPlan for PipelinedShuffleReaderExec {
             MetricBuilder::new(&self.metrics).counter("remote_partitions", partition);
 
         // Every producer is drained at once; see the type documentation for
-        // why that is required.
-        let registry = self
-            .registry
-            .clone()
-            .or_else(|| config.get_extension::<PipelinedRegistry>());
+        // why that is required. Producers on this executor are read from the
+        // registry the executor attaches to the task's session.
+        let registry = config.get_extension::<PipelinedRegistry>();
         let mut builder = RecordBatchReceiverStreamBuilder::new(
             self.schema.clone(),
             locations.len().max(2),
@@ -301,10 +288,7 @@ impl ExecutionPlan for PipelinedShuffleReaderExec {
         // Remote streams go over the connection the executor's pool keeps to
         // each producer executor, with windows sized so that sharing it is
         // safe; see `shared_connection_config`.
-        let grpc_config = Arc::new(shared_connection_config(
-            &GrpcClientConfig::from(&ballista_config),
-            &ballista_config,
-        ));
+        let grpc_config = Arc::new(shared_connection_config(&ballista_config));
         for location in locations {
             let tx = builder.tx();
             let local = registry.clone().filter(|r| {
@@ -387,14 +371,11 @@ impl ExecutionPlan for PipelinedShuffleReaderExec {
 ///
 /// Differing from the blocking reader's configuration also keeps these
 /// connections apart from the ones the pool checks out one stream at a time.
-fn shared_connection_config(
-    grpc_config: &GrpcClientConfig,
-    ballista_config: &BallistaConfig,
-) -> GrpcClientConfig {
+fn shared_connection_config(ballista_config: &BallistaConfig) -> GrpcClientConfig {
     GrpcClientConfig {
         initial_stream_window_size: ballista_config.pipelined_stream_window_bytes(),
         initial_connection_window_size: HTTP2_MAX_WINDOW_BYTES,
-        ..grpc_config.clone()
+        ..GrpcClientConfig::from(ballista_config)
     }
 }
 
@@ -445,25 +426,23 @@ async fn open_remote_once(
 ) -> std::result::Result<SendableRecordBatchStream, BallistaError> {
     let host = location.executor_meta.host.as_str();
     let port = location.executor_meta.port;
-    let (mut client, shared) = match client_pool {
+    let shared = match client_pool {
         Some(pool) => {
-            let shared = pool
-                .shared(host, port, grpc_config, customize_endpoint)
-                .await?;
-            (shared.client(), Some(shared))
+            pool.shared(host, port, grpc_config, customize_endpoint)
+                .await?
         }
         // Without a pool, as when a custom execution engine runs the plan,
         // each stream gets a connection of its own.
-        None => (
+        None => Arc::new(SharedClient::new(
             new_ballista_client(host, port, grpc_config, customize_endpoint).await?,
-            None,
-        ),
+        )),
     };
-    client
+    shared
+        .client()
         .fetch_pipelined_partition(location, registration_timeout)
         .await
         .inspect_err(|e| {
-            if let (Some(shared), BallistaError::GrpcConnectionError(_)) = (&shared, e) {
+            if matches!(e, BallistaError::GrpcConnectionError(_)) {
                 shared.discard();
             }
         })

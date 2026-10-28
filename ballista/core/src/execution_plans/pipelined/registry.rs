@@ -39,9 +39,8 @@
 //! once claimed; broadcast partitions keep their batches until then.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use datafusion::arrow::datatypes::SchemaRef;
@@ -50,23 +49,20 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use futures::{Stream, StreamExt};
-use tokio::sync::{Notify, mpsc, oneshot};
+use futures::Stream;
+use tokio::sync::{mpsc, watch};
 
 use crate::JobId;
 use crate::serde::scheduler::TaskKey;
 
-/// How many recently cleaned-up jobs the registry remembers. A producer task
-/// that starts after its job was cleaned up — launched just before the job was
-/// cancelled, say — would otherwise register outputs no consumer will read and
-/// wait on them forever. Remembering the job lets it fail instead.
+/// How many recently cleaned-up jobs the registry remembers, whether the
+/// whole job or only some of its stages was cleaned up. A producer task that
+/// starts after its job or stage was cleaned up — launched just before the
+/// job was cancelled, say, or a leftover task of a stage the scheduler
+/// reclaimed when the job succeeded — would otherwise register outputs no
+/// consumer will read and wait on them forever. Remembering the job lets it
+/// fail instead.
 const CLOSED_JOB_MEMORY: usize = 1024;
-
-/// How many recently cleaned-up stages of still-running jobs the registry
-/// remembers, for the same reason. When a pipelined job succeeds, the
-/// scheduler cleans up its other stages at once, and cancels their leftover
-/// tasks; one that had not started yet would otherwise start afterwards.
-const CLOSED_STAGE_MEMORY: usize = 4096;
 
 /// A message on a single-consumer output queue.
 #[derive(Debug)]
@@ -86,7 +82,7 @@ pub struct ProducerOutputs {
     partitions: HashMap<usize, PartitionOutput>,
     /// The producer's error, if it failed. Reported to a consumer whose
     /// partition ends without being finished.
-    failure: Mutex<Option<String>>,
+    failure: OnceLock<String>,
 }
 
 impl std::fmt::Debug for ProducerOutputs {
@@ -240,7 +236,7 @@ impl ProducerOutputs {
             schema,
             compression,
             partitions: outputs,
-            failure: Mutex::new(None),
+            failure: OnceLock::new(),
         });
         (outputs, sinks)
     }
@@ -248,10 +244,7 @@ impl ProducerOutputs {
     /// Records why the producer failed, so consumers report the cause rather
     /// than only that their stream ended early.
     pub(crate) fn fail(&self, error: &DataFusionError) {
-        self.failure
-            .lock()
-            .unwrap()
-            .get_or_insert_with(|| error.to_string());
+        self.failure.get_or_init(|| error.to_string());
         for output in self.partitions.values() {
             if let PartitionOutput::Replay(buffer) = output {
                 buffer.end(ReplayEnd::Failed);
@@ -262,9 +255,10 @@ impl ProducerOutputs {
     /// The error a consumer of `partition` sees when the producer stopped
     /// before finishing it.
     fn stopped_early(&self, key: &TaskKey, partition: usize) -> DataFusionError {
-        let reason = self.failure.lock().unwrap().clone().unwrap_or_else(|| {
-            "the task stopped before finishing the partition".to_owned()
-        });
+        let reason = self.failure.get().map_or(
+            "the task stopped before finishing the partition",
+            String::as_str,
+        );
         DataFusionError::Execution(format!(
             "pipelined producer {key} failed while serving partition {partition}: {reason}"
         ))
@@ -285,74 +279,49 @@ impl ProducerOutputs {
     }
 }
 
-enum ProducerSlot {
-    /// Consumers that asked for this producer before it registered.
-    Waiting(Vec<oneshot::Sender<Arc<ProducerOutputs>>>),
-    Ready(Arc<ProducerOutputs>),
+/// A producer's outputs once it registers. Consumers that ask before then
+/// subscribe and wait for the value to be set.
+type ProducerSlot = watch::Sender<Option<Arc<ProducerOutputs>>>;
+
+/// What has been cleaned up of one job on this executor.
+#[derive(Default)]
+struct ClosedJob {
+    /// The whole job.
+    all: bool,
+    /// Stages cleaned up ahead of the job.
+    stages: HashSet<usize>,
 }
 
-/// A set that remembers only its `capacity` most recent insertions.
-struct RecentSet<T> {
-    items: HashSet<T>,
-    order: VecDeque<T>,
-    capacity: usize,
+/// The cleaned-up parts of the [`CLOSED_JOB_MEMORY`] most recently touched
+/// jobs.
+#[derive(Default)]
+struct ClosedJobs {
+    jobs: HashMap<JobId, ClosedJob>,
+    /// Jobs in the order they were first cleaned up, oldest first.
+    order: VecDeque<JobId>,
 }
 
-impl<T: Clone + Eq + Hash> RecentSet<T> {
-    fn new(capacity: usize) -> Self {
-        Self {
-            items: HashSet::new(),
-            order: VecDeque::new(),
-            capacity,
-        }
-    }
-
-    fn insert(&mut self, item: T) {
-        if self.items.insert(item.clone()) {
-            self.order.push_back(item);
-            if self.order.len() > self.capacity
+impl ClosedJobs {
+    /// The entry for `job_id`, forgetting the oldest job if that makes room.
+    fn entry(&mut self, job_id: &JobId) -> &mut ClosedJob {
+        if !self.jobs.contains_key(job_id) {
+            self.order.push_back(job_id.clone());
+            if self.order.len() > CLOSED_JOB_MEMORY
                 && let Some(oldest) = self.order.pop_front()
             {
-                self.items.remove(&oldest);
+                self.jobs.remove(&oldest);
             }
         }
+        self.jobs.entry(job_id.clone()).or_default()
     }
 
-    fn contains(&self, item: &T) -> bool {
-        self.items.contains(item)
-    }
-
-    fn len(&self) -> usize {
-        self.items.len()
-    }
-}
-
-struct RegistryState {
-    producers: HashMap<TaskKey, ProducerSlot>,
-    closed_jobs: RecentSet<JobId>,
-    closed_stages: RecentSet<(JobId, usize)>,
-}
-
-impl Default for RegistryState {
-    fn default() -> Self {
-        Self {
-            producers: HashMap::new(),
-            closed_jobs: RecentSet::new(CLOSED_JOB_MEMORY),
-            closed_stages: RecentSet::new(CLOSED_STAGE_MEMORY),
-        }
-    }
-}
-
-impl RegistryState {
     /// Why `key`'s producer can no longer serve, if its job or stage has been
     /// cleaned up on this executor.
-    fn closed(&self, key: &TaskKey) -> Option<String> {
-        if self.closed_jobs.contains(&key.job_id) {
+    fn reason(&self, key: &TaskKey) -> Option<String> {
+        let job = self.jobs.get(&key.job_id)?;
+        if job.all {
             Some(format!("job {} has finished on this executor", key.job_id))
-        } else if self
-            .closed_stages
-            .contains(&(key.job_id.clone(), key.stage_id))
-        {
+        } else if job.stages.contains(&key.stage_id) {
             Some(format!(
                 "stage {} of job {} has finished on this executor",
                 key.stage_id, key.job_id
@@ -361,15 +330,24 @@ impl RegistryState {
             None
         }
     }
+}
 
+#[derive(Default)]
+struct RegistryState {
+    producers: HashMap<TaskKey, ProducerSlot>,
+    closed: ClosedJobs,
+}
+
+impl RegistryState {
     /// Drops every producer for which `gone` holds, closing the queues no
-    /// consumer had claimed.
+    /// consumer had claimed. Consumers still waiting for one of them see
+    /// their slot dropped.
     fn remove_producers(&mut self, gone: impl Fn(&TaskKey) -> bool) {
         self.producers.retain(|key, slot| {
             if !gone(key) {
                 return true;
             }
-            if let ProducerSlot::Ready(outputs) = slot {
+            if let Some(outputs) = &*slot.borrow() {
                 outputs.close_unclaimed_queues();
             }
             false
@@ -402,7 +380,7 @@ impl std::fmt::Debug for PipelinedRegistry {
         f.debug_struct("PipelinedRegistry")
             .field("executor_id", &self.executor_id)
             .field("producers", &state.producers.len())
-            .field("closed_jobs", &state.closed_jobs.len())
+            .field("closed_jobs", &state.closed.jobs.len())
             .finish()
     }
 }
@@ -429,25 +407,22 @@ impl PipelinedRegistry {
     /// gone.
     pub fn register(&self, key: TaskKey, outputs: Arc<ProducerOutputs>) -> Result<()> {
         let mut state = self.state.lock().unwrap();
-        if let Some(reason) = state.closed(&key) {
+        if let Some(reason) = state.closed.reason(&key) {
             return Err(DataFusionError::Execution(format!(
                 "pipelined producer {key} cannot start: {reason}"
             )));
         }
-        if let Some(ProducerSlot::Ready(_)) = state.producers.get(&key) {
+        let slot = state
+            .producers
+            .entry(key.clone())
+            .or_insert_with(|| watch::Sender::new(None));
+        if slot.borrow().is_some() {
             return Err(DataFusionError::Internal(format!(
                 "pipelined producer {key} registered twice"
             )));
         }
-        if let Some(ProducerSlot::Waiting(waiters)) = state
-            .producers
-            .insert(key, ProducerSlot::Ready(outputs.clone()))
-        {
-            for waiter in waiters {
-                // A waiter that timed out has dropped its receiver.
-                let _ = waiter.send(outputs.clone());
-            }
-        }
+        // Wakes any consumer already waiting.
+        slot.send_replace(Some(outputs));
         Ok(())
     }
 
@@ -503,7 +478,7 @@ impl PipelinedRegistry {
     pub fn remove_job(&self, job_id: &JobId) {
         let mut state = self.state.lock().unwrap();
         state.remove_producers(|key| key.job_id == *job_id);
-        state.closed_jobs.insert(job_id.clone());
+        state.closed.entry(job_id).all = true;
     }
 
     /// Drops every producer of one stage of `job_id`, as when the scheduler
@@ -512,7 +487,7 @@ impl PipelinedRegistry {
     pub fn remove_stage(&self, job_id: &JobId, stage_id: usize) {
         let mut state = self.state.lock().unwrap();
         state.remove_producers(|key| key.job_id == *job_id && key.stage_id == stage_id);
-        state.closed_stages.insert((job_id.clone(), stage_id));
+        state.closed.entry(job_id).stages.insert(stage_id);
     }
 
     /// Number of producers registered or waited for.
@@ -526,43 +501,42 @@ impl PipelinedRegistry {
         key: &TaskKey,
         timeout: Duration,
     ) -> Result<Arc<ProducerOutputs>> {
-        let rx = {
+        let mut rx = {
             let mut state = self.state.lock().unwrap();
-            if let Some(reason) = state.closed(key) {
+            if let Some(reason) = state.closed.reason(key) {
                 return Err(DataFusionError::Execution(format!(
                     "{reason}; pipelined producer {key} is gone"
                 )));
             }
-            let slot = state
+            state
                 .producers
                 .entry(key.clone())
-                .or_insert_with(|| ProducerSlot::Waiting(vec![]));
-            match slot {
-                ProducerSlot::Ready(outputs) => return Ok(outputs.clone()),
-                ProducerSlot::Waiting(waiters) => {
-                    let (tx, rx) = oneshot::channel();
-                    waiters.push(tx);
-                    rx
-                }
-            }
+                .or_insert_with(|| watch::Sender::new(None))
+                .subscribe()
         };
-        match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(outputs)) => Ok(outputs),
-            Ok(Err(_)) => Err(DataFusionError::Execution(format!(
+        let waited = tokio::time::timeout(timeout, async {
+            rx.wait_for(Option::is_some)
+                .await
+                .ok()
+                .and_then(|outputs| outputs.clone())
+        })
+        .await;
+        drop(rx);
+        match waited {
+            Ok(Some(outputs)) => Ok(outputs),
+            // The slot was dropped: its stage or job was cleaned up.
+            Ok(None) => Err(DataFusionError::Execution(format!(
                 "the stage of pipelined producer {key} finished on this executor \
                  before the producer started"
             ))),
             Err(_) => {
-                // Forget this waiter, and the slot with it if no other
-                // consumer is still waiting, so a producer that never starts
-                // leaves nothing behind.
+                // Forget the slot if no other consumer is still waiting, so a
+                // producer that never starts leaves nothing behind.
                 let mut state = self.state.lock().unwrap();
-                if let Some(ProducerSlot::Waiting(waiters)) = state.producers.get_mut(key)
-                {
-                    waiters.retain(|waiter| !waiter.is_closed());
-                    if waiters.is_empty() {
-                        state.producers.remove(key);
-                    }
+                if state.producers.get(key).is_some_and(|slot| {
+                    slot.borrow().is_none() && slot.receiver_count() == 0
+                }) {
+                    state.producers.remove(key);
                 }
                 Err(DataFusionError::Execution(format!(
                     "timed out after {timeout:?} waiting for pipelined producer {key} to start"
@@ -590,10 +564,16 @@ fn queue_stream(
 
 /// A broadcast output partition: every batch the producer wrote, kept for
 /// consumers that read it from the start.
-#[derive(Default)]
 pub(crate) struct ReplayBuffer {
-    state: Mutex<ReplayState>,
-    notify: Notify,
+    state: watch::Sender<ReplayState>,
+}
+
+impl Default for ReplayBuffer {
+    fn default() -> Self {
+        Self {
+            state: watch::Sender::new(ReplayState::default()),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -613,13 +593,15 @@ enum ReplayEnd {
 
 impl ReplayBuffer {
     fn push(&self, batch: RecordBatch) {
-        self.state.lock().unwrap().batches.push(batch);
-        self.notify.notify_waiters();
+        self.state.send_modify(|state| state.batches.push(batch));
     }
 
     fn end(&self, end: ReplayEnd) {
-        self.state.lock().unwrap().end.get_or_insert(end);
-        self.notify.notify_waiters();
+        self.state.send_if_modified(|state| {
+            let first = state.end.is_none();
+            state.end.get_or_insert(end);
+            first
+        });
     }
 }
 
@@ -642,44 +624,39 @@ fn replay_stream(
     key: TaskKey,
     partition: usize,
 ) -> impl Stream<Item = Result<RecordBatch>> + Send {
-    futures::stream::unfold((buffer, 0usize, false), move |(buffer, next, done)| {
+    let rx = buffer.state.subscribe();
+    futures::stream::unfold(Some((rx, 0usize)), move |state| {
         let outputs = outputs.clone();
         let key = key.clone();
         async move {
-            if done {
-                return None;
-            }
+            let (mut rx, next) = state?;
             loop {
-                // Wait through a second handle, so `buffer` itself stays free
-                // to move into the next state.
-                let waiter = buffer.clone();
-                let notified = waiter.notify.notified();
-                futures::pin_mut!(notified);
-                // Register for a wakeup before looking, so a batch pushed
-                // between the look and the wait is not missed.
-                notified.as_mut().enable();
                 {
-                    let state = buffer.state.lock().unwrap();
+                    let state = rx.borrow_and_update();
                     if let Some(batch) = state.batches.get(next) {
                         let batch = batch.clone();
                         drop(state);
-                        return Some((Ok(batch), (buffer, next + 1, false)));
+                        return Some((Ok(batch), Some((rx, next + 1))));
                     }
                     match state.end {
                         Some(ReplayEnd::Finished) => return None,
                         Some(ReplayEnd::Failed) => {
-                            drop(state);
-                            let error = outputs.stopped_early(&key, partition);
-                            return Some((Err(error), (buffer, next, true)));
+                            return Some((
+                                Err(outputs.stopped_early(&key, partition)),
+                                None,
+                            ));
                         }
                         None => {}
                     }
                 }
-                notified.await;
+                // The outputs this stream holds keep the sender alive, so
+                // this only waits for the producer's next batch or its end.
+                if rx.changed().await.is_err() {
+                    return Some((Err(outputs.stopped_early(&key, partition)), None));
+                }
             }
         }
     })
-    .boxed()
 }
 
 #[cfg(test)]
@@ -768,6 +745,22 @@ mod tests {
 
         let batches = consumer.await.unwrap().unwrap();
         assert_eq!(values(&batches), vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn registering_twice_fails_and_keeps_the_first_outputs() {
+        let registry = PipelinedRegistry::new("local");
+        let (first, sink) = queue(2, WAIT);
+        registry.register(key(0), first).unwrap();
+        let (second, _second_sink) = queue(2, WAIT);
+        let err = registry.register(key(0), second).unwrap_err();
+        assert!(err.to_string().contains("registered twice"), "{err}");
+
+        let stream = registry.open(&key(0), 0, WAIT).await.unwrap().stream;
+        assert!(sink.send(batch(&[1])).await.unwrap());
+        sink.finish().await.unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(values(&batches), vec![1]);
     }
 
     #[tokio::test]

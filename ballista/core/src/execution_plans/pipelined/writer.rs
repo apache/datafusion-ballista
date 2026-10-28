@@ -17,7 +17,7 @@
 
 //! [`PipelinedShuffleWriterExec`]: the root of a stage in a pipelined job.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use datafusion::arrow::compute::BatchCoalescer;
@@ -74,7 +74,6 @@ pub struct PipelinedShuffleWriterExec {
     broadcast: bool,
     task_id: usize,
     global_output_partition_ids: Vec<usize>,
-    registry: Option<Arc<PipelinedRegistry>>,
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
 }
@@ -122,7 +121,6 @@ impl PipelinedShuffleWriterExec {
             broadcast,
             task_id: 0,
             global_output_partition_ids: (0..input_partitions).collect(),
-            registry: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
         })
@@ -138,13 +136,6 @@ impl PipelinedShuffleWriterExec {
     /// passthrough outputs. Set by the executor.
     pub fn with_global_output_partition_ids(mut self, ids: Vec<usize>) -> Self {
         self.global_output_partition_ids = ids;
-        self
-    }
-
-    /// The registry outputs are served from. When unset, the writer uses the
-    /// one the executor attaches to the task's session configuration.
-    pub fn with_registry(mut self, registry: Arc<PipelinedRegistry>) -> Self {
-        self.registry = Some(registry);
         self
     }
 
@@ -202,10 +193,9 @@ impl PipelinedShuffleWriterExec {
         &self,
         context: Arc<TaskContext>,
     ) -> Result<Vec<ShuffleWritePartition>> {
-        let registry = self
-            .registry
-            .clone()
-            .or_else(|| context.session_config().get_extension::<PipelinedRegistry>())
+        let registry = context
+            .session_config()
+            .get_extension::<PipelinedRegistry>()
             .ok_or_else(|| {
                 DataFusionError::Internal(
                     "PipelinedShuffleWriterExec has no registry; the executor provides one"
@@ -354,13 +344,6 @@ struct Outputs {
     /// One per output partition, in ascending partition order. For hash
     /// routing the partitions are `0..n`, so a slot's index is its partition.
     slots: Vec<Output>,
-    /// Hash routing only: the rows routed to each slot, coalesced back up to
-    /// the batch size before they are sent. Empty for passthrough, which
-    /// sends input batches as they are.
-    coalescers: Vec<Mutex<BatchCoalescer>>,
-    /// How many slots still have a consumer. At zero the writer can stop
-    /// reading input nobody wants.
-    open: AtomicUsize,
 }
 
 impl Outputs {
@@ -371,24 +354,17 @@ impl Outputs {
         sinks: Vec<PartitionSink>,
         coalesce: Option<(SchemaRef, usize)>,
     ) -> Self {
-        let slots: Vec<Output> = ids
+        let slots = ids
             .into_iter()
             .zip(sinks)
-            .map(|(id, sink)| Output::new(id, sink))
-            .collect();
-        let coalescers = coalesce
-            .map(|(schema, batch_size)| {
-                slots
-                    .iter()
-                    .map(|_| Mutex::new(BatchCoalescer::new(schema.clone(), batch_size)))
-                    .collect()
+            .map(|(id, sink)| {
+                let coalescer = coalesce.as_ref().map(|(schema, batch_size)| {
+                    Mutex::new(BatchCoalescer::new(schema.clone(), *batch_size))
+                });
+                Output::new(id, sink, coalescer)
             })
-            .unwrap_or_default();
-        Self {
-            open: AtomicUsize::new(slots.len()),
-            slots,
-            coalescers,
-        }
+            .collect();
+        Self { slots }
     }
 
     /// The slot serving global output partition `id`.
@@ -402,53 +378,17 @@ impl Outputs {
             })
     }
 
+    /// Whether every consumer has gone away, so the writer can stop reading
+    /// input nobody wants.
     fn all_closed(&self) -> bool {
-        self.open.load(Ordering::Relaxed) == 0
+        self.slots.iter().all(|output| !output.is_open())
     }
 
-    /// Sends a batch to `output`, counting it. Once the consumer is gone the
-    /// output is closed and `open` counts down. Fails if the consumer never
-    /// opens the partition.
-    async fn send(&self, output: &Output, batch: RecordBatch) -> Result<()> {
-        if !output.is_open() {
-            return Ok(());
-        }
-        let rows = batch.num_rows() as u64;
-        let bytes = batch.get_array_memory_size() as u64;
-        if output.sink.send(batch).await? {
-            output.rows.fetch_add(rows, Ordering::Relaxed);
-            output.batches.fetch_add(1, Ordering::Relaxed);
-            output.bytes.fetch_add(bytes, Ordering::Relaxed);
-        } else if output.open.swap(false, Ordering::Relaxed) {
-            self.open.fetch_sub(1, Ordering::Relaxed);
-        }
-        Ok(())
-    }
-
-    /// Flushes the rows each coalescer still holds and sends every output
-    /// its end-of-stream marker.
-    ///
-    /// Outputs are finished concurrently: a full queue holds back only its own
-    /// partition's marker, not every partition after it.
+    /// Finishes every output. Outputs are finished concurrently: a full queue
+    /// holds back only its own partition's marker, not every partition after
+    /// it.
     async fn finish(&self) -> Result<()> {
-        let finishing = self
-            .slots
-            .iter()
-            .enumerate()
-            .map(|(slot, output)| async move {
-                if let Some(coalescer) = self.coalescers.get(slot) {
-                    let ready = {
-                        let mut coalescer = coalescer.lock().unwrap();
-                        coalescer.finish_buffered_batch()?;
-                        drain(&mut coalescer)
-                    };
-                    for batch in ready {
-                        self.send(output, batch).await?;
-                    }
-                }
-                output.sink.finish().await
-            });
-        futures::future::try_join_all(finishing).await?;
+        futures::future::try_join_all(self.slots.iter().map(Output::finish)).await?;
         Ok(())
     }
 }
@@ -458,6 +398,10 @@ struct Output {
     /// The global output partition.
     id: usize,
     sink: PartitionSink,
+    /// Hash routing only: the rows routed here, coalesced back up to the
+    /// batch size before they are sent. Passthrough sends input batches as
+    /// they are.
+    coalescer: Option<Mutex<BatchCoalescer>>,
     /// Cleared once the consumer has gone away.
     open: AtomicBool,
     rows: AtomicU64,
@@ -466,10 +410,15 @@ struct Output {
 }
 
 impl Output {
-    fn new(id: usize, sink: PartitionSink) -> Self {
+    fn new(
+        id: usize,
+        sink: PartitionSink,
+        coalescer: Option<Mutex<BatchCoalescer>>,
+    ) -> Self {
         Self {
             id,
             sink,
+            coalescer,
             open: AtomicBool::new(true),
             rows: AtomicU64::new(0),
             batches: AtomicU64::new(0),
@@ -479,6 +428,63 @@ impl Output {
 
     fn is_open(&self) -> bool {
         self.open.load(Ordering::Relaxed)
+    }
+
+    /// Writes rows routed to this output, through the coalescer if it has
+    /// one. Does nothing once the consumer is gone. Fails if the consumer
+    /// never opens the partition.
+    async fn write(&self, batch: RecordBatch) -> Result<()> {
+        if !self.is_open() {
+            return Ok(());
+        }
+        match &self.coalescer {
+            Some(coalescer) => {
+                let ready = {
+                    let mut coalescer = coalescer.lock().unwrap();
+                    coalescer.push_batch(batch)?;
+                    drain(&mut coalescer)
+                };
+                for batch in ready {
+                    self.send(batch).await?;
+                }
+                Ok(())
+            }
+            None => self.send(batch).await,
+        }
+    }
+
+    /// Flushes the rows the coalescer still holds and sends the end-of-stream
+    /// marker.
+    async fn finish(&self) -> Result<()> {
+        if let Some(coalescer) = &self.coalescer {
+            let ready = {
+                let mut coalescer = coalescer.lock().unwrap();
+                coalescer.finish_buffered_batch()?;
+                drain(&mut coalescer)
+            };
+            for batch in ready {
+                self.send(batch).await?;
+            }
+        }
+        self.sink.finish().await
+    }
+
+    /// Sends a batch to the sink, counting it, and marks the output closed
+    /// once the consumer is gone.
+    async fn send(&self, batch: RecordBatch) -> Result<()> {
+        if !self.is_open() {
+            return Ok(());
+        }
+        let rows = batch.num_rows() as u64;
+        let bytes = batch.get_array_memory_size() as u64;
+        if self.sink.send(batch).await? {
+            self.rows.fetch_add(rows, Ordering::Relaxed);
+            self.batches.fetch_add(1, Ordering::Relaxed);
+            self.bytes.fetch_add(bytes, Ordering::Relaxed);
+        } else {
+            self.open.store(false, Ordering::Relaxed);
+        }
+        Ok(())
     }
 }
 
@@ -505,26 +511,13 @@ async fn drive_hashed(
         input_rows.add(batch.num_rows());
         for piece in partitioner.partition_iter(batch)? {
             let (partition, piece) = piece?;
-            let (Some(output), Some(coalescer)) = (
-                outputs.slots.get(partition),
-                outputs.coalescers.get(partition),
-            ) else {
-                return Err(DataFusionError::Internal(format!(
+            let output = outputs.slots.get(partition).ok_or_else(|| {
+                DataFusionError::Internal(format!(
                     "hash partitioning produced partition {partition}, which this task does not serve"
-                )));
-            };
-            if !output.is_open() {
-                continue;
-            }
-            let ready = {
-                let mut coalescer = coalescer.lock().unwrap();
-                coalescer.push_batch(piece)?;
-                drain(&mut coalescer)
-            };
-            for batch in ready {
-                let _timer = write_time.timer();
-                outputs.send(output, batch).await?;
-            }
+                ))
+            })?;
+            let _timer = write_time.timer();
+            output.write(piece).await?;
         }
         if outputs.all_closed() {
             debug!("every consumer of this pipelined task has gone away; stopping");
@@ -550,7 +543,7 @@ async fn drive_passthrough(
         input_rows.add(batch.num_rows());
         {
             let _timer = write_time.timer();
-            outputs.send(output, batch).await?;
+            output.write(batch).await?;
         }
         if !output.is_open() {
             break;
@@ -626,7 +619,7 @@ impl ExecutionPlan for PipelinedShuffleWriterExec {
                 "PipelinedShuffleWriterExec expects a single child".to_owned(),
             ));
         };
-        let mut writer = PipelinedShuffleWriterExec::try_new(
+        let writer = PipelinedShuffleWriterExec::try_new(
             self.job_id.clone(),
             self.stage_id,
             input,
@@ -635,9 +628,6 @@ impl ExecutionPlan for PipelinedShuffleWriterExec {
         )?
         .with_task_id(self.task_id)
         .with_global_output_partition_ids(self.global_output_partition_ids.clone());
-        if let Some(registry) = &self.registry {
-            writer = writer.with_registry(registry.clone());
-        }
         Ok(Arc::new(writer))
     }
 

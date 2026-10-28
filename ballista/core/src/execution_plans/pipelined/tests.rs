@@ -84,8 +84,13 @@ fn input(partitions: Vec<Vec<RecordBatch>>) -> Arc<dyn ExecutionPlan> {
     MemorySourceConfig::try_new_exec(&partitions, schema(), None).unwrap()
 }
 
-fn task_ctx(queue_capacity: Option<usize>) -> Arc<TaskContext> {
-    let mut config = SessionConfig::new_with_ballista();
+/// A context for tasks on the executor that owns `registry`, as the executor
+/// attaches it to every task's session.
+fn task_ctx(
+    registry: &Arc<PipelinedRegistry>,
+    queue_capacity: Option<usize>,
+) -> Arc<TaskContext> {
+    let mut config = SessionConfig::new_with_ballista().with_extension(registry.clone());
     if let Some(capacity) = queue_capacity {
         config
             .options_mut()
@@ -133,7 +138,6 @@ fn writer(
     input: Arc<dyn ExecutionPlan>,
     partitioning: Option<Partitioning>,
     broadcast: bool,
-    registry: &Arc<PipelinedRegistry>,
 ) -> PipelinedShuffleWriterExec {
     PipelinedShuffleWriterExec::try_new(
         "job".into(),
@@ -144,7 +148,6 @@ fn writer(
     )
     .unwrap()
     .with_task_id(task_id)
-    .with_registry(registry.clone())
 }
 
 async fn read_partition(
@@ -176,19 +179,18 @@ async fn hash_exchange_delivers_every_row_to_exactly_one_partition() {
         vec![batch(0..100), batch(100..200)],
         vec![batch(200..300), batch(300..400)],
     ]);
-    let writer = writer(0, input, Some(hash_on_k(3)), false, &registry);
+    let writer = writer(0, input, Some(hash_on_k(3)), false);
     let reader = PipelinedShuffleReaderExec::try_new(
         STAGE,
         (0..3).map(|p| vec![location(0, p)]).collect(),
         schema(),
         hash_on_k(3),
     )
-    .unwrap()
-    .with_registry(registry.clone());
+    .unwrap();
 
     // The readers start first, so they also exercise waiting for the producer
     // to register.
-    let ctx = task_ctx(None);
+    let ctx = task_ctx(&registry, None);
     let reads = futures::future::try_join_all(
         (0..3).map(|p| read_partition(&reader, p, ctx.clone())),
     );
@@ -231,14 +233,12 @@ async fn consumer_partition_merges_every_producer_task() {
             input(vec![vec![batch(0..50)]]),
             Some(hash_on_k(2)),
             false,
-            &registry,
         ),
         writer(
             1,
             input(vec![vec![batch(50..100)]]),
             Some(hash_on_k(2)),
             false,
-            &registry,
         ),
     ];
     let reader = PipelinedShuffleReaderExec::try_new(
@@ -249,10 +249,9 @@ async fn consumer_partition_merges_every_producer_task() {
         schema(),
         hash_on_k(2),
     )
-    .unwrap()
-    .with_registry(registry.clone());
+    .unwrap();
 
-    let ctx = task_ctx(Some(1));
+    let ctx = task_ctx(&registry, Some(1));
     let reads = futures::future::try_join_all(
         (0..2).map(|p| read_partition(&reader, p, ctx.clone())),
     );
@@ -275,7 +274,6 @@ async fn passthrough_exchange_keeps_input_partitions_under_their_global_ids() {
         input(vec![vec![batch(0..10)], vec![batch(10..20)]]),
         None,
         false,
-        &registry,
     )
     .with_global_output_partition_ids(vec![4, 7]);
     // The scheduler names the task's outputs the same way.
@@ -291,10 +289,9 @@ async fn passthrough_exchange_keeps_input_partitions_under_their_global_ids() {
         schema(),
         Partitioning::UnknownPartitioning(2),
     )
-    .unwrap()
-    .with_registry(registry.clone());
+    .unwrap();
 
-    let ctx = task_ctx(None);
+    let ctx = task_ctx(&registry, None);
     let reads = futures::future::try_join_all(
         (0..2).map(|p| read_partition(&reader, p, ctx.clone())),
     );
@@ -313,7 +310,6 @@ async fn broadcast_outputs_replay_to_every_consumer_task() {
         input(vec![vec![batch(0..10)], vec![batch(10..20)]]),
         None,
         true,
-        &registry,
     );
     // Two consumer tasks, each reading every partition in full.
     let readers: Vec<_> = (0..2)
@@ -323,11 +319,10 @@ async fn broadcast_outputs_replay_to_every_consumer_task() {
                 vec![location(0, 0), location(0, 1)],
                 schema(),
             )
-            .with_registry(registry.clone())
         })
         .collect();
 
-    let ctx = task_ctx(Some(1));
+    let ctx = task_ctx(&registry, Some(1));
     writer.execute_pipelined(ctx.clone()).await.unwrap();
     for reader in &readers {
         let mut all = keys(&read_partition(reader, 0, ctx.clone()).await.unwrap());
@@ -342,17 +337,16 @@ async fn producer_failure_fails_the_consumer_with_the_cause() {
     let failing: Arc<dyn ExecutionPlan> = Arc::new(
         ChaosExec::new(input(vec![vec![batch(0..10)]]), 1.0, "fatal", Some(7)).unwrap(),
     );
-    let writer = writer(0, failing, Some(hash_on_k(2)), false, &registry);
+    let writer = writer(0, failing, Some(hash_on_k(2)), false);
     let reader = PipelinedShuffleReaderExec::try_new(
         STAGE,
         (0..2).map(|p| vec![location(0, p)]).collect(),
         schema(),
         hash_on_k(2),
     )
-    .unwrap()
-    .with_registry(registry.clone());
+    .unwrap();
 
-    let ctx = task_ctx(None);
+    let ctx = task_ctx(&registry, None);
     let (read, write) = tokio::join!(
         read_partition(&reader, 0, ctx.clone()),
         writer.execute_pipelined(ctx)
@@ -368,17 +362,16 @@ async fn producer_stops_when_its_consumer_goes_away() {
     // Far more batches than the queue holds, so the producer can only finish
     // by noticing that its consumer has gone.
     let batches = (0..100).map(|i| batch(i * 10..(i + 1) * 10)).collect();
-    let writer = writer(0, input(vec![batches]), None, false, &registry);
+    let writer = writer(0, input(vec![batches]), None, false);
     let reader = PipelinedShuffleReaderExec::try_new(
         STAGE,
         vec![vec![location(0, 0)]],
         schema(),
         Partitioning::UnknownPartitioning(1),
     )
-    .unwrap()
-    .with_registry(registry.clone());
+    .unwrap();
 
-    let ctx = task_ctx(Some(1));
+    let ctx = task_ctx(&registry, Some(1));
     let consume_one = async {
         let mut stream = reader.execute(0, ctx.clone()).unwrap();
         let first = stream.next().await.unwrap().unwrap();
@@ -407,8 +400,8 @@ async fn producer_stops_when_its_consumer_goes_away() {
 async fn producer_fails_when_no_consumer_opens_its_full_queue() {
     let registry = Arc::new(PipelinedRegistry::new(EXECUTOR));
     let batches = (0..100).map(|i| batch(i * 10..(i + 1) * 10)).collect();
-    let writer = writer(0, input(vec![batches]), None, false, &registry);
-    let mut config = SessionConfig::new_with_ballista();
+    let writer = writer(0, input(vec![batches]), None, false);
+    let mut config = SessionConfig::new_with_ballista().with_extension(registry);
     config
         .options_mut()
         .set(BALLISTA_PIPELINED_QUEUE_CAPACITY, "1")
@@ -430,17 +423,16 @@ async fn producer_fails_when_no_consumer_opens_its_full_queue() {
 #[tokio::test]
 async fn empty_input_still_ends_every_output() {
     let registry = Arc::new(PipelinedRegistry::new(EXECUTOR));
-    let writer = writer(0, input(vec![vec![]]), Some(hash_on_k(2)), false, &registry);
+    let writer = writer(0, input(vec![vec![]]), Some(hash_on_k(2)), false);
     let reader = PipelinedShuffleReaderExec::try_new(
         STAGE,
         (0..2).map(|p| vec![location(0, p)]).collect(),
         schema(),
         hash_on_k(2),
     )
-    .unwrap()
-    .with_registry(registry.clone());
+    .unwrap();
 
-    let ctx = task_ctx(None);
+    let ctx = task_ctx(&registry, None);
     let reads = futures::future::try_join_all(
         (0..2).map(|p| read_partition(&reader, p, ctx.clone())),
     );
@@ -497,7 +489,7 @@ async fn restricting_a_broadcast_reader_keeps_every_location() {
 #[derive(Debug, Default)]
 struct CountingPool {
     acquired: parking_lot::Mutex<BTreeMap<u16, usize>>,
-    shared: Arc<parking_lot::Mutex<BTreeMap<u16, Arc<SharedClient>>>>,
+    shared: parking_lot::Mutex<BTreeMap<u16, Arc<SharedClient>>>,
 }
 
 #[async_trait::async_trait]
@@ -523,18 +515,15 @@ impl crate::client_pool::BallistaClientPool for CountingPool {
         _config: &crate::utils::GrpcClientConfig,
         _customize_endpoint: Option<Arc<crate::extension::BallistaConfigGrpcEndpoint>>,
     ) -> crate::error::Result<Arc<SharedClient>> {
-        if let Some(client) = self.shared.lock().get(&port) {
+        let mut shared = self.shared.lock();
+        if let Some(client) = shared.get(&port).filter(|c| !c.is_discarded()) {
             return Ok(client.clone());
         }
         *self.acquired.lock().entry(port).or_default() += 1;
-        let shared = self.shared.clone();
         let client = Arc::new(SharedClient::new(
             crate::client::BallistaClient::new_for_test(host, port),
-            Box::new(move || {
-                shared.lock().remove(&port);
-            }),
         ));
-        self.shared.lock().insert(port, client.clone());
+        shared.insert(port, client.clone());
         Ok(client)
     }
 
