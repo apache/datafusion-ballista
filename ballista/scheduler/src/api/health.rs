@@ -22,7 +22,10 @@
 //! the sole condition under which k8s should kill and restart the pod).
 //!
 //! `/readyz` returns 200 only when the scheduler is ready to accept work,
-//! defined as having at least `min_ready_executors` live executors registered.
+//! defined as having at least `min_ready_executors` live executors registered
+//! and not being shut down: a scheduler that received SIGTERM refuses new jobs
+//! while its active ones finish, and fails `/readyz` so a Service stops routing
+//! new work to it.
 //! A readiness failure removes the pod from Service endpoints but leaves the
 //! process alone, which is what we want during rolling upgrades: a fresh
 //! scheduler with `BALLISTA_PROTOCOL_VERSION` rejects executors from the
@@ -78,7 +81,7 @@ pub(crate) async fn healthz() -> Response {
         tag = "health",
         responses(
             (status = 200, description = "Scheduler is ready to accept queries", content_type = "text/plain", body = String),
-            (status = 503, description = "Scheduler is not ready (insufficient executors)", content_type = "text/plain", body = String)
+            (status = 503, description = "Scheduler is not ready (insufficient executors, or shutting down)", content_type = "text/plain", body = String)
         )
     )
 )]
@@ -90,7 +93,13 @@ pub(crate) async fn readyz<
 ) -> Response {
     let alive = scheduler.state.executor_manager.get_alive_executors().len();
     let required = scheduler.state.config.min_ready_executors;
-    if scheduler.is_ready() {
+    if scheduler.is_draining() {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not ready: shutting down\n".to_string(),
+        )
+            .into_response()
+    } else if scheduler.is_ready() {
         (
             StatusCode::OK,
             format!("ready: {alive} executors registered\n"),
@@ -154,6 +163,14 @@ mod tests {
         let scheduler = scheduler_with_min_ready(0).await;
         let response = readyz(State(scheduler)).await;
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn readyz_fails_once_the_scheduler_is_draining() {
+        let scheduler = scheduler_with_min_ready(0).await;
+        scheduler.start_draining();
+        let response = readyz(State(scheduler)).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]

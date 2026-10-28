@@ -129,10 +129,10 @@ The scheduler also provides a REST API that allows jobs to be monitored.
 
 Two probe endpoints are always mounted, whether or not the `rest-api` feature is enabled:
 
-| API      | Method | Description                                                                         |
-| -------- | ------ | ----------------------------------------------------------------------------------- |
-| /healthz | GET    | Liveness. Always `200 OK` while the process runs.                                   |
-| /readyz  | GET    | Readiness. `200 OK` once at least `--min-ready-executors` executors are registered. |
+| API      | Method | Description                                                                                                                         |
+| -------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| /healthz | GET    | Liveness. Always `200 OK` while the process runs.                                                                                   |
+| /readyz  | GET    | Readiness. `200 OK` once at least `--min-ready-executors` executors are registered, and `503` while the scheduler is shutting down. |
 
 ## Web TUI Configuration
 

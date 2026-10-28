@@ -15,19 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::wait_for_future;
-use ballista::prelude::*;
-use ballista_core::extension::SessionConfigHelperExt;
-use ballista_core::serde::protobuf::KeyValuePair;
 use cluster::{PyExecutor, PyScheduler};
-use datafusion::execution::SessionStateBuilder;
-use datafusion::prelude::*;
-use datafusion_proto::bytes::logical_plan_from_bytes;
-use datafusion_python::errors::from_datafusion_error;
 use pyo3::prelude::*;
-use std::collections::HashMap;
 
 mod cluster;
+mod codec;
+mod config;
+mod ffi_planner_workaround;
+mod query_planner;
 mod utils;
 
 pub(crate) struct TokioRuntime(tokio::runtime::Runtime);
@@ -39,60 +34,26 @@ fn _internal_ballista(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyScheduler>()?;
     m.add_class::<PyExecutor>()?;
 
-    m.add_class::<datafusion_python::dataframe::PyParquetWriterOptions>()?;
-    m.add_class::<datafusion_python::dataframe::PyParquetColumnOptions>()?;
-    m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
+    m.add_class::<config::PyBallistaConfigExtension>()?;
 
-    m.add_function(wrap_pyfunction!(create_ballista_data_frame, m.clone())?)?;
+    m.add_class::<query_planner::PyBallistaExtension>()?;
+    m.add_class::<query_planner::PyBallistaLogicalExtensionCodec>()?;
+    m.add_class::<query_planner::PyBallistaPhysicalExtensionCodec>()?;
+    m.add_class::<query_planner::PyBallistaQueryPlanner>()?;
+
     m.add_function(wrap_pyfunction!(
         crate::cluster::setup_test_cluster,
         m.clone()
     )?)?;
 
+    m.add_function(wrap_pyfunction!(
+        query_planner::ballista_datafusion_config_defaults,
+        m.clone()
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        query_planner::with_ballista_query_planner,
+        m.clone()
+    )?)?;
+
     Ok(())
-}
-
-/// Creates a DataFrame which runs on ballista session context.
-///
-/// `config_overrides` is an optional dictionary of DataFusion / Ballista
-/// configuration keys (e.g. `datafusion.execution.target_partitions`) that
-/// will be applied on top of `SessionConfig::new_with_ballista()` and
-/// propagated to the scheduler-side session.
-///
-/// Returned DataFrame will execute its plan on ballista.
-#[pyfunction]
-#[pyo3(signature = (plan_blob, url, session_id, config_overrides=None))]
-fn create_ballista_data_frame(
-    py: Python,
-    plan_blob: &[u8],
-    url: &str,
-    session_id: &str,
-    config_overrides: Option<HashMap<String, String>>,
-) -> PyResult<datafusion_python::dataframe::PyDataFrame> {
-    let mut session_config = SessionConfig::new_with_ballista();
-    if let Some(overrides) = config_overrides {
-        let pairs: Vec<KeyValuePair> = overrides
-            .into_iter()
-            .map(|(key, value)| KeyValuePair {
-                key,
-                value: Some(value),
-            })
-            .collect();
-        session_config.update_from_key_value_pair_mut(&pairs);
-    }
-
-    let state = SessionStateBuilder::new()
-        .with_default_features()
-        .with_config(session_config)
-        .with_session_id(session_id.to_string())
-        .build();
-
-    let ctx = wait_for_future(py, SessionContext::remote_with_state(url, state))
-        .map_err(from_datafusion_error)?;
-    let plan = logical_plan_from_bytes(plan_blob, &ctx.task_ctx())
-        .map_err(from_datafusion_error)?;
-
-    Ok(datafusion_python::dataframe::PyDataFrame::new(
-        DataFrame::new(ctx.state(), plan),
-    ))
 }

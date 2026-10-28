@@ -384,10 +384,31 @@ async fn test_hash_join_three_tables_collect_left() -> datafusion::common::Resul
     assert_eq!(1, stages.len());
     assert_eq!(0, cancellable.len());
 
-    assert_plan!(planner.current_plan(),  @ r"
+    // The outer join's build side is the inner join's output, whose size is
+    // only an estimate until it runs, so it is staged rather than broadcast.
+    assert_plan!(planner.current_plan(),  @ "
     AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
+      ProjectionExec: expr=[id@0 as id]
+        DynamicJoinSelectionExec: plan_id=1, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
+          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=4, stage_id=1, stage_resolved=false
+            HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@0]
+              ExchangeExec: partitioning=None, plan_id=2, stage_id=0, stage_resolved=true, broadcast=true
+                DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+              DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+          DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+    ");
+
+    // Once measured small, the staged output is broadcast as it stands.
+    planner.finalise_stage_internal(1, mock_partitions_with_statistics())?;
+
+    let (stages, cancellable) = planner.actionable_stages()?;
+    assert_eq!(1, stages.unwrap().len());
+    assert_eq!(0, cancellable.len());
+
+    assert_plan!(planner.current_plan(), @"
+    AdaptiveDatafusionExec: is_final=true, plan_id=3, stage_id=2, stage_resolved=false
       HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@0]
-        ExchangeExec: partitioning=None, plan_id=4, stage_id=1, stage_resolved=false, broadcast=true
+        ExchangeExec: partitioning=None, plan_id=5, stage_id=1, stage_resolved=true, broadcast=true
           HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@0]
             ExchangeExec: partitioning=None, plan_id=2, stage_id=0, stage_resolved=true, broadcast=true
               DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
