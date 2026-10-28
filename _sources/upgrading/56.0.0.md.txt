@@ -134,6 +134,14 @@ early, so a straggler partition leaves them idle. Set
 `ballista.scheduler.max_partitions_per_task` to a positive value to dispatch
 smaller tasks, which release their vcores sooner.
 
+### API changes
+
+#### `sort_shuffle::BufferedBatches` is no longer public
+
+`ballista_core::execution_plans::sort_shuffle::BufferedBatches`, the sort-shuffle
+writer's internal row buffer, is no longer exported. It had no use outside the
+writer. Code that used it directly should use `SortShuffleWriterExec` instead.
+
 ### Python client changes
 
 #### Summary

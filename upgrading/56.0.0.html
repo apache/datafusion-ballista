@@ -519,6 +519,15 @@ early, so a straggler partition leaves them idle. Set
 smaller tasks, which release their vcores sooner.</p>
 </section>
 </section>
+<section id="api-changes">
+<h3>API changes<a class="headerlink" href="#api-changes" title="Link to this heading">#</a></h3>
+<section id="sort-shuffle-bufferedbatches-is-no-longer-public">
+<h4><code class="docutils literal notranslate"><span class="pre">sort_shuffle::BufferedBatches</span></code> is no longer public<a class="headerlink" href="#sort-shuffle-bufferedbatches-is-no-longer-public" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">ballista_core::execution_plans::sort_shuffle::BufferedBatches</span></code>, the sort-shuffle
+writer’s internal row buffer, is no longer exported. It had no use outside the
+writer. Code that used it directly should use <code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExec</span></code> instead.</p>
+</section>
+</section>
 <section id="python-client-changes">
 <h3>Python client changes<a class="headerlink" href="#python-client-changes" title="Link to this heading">#</a></h3>
 <section id="summary">
@@ -706,6 +715,10 @@ unchanged.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#containers-stop-on-sigterm">Containers stop on SIGTERM</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#undecodable-fetch-tickets-are-rejected-as-invalidargument">Undecodable fetch tickets are rejected as <code class="docutils literal notranslate"><span class="pre">InvalidArgument</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#pull-staged-executors-no-longer-run-more-partitions-than-they-have-vcores">Pull-staged executors no longer run more partitions than they have vcores</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-shuffle-bufferedbatches-is-no-longer-public"><code class="docutils literal notranslate"><span class="pre">sort_shuffle::BufferedBatches</span></code> is no longer public</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#python-client-changes">Python client changes</a><ul class="nav section-nav flex-column">
