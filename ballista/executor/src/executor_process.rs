@@ -39,6 +39,7 @@ use tokio::fs::DirEntry;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::{fs, time};
+use tonic::transport::Channel;
 
 use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool, TrackConsumersPool};
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
@@ -48,10 +49,9 @@ use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
 use ballista_core::extension::{EndpointOverrideFn, SessionConfigExt};
 use ballista_core::serde::protobuf::executor_resource::Resource;
-use ballista_core::serde::protobuf::executor_status::Status;
 use ballista_core::serde::protobuf::{
-    ExecutorRegistration, ExecutorResource, ExecutorSpecification, ExecutorStatus,
-    ExecutorStoppedParams, HeartBeatParams, scheduler_grpc_client::SchedulerGrpcClient,
+    ExecutorRegistration, ExecutorResource, ExecutorSpecification, ExecutorStoppedParams,
+    scheduler_grpc_client::SchedulerGrpcClient,
 };
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
@@ -70,7 +70,7 @@ use crate::ArrowFlightServerProvider;
 use crate::client_pool::DefaultBallistaClientPool;
 use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
 use crate::executor::{Executor, TasksDrainedFuture};
-use crate::executor_server::TERMINATING;
+use crate::executor_server::{TERMINATING, heartbeat_params};
 use crate::flight_service::BallistaFlightService;
 use crate::metrics::LoggingMetricsCollector;
 use crate::metrics::{ExecutorMemoryMetrics, ExecutorMetricCollectionPolicy};
@@ -839,6 +839,13 @@ async fn start_executor_process_inner(
             );
         }
         _ => {
+            start_pull_heartbeater(
+                scheduler.clone(),
+                executor.clone(),
+                opt.metric_collection_policy,
+                opt.executor_heartbeat_interval_seconds,
+                &shutdown_notification,
+            );
             let poll_loop = execution_loop::poll_loop(
                 scheduler.clone(),
                 executor.clone(),
@@ -883,7 +890,7 @@ async fn start_executor_process_inner(
         }
     });
 
-    let tasks_drained = TasksDrainedFuture(executor);
+    let tasks_drained = TasksDrainedFuture(executor.clone());
 
     // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
     // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs
@@ -915,16 +922,13 @@ async fn start_executor_process_inner(
     let graceful_shutdown = async {
         if notify_scheduler {
             // Send a heartbeat to update status of executor to `Fenced`. This should signal to the
-            // scheduler to no longer schedule tasks on this executor
+            // scheduler to no longer schedule tasks on this executor. It carries the latest
+            // metrics, which the scheduler keeps once the executor stops heartbeating.
             if let Err(error) = scheduler
-                .heart_beat_from_executor(HeartBeatParams {
-                    executor_id: executor_id.clone(),
-                    metrics: vec![],
-                    status: Some(ExecutorStatus {
-                        status: Some(Status::Terminating(String::default())),
-                    }),
-                    metadata: Some(executor_meta),
-                })
+                .heart_beat_from_executor(heartbeat_params(
+                    &executor,
+                    opt.metric_collection_policy,
+                ))
                 .await
             {
                 error!("error sending heartbeat with fenced status: {error:?}");
@@ -1037,6 +1041,39 @@ async fn check_services(
             }
         }
     }
+}
+
+/// Sends periodic heartbeats from a pull-based executor so the scheduler sees
+/// its metrics and status, as it does for a push-based one.
+///
+/// The poll loop already keeps the executor alive, as it polls far more often
+/// than this. A failed heartbeat is logged and retried on the next interval;
+/// the executor's health, and shutting down when the scheduler is unreachable,
+/// stay with the poll loop.
+fn start_pull_heartbeater(
+    mut scheduler: SchedulerGrpcClient<Channel>,
+    executor: Arc<Executor>,
+    metric_collection_policy: ExecutorMetricCollectionPolicy,
+    interval_seconds: u64,
+    shutdown_notification: &ShutdownNotifier,
+) {
+    let mut shutdown = shutdown_notification.subscribe_for_shutdown();
+    let complete = shutdown_notification.shutdown_complete_tx.clone();
+    tokio::spawn(async move {
+        info!("Starting heartbeater to send metrics to the scheduler periodically");
+        while !shutdown.is_shutdown() {
+            let params = heartbeat_params(&executor, metric_collection_policy);
+            if let Err(e) = scheduler.heart_beat_from_executor(params).await {
+                warn!("Fail to send heartbeat to the scheduler due to {e:?}");
+            }
+            tokio::select! {
+                _ = time::sleep(Duration::from_secs(interval_seconds)) => {},
+                _ = shutdown.recv() => break,
+            };
+        }
+        info!("Stop heartbeater");
+        drop(complete);
+    });
 }
 
 /// This function will be scheduled periodically for cleanup the job shuffle data left on the executor.

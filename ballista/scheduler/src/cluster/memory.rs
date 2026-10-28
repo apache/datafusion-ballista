@@ -202,24 +202,23 @@ impl ClusterState for InMemoryClusterState {
             }
         }
 
-        //
-        // pull based executor sends `save_executor_metadata`
-        // with all requests, not `ExecutorHeartbeat`, to make it consistent
-        // with push based, registering `ExecutorHeartbeat` every time
-        //
-        let heartbeat = ExecutorHeartbeat {
-            executor_id,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("Time went backwards")
-                .as_secs(),
-            metrics: vec![],
-            status: None,
-            peak_proc_physical_memory: 0,
-            peak_proc_virtual_memory: 0,
-        };
-        self.save_executor_heartbeat(heartbeat).await
-        // Ok(())
+        // A poll refreshes the heartbeat timestamp and keeps the last status,
+        // metrics and peaks; see the `ClusterState::save_executor_metadata`
+        // docs. The entry is updated in place so a heartbeat saved
+        // concurrently isn't overwritten.
+        let timestamp = timestamp_secs();
+        self.heartbeats
+            .entry(executor_id.clone())
+            .and_modify(|heartbeat| heartbeat.timestamp = timestamp)
+            .or_insert_with(|| ExecutorHeartbeat {
+                executor_id,
+                timestamp,
+                metrics: vec![],
+                status: None,
+                peak_proc_physical_memory: 0,
+                peak_proc_virtual_memory: 0,
+            });
+        Ok(())
     }
 
     async fn get_executor_metadata(&self, executor_id: &str) -> Result<ExecutorMetadata> {

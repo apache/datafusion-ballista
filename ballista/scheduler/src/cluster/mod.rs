@@ -221,6 +221,19 @@ pub trait ClusterState: Send + Sync + 'static {
     ) -> Result<()>;
 
     /// Saves executor metadata, overwriting any existing metadata for the executor ID.
+    ///
+    /// Pull-based executors call this with every poll instead of registering
+    /// through [`Self::register_executor`], so the call also acts as a liveness
+    /// signal. An implementation must refresh the executor's heartbeat
+    /// timestamp here, since [`ExecutorManager`](crate::state::executor_manager::ExecutorManager)
+    /// uses it to decide whether the executor is still alive.
+    ///
+    /// It must not reset the rest of the heartbeat. Status, metrics and peak
+    /// memory come from the executor's own periodic
+    /// [`save_executor_heartbeat`](Self::save_executor_heartbeat) calls, and a
+    /// poll must keep the last values it saved. If the executor has no
+    /// heartbeat yet, insert one with the current timestamp and empty status
+    /// and metrics.
     async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()>;
 
     /// Returns executor metadata for the given executor ID.
