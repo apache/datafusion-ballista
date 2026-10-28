@@ -169,6 +169,21 @@ impl Fixture {
         )
     }
 
+    /// A grouped aggregate whose final-aggregate stage feeds a sorted merge.
+    pub fn partial_reduce_query() -> &'static str {
+        "SELECT key, COUNT(*) AS n, SUM(value) AS total \
+         FROM facts GROUP BY key ORDER BY key"
+    }
+
+    pub fn partial_reduce_chaos_query(injection: &str) -> String {
+        format!(
+            "SELECT key, COUNT(*) AS n, SUM(value) AS total \
+             FROM facts GROUP BY key \
+             HAVING {injection} IS NOT NULL \
+             ORDER BY key"
+        )
+    }
+
     pub fn shuffle_loss_chaos_query(injection: &str) -> String {
         format!(
             "SELECT f.value, d.name \

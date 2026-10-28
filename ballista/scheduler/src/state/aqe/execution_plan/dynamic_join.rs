@@ -33,8 +33,8 @@ use datafusion::{
         DisplayAs, DisplayFormatType, Distribution, ExecutionPlan,
         ExecutionPlanProperties, PlanProperties, apply_expression_roots,
         joins::{
-            HashJoinExec, HashJoinExecBuilder, JoinOn, PartitionMode, SortMergeJoinExec,
-            utils::JoinFilter,
+            CrossJoinExec, HashJoinExec, HashJoinExecBuilder, JoinOn, NestedLoopJoinExec,
+            PartitionMode, SortMergeJoinExec, SymmetricHashJoinExec, utils::JoinFilter,
         },
     },
 };
@@ -373,6 +373,26 @@ impl DynamicJoinSelectionExec {
         };
 
         let action = match (&selection_state, partition_mode) {
+            // A row estimate taken through a join that has not run yet has no
+            // upper bound, so it is no basis for a broadcast. Measure the build
+            // side first and decide on its real size; without staging, fall
+            // back to shuffling both sides.
+            (JoinInputState::Unknown, PartitionMode::CollectLeft)
+                if !self.null_aware && size_estimated_through_join(build_side) =>
+            {
+                if bc.stage_build_side_enabled()
+                    && !self.left.is::<ExchangeExec>()
+                    && !self.right.is::<ExchangeExec>()
+                {
+                    Ok(JoinSelectionAction::StageBuildSide {
+                        build_is_right: swap_inputs,
+                    })
+                } else {
+                    Ok(JoinSelectionAction::Repartition(Arc::new(
+                        self.to_partitioned(),
+                    )))
+                }
+            }
             (JoinInputState::Unknown, PartitionMode::CollectLeft) => self
                 .to_hash_join(PartitionMode::CollectLeft)
                 .map(JoinSelectionAction::CollectLeft),
@@ -693,6 +713,28 @@ fn requires_build_staging(
     probe_bytes >= build_bytes.saturating_mul(min_probe_ratio)
 }
 
+/// Whether `plan`'s size statistics are an estimate taken through a join that
+/// has not run yet.
+///
+/// Without distinct counts, which a shuffle does not carry, DataFusion
+/// estimates an inner join's output as the smaller input's row count. For a
+/// key/foreign-key join whose large side is the foreign key, that undercounts
+/// by the join's fan-out: TPC-H q21's `(supplier ⋈ nation) ⋈ lineitem` was
+/// estimated at 399,809 rows and produced 151,688,609. A filter's estimate, by
+/// contrast, is bounded by its input. A resolved [`ExchangeExec`] reports what
+/// its shuffle measured, so the walk stops there.
+fn size_estimated_through_join(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    if plan.is::<ExchangeExec>() {
+        return false;
+    }
+    plan.is::<HashJoinExec>()
+        || plan.is::<SortMergeJoinExec>()
+        || plan.is::<NestedLoopJoinExec>()
+        || plan.is::<CrossJoinExec>()
+        || plan.is::<SymmetricHashJoinExec>()
+        || plan.children().into_iter().any(size_estimated_through_join)
+}
+
 /// Whether the build (left) side of a `Partitioned` hash join fits the
 /// per-slot memory budget. A `max_build_bytes` of 0 disables the check (the
 /// join always uses hash join); an unknown build size (`build_max_partition_bytes
@@ -838,6 +880,7 @@ mod tests {
     use datafusion::physical_plan::displayable;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::expressions::Column;
+    use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::physical_plan::test::exec::StatisticsExec;
 
     const BYTE_THRESHOLD: usize = 10 * 1024 * 1024;
@@ -1475,6 +1518,99 @@ mod tests {
         assert!(matches!(action, JoinSelectionAction::Repartition(_)));
     }
 
+    /// An inner join of a small side to a large one, whose estimate DataFusion
+    /// sizes at the small side's row count (no distinct counts are known).
+    fn join_of(small_rows: usize, large_rows: usize) -> Arc<dyn ExecutionPlan> {
+        let on: JoinOn =
+            vec![(Arc::new(Column::new("k", 0)), Arc::new(Column::new("k", 0)))];
+        let join = HashJoinExecBuilder::new(
+            stats_exec_rows_only(small_rows),
+            stats_exec_rows_only(large_rows),
+            on,
+            JoinType::Inner,
+        )
+        .with_partition_mode(PartitionMode::Partitioned)
+        .with_projection(Some(vec![1]))
+        .build()
+        .unwrap();
+        Arc::new(join)
+    }
+
+    /// The q21 shape (#2661): the build side is an unexecuted join whose
+    /// estimate is under the broadcast threshold, against a larger probe.
+    fn q21_shaped_action(stage_build_side: bool) -> JoinSelectionAction {
+        run_to_actual_join(
+            join_of(1_000, 1_000_000_000),
+            stats_exec_rows_only(300_000_000),
+            JoinType::Inner,
+            true,
+            STAGE_THRESHOLD,
+            ROW_THRESHOLD,
+            stage_build_side,
+        )
+    }
+
+    // The estimate through the join would pass both thresholds, but it says
+    // nothing about the real size, so the build side is measured first.
+    #[test]
+    fn stages_a_build_side_estimated_through_a_join_instead_of_broadcasting() {
+        let join = join_of(1_000, 1_000_000_000);
+        assert!(
+            supports_collect(&join),
+            "precondition: the join's estimate alone would broadcast"
+        );
+
+        assert!(matches!(
+            q21_shaped_action(true),
+            JoinSelectionAction::StageBuildSide {
+                build_is_right: false
+            }
+        ));
+    }
+
+    #[test]
+    fn repartitions_a_build_side_estimated_through_a_join_without_staging() {
+        assert!(matches!(
+            q21_shaped_action(false),
+            JoinSelectionAction::Repartition(_)
+        ));
+    }
+
+    // Once the join has run behind an exchange, its size is measured, and a
+    // build side that really is small is broadcast as before.
+    #[test]
+    fn broadcasts_a_join_output_once_it_is_measured() {
+        let measured = resolved_exchange_over(join_of(1_000, 1_000_000_000), &[64, 64]);
+        assert!(!size_estimated_through_join(&measured));
+
+        let action = run_to_actual_join(
+            measured,
+            stats_exec_rows_only(300_000_000),
+            JoinType::Inner,
+            true,
+            STAGE_THRESHOLD,
+            ROW_THRESHOLD,
+            true,
+        );
+        assert!(is_collected(&action));
+    }
+
+    #[test]
+    fn size_estimated_through_join_looks_below_other_operators() {
+        let projected: Arc<dyn ExecutionPlan> = Arc::new(
+            ProjectionExec::try_new(
+                vec![(
+                    Arc::new(Column::new("k", 0)) as Arc<dyn PhysicalExpr>,
+                    "k".to_string(),
+                )],
+                join_of(1_000, 1_000_000_000),
+            )
+            .unwrap(),
+        );
+        assert!(size_estimated_through_join(&projected));
+        assert!(!size_estimated_through_join(&stats_exec(1_000)));
+    }
+
     /// Constructs a minimal `DynamicJoinSelectionExec` around the given children.
     /// Properties are borrowed from the left child — correct enough for unit tests
     /// that only exercise `children_resolved`.
@@ -1608,8 +1744,16 @@ mod tests {
     fn test_exchange_with_partition_bytes(
         per_partition_bytes: &[usize],
     ) -> Arc<dyn ExecutionPlan> {
-        let schema = test_schema();
-        let input = Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>;
+        let input = Arc::new(EmptyExec::new(test_schema())) as Arc<dyn ExecutionPlan>;
+        resolved_exchange_over(input, per_partition_bytes)
+    }
+
+    /// An `ExchangeExec` over `input` whose shuffle has resolved with one
+    /// location per partition, each reporting the given byte size.
+    fn resolved_exchange_over(
+        input: Arc<dyn ExecutionPlan>,
+        per_partition_bytes: &[usize],
+    ) -> Arc<dyn ExecutionPlan> {
         let n = per_partition_bytes.len();
         let exchange =
             ExchangeExec::new(input, Some(Partitioning::UnknownPartitioning(n)), 0);

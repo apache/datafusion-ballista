@@ -36,7 +36,6 @@
 //! [`UnorderedRangeRepartitionExec`]: super::UnorderedRangeRepartitionExec
 //! [`RuntimeStatsExec`]: super::RuntimeStatsExec
 
-use std::any::Any;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -54,6 +53,7 @@ use tokio::sync::mpsc;
 
 use crate::execution_plans::RuntimeStatsExec;
 use crate::execution_plans::plan_algebra::preserves_distribution;
+use crate::utils::panic_payload_message;
 
 /// Walk `child`'s subtree for a [`RuntimeStatsExec`] that sketches on our
 /// routing expression, snapshot its merged sketch, and compute `K - 1`
@@ -262,19 +262,6 @@ pub(super) async fn guarded_scatter<F>(
             )
             .await;
         }
-    }
-}
-
-/// Extract a human-readable message from a `catch_unwind` panic payload.
-/// `panic!("literal")` yields `&'static str`; `panic!("{x}")` yields
-/// `String`. Anything else falls back to a placeholder.
-fn panic_payload_message(payload: Box<dyn Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<&'static str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic payload".to_string()
     }
 }
 
