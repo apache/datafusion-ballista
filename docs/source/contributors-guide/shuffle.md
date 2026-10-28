@@ -262,13 +262,12 @@ behavior it would be config-gated, leaving today's model as the default:
   where it does not ([#1151], [#2003]).
 - **In-memory shuffle.** Small intermediates are written and read back through
   the filesystem regardless of size. Keeping them in a bounded in-memory buffer,
-  spilling to files only once the buffer is exceeded, would remove most of the
-  write amplification for short queries while leaving the durable path in place
-  for the ones that need it. This looks like the largest single win available:
-  simply pointing `work_dir` at a RAM disk large enough to hold the whole
-  shuffle already recovers a large share of the TPC-H gap against a pipelined
-  engine, which says the cost being paid there is the filesystem round trip
-  rather than the barrier itself ([#2318]).
+  spilling to files only once the buffer is exceeded, would remove that write
+  amplification for short queries while leaving the durable path in place for
+  the ones that need it. How much it buys is still open. A prototype that kept
+  sort-shuffle output in memory measured neutral at a 1 GiB budget and about 5%
+  faster at 12 GiB on TPC-H SF10, but the passthrough writer, including every
+  query's final stage, still went through files ([#2317], [#2318]).
 - **A cheaper shuffle format.** The write side currently produces a file per
   output partition per task and a metadata round-trip per partition, which is a
   lot of small files and small reads at high partition counts. Writing one
@@ -293,6 +292,7 @@ properties above it preserves and which it trades away.
 [#1151]: https://github.com/apache/datafusion-ballista/issues/1151
 [#1539]: https://github.com/apache/datafusion-ballista/issues/1539
 [#2003]: https://github.com/apache/datafusion-ballista/issues/2003
+[#2317]: https://github.com/apache/datafusion-ballista/pull/2317
 [#2318]: https://github.com/apache/datafusion-ballista/issues/2318
 [#2319]: https://github.com/apache/datafusion-ballista/issues/2319
 [#2320]: https://github.com/apache/datafusion-ballista/issues/2320

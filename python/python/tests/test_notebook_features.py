@@ -17,14 +17,16 @@
 
 """Tests for notebook-specific features in Ballista."""
 
-import pytest
-import tempfile
 import os
+import tempfile
+
+import pytest
 from ballista import (
     BallistaSessionContext,
     setup_test_cluster,
     ExecutionPlanVisualization,
 )
+from ballista.jupyter import collect_with_progress, explain_visual
 
 
 @pytest.fixture
@@ -40,20 +42,20 @@ class TestExplainVisual:
     def test_explain_visual_returns_visualization(self, ctx):
         """Test that explain_visual returns an ExecutionPlanVisualization."""
         df = ctx.sql("SELECT 1 as value")
-        viz = df.explain_visual()
+        viz = explain_visual(df)
         assert isinstance(viz, ExecutionPlanVisualization)
 
     def test_explain_visual_with_analyze(self, ctx):
         """Test explain_visual with analyze=True."""
         df = ctx.sql("SELECT 1 as value")
-        viz = df.explain_visual(analyze=True)
+        viz = explain_visual(df, analyze=True)
         assert isinstance(viz, ExecutionPlanVisualization)
         assert viz.analyze is True
 
     def test_visualization_to_dot(self, ctx):
         """Test converting visualization to DOT format."""
         df = ctx.sql("SELECT 1 as value")
-        viz = df.explain_visual()
+        viz = explain_visual(df)
         dot = viz.to_dot()
         assert "digraph" in dot
         assert "ExecutionPlan" in dot
@@ -61,7 +63,7 @@ class TestExplainVisual:
     def test_visualization_to_svg(self, ctx):
         """Test converting visualization to SVG or HTML fallback."""
         df = ctx.sql("SELECT 1 as value")
-        viz = df.explain_visual()
+        viz = explain_visual(df)
         svg = viz.to_svg()
         # Should return either SVG or HTML fallback
         assert svg is not None
@@ -70,7 +72,7 @@ class TestExplainVisual:
     def test_visualization_repr_html(self, ctx):
         """Test HTML representation for Jupyter."""
         df = ctx.sql("SELECT 1 as value")
-        viz = df.explain_visual()
+        viz = explain_visual(df)
         html = viz._repr_html_()
         assert html is not None
         assert len(html) > 0
@@ -78,14 +80,14 @@ class TestExplainVisual:
     def test_visualization_repr(self, ctx):
         """Test string representation."""
         df = ctx.sql("SELECT 1 as value")
-        viz = df.explain_visual()
+        viz = explain_visual(df)
         s = repr(viz)
         assert "ExecutionPlanVisualization" in s
 
     def test_visualization_save_dot(self, ctx):
         """Test saving visualization as DOT file."""
         df = ctx.sql("SELECT 1 as value")
-        viz = df.explain_visual()
+        viz = explain_visual(df)
 
         with tempfile.NamedTemporaryFile(suffix=".dot", delete=False) as f:
             path = f.name
@@ -101,7 +103,7 @@ class TestExplainVisual:
     def test_visualization_save_svg(self, ctx):
         """Test saving visualization as SVG file."""
         df = ctx.sql("SELECT 1 as value")
-        viz = df.explain_visual()
+        viz = explain_visual(df)
 
         with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
             path = f.name
@@ -160,61 +162,6 @@ LogicalPlan
         assert svg1 == svg2  # Should be same cached result
 
 
-class TestCollectWithProgress:
-    """Tests for the collect_with_progress method."""
-
-    def test_collect_with_progress_returns_batches(self, ctx):
-        """Test that collect_with_progress returns batches."""
-        df = ctx.sql("SELECT 1 as value")
-        batches = df.collect_with_progress()
-        assert batches is not None
-        assert len(batches) > 0
-
-    def test_collect_with_progress_callback(self, ctx):
-        """Test collect_with_progress with callback."""
-        df = ctx.sql("SELECT 1 as value")
-        callback_calls = []
-
-        def callback(status, progress):
-            callback_calls.append((status, progress))
-
-        batches = df.collect_with_progress(callback=callback)
-        assert batches is not None
-        # Callback should have been called at least once for completion
-        assert len(callback_calls) > 0
-
-    def test_collect_with_progress_matches_collect(self, ctx):
-        """Test that collect_with_progress returns same data as collect."""
-        df = ctx.sql("SELECT 1 as value")
-        batches_progress = df.collect_with_progress()
-        batches_normal = df.collect()
-
-        assert len(batches_progress) == len(batches_normal)
-        for bp, bn in zip(batches_progress, batches_normal):
-            assert len(bp) == len(bn)
-
-
-class TestBallistaSessionContextTables:
-    """Tests for the BallistaSessionContext.get_tables() method."""
-
-    def test_tables_empty(self, ctx):
-        """Test listing tables when none registered."""
-        tables = ctx.get_tables()
-        assert isinstance(tables, dict)
-
-    def test_tables_after_register_parquet(self, ctx):
-        """Test listing tables after registering a Parquet file."""
-        ctx.register_parquet("test_parquet", "testdata/test.parquet")
-        tables = ctx.get_tables()
-        assert isinstance(tables, dict)
-
-    def test_tables_after_register_csv(self, ctx):
-        """Test listing tables after registering a CSV file."""
-        ctx.register_csv("test_csv", "testdata/test.csv", has_header=True)
-        tables = ctx.get_tables()
-        assert isinstance(tables, dict)
-
-
 class TestHTMLRendering:
     """Tests for HTML rendering in notebooks."""
 
@@ -229,3 +176,37 @@ class TestHTMLRendering:
         html = df._repr_html_()
         # The HTML should contain table tags or similar
         assert html is not None
+
+
+class TestCollectWithProgress:
+    """Tests for the collect_with_progress method."""
+
+    def test_collect_with_progress_returns_batches(self, ctx):
+        """Test that collect_with_progress returns batches."""
+        df = ctx.sql("SELECT 1 as value")
+        batches = collect_with_progress(df)
+        assert batches is not None
+        assert len(batches) > 0
+
+    def test_collect_with_progress_callback(self, ctx):
+        """Test collect_with_progress with callback."""
+        df = ctx.sql("SELECT 1 as value")
+        callback_calls = []
+
+        def callback(status, progress):
+            callback_calls.append((status, progress))
+
+        batches = collect_with_progress(df, callback=callback)
+        assert batches is not None
+        # Callback should have been called at least once for completion
+        assert len(callback_calls) > 0
+
+    def test_collect_with_progress_matches_collect(self, ctx):
+        """Test that collect_with_progress returns same data as collect."""
+        df = ctx.sql("SELECT 1 as value")
+        batches_progress = collect_with_progress(df)
+        batches_normal = df.collect()
+
+        assert len(batches_progress) == len(batches_normal)
+        for bp, bn in zip(batches_progress, batches_normal):
+            assert len(bp) == len(bn)

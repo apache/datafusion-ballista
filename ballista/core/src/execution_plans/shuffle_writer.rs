@@ -30,7 +30,8 @@ use crate::JobId;
 use crate::error::BallistaError;
 use crate::execution_plans::{
     ObservedWindowState, OrderedRangeRepartitionExec, PartitionedBoundedWindowAggExec,
-    SortShuffleWriterExec, UnorderedRangeRepartitionExec, create_shuffle_path,
+    PipelinedShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
+    create_shuffle_path,
 };
 use crate::extension::SessionConfigExt;
 use crate::utils;
@@ -74,7 +75,7 @@ use super::shuffle_writer_trait::ShuffleWriter;
 /// id — the thing that ends up in `ShuffleWritePartition.partition_id` and
 /// keys `PartitionLocation`s downstream.
 #[derive(Debug, Clone)]
-enum GlobalPartitionMap {
+pub(crate) enum GlobalPartitionMap {
     /// The plan collapses to a single output partition (e.g.
     /// `SortPreservingMergeExec`). Every local index → global partition 0.
     Collapsed,
@@ -94,7 +95,7 @@ enum GlobalPartitionMap {
 }
 
 impl GlobalPartitionMap {
-    fn resolve(&self, local: usize) -> u64 {
+    pub(crate) fn resolve(&self, local: usize) -> u64 {
         match self {
             GlobalPartitionMap::Collapsed => 0,
             GlobalPartitionMap::KSpace => local as u64,
@@ -121,7 +122,7 @@ impl GlobalPartitionMap {
 ///   partitioning-preserving passthroughs).
 /// - If we hit a leaf or a fan-in without recognising it, treat it as
 ///   passthrough (the caller passes `global_output_partition_ids`).
-fn walk_child_partition_mapping(
+pub(crate) fn walk_child_partition_mapping(
     plan: &Arc<dyn ExecutionPlan>,
     global_output_partition_ids: &[usize],
 ) -> GlobalPartitionMap {
@@ -193,10 +194,16 @@ pub fn compute_global_output_partition_ids(
         };
         return (0..*k).collect();
     }
-    // Both passthrough writers derive their ids the same way: they never
+    if let Some(w) = stage_plan.downcast_ref::<PipelinedShuffleWriterExec>()
+        && let Some(Partitioning::Hash(_, k)) = w.shuffle_output_partitioning()
+    {
+        return (0..*k).collect();
+    }
+    // The passthrough writers derive their ids the same way: they never
     // repartition, so the child plan's shape decides.
     if stage_plan.is::<ShuffleWriterExec>()
         || stage_plan.is::<crate::execution_plans::RangeShuffleWriterExec>()
+        || stage_plan.is::<PipelinedShuffleWriterExec>()
     {
         let children = stage_plan.children();
         let [child] = children.as_slice() else {

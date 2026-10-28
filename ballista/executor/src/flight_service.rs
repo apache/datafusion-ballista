@@ -211,6 +211,9 @@ impl ResultBackend for LocalDiskBackend {
 
                 Ok(Box::pin(flight_data_stream) as BoxedFlightStream<FlightData>)
             }
+            BallistaAction::FetchPipelinedPartition { .. } => Err(Status::unimplemented(
+                "this executor does not serve pipelined partitions",
+            )),
         }
     }
 }
@@ -349,6 +352,11 @@ impl FlightService for BallistaFlightService {
                         };
 
                         Ok(Response::new(stream))
+                    }
+                    BallistaAction::FetchPipelinedPartition { .. } => {
+                        Err(Status::invalid_argument(
+                            "pipelined partitions are served by do_get, not IO_BLOCK_TRANSPORT",
+                        ))
                     }
                 }
             }
