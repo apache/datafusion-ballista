@@ -313,23 +313,34 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 }
             }
             SubmitPlan::Physical(physical_plan) => {
-                // AQE plans from the logical plan, so an already-built
-                // physical plan always uses the static planner, including when
-                // AQE is on (the default).
-                debug!("Using static query planner for physical-plan job submission");
-                let session_config = Arc::new(ctx.copied_config());
+                if session_config.ballista_adaptive_query_planner_enabled() {
+                    debug!(
+                        "Using adaptive query planner (AQE) for physical-plan job submission"
+                    );
+                    Box::new(AdaptiveExecutionGraph::try_new_from_physical(
+                        &self.scheduler_id,
+                        job_id,
+                        job_name,
+                        &ctx,
+                        physical_plan.clone(),
+                        queued_at,
+                    )?) as ExecutionGraphBox
+                } else {
+                    debug!("Using static query planner for physical-plan job submission");
+                    let session_config = Arc::new(ctx.copied_config());
 
-                Box::new(StaticExecutionGraph::new(
-                    &self.scheduler_id,
-                    job_id,
-                    job_name,
-                    &ctx.session_id(),
-                    physical_plan.clone(),
-                    queued_at,
-                    session_config,
-                    &mut planner,
-                    None,
-                )?) as ExecutionGraphBox
+                    Box::new(StaticExecutionGraph::new(
+                        &self.scheduler_id,
+                        job_id,
+                        job_name,
+                        &ctx.session_id(),
+                        physical_plan.clone(),
+                        queued_at,
+                        session_config,
+                        &mut planner,
+                        None,
+                    )?) as ExecutionGraphBox
+                }
             }
         };
         let string_plan =
@@ -371,9 +382,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         .await
     }
 
-    /// Submit an already-built physical plan for distributed execution. The physical
-    /// plan is planned with the static distributed planner; adaptive query planning
-    /// (AQE) is not available for this path.
+    /// Submit an already-built physical plan for distributed execution. The plan
+    /// goes through adaptive query planning (AQE) when
+    /// `ballista.planner.adaptive.enabled` is set, and through the static
+    /// distributed planner otherwise, like a logical submission.
     #[allow(clippy::too_many_arguments)]
     pub async fn submit_physical_plan(
         &self,
