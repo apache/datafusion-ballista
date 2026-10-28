@@ -58,7 +58,8 @@ use ballista_core::serde::{
 };
 use ballista_core::utils::{
     GrpcClientConfig, GrpcServerConfig, create_grpc_client_endpoint, create_grpc_server,
-    default_config_producer, drain_or_time_out, get_time_before, shutdown_signal,
+    create_grpc_server_incoming, default_config_producer, drain_or_time_out,
+    get_time_before, shutdown_signal,
 };
 use ballista_core::{
     BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer,
@@ -990,6 +991,12 @@ async fn flight_server_task(
     grpc_server_config: GrpcServerConfig,
 ) -> JoinHandle<Result<(), BallistaError>> {
     tokio::spawn(async move {
+        // Bound here rather than by `serve`, so the accept queue gets
+        // `listen_backlog` instead of the standard library's 128. Every
+        // reader task of a job on every executor connects to this port when
+        // the job starts.
+        let incoming = create_grpc_server_incoming(address, &grpc_server_config)
+            .inspect_err(|_| error!("Could not bind built-in arrow flight server."))?;
         info!(
             "Built-in arrow flight server listening on: {address:?} max_encoding_size: {max_encoding_message_size} max_decoding_size: {max_decoding_message_size}"
         );
@@ -1000,7 +1007,7 @@ async fn flight_server_task(
                     .max_decoding_message_size(max_decoding_message_size)
                     .max_encoding_message_size(max_encoding_message_size),
             )
-            .serve_with_shutdown(address, grpc_shutdown.recv());
+            .serve_with_incoming_shutdown(incoming, grpc_shutdown.recv());
 
         server_future.await.map_err(|e| {
             error!("Could not start built-in arrow flight server.");
