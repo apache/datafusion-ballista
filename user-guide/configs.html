@@ -723,6 +723,48 @@ explanation of the sort-based shuffle writer.</p>
 </div>
 <!-- END GENERATED CONFIG REFERENCE -->
 </section>
+<section id="pipelined-execution-settings">
+<h2>Pipelined Execution Settings<a class="headerlink" href="#pipelined-execution-settings" title="Link to this heading">#</a></h2>
+<p>These session-level keys select and tune the experimental pipelined execution
+mode, in which every task of a job is placed up front and stages stream data
+to each other instead of exchanging shuffle files. The scheduler does not run
+pipelined jobs yet.</p>
+<!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.execution.,ballista.pipelined. -->
+<!-- prettier-ignore -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>key</p></th>
+<th class="head"><p>type</p></th>
+<th class="head"><p>default</p></th>
+<th class="head"><p>description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>ballista.execution.mode</p></td>
+<td><p>Utf8</p></td>
+<td><p>blocking</p></td>
+<td><p>How a job’s stages exchange data. <code class="docutils literal notranslate"><span class="pre">blocking</span></code> runs stages one after another and passes data between them through shuffle files. <code class="docutils literal notranslate"><span class="pre">pipelined</span></code> (experimental) places every task of the job up front and streams record batches between stages over Arrow Flight. It has lower latency, but a failed task fails the job instead of being retried, and a job waits until it can reserve the vcores of its widest stage all at once. <code class="docutils literal notranslate"><span class="pre">pipelined</span></code> requires push-staged scheduling, and the scheduler does not run it yet.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.pipelined.queue_capacity</p></td>
+<td><p>UInt64</p></td>
+<td><p>2</p></td>
+<td><p>Number of batches each output partition of a pipelined stage buffers before its producer waits for the consumer to read. Higher values smooth out bursty consumers at the cost of memory. At least 1.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.pipelined.registration_timeout_seconds</p></td>
+<td><p>UInt64</p></td>
+<td><p>60</p></td>
+<td><p>How long either side of a pipelined exchange waits for the other before failing the query: a consumer for its producer task to start, and a producer whose output queue is full for a consumer to open it. All tasks of a pipelined job are launched together, so either can be first. At least 1.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.pipelined.stream_window_bytes</p></td>
+<td><p>UInt64</p></td>
+<td><p>524288</p></td>
+<td><p>HTTP/2 flow-control window, in bytes, of each stream a pipelined reader opens to another executor. The streams of every task on an executor share one connection to each producer executor, whose connection window is the largest HTTP/2 allows, so this bounds the data a stalled stream can hold, and a connection can carry 2147483647 divided by this many streams before stalled streams could starve the rest. It also caps a stream’s throughput at this many bytes per round trip, so raise it on high-latency links. Between 65535 and 2147483647.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- END GENERATED CONFIG REFERENCE -->
+</section>
 <section id="testing-and-fault-injection">
 <h2>Testing and Fault Injection<a class="headerlink" href="#testing-and-fault-injection" title="Link to this heading">#</a></h2>
 <p>These settings drive chaos-monkey fault injection and exist for robustness
@@ -868,6 +910,7 @@ manage the whole cluster are also needed to be taken care of.</p>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-settings">Shuffle Settings</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pipelined-execution-settings">Pipelined Execution Settings</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing-and-fault-injection">Testing and Fault Injection</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-scheduler-configuration-settings">Ballista Scheduler Configuration Settings</a></li>
 </ul>
