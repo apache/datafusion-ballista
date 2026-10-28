@@ -125,16 +125,13 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     logging::init_logging(tui_mode.clone())?;
 
-    // Exit on SIGTERM, as the signal's default action would. That action
-    // doesn't apply to PID 1, which the CLI is in a container.
-    #[cfg(unix)]
+    // Exit when asked to terminate, as the signal's default action would. That
+    // action doesn't apply to PID 1, which the CLI is in a container.
     {
         #[cfg(all(feature = "tui", not(feature = "web")))]
         let tui_mode = tui_mode.clone();
         tokio::spawn(async move {
-            use tokio::signal::unix::{SignalKind, signal};
-            if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
-                sigterm.recv().await;
+            if ballista_core::utils::terminate_signal().await.is_ok() {
                 // Leave the TUI's raw mode and alternate screen, as the TUI does
                 // when it exits.
                 #[cfg(all(feature = "tui", not(feature = "web")))]
