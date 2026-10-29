@@ -955,6 +955,7 @@ mod tests {
                         .collect(),
                     runtime_stats: vec![],
                     task_column_stats: vec![],
+                    runtime_filters: vec![],
                     window_state: vec![],
                 })),
             })
