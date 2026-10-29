@@ -75,7 +75,7 @@ use crate::state::execution_graph::{
     RunningTaskInfo, TaskDescription, create_task_info,
 };
 use crate::state::execution_stage::{
-    PendingPartitions, RunningStage, is_external_fetch_failure, stage_input_partitions,
+    PendingPartitions, RunningStage, external_fetch_failures, stage_input_partitions,
 };
 use crate::state::task_builder::stages_read_whole;
 
@@ -759,12 +759,13 @@ impl ExecutionGraph for PipelinedExecutionGraph {
                         // lost build is dropped and a retry rebuilds it.
                         if let Some(FailedReason::FetchPartitionError(fetch)) =
                             &failed.failed_reason
-                            && is_external_fetch_failure(
+                            && !external_fetch_failures(
                                 &stage.inputs,
                                 &fetch.executor_id,
                                 fetch.map_stage_id as usize,
                                 fetch.map_partition_id as usize,
                             )
+                            .is_empty()
                         {
                             format!(
                                 "stage {stage_id} {CACHE_DATA_LOST} on executor {}",

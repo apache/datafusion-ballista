@@ -58,6 +58,17 @@ impl SessionManager {
             .await
     }
 
+    /// Creates a context for work the scheduler starts on behalf of a running
+    /// job, from the job's configuration, without touching any session; see
+    /// [`JobState::new_context`].
+    pub(crate) async fn new_context(
+        &self,
+        session_id: &str,
+        config: &SessionConfig,
+    ) -> Result<Arc<SessionContext>> {
+        self.state.new_context(session_id, config).await
+    }
+
     pub(crate) fn produce_config(&self) -> SessionConfig {
         self.state.produce_config()
     }

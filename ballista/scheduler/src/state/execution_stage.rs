@@ -37,6 +37,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
     PipelinedShuffleWriterExec, RangeShuffleWriterExec, ShuffleReaderExec,
     ShuffleWriterExec, SortShuffleWriterExec, TaskRuntimeStats, TaskWindowState,
+    UnresolvedShuffleExec,
 };
 use ballista_core::hll::HyperLogLog;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
@@ -1491,28 +1492,81 @@ pub(crate) fn reads_external_data_on(
     })
 }
 
-/// Whether a failed fetch was for external (cache) data in `inputs`: one of
-/// their locations is on `executor_id` with the stage and partition the executor
-/// reported. The report has no job id, so when one of the job's own locations
-/// matches too, the failure counts as external.
-pub(crate) fn is_external_fetch_failure(
+/// The external (cache) inputs in `inputs` a failed fetch was for: those with a
+/// location on `executor_id` at the stage and partition the executor reported.
+/// The report has no job id, so one of the job's own inputs may match too.
+pub(crate) fn external_fetch_failures(
     inputs: &HashMap<usize, StageOutput>,
     executor_id: &str,
     stage_id: usize,
     partition_id: usize,
-) -> bool {
-    inputs.iter().any(|(id, output)| {
-        is_external_stage_id(*id)
-            && output
-                .partition_locations
-                .values()
-                .flatten()
-                .any(|location| {
-                    location.executor_meta.id == executor_id
-                        && location.partition_id.stage_id == stage_id
-                        && location.partition_id.partition_id == partition_id
-                })
-    })
+) -> Vec<usize> {
+    let mut lost: Vec<usize> = inputs
+        .iter()
+        .filter(|(id, output)| {
+            is_external_stage_id(**id)
+                && output
+                    .partition_locations
+                    .values()
+                    .flatten()
+                    .any(|location| {
+                        location.executor_meta.id == executor_id
+                            && location.partition_id.stage_id == stage_id
+                            && location.partition_id.partition_id == partition_id
+                    })
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    lost.sort_unstable();
+    lost
+}
+
+/// The partitions `plan`'s reader of external input `input_id` declares.
+pub(crate) fn external_reader_partitions(
+    plan: &dyn ExecutionPlan,
+    input_id: usize,
+) -> Option<usize> {
+    if let Some(reader) = plan.downcast_ref::<ShuffleReaderExec>()
+        && reader.stage_id == input_id
+    {
+        return Some(reader.partition.len());
+    }
+    if let Some(unresolved) = plan.downcast_ref::<UnresolvedShuffleExec>()
+        && unresolved.stage_id == input_id
+    {
+        return Some(unresolved.output_partition_count);
+    }
+    plan.children()
+        .into_iter()
+        .find_map(|child| external_reader_partitions(child.as_ref(), input_id))
+}
+
+/// A complete [`StageOutput`] of `locations` for a reader of `partitions`
+/// partitions. A rebuild can have another count; the reader's partitioning is
+/// unknown, so partition `j` folds into `j % partitions`.
+pub(crate) fn fold_external_locations(
+    locations: Vec<Vec<PartitionLocation>>,
+    partitions: usize,
+) -> Result<StageOutput> {
+    let mut output = StageOutput::new();
+    for (partition, locations) in locations.into_iter().enumerate() {
+        if locations.is_empty() {
+            continue;
+        }
+        if partitions == 0 {
+            return Err(BallistaError::Internal(
+                "an external input read with no partitions was rebuilt with data"
+                    .to_owned(),
+            ));
+        }
+        output
+            .partition_locations
+            .entry(partition % partitions)
+            .or_default()
+            .extend(locations);
+    }
+    output.complete = true;
+    Ok(output)
 }
 
 /// This data structure collects the partition locations for an `ExecutionStage`.
