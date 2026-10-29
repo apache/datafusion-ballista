@@ -106,8 +106,10 @@ executors find data from the locations, not the id.
 
 The entry is complete from the start, so it never delays the stage; it is there
 so a rollback (for example, after the job loses one of its own shuffle outputs)
-restores the reader. For each running job the scheduler also records which
-builds it read, to drop them if the job loses their data.
+restores the reader, and so a lost cache can leave the stage waiting for a
+rebuild. For each running job the scheduler also keeps a read record: per read,
+the cache, the build read, its subplan, and the schema the build wrote, to
+rebuild the cache if the job loses its data (see [Recovery](#recovery)).
 
 ## Recovery
 
