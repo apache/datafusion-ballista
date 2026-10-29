@@ -114,3 +114,32 @@ jobs:
         env:
           DOCKER_USER: ${{ github.actor }}
           DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
+
+  # Nobody watches the nightly run, so a failure files an issue. Repeated
+  # failures comment on the open issue instead of filing a new one each night.
+  report_nightly_failure:
+    name: Report Nightly Failure
+    needs: build_docker
+    if: failure() && github.event_name == 'schedule' && github.repository == 'apache/datafusion-ballista'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: File or update issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="Nightly Docker image build failed"
+          BODY="The nightly Docker image build failed on \`${GITHUB_SHA}\`: ${RUN_URL}"
+
+          ISSUE=$(gh issue list --state open --search "in:title \"${TITLE}\"" \
+            --json number,title --jq "map(select(.title == \"${TITLE}\")) | .[0].number // empty")
+
+          if [[ -n "$ISSUE" ]]
+          then
+            gh issue comment "$ISSUE" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi
