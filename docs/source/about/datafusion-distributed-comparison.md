@@ -77,7 +77,7 @@ side by side on the same scheduler and executors. DataFusion Distributed is desi
 | Extension points         | Logical and physical codecs, query planner, config and runtime producers, executor and scheduler overrides                                | Physical codec, worker and channel resolvers, network boundaries, and event handlers for task counts, routing, and plan rewrites |
 | Operations               | Event logs and a history server, Prometheus metrics, TUI                                                                                  | Distributed `EXPLAIN ANALYZE`, metrics collection, a TUI console                                                                 |
 
-## Why Ballista does not build on DataFusion Distributed
+## Why Ballista can't build on DataFusion Distributed
 
 The two projects overlap in one place: how a plan is split into stages and how data moves between them. Everything
 else Ballista provides sits above that layer, and DataFusion Distributed deliberately leaves it out. Its stated goal is
