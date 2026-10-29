@@ -58,7 +58,7 @@ use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 
 use crate::auth::{AnonymousAuthenticator, Authenticator};
-use crate::backend::{QueryBackend, QueryResult};
+use crate::backend::{PipelinedOutput, QueryBackend};
 use crate::metadata;
 use crate::session::{LocalResult, Prepared, SessionStore};
 use crate::ticket::StatementHandle;
@@ -245,14 +245,14 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
             .await
             .map_err(query_failed)?;
 
-        if !result.pipelined_partitions.is_empty() {
-            let handle = pipelined_handle(&result).map_err(|e| {
+        if let Some(pipelined) = &result.pipelined {
+            let handle = pipelined_handle(&result.schema, pipelined).map_err(|e| {
                 Status::internal(format!("invalid pipelined partition location: {e}"))
             })?;
             log::debug!(
                 "flight-sql: pipelined job {} streams {} partition(s) through one endpoint",
                 result.job_id,
-                result.pipelined_partitions.len()
+                pipelined.partitions.len()
             );
             return build_flight_info(
                 &result.schema,
@@ -441,13 +441,15 @@ fn partition_handle(
 
 /// Turns a pipelined job's final-stage partitions into one handle, which
 /// `DoGet` redeems by streaming every partition at once.
-fn pipelined_handle(result: &QueryResult) -> Result<StatementHandle, BallistaError> {
+fn pipelined_handle(
+    schema: &Schema,
+    pipelined: &PipelinedOutput,
+) -> Result<StatementHandle, BallistaError> {
     let IpcMessage(schema) =
-        SchemaAsIpc::new(&result.schema, &IpcWriteOptions::default()).try_into()?;
-    let registration_timeout_ms =
-        result.pipelined_registration_timeout.as_millis() as u64;
-    let actions = result
-        .pipelined_partitions
+        SchemaAsIpc::new(schema, &IpcWriteOptions::default()).try_into()?;
+    let registration_timeout_ms = pipelined.registration_timeout.as_millis() as u64;
+    let actions = pipelined
+        .partitions
         .iter()
         .map(|location| {
             let partition_id = location.partition_id.as_ref().ok_or_else(|| {

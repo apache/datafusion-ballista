@@ -57,6 +57,7 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::fmt::Debug;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
@@ -659,7 +660,9 @@ const JOB_FAILURE_GRACE: Duration = Duration::from_secs(5);
 /// before reading every batch, whether early or after a failed fetch.
 struct PipelinedResults {
     job_id: JobId,
-    data: BoxStream<'static, Result<RecordBatch>>,
+    /// The fetches of the job's final stage, dropped once the stream ends so
+    /// their connections close.
+    data: Option<BoxStream<'static, Result<RecordBatch>>>,
     failure: Option<tokio::sync::oneshot::Receiver<String>>,
     /// A fetch failed: its error, reported unless the job's own failure
     /// arrives before the deadline.
@@ -670,7 +673,6 @@ struct PipelinedResults {
     /// because the job has nothing left to cancel: every batch was read, or
     /// the job failed.
     scheduler: Option<SchedulerClient>,
-    done: bool,
 }
 
 impl PipelinedResults {
@@ -682,12 +684,11 @@ impl PipelinedResults {
     ) -> Self {
         Self {
             job_id,
-            data,
+            data: Some(data),
             failure,
             fetch_error: None,
             failure_grace: JOB_FAILURE_GRACE,
             scheduler,
-            done: false,
         }
     }
 }
@@ -699,16 +700,15 @@ impl Stream for PipelinedResults {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        use std::future::Future;
         use std::task::Poll;
         loop {
-            if self.done {
+            if self.data.is_none() {
                 return Poll::Ready(None);
             }
             if let Some(failure) = self.failure.as_mut() {
                 match std::pin::Pin::new(failure).poll(cx) {
                     Poll::Ready(Ok(reason)) => {
-                        self.done = true;
+                        self.data = None;
                         self.scheduler = None;
                         let msg = format!("Job {} failed: {reason}", self.job_id);
                         error!("{msg}");
@@ -724,11 +724,14 @@ impl Stream for PipelinedResults {
                 if still_watching && deadline.as_mut().poll(cx).is_pending() {
                     return Poll::Pending;
                 }
-                self.done = true;
+                self.data = None;
                 let error = self.fetch_error.take().map(|(error, _)| error);
                 return Poll::Ready(error.map(Err));
             }
-            match self.data.poll_next_unpin(cx) {
+            let Some(data) = self.data.as_mut() else {
+                return Poll::Ready(None);
+            };
+            match data.poll_next_unpin(cx) {
                 // A fetch usually fails because the job did, and the scheduler
                 // cleaned up the producer it read from. The job's error says
                 // why, so give it a moment to arrive.
@@ -737,11 +740,11 @@ impl Stream for PipelinedResults {
                     self.fetch_error = Some((error, deadline));
                 }
                 Poll::Ready(Some(Err(error))) => {
-                    self.done = true;
+                    self.data = None;
                     return Poll::Ready(Some(Err(error)));
                 }
                 Poll::Ready(None) => {
-                    self.done = true;
+                    self.data = None;
                     self.scheduler = None;
                     return Poll::Ready(None);
                 }
@@ -770,25 +773,46 @@ impl Drop for PipelinedResults {
     }
 }
 
+/// How often a pipelined job's status is polled for a failure while its
+/// results stream. Slower than the blocking client's polling: the stream's
+/// end already says the job succeeded, and a failed fetch waits
+/// [`JOB_FAILURE_GRACE`] for the job's error.
+const PIPELINED_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Runs `watch` in the background and sends the job failure it returns, if
+/// any, to the returned receiver. Stops early once the receiver is dropped.
+fn report_job_failure(
+    watch: impl Future<Output = Option<String>> + Send + 'static,
+) -> tokio::sync::oneshot::Receiver<String> {
+    let (mut tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        tokio::select! {
+            failure = watch => {
+                if let Some(reason) = failure {
+                    let _ = tx.send(reason);
+                }
+            }
+            _ = tx.closed() => {}
+        }
+    });
+    rx
+}
+
 /// Follows the rest of a pushed status stream, reporting the error if the job
 /// fails. Stops quietly when it succeeds or the stream ends.
 fn watch_pushed_status(
     mut statuses: tonic::Streaming<GetJobStatusResult>,
 ) -> tokio::sync::oneshot::Receiver<String> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
+    report_job_failure(async move {
         while let Some(Ok(item)) = statuses.next().await {
             match item.status.and_then(|status| status.status) {
-                Some(job_status::Status::Failed(failed)) => {
-                    let _ = tx.send(failed.error);
-                    return;
-                }
-                Some(job_status::Status::Successful(_)) => return,
+                Some(job_status::Status::Failed(failed)) => return Some(failed.error),
+                Some(job_status::Status::Successful(_)) => return None,
                 _ => {}
             }
         }
-    });
-    rx
+        None
+    })
 }
 
 /// Polls a job's status until it finishes, reporting the error if it fails.
@@ -796,12 +820,8 @@ fn watch_pulled_status(
     mut scheduler: SchedulerClient,
     job_id: JobId,
 ) -> tokio::sync::oneshot::Receiver<String> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
+    report_job_failure(async move {
         loop {
-            if tx.is_closed() {
-                return;
-            }
             let status = scheduler
                 .get_job_status(GetJobStatusParams {
                     job_id: job_id.clone().into(),
@@ -809,15 +829,13 @@ fn watch_pulled_status(
                 .await;
             match status.map(|r| r.into_inner().status.and_then(|s| s.status)) {
                 Ok(Some(job_status::Status::Failed(failed))) => {
-                    let _ = tx.send(failed.error);
-                    return;
+                    return Some(failed.error);
                 }
-                Ok(Some(job_status::Status::Successful(_))) | Err(_) => return,
-                Ok(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+                Ok(Some(job_status::Status::Successful(_))) | Err(_) => return None,
+                Ok(_) => tokio::time::sleep(PIPELINED_STATUS_POLL_INTERVAL).await,
             }
         }
-    });
-    rx
+    })
 }
 
 /// Client will periodically invoke scheduler to check
@@ -917,6 +935,7 @@ async fn execute_query_pull(
         let status = status.and_then(|s| s.status);
         let wait_future = tokio::time::sleep(Duration::from_millis(50));
         let has_status_change = prev_status != status;
+        let running = matches!(status, Some(job_status::Status::Running(_)));
         match status {
             None => {
                 if has_status_change {
@@ -932,12 +951,26 @@ async fn execute_query_pull(
                 wait_future.await;
                 prev_status = status;
             }
-            Some(job_status::Status::Running(RunningJob {
-                pipelined_output_locations,
-                ..
-            })) if !pipelined_output_locations.is_empty() => {
-                info!("Pipelined job {job_id} is running; streaming its results");
-                let failure = watch_pulled_status(scheduler.clone(), job_id.clone());
+            Some(
+                job_status::Status::Running(RunningJob {
+                    pipelined_output_locations,
+                    ..
+                })
+                | job_status::Status::Successful(SuccessfulJob {
+                    pipelined_output_locations,
+                    ..
+                }),
+            ) if !pipelined_output_locations.is_empty() => {
+                // A job that finished before this client saw it running still
+                // serves its results from its final stage until it is cleaned
+                // up, and has nothing left to watch or cancel.
+                info!(
+                    "Pipelined job {job_id} is {}; streaming its results",
+                    if running { "running" } else { "finished" }
+                );
+                let failure = running
+                    .then(|| watch_pulled_status(scheduler.clone(), job_id.clone()));
+                let scheduler = running.then(|| scheduler.clone());
                 break pipelined_results(
                     job_id,
                     pipelined_output_locations,
@@ -951,8 +984,8 @@ async fn execute_query_pull(
                         io_retry_wait_time_ms,
                         registration_timeout,
                     },
-                    Some(failure),
-                    Some(scheduler.clone()),
+                    failure,
+                    scheduler,
                 );
             }
             Some(job_status::Status::Running(_)) => {
@@ -966,29 +999,6 @@ async fn execute_query_pull(
                 let msg = format!("Job {} failed: {}", job_id, err.error);
                 error!("{msg}");
                 break Err(DataFusionError::Execution(msg));
-            }
-            Some(job_status::Status::Successful(SuccessfulJob {
-                pipelined_output_locations,
-                ..
-            })) if !pipelined_output_locations.is_empty() => {
-                // Finished before this client saw it running: the final
-                // stage still serves its results until the job is cleaned up.
-                break pipelined_results(
-                    job_id,
-                    pipelined_output_locations,
-                    PipelinedFetch {
-                        max_message_size,
-                        scheduler_url,
-                        flight_proxy,
-                        customize_endpoint,
-                        use_tls,
-                        io_retries_times,
-                        io_retry_wait_time_ms,
-                        registration_timeout,
-                    },
-                    None,
-                    None,
-                );
             }
             Some(job_status::Status::Successful(SuccessfulJob {
                 queued_at,
@@ -1149,6 +1159,7 @@ async fn execute_query_push(
         }
         let status = status.and_then(|s| s.status);
         let has_status_change = prev_status != status;
+        let running = matches!(status, Some(job_status::Status::Running(_)));
         match status {
             None => {
                 if has_status_change {
@@ -1162,12 +1173,25 @@ async fn execute_query_push(
                 }
                 prev_status = status;
             }
-            Some(job_status::Status::Running(RunningJob {
-                pipelined_output_locations,
-                ..
-            })) if !pipelined_output_locations.is_empty() => {
-                info!("Pipelined job {job_id} is running; streaming its results");
-                let failure = watch_pushed_status(query_status_stream);
+            Some(
+                job_status::Status::Running(RunningJob {
+                    pipelined_output_locations,
+                    ..
+                })
+                | job_status::Status::Successful(SuccessfulJob {
+                    pipelined_output_locations,
+                    ..
+                }),
+            ) if !pipelined_output_locations.is_empty() => {
+                // A job that finished before this client saw it running still
+                // serves its results from its final stage until it is cleaned
+                // up, and has nothing left to watch or cancel.
+                info!(
+                    "Pipelined job {job_id} is {}; streaming its results",
+                    if running { "running" } else { "finished" }
+                );
+                let failure = running.then(|| watch_pushed_status(query_status_stream));
+                let scheduler = running.then(|| scheduler.clone());
                 break pipelined_results(
                     job_id,
                     pipelined_output_locations,
@@ -1181,8 +1205,8 @@ async fn execute_query_push(
                         io_retry_wait_time_ms,
                         registration_timeout,
                     },
-                    Some(failure),
-                    Some(scheduler.clone()),
+                    failure,
+                    scheduler,
                 );
             }
             Some(job_status::Status::Running(_)) => {
@@ -1195,29 +1219,6 @@ async fn execute_query_push(
                 let msg = format!("Job {} failed: {}", job_id, err.error);
                 error!("{msg}");
                 break Err(DataFusionError::Execution(msg));
-            }
-            Some(job_status::Status::Successful(SuccessfulJob {
-                pipelined_output_locations,
-                ..
-            })) if !pipelined_output_locations.is_empty() => {
-                // Finished before this client saw it running: the final
-                // stage still serves its results until the job is cleaned up.
-                break pipelined_results(
-                    job_id,
-                    pipelined_output_locations,
-                    PipelinedFetch {
-                        max_message_size,
-                        scheduler_url,
-                        flight_proxy,
-                        customize_endpoint,
-                        use_tls,
-                        io_retries_times,
-                        io_retry_wait_time_ms,
-                        registration_timeout,
-                    },
-                    None,
-                    None,
-                );
             }
             Some(job_status::Status::Successful(SuccessfulJob {
                 queued_at,
@@ -1380,8 +1381,9 @@ async fn fetch_partition(
 mod test {
     use crate::config::BallistaConfig;
     use crate::execution_plans::distributed_query::{
-        DistributedQueryExec, check_scheduler_version, execute_query_pull,
-        execute_query_push, get_client_host_port, job_submission_request,
+        DistributedQueryExec, PipelinedResults, check_scheduler_version,
+        execute_query_pull, execute_query_push, get_client_host_port,
+        job_submission_request,
     };
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
     use crate::serde::protobuf::scheduler_grpc_server::{
@@ -1407,7 +1409,8 @@ mod test {
     use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
     use datafusion::prelude::SessionConfig;
     use datafusion_proto::protobuf::LogicalPlanNode;
-    use futures::Stream;
+    use futures::stream::BoxStream;
+    use futures::{Stream, StreamExt, TryStreamExt};
     use parking_lot::Mutex;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -1684,10 +1687,22 @@ mod test {
         .unwrap()
     }
 
+    /// A fetch that fails with `message`, then never yields again.
+    fn failing_fetch(
+        message: &str,
+    ) -> BoxStream<
+        'static,
+        datafusion::error::Result<datafusion::arrow::record_batch::RecordBatch>,
+    > {
+        futures::stream::iter(vec![Err(datafusion::error::DataFusionError::Execution(
+            message.to_owned(),
+        ))])
+        .chain(futures::stream::pending())
+        .boxed()
+    }
+
     #[tokio::test]
     async fn pipelined_results_end_with_the_job_failure() {
-        use super::PipelinedResults;
-        use futures::StreamExt;
         let (tx, rx) = tokio::sync::oneshot::channel();
         // Results that never arrive, as when the final stage's producer died.
         let mut results = PipelinedResults::new(
@@ -1704,8 +1719,6 @@ mod test {
 
     #[tokio::test]
     async fn pipelined_results_pass_data_through_when_the_job_succeeds() {
-        use super::PipelinedResults;
-        use futures::{StreamExt, TryStreamExt};
         let (tx, rx) = tokio::sync::oneshot::channel::<String>();
         // The watcher saw the job succeed and stopped without a failure.
         drop(tx);
@@ -1723,20 +1736,12 @@ mod test {
 
     #[tokio::test]
     async fn pipelined_results_prefer_the_job_failure_to_a_fetch_error() {
-        use super::PipelinedResults;
-        use futures::StreamExt;
         let (tx, rx) = tokio::sync::oneshot::channel();
         // The job failed and its producers were cleaned up, so the fetch
         // fails first, with an error that does not say why.
         let mut results = PipelinedResults::new(
             "job".into(),
-            futures::stream::iter(vec![Err(
-                datafusion::error::DataFusionError::Execution(
-                    "job job has finished on this executor".to_owned(),
-                ),
-            )])
-            .chain(futures::stream::pending())
-            .boxed(),
+            failing_fetch("job job has finished on this executor"),
             Some(rx),
             None,
         );
@@ -1751,30 +1756,26 @@ mod test {
 
     #[tokio::test]
     async fn pipelined_results_report_a_fetch_error_the_job_does_not_explain() {
-        use super::PipelinedResults;
-        use futures::StreamExt;
-        let fetch_error = || {
-            futures::stream::iter(vec![Err(
-                datafusion::error::DataFusionError::Execution(
-                    "connection reset".to_owned(),
-                ),
-            )])
-            .chain(futures::stream::pending())
-            .boxed()
-        };
-
         // The watcher saw the job end without failing.
         let (tx, rx) = tokio::sync::oneshot::channel::<String>();
         drop(tx);
-        let mut results =
-            PipelinedResults::new("job".into(), fetch_error(), Some(rx), None);
+        let mut results = PipelinedResults::new(
+            "job".into(),
+            failing_fetch("connection reset"),
+            Some(rx),
+            None,
+        );
         let err = results.next().await.unwrap().unwrap_err();
         assert!(err.to_string().contains("connection reset"), "{err}");
 
         // The watcher has not heard anything within the grace period.
         let (_tx, rx) = tokio::sync::oneshot::channel::<String>();
-        let mut results =
-            PipelinedResults::new("job".into(), fetch_error(), Some(rx), None);
+        let mut results = PipelinedResults::new(
+            "job".into(),
+            failing_fetch("connection reset"),
+            Some(rx),
+            None,
+        );
         results.failure_grace = Duration::from_millis(20);
         let err = results.next().await.unwrap().unwrap_err();
         assert!(err.to_string().contains("connection reset"), "{err}");
@@ -1798,8 +1799,6 @@ mod test {
     /// reading it to the end does not.
     #[tokio::test]
     async fn dropping_pipelined_results_early_cancels_the_job() {
-        use super::PipelinedResults;
-        use futures::{StreamExt, TryStreamExt};
         let scheduler = IncompatibleScheduler::default();
         let url = scheduler.start().await;
 
@@ -1824,12 +1823,7 @@ mod test {
 
         let mut fetch_failed = PipelinedResults::new(
             "fetch-failed".into(),
-            futures::stream::iter(vec![Err(
-                datafusion::error::DataFusionError::Execution(
-                    "connection reset".to_owned(),
-                ),
-            )])
-            .boxed(),
+            failing_fetch("connection reset"),
             None,
             Some(scheduler_client(url).await),
         );

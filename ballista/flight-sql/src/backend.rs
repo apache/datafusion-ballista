@@ -42,7 +42,7 @@ use datafusion::prelude::SessionContext;
 /// still sitting on the executors that produced them; the frontend turns each
 /// one into a `FlightEndpoint` whose ticket the client redeems with `DoGet`.
 /// A pipelined job (`ballista.execution.mode = pipelined`) instead streams its
-/// result while it runs, from `pipelined_partitions`.
+/// result while it runs, from `pipelined`.
 #[derive(Debug)]
 pub struct QueryResult {
     /// Scheduler-assigned id of the job that produced the result.
@@ -53,13 +53,20 @@ pub struct QueryResult {
     pub schema: SchemaRef,
     /// One entry per output partition, in the order the scheduler reported.
     pub partitions: Vec<PartitionLocation>,
-    /// For a pipelined job, where its final stage serves each output
-    /// partition while the job runs; empty for any other job. The job cannot
-    /// finish until every one of them has been read.
-    pub pipelined_partitions: Vec<PipelinedPartitionLocation>,
-    /// How long a fetch of a `pipelined_partitions` entry waits for the task
-    /// that serves it to start.
-    pub pipelined_registration_timeout: Duration,
+    /// Set for a pipelined job, whose result is read while it runs instead of
+    /// from `partitions`.
+    pub pipelined: Option<PipelinedOutput>,
+}
+
+/// Where a running pipelined job serves its result.
+#[derive(Debug)]
+pub struct PipelinedOutput {
+    /// Where the job's final stage serves each output partition. The job
+    /// cannot finish until every one of them has been read.
+    pub partitions: Vec<PipelinedPartitionLocation>,
+    /// How long a fetch of one of `partitions` waits for the task that
+    /// serves it to start.
+    pub registration_timeout: Duration,
 }
 
 /// Submits queries on behalf of a protocol frontend.
