@@ -52,6 +52,9 @@ pub mod execution_graph_dot;
 pub mod execution_stage;
 /// Executor registration and management.
 pub mod executor_manager;
+// Nothing plans pipelined jobs yet, so only the tests use this module.
+#[allow(dead_code)]
+pub(crate) mod pipelined_join_selection;
 /// Session state management.
 pub mod session_manager;
 /// Per-task plan rewriter (restrict scan/shuffle-reader to task's slice).

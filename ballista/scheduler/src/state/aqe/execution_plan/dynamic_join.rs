@@ -825,7 +825,7 @@ const DEFAULT_BINARY_WIDTH_BYTES: usize = 100;
 ///
 /// Returns `None` if the estimate overflows, so the caller declines to broadcast
 /// rather than wrapping around to a small number.
-fn estimate_output_byte_size(
+pub(crate) fn estimate_output_byte_size(
     schema: &Schema,
     num_rows: usize,
     column_statistics: &[ColumnStatistics],
