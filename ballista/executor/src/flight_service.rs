@@ -72,31 +72,25 @@ use tonic::{Request, Response, Status, Streaming};
 /// via the `IO_BLOCK_TRANSPORT` action.
 #[derive(Clone)]
 pub struct BallistaFlightService {
-    work_dir: String,
-    pipelined_registry: Option<Arc<PipelinedRegistry>>,
+    backend: LocalDiskBackend,
 }
 
 impl BallistaFlightService {
     /// Creates a new BallistaFlightService instance.
     pub fn new(work_dir: String) -> Self {
         Self {
-            work_dir,
-            pipelined_registry: None,
+            backend: LocalDiskBackend {
+                work_dir,
+                pipelined_registry: None,
+            },
         }
     }
 
     /// Also serves the output partitions of the pipelined tasks running on
     /// this executor. Without it, pipelined fetches are refused.
     pub fn with_pipelined_registry(mut self, registry: Arc<PipelinedRegistry>) -> Self {
-        self.pipelined_registry = Some(registry);
+        self.backend.pipelined_registry = Some(registry);
         self
-    }
-
-    fn backend(&self) -> LocalDiskBackend {
-        LocalDiskBackend {
-            work_dir: self.work_dir.clone(),
-            pipelined_registry: self.pipelined_registry.clone(),
-        }
     }
 }
 
@@ -109,6 +103,7 @@ const BLOCK_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
 
 /// A [`ResultBackend`] that serves shuffle partitions from the executor's
 /// work directory, and pipelined partitions from its registry.
+#[derive(Clone)]
 struct LocalDiskBackend {
     work_dir: String,
     pipelined_registry: Option<Arc<PipelinedRegistry>>,
@@ -306,7 +301,7 @@ impl FlightService for BallistaFlightService {
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
-        serve_do_get(&self.backend(), request).await
+        serve_do_get(&self.backend, request).await
     }
 
     async fn get_schema(
@@ -396,7 +391,7 @@ impl FlightService for BallistaFlightService {
                         ..
                     } => {
                         let path = resolve_fetch_path(
-                            &self.work_dir,
+                            &self.backend.work_dir,
                             job_id,
                             *stage_id,
                             *partition_id,
@@ -707,16 +702,15 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn do_get_streams_a_running_pipelined_partition() {
-        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int64Array::from((0..100).collect::<Vec<i64>>()))],
+    /// Runs a pipelined writer over `batch` while fetching its partition 0
+    /// through the Flight service, and returns the batches the fetch read.
+    async fn fetch_while_writing(batch: RecordBatch) -> Vec<RecordBatch> {
+        let input = MemorySourceConfig::try_new_exec(
+            &[vec![batch.clone()]],
+            batch.schema(),
+            None,
         )
         .unwrap();
-        let input =
-            MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap();
         let registry = Arc::new(PipelinedRegistry::new("executor"));
         let writer =
             PipelinedShuffleWriterExec::try_new("job".into(), 1, input, None, false)
@@ -737,11 +731,23 @@ mod tests {
                 .unwrap()
         };
         let ctx = SessionContext::new_with_config(
-            SessionConfig::new().with_extension(registry.clone()),
+            SessionConfig::new().with_extension(registry),
         )
         .task_ctx();
         let (batches, write) = tokio::join!(fetch, writer.execute_pipelined(ctx));
         write.unwrap();
+        batches
+    }
+
+    #[tokio::test]
+    async fn do_get_streams_a_running_pipelined_partition() {
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from((0..100).collect::<Vec<i64>>()))],
+        )
+        .unwrap();
+        let batches = fetch_while_writing(batch).await;
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(rows, 100);
     }
@@ -762,33 +768,9 @@ mod tests {
         )]));
         let values: DictionaryArray<UInt16Type> =
             vec!["a", "b", "a", "c"].into_iter().collect();
-        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(values)]).unwrap();
-        let input =
-            MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap();
-        let registry = Arc::new(PipelinedRegistry::new("executor"));
-        let writer =
-            PipelinedShuffleWriterExec::try_new("job".into(), 1, input, None, false)
-                .unwrap();
-        let service = BallistaFlightService::new("/tmp".to_owned())
-            .with_pipelined_registry(registry.clone());
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
 
-        let fetch = async {
-            let response = service
-                .do_get(Request::new(fetch_ticket(0)))
-                .await
-                .unwrap()
-                .into_inner();
-            FlightRecordBatchStream::new_from_flight_data(response.map_err(Into::into))
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap()
-        };
-        let ctx = SessionContext::new_with_config(
-            SessionConfig::new().with_extension(registry.clone()),
-        )
-        .task_ctx();
-        let (batches, write) = tokio::join!(fetch, writer.execute_pipelined(ctx));
-        write.unwrap();
+        let batches = fetch_while_writing(batch).await;
         assert_eq!(batches.len(), 1);
         let column = batches[0].column(0);
         assert_eq!(column.data_type(), &dictionary);

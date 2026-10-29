@@ -433,7 +433,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     Arc::new(TaskContext::new(
                         Some(task_identity.clone()),
                         task.session_id,
-                        self.executor.with_pipelined_registry(task.session_config),
+                        task.session_config,
                         function_registry.scalar_functions.clone(),
                         function_registry.higher_order_functions.clone(),
                         function_registry.aggregate_functions.clone(),
