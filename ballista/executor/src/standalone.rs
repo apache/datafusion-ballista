@@ -39,9 +39,11 @@ use ballista_core::{ConfigProducer, RuntimeProducer};
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use log::info;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tonic::transport::Channel;
+use tonic::transport::server::TcpIncoming;
 
 /// Creates new standalone executor based on
 /// session_state provided.
@@ -112,14 +114,18 @@ pub async fn new_standalone_executor_from_builder(
     );
 
     // A push-staged executor serves the scheduler's task launches on a gRPC
-    // port of its own, which `executor_server::startup` binds. Take a free one.
-    let grpc_port = if push_staged {
-        std::net::TcpListener::bind("127.0.0.1:0")?
-            .local_addr()?
-            .port()
+    // port of its own. Bind it now and keep it bound until the server takes it
+    // over, so no other port-0 bind in this process can be handed the same
+    // number in between.
+    let grpc_listener = if push_staged {
+        Some(TcpListener::bind("127.0.0.1:0").await?)
     } else {
+        None
+    };
+    let grpc_port = match &grpc_listener {
+        Some(listener) => listener.local_addr()?.port(),
         // TODO Make it configurable
-        50020
+        None => 50020,
     };
 
     let executor_meta = ExecutorRegistration {
@@ -163,7 +169,7 @@ pub async fn new_standalone_executor_from_builder(
             )),
     );
 
-    if push_staged {
+    if let Some(grpc_listener) = grpc_listener {
         let process_config = crate::executor_process::ExecutorProcessConfig {
             bind_host: "127.0.0.1".to_owned(),
             port: address.port(),
@@ -177,7 +183,15 @@ pub async fn new_standalone_executor_from_builder(
         };
         let shutdown = crate::shutdown::ShutdownNotifier::new();
         let (stop_send, stop_receive) = tokio::sync::mpsc::channel::<bool>(10);
-        crate::executor_server::startup(
+        let incoming = TcpIncoming::from(grpc_listener)
+            .with_nodelay(Some(true))
+            .with_keepalive(Some(Duration::from_secs(
+                process_config.grpc_server_config.tcp_keepalive_seconds,
+            )));
+        info!(
+            "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on 127.0.0.1:{grpc_port}"
+        );
+        crate::executor_server::startup_with_incoming(
             scheduler,
             Arc::new(process_config),
             executor,
@@ -185,9 +199,11 @@ pub async fn new_standalone_executor_from_builder(
             stop_send,
             &shutdown,
             crate::health::ExecutorHealth::new(),
+            incoming,
         )
         .await?;
-        // The executor's loops stop when the notifier or the stop channel is
+        // The executor's loops stop when the notifier is dropped, and its
+        // `stop_executor` handler panics if the stop channel's receiver is
         // dropped, so keep both for the life of the runtime.
         tokio::spawn(async move {
             let _keep_alive = (shutdown, stop_receive);

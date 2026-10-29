@@ -28,6 +28,8 @@ mod standalone_push_staged {
         BALLISTA_STANDALONE_PARALLELISM, BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY,
     };
     use ballista_core::extension::SessionConfigExt;
+    use ballista_core::serde::protobuf::PollWorkParams;
+    use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::execution::{SessionState, SessionStateBuilder};
     use datafusion::prelude::{CsvReadOptions, SessionConfig, SessionContext};
@@ -133,6 +135,18 @@ mod standalone_push_staged {
 
         let state = state("push-staged");
         let (host, port) = setup_test_cluster_with_executors(&state, 2, 2).await;
+
+        // The results match pull-staged by design, so check the scheduler
+        // really is push-staged: one of those rejects polling for work.
+        let mut scheduler = SchedulerGrpcClient::connect(format!("http://{host}:{port}"))
+            .await
+            .unwrap();
+        let status = scheduler
+            .poll_work(PollWorkParams::default())
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+
         let ctx =
             SessionContext::remote_with_state(&format!("df://{host}:{port}"), state)
                 .await
