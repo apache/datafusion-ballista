@@ -182,6 +182,10 @@ pub const BALLISTA_SEMI_JOIN_REDUCTION: &str = "ballista.optimizer.semi_join_red
 pub const BALLISTA_BALANCE_SCAN_FILE_GROUPS: &str =
     "ballista.optimizer.balance_scan_file_groups";
 
+/// Enable cross-stage hash-join runtime filters (AQE only).
+pub const BALLISTA_RUNTIME_FILTER_ENABLED: &str =
+    "ballista.planner.runtime_filter.enabled";
+
 /// Configuration key to enable AQE coalesce-shuffle-partitions rule.
 /// Disabled by default — opt in when the workload benefits from larger
 /// downstream tasks more than from preserved parallelism.
@@ -509,6 +513,9 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Wait time in milliseconds between IO retries in the Ballista client.".to_string(),
                          DataType::UInt64,
                          Some(3000.to_string())),
+        ConfigEntry::new(BALLISTA_RUNTIME_FILTER_ENABLED.to_string(),
+                         "Enables bounded distributed runtime filters for AQE inner and semi hash joins.".to_string(),
+                         DataType::Boolean, Some(false.to_string())),
         ConfigEntry::new(BALLISTA_COALESCE_ENABLED.to_string(),
                          "Enables the AQE coalesce-shuffle-partitions rule. \
                           Disabled by default — opt in when fewer/larger \
@@ -1123,6 +1130,11 @@ impl BallistaConfig {
     /// surviving files are spread evenly over the scan's file groups.
     pub fn balance_scan_file_groups_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_BALANCE_SCAN_FILE_GROUPS)
+    }
+
+    /// Whether distributed runtime filtering is enabled.
+    pub fn runtime_filter_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_RUNTIME_FILTER_ENABLED)
     }
 
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
