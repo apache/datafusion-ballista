@@ -73,6 +73,10 @@ BALLISTA_GRPC_MESSAGE_SIZE = 128 * 1024 * 1024
 # container, leaving room for shuffle buffers and the rest of the process.
 BALLISTA_MEMORY_POOL_FRACTION = 0.7
 
+# The user and group the apache/spark image runs as. A fresh shuffle volume is
+# owned by root, so the pods' fsGroup makes it writable.
+SPARK_SECURITY_CONTEXT = {"fsGroup": 185}
+
 # Seconds to wait for each step.
 DEPLOY_TIMEOUT = 15 * 60
 RUN_TIMEOUT = 6 * 60 * 60
@@ -548,7 +552,7 @@ def spark_executor_template(cfg, run_name):
 
     Spark fills in the image, command, resources and volumes from its settings.
     """
-    spec = pod_spec(cfg, [{"name": "executor"}])
+    spec = pod_spec(cfg, [{"name": "executor"}], security_context=SPARK_SECURITY_CONTEXT)
     return {"apiVersion": "v1", "kind": "Pod", **pod_template(run_name, "spark-executor", spec)}
 
 
@@ -602,7 +606,7 @@ def spark_manifests(args, cfg, run_name, data_path, numbers):
         {"name": "scripts", "configMap": {"name": f"{run_name}-scripts"}},
         {"name": "queries", "configMap": {"name": f"{run_name}-queries"}},
         {"name": "conf", "configMap": {"name": f"{run_name}-conf"}},
-    ], restart_policy="Never"))
+    ], restart_policy="Never", security_context=SPARK_SECURITY_CONTEXT))
     scripts = read_files(os.path.join(HERE, "spark"), ["tpcbench.py"])
     scripts.update(read_files(HERE, ["tpch_expected_rows.py"]))
     cluster = [

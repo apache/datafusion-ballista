@@ -263,6 +263,8 @@ class SparkTest(unittest.TestCase):
         self.assertEqual(template["kind"], "Pod")
         self.assertEqual(template["spec"]["tolerations"], [{"operator": "Exists"}])
         self.assertEqual(template["spec"]["containers"][0]["envFrom"], [{"secretRef": {"name": "aws-creds"}}])
+        # The apache/spark image runs as 185, and a fresh shuffle volume is owned by root.
+        self.assertEqual(template["spec"]["securityContext"], {"fsGroup": 185})
 
     def test_s3a(self):
         self.assertEqual(run.to_s3a("s3://b/x"), "s3a://b/x")
