@@ -393,10 +393,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         error!(
                             "Failed to launch new task, could not get executor metadata: {e}"
                         );
-                        state
+                        // Refund like the rejected-launch branch: the executor
+                        // stays registered, so its reserved vcores must go
+                        // back into the budget (see #2686).
+                        let freed = state
                             .task_manager
                             .take_task_reservations(&executor_id, &reservations);
-                        (vec![], HashSet::new())
+                        (vec![(executor_id.clone(), freed)], HashSet::new())
                     }
                 }
             });
@@ -740,6 +743,104 @@ mod tests {
         assert_eq!(failed_jobs, HashSet::from([orphan]));
         let freed: u32 = unassigned_slots.iter().map(|(_, n)| *n).sum();
         assert_eq!(freed, orphaned_vcores);
+
+        Ok(())
+    }
+
+    /// When metadata lookup fails but the executor is still registered (e.g. a
+    /// transient miss from a non-memory ClusterState backend), the batch's
+    /// reserved vcores must be refunded so they are not stuck until re-register.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_refunds_vcores_when_executor_metadata_missing() -> Result<()> {
+        use crate::cluster::BallistaCluster;
+        use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
+        use crate::state::session_manager::share_file_statistics_cache;
+        use ballista_core::utils::{default_config_producer, default_session_builder};
+
+        let cluster_state = Arc::new(InMemoryClusterState::default());
+        let cluster = BallistaCluster::new(
+            cluster_state.clone(),
+            Arc::new(InMemoryJobState::new(
+                "localhost:50050",
+                share_file_statistics_cache(Arc::new(default_session_builder)),
+                Arc::new(default_config_producer),
+            )),
+        );
+
+        let job_id = JobId::from("job-meta-miss");
+        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerState::new_with_task_launcher(
+                cluster,
+                BallistaCodec::default(),
+                "localhost:50050".to_owned(),
+                Arc::new(SchedulerConfig::default()),
+                Arc::new(RejectOne {
+                    reject: JobId::from("no-such-job"),
+                }),
+            );
+
+        let vcores = 8;
+        state
+            .executor_manager
+            .register_executor(
+                ExecutorMetadata {
+                    id: "executor-1".to_string(),
+                    host: String::default(),
+                    port: 0,
+                    grpc_port: 0,
+                    specification: ExecutorSpecification::default().with_vcores(vcores),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
+                },
+                ExecutorData {
+                    executor_id: "executor-1".to_string(),
+                    total_vcores: vcores,
+                    available_vcores: vcores,
+                },
+            )
+            .await?;
+
+        let ctx = state
+            .session_manager
+            .create_or_update_session("session", &SessionConfig::new_with_ballista())
+            .await?;
+        state
+            .task_manager
+            .queue_job(&job_id, "", timestamp_millis())?;
+        state
+            .task_manager
+            .submit_job(&job_id, "", ctx, &agg_plan(), timestamp_millis(), None)
+            .await?;
+
+        let bound = state
+            .executor_manager
+            .bind_schedulable_tasks(state.task_manager.get_running_job_cache())
+            .await?;
+        let bound_vcores: u32 = bound.iter().map(|(_, t)| t.vcores_consumed).sum();
+        assert!(bound_vcores > 0);
+
+        // Simulate a transient metadata miss while the executor remains in the
+        // available-vcores budget (the situation #2686 describes).
+        cluster_state.drop_executor_metadata("executor-1");
+        assert!(
+            state
+                .executor_manager
+                .get_executor_metadata("executor-1")
+                .await
+                .is_err()
+        );
+
+        let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
+        let sender = EventSender::new(tx_event);
+        state.task_manager.record_task_reservations(&bound);
+        let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
+
+        assert!(failed_jobs.is_empty());
+        let freed: u32 = unassigned_slots.iter().map(|(_, n)| *n).sum();
+        assert_eq!(freed, bound_vcores);
+        assert_eq!(
+            unassigned_slots,
+            vec![("executor-1".to_string(), bound_vcores)]
+        );
 
         Ok(())
     }
