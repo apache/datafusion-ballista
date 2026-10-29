@@ -3795,9 +3795,10 @@ mod test {
         Ok(())
     }
 
-    /// The stage reading a cache loses its data: it rolls back and waits, no
-    /// stage of the job re-runs, and once the rebuild's locations are provided,
-    /// in another partition count, it reads them and the job succeeds.
+    /// The stage reading a cache loses its data after one of its tasks
+    /// finished: it rolls back and waits, no other stage re-runs, and once the
+    /// rebuild's locations are provided, in another partition count, it reads
+    /// them and the job succeeds, with each output partition once.
     #[tokio::test]
     async fn a_lost_cache_is_read_again_once_rebuilt() -> Result<()> {
         let (mut graph, reading, _) =
@@ -3806,10 +3807,13 @@ mod test {
         revive_graph_and_complete_next_stage(&mut graph)?;
         graph.revive();
         let executor2 = mock_executor("executor-id2".to_string());
+        let done = graph.pop_next_task(&executor2.id)?.unwrap();
         let task = graph.pop_next_task(&executor2.id)?.unwrap();
-        let failed =
-            mock_failed_task(task, wrapped_fetch_failed_task("executor-cache", 1, 0));
-        let events = graph.update_task_status(&executor2, vec![failed], 4, 4)?;
+        let statuses = vec![
+            mock_completed_task(done, &executor2.id),
+            mock_failed_task(task, wrapped_fetch_failed_task("executor-cache", 1, 0)),
+        ];
+        let events = graph.update_task_status(&executor2, statuses, 4, 4)?;
         assert!(events.iter().any(|event| matches!(
             event,
             QueryStageSchedulerEvent::ExternalInputLost { inputs, .. }
@@ -3859,6 +3863,13 @@ mod test {
             locations
                 .iter()
                 .all(|loc| loc.executor_meta.id == "executor-new")
+        );
+        // The finished task's output from before the rollback is not kept:
+        // each task of the re-run is in the job's output once.
+        let keys = location_keys(&graph.output_locations());
+        assert_eq!(
+            keys,
+            (0..keys.len()).map(|task| (0, task)).collect::<Vec<_>>()
         );
         Ok(())
     }
