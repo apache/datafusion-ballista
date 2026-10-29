@@ -36,6 +36,17 @@
 //! unknown: a pipelined job holds every hash table of the job at once, a hash
 //! build cannot spill, and a failed pipelined task fails the job, so a build of
 //! unknown size is treated as too large.
+//!
+//! The limit is per join and per partition. It does not bound the total of all
+//! the hash tables a pipelined job holds at once, so a job with many joins just
+//! under the limit can still need more memory than the limit suggests.
+//!
+//! Joins that are `CollectLeft` when this rule runs are not checked. The
+//! distributed planner can later turn such a join back into a `Partitioned`
+//! one, when its join type is unsafe to broadcast or its build side is over
+//! `ballista.optimizer.broadcast_join_threshold_bytes`. Those build sides are
+//! still under DataFusion's `hash_join_single_partition_threshold`, so they
+//! are small unless that threshold has been raised well above its default.
 
 use std::sync::Arc;
 
@@ -43,6 +54,7 @@ use ballista_core::config::BallistaConfig;
 use datafusion::arrow::compute::SortOptions;
 use datafusion::common::Result;
 use datafusion::common::config::ConfigOptions;
+use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
@@ -52,7 +64,9 @@ use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode, SortMergeJoinExec};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::statistics::StatisticsContext;
-use datafusion::physical_plan::{ExecutionPlan, StatisticsArgs};
+use datafusion::physical_plan::{
+    ExecutionPlan, ExecutionPlanProperties, Partitioning, StatisticsArgs,
+};
 use log::{debug, warn};
 
 use crate::state::aqe::execution_plan::estimate_output_byte_size;
@@ -98,34 +112,22 @@ impl PhysicalOptimizerRule for PipelinedJoinSelection {
                 return Ok(Transformed::no(plan));
             }
 
-            // The inputs are not repartitioned yet. A `Partitioned` join's
-            // will be, into `target_partitions` partitions.
+            let partitions =
+                join_input_partitions(join, config.execution.target_partitions);
             let build_partition_bytes = estimated_bytes(join.left().as_ref())
-                .map(|bytes| bytes.div_ceil(config.execution.target_partitions.max(1)));
+                .map(|bytes| bytes.div_ceil(partitions));
             if build_partition_bytes.is_some_and(|bytes| bytes <= max_build_bytes) {
                 return Ok(Transformed::no(plan));
             }
 
-            match to_sort_merge_join(join) {
-                Ok(sort_merge_join) => {
-                    debug!(
-                        "pipelined join selection: demoting {:?} hash join to sort-merge join, \
-                         estimated build bytes per partition={build_partition_bytes:?}, \
-                         hash_join_max_build_partition_bytes={max_build_bytes}",
-                        join.join_type(),
-                    );
-                    Ok(Transformed::yes(sort_merge_join))
-                }
-                // A join type the sort-merge join does not support keeps its
-                // hash join.
-                Err(e) => {
-                    debug!(
-                        "pipelined join selection: keeping {:?} hash join, no sort-merge equivalent: {e}",
-                        join.join_type(),
-                    );
-                    Ok(Transformed::no(plan))
-                }
-            }
+            let sort_merge_join = to_sort_merge_join(join)?;
+            debug!(
+                "pipelined join selection: demoting {:?} hash join to sort-merge join, \
+                 estimated build bytes per partition={build_partition_bytes:?}, \
+                 hash_join_max_build_partition_bytes={max_build_bytes}",
+                join.join_type(),
+            );
+            Ok(Transformed::yes(sort_merge_join))
         })
         .map(|t| t.data)
     }
@@ -151,21 +153,20 @@ pub(crate) async fn create_pipelined_physical_plan(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut rules = state.physical_optimizers().to_vec();
     // Without `JoinSelection` the partition modes stay `Auto`, so the rule
-    // finds no `Partitioned` join and leaves the plan as it is.
-    let position = match rules
+    // would find no `Partitioned` join to check. Forcing hash joins would then
+    // drop the session's own `prefer_hash_join` choice for nothing, so plan the
+    // job as the static planner does.
+    let Some(index) = rules
         .iter()
         .position(|rule| rule.name() == "join_selection")
-    {
-        Some(index) => index + 1,
-        None => {
-            warn!(
-                "pipelined join selection: no join_selection rule in the session, \
-                 so hash joins are not demoted to sort-merge joins"
-            );
-            0
-        }
+    else {
+        warn!(
+            "pipelined join selection: no join_selection rule in the session, \
+             so the job is planned without size-aware join selection"
+        );
+        return state.create_physical_plan(logical_plan).await;
     };
-    rules.insert(position, Arc::new(PipelinedJoinSelection::new()));
+    rules.insert(index + 1, Arc::new(PipelinedJoinSelection::new()));
     let mut planning_state = SessionStateBuilder::new_from_existing(state.clone())
         .with_physical_optimizer_rules(rules)
         .build();
@@ -177,15 +178,38 @@ pub(crate) async fn create_pipelined_physical_plan(
     planning_state.create_physical_plan(logical_plan).await
 }
 
+/// The number of partitions a `Partitioned` join will run with.
+///
+/// The inputs are not repartitioned yet, and `EnforceDistribution` will
+/// repartition them into `target_partitions` partitions. An input that is
+/// already hash partitioned may be kept as it is, with its own partition
+/// count, so the smallest such count is used when it is lower.
+fn join_input_partitions(join: &HashJoinExec, target_partitions: usize) -> usize {
+    [join.left(), join.right()]
+        .into_iter()
+        .filter_map(|input| match input.output_partitioning() {
+            Partitioning::Hash(_, partitions) => Some(*partitions),
+            _ => None,
+        })
+        .fold(target_partitions, usize::min)
+        .max(1)
+}
+
 /// Estimated output size of `plan` in bytes, or `None` if unknown.
 ///
 /// Uses `total_byte_size` when it is known, otherwise estimates it from the
-/// row count as AQE's broadcast check does. A zero is treated as unknown, since
-/// statistics can report zero for inputs they did not measure.
+/// row count as AQE's broadcast check does. An inexact zero is treated as
+/// unknown, since statistics can report zero for inputs they did not measure.
+/// An exact zero is a known empty input.
 fn estimated_bytes(plan: &dyn ExecutionPlan) -> Option<usize> {
     let stats = StatisticsContext::new()
         .compute(plan, &StatisticsArgs::new())
         .ok()?;
+    if stats.num_rows == Precision::Exact(0)
+        || stats.total_byte_size == Precision::Exact(0)
+    {
+        return Some(0);
+    }
     if let Some(&bytes) = stats.total_byte_size.get_value()
         && bytes != 0
     {
@@ -233,10 +257,11 @@ mod tests {
     use ballista_core::extension::SessionConfigExt;
     use datafusion::arrow::array::{Int64Array, RecordBatch};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::common::stats::Precision;
+    use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::tree_node::TreeNodeRecursion;
     use datafusion::common::{ColumnStatistics, JoinType, NullEquality, Statistics};
     use datafusion::datasource::MemTable;
+    use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::test::exec::StatisticsExec;
     use datafusion::prelude::{SessionConfig, SessionContext, col};
 
@@ -355,6 +380,36 @@ mod tests {
         let plan = hash_join(build, PartitionMode::Partitioned, None);
         let optimized = optimize(plan, SessionConfig::new_with_ballista());
         assert_sort_merge_join_over_inputs(&optimized);
+    }
+
+    #[test]
+    fn keeps_hash_join_with_known_empty_build() {
+        let build = input("build", Precision::Exact(0), Precision::Exact(0));
+        let plan = hash_join(build, PartitionMode::Partitioned, None);
+        let optimized = optimize(plan, SessionConfig::new_with_ballista());
+        assert!(optimized.downcast_ref::<HashJoinExec>().is_some());
+
+        // An inexact zero may be an input that was not measured.
+        let build = input("build", Precision::Inexact(0), Precision::Inexact(0));
+        let plan = hash_join(build, PartitionMode::Partitioned, None);
+        let optimized = optimize(plan, SessionConfig::new_with_ballista());
+        assert!(optimized.is::<SortMergeJoinExec>());
+    }
+
+    #[test]
+    fn uses_the_partition_count_of_hash_partitioned_inputs() {
+        // 160 MiB is 10 MiB per partition over 16 partitions, but an input
+        // already hash partitioned into 1 partition may be kept that way.
+        let build = Arc::new(
+            RepartitionExec::try_new(
+                small_build(),
+                Partitioning::Hash(vec![Arc::new(Column::new("build_key", 0))], 1),
+            )
+            .unwrap(),
+        );
+        let plan = hash_join(build, PartitionMode::Partitioned, None);
+        let optimized = optimize(plan, SessionConfig::new_with_ballista());
+        assert!(optimized.is::<SortMergeJoinExec>());
     }
 
     #[test]
@@ -506,6 +561,50 @@ mod tests {
             })
             .collect();
         assert_eq!(values, (1..=1000).collect::<Vec<_>>());
+    }
+
+    /// Runs `plan` and returns its rows as sorted, formatted lines.
+    async fn sorted_rows(
+        ctx: &SessionContext,
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Vec<String> {
+        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
+            .await
+            .unwrap();
+        let mut rows: Vec<String> = pretty_format_batches(&batches)
+            .unwrap()
+            .to_string()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    // The sort-merge join applies a join filter differently for outer joins,
+    // so a demoted outer join with a filter must return what the hash join
+    // returns.
+    #[tokio::test]
+    async fn demoted_outer_joins_with_filters_match_hash_joins() {
+        for join in ["LEFT JOIN", "FULL JOIN"] {
+            let sql = format!(
+                "SELECT a.k, a.v, b.k, b.v FROM a {join} b ON a.k = b.k AND b.v > 500"
+            );
+            let hash_config = SessionConfig::new_with_ballista()
+                .set_usize(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, 0);
+            let (ctx, hash_plan) = plan_pipelined(hash_config, &sql).await;
+            assert_eq!(
+                join_operators(&hash_plan),
+                vec!["HashJoinExec(Partitioned)"]
+            );
+            let expected = sorted_rows(&ctx, hash_plan).await;
+
+            let demoted_config = SessionConfig::new_with_ballista()
+                .set_usize(BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, 1);
+            let (ctx, demoted_plan) = plan_pipelined(demoted_config, &sql).await;
+            assert_eq!(join_operators(&demoted_plan), vec!["SortMergeJoinExec"]);
+            assert_eq!(sorted_rows(&ctx, demoted_plan).await, expected, "{join}");
+        }
     }
 
     #[test]
