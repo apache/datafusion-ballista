@@ -94,6 +94,7 @@ pub struct AdaptivePlanner {
     job_id: JobId,
 
     runnable_stage_output: HashMap<usize, StageOutput>,
+    runtime_filters: Option<super::runtime_filter_planner::RuntimeFilterPlanner>,
 }
 
 impl Debug for AdaptivePlanner {
@@ -126,7 +127,15 @@ impl AdaptivePlanner {
         let planner = DefaultPhysicalPlanner::default();
         let plan = planner.optimize_physical_plan(plan, &session_state, |_, _| {})?;
 
+        let runtime_filters = session_state
+            .config()
+            .options()
+            .extensions
+            .get::<ballista_core::config::BallistaConfig>()
+            .is_some_and(|c| c.runtime_filter_enabled())
+            .then(super::runtime_filter_planner::RuntimeFilterPlanner::default);
         Ok(Self {
+            runtime_filters,
             stage_id_generator: 0, // FIXME: compatibility issue with static where stages start from 1
             session_state,
             physical_planner: planner.into(),
@@ -401,6 +410,9 @@ impl AdaptivePlanner {
                 Ok((None, stages_to_cancel))
             }
             Some(stages) => {
+                if let Some(filters) = &mut self.runtime_filters {
+                    filters.discover(&self.plan)?;
+                }
                 let config = self.session_state.config().options();
                 let (stage_ids, shuffle_writers) = stages
                     .into_iter()
@@ -413,6 +425,10 @@ impl AdaptivePlanner {
                         // plan in `default_optimizers()`.
                         let plan = CoalescePartitionsRule.optimize(plan, config)?;
                         let plan = OptimizeSkewedJoinRule.optimize(plan, config)?;
+                        let plan = match &mut self.runtime_filters {
+                            Some(filters) => filters.instrument(plan)?,
+                            None => plan,
+                        };
                         BallistaAdapter::adapt_to_ballista(plan, &self.job_id, config)
                             .map(|w| (w.plan.stage_id(), w))
                     })

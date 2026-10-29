@@ -165,3 +165,44 @@ async fn reuses_the_staged_exchange_when_the_build_side_measures_too_large() {
               StatsExec: partitions=4, rows=Exact(1000000000), bytes=Exact(42949672960)
     ");
 }
+
+/// Enabling filters must not interfere with AQE's measured join decisions.
+#[tokio::test]
+async fn runtime_filters_preserve_adaptive_planning() {
+    use datafusion::physical_plan::displayable;
+
+    let mut plans = Vec::new();
+    for enabled in [false, true] {
+        let ctx = q8_shaped_ctx();
+        ctx.sql("SET datafusion.optimizer.prefer_hash_join = true")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        ctx.sql(&format!(
+            "SET ballista.planner.runtime_filter.enabled = {enabled}"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+        let mut planner = planner_for(&ctx, Q8_SHAPED_JOIN).await;
+        let initial = displayable(planner.current_plan())
+            .indent(false)
+            .to_string();
+        let stages = planner.actionable_stages().unwrap().0.unwrap();
+        assert_eq!(stages.len(), 1);
+        planner
+            .finalise_stage_internal(0, mock_partitions_with_statistics())
+            .unwrap();
+        plans.push((
+            initial,
+            displayable(planner.current_plan())
+                .indent(false)
+                .to_string(),
+        ));
+    }
+    assert_eq!(plans[0], plans[1]);
+}
