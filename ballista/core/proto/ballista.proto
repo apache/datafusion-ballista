@@ -1291,6 +1291,10 @@ message SuccessfulJob {
   uint64 queued_at = 2;
   uint64 started_at = 3;
   uint64 ended_at = 4;
+  // For a pipelined job: where its final stage served each output partition,
+  // the same as in its running status. A small result can finish before a
+  // polling client has seen the job running; the client can still read it.
+  repeated PipelinedPartitionLocation pipelined_output_locations = 5;
 }
 
 message QueuedJob {
@@ -1302,6 +1306,10 @@ message RunningJob {
   uint64 queued_at = 1;
   uint64 started_at = 2;
   string scheduler = 3;
+  // Set for a pipelined job once its tasks are placed: where the final stage
+  // serves each output partition. The client streams these while the job is
+  // still running, since the final stage cannot finish until it is drained.
+  repeated PipelinedPartitionLocation pipelined_output_locations = 4;
 }
 
 message FailedJob {

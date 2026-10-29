@@ -1773,6 +1773,11 @@ pub struct SuccessfulJob {
     pub started_at: u64,
     #[prost(uint64, tag = "4")]
     pub ended_at: u64,
+    /// For a pipelined job: where its final stage served each output partition,
+    /// the same as in its running status. A small result can finish before a
+    /// polling client has seen the job running; the client can still read it.
+    #[prost(message, repeated, tag = "5")]
+    pub pipelined_output_locations: ::prost::alloc::vec::Vec<PipelinedPartitionLocation>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct QueuedJob {
@@ -1780,7 +1785,7 @@ pub struct QueuedJob {
     pub queued_at: u64,
 }
 /// TODO: add progress report
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunningJob {
     #[prost(uint64, tag = "1")]
     pub queued_at: u64,
@@ -1788,6 +1793,11 @@ pub struct RunningJob {
     pub started_at: u64,
     #[prost(string, tag = "3")]
     pub scheduler: ::prost::alloc::string::String,
+    /// Set for a pipelined job once its tasks are placed: where the final stage
+    /// serves each output partition. The client streams these while the job is
+    /// still running, since the final stage cannot finish until it is drained.
+    #[prost(message, repeated, tag = "4")]
+    pub pipelined_output_locations: ::prost::alloc::vec::Vec<PipelinedPartitionLocation>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FailedJob {
