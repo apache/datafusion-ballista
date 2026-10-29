@@ -125,6 +125,17 @@ class TpcbenchTest(unittest.TestCase):
             (statement,) = tpcbench.load_statements(d, 1, renames)
         self.assertEqual(statement, "select ib_income_band_id, ib_income_band_sk_x from income_band")
 
+    def test_errors_keep_the_root_cause(self):
+        e = RuntimeError("An error occurred while calling o272.collectToPython.\n"
+                         "\tat org.apache.spark.Foo.bar(Foo.scala:1)\n" * 50 +
+                         "Caused by: org.apache.spark.SparkException: Job aborted\n"
+                         "Caused by: java.nio.file.AccessDeniedException: s3a://b/f: 403 Forbidden\n"
+                         "\tat software.amazon.Foo(Foo.java:1)")
+        self.assertEqual(tpcbench.describe_error(e),
+                         "RuntimeError: An error occurred while calling o272.collectToPython. ... "
+                         "Caused by: java.nio.file.AccessDeniedException: s3a://b/f: 403 Forbidden")
+        self.assertEqual(tpcbench.describe_error(ValueError("boom")), "ValueError: boom")
+
     def test_selected_queries(self):
         self.assertEqual(tpcbench.selected_queries("tpch", None), list(range(1, 23)))
         self.assertEqual(tpcbench.selected_queries("tpcds", "q1, 99"), [1, 99])

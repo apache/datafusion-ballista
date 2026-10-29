@@ -131,6 +131,18 @@ def execute(spark, benchmark, number, statements):
     return time.monotonic() - start, row_count
 
 
+def describe_error(e):
+    """The error's first line and its root cause.
+
+    A Spark failure is a long Java stack trace whose cause, such as an S3 403,
+    is in its last "Caused by:" line.
+    """
+    lines = str(e).splitlines()
+    first = f"{type(e).__name__}: {lines[0] if lines else ''}"
+    causes = [line.strip() for line in lines if line.strip().startswith("Caused by:")]
+    return (f"{first} ... {causes[-1]}" if causes else first)[:2000]
+
+
 def run_query(spark, args, number, statements, expected_rows):
     """Run one query args.iterations times. Stops at the first failed iteration."""
     record = {"query": number, "iterations": [], "error": None}
@@ -141,7 +153,7 @@ def run_query(spark, args, number, statements, expected_rows):
             if expected is not None and row_count != expected:
                 raise RuntimeError(f"q{number} returned {row_count} rows, expected {expected}")
         except Exception as e:  # noqa: BLE001 - a failed query must not stop the suite
-            record["error"] = f"{type(e).__name__}: {e}"[:1000]
+            record["error"] = describe_error(e)
             log(f"q{number} iteration {i + 1}/{args.iterations} FAILED: {record['error']}")
             break
         record["iterations"].append({"elapsed": round(elapsed, 3), "row_count": row_count})
