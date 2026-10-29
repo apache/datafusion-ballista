@@ -73,6 +73,8 @@ pub(crate) mod execution_plan;
 pub mod optimizer_rule;
 pub mod planner;
 pub(crate) mod reuse_exchange;
+mod runtime_filter;
+mod runtime_filter_planner;
 pub(crate) mod skew_join;
 #[cfg(test)]
 mod test;
@@ -110,6 +112,7 @@ pub(crate) struct AdaptiveExecutionGraph {
     scheduler_id: Option<String>,
     /// Adaptive Planner to be used with this execution graph
     planner: AdaptivePlanner,
+    runtime_filters: Option<runtime_filter::RuntimeFilterRegistry>,
     /// ID for this job
     job_id: JobId,
     /// Job name, can be empty string
@@ -243,8 +246,23 @@ impl AdaptiveExecutionGraph {
                 .collect();
         let stages = stages?;
 
+        let filter_config = session_config
+            .options()
+            .extensions
+            .get::<ballista_core::config::BallistaConfig>();
+        let runtime_filters = filter_config
+            .filter(|config| config.runtime_filter_enabled())
+            .map(|_| {
+                let mut registry = runtime_filter::RuntimeFilterRegistry::default();
+                for (&id, stage) in &stages {
+                    registry.register(id, stage.plan());
+                }
+                registry
+            });
+
         Ok(Self {
             planner,
+            runtime_filters,
             scheduler_id: Some(scheduler_id.to_string()),
             job_id: job_id.to_owned(),
             job_name: job_name.to_owned(),
@@ -577,6 +595,9 @@ impl AdaptiveExecutionGraph {
                             self.session_config.clone(),
                             stage,
                         )?;
+                        if let Some(registry) = &mut self.runtime_filters {
+                            registry.register(stage_id, stage.plan());
+                        }
                         self.stages.insert(stage_id, stage);
                     }
                 }
@@ -656,6 +677,24 @@ impl AdaptiveExecutionGraph {
                 None
             }
         });
+
+        if let (Some(id), Some(registry)) = (running_stage_id, &mut self.runtime_filters)
+        {
+            let plan = self.stages[&id].plan_arc();
+            let prepared = match registry.prepare(id, plan.clone(), &self.stages) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    log::warn!(
+                        "Runtime filter unavailable for stage {id}; bypassing: {error}"
+                    );
+                    plan
+                }
+            };
+            let ExecutionStage::Running(stage) = self.stages.get_mut(&id).unwrap() else {
+                unreachable!()
+            };
+            stage.plan = prepared;
+        }
 
         // If no available tasks found in the running stage,
         // try to find a resolved stage and convert it to the running stage
@@ -1635,13 +1674,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         let job_id = self.job_id.clone();
         let session_id = self.session_id.clone();
 
-        let mut next_task = self.stages.iter_mut().find(|(_stage_id, stage)| {
-            if let ExecutionStage::Running(stage) = stage {
-                stage.available_tasks() > 0
-            } else {
-                false
-            }
-        }).map(|(stage_id, stage)| {
+        let ready_id = self.get_running_stage_id(&[]);
+        let mut next_task = ready_id.and_then(|id| self.stages.get_mut(&id).map(|stage| (id, stage))).map(|(stage_id, stage)| {
             if let ExecutionStage::Running(stage) = stage {
                 use ballista_core::serde::scheduler::TaskKey;
 
@@ -1680,7 +1714,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
                 let key = TaskKey {
                     job_id,
-                    stage_id: *stage_id,
+                    stage_id,
                     task_id,
                 };
 
