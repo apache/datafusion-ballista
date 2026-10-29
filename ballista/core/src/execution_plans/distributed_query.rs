@@ -17,7 +17,6 @@
 
 use crate::JobId;
 use crate::client::BallistaClient;
-use crate::config::BALLISTA_PIPELINED_REGISTRATION_TIMEOUT_SECONDS;
 use crate::config::BallistaConfig;
 use crate::error::BallistaError;
 use crate::extension::{
@@ -361,6 +360,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 session_config.ballista_grpc_interceptor(),
                 session_config.ballista_override_create_grpc_client_endpoint(),
                 bc.use_tls(),
+                bc.pipelined_registration_timeout(),
             ))
             .try_flatten()
             .inspect(move |batch| {
@@ -388,6 +388,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 session_config.ballista_grpc_interceptor(),
                 session_config.ballista_override_create_grpc_client_endpoint(),
                 bc.use_tls(),
+                bc.pipelined_registration_timeout(),
             ))
             .try_flatten()
             .inspect(move |batch| {
@@ -484,6 +485,7 @@ pub async fn execute_physical_plan<U: 'static + AsExecutionPlan>(
                     session_config.ballista_grpc_interceptor(),
                     session_config.ballista_override_create_grpc_client_endpoint(),
                     bc.use_tls(),
+                    bc.pipelined_registration_timeout(),
                 )
                 .await?,
             )
@@ -500,6 +502,7 @@ pub async fn execute_physical_plan<U: 'static + AsExecutionPlan>(
                     session_config.ballista_grpc_interceptor(),
                     session_config.ballista_override_create_grpc_client_endpoint(),
                     bc.use_tls(),
+                    bc.pipelined_registration_timeout(),
                 )
                 .await?,
             )
@@ -550,19 +553,6 @@ async fn cancel_job(scheduler: &mut SchedulerClient, job_id: &str) {
     {
         warn!("Failed to cancel job {job_id}: {e}");
     }
-}
-
-/// The registration timeout the query was submitted with, which bounds how
-/// long the client waits for a pipelined job's final stage to start serving.
-fn pipelined_registration_timeout(query: &ExecuteQueryParams) -> Duration {
-    query
-        .settings
-        .iter()
-        .find(|kv| kv.key == BALLISTA_PIPELINED_REGISTRATION_TIMEOUT_SECONDS)
-        .and_then(|kv| kv.value.as_ref())
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(60))
 }
 
 /// How the client reaches the final stage of a pipelined job.
@@ -666,7 +656,7 @@ const JOB_FAILURE_GRACE: Duration = Duration::from_secs(5);
 
 /// A pipelined job's result stream, cut short with the job's error if the
 /// scheduler reports that it failed, and cancelling the job if it is dropped
-/// before it ends.
+/// before reading every batch, whether early or after a failed fetch.
 struct PipelinedResults {
     job_id: JobId,
     data: BoxStream<'static, Result<RecordBatch>>,
@@ -676,7 +666,9 @@ struct PipelinedResults {
     fetch_error: Option<(DataFusionError, std::pin::Pin<Box<tokio::time::Sleep>>)>,
     /// How long to wait for the job's failure after a fetch fails.
     failure_grace: Duration,
-    /// Cancels the job if the stream is dropped before it ends.
+    /// Cancels the job when the stream is dropped, unless it is cleared
+    /// because the job has nothing left to cancel: every batch was read, or
+    /// the job failed.
     scheduler: Option<SchedulerClient>,
     done: bool,
 }
@@ -717,6 +709,7 @@ impl Stream for PipelinedResults {
                 match std::pin::Pin::new(failure).poll(cx) {
                     Poll::Ready(Ok(reason)) => {
                         self.done = true;
+                        self.scheduler = None;
                         let msg = format!("Job {} failed: {reason}", self.job_id);
                         error!("{msg}");
                         return Poll::Ready(Some(Err(DataFusionError::Execution(msg))));
@@ -749,6 +742,7 @@ impl Stream for PipelinedResults {
                 }
                 Poll::Ready(None) => {
                     self.done = true;
+                    self.scheduler = None;
                     return Poll::Ready(None);
                 }
                 other => return other,
@@ -758,20 +752,17 @@ impl Stream for PipelinedResults {
 }
 
 impl Drop for PipelinedResults {
-    /// A client that stops reading early wants no more of the job, and its
-    /// producers would otherwise run on until they notice. Cancel it, which
-    /// frees its vcores at once.
+    /// A client that stops reading early, or whose fetch failed, gets no
+    /// more of the job, and its producers would otherwise run on until they
+    /// notice. Cancel it, which frees its vcores at once.
     fn drop(&mut self) {
-        if self.done {
-            return;
-        }
         if let Some(mut scheduler) = self.scheduler.take()
             && let Ok(runtime) = tokio::runtime::Handle::try_current()
         {
             let job_id = self.job_id.clone();
             runtime.spawn(async move {
                 info!(
-                    "Result stream of pipelined job {job_id} dropped early; cancelling it"
+                    "Result stream of pipelined job {job_id} dropped before its end; cancelling it"
                 );
                 cancel_job(&mut scheduler, job_id.as_str()).await;
             });
@@ -845,10 +836,10 @@ async fn execute_query_pull(
     grpc_interceptor: Arc<BallistaGrpcMetadataInterceptor>,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     use_tls: bool,
+    registration_timeout: Duration,
 ) -> Result<BoxStream<'static, Result<RecordBatch>>> {
     let io_retries_times = grpc_config.io_retries_times;
     let io_retry_wait_time_ms = grpc_config.io_retry_wait_time_ms;
-    let registration_timeout = pipelined_registration_timeout(&query);
 
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
@@ -1073,10 +1064,10 @@ async fn execute_query_push(
     grpc_interceptor: Arc<BallistaGrpcMetadataInterceptor>,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     use_tls: bool,
+    registration_timeout: Duration,
 ) -> Result<BoxStream<'static, Result<RecordBatch>>> {
     let io_retries_times = grpc_config.io_retries_times;
     let io_retry_wait_time_ms = grpc_config.io_retry_wait_time_ms;
-    let registration_timeout = pipelined_registration_timeout(&query);
 
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
@@ -1637,6 +1628,7 @@ mod test {
             Default::default(),
             None,
             false,
+            config.pipelined_registration_timeout(),
         )
         .await;
 
@@ -1664,6 +1656,7 @@ mod test {
             Default::default(),
             None,
             false,
+            config.pipelined_registration_timeout(),
         )
         .await;
 
@@ -1800,8 +1793,9 @@ mod test {
         )
     }
 
-    /// A client that stops reading wants no more of the job, so dropping its
-    /// result stream early cancels the job; reading it to the end does not.
+    /// A client that stops reading, or whose fetch failed, gets no more of the
+    /// job, so dropping its result stream before the end cancels the job;
+    /// reading it to the end does not.
     #[tokio::test]
     async fn dropping_pipelined_results_early_cancels_the_job() {
         use super::PipelinedResults;
@@ -1823,35 +1817,33 @@ mod test {
                 .chain(futures::stream::pending())
                 .boxed(),
             None,
-            Some(scheduler_client(url).await),
+            Some(scheduler_client(url.clone()).await),
         );
         abandoned.next().await.unwrap().unwrap();
         drop(abandoned);
 
+        let mut fetch_failed = PipelinedResults::new(
+            "fetch-failed".into(),
+            futures::stream::iter(vec![Err(
+                datafusion::error::DataFusionError::Execution(
+                    "connection reset".to_owned(),
+                ),
+            )])
+            .boxed(),
+            None,
+            Some(scheduler_client(url).await),
+        );
+        fetch_failed.next().await.unwrap().unwrap_err();
+        assert!(fetch_failed.next().await.is_none());
+        drop(fetch_failed);
+
         let deadline = Instant::now() + Duration::from_secs(5);
-        while scheduler.cancelled().is_empty() && Instant::now() < deadline {
+        while scheduler.cancelled().len() < 2 && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert_eq!(scheduler.cancelled(), ["abandoned"]);
-    }
-
-    #[test]
-    fn pipelined_registration_timeout_comes_from_the_query_settings() {
-        use super::pipelined_registration_timeout;
-        let mut query = job_submission();
-        assert_eq!(
-            pipelined_registration_timeout(&query),
-            Duration::from_secs(60)
-        );
-        query.settings.push(crate::serde::protobuf::KeyValuePair {
-            key: crate::config::BALLISTA_PIPELINED_REGISTRATION_TIMEOUT_SECONDS
-                .to_owned(),
-            value: Some("7".to_owned()),
-        });
-        assert_eq!(
-            pipelined_registration_timeout(&query),
-            Duration::from_secs(7)
-        );
+        let mut cancelled = scheduler.cancelled();
+        cancelled.sort();
+        assert_eq!(cancelled, ["abandoned", "fetch-failed"]);
     }
 
     #[test]
