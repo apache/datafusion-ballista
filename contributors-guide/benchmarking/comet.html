@@ -448,17 +448,16 @@ left at Comet’s defaults.</p>
 </section>
 <section id="reproducing">
 <h2>Reproducing<a class="headerlink" href="#reproducing" title="Link to this heading">#</a></h2>
-<p>Start from the <a class="reference internal" href="spark.html"><span class="std std-doc">Spark</span></a> <code class="docutils literal notranslate"><span class="pre">spark-submit</span></code> command, add the Comet JAR to
-the driver and executor classpath (see the
-<a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/installation.html">Comet installation guide</a>)
-and add the settings above:</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="w">  </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>32G<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.memoryPool.fraction<span class="o">=</span><span class="m">0</span>.8
+<p>Build the Comet image from <code class="docutils literal notranslate"><span class="pre">benchmarks/cluster/docker/comet.Dockerfile</span></code>, which
+adds the Comet JAR to the Spark image (see the
+<a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/installation.html">Comet installation guide</a>),
+then run:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>benchmarks/cluster
+python3<span class="w"> </span>run.py<span class="w"> </span>--engine<span class="w"> </span>comet
 </pre></div>
 </div>
+<p>The settings above are in <code class="docutils literal notranslate"><span class="pre">benchmarks/cluster/conf/comet.conf</span></code>, on top of the
+<a class="reference internal" href="spark.html"><span class="std std-doc">Spark</span></a> settings.</p>
 </section>
 </section>
 

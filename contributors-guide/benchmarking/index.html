@@ -595,11 +595,15 @@ iterations after an untimed warm-up run (see
 </section>
 <section id="reproducing">
 <h2>Reproducing<a class="headerlink" href="#reproducing" title="Link to this heading">#</a></h2>
-<p>The Ballista numbers come from the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> runner in this repository. The Spark,
-Spark + Comet, and Trino numbers were collected with a benchmark harness that
-is not in this repository yet. We are working on adding scripts so that anyone
-can reproduce all of these results. See the per-engine pages below for the
-commands and settings.</p>
+<p><a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster"><code class="docutils literal notranslate"><span class="pre">benchmarks/cluster</span></code></a>
+has the scripts to run all four engines on your own Kubernetes cluster with
+the settings described on these pages. You provide the cluster, the data in
+S3, and the images, which the directory has Dockerfiles for.</p>
+<p>The Ballista numbers above come from the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> runner in this repository. The
+Spark, Spark + Comet, and Trino numbers were collected before these scripts
+were added, with a harness that used the same settings but its own phrasing of
+the queries (see <a class="reference internal" href="environment.html#queries"><span class="std std-ref">Queries</span></a>). The scripts run the
+queries in this repository on every engine.</p>
 </section>
 <section id="details">
 <h2>Details<a class="headerlink" href="#details" title="Link to this heading">#</a></h2>

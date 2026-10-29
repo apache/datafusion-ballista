@@ -432,8 +432,7 @@ total, compared with 64 GiB for a Ballista executor).</p></li>
 default JVM heap of 80 %, about 51 GiB), no spill volume. A separate
 coordinator pod plans and schedules but does not scan data.</p></li>
 <li><p><strong>Driver (Spark and Spark + Comet):</strong> runs the queries through a Spark
-benchmark harness that is not in this repository yet. See
-<a class="reference internal" href="spark.html"><span class="std std-doc">Spark</span></a>.</p></li>
+benchmark harness. See <a class="reference internal" href="spark.html"><span class="std std-doc">Spark</span></a>.</p></li>
 <li><p><strong>Client pod (Ballista):</strong> the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> Rust benchmark runner from
 <a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks"><code class="docutils literal notranslate"><span class="pre">benchmarks/</span></code></a>
 in this repo (<code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">run</span> <span class="pre">--release</span> <span class="pre">--bin</span> <span class="pre">tpch</span> <span class="pre">--</span> <span class="pre">benchmark</span> <span class="pre">ballista</span> <span class="pre">...</span></code>),
@@ -476,10 +475,13 @@ number.</p>
 <h2>Queries<a class="headerlink" href="#queries" title="Link to this heading">#</a></h2>
 <p>The SQLBench-H phrasing of the 22 TPC-H queries from
 <a class="reference external" href="https://github.com/apache/datafusion-benchmarks">apache/datafusion-benchmarks</a>.</p>
-<p>The Spark harness uses the same queries with the same substitution
-parameters. The only differences are in wording: it writes some dates as
-arithmetic (for example <code class="docutils literal notranslate"><span class="pre">date</span> <span class="pre">'1998-12-01'</span> <span class="pre">-</span> <span class="pre">interval</span> <span class="pre">'90'</span> <span class="pre">day</span></code> instead of
-<code class="docutils literal notranslate"><span class="pre">date</span> <span class="pre">'1998-09-02'</span></code>), and it phrases Q15 as a CTE instead of a view.</p>
+<p>The harness that collected the Spark, Spark + Comet, and Trino results uses
+the same queries with the same substitution parameters. The only differences
+are in wording: it writes some dates as arithmetic (for example
+<code class="docutils literal notranslate"><span class="pre">date</span> <span class="pre">'1998-12-01'</span> <span class="pre">-</span> <span class="pre">interval</span> <span class="pre">'90'</span> <span class="pre">day</span></code> instead of <code class="docutils literal notranslate"><span class="pre">date</span> <span class="pre">'1998-09-02'</span></code>), and it
+phrases Q15 as a CTE instead of a view. The scripts in
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster"><code class="docutils literal notranslate"><span class="pre">benchmarks/cluster</span></code></a>
+run the queries in this repository on every engine.</p>
 </section>
 </section>
 

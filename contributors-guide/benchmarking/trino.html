@@ -467,10 +467,16 @@ reviewed by Trino experts.</p>
 </section>
 <section id="reproducing">
 <h2>Reproducing<a class="headerlink" href="#reproducing" title="Link to this heading">#</a></h2>
-<p>The Trino numbers were collected with the same harness. It creates
-external Hive tables over the Parquet files, syncs their partitions, and runs
-each query once untimed and then three times, one query at a time, through the
-Trino client, with the settings on this page.</p>
+<p>The Trino numbers were collected with the same harness as the Spark numbers.
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster"><code class="docutils literal notranslate"><span class="pre">benchmarks/cluster</span></code></a>
+does the same with the settings on this page: it creates external Hive tables
+over the Parquet files, syncs their partitions, and runs each query once
+untimed and then three times, one query at a time, through Trino’s HTTP
+protocol:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>benchmarks/cluster
+python3<span class="w"> </span>run.py<span class="w"> </span>--engine<span class="w"> </span>trino
+</pre></div>
+</div>
 </section>
 </section>
 

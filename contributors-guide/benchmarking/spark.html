@@ -469,24 +469,17 @@ The matching Ballista executor runs <code class="docutils literal notranslate"><
 </section>
 <section id="reproducing">
 <h2>Reproducing<a class="headerlink" href="#reproducing" title="Link to this heading">#</a></h2>
-<p>Until the harness is added, the closest public equivalent is
-<code class="docutils literal notranslate"><span class="pre">tpcbench.py</span></code> from
-<a class="reference external" href="https://github.com/apache/datafusion-benchmarks">apache/datafusion-benchmarks</a>,
-with the settings above and stock Spark 4.1 defaults for everything else:</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>spark-submit<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--master<span class="w"> </span>&lt;master&gt;<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.executor.instances<span class="o">=</span><span class="m">32</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.executor.cores<span class="o">=</span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.executor.memory<span class="o">=</span>64G<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.executor.memoryOverhead<span class="o">=</span>10G<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.sql.shuffle.partitions<span class="o">=</span><span class="m">512</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>tpcbench.py<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--benchmark<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--data<span class="w"> </span>s3a://&lt;bucket&gt;/tpch/sf1000<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--format<span class="w"> </span>parquet<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--iterations<span class="w"> </span><span class="m">2</span>
+<p>With the scripts in
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster"><code class="docutils literal notranslate"><span class="pre">benchmarks/cluster</span></code></a>,
+after setting up <code class="docutils literal notranslate"><span class="pre">cluster.toml</span></code> as its README describes:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>benchmarks/cluster
+python3<span class="w"> </span>run.py<span class="w"> </span>--engine<span class="w"> </span>spark
 </pre></div>
 </div>
+<p>The settings above are in <code class="docutils literal notranslate"><span class="pre">benchmarks/cluster/conf/spark.conf</span></code>. The driver runs
+<code class="docutils literal notranslate"><span class="pre">spark/tpcbench.py</span></code> in client mode in a Kubernetes Job, and Spark starts the
+executors with a volume each for shuffle files, from the storage class in
+<code class="docutils literal notranslate"><span class="pre">cluster.toml</span></code>.</p>
 </section>
 </section>
 
