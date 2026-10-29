@@ -34,7 +34,7 @@ use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, metrics};
 use futures::StreamExt;
-use log::{error, info};
+use log::{debug, error, info};
 use std::any::Any;
 use std::borrow::Cow;
 use std::future::Future;
@@ -48,6 +48,39 @@ use tokio::net::TcpSocket;
 use tonic::codegen::StdError;
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::{Channel, Endpoint, Error, Server};
+
+/// Retry an async operation up to `retries` times after its initial attempt.
+///
+/// The caller decides which errors are transient. Non-retriable errors are
+/// returned immediately, and `wait_ms` is applied only before a retry.
+pub(crate) async fn with_retry<T, E, F, Fut>(
+    retries: u8,
+    wait_ms: u64,
+    should_retry: impl Fn(&E) -> bool,
+    mut f: F,
+) -> std::result::Result<T, E>
+where
+    E: std::fmt::Debug,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = std::result::Result<T, E>>,
+{
+    let mut attempt = 0;
+    loop {
+        match f().await {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt < retries && should_retry(&error) => {
+                attempt += 1;
+                debug!(
+                    "retrying operation (attempt {attempt}/{retries}) after error: {error:?}"
+                );
+                if wait_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
 
 /// Configuration for gRPC client connections.
 ///

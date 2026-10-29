@@ -28,7 +28,7 @@ use crate::execution_plans::sort_shuffle::{
 };
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::scheduler::{PartitionLocation, PartitionStats, ShuffleFileKind};
-use crate::utils::GrpcClientConfig;
+use crate::utils::{GrpcClientConfig, with_retry};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::reader::StreamReader;
@@ -56,14 +56,12 @@ use rand::rng;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs::File;
-use std::future::Future;
 use std::io::BufReader;
 use std::path::Path;
 use std::pin::Pin;
 use std::result;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -932,42 +930,6 @@ fn send_fetch_partitions(
     }
 
     AbortableReceiverStream::create(response_receiver, spawned_tasks)
-}
-
-/// Retry an idempotent async operation up to `retries` times after the initial
-/// attempt, sleeping `wait_ms` between tries. Opening a shuffle partition fetch
-/// is idempotent (the server re-reads the file), so a transport error before
-/// any batch has been yielded downstream can be recovered by fetching again.
-/// Only errors accepted by `should_retry` are retried; anything else is
-/// returned immediately on the first failure.
-pub(crate) async fn with_retry<T, F, Fut>(
-    retries: u8,
-    wait_ms: u64,
-    should_retry: impl Fn(&BallistaError) -> bool,
-    mut f: F,
-) -> result::Result<T, BallistaError>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = result::Result<T, BallistaError>>,
-{
-    let mut attempt: u8 = 0;
-    loop {
-        match f().await {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                if attempt >= retries || !should_retry(&e) {
-                    return Err(e);
-                }
-                attempt += 1;
-                debug!(
-                    "retrying shuffle fetch (attempt {attempt}/{retries}) after error: {e}"
-                );
-                if wait_ms > 0 {
-                    tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-                }
-            }
-        }
-    }
 }
 
 /// Transport/fetch failures worth refetching an idempotent shuffle block for.
