@@ -69,11 +69,16 @@ iterations after an untimed warm-up run (see
 
 ## Reproducing
 
-The Ballista numbers come from the `tpch` runner in this repository. The Spark,
-Spark + Comet, and Trino numbers were collected with a benchmark harness that
-is not in this repository yet. We are working on adding scripts so that anyone
-can reproduce all of these results. See the per-engine pages below for the
-commands and settings.
+[`benchmarks/cluster`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster)
+has the scripts to run all four engines on your own Kubernetes cluster with
+the settings described on these pages. You provide the cluster, the data in
+S3, and the images, which the directory has Dockerfiles for.
+
+The Ballista numbers above come from the `tpch` runner in this repository. The
+Spark, Spark + Comet, and Trino numbers were collected before these scripts
+were added, with a harness that used the same settings but its own phrasing of
+the queries (see [Queries](environment.md#queries)). The scripts run the
+queries in this repository on every engine.
 
 ## Details
 
