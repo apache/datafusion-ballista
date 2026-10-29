@@ -393,9 +393,10 @@ cached.collect().await?;       // reads it
 ```
 
 - Cached data is shuffle output on the executors. If a query loses part of it
-  (an executor holding it is lost, or a fetch from it fails), the query fails
-  with "lost DataFrame::cache() data; retry the query", and the retry rebuilds
-  the cache.
+  (an executor holding it is lost, or a fetch from it fails), it rebuilds the
+  cache and carries on. A query planned by the adaptive planner, or one that
+  reads the same cache more than once, fails instead with "lost
+  DataFrame::cache() data; retry the query", and the retry rebuilds the cache.
 - Cached data is not evicted yet: it is kept until it is found lost, so cache
   only what you reuse.
 - `EXPLAIN` of a cached DataFrame never builds it.
