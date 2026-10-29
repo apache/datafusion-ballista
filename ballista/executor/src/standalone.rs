@@ -130,7 +130,8 @@ pub async fn new_standalone_executor_from_builder(
         vcores,
     ));
 
-    let service = BallistaFlightService::new(work_dir);
+    let service = BallistaFlightService::new(work_dir)
+        .with_pipelined_registry(executor.pipelined_registry().clone());
     let server = FlightServiceServer::new(service)
         .max_decoding_message_size(max_message_size)
         .max_encoding_message_size(max_message_size);

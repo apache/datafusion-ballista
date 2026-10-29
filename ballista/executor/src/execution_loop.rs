@@ -203,6 +203,7 @@ where
                     let job_id = cleanup.job_id.clone().into();
                     let work_dir = executor.work_dir.clone();
                     let remove_stage_ids = cleanup.remove_stage_ids.clone();
+                    executor.remove_pipelined_job_data(&job_id, &remove_stage_ids);
 
                     // In poll-based cleanup, removing job data is fire-and-forget.
                     // Failures here do not affect task execution and are only logged.
