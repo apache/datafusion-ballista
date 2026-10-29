@@ -34,6 +34,7 @@ use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 
 use ballista_core::error::BallistaError;
+use ballista_core::execution_plans::PipelinedShuffleWriterExec;
 use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
@@ -396,6 +397,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             task_id,
         };
 
+        let pipelined = plan.downcast_ref::<PipelinedShuffleWriterExec>().is_some();
         let exec = self.executor.execution_engine.create_query_stage_exec(
             job_id.clone(),
             stage_id,
@@ -406,11 +408,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             &task.session_config,
         );
 
-        let runtime = self.executor.produce_runtime_for_session(
-            &task.session_id,
-            &task.session_config,
-            task.vcores_consumed,
-        );
+        // A pipelined task's `vcores_consumed` is its job's reservation on
+        // this executor, which all the job's tasks here share.
+        let runtime = if pipelined {
+            self.executor.produce_runtime_for_pipelined_task(
+                job_id.as_str(),
+                &task.session_id,
+                &task.session_config,
+                task.vcores_consumed,
+            )
+        } else {
+            self.executor.produce_runtime_for_session(
+                &task.session_id,
+                &task.session_config,
+                task.vcores_consumed,
+            )
+        };
 
         match (exec, runtime) {
             (Ok(exec), Ok(runtime)) => {
@@ -420,7 +433,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     Arc::new(TaskContext::new(
                         Some(task_identity.clone()),
                         task.session_id,
-                        task.session_config,
+                        self.executor.with_pipelined_registry(task.session_config),
                         function_registry.scalar_functions.clone(),
                         function_registry.higher_order_functions.clone(),
                         function_registry.aggregate_functions.clone(),
@@ -884,6 +897,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         let params = request.into_inner();
         let job_id = params.job_id.into();
 
+        self.executor
+            .remove_pipelined_job_data(&job_id, &params.remove_stage_ids);
         remove_job_data(&self.executor.work_dir, &job_id, &params.remove_stage_ids)
             .await
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
