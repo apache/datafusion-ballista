@@ -410,7 +410,8 @@ def print_results(run):
             continue
         total += q["mean"]
         times = ", ".join(f"{t:.2f}" for t in q["elapsed"])
-        print(f"{q['query']:>6}{q['mean']:>11.2f}{q.get('row_count', ''):>8}  {times}", file=sys.stderr)
+        rows = "" if q.get("row_count") is None else q["row_count"]
+        print(f"{q['query']:>6}{q['mean']:>11.2f}{rows:>8}  {times}", file=sys.stderr)
     print(f"{'total':>6}{total:>11.2f}", file=sys.stderr)
 
 

@@ -343,6 +343,13 @@ class ResultsTest(unittest.TestCase):
         self.assertEqual(run.query_result({"query": 2, "iterations": []})["error"], "no iterations ran")
         self.assertEqual(run.query_result({"query": 2, "iterations": [], "error": "OOM"})["error"], "OOM")
 
+    def test_print_results_without_a_row_count(self):
+        results = {"queries": [run.query_result({"query": 1, "iterations": [{"elapsed": 1.0}]}),
+                               run.query_result({"query": 2, "iterations": [{"elapsed": 2.0, "row_count": None}]})]}
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            run.print_results(results)
+        self.assertIn("total", err.getvalue())
+
     def test_compare_table(self):
         a = {"queries": [{"query": 1, "mean": 1.0}, {"query": 2, "mean": 2.5}]}
         b = {"queries": [{"query": 1, "mean": 3.0}, {"query": 2, "error": "boom"}]}
