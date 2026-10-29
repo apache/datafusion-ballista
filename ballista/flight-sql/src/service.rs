@@ -24,7 +24,9 @@ use std::time::Duration;
 use arrow::array::RecordBatch;
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::ipc::writer::IpcWriteOptions;
-use arrow_flight::encode::FlightDataEncoderBuilder;
+use arrow_flight::decode::FlightRecordBatchStream;
+use arrow_flight::encode::{DictionaryHandling, FlightDataEncoderBuilder};
+use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::sql::server::FlightSqlService;
 use arrow_flight::sql::{
@@ -56,7 +58,7 @@ use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 
 use crate::auth::{AnonymousAuthenticator, Authenticator};
-use crate::backend::QueryBackend;
+use crate::backend::{QueryBackend, QueryResult};
 use crate::metadata;
 use crate::session::{LocalResult, Prepared, SessionStore};
 use crate::ticket::StatementHandle;
@@ -243,6 +245,22 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
             .await
             .map_err(query_failed)?;
 
+        if !result.pipelined_partitions.is_empty() {
+            let handle = pipelined_handle(&result).map_err(|e| {
+                Status::internal(format!("invalid pipelined partition location: {e}"))
+            })?;
+            log::debug!(
+                "flight-sql: pipelined job {} streams {} partition(s) through one endpoint",
+                result.job_id,
+                result.pipelined_partitions.len()
+            );
+            return build_flight_info(
+                &result.schema,
+                vec![Self::endpoint(handle)],
+                descriptor,
+            );
+        }
+
         let endpoints = result
             .partitions
             .into_iter()
@@ -419,6 +437,46 @@ fn partition_handle(
 
     let encoded: protobuf::Action = action.try_into()?;
     Ok(StatementHandle::Partition(encoded.encode_to_vec()))
+}
+
+/// Turns a pipelined job's final-stage partitions into one handle, which
+/// `DoGet` redeems by streaming every partition at once.
+fn pipelined_handle(result: &QueryResult) -> Result<StatementHandle, BallistaError> {
+    let IpcMessage(schema) =
+        SchemaAsIpc::new(&result.schema, &IpcWriteOptions::default()).try_into()?;
+    let registration_timeout_ms =
+        result.pipelined_registration_timeout.as_millis() as u64;
+    let actions = result
+        .pipelined_partitions
+        .iter()
+        .map(|location| {
+            let partition_id = location.partition_id.as_ref().ok_or_else(|| {
+                BallistaError::Internal(
+                    "pipelined partition location has no partition id".to_string(),
+                )
+            })?;
+            let executor = location.executor_meta.as_ref().ok_or_else(|| {
+                BallistaError::Internal(
+                    "pipelined partition location has no executor metadata".to_string(),
+                )
+            })?;
+            let action = BallistaAction::FetchPipelinedPartition {
+                job_id: partition_id.job_id.clone().into(),
+                stage_id: partition_id.stage_id as usize,
+                task_id: location.task_id as usize,
+                partition_id: partition_id.partition_id as usize,
+                host: executor.host.clone(),
+                port: executor.port as u16,
+                registration_timeout_ms,
+            };
+            let encoded: protobuf::Action = action.try_into()?;
+            Ok(encoded.encode_to_vec())
+        })
+        .collect::<Result<Vec<_>, BallistaError>>()?;
+    Ok(StatementHandle::Pipelined {
+        schema: schema.to_vec(),
+        actions,
+    })
 }
 
 fn build_flight_info(
@@ -672,6 +730,36 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
                             Status::not_found("result already consumed or expired")
                         })?;
                 Ok(batch_response(result.schema, result.batches))
+            }
+            StatementHandle::Pipelined { schema, actions } => {
+                let schema = Arc::new(
+                    Schema::try_from(IpcMessage(schema.into()))
+                        .map_err(invalid_ticket)?,
+                );
+                // Open every partition before reading any: the job cannot
+                // finish one partition until the others are being read.
+                let partitions =
+                    futures::future::try_join_all(actions.into_iter().map(|action| {
+                        self.proxy.do_get(Request::new(Ticket {
+                            ticket: action.into(),
+                        }))
+                    }))
+                    .await?;
+                let batches = futures::stream::select_all(partitions.into_iter().map(
+                    |partition| {
+                        FlightRecordBatchStream::new_from_flight_data(
+                            partition.into_inner().map_err(FlightError::from),
+                        )
+                    },
+                ));
+                // Dictionary columns stay dictionary-encoded, as the schema
+                // the client was promised declares them.
+                let stream = FlightDataEncoderBuilder::new()
+                    .with_schema(schema)
+                    .with_dictionary_handling(DictionaryHandling::Resend)
+                    .build(batches)
+                    .map_err(Status::from);
+                Ok(Response::new(Box::pin(stream) as DoGetStream))
             }
         }
     }
