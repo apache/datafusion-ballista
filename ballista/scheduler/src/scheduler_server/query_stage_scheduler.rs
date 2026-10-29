@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::protobuf::{FailedJob, JobStatus, job_status};
+use ballista_core::serde::scheduler::PartitionLocation;
 use ballista_core::utils::panic_payload_message;
 use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::prelude::SessionContext;
@@ -312,6 +313,25 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             }
             QueryStageSchedulerEvent::ExecutorLost(executor_id, _) => {
                 self.on_executor_lost(executor_id, event_sender).await?;
+            }
+            QueryStageSchedulerEvent::ExternalInputLost { job_id, inputs } => {
+                self.state
+                    .on_external_input_lost(job_id, inputs, &event_sender);
+            }
+            QueryStageSchedulerEvent::ExternalInputReady {
+                job_id,
+                input,
+                locations,
+                queued_at,
+            } => {
+                self.on_external_input_ready(
+                    job_id,
+                    input,
+                    locations,
+                    queued_at,
+                    event_sender,
+                )
+                .await?;
             }
             QueryStageSchedulerEvent::CancelTasks(tasks) => {
                 if let Err(e) = self
@@ -745,6 +765,48 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         Ok(())
     }
 
+    /// A job's lost cache input was rebuilt: resumes the stages waiting for it,
+    /// or fails the job if it cannot resume.
+    async fn on_external_input_ready(
+        &self,
+        job_id: JobId,
+        input: usize,
+        locations: Vec<Vec<PartitionLocation>>,
+        queued_at: u64,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        match self
+            .state
+            .task_manager
+            .resolve_external_input(&job_id, input, locations)
+            .await
+        {
+            Ok(events) => {
+                for event in events {
+                    event_sender.post_event(event).await?;
+                }
+                if self.state.config.is_push_staged_scheduling() {
+                    event_sender
+                        .post_event(QueryStageSchedulerEvent::ReviveOffers)
+                        .await?;
+                }
+            }
+            Err(e) => {
+                event_sender
+                    .post_event(QueryStageSchedulerEvent::JobRunningFailed {
+                        job_id,
+                        fail_message: format!(
+                            "Job could not resume after a cache it reads was rebuilt: {e}"
+                        ),
+                        queued_at,
+                        failed_at: timestamp_millis(),
+                    })
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn on_executor_lost(
         &self,
         executor_id: String,
@@ -769,6 +831,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                             fail_message,
                             queued_at,
                             failed_at: timestamp_millis(),
+                        })
+                        .await?;
+                }
+                // Jobs whose stages wait for lost cache data to be rebuilt.
+                for (job_id, inputs) in outcome.lost_inputs {
+                    event_sender
+                        .post_event(QueryStageSchedulerEvent::ExternalInputLost {
+                            job_id,
+                            inputs,
                         })
                         .await?;
                 }

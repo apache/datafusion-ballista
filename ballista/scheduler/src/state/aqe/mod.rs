@@ -27,7 +27,7 @@ use crate::state::execution_graph::{
     StageOutput,
 };
 use crate::state::execution_stage::{
-    RunningStage, external_inputs, is_external_fetch_failure,
+    RunningStage, external_fetch_failures, external_inputs,
 };
 use crate::state::task_manager::UpdatedStages;
 use ballista_core::JobId;
@@ -1007,14 +1007,17 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                                 "Stages was marked failed, ignore FetchPartitionError from task {task_identity}"
                                             );
                                             warn!("{error_msg}");
-                                        } else if is_external_fetch_failure(
+                                        } else if !external_fetch_failures(
                                             &running_stage.inputs,
                                             &executor_id,
                                             map_stage_id,
                                             map_partition_id,
-                                        ) {
-                                            // Cache data is another job's output,
-                                            // which this graph cannot re-run.
+                                        )
+                                        .is_empty()
+                                        {
+                                            // Cache data is another job's output, and
+                                            // this graph cannot re-resolve a rolled-back
+                                            // stage to read a rebuild.
                                             let error_msg = format!(
                                                 "Stage {stage_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
                                             );
@@ -1049,13 +1052,27 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                             )
                                         }
                                     } else {
-                                        let error_msg = format!(
+                                        let mut error_msg = format!(
                                             "Stage {} has failed {} times, \
                                             most recent failure reason: {:?}",
                                             stage_id,
                                             max_stage_failures,
                                             failed_task.error
                                         );
+                                        if !external_fetch_failures(
+                                            &running_stage.inputs,
+                                            &fetch_partition_error.executor_id,
+                                            fetch_partition_error.map_stage_id as usize,
+                                            fetch_partition_error.map_partition_id
+                                                as usize,
+                                        )
+                                        .is_empty()
+                                        {
+                                            error_msg.push_str(&format!(
+                                                " ({CACHE_DATA_LOST} on executor {}; retry the query)",
+                                                fetch_partition_error.executor_id
+                                            ));
+                                        }
                                         error!("{error_msg}");
                                         failed_stages.insert(stage_id, error_msg);
                                     }

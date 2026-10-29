@@ -30,7 +30,7 @@ use ballista_core::extension::BallistaCacheNode;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::catalog::{Session, TableProvider};
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, TableReference};
 use datafusion::datasource::provider_as_source;
 use datafusion::error::Result as DataFusionResult;
@@ -115,12 +115,36 @@ pub(crate) fn all_locations_live(
         .all(|loc| alive_executors.contains(&loc.executor_meta.id))
 }
 
-/// A cache read in a job's plan: the cache, and the build job whose output was
-/// read, to drop that build if the job loses its data.
+/// A cache read in a job's plan, kept to rebuild the cache if the job loses
+/// its data.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedRead {
     pub(crate) key: CacheKey,
+    /// The build job whose output is read.
     pub(crate) materializing_job: JobId,
+    /// The read's external stage id.
+    pub(crate) input_id: usize,
+    /// The cache node, with its subplan.
+    pub(crate) cache: LogicalPlan,
+    /// The schema the build wrote; a rebuild must write the same one, as the
+    /// read picks its columns by position.
+    pub(crate) written: SchemaRef,
+}
+
+impl ResolvedRead {
+    /// The caches this read depends on: its own, and each one in its subplan,
+    /// which a rebuild of it may rebuild too.
+    pub(crate) fn depends_on(&self) -> HashSet<CacheKey> {
+        let mut keys = HashSet::new();
+        // The closure never fails.
+        let _ = self.cache.apply(|node| {
+            if let Some(cache) = cache_node(node) {
+                keys.insert(CacheKey::new(cache.session_id(), cache.cache_id()));
+            }
+            Ok(TreeNodeRecursion::Continue)
+        });
+        keys
+    }
 }
 
 /// What [`resolve_cache_reads`] does with a cache not built on live executors.
@@ -167,6 +191,9 @@ fn resolve<'a>(
                 reads.push(ResolvedRead {
                     key,
                     materializing_job: cache.materializing_job.clone(),
+                    input_id: stage_id,
+                    cache: plan.clone(),
+                    written: cache.schema.clone(),
                 });
                 return Ok(Some(cache_read(node, stage_id, cache)?));
             }
