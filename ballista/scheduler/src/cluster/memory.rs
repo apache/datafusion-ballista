@@ -513,6 +513,17 @@ impl JobState for InMemoryJobState {
         )?)
     }
 
+    async fn new_context(
+        &self,
+        _session_id: &str,
+        config: &SessionConfig,
+    ) -> Result<Arc<SessionContext>> {
+        Ok(create_datafusion_context(
+            config,
+            self.session_builder.clone(),
+        )?)
+    }
+
     async fn remove_session(&self, session_id: &str) -> Result<()> {
         self.job_event_sender.send(&JobStateEvent::SessionRemoved {
             session_id: session_id.to_string(),
