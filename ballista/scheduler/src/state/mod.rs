@@ -24,7 +24,7 @@ use crate::state::executor_manager::ExecutorManager;
 use crate::state::pipelined_graph::{PlacementDecision, plan_placement};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
-use ballista_core::config::ExecutionMode;
+use ballista_core::config::{BALLISTA_EXECUTION_MODE, ExecutionMode};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
 use ballista_core::execution_plans::PipelinedShuffleWriterExec;
@@ -591,23 +591,34 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Result<()> {
         let start = Instant::now();
 
-        // A pipelined job must be placed all at once, which the scheduler can
-        // only do when it pushes tasks to executors.
-        if !self.config.is_push_staged_scheduling()
-            && session_ctx
-                .state()
-                .config()
-                .ballista_config()
-                .execution_mode()?
-                == ExecutionMode::Pipelined
-        {
+        let pipelined = session_ctx
+            .state()
+            .config()
+            .ballista_config()
+            .execution_mode()?
+            == ExecutionMode::Pipelined;
+        // A cache build runs blocking whatever the session's mode: a pipelined
+        // job streams its output and leaves no shuffle files to cache. Jobs
+        // reading the cache keep the session's mode.
+        let session_ctx = if pipelined && self.cache_linker.key_of(job_id).is_some() {
+            let mut state = session_ctx.state();
+            state.config_mut().options_mut().set(
+                BALLISTA_EXECUTION_MODE,
+                &ExecutionMode::Blocking.to_string(),
+            )?;
+            Arc::new(SessionContext::new_with_state(state))
+        } else if pipelined && !self.config.is_push_staged_scheduling() {
+            // A pipelined job must be placed all at once, which the scheduler
+            // can only do when it pushes tasks to executors.
             return Err(BallistaError::General(
                 "ballista.execution.mode = pipelined requires push-staged scheduling, \
                  but this scheduler runs pull-staged (start it with \
                  --scheduler-policy push-staged)"
                     .to_owned(),
             ));
-        }
+        } else {
+            session_ctx
+        };
 
         self.task_manager
             .submit_plan(job_id, job_name, session_ctx, plan, queued_at, subscriber)

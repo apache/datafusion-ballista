@@ -51,6 +51,7 @@ use ballista_core::execution_plans::{
     PipelinedShuffleReaderExec, PipelinedShuffleWriterExec, ShuffleWriter,
     UnresolvedShuffleExec, compute_global_output_partition_ids,
 };
+use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
     AvailableVcores, FailedJob, JobStatus, RunningJob, SuccessfulJob, TaskStatus,
@@ -63,6 +64,7 @@ use datafusion::physical_plan::{ExecutionPlan, replace_children_if_necessary};
 use datafusion::prelude::SessionConfig;
 use log::{info, warn};
 
+use crate::cache::CACHE_DATA_LOST;
 use crate::cluster::{BoundTask, ExecutorSlot, stage_has_input_collapse};
 use crate::planner::{DistributedPlanner, find_unresolved_shuffles};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
@@ -72,7 +74,7 @@ use crate::state::execution_graph::{
     RunningTaskInfo, TaskDescription, create_task_info,
 };
 use crate::state::execution_stage::{
-    PendingPartitions, RunningStage, stage_input_partitions,
+    PendingPartitions, RunningStage, is_external_fetch_failure, stage_input_partitions,
 };
 use crate::state::task_builder::stages_read_whole;
 
@@ -736,10 +738,27 @@ impl ExecutionGraph for PipelinedExecutionGraph {
                 }
                 Some(task_status::Status::Failed(failed)) => {
                     failure.get_or_insert_with(|| {
-                        format!(
-                            "task {task_id} of stage {stage_id} failed: {}",
-                            failed.error
-                        )
+                        // Cache data is another job's output: say so, so the
+                        // lost build is dropped and a retry rebuilds it.
+                        if let Some(FailedReason::FetchPartitionError(fetch)) =
+                            &failed.failed_reason
+                            && is_external_fetch_failure(
+                                &stage.inputs,
+                                &fetch.executor_id,
+                                fetch.map_stage_id as usize,
+                                fetch.map_partition_id as usize,
+                            )
+                        {
+                            format!(
+                                "stage {stage_id} {CACHE_DATA_LOST} on executor {}",
+                                fetch.executor_id
+                            )
+                        } else {
+                            format!(
+                                "task {task_id} of stage {stage_id} failed: {}",
+                                failed.error
+                            )
+                        }
                     });
                 }
                 _ => {}

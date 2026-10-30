@@ -227,6 +227,54 @@ mod pipelined {
         check_matches_blocking(dir.path(), &pipelined).await;
     }
 
+    async fn set(ctx: &SessionContext, key: &str, value: &str) {
+        ctx.sql(&format!("SET {key} = '{value}'"))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+    }
+
+    /// One session switches mode with `SET`: each query runs in the mode set
+    /// when it is submitted, on the same cluster, with the same results.
+    #[tokio::test]
+    async fn one_session_switches_between_blocking_and_pipelined() {
+        let dir = TempDir::new().unwrap();
+        write_tables(dir.path());
+        // Started pipelined, so the standalone cluster runs push-staged.
+        let ctx = context(dir.path(), &[(BALLISTA_EXECUTION_MODE, "pipelined")]).await;
+        for (sql, sorted) in QUERIES {
+            set(&ctx, BALLISTA_EXECUTION_MODE, "blocking").await;
+            let blocking = rows(&ctx, sql, *sorted).await;
+            set(&ctx, BALLISTA_EXECUTION_MODE, "pipelined").await;
+            let pipelined = rows(&ctx, sql, *sorted).await;
+            assert_eq!(pipelined, blocking, "pipelined result differs for: {sql}");
+        }
+    }
+
+    /// A pipelined session builds a cached frame as a blocking job, which
+    /// leaves shuffle output to cache, and reads it back pipelined.
+    #[tokio::test]
+    async fn pipelined_session_caches_a_data_frame() {
+        let dir = TempDir::new().unwrap();
+        write_tables(dir.path());
+        let ctx = context(dir.path(), &[(BALLISTA_EXECUTION_MODE, "pipelined")]).await;
+        set(&ctx, "ballista.cache.noop", "false").await;
+        let sql = "SELECT o_cust, count(*) AS n, sum(o_amount) AS total \
+                   FROM orders GROUP BY o_cust";
+        let expected = rows(&context(dir.path(), &[]).await, sql, true).await;
+
+        let cached = ctx.sql(sql).await.unwrap().cache().await.unwrap();
+        for _ in 0..2 {
+            let batches = cached.clone().collect().await.unwrap();
+            let text = pretty_format_batches(&batches).unwrap().to_string();
+            let mut actual: Vec<String> = text.lines().map(str::to_owned).collect();
+            actual.sort();
+            assert_eq!(actual, expected);
+        }
+    }
+
     /// A client that stops reading part-way must not leave its job holding
     /// vcores: the next job, which needs every vcore, still runs.
     #[tokio::test]

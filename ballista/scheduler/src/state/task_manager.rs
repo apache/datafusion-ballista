@@ -904,12 +904,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         for pairs in self.active_job_cache.iter() {
             let (job_id, job_info) = pairs.pair();
             let mut graph = job_info.execution_graph.write().await;
-            let reason = if let Some(pipelined) = graph.as_pipelined_mut() {
-                pipelined.lost_executor(executor_id)
-            } else if graph.reads_external_data_on(executor_id) {
+            let reason = if graph.reads_external_data_on(executor_id) {
                 Some(format!(
                     "Job {job_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
                 ))
+            } else if let Some(pipelined) = graph.as_pipelined_mut() {
+                pipelined.lost_executor(executor_id)
             } else {
                 let reset = graph.reset_stages_on_lost_executor(executor_id)?;
                 if !reset.0.is_empty() {
