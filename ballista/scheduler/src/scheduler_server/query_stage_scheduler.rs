@@ -563,11 +563,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         error!("Job {job_id} failed: {fail_message}");
         // Release a cache claim this job owned and fail what waited on it.
         self.state
-            .on_job_terminal(
-                &job_id,
-                JobEnd::Failed(&fail_message),
-                &event_sender,
-            )
+            .on_job_terminal(&job_id, JobEnd::Failed(&fail_message), &event_sender)
             .await;
         if let Err(e) = self
             .state
@@ -622,11 +618,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         error!("Job failed: [{job_id}]");
         // Release a cache claim this job owned and fail what waited on it.
         self.state
-            .on_job_terminal(
-                &job_id,
-                JobEnd::Failed(&fail_message),
-                &event_sender,
-            )
+            .on_job_terminal(&job_id, JobEnd::Failed(&fail_message), &event_sender)
             .await;
         if let Err(e) = self.abort_job(&job_id, fail_message).await {
             error!("Fail to abort job {job_id} due to {e:?}");
