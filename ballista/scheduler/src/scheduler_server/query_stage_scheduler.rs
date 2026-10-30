@@ -467,28 +467,33 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.state
                     .on_job_terminal(&job_id, JobEnd::Finished, &event_sender)
                     .await;
-                let (intermediate_stage_ids, reservation) =
-                    match self.state.task_manager.succeed_job(&job_id).await {
-                        Ok(finished) => finished,
-                        Err(e) => {
-                            error!(
-                                "Fail to invoke succeed_job for job {job_id} due to {e:?}"
-                            );
-                            (vec![], vec![])
-                        }
-                    };
                 // Vcores a pipelined job held for its whole life.
-                if !reservation.is_empty()
-                    && self.state.config.is_push_staged_scheduling()
+                let executor_manager = self.state.executor_manager.clone();
+                let refund_vcores = self.state.config.is_push_staged_scheduling();
+                let sender = event_sender.clone();
+                let release_reservation = move |reservation| async move {
+                    if refund_vcores {
+                        executor_manager.unbind_tasks(reservation).await?;
+                        sender
+                            .post_event(QueryStageSchedulerEvent::ReviveOffers)
+                            .await?;
+                    }
+                    Ok(())
+                };
+                let intermediate_stage_ids = match self
+                    .state
+                    .task_manager
+                    .succeed_job(&job_id, release_reservation)
+                    .await
                 {
-                    self.state
-                        .executor_manager
-                        .unbind_tasks(reservation)
-                        .await?;
-                    event_sender
-                        .post_event(QueryStageSchedulerEvent::ReviveOffers)
-                        .await?;
-                }
+                    Ok(intermediate_stage_ids) => intermediate_stage_ids,
+                    Err(e) => {
+                        error!(
+                            "Fail to invoke succeed_job for job {job_id} due to {e:?}"
+                        );
+                        vec![]
+                    }
+                };
                 self.state
                     .clean_up_successful_job(job_id, intermediate_stage_ids)
                     .await;

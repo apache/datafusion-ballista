@@ -731,14 +731,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Move a job from Active to Success and return the ids of its intermediate
-    /// (non-final) stages so their shuffle data can be reclaimed immediately,
-    /// along with any vcores the job held for its whole life (a pipelined
-    /// job's reservation), to be released.
-    /// Returns empty vecs if the job is not found or not successful.
-    pub(crate) async fn succeed_job(
+    /// (non-final) stages so their shuffle data can be reclaimed immediately.
+    /// Returns an empty vec if the job is not found or not successful.
+    ///
+    /// Vcores the job held for its whole life (a pipelined job's reservation)
+    /// are handed to `release_reservation` before the terminal state is
+    /// persisted, as in [`Self::abort_job`], so a failed save cannot strand
+    /// them.
+    pub(crate) async fn succeed_job<F, Fut>(
         &self,
         job_id: &JobId,
-    ) -> Result<(Vec<u32>, Vec<ExecutorSlot>)> {
+        release_reservation: F,
+    ) -> Result<Vec<u32>>
+    where
+        F: FnOnce(Vec<ExecutorSlot>) -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
         debug!("Moving job {job_id} from Active to Success");
 
         if let Some(graph) = self.get_active_execution_graph(job_id) {
@@ -746,7 +754,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 let mut graph = graph.write().await;
                 if !graph.is_successful() {
                     error!("Job {job_id} has not finished and cannot be completed");
-                    return Ok((vec![], vec![]));
+                    return Ok(vec![]);
                 }
                 let reservation = graph
                     .as_pipelined_mut()
@@ -756,11 +764,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 (graph.cloned(), graph.intermediate_stage_ids(), reservation)
             };
 
-            self.persist_terminal_and_evict(job_id, &snapshot).await?;
-            Ok((intermediate_stage_ids, reservation))
+            let release_result = if reservation.is_empty() {
+                Ok(())
+            } else {
+                release_reservation(reservation).await
+            };
+            let persist_result = self.persist_terminal_and_evict(job_id, &snapshot).await;
+            persist_result?;
+            release_result?;
+            Ok(intermediate_stage_ids)
         } else {
             warn!("Fail to find job {job_id} in the cache");
-            Ok((vec![], vec![]))
+            Ok(vec![])
         }
     }
 
@@ -904,12 +919,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         for pairs in self.active_job_cache.iter() {
             let (job_id, job_info) = pairs.pair();
             let mut graph = job_info.execution_graph.write().await;
+            // Called for every pipelined job, so each drops the lost
+            // executor's share of its reservation.
+            let lost_pipelined = graph
+                .as_pipelined_mut()
+                .map(|pipelined| pipelined.lost_executor(executor_id));
             let reason = if graph.reads_external_data_on(executor_id) {
                 Some(format!(
                     "Job {job_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
                 ))
-            } else if let Some(pipelined) = graph.as_pipelined_mut() {
-                pipelined.lost_executor(executor_id)
+            } else if let Some(reason) = lost_pipelined {
+                reason
             } else {
                 let reset = graph.reset_stages_on_lost_executor(executor_id)?;
                 if !reset.0.is_empty() {
@@ -1593,7 +1613,7 @@ mod tests {
                 .is_successful()
         );
         assert_eq!(budget.vcores, 4 - held_vcores);
-        manager.succeed_job(&job_id).await?;
+        manager.succeed_job(&job_id, |_| async { Ok(()) }).await?;
         assert!(manager.get_active_execution_graph(&job_id).is_none());
         assert_eq!(manager.outstanding_task_reservations.len(), 1);
 
@@ -1665,10 +1685,11 @@ mod tests {
         let (manager, state, job_id, active_graph) = setup_job(true).await?;
         let manager_for_save = manager.clone();
         let job_id_for_save = job_id.clone();
-        let save =
-            tokio::spawn(
-                async move { manager_for_save.succeed_job(&job_id_for_save).await },
-            );
+        let save = tokio::spawn(async move {
+            manager_for_save
+                .succeed_job(&job_id_for_save, |_| async { Ok(()) })
+                .await
+        });
 
         timeout(Duration::from_secs(1), state.save_started.notified())
             .await
@@ -1699,16 +1720,107 @@ mod tests {
         Ok(())
     }
 
+    /// A pipelined job's reservation is handed back even when its terminal
+    /// state cannot be saved: it has already been taken from the graph, so
+    /// nothing else would release it.
+    #[tokio::test]
+    async fn failed_terminal_save_still_releases_a_pipelined_reservation() -> Result<()> {
+        use crate::planner::DefaultDistributedPlanner;
+        use crate::state::execution_graph::ExecutionGraph;
+        use crate::state::pipelined_graph::{PlacementDecision, plan_placement};
+        use crate::test_utils::test_join_plan;
+        use ballista_core::serde::protobuf::AvailableVcores;
+
+        let state = Arc::new(BlockingJobState::new());
+        state.failures_remaining.store(1, Ordering::SeqCst);
+        let job_state: Arc<dyn JobState> = state.clone();
+        let manager: TestTaskManager = TaskManager::new(
+            job_state,
+            BallistaCodec::default(),
+            "test-scheduler".to_string(),
+            "localhost:50050".to_string(),
+            Arc::new(SchedulerConfig::default()),
+        );
+
+        let mut graph = PipelinedExecutionGraph::new(
+            "localhost:50050",
+            &"job".into(),
+            "",
+            "session",
+            test_join_plan(4).await.physical_plan(),
+            0,
+            Arc::new(SessionConfig::new_with_ballista()),
+            &mut DefaultDistributedPlanner::new(),
+            None,
+        )?;
+        let available: Vec<AvailableVcores> = ["a", "b"]
+            .into_iter()
+            .map(|id| AvailableVcores {
+                executor_id: id.to_owned(),
+                vcores: 4,
+            })
+            .collect();
+        let PlacementDecision::Fits(placement) =
+            plan_placement(&graph.placement_requirements().unwrap(), &available, 8, 0)
+        else {
+            panic!("the job should fit");
+        };
+        let executors = ["a", "b"]
+            .into_iter()
+            .map(|id| (id.to_owned(), mock_executor(id.to_owned())))
+            .collect();
+        for (executor_id, task) in graph.place(&placement, &executors)? {
+            graph.update_task_status(
+                &mock_executor(executor_id.clone()),
+                vec![mock_completed_task(task, &executor_id)],
+                1,
+                1,
+            )?;
+        }
+        assert!(graph.is_successful());
+
+        let job_id = graph.job_id().clone();
+        let graph: ExecutionGraphBox = Box::new(graph);
+        state.accept_job(&job_id, "", 0)?;
+        state.submit_job(job_id.clone(), &graph, None).await?;
+        manager
+            .active_job_cache
+            .insert(job_id.clone(), JobInfoCache::new(graph));
+
+        let released: Arc<parking_lot::Mutex<Vec<ExecutorSlot>>> = Arc::default();
+        let recorder = released.clone();
+        let save = tokio::spawn(async move {
+            manager
+                .succeed_job(&job_id, |reservation| async move {
+                    recorder.lock().extend(reservation);
+                    Ok(())
+                })
+                .await
+        });
+        timeout(Duration::from_secs(1), state.save_started.notified())
+            .await
+            .expect("terminal save should start");
+        state.allow_save.notify_one();
+        assert!(save.await.expect("succeed_job should not panic").is_err());
+
+        let mut released = released.lock().clone();
+        released.sort();
+        assert!(!released.is_empty());
+        assert_eq!(released, placement.reservation);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn failed_terminal_save_is_not_retried_and_evicts_local_cache() -> Result<()> {
         let (manager, state, job_id, active_graph) = setup_job(true).await?;
         state.failures_remaining.store(1, Ordering::SeqCst);
         let manager_for_save = manager.clone();
         let job_id_for_save = job_id.clone();
-        let save =
-            tokio::spawn(
-                async move { manager_for_save.succeed_job(&job_id_for_save).await },
-            );
+        let save = tokio::spawn(async move {
+            manager_for_save
+                .succeed_job(&job_id_for_save, |_| async { Ok(()) })
+                .await
+        });
 
         timeout(Duration::from_secs(1), state.save_started.notified())
             .await

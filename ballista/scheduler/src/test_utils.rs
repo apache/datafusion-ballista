@@ -356,6 +356,31 @@ pub struct SchedulerTest {
     unreachable_executors: Arc<Mutex<HashSet<String>>>,
 }
 
+async fn register_virtual_executor(
+    scheduler: &SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
+    executor_id: String,
+    vcores: u32,
+) -> Result<()> {
+    let metadata = ExecutorMetadata {
+        id: executor_id.clone(),
+        host: String::default(),
+        port: 0,
+        grpc_port: 0,
+        specification: ExecutorSpecification::default().with_vcores(vcores),
+        os_info: ExecutorOperatingSystemSpecification::default(),
+    };
+    let executor_data = ExecutorData {
+        executor_id,
+        total_vcores: vcores,
+        available_vcores: vcores,
+    };
+    scheduler
+        .state
+        .executor_manager
+        .register_executor(metadata, executor_data)
+        .await
+}
+
 impl SchedulerTest {
     /// Creates a new scheduler test harness with the specified configuration.
     pub async fn new(
@@ -414,27 +439,7 @@ impl SchedulerTest {
         scheduler.init().await?;
 
         for (executor_id, VirtualExecutor { vcores, .. }) in executors {
-            let metadata = ExecutorMetadata {
-                id: executor_id.clone(),
-                host: String::default(),
-                port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default()
-                    .with_vcores(vcores as u32),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            };
-
-            let executor_data = ExecutorData {
-                executor_id,
-                total_vcores: vcores as u32,
-                available_vcores: vcores as u32,
-            };
-
-            scheduler
-                .state
-                .executor_manager
-                .register_executor(metadata, executor_data)
-                .await?;
+            register_virtual_executor(&scheduler, executor_id, vcores as u32).await?;
         }
 
         Ok(Self {
@@ -662,6 +667,12 @@ impl SchedulerTest {
             )
             .await;
         Ok(())
+    }
+
+    /// Registers `executor_id` again with `vcores` free vcores, as an executor
+    /// removed while still alive does on its next heartbeat.
+    pub async fn register_executor(&self, executor_id: &str, vcores: u32) -> Result<()> {
+        register_virtual_executor(&self.scheduler, executor_id.to_owned(), vcores).await
     }
 
     /// Makes every subsequent task launch onto `executor_id` fail, as if the

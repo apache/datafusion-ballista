@@ -555,7 +555,10 @@ impl PipelinedExecutionGraph {
     }
 
     /// If losing `executor_id` breaks this job, the reason to fail it with.
-    pub fn lost_executor(&self, executor_id: &str) -> Option<String> {
+    /// The lost executor's share of the reservation is dropped, since its
+    /// capacity is already gone.
+    pub fn lost_executor(&mut self, executor_id: &str) -> Option<String> {
+        self.reservation.retain(|(id, _)| id != executor_id);
         (self.is_running() && self.executors.contains(executor_id)).then(|| {
             format!(
                 "executor {executor_id}, which was running part of pipelined job {}, was lost",
@@ -1737,6 +1740,47 @@ mod tests {
         })
         .await?;
         assert!(failed, "losing an executor did not fail the job");
+        Ok(())
+    }
+
+    /// An executor removed while alive registers again under the same id: the
+    /// failed job's reservation must not hand it the vcores it had before on
+    /// top of its fresh capacity.
+    #[tokio::test]
+    async fn a_lost_executor_registering_again_gets_only_its_own_vcores() -> Result<()> {
+        let runner =
+            TaskRunnerFn::new(|_executor: String, _task: MultiTaskDefinition| vec![]);
+        let mut test =
+            pipelined_scheduler(TaskSchedulingPolicy::PushStaged, Some(Arc::new(runner)))
+                .await;
+        test.set_session_option("datafusion.execution.target_partitions", "8")?;
+        let job_id = test.submit("pipelined", &aggregation(8)).await?;
+        let reserved = await_condition(Duration::from_millis(20), 100, || async {
+            Ok(test.free_vcores().await? == 0)
+        })
+        .await?;
+        assert!(reserved, "the job was never placed on every vcore");
+
+        test.lose_executor("virtual-executor-0").await?;
+        test.register_executor("virtual-executor-0", 4).await?;
+        let failed = await_condition(Duration::from_millis(20), 100, || async {
+            Ok(matches!(
+                test.job_status(&job_id).await?,
+                Some(JobStatus {
+                    status: Some(Status::Failed(_)),
+                    ..
+                })
+            ))
+        })
+        .await?;
+        assert!(failed, "losing an executor did not fail the job");
+        // The reservation is released before the job is evicted.
+        let evicted = await_condition(Duration::from_millis(20), 100, || async {
+            Ok(!test.is_active(&job_id))
+        })
+        .await?;
+        assert!(evicted, "the failed job was not evicted");
+        assert_eq!(test.free_vcores().await?, 8);
         Ok(())
     }
 
