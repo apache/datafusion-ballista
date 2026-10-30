@@ -39,6 +39,7 @@ use tokio::fs::DirEntry;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::{fs, time};
+use tonic::transport::Channel;
 
 use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool, TrackConsumersPool};
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
@@ -46,19 +47,20 @@ use datafusion::prelude::SessionConfig;
 
 use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
+use ballista_core::execution_plans::PipelinedRegistry;
 use ballista_core::extension::{EndpointOverrideFn, SessionConfigExt};
 use ballista_core::serde::protobuf::executor_resource::Resource;
-use ballista_core::serde::protobuf::executor_status::Status;
 use ballista_core::serde::protobuf::{
-    ExecutorRegistration, ExecutorResource, ExecutorSpecification, ExecutorStatus,
-    ExecutorStoppedParams, HeartBeatParams, scheduler_grpc_client::SchedulerGrpcClient,
+    ExecutorRegistration, ExecutorResource, ExecutorSpecification, ExecutorStoppedParams,
+    scheduler_grpc_client::SchedulerGrpcClient,
 };
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
 use ballista_core::utils::{
     GrpcClientConfig, GrpcServerConfig, create_grpc_client_endpoint, create_grpc_server,
-    default_config_producer, drain_or_time_out, get_time_before, shutdown_signal,
+    create_grpc_server_incoming, default_config_producer, drain_or_time_out,
+    get_time_before, shutdown_signal,
 };
 use ballista_core::{
     BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION, ConfigProducer, JobId, RuntimeProducer,
@@ -69,7 +71,7 @@ use crate::ArrowFlightServerProvider;
 use crate::client_pool::DefaultBallistaClientPool;
 use crate::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
 use crate::executor::{Executor, TasksDrainedFuture};
-use crate::executor_server::TERMINATING;
+use crate::executor_server::{TERMINATING, heartbeat_params};
 use crate::flight_service::BallistaFlightService;
 use crate::metrics::LoggingMetricsCollector;
 use crate::metrics::{ExecutorMemoryMetrics, ExecutorMetricCollectionPolicy};
@@ -838,6 +840,13 @@ async fn start_executor_process_inner(
             );
         }
         _ => {
+            start_pull_heartbeater(
+                scheduler.clone(),
+                executor.clone(),
+                opt.metric_collection_policy,
+                opt.executor_heartbeat_interval_seconds,
+                &shutdown_notification,
+            );
             let poll_loop = execution_loop::poll_loop(
                 scheduler.clone(),
                 executor.clone(),
@@ -863,6 +872,7 @@ async fn start_executor_process_inner(
             info!("Starting built-in arrow flight service");
             flight_server_task(
                 flight_work_dir,
+                executor.pipelined_registry().clone(),
                 address,
                 shutdown,
                 opt.grpc_max_encoding_message_size as usize,
@@ -882,7 +892,7 @@ async fn start_executor_process_inner(
         }
     });
 
-    let tasks_drained = TasksDrainedFuture(executor);
+    let tasks_drained = TasksDrainedFuture(executor.clone());
 
     // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
     // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs
@@ -914,16 +924,13 @@ async fn start_executor_process_inner(
     let graceful_shutdown = async {
         if notify_scheduler {
             // Send a heartbeat to update status of executor to `Fenced`. This should signal to the
-            // scheduler to no longer schedule tasks on this executor
+            // scheduler to no longer schedule tasks on this executor. It carries the latest
+            // metrics, which the scheduler keeps once the executor stops heartbeating.
             if let Err(error) = scheduler
-                .heart_beat_from_executor(HeartBeatParams {
-                    executor_id: executor_id.clone(),
-                    metrics: vec![],
-                    status: Some(ExecutorStatus {
-                        status: Some(Status::Terminating(String::default())),
-                    }),
-                    metadata: Some(executor_meta),
-                })
+                .heart_beat_from_executor(heartbeat_params(
+                    &executor,
+                    opt.metric_collection_policy,
+                ))
                 .await
             {
                 error!("error sending heartbeat with fenced status: {error:?}");
@@ -983,6 +990,7 @@ async fn start_executor_process_inner(
 // Arrow flight service
 async fn flight_server_task(
     work_dir: String,
+    pipelined_registry: Arc<PipelinedRegistry>,
     address: SocketAddr,
     mut grpc_shutdown: Shutdown,
     max_encoding_message_size: usize,
@@ -990,17 +998,26 @@ async fn flight_server_task(
     grpc_server_config: GrpcServerConfig,
 ) -> JoinHandle<Result<(), BallistaError>> {
     tokio::spawn(async move {
+        // Bound here rather than by `serve`, so the accept queue gets
+        // `listen_backlog` instead of the standard library's 128. Every
+        // reader task of a job on every executor connects to this port when
+        // the job starts.
+        let incoming = create_grpc_server_incoming(address, &grpc_server_config)
+            .inspect_err(|_| error!("Could not bind built-in arrow flight server."))?;
         info!(
             "Built-in arrow flight server listening on: {address:?} max_encoding_size: {max_encoding_message_size} max_decoding_size: {max_decoding_message_size}"
         );
 
         let server_future = create_grpc_server(&grpc_server_config)
             .add_service(
-                FlightServiceServer::new(BallistaFlightService::new(work_dir))
-                    .max_decoding_message_size(max_decoding_message_size)
-                    .max_encoding_message_size(max_encoding_message_size),
+                FlightServiceServer::new(
+                    BallistaFlightService::new(work_dir)
+                        .with_pipelined_registry(pipelined_registry),
+                )
+                .max_decoding_message_size(max_decoding_message_size)
+                .max_encoding_message_size(max_encoding_message_size),
             )
-            .serve_with_shutdown(address, grpc_shutdown.recv());
+            .serve_with_incoming_shutdown(incoming, grpc_shutdown.recv());
 
         server_future.await.map_err(|e| {
             error!("Could not start built-in arrow flight server.");
@@ -1030,6 +1047,39 @@ async fn check_services(
             }
         }
     }
+}
+
+/// Sends periodic heartbeats from a pull-based executor so the scheduler sees
+/// its metrics and status, as it does for a push-based one.
+///
+/// The poll loop already keeps the executor alive, as it polls far more often
+/// than this. A failed heartbeat is logged and retried on the next interval;
+/// the executor's health, and shutting down when the scheduler is unreachable,
+/// stay with the poll loop.
+fn start_pull_heartbeater(
+    mut scheduler: SchedulerGrpcClient<Channel>,
+    executor: Arc<Executor>,
+    metric_collection_policy: ExecutorMetricCollectionPolicy,
+    interval_seconds: u64,
+    shutdown_notification: &ShutdownNotifier,
+) {
+    let mut shutdown = shutdown_notification.subscribe_for_shutdown();
+    let complete = shutdown_notification.shutdown_complete_tx.clone();
+    tokio::spawn(async move {
+        info!("Starting heartbeater to send metrics to the scheduler periodically");
+        while !shutdown.is_shutdown() {
+            let params = heartbeat_params(&executor, metric_collection_policy);
+            if let Err(e) = scheduler.heart_beat_from_executor(params).await {
+                warn!("Fail to send heartbeat to the scheduler due to {e:?}");
+            }
+            tokio::select! {
+                _ = time::sleep(Duration::from_secs(interval_seconds)) => {},
+                _ = shutdown.recv() => break,
+            };
+        }
+        info!("Stop heartbeater");
+        drop(complete);
+    });
 }
 
 /// This function will be scheduled periodically for cleanup the job shuffle data left on the executor.

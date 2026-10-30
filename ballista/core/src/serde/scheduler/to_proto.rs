@@ -27,6 +27,7 @@ use datafusion_proto::protobuf as datafusion_protobuf;
 use crate::serde::scheduler::{
     Action, ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
     ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
+    PipelinedPartitionLocation,
 };
 use datafusion::physical_plan::Partitioning;
 use protobuf::{NamedCount, NamedGauge, NamedTime, action::ActionType, operator_metric};
@@ -66,6 +67,28 @@ impl TryInto<protobuf::Action> for Action {
                 })),
                 settings: vec![],
             }),
+            Action::FetchPipelinedPartition {
+                job_id,
+                stage_id,
+                task_id,
+                partition_id,
+                host,
+                port,
+                registration_timeout_ms,
+            } => Ok(protobuf::Action {
+                action_type: Some(ActionType::FetchPipelinedPartition(
+                    protobuf::FetchPipelinedPartition {
+                        job_id: job_id.into(),
+                        stage_id: stage_id as u32,
+                        task_id: task_id as u32,
+                        partition_id: partition_id as u32,
+                        host,
+                        port: port as u32,
+                        registration_timeout_ms,
+                    },
+                )),
+                settings: vec![],
+            }),
         }
     }
 }
@@ -77,6 +100,17 @@ impl Into<protobuf::PartitionId> for PartitionId {
             job_id: self.job_id.into(),
             stage_id: self.stage_id as u32,
             partition_id: self.partition_id as u32,
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::PipelinedPartitionLocation> for PipelinedPartitionLocation {
+    fn into(self) -> protobuf::PipelinedPartitionLocation {
+        protobuf::PipelinedPartitionLocation {
+            partition_id: Some(self.partition_id.into()),
+            task_id: self.task_id as u32,
+            executor_meta: Some(self.executor_meta.into()),
         }
     }
 }

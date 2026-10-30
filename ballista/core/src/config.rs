@@ -217,6 +217,31 @@ pub const BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK: &str =
 pub const BALLISTA_SCHEDULER_SHARE_FILE_STATISTICS_CACHE: &str =
     "ballista.scheduler.share_file_statistics_cache";
 
+/// Configuration key selecting how a job's stages exchange data. See
+/// [`ExecutionMode`] for the values.
+pub const BALLISTA_EXECUTION_MODE: &str = "ballista.execution.mode";
+
+/// Configuration key for how many batches each output partition of a
+/// pipelined stage buffers before its producer waits for the consumer.
+pub const BALLISTA_PIPELINED_QUEUE_CAPACITY: &str = "ballista.pipelined.queue_capacity";
+
+/// Configuration key for how long a pipelined fetch waits for its producer task
+/// to start on the executor before failing.
+pub const BALLISTA_PIPELINED_REGISTRATION_TIMEOUT_SECONDS: &str =
+    "ballista.pipelined.registration_timeout_seconds";
+
+/// Configuration key for the HTTP/2 stream window of the connections that
+/// pipelined readers share, in bytes.
+pub const BALLISTA_PIPELINED_STREAM_WINDOW_BYTES: &str =
+    "ballista.pipelined.stream_window_bytes";
+
+/// The largest flow-control window HTTP/2 allows, for a stream or a
+/// connection.
+pub const HTTP2_MAX_WINDOW_BYTES: u32 = (1 << 31) - 1;
+
+/// The smallest stream window HTTP/2 starts from.
+const HTTP2_DEFAULT_WINDOW_BYTES: u32 = 65_535;
+
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -234,7 +259,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Task scheduling policy of a standalone in-process cluster: `pull-staged`, where the executor polls the scheduler for work, or `push-staged`, where the scheduler pushes tasks to the executor.".to_string(),
                          DataType::Utf8, Some(TaskSchedulingPolicy::PullStaged.to_string())),
         ConfigEntry::new(BALLISTA_CACHE_NOOP.to_string(),
-                         "Disable default cache node extension".to_string(),
+                         "When true (the default), DataFrame::cache() does nothing. When false, the first action on a cached DataFrame materializes it in the cluster, and later actions read it back instead of recomputing it".to_string(),
                          DataType::Boolean,
                          Some((true).to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_READER_MAX_REQUESTS.to_string(),
@@ -520,6 +545,55 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                 .to_string(),
             DataType::Boolean,
             Some(true.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_EXECUTION_MODE.to_string(),
+            "How a job's stages exchange data. `blocking` runs stages one after \
+             another and passes data between them through shuffle files. \
+             `pipelined` (experimental) places every task of the job up front \
+             and streams record batches between stages over Arrow Flight. It \
+             has lower latency, but a failed task fails the job instead of \
+             being retried, and a job waits until it can reserve the vcores \
+             of its widest stage all at once. `pipelined` requires push-staged \
+             scheduling, and the scheduler does not run it yet."
+                .to_string(),
+            DataType::Utf8,
+            Some(ExecutionMode::Blocking.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_PIPELINED_QUEUE_CAPACITY.to_string(),
+            "Number of batches each output partition of a pipelined stage \
+             buffers before its producer waits for the consumer to read. Higher \
+             values smooth out bursty consumers at the cost of memory. At least 1."
+                .to_string(),
+            DataType::UInt64,
+            Some(2.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_PIPELINED_REGISTRATION_TIMEOUT_SECONDS.to_string(),
+            "How long either side of a pipelined exchange waits for the other \
+             before failing the query: a consumer for its producer task to \
+             start, and a producer whose output queue is full for a consumer \
+             to open it. All tasks of a pipelined job are launched together, \
+             so either can be first. At least 1."
+                .to_string(),
+            DataType::UInt64,
+            Some(60.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_PIPELINED_STREAM_WINDOW_BYTES.to_string(),
+            "HTTP/2 flow-control window, in bytes, of each stream a pipelined \
+             reader opens to another executor. The streams of every task on an \
+             executor share one connection to each producer executor, whose \
+             connection window is the largest HTTP/2 allows, so this bounds the \
+             data a stalled stream can hold, and a connection can carry \
+             2147483647 divided by this many streams before stalled streams could \
+             starve the rest. It also caps a stream's throughput at this many \
+             bytes per round trip, so raise it on high-latency links. Between \
+             65535 and 2147483647."
+                .to_string(),
+            DataType::UInt64,
+            Some((512 * 1024).to_string()),
         ),
     ];
     entries
@@ -888,6 +962,40 @@ impl BallistaConfig {
         }
     }
 
+    /// Returns how a job's stages exchange data.
+    pub fn execution_mode(&self) -> std::result::Result<ExecutionMode, DataFusionError> {
+        self.get_string_setting(BALLISTA_EXECUTION_MODE).parse()
+    }
+
+    /// Returns how many batches each pipelined output partition buffers before
+    /// its producer waits. Never zero, since a zero-capacity queue could never
+    /// accept a batch.
+    pub fn pipelined_queue_capacity(&self) -> usize {
+        self.get_usize_setting(BALLISTA_PIPELINED_QUEUE_CAPACITY)
+            .max(1)
+    }
+
+    /// Returns how long a pipelined consumer waits for its producer task to
+    /// register, and a producer with a full queue for its consumer to open
+    /// it, before failing. At least one second, since a zero timeout would
+    /// fail every exchange whose two sides do not start at the same instant.
+    pub fn pipelined_registration_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            self.get_usize_setting(BALLISTA_PIPELINED_REGISTRATION_TIMEOUT_SECONDS)
+                .max(1) as u64,
+        )
+    }
+
+    /// Returns the HTTP/2 stream window, in bytes, of the connections that
+    /// pipelined readers share, clamped to what HTTP/2 allows.
+    pub fn pipelined_stream_window_bytes(&self) -> u32 {
+        self.get_usize_setting(BALLISTA_PIPELINED_STREAM_WINDOW_BYTES)
+            .clamp(
+                HTTP2_DEFAULT_WINDOW_BYTES as usize,
+                HTTP2_MAX_WINDOW_BYTES as usize,
+            ) as u32
+    }
+
     /// Returns the target post-coalesce partition byte size in bytes
     /// (Spark's `advisoryPartitionSizeInBytes`).
     pub fn coalesce_target_partition_bytes(&self) -> usize {
@@ -1066,6 +1174,44 @@ impl datafusion::config::ConfigExtension for BallistaConfig {
 
 // an enum used to configure the scheduler policy
 
+/// How a job's stages exchange data, set per session with
+/// [`BALLISTA_EXECUTION_MODE`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExecutionMode {
+    /// Stages run one after another. Each stage writes its output to shuffle
+    /// files, and the next stage starts once every input stage has finished.
+    #[default]
+    Blocking,
+    /// Every task of the job is placed up front, and stages stream record
+    /// batches to each other over Arrow Flight while they run. Requires
+    /// push-staged scheduling. A failed task fails the job.
+    Pipelined,
+}
+
+impl Display for ExecutionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExecutionMode::Blocking => f.write_str("blocking"),
+            ExecutionMode::Pipelined => f.write_str("pipelined"),
+        }
+    }
+}
+
+impl std::str::FromStr for ExecutionMode {
+    type Err = DataFusionError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "blocking" => Ok(ExecutionMode::Blocking),
+            "pipelined" => Ok(ExecutionMode::Pipelined),
+            other => Err(DataFusionError::Configuration(format!(
+                "Got an invalid execution mode {other}: \
+                Valid options are: blocking and pipelined"
+            ))),
+        }
+    }
+}
+
 /// Ballista supports both push-based and pull-based task scheduling.
 /// It is recommended that you try both to determine which is the best for your use case.
 #[derive(Clone, Copy, Debug, serde::Deserialize, Default)]
@@ -1179,6 +1325,48 @@ mod tests {
             err.to_string()
                 .contains("invalid standalone task scheduling policy eager")
         );
+    }
+
+    #[test]
+    fn execution_mode_defaults_to_blocking_and_parses_pipelined() {
+        use crate::extension::SessionConfigExt;
+        use datafusion::prelude::SessionConfig;
+
+        let mut config = SessionConfig::new_with_ballista();
+        assert_eq!(
+            config.ballista_config().execution_mode().unwrap(),
+            ExecutionMode::Blocking
+        );
+
+        config
+            .options_mut()
+            .set(BALLISTA_EXECUTION_MODE, "Pipelined")
+            .unwrap();
+        assert_eq!(
+            config.ballista_config().execution_mode().unwrap(),
+            ExecutionMode::Pipelined
+        );
+
+        config
+            .options_mut()
+            .set(BALLISTA_EXECUTION_MODE, "streaming")
+            .unwrap();
+        let err = config.ballista_config().execution_mode().unwrap_err();
+        assert!(err.to_string().contains("invalid execution mode streaming"));
+    }
+
+    #[test]
+    fn pipelined_queue_capacity_is_never_zero() {
+        use crate::extension::SessionConfigExt;
+        use datafusion::prelude::SessionConfig;
+
+        let mut config = SessionConfig::new_with_ballista();
+        assert_eq!(config.ballista_config().pipelined_queue_capacity(), 2);
+        config
+            .options_mut()
+            .set(BALLISTA_PIPELINED_QUEUE_CAPACITY, "0")
+            .unwrap();
+        assert_eq!(config.ballista_config().pipelined_queue_capacity(), 1);
     }
 
     #[test]

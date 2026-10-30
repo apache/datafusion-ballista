@@ -616,6 +616,34 @@ impl TestCluster {
         crate::rest::stages(&self.client, &self.rest_url(), job_id).await
     }
 
+    /// The ids of every job the scheduler currently lists, in any state, in
+    /// the order the jobs started.
+    ///
+    /// For scenarios where one query runs several jobs (a `DataFrame::cache()`
+    /// build, its read, a rebuild), so "the running job" is ambiguous.
+    pub async fn job_ids(&self) -> Result<Vec<String>, String> {
+        crate::rest::job_ids(&self.client, &self.rest_url()).await
+    }
+
+    /// Index of the executor holding `job_id`'s final-stage output: the
+    /// highest-numbered stage directory among the executors' work dirs. For a
+    /// single-partition final stage that is exactly one executor.
+    pub fn executor_with_final_output(&self, job_id: &str) -> Option<usize> {
+        self.executors
+            .iter()
+            .enumerate()
+            .flat_map(|(index, executor)| {
+                std::fs::read_dir(executor.work_dir.join(job_id))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|entry| entry.file_name().to_str()?.parse::<usize>().ok())
+                    .map(move |stage_id| (stage_id, index))
+            })
+            .max()
+            .map(|(_, index)| index)
+    }
+
     /// Block until `stage_id` has at least one task in state Running.
     ///
     /// This is what lets a kill land *while the stage is genuinely executing*,
@@ -637,6 +665,16 @@ impl TestCluster {
     /// somewhere. Used where the scenario only needs a kill to land mid-flight.
     pub async fn await_any_stage_running(&self, job_id: &str) -> Result<(), String> {
         crate::rest::await_any_stage_running(&self.client, &self.rest_url(), job_id).await
+    }
+
+    /// Block until `stage_id` has at least one task in state Successful.
+    pub async fn await_stage_task_successful(
+        &self,
+        job_id: &str,
+        stage_id: usize,
+    ) -> Result<(), String> {
+        self.await_stage_task_state(job_id, stage_id, "Successful")
+            .await
     }
 
     /// Block until every task in `stage_id` is Successful.
@@ -839,7 +877,8 @@ impl TestCluster {
         }
     }
 
-    fn executor_with_shuffle_output(
+    /// The index of an executor holding shuffle output of `stage_id`.
+    pub fn executor_with_shuffle_output(
         &self,
         job_id: &str,
         stage_id: usize,

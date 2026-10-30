@@ -44,6 +44,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs::File, pin::Pin};
+use tokio::net::TcpSocket;
 use tonic::codegen::StdError;
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::{Channel, Endpoint, Error, Server};
@@ -147,6 +148,16 @@ pub struct GrpcServerConfig {
     pub http2_keepalive_interval_seconds: u64,
     /// HTTP/2 keep-alive ping timeout in seconds
     pub http2_keepalive_timeout_seconds: u64,
+    /// Length of the listening socket's accept queue, for servers bound with
+    /// [`create_grpc_server_incoming`].
+    ///
+    /// The kernel caps it at `net.core.somaxconn` (4096 on Linux 5.4 and
+    /// later). A connection that arrives while the queue is full is delayed
+    /// by a SYN retransmit, and under Linux SYN cookies can be reset once the
+    /// client starts sending, so the queue should hold the largest burst a
+    /// peer can produce. A wide pipelined job opens a connection from every
+    /// reader partition to every executor it reads from, all at once.
+    pub listen_backlog: u32,
 }
 
 impl Default for GrpcServerConfig {
@@ -156,6 +167,7 @@ impl Default for GrpcServerConfig {
             tcp_keepalive_seconds: 3600,
             http2_keepalive_interval_seconds: 300,
             http2_keepalive_timeout_seconds: 20,
+            listen_backlog: 4096,
         }
     }
 }
@@ -397,6 +409,13 @@ where
 pub fn create_grpc_server(config: &GrpcServerConfig) -> Server {
     Server::builder()
         .timeout(Duration::from_secs(config.timeout_seconds))
+        // No limit on the streams a connection carries. This is tonic's
+        // default, made explicit because pipelined readers depend on it: they
+        // multiplex the streams of every task on an executor over one
+        // connection to each producer executor, and a stream the client had
+        // to queue behind a limit would leave its producer blocked on a full
+        // queue.
+        .max_concurrent_streams(None)
         // Disable Nagle's Algorithm since we don't want packets to wait
         .tcp_nodelay(true)
         .tcp_keepalive(Some(Duration::from_secs(config.tcp_keepalive_seconds)))
@@ -419,6 +438,10 @@ pub fn create_grpc_server(config: &GrpcServerConfig) -> Server {
 /// [`create_grpc_server`] sets, for the same reasons. The remaining settings
 /// still come from the builder.
 ///
+/// The socket listens with `config.listen_backlog` rather than the 128 that
+/// tonic's own `serve` and `TcpIncoming::bind` get from the standard library,
+/// which a burst of connections from a wide cluster overflows at once.
+///
 /// # Panics
 ///
 /// The listener is registered with the Tokio reactor, so this must be called
@@ -427,7 +450,17 @@ pub fn create_grpc_server_incoming(
     addr: SocketAddr,
     config: &GrpcServerConfig,
 ) -> Result<TcpIncoming> {
-    Ok(TcpIncoming::bind(addr)?
+    let socket = if addr.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
+    // The standard library's bind sets this too, so a restarted server can
+    // rebind its port while old connections linger in TIME_WAIT.
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    let listener = socket.listen(config.listen_backlog)?;
+    Ok(TcpIncoming::from(listener)
         .with_nodelay(Some(true))
         .with_keepalive(Some(Duration::from_secs(config.tcp_keepalive_seconds))))
 }

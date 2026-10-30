@@ -229,7 +229,7 @@ jobs:
           rustup default stable
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Install taplo
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: taplo-cli@0.10.0
 
@@ -247,7 +247,7 @@ jobs:
         with:
           fetch-depth: 1
       - name: Install cargo-machete
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-machete@0.9.2
 

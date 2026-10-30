@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::cache::CACHE_DATA_LOST;
 use crate::display::print_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
@@ -24,7 +25,9 @@ use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ResolvedStage, RunningTaskInfo,
     StageOutput,
 };
-use crate::state::execution_stage::RunningStage;
+use crate::state::execution_stage::{
+    RunningStage, external_inputs, is_external_fetch_failure,
+};
 use crate::state::task_manager::UpdatedStages;
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
@@ -117,6 +120,14 @@ pub(crate) struct AdaptiveExecutionGraph {
     end_time: u64,
     /// Map from Stage ID -> ExecutionStage
     stages: HashMap<usize, ExecutionStage>,
+    /// Stages retired after an AQE replan made them redundant. Tracked
+    /// separately from `stages` because `is_successful()` requires every
+    /// stage in the map to be Successful: a cancelled stage left behind in
+    /// a non-Successful state would block job completion forever. Late
+    /// task statuses for these stage ids are discarded instead of erroring.
+    /// Outstanding vcore reservations are tracked separately by TaskManager,
+    /// so they can outlive the entire execution graph.
+    retired_stages: HashSet<usize>,
 
     /// Locations of this `ExecutionGraph` final output locations
     output_locations: Vec<PartitionLocation>,
@@ -189,12 +200,14 @@ impl AdaptiveExecutionGraph {
                     queued_at,
                     started_at,
                     scheduler: scheduler_id.to_string(),
+                    pipelined_output_locations: vec![],
                 })),
             },
             queued_at,
             start_time: started_at,
             end_time: 0,
             stages,
+            retired_stages: HashSet::new(),
             output_locations: vec![],
             failed_stage_attempts: HashMap::new(),
             session_config,
@@ -209,12 +222,14 @@ impl AdaptiveExecutionGraph {
         stage: AdaptiveStageInfo,
     ) -> ballista_core::error::Result<(usize, ExecutionStage)> {
         let stage_id = stage.plan.stage_id();
+        let mut inputs = stage.inputs;
+        inputs.extend(external_inputs(stage.plan.as_ref()));
         let stage = ExecutionStage::Resolved(ResolvedStage::new(
             stage_id,
             0,
             stage.plan,
             vec![], // we do not know output links at this moment
-            stage.inputs,
+            inputs,
             HashSet::new(),
             session_config,
         ));
@@ -419,7 +434,7 @@ impl AdaptiveExecutionGraph {
         Ok(())
     }
 
-    /// Return a Vec of stages to cancel
+    /// Return the set of stage ids the replan cancelled
     fn update_stage_progress(
         &mut self,
         stage_id: usize,
@@ -505,15 +520,60 @@ impl AdaptiveExecutionGraph {
                 // we update output locations
                 self.output_locations = partitions.into_iter().flatten().collect();
             }
-            // marking stages which need cancelling as canceled.
-            // stage ids are returned for task cancellation action
+            // Drop stages the replan cancelled from both the planner and
+            // graph. Tasks already dispatched may still finish; statuses
+            // for their retired stage ids are ignored below.
             for stage_id in stages_to_cancel.iter() {
                 self.planner.cancel_stage(*stage_id)?;
+                self.retire_cancelled_stage(*stage_id);
             }
 
             Ok(stages_to_cancel)
         } else {
             Ok(HashSet::new())
+        }
+    }
+
+    /// Retire a stage the replan cancelled. The stage is moved out of
+    /// `self.stages` so the job no longer waits on it: `is_successful()`
+    /// requires every stage in the map to be Successful, so a cancelled
+    /// stage left behind in a non-Successful state would wedge the job.
+    /// The id is remembered in `retired_stages` so a late completion from
+    /// one of its tasks is discarded as coming from a cancelled attempt.
+    fn retire_cancelled_stage(&mut self, stage_id: usize) {
+        match self.stages.remove(&stage_id) {
+            Some(ExecutionStage::Running(running)) => {
+                let inflight = running.running_tasks().len();
+                self.retired_stages.insert(stage_id);
+                debug!(
+                    "Job {} stage {stage_id} retired after AQE replan ({inflight} task(s) still in flight)",
+                    self.job_id(),
+                );
+            }
+            Some(stage) => {
+                // Resolved/UnResolved stages have no in-flight tasks; retire
+                // them the same way. Successful/Failed stages are already
+                // terminal and keep their outputs/history.
+                if matches!(
+                    stage,
+                    ExecutionStage::Resolved(_) | ExecutionStage::UnResolved(_)
+                ) {
+                    self.retired_stages.insert(stage_id);
+                    debug!(
+                        "Job {} stage {stage_id} dropped after AQE replan",
+                        self.job_id(),
+                    );
+                } else {
+                    self.stages.insert(stage_id, stage);
+                }
+            }
+            None => {
+                warn!(
+                    "Stage {}/{} to be cancelled was not found in the execution graph",
+                    self.job_id(),
+                    stage_id
+                );
+            }
         }
     }
 
@@ -885,6 +945,19 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                                 "Stages was marked failed, ignore FetchPartitionError from task {task_identity}"
                                             );
                                             warn!("{error_msg}");
+                                        } else if is_external_fetch_failure(
+                                            &running_stage.inputs,
+                                            &executor_id,
+                                            map_stage_id,
+                                            map_partition_id,
+                                        ) {
+                                            // Cache data is another job's output,
+                                            // which this graph cannot re-run.
+                                            let error_msg = format!(
+                                                "Stage {stage_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
+                                            );
+                                            error!("{error_msg}");
+                                            failed_stages.insert(stage_id, error_msg);
                                         } else {
                                             // There are different removal strategies here.
                                             // We can choose just remove the map_partition_id in the FetchPartitionError, when resubmit the input stage, there are less tasks
@@ -1038,9 +1111,9 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                     )?;
 
                     if !stages_to_cancel.is_empty() {
-                        warn!(
-                            "there are stages to be cancelled but its not implemented. stages to cancel: {:?}",
-                            stages_to_cancel
+                        debug!(
+                            "retired stages after AQE replan for job {}: {:?}",
+                            job_id, stages_to_cancel
                         );
                     }
                 } else {
@@ -1054,6 +1127,20 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             .collect::<Vec<_>>(),
                     );
                 }
+            } else if self.retired_stages.contains(&stage_id) {
+                // The stage was retired after an AQE replan made it
+                // redundant, so a late status from one of its tasks is
+                // stale: discard it instead of failing the whole update
+                // (which would wedge the job).
+                warn!(
+                    "Stage {}/{} was retired by an AQE replan; ignoring late status for task(s) {:?}",
+                    job_id,
+                    stage_id,
+                    stage_task_statuses
+                        .iter()
+                        .map(|task_status| task_status.task_id)
+                        .collect::<Vec<_>>(),
+                );
             } else {
                 return Err(BallistaError::Internal(format!(
                     "Invalid stage ID {stage_id} for job {job_id}"
@@ -1413,6 +1500,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                 queued_at: self.queued_at,
                 started_at: self.start_time,
                 ended_at: self.end_time,
+                pipelined_output_locations: vec![],
             })),
         };
 
