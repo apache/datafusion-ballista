@@ -15,17 +15,25 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Extension codecs used by the Python FFI query planner.
+//! Extension codecs used by the Python FFI query planner, scheduler and
+//! executor.
 //!
-//! They delegate to Ballista's default codecs and add support for
-//! [DistributedQueryExec] and [DistributedExplainAnalyzeExec], which are only
-//! serialized when plans cross the datafusion-python FFI boundary.
+//! They wrap datafusion-python's [PythonLogicalCodec] and
+//! [PythonPhysicalCodec] with Ballista's default codecs as their terminal
+//! codec. Python UDFs (scalar, aggregate and window functions) are inlined
+//! as cloudpickle payloads, everything else is handled by Ballista's codecs.
+//! As the terminal codec writes unframed payloads, plans which do not
+//! reference Python UDFs serialize exactly as with Ballista's default codecs.
 //!
-//! They are also where Python-specific serde will live. In the future they
-//! will encode and decode things Ballista's default codecs do not know about,
-//! such as Python UDFs (scalar, aggregate and window functions), Python table
-//! providers and similar Python-defined extensions. Anything that cannot be
-//! handled here falls back to Ballista's default codecs.
+//! The physical codec additionally supports [DistributedQueryExec] and
+//! [DistributedExplainAnalyzeExec], which are only serialized when plans
+//! cross the datafusion-python FFI boundary.
+//!
+//! Note: [BallistaPhysicalExtensionCodec] serializes shuffle partitioning
+//! expressions with its internal default codec, so Python UDFs used directly
+//! as shuffle partitioning keys would not be inlined. DataFusion's planner
+//! projects such keys into columns before repartitioning, so this does not
+//! show up in practice.
 
 use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::{
@@ -35,7 +43,7 @@ use ballista_core::serde::protobuf::{
     self, ballista_physical_plan_node::PhysicalPlanType,
 };
 use ballista_core::serde::{
-    BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
+    BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::catalog::TableProvider;
@@ -43,24 +51,46 @@ use datafusion::common::{DataFusionError, Result, TableReference};
 use datafusion::config::{ConfigExtension, ExtensionOptions};
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::execution::TaskContext;
-use datafusion::logical_expr::{Extension, LogicalPlan};
+use datafusion::logical_expr::{
+    AggregateUDF, Extension, LogicalPlan, ScalarUDF, WindowUDF,
+};
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr_common::physical_expr::proto_decode::PhysicalExprDecodeCtx;
+use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::{AsLogicalPlan, LogicalExtensionCodec};
 use datafusion_proto::physical_plan::{
     PhysicalExtensionCodec, PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf::LogicalPlanNode;
+use datafusion_python::codec::{PythonLogicalCodec, PythonPhysicalCodec};
 use prost::Message;
 use std::sync::Arc;
 
-/// Logical extension codec delegating to [BallistaLogicalExtensionCodec].
-///
-/// Currently a pass-through; it is the extension point for future
-/// Python-specific logical serde, such as Python UDFs and Python table
-/// providers.
-#[derive(Debug, Default)]
+/// [BallistaCodec] using Python aware codecs, used by
+/// scheduler and executor started from Python.
+pub(crate) fn ballista_codec() -> BallistaCodec {
+    BallistaCodec::new(
+        Arc::new(PyBallistaLogicalExtensionCodec::default()),
+        Arc::new(PyBallistaPhysicalExtensionCodec::default()),
+    )
+}
+
+/// Logical extension codec delegating to [PythonLogicalCodec] with
+/// [BallistaLogicalExtensionCodec] as its terminal codec.
+#[derive(Debug)]
 pub(crate) struct PyBallistaLogicalExtensionCodec {
-    inner: BallistaLogicalExtensionCodec,
+    inner: PythonLogicalCodec,
+}
+
+impl Default for PyBallistaLogicalExtensionCodec {
+    fn default() -> Self {
+        Self {
+            inner: PythonLogicalCodec::new(Arc::new(
+                BallistaLogicalExtensionCodec::default(),
+            )),
+        }
+    }
 }
 
 impl LogicalExtensionCodec for PyBallistaLogicalExtensionCodec {
@@ -112,17 +142,38 @@ impl LogicalExtensionCodec for PyBallistaLogicalExtensionCodec {
     ) -> Result<()> {
         self.inner.try_encode_file_format(buf, node)
     }
+
+    fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {
+        self.inner.try_decode_udf(name, buf)
+    }
+
+    fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> Result<()> {
+        self.inner.try_encode_udf(node, buf)
+    }
+
+    fn try_decode_udaf(&self, name: &str, buf: &[u8]) -> Result<Arc<AggregateUDF>> {
+        self.inner.try_decode_udaf(name, buf)
+    }
+
+    fn try_encode_udaf(&self, node: &AggregateUDF, buf: &mut Vec<u8>) -> Result<()> {
+        self.inner.try_encode_udaf(node, buf)
+    }
+
+    fn try_decode_udwf(&self, name: &str, buf: &[u8]) -> Result<Arc<WindowUDF>> {
+        self.inner.try_decode_udwf(name, buf)
+    }
+
+    fn try_encode_udwf(&self, node: &WindowUDF, buf: &mut Vec<u8>) -> Result<()> {
+        self.inner.try_encode_udwf(node, buf)
+    }
 }
 
-/// Physical extension codec delegating to [BallistaPhysicalExtensionCodec],
-/// additionally handling [DistributedQueryExec] and
-/// [DistributedExplainAnalyzeExec].
-///
-/// It is the extension point for future Python-specific physical serde, such
-/// as Python UDFs referenced from physical expressions.
+/// Physical extension codec delegating to [PythonPhysicalCodec] with
+/// [BallistaPhysicalExtensionCodec] as its terminal codec, additionally
+/// handling [DistributedQueryExec] and [DistributedExplainAnalyzeExec].
 #[derive(Debug)]
 pub(crate) struct PyBallistaPhysicalExtensionCodec {
-    inner: BallistaPhysicalExtensionCodec,
+    inner: PythonPhysicalCodec,
     /// Codec used for the logical plan embedded in [DistributedQueryExec]
     logical_codec: Arc<dyn LogicalExtensionCodec>,
 }
@@ -136,7 +187,9 @@ impl Default for PyBallistaPhysicalExtensionCodec {
 impl PyBallistaPhysicalExtensionCodec {
     pub(crate) fn new(logical_codec: Arc<dyn LogicalExtensionCodec>) -> Self {
         Self {
-            inner: BallistaPhysicalExtensionCodec::default(),
+            inner: PythonPhysicalCodec::new(Arc::new(
+                BallistaPhysicalExtensionCodec::default(),
+            )),
             logical_codec,
         }
     }
@@ -318,6 +371,48 @@ impl PhysicalExtensionCodec for PyBallistaPhysicalExtensionCodec {
         }
         self.inner.try_encode(node, buf, proto_converter)
     }
+
+    fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {
+        self.inner.try_decode_udf(name, buf)
+    }
+
+    fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> Result<()> {
+        self.inner.try_encode_udf(node, buf)
+    }
+
+    fn try_decode_expr(
+        &self,
+        buf: &[u8],
+        inputs: &[Arc<dyn PhysicalExpr>],
+        ctx: &PhysicalExprDecodeCtx<'_>,
+    ) -> Result<Arc<dyn PhysicalExpr>> {
+        self.inner.try_decode_expr(buf, inputs, ctx)
+    }
+
+    fn try_encode_expr(
+        &self,
+        node: &Arc<dyn PhysicalExpr>,
+        buf: &mut Vec<u8>,
+        ctx: &PhysicalExprEncodeCtx<'_>,
+    ) -> Result<()> {
+        self.inner.try_encode_expr(node, buf, ctx)
+    }
+
+    fn try_decode_udaf(&self, name: &str, buf: &[u8]) -> Result<Arc<AggregateUDF>> {
+        self.inner.try_decode_udaf(name, buf)
+    }
+
+    fn try_encode_udaf(&self, node: &AggregateUDF, buf: &mut Vec<u8>) -> Result<()> {
+        self.inner.try_encode_udaf(node, buf)
+    }
+
+    fn try_decode_udwf(&self, name: &str, buf: &[u8]) -> Result<Arc<WindowUDF>> {
+        self.inner.try_decode_udwf(name, buf)
+    }
+
+    fn try_encode_udwf(&self, node: &WindowUDF, buf: &mut Vec<u8>) -> Result<()> {
+        self.inner.try_encode_udwf(node, buf)
+    }
 }
 
 #[cfg(test)]
@@ -408,6 +503,107 @@ mod test {
                 .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn test_non_python_udf_encodes_as_ballista() {
+        let udf = datafusion::functions::math::abs();
+
+        let mut expected = vec![];
+        BallistaLogicalExtensionCodec::default()
+            .try_encode_udf(&udf, &mut expected)
+            .unwrap();
+
+        let mut logical = vec![];
+        PyBallistaLogicalExtensionCodec::default()
+            .try_encode_udf(&udf, &mut logical)
+            .unwrap();
+
+        let mut physical = vec![];
+        PyBallistaPhysicalExtensionCodec::default()
+            .try_encode_udf(&udf, &mut physical)
+            .unwrap();
+
+        assert_eq!(logical, expected);
+        assert_eq!(physical, expected);
+    }
+
+    #[test]
+    fn test_non_python_udaf_encodes_as_ballista() {
+        let udaf = datafusion::functions_aggregate::sum::sum_udaf();
+
+        let mut expected = vec![];
+        BallistaLogicalExtensionCodec::default()
+            .try_encode_udaf(&udaf, &mut expected)
+            .unwrap();
+
+        let mut logical = vec![];
+        PyBallistaLogicalExtensionCodec::default()
+            .try_encode_udaf(&udaf, &mut logical)
+            .unwrap();
+
+        let mut physical = vec![];
+        PyBallistaPhysicalExtensionCodec::default()
+            .try_encode_udaf(&udaf, &mut physical)
+            .unwrap();
+
+        assert_eq!(logical, expected);
+        assert_eq!(physical, expected);
+    }
+
+    #[test]
+    fn test_non_python_udwf_encodes_as_ballista() {
+        let udwf = datafusion::functions_window::row_number::row_number_udwf();
+
+        let mut expected = vec![];
+        BallistaLogicalExtensionCodec::default()
+            .try_encode_udwf(&udwf, &mut expected)
+            .unwrap();
+
+        let mut logical = vec![];
+        PyBallistaLogicalExtensionCodec::default()
+            .try_encode_udwf(&udwf, &mut logical)
+            .unwrap();
+
+        let mut physical = vec![];
+        PyBallistaPhysicalExtensionCodec::default()
+            .try_encode_udwf(&udwf, &mut physical)
+            .unwrap();
+
+        assert_eq!(logical, expected);
+        assert_eq!(physical, expected);
+    }
+
+    #[tokio::test]
+    async fn test_distributed_query_exec_roundtrip_with_udf() {
+        let ctx = SessionContext::new();
+        let plan = ctx
+            .sql("SELECT abs(-1) AS a")
+            .await
+            .unwrap()
+            .logical_plan()
+            .clone();
+
+        let exec: Arc<dyn ExecutionPlan> =
+            Arc::new(DistributedQueryExec::<LogicalPlanNode>::new(
+                "df://localhost:50050".to_string(),
+                BallistaConfig::default(),
+                plan.clone(),
+                "session-1".to_string(),
+            ));
+
+        let codec = PyBallistaPhysicalExtensionCodec::default();
+        let converter = DefaultPhysicalProtoConverter {};
+        let mut buf = vec![];
+        codec.try_encode(exec, &mut buf, &converter).unwrap();
+        let decoded = codec
+            .try_decode(&buf, &[], &ctx.task_ctx(), &converter)
+            .unwrap();
+
+        let decoded = decoded
+            .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
+            .expect("decoded plan should be DistributedQueryExec");
+        assert_eq!(decoded.plan(), &plan);
     }
 
     #[tokio::test]

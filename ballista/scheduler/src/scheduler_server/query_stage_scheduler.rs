@@ -43,6 +43,7 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::event_log;
 
 use crate::state::SchedulerState;
+use crate::state::cache_linker::JobEnd;
 
 pub(crate) struct QueryStageScheduler<
     T: 'static + AsLogicalPlan,
@@ -433,6 +434,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job {job_id} failed: {fail_message}");
+                // Release a cache claim this job owned and fail what waited on it.
+                self.state
+                    .on_job_terminal(
+                        &job_id,
+                        JobEnd::Failed(&fail_message),
+                        &event_sender,
+                    )
+                    .await;
                 if let Err(e) = self
                     .state
                     .task_manager
@@ -453,6 +462,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_completed(&job_id, queued_at, completed_at);
 
                 info!("Job finished successfully: [{job_id}]");
+                // Record a cache this job built while its graph is active, and
+                // before cleanup, so its pin is in place.
+                self.state
+                    .on_job_terminal(&job_id, JobEnd::Finished, &event_sender)
+                    .await;
                 let (intermediate_stage_ids, reservation) =
                     match self.state.task_manager.succeed_job(&job_id).await {
                         Ok(finished) => finished,
@@ -476,7 +490,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .await?;
                 }
                 self.state
-                    .clean_up_successful_job(job_id, intermediate_stage_ids);
+                    .clean_up_successful_job(job_id, intermediate_stage_ids)
+                    .await;
             }
             QueryStageSchedulerEvent::JobRunningFailed {
                 job_id,
@@ -488,6 +503,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job failed: [{job_id}]");
+                // Release a cache claim this job owned and fail what waited on it.
+                self.state
+                    .on_job_terminal(
+                        &job_id,
+                        JobEnd::Failed(&fail_message),
+                        &event_sender,
+                    )
+                    .await;
                 if let Err(e) = self.abort_job(&job_id, fail_message).await {
                     error!("Fail to abort job {job_id} due to {e:?}");
                 }
@@ -518,6 +541,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 if let Err(e) = self.abort_job(&job_id, "Cancelled".to_owned()).await {
                     error!("Fail to cancel job {job_id} due to {e:?}");
                 }
+                // A held job was never submitted, so `abort_job` cannot end it.
+                self.state
+                    .on_job_terminal(&job_id, JobEnd::Cancelled, &event_sender)
+                    .await;
                 self.state.clean_up_failed_job(job_id);
                 self.revive_after_abort(&event_sender).await?;
             }
@@ -536,8 +563,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     let vcores_freed = self
                         .state
                         .task_manager
-                        .sum_vcores_for_statuses(&tasks_status)
-                        .await;
+                        .take_vcores_for_statuses(&executor_id, &tasks_status);
                     self.state
                         .executor_manager
                         .unbind_tasks(vec![(executor_id.clone(), vcores_freed)])

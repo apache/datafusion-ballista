@@ -186,23 +186,16 @@ impl Executor {
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
         vcores: usize,
     ) -> Self {
-        let pipelined_registry = Arc::new(PipelinedRegistry::new(metadata.id.clone()));
-        Self {
+        Self::new(
             metadata,
-            work_dir: work_dir.to_owned(),
-            function_registry,
+            work_dir,
             runtime_producer,
             config_producer,
+            function_registry,
             metrics_collector,
             vcores,
-            abort_handles: Default::default(),
-            tasks_drained_waker: Default::default(),
-            execution_engine: Arc::new(DefaultExecutionEngine::new()),
-            session_runtime_cache: None,
-            memory_metrics: None,
-            pipelined_registry,
-            pipelined_runtimes: Default::default(),
-        }
+            Arc::new(DefaultExecutionEngine::new()),
+        )
     }
 }
 
@@ -289,9 +282,11 @@ impl Executor {
         Ok(runtime)
     }
 
-    /// Creates a default [`SessionConfig`] using the configured config producer.
+    /// Creates a default [`SessionConfig`] using the configured config producer,
+    /// with this executor's pipelined registry attached: that is how a task's
+    /// pipelined writer and readers find it.
     pub fn produce_config(&self) -> SessionConfig {
-        (self.config_producer)()
+        (self.config_producer)().with_extension(self.pipelined_registry.clone())
     }
 
     /// Execute one partition of a query stage and persist the result to disk in IPC format. On
@@ -367,12 +362,6 @@ impl Executor {
     /// executor.
     pub fn pipelined_registry(&self) -> &Arc<PipelinedRegistry> {
         &self.pipelined_registry
-    }
-
-    /// Returns `config` with this executor's pipelined registry attached, which
-    /// is how a task's pipelined writer and readers find it.
-    pub fn with_pipelined_registry(&self, config: SessionConfig) -> SessionConfig {
-        config.with_extension(self.pipelined_registry.clone())
     }
 
     /// Forgets the pipelined outputs of `job_id`, or of just `stage_ids` when

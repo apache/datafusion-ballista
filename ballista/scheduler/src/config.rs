@@ -310,6 +310,13 @@ pub struct Config {
         help = "Should the REST API be disabled"
     )]
     pub disable_rest_api: bool,
+    /// Run `DataFrame::cache()` queries uncached
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Run DataFrame::cache() queries uncached, whatever clients request: each cached subplan is computed as part of the query instead of being materialized and kept"
+    )]
+    pub disable_dataframe_cache: bool,
     #[cfg(feature = "rest-api")]
     /// Comma-separated list of allowed origins for CORS
     #[arg(
@@ -477,6 +484,10 @@ pub struct SchedulerConfig {
     pub on_work_available: Option<OnWorkAvailableFn>,
     /// Job id generator to be used by this scheduler
     pub job_id_generator: Option<Arc<dyn JobIdGenerator>>,
+    /// Runs `DataFrame::cache()` queries uncached, whatever clients request: each
+    /// cached subplan is computed as part of the query instead of being
+    /// materialized. Lets an operator turn caching off for the cluster.
+    pub disable_dataframe_cache: bool,
 }
 
 impl Default for SchedulerConfig {
@@ -531,6 +542,7 @@ impl Default for SchedulerConfig {
             web_tui_route: String::from("/"),
             on_work_available: None,
             job_id_generator: None,
+            disable_dataframe_cache: false,
         }
     }
 }
@@ -798,6 +810,12 @@ impl SchedulerConfig {
         self
     }
 
+    /// Runs `DataFrame::cache()` queries uncached when `disable` is true.
+    pub fn with_disable_dataframe_cache(mut self, disable: bool) -> Self {
+        self.disable_dataframe_cache = disable;
+        self
+    }
+
     /// Sets a custom session builder.
     pub fn with_override_session_builder(
         mut self,
@@ -981,6 +999,7 @@ impl TryFrom<Config> for SchedulerConfig {
             web_tui_route: opt.web_tui_route,
             on_work_available: None,
             job_id_generator: None,
+            disable_dataframe_cache: opt.disable_dataframe_cache,
         };
 
         Ok(config)

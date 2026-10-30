@@ -47,7 +47,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::{
     Action as BallistaAction, ShuffleFileKind, ShuffleLayout,
 };
-use ballista_flight_sql::backend::{QueryBackend, QueryResult};
+use ballista_flight_sql::backend::{PipelinedOutput, QueryBackend, QueryResult};
 use ballista_flight_sql::{
     ANONYMOUS_SESSION, AnonymousAuthenticator, Authenticator, BallistaFlightSqlService,
     Identity,
@@ -125,8 +125,10 @@ impl QueryBackend for StubBackend {
                 job_id: JOB_ID.to_string(),
                 schema: Arc::new(plan.schema().as_arrow().clone()),
                 partitions: vec![],
-                pipelined_partitions,
-                pipelined_registration_timeout: Duration::from_secs(7),
+                pipelined: Some(PipelinedOutput {
+                    partitions: pipelined_partitions,
+                    registration_timeout: Duration::from_secs(7),
+                }),
             });
         }
 
@@ -156,8 +158,7 @@ impl QueryBackend for StubBackend {
             job_id: JOB_ID.to_string(),
             schema: Arc::new(plan.schema().as_arrow().clone()),
             partitions,
-            pipelined_partitions: vec![],
-            pipelined_registration_timeout: Duration::default(),
+            pipelined: None,
         })
     }
 }
