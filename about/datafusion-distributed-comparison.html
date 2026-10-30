@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Comparison with DataFusion Distributed &#8212; Apache DataFusion Ballista  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=18bd87630a240e9c25be" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=18bd87630a240e9c25be" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=18bd87630a240e9c25be"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=18bd87630a240e9c25be" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=18bd87630a240e9c25be" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'about/datafusion-distributed-comparison';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Communication" href="../community/communication.html" />
+    <link rel="prev" title="Trino Benchmark Configuration" href="../contributors-guide/benchmarking/trino.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="color-scheme" content="light dark"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/ballista_black.svg" class="logo__image only-light" alt="Apache DataFusion Ballista  documentation - Home"/>
+    <img src="../_static/ballista_white.svg" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Ballista  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/introduction.html">Introduction</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cluster Deployment</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../user-guide/deployment/index.html">Deployment</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/quick-start.html">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/cargo-install.html">Cargo Install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/docker.html">Docker</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/docker-compose.html">Docker Compose</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/deployment/kubernetes.html">Kubernetes</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/scheduler.html">Scheduler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/history-server.html">History Server</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Clients</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../user-guide/python/index.html">Python</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/python/quickstart.html">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/python/cloud-storage.html">Querying S3 Data</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user-guide/python/jupyter.html">Jupyter Notebooks</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/rust.html">Rust</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/cli.html">SQL CLI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/flightsql.html">Arrow Flight SQL</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/configs.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/tuning-guide.html">Tuning Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/metrics.html">Ballista Scheduler Metrics</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/faq.html">Frequently Asked Questions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/extending-components.html">Extending Ballista Scheduler And Executors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/extensions-example.html">Extensions Example</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Changelog</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../changelog/index.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/55.0.0.html">Apache DataFusion Ballista 55.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/54.1.0.html">Apache DataFusion Ballista 54.1.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/54.0.0.html">Apache DataFusion Ballista 54.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/53.0.0.html">Apache DataFusion Ballista 53.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/52.0.0.html">Apache DataFusion Ballista 52.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/51.0.0.html">Apache DataFusion Ballista 51.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/50.0.0.html">Apache DataFusion Ballista 50.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/49.0.0.html">Apache DataFusion Ballista 49.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/48.0.0.html">Apache DataFusion Ballista 48.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/47.0.0.html">Apache DataFusion Ballista 47.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/46.0.0.html">Apache DataFusion Ballista 46.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/45.0.0.html">Apache DataFusion Ballista 45.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/44.0.0.html">Apache DataFusion Ballista 44.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/43.0.0.html">Apache DataFusion Ballista 43.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.12.0.html">Apache DataFusion Ballista 0.12.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.11.0.html">Apache DataFusion Ballista 0.11.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.10.0.html">Apache DataFusion Ballista 0.10.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.9.0.html">Apache DataFusion Ballista 0.9.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.8.0.html">Apache DataFusion Ballista 0.8.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.7.0.html">Apache DataFusion Ballista 0.7.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.6.0.html">Apache DataFusion Ballista 0.6.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.5.0.html">Apache DataFusion Ballista 0.5.0 Changelog</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Upgrade Guides</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../upgrading/index.html">Upgrade Guides</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/56.0.0.html">Ballista 56.0.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/55.0.0.html">Ballista 55.0.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/54.0.0.html">Ballista 54.0.0</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Contributors Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/architecture.html">Ballista Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/shuffle.html">Shuffle Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/dataframe-cache.html">DataFrame Cache Design (<code class="docutils literal notranslate"><span class="pre">DataFrame::cache()</span></code>)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/code-organization.html">Ballista Code Organization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/user-personas.html">User Personas</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/development.html">Ballista Development</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../contributors-guide/benchmarking/index.html">Benchmarking</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../contributors-guide/benchmarking/environment.html">Environment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributors-guide/benchmarking/ballista.html">Ballista</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributors-guide/benchmarking/spark.html">Spark</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributors-guide/benchmarking/comet.html">Spark + Comet</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributors-guide/benchmarking/trino.html">Trino</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/">Source code</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">About</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active"><a aria-current="page" class="current reference internal" href="#">Comparison with DataFusion Distributed</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../community/adopters.html">Who Uses Ballista</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
+</ul>
+
+    
+  </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Comparison with DataFusion Distributed</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="comparison-with-datafusion-distributed">
+<h1>Comparison with DataFusion Distributed<a class="headerlink" href="#comparison-with-datafusion-distributed" title="Link to this heading">#</a></h1>
+<p><a class="reference external" href="https://github.com/datafusion-contrib/datafusion-distributed">DataFusion Distributed</a> is another project that runs <a class="reference external" href="https://datafusion.apache.org/">Apache DataFusion</a> plans across many machines. Both
+projects are open source, both are built on the same query engine, and both stream Arrow data over gRPC. Users
+reasonably ask how they differ, which one to choose, and whether one could be built on top of the other. This page
+answers those questions. It is likely biased, because the Ballista community maintains it.</p>
+<p>In short: <strong>Ballista is a distributed query engine, and DataFusion Distributed is a library for building one.</strong>
+Ballista ships a scheduler, executors, clients, and the machinery for running many jobs on a shared cluster and
+surviving the loss of an executor. DataFusion Distributed adds a small set of operators and a planner to DataFusion
+so that an existing system can spread one query over workers it already manages, and leaves deployment, worker
+discovery, and cluster management to that system.</p>
+<section id="execution-models">
+<h2>Execution models<a class="headerlink" href="#execution-models" title="Link to this heading">#</a></h2>
+<p>Ballista started with the execution model of Apache Spark. Each query stage runs to completion and writes its output
+to local storage before the next stage starts (a <em>blocking</em> shuffle). That output outlives the task that wrote it,
+which is what lets Ballista recover from a lost executor by re-running only the lost tasks, run a query wider than the
+cluster, and plan the rest of a query from exact statistics. <a class="reference internal" href="../contributors-guide/shuffle.html"><span class="std std-doc">Shuffle Design</span></a>
+explains this model and its costs in detail.</p>
+<p>Ballista is adding a second, <em>pipelined</em> execution model, in the style of Trino, as an experimental option chosen per
+job with <code class="docutils literal notranslate"><span class="pre">ballista.execution.mode</span> <span class="pre">=</span> <span class="pre">pipelined</span></code>. All of a job’s tasks are placed up front and stages stream batches to
+each other through bounded in-memory queues, with nothing written to disk. The configuration and the pipelined
+exchange operators are on <code class="docutils literal notranslate"><span class="pre">main</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2670">#2670</a>, <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2685">#2685</a>); the scheduler support that runs pipelined jobs end to end is in
+review in <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2657">#2657</a>.</p>
+<p>DataFusion Distributed has one execution model, the pipelined one. Its documentation is clear about the trade-off:</p>
+<blockquote>
+<div><p>If any node fails mid-query, the whole query fails; there are no retries. There’s no persistence of intermediate
+results, so queries can’t checkpoint or resume from where they stopped.</p>
+</div></blockquote>
+<p>So the choice between them is no longer “batch versus interactive”. Once pipelined mode is complete, a Ballista
+cluster will run long ETL jobs with the blocking model and low-latency analytical queries with the pipelined model,
+side by side on the same scheduler and executors. DataFusion Distributed is designed for the second kind of workload.</p>
+</section>
+<section id="comparison">
+<h2>Comparison<a class="headerlink" href="#comparison" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p></p></th>
+<th class="head"><p>Ballista</p></th>
+<th class="head"><p>DataFusion Distributed</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>What it is</p></td>
+<td><p>A distributed query engine: scheduler and executor binaries</p></td>
+<td><p>A library: operators and a planner that extend DataFusion</p></td>
+</tr>
+<tr class="row-odd"><td><p>Governance</p></td>
+<td><p>Apache DataFusion subproject</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">datafusion-contrib</span></code> organization</p></td>
+</tr>
+<tr class="row-even"><td><p>Deployment</p></td>
+<td><p>Docker images, Docker Compose and Kubernetes guides, optional KEDA autoscaling</p></td>
+<td><p>Left to the user, who hosts workers in their own services</p></td>
+</tr>
+<tr class="row-odd"><td><p>Cluster state</p></td>
+<td><p>Scheduler tracks executors (registration, heartbeats, expiry), jobs, and stages</p></td>
+<td><p>None; the node that receives a query coordinates it, and its state lives for that query</p></td>
+</tr>
+<tr class="row-even"><td><p>Concurrent jobs</p></td>
+<td><p>Many jobs share the cluster’s vcores, with job status, cancellation, and metrics through gRPC and a REST API</p></td>
+<td><p>Each query is coordinated independently by the node that receives it, with no shared job queue or admission control</p></td>
+</tr>
+<tr class="row-odd"><td><p>Exchange between stages</p></td>
+<td><p>Blocking (Arrow IPC files on executors, read locally or over Arrow Flight); pipelined is experimental and per job</p></td>
+<td><p>Streaming over gRPC, using Arrow Flight encoding</p></td>
+</tr>
+<tr class="row-even"><td><p>Fault tolerance</p></td>
+<td><p>Task retry, and re-execution of lost stages when an executor is lost or a shuffle fetch fails</p></td>
+<td><p>Retries only when a task is first routed to a worker; a worker failure after that fails the query</p></td>
+</tr>
+<tr class="row-odd"><td><p>Adaptive query execution</p></td>
+<td><p>On by default: re-plans after each stage from exact statistics (join selection, broadcast, empty-input elimination, partition coalescing)</p></td>
+<td><p>Opt-in: sizes the task count of later stages from sampled statistics</p></td>
+</tr>
+<tr class="row-even"><td><p>Memory</p></td>
+<td><p>Each executor has a memory pool (70% of the container by default), split per task, with spilling</p></td>
+<td><p>Whatever the user configures in the worker’s <code class="docutils literal notranslate"><span class="pre">RuntimeEnv</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Clients</p></td>
+<td><p>Rust <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code> extension, Python, SQL CLI, Arrow Flight SQL</p></td>
+<td><p>The user’s own <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code>; the planner is registered on it</p></td>
+</tr>
+<tr class="row-even"><td><p>Extension points</p></td>
+<td><p>Logical and physical codecs, query planner, config and runtime producers, executor and scheduler overrides</p></td>
+<td><p>Physical codec, worker and channel resolvers, network boundaries, and event handlers for task counts, routing, and plan rewrites</p></td>
+</tr>
+<tr class="row-odd"><td><p>Operations</p></td>
+<td><p>Event logs and a history server, Prometheus metrics, TUI</p></td>
+<td><p>Distributed <code class="docutils literal notranslate"><span class="pre">EXPLAIN</span> <span class="pre">ANALYZE</span></code>, metrics collection, a TUI console</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="why-ballista-can-t-build-on-datafusion-distributed">
+<h2>Why Ballista can’t build on DataFusion Distributed<a class="headerlink" href="#why-ballista-can-t-build-on-datafusion-distributed" title="Link to this heading">#</a></h2>
+<p>The two projects overlap in one place: how a plan is split into stages and how data moves between them. Everything
+else Ballista provides sits above that layer, and DataFusion Distributed deliberately leaves it out. Its stated goal is
+to remain “a library, not an engine” that is “unopinionated about networking”. Rebuilding Ballista on it would
+therefore replace only the part that Ballista needs to own in order to offer both execution models.</p>
+<p><strong>Ballista’s blocking model needs a scheduler that sees stages.</strong> Recovery in Ballista works because the scheduler
+knows when each stage has completed, where its output lives, and which tasks to re-run when an executor disappears.
+DataFusion Distributed’s coordinator is scoped to a single query and is built around all stages running at once. In
+its default mode it sets up every stage’s tasks before the query’s final stage runs, keeps only the worker addresses
+of a stage once its plan has been sent, and treats a worker failure after routing as a query failure. Its transport is
+pluggable through the <code class="docutils literal notranslate"><span class="pre">WorkerChannel</span></code> trait, and a disk-backed implementation has been suggested as a way to bring
+Ballista’s model to it. A channel can make a producer’s output re-readable, but it cannot decide that a stage has
+finished, keep the plan needed to re-run part of it, or move a task to another worker. Those are coordinator
+responsibilities. Adding them would turn DataFusion Distributed into an engine, against its own design, or leave
+Ballista running its own scheduler on top of a second coordinator.</p>
+<p><strong>Exact statistics come from completed stages.</strong> Ballista’s adaptive planner re-optimizes the remaining plan after
+each stage finishes, using measured row and byte counts. That includes decisions that need a final answer, such as
+removing work below an input that turned out to be empty. DataFusion Distributed’s adaptive execution samples batches
+from running stages to size later ones. Both approaches are sound, but they need different contracts between the
+planner and the exchange. See <a class="reference internal" href="../contributors-guide/shuffle.html#completed-stages-yield-exact-statistics"><span class="std std-ref">Shuffle
+Design</span></a> for more on this distinction.</p>
+<p><strong>The building blocks Ballista would keep are most of Ballista.</strong> These include the executor lifecycle, vcore
+accounting and placement across many jobs, per-task memory pools, multi-partition tasks, the DataFrame cache, the
+clients, the REST API, event logs, and the history server. They would all remain, on top of a dependency whose
+coordination model differs from theirs.</p>
+<p><strong>Ballista’s own APIs would gain a second source of churn.</strong> Users extend Ballista through its codecs, planners, and
+producers, and follow DataFusion’s release cadence. DataFusion Distributed is moving quickly, with four major releases
+so far, and marks <code class="docutils literal notranslate"><span class="pre">WorkerChannel</span></code> as unstable. That is reasonable for a young library, but building Ballista on it
+would pass those changes on to Ballista’s users.</p>
+<p>The reverse does not work either. DataFusion Distributed’s users choose it because it embeds into an existing system
+as an extension of DataFusion, with no scheduler or executor processes to run. Ballista cannot offer that.</p>
+</section>
+<section id="where-the-projects-can-share-work">
+<h2>Where the projects can share work<a class="headerlink" href="#where-the-projects-can-share-work" title="Link to this heading">#</a></h2>
+<p>The overlap is real and likely to grow, as Ballista’s pipelined mode moves into the space DataFusion Distributed
+targets. The most useful place to share work is DataFusion itself. Several DataFusion and Arrow improvements have
+already come from DataFusion Distributed, such as range partitioning that avoids unnecessary shuffles (<a class="reference external" href="https://github.com/apache/datafusion/pull/23184">datafusion#23184</a>,
+<a class="reference external" href="https://github.com/apache/datafusion/pull/24598">datafusion#24598</a>), dynamic filters that can be sent over the network (<a class="reference external" href="https://github.com/apache/datafusion/pull/21807">datafusion#21807</a>, <a class="reference external" href="https://github.com/apache/datafusion/pull/24068">datafusion#24068</a>), and IPC
+and Flight optimizations (<a class="reference external" href="https://github.com/apache/arrow-rs/pull/10044">arrow-rs#10044</a>, <a class="reference external" href="https://github.com/apache/arrow-rs/pull/10273">arrow-rs#10273</a>). Both projects benefit from those. Other shared
+pieces, such as an exchange abstraction or a common way to split a plan into stages, would also be best placed in
+DataFusion, where any distributed engine can use them.</p>
+</section>
+<section id="performance">
+<h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h2>
+<p>The results below compare the two projects on the same hardware and data, with each given the same resources.
+Both use the same query engine, both are open source, and both are improving quickly. Treat the gaps as a snapshot of
+two moving targets rather than a fixed property of either design, and expect them to narrow as each project adopts
+what works in the other.</p>
+<p><strong>Setup.</strong> TPC-H at scale factor 1000, Parquet files compressed with zstd, read from Amazon S3. The tables are
+Hive-partitioned (<code class="docutils literal notranslate"><span class="pre">lineitem</span></code> and <code class="docutils literal notranslate"><span class="pre">orders</span></code> by date), and both projects declared the partition columns so that they
+prune partitions. Kubernetes on AWS, with 32 workers (Ballista executors) of 8 vCPU and 64 GiB each. Each query ran
+twice with no warm-up, so the first, cold run is included in the mean.</p>
+<ul class="simple">
+<li><p><strong>Ballista</strong> was built from <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2657">#2657</a> at commit <code class="docutils literal notranslate"><span class="pre">cb49f30f</span></code> (DataFusion 55.2.0). Each executor ran 8 tasks with a
+memory pool of 70% of its memory, and <code class="docutils literal notranslate"><span class="pre">target_partitions</span></code> was 256. The same image ran the blocking and pipelined
+modes.</p></li>
+<li><p><strong>DataFusion Distributed</strong> was built from <code class="docutils literal notranslate"><span class="pre">main</span></code> at commit <code class="docutils literal notranslate"><span class="pre">90350275</span></code> (DataFusion 55.0.0), using the worker from
+its <code class="docutils literal notranslate"><span class="pre">benchmarks/remote-worker</span></code> crate. Upstream’s worker has an unbounded memory pool, so it was patched to give each
+worker a fair spill pool of 70% of its memory, like Ballista’s executors. A separate 8 vCPU, 32 GiB pod ran the
+coordinator and the final stage of each query. Its settings were otherwise the defaults.</p></li>
+</ul>
+<p>Mean time per query, in seconds:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Query</p></th>
+<th class="head text-right"><p>DataFusion Distributed</p></th>
+<th class="head text-right"><p>Ballista (pipelined)</p></th>
+<th class="head text-right"><p>Ballista (blocking)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Q1</p></td>
+<td class="text-right"><p>8.2</p></td>
+<td class="text-right"><p>13.8</p></td>
+<td class="text-right"><p>14.8</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q2</p></td>
+<td class="text-right"><p>19.3</p></td>
+<td class="text-right"><p>13.5</p></td>
+<td class="text-right"><p>36.3</p></td>
+</tr>
+<tr class="row-even"><td><p>Q3</p></td>
+<td class="text-right"><p>8.3</p></td>
+<td class="text-right"><p>7.3</p></td>
+<td class="text-right"><p>17.9</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q4</p></td>
+<td class="text-right"><p>5.8</p></td>
+<td class="text-right"><p>6.1</p></td>
+<td class="text-right"><p>10.9</p></td>
+</tr>
+<tr class="row-even"><td><p>Q5</p></td>
+<td class="text-right"><p>16.2</p></td>
+<td class="text-right"><p>13.9</p></td>
+<td class="text-right"><p>41.4</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q6</p></td>
+<td class="text-right"><p>1.7</p></td>
+<td class="text-right"><p>1.4</p></td>
+<td class="text-right"><p>1.7</p></td>
+</tr>
+<tr class="row-even"><td><p>Q7</p></td>
+<td class="text-right"><p>18.6</p></td>
+<td class="text-right"><p>18.7</p></td>
+<td class="text-right"><p>35.1</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q8</p></td>
+<td class="text-right"><p>20.9</p></td>
+<td class="text-right"><p>14.1</p></td>
+<td class="text-right"><p>21.6</p></td>
+</tr>
+<tr class="row-even"><td><p>Q9</p></td>
+<td class="text-right"><p>31.7</p></td>
+<td class="text-right"><p>24.2</p></td>
+<td class="text-right"><p>35.8</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q10</p></td>
+<td class="text-right"><p>25.5</p></td>
+<td class="text-right"><p>22.0</p></td>
+<td class="text-right"><p>45.1</p></td>
+</tr>
+<tr class="row-even"><td><p>Q11</p></td>
+<td class="text-right"><p>9.4</p></td>
+<td class="text-right"><p>4.4</p></td>
+<td class="text-right"><p>18.7</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q12</p></td>
+<td class="text-right"><p>5.0</p></td>
+<td class="text-right"><p>4.4</p></td>
+<td class="text-right"><p>10.1</p></td>
+</tr>
+<tr class="row-even"><td><p>Q13</p></td>
+<td class="text-right"><p>6.2</p></td>
+<td class="text-right"><p>5.8</p></td>
+<td class="text-right"><p>10.8</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q14</p></td>
+<td class="text-right"><p>2.9</p></td>
+<td class="text-right"><p>1.4</p></td>
+<td class="text-right"><p>7.0</p></td>
+</tr>
+<tr class="row-even"><td><p>Q15</p></td>
+<td class="text-right"><p>11.5</p></td>
+<td class="text-right"><p>6.9</p></td>
+<td class="text-right"><p>10.6</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q16</p></td>
+<td class="text-right"><p>78.2</p></td>
+<td class="text-right"><p>5.1</p></td>
+<td class="text-right"><p>13.3</p></td>
+</tr>
+<tr class="row-even"><td><p>Q17</p></td>
+<td class="text-right"><p>20.0</p></td>
+<td class="text-right"><p>15.4</p></td>
+<td class="text-right"><p>23.6</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q18</p></td>
+<td class="text-right"><p>30.8</p></td>
+<td class="text-right"><p>35.4</p></td>
+<td class="text-right"><p>55.4</p></td>
+</tr>
+<tr class="row-even"><td><p>Q19</p></td>
+<td class="text-right"><p>8.1</p></td>
+<td class="text-right"><p>7.4</p></td>
+<td class="text-right"><p>12.1</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q20</p></td>
+<td class="text-right"><p>16.6</p></td>
+<td class="text-right"><p>6.3</p></td>
+<td class="text-right"><p>15.6</p></td>
+</tr>
+<tr class="row-even"><td><p>Q21</p></td>
+<td class="text-right"><p>34.6</p></td>
+<td class="text-right"><p>45.9</p></td>
+<td class="text-right"><p>68.6</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q22</p></td>
+<td class="text-right"><p>6.9</p></td>
+<td class="text-right"><p>5.4</p></td>
+<td class="text-right"><p>10.5</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Total</strong></p></td>
+<td class="text-right"><p><strong>386.5</strong></p></td>
+<td class="text-right"><p><strong>278.8</strong></p></td>
+<td class="text-right"><p><strong>517.0</strong></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>What the results show.</strong></p>
+<ul class="simple">
+<li><p>Pipelined Ballista and DataFusion Distributed are close, which is expected of two pipelined engines on the same
+query engine. Ballista was faster on 17 of the 22 queries and DataFusion Distributed on 5 (Q1, Q4, Q7, Q18, and
+Q21). The geometric mean of the per-query ratios favours pipelined Ballista by about 1.4x.</p></li>
+<li><p>Most of the difference in the total is Q16. DataFusion Distributed runs the final <code class="docutils literal notranslate"><span class="pre">COUNT(DISTINCT)</span></code> aggregation and
+anti join of Q16 on the coordinator, over 8 partitions. With the coordinator’s 22.4 GiB memory pool, that stage
+spilled 7.2 GB, and it was the only stage in the run that spilled. Excluding Q16, the geometric mean favours
+pipelined Ballista by about 1.2x.</p></li>
+<li><p>Blocking Ballista was about 1.85x slower than pipelined Ballista in total, which is the latency cost of writing
+every stage’s output to disk before the next stage starts.</p></li>
+</ul>
+<p><strong>Caveats.</strong></p>
+<ul class="simple">
+<li><p>Each query ran only twice, so per-query differences of less than about 10% are within run-to-run variation.</p></li>
+<li><p>The setups are as close as we could make them, but not identical. DataFusion Distributed’s coordinator is an extra
+pod that runs part of each query, while Ballista’s scheduler runs no query work. The two projects were also on
+different patch releases of DataFusion.</p></li>
+<li><p>DataFusion Distributed’s README publishes a comparison in which Ballista is slower than it by a wide margin, on a
+12-node cluster at scale factors up to 100. That comparison was last updated in July 2026 and used Ballista 53.0.0.
+Ballista has had two releases and more than 500 commits since. Those include adaptive query execution enabled by
+default (<a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2315">#2315</a>) and tasks that cover several partitions (<a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2038">#2038</a>). The pipelined mode was not available then.</p></li>
+<li><p>Corrections to either setup are welcome. Please open an issue.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="../contributors-guide/benchmarking/trino.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Trino Benchmark Configuration</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="../community/communication.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Communication</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#execution-models">Execution models</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#comparison">Comparison</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-ballista-can-t-build-on-datafusion-distributed">Why Ballista can’t build on DataFusion Distributed</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-the-projects-can-share-work">Where the projects can share work</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/about/datafusion-distributed-comparison.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../_sources/about/datafusion-distributed-comparison.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=18bd87630a240e9c25be"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=18bd87630a240e9c25be"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion Ballista, Arrow Ballista, Apache, the Apache feather logo, and the Apache DataFusion Ballista project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
