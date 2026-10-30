@@ -646,6 +646,11 @@ standard DataFusion settings.</p>
 <td><p>number of available CPU cores</p></td>
 <td><p>Number of vcores advertised by the standalone in-process executor.</p></td>
 </tr>
+<tr class="row-even"><td><p>ballista.standalone.task_scheduling_policy</p></td>
+<td><p>Utf8</p></td>
+<td><p>pull-staged</p></td>
+<td><p>Task scheduling policy of a standalone in-process cluster: <code class="docutils literal notranslate"><span class="pre">pull-staged</span></code>, where the executor polls the scheduler for work, or <code class="docutils literal notranslate"><span class="pre">push-staged</span></code>, where the scheduler pushes tasks to the executor.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
