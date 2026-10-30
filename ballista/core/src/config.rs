@@ -32,6 +32,9 @@ use std::{collections::HashMap, fmt::Display};
 pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
 /// Configuration key for standalone processing parallelism.
 pub const BALLISTA_STANDALONE_PARALLELISM: &str = "ballista.standalone.parallelism";
+/// Configuration key for the task scheduling policy of a standalone cluster.
+pub const BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY: &str =
+    "ballista.standalone.task_scheduling_policy";
 /// Configuration key for disabling default cache extension node.
 pub const BALLISTA_CACHE_NOOP: &str = "ballista.cache.noop";
 /// Configuration key for maximum concurrent shuffle read requests.
@@ -252,6 +255,9 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Number of vcores advertised by the standalone in-process executor.".to_string(),
                          DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string()))
             .with_doc_default("number of available CPU cores"),
+        ConfigEntry::new(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY.to_string(),
+                         "Task scheduling policy of a standalone in-process cluster: `pull-staged`, where the executor polls the scheduler for work, or `push-staged`, where the scheduler pushes tasks to the executor.".to_string(),
+                         DataType::Utf8, Some(TaskSchedulingPolicy::PullStaged.to_string())),
         ConfigEntry::new(BALLISTA_CACHE_NOOP.to_string(),
                          "When true (the default), DataFrame::cache() does nothing. When false, the first action on a cached DataFrame materializes it in the cluster, and later actions read it back instead of recomputing it".to_string(),
                          DataType::Boolean,
@@ -746,6 +752,25 @@ impl BallistaConfig {
     /// Returns the standalone processing parallelism level.
     pub fn standalone_parallelism(&self) -> usize {
         self.get_usize_setting(BALLISTA_STANDALONE_PARALLELISM)
+    }
+
+    /// Returns the task scheduling policy of a standalone in-process cluster.
+    pub fn standalone_task_scheduling_policy(
+        &self,
+    ) -> std::result::Result<TaskSchedulingPolicy, DataFusionError> {
+        match self
+            .get_string_setting(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY)
+            .trim()
+            .to_lowercase()
+            .as_str()
+        {
+            "pull-staged" => Ok(TaskSchedulingPolicy::PullStaged),
+            "push-staged" => Ok(TaskSchedulingPolicy::PushStaged),
+            other => Err(DataFusionError::Configuration(format!(
+                "Got an invalid standalone task scheduling policy {other}: \
+                Valid options are: pull-staged and push-staged"
+            ))),
+        }
     }
 
     /// Deprecated alias for [`Self::standalone_parallelism`].
@@ -1260,6 +1285,46 @@ mod tests {
         let config = BallistaConfig::default();
         assert_eq!(16777216, config.grpc_client_max_message_size());
         Ok(())
+    }
+
+    #[test]
+    fn standalone_task_scheduling_policy_defaults_to_pull_staged() {
+        use crate::extension::SessionConfigExt;
+        use datafusion::prelude::SessionConfig;
+
+        let mut config = SessionConfig::new_with_ballista();
+        assert!(matches!(
+            config
+                .ballista_config()
+                .standalone_task_scheduling_policy()
+                .unwrap(),
+            TaskSchedulingPolicy::PullStaged
+        ));
+
+        config
+            .options_mut()
+            .set(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY, "Push-Staged")
+            .unwrap();
+        assert!(matches!(
+            config
+                .ballista_config()
+                .standalone_task_scheduling_policy()
+                .unwrap(),
+            TaskSchedulingPolicy::PushStaged
+        ));
+
+        config
+            .options_mut()
+            .set(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY, "eager")
+            .unwrap();
+        let err = config
+            .ballista_config()
+            .standalone_task_scheduling_policy()
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid standalone task scheduling policy eager")
+        );
     }
 
     #[test]

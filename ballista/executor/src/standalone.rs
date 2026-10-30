@@ -39,9 +39,11 @@ use ballista_core::{ConfigProducer, RuntimeProducer};
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use log::info;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tonic::transport::Channel;
+use tonic::transport::server::TcpIncoming;
 
 /// Creates new standalone executor based on
 /// session_state provided.
@@ -84,7 +86,11 @@ pub async fn new_standalone_executor_from_state(
 /// by accepting custom producers for session config, runtime environment,
 /// codec, and function registry.
 ///
-/// The executor binds to a random available port on localhost.
+/// The executor binds to a random available port on localhost. It polls the
+/// scheduler for work, unless `ballista.standalone.task_scheduling_policy` is
+/// `push-staged`: then it registers with the scheduler and takes the tasks the
+/// scheduler pushes to it, and expects a standalone scheduler started from the
+/// same configuration.
 pub async fn new_standalone_executor_from_builder(
     scheduler: SchedulerGrpcClient<Channel>,
     vcores: usize,
@@ -98,12 +104,35 @@ pub async fn new_standalone_executor_from_builder(
     let address = listener.local_addr()?;
     info!("Ballista v{BALLISTA_VERSION} Rust Executor listening on {address:?}");
 
+    let config = config_producer();
+    let max_message_size = config.ballista_grpc_client_max_message_size();
+    let push_staged = matches!(
+        config
+            .ballista_config()
+            .standalone_task_scheduling_policy()?,
+        ballista_core::config::TaskSchedulingPolicy::PushStaged
+    );
+
+    // A push-staged executor serves the scheduler's task launches on a gRPC
+    // port of its own. Bind it now and keep it bound until the server takes it
+    // over, so no other port-0 bind in this process can be handed the same
+    // number in between.
+    let grpc_listener = if push_staged {
+        Some(TcpListener::bind("127.0.0.1:0").await?)
+    } else {
+        None
+    };
+    let grpc_port = match &grpc_listener {
+        Some(listener) => listener.local_addr()?.port(),
+        // TODO Make it configurable
+        None => 50020,
+    };
+
     let executor_meta = ExecutorRegistration {
         id: new_instance_id(), // assign this executor a unique ID
         host: Some("localhost".to_string()),
         port: address.port() as u32,
-        // TODO Make it configurable
-        grpc_port: 50020,
+        grpc_port: grpc_port as u32,
         specification: Some(
             ExecutorSpecification::default()
                 .with_vcores(vcores as u32)
@@ -112,9 +141,6 @@ pub async fn new_standalone_executor_from_builder(
         os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
         ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
     };
-
-    let config = config_producer();
-    let max_message_size = config.ballista_grpc_client_max_message_size();
 
     let work_dir = TempDir::new()?.path().to_str().unwrap().to_string();
 
@@ -144,14 +170,56 @@ pub async fn new_standalone_executor_from_builder(
             )),
     );
 
-    tokio::spawn(execution_loop::poll_loop(
-        scheduler,
-        executor,
-        codec,
-        None,
-        None,
-        crate::health::ExecutorHealth::new(),
-    ));
+    if let Some(grpc_listener) = grpc_listener {
+        let process_config = crate::executor_process::ExecutorProcessConfig {
+            bind_host: "127.0.0.1".to_owned(),
+            port: address.port(),
+            grpc_port,
+            vcores,
+            task_scheduling_policy:
+                ballista_core::config::TaskSchedulingPolicy::PushStaged,
+            grpc_max_decoding_message_size: max_message_size as u32,
+            grpc_max_encoding_message_size: max_message_size as u32,
+            ..Default::default()
+        };
+        let shutdown = crate::shutdown::ShutdownNotifier::new();
+        let (stop_send, stop_receive) = tokio::sync::mpsc::channel::<bool>(10);
+        let incoming = TcpIncoming::from(grpc_listener)
+            .with_nodelay(Some(true))
+            .with_keepalive(Some(Duration::from_secs(
+                process_config.grpc_server_config.tcp_keepalive_seconds,
+            )));
+        info!(
+            "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on 127.0.0.1:{grpc_port}"
+        );
+        crate::executor_server::startup_with_incoming(
+            scheduler,
+            Arc::new(process_config),
+            executor,
+            codec,
+            stop_send,
+            &shutdown,
+            crate::health::ExecutorHealth::new(),
+            incoming,
+        )
+        .await?;
+        // The executor's loops stop when the notifier is dropped, and its
+        // `stop_executor` handler panics if the stop channel's receiver is
+        // dropped, so keep both for the life of the runtime.
+        tokio::spawn(async move {
+            let _keep_alive = (shutdown, stop_receive);
+            futures::future::pending::<()>().await
+        });
+    } else {
+        tokio::spawn(execution_loop::poll_loop(
+            scheduler,
+            executor,
+            codec,
+            None,
+            None,
+            crate::health::ExecutorHealth::new(),
+        ));
+    }
     Ok(())
 }
 

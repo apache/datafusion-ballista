@@ -31,6 +31,7 @@ use tokio::sync::mpsc;
 
 use log::{debug, error, info, warn};
 use tonic::transport::Channel;
+use tonic::transport::server::TcpIncoming;
 use tonic::{Request, Response, Status};
 
 use ballista_core::error::BallistaError;
@@ -106,6 +107,43 @@ struct CuratorTaskStatus {
 ///
 /// Returns a handle to the server task that can be awaited for completion.
 pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
+    scheduler: SchedulerGrpcClient<Channel>,
+    config: Arc<ExecutorProcessConfig>,
+    executor: Arc<Executor>,
+    codec: BallistaCodec<T, U>,
+    stop_send: mpsc::Sender<bool>,
+    shutdown_noti: &ShutdownNotifier,
+    health: ExecutorHealth,
+) -> Result<ServerHandle, BallistaError> {
+    // The listening socket is bound here rather than inside the spawned task,
+    // because registration with the scheduler makes the scheduler dial this
+    // port back to check connectivity. Binding lazily inside the server future
+    // let that callback lose the race and get ECONNREFUSED, which fails
+    // registration and takes the executor down with it.
+    let addr = format!("{}:{}", config.bind_host, executor.metadata.grpc_port);
+    let addr = addr.parse().unwrap();
+    let incoming = create_grpc_server_incoming(addr, &config.grpc_server_config)?;
+    info!("Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {addr:?}");
+    startup_with_incoming(
+        scheduler,
+        config,
+        executor,
+        codec,
+        stop_send,
+        shutdown_noti,
+        health,
+        incoming,
+    )
+    .await
+}
+
+/// Like [`startup`], but serves the executor gRPC service on `incoming`, a
+/// socket the caller has already bound to `executor.metadata.grpc_port`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn startup_with_incoming<
+    T: 'static + AsLogicalPlan,
+    U: 'static + AsExecutionPlan,
+>(
     mut scheduler: SchedulerGrpcClient<Channel>,
     config: Arc<ExecutorProcessConfig>,
     executor: Arc<Executor>,
@@ -113,6 +151,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     stop_send: mpsc::Sender<bool>,
     shutdown_noti: &ShutdownNotifier,
     health: ExecutorHealth,
+    incoming: TcpIncoming,
 ) -> Result<ServerHandle, BallistaError> {
     let channel_buf_size = executor.vcores * 50;
     let (tx_task, rx_task) = mpsc::channel::<CuratorTaskDefinition>(channel_buf_size);
@@ -135,23 +174,9 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         health,
     );
 
-    // 1. Start executor grpc service
-    //
-    // The listening socket is bound here rather than inside the spawned task,
-    // because step 2 registers with the scheduler and the scheduler dials this
-    // port back to check connectivity. Binding lazily inside the server future
-    // let that callback lose the race and get ECONNREFUSED, which fails
-    // registration and takes the executor down with it.
+    // 1. Start executor grpc service on the already-bound socket
     let server = {
-        let executor_meta = executor.metadata.clone();
-        let addr = format!("{}:{}", config.bind_host, executor_meta.grpc_port);
-        let addr = addr.parse().unwrap();
         let grpc_server_config = config.grpc_server_config.clone();
-
-        let incoming = create_grpc_server_incoming(addr, &grpc_server_config)?;
-        info!(
-            "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {addr:?}"
-        );
         let server = ExecutorGrpcServer::new(executor_server.clone())
             .max_encoding_message_size(config.grpc_max_encoding_message_size as usize)
             .max_decoding_message_size(config.grpc_max_decoding_message_size as usize);
