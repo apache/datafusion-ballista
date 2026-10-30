@@ -40,12 +40,12 @@ homepage = "https://datafusion.apache.org/ballista/"
 license = "Apache-2.0"
 repository = "https://github.com/apache/datafusion-ballista"
 # we should try to follow datafusion version 
-rust-version = "1.94.0"
+rust-version = "1.95.0"
 version = "55.0.0"
 
 [workspace.dependencies]
-arrow = { version = "59.2.0", features = ["ipc_compression"] }
-arrow-flight = { version = "59.2.0", features = ["flight-sql-experimental"] }
+arrow = { version = "60.0.0", features = ["ipc_compression"] }
+arrow-flight = { version = "60.0.0", features = ["flight-sql"] }
 ballista = { path = "ballista/client", version = "55.0.0" }
 ballista-api-types = { path = "ballista/api-types", version = "55.0.0" }
 ballista-core = { path = "ballista/core", version = "55.0.0" }
@@ -56,21 +56,20 @@ ballista-result-service = { path = "ballista/result-service", version = "55.0.0"
 ballista-scheduler = { path = "ballista/scheduler", version = "55.0.0" }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
-# Keep these as minor-version requirements rather than exact patch pins so a
-# DataFusion patch release can be picked up with a lockfile bump alone.
-# Cargo.lock records the exact patch version CI builds against.
-datafusion = "55"
-datafusion-cli = "55"
-datafusion-functions-aggregate-common = "55"
-datafusion-proto = "55"
-datafusion-proto-common = "55"
-datafusion-substrait = "55"
+# Pinned to a commit on DataFusion's main branch while preparing for the
+# DataFusion 56 upgrade. Switch back to crates.io versions once 56 is released.
+datafusion = { git = "https://github.com/apache/datafusion", rev = "611311cd7ef50b40dd33f88ec527e2913de8e3d1" }
+datafusion-cli = { git = "https://github.com/apache/datafusion", rev = "611311cd7ef50b40dd33f88ec527e2913de8e3d1" }
+datafusion-functions-aggregate-common = { git = "https://github.com/apache/datafusion", rev = "611311cd7ef50b40dd33f88ec527e2913de8e3d1" }
+datafusion-proto = { git = "https://github.com/apache/datafusion", rev = "611311cd7ef50b40dd33f88ec527e2913de8e3d1" }
+datafusion-proto-common = { git = "https://github.com/apache/datafusion", rev = "611311cd7ef50b40dd33f88ec527e2913de8e3d1" }
+datafusion-substrait = { git = "https://github.com/apache/datafusion", rev = "611311cd7ef50b40dd33f88ec527e2913de8e3d1" }
 
 ctor = { version = "1.0" }
 insta = "1.47"
 itertools = "0.15"
 mimalloc = { version = "0.1" }
-object_store = "0.13.2"
+object_store = "0.14.2"
 ordered-float = "5"
 pastey = "0.2.3"
 prost = "0.14"

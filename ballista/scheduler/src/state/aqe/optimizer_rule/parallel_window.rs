@@ -562,7 +562,7 @@ mod tests {
     async fn no_rewrite_on_a_key_without_an_encoding() -> datafusion::common::Result<()> {
         let plan = plan(
             "SELECT sum(v2) OVER (ORDER BY name \
-                RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) \
+                RANGE BETWEEN CURRENT ROW AND CURRENT ROW) \
              FROM large",
         )
         .await?;

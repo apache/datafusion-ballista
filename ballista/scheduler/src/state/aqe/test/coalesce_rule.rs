@@ -336,14 +336,13 @@ async fn should_attach_coalesce_to_both_sides_of_hash_join()
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=false
-      ProjectionExec: expr=[a@0 as a, b@2 as b]
-        SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)]
-          SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
-              DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
-          SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=1, stage_resolved=true, coalesce=2 of 8
-              DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+      SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)], projection=[a@0, b@2]
+        SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
+            DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+        SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=1, stage_resolved=true, coalesce=2 of 8
+            DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
     ");
 
     Ok(())
@@ -387,19 +386,17 @@ async fn should_attach_coalesce_to_all_three_legs_of_two_hash_joins()
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=true, plan_id=3, stage_id=3, stage_resolved=false
-      ProjectionExec: expr=[a@0 as a, b@2 as b, c@3 as c]
-        SortMergeJoinExec: join_type=Inner, on=[(c@1, c@0)]
-          ProjectionExec: expr=[a@0 as a, c@1 as c, b@2 as b]
-            SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)]
-              SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-                ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
-                  DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
-              SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-                ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=1, stage_resolved=true, coalesce=2 of 8
-                  DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
-          SortExec: expr=[c@0 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([c@0], 8), plan_id=2, stage_id=2, stage_resolved=true, coalesce=2 of 8
+      SortMergeJoinExec: join_type=Inner, on=[(c@1, c@0)], projection=[a@0, b@2, c@3]
+        SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)], projection=[a@0, c@1, b@2]
+          SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
+            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
               DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+          SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
+            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=1, stage_resolved=true, coalesce=2 of 8
+              DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+        SortExec: expr=[c@0 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([c@0], 8), plan_id=2, stage_id=2, stage_resolved=true, coalesce=2 of 8
+            DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
     ");
 
     Ok(())
@@ -447,14 +444,13 @@ async fn should_attach_coalesce_to_both_sides_of_sort_merge_join()
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=false
-      ProjectionExec: expr=[a@0 as a, b@2 as b]
-        SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)]
-          SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
-              DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
-          SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=1, stage_resolved=true, coalesce=2 of 8
-              DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+      SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)], projection=[a@0, b@2]
+        SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
+            DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+        SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=1, stage_resolved=true, coalesce=2 of 8
+            DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
     ");
 
     Ok(())

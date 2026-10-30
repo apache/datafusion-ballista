@@ -125,10 +125,10 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                     log::debug!("create_physical_plan - handling empty exec");
                     Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
                 }
-                LogicalPlan::DescribeTable(_) => {
-                    // The plan already carries the table schema resolved from
-                    // this context's catalog, and it cannot be serialized, so
-                    // it is planned here rather than on the cluster.
+                LogicalPlan::Show(_) => {
+                    // SHOW and DESCRIBE statements read this context's catalog
+                    // and cannot be serialized, so they are planned here
+                    // rather than on the cluster.
                     self.local_planner
                         .create_physical_plan(logical_plan, session_state)
                         .await
@@ -240,16 +240,6 @@ mod test {
     }
 
     #[tokio::test]
-    async fn should_detect_show_table_as_local_plan() -> Result<()> {
-        let ctx = context();
-        let df = ctx.sql("SHOW TABLES").await?;
-
-        assert!(scans_only_information_schema(df.logical_plan())?);
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn should_detect_select_from_information_schema_as_local_plan() -> Result<()> {
         let ctx = context();
         let df = ctx.sql("SELECT * FROM information_schema.df_settings WHERE NAME LIKE 'ballista%'").await?;
@@ -312,29 +302,36 @@ mod test {
     }
 
     #[tokio::test]
-    async fn should_plan_describe_table_locally() -> Result<()> {
+    async fn should_plan_show_statements_locally() -> Result<()> {
         let ctx = context();
         ctx.sql("CREATE TABLE tt (c0 INT, c1 INT)")
             .await?
             .show()
             .await?;
-        let describe_df = ctx.sql("DESCRIBE tt").await?;
         let planner = BallistaQueryPlanner::<LogicalPlanNode>::new(
             "http://localhost:50050".to_string(),
             BallistaConfig::default(),
         );
-        let plan = planner
-            .create_physical_plan(describe_df.logical_plan(), &ctx.state())
-            .await?;
 
-        assert!(matches!(
-            describe_df.logical_plan(),
-            LogicalPlan::DescribeTable(_)
-        ));
-        assert!(
-            plan.downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
-                .is_none()
-        );
+        for sql in [
+            "DESCRIBE tt",
+            "SHOW TABLES",
+            "SHOW COLUMNS FROM tt",
+            "SHOW CREATE TABLE tt",
+            "SHOW ALL",
+        ] {
+            let df = ctx.sql(sql).await?;
+            let plan = planner
+                .create_physical_plan(df.logical_plan(), &ctx.state())
+                .await?;
+
+            assert!(matches!(df.logical_plan(), LogicalPlan::Show(_)), "{sql}");
+            assert!(
+                plan.downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
+                    .is_none(),
+                "{sql}"
+            );
+        }
         Ok(())
     }
 

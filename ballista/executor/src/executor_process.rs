@@ -1890,6 +1890,8 @@ mod spill_limit_tests {
             with_max_temp_directory_size(with_spill_dir(producer, spill_dir), 2048);
         let runtime = producer(&SessionConfig::new()).unwrap();
 
+        // The disk manager creates its directories on the first spill file.
+        let _spill_file = runtime.disk_manager.create_tmp_file("test").unwrap();
         let paths = runtime.disk_manager.temp_dir_paths();
         assert!(!paths.is_empty());
         assert!(
