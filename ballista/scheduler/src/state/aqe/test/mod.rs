@@ -30,6 +30,8 @@ mod plan_to_stages;
 /// Regression tests for range-repartition planning end-to-end
 /// through `AdaptivePlanner` (DER → routing park → filter injection).
 mod range_repartition;
+/// Functional tests for the OptimizeSkewedJoinRule end-to-end through the planner
+mod skew_join_rule;
 /// Multi-pass coverage for staging a join's build side before deciding the join
 mod stage_build_side;
 /// A table whose statistics are declared rather than measured

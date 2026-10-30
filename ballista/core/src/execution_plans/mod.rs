@@ -65,7 +65,9 @@ pub use runtime_stats::{
     log_merged_runtime_stats, merge_reports as merge_runtime_stats_reports,
     repartition_routing_expr,
 };
-pub use shuffle_reader::{CoalescePlan, PartitionGroup, ShuffleReaderExec};
+pub use shuffle_reader::{
+    CoalescePlan, PartitionGroup, ShuffleReaderExec, SkewJoinPlan, SkewJoinShard,
+};
 pub use shuffle_reader::{stats_for_partition, stats_for_partitions};
 pub use shuffle_writer::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;
 pub use shuffle_writer::ShuffleWriterExec;
