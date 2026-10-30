@@ -73,11 +73,11 @@ pub async fn new_standalone_scheduler_from_state(
 
 /// Creates a standalone scheduler with custom session builder, config producer, and codec.
 ///
-/// The scheduler waits for executors to poll it for work, unless the
-/// configuration asks for pipelined execution (`ballista.execution.mode =
-/// pipelined`), whose jobs must be placed all at once: then it pushes tasks to
-/// executors, which a standalone executor started from the same configuration
-/// supports.
+/// The scheduler waits for executors to poll it for work, unless
+/// `ballista.standalone.task_scheduling_policy` is `push-staged` or the
+/// configuration asks for pipelined execution: then it pushes tasks to
+/// executors, which a standalone executor started from the same
+/// configuration supports.
 ///
 /// Returns the socket address the scheduler is listening on.
 pub async fn new_standalone_scheduler_with_builder(
@@ -86,13 +86,9 @@ pub async fn new_standalone_scheduler_with_builder(
     codec: BallistaCodec,
 ) -> Result<SocketAddr> {
     let config = config_producer();
-    let policy = if config.ballista_config().execution_mode()?
-        == ballista_core::config::ExecutionMode::Pipelined
-    {
-        ballista_core::config::TaskSchedulingPolicy::PushStaged
-    } else {
-        ballista_core::config::TaskSchedulingPolicy::PullStaged
-    };
+    let policy = config
+        .ballista_config()
+        .standalone_task_scheduling_policy()?;
 
     // Let the OS assign a random, free port. Bound before the scheduler is
     // built so the scheduler can advertise its real address: push-staged
