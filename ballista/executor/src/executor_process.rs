@@ -673,16 +673,30 @@ async fn start_executor_process_inner(
                         }
                     }
 
-                    match endpoint.connect().await {
-                        Ok(connection) => {
+                    // Bound each attempt by the overall deadline as well, so a
+                    // scheduler that accepts the TCP connection but never answers
+                    // cannot hold the executor past it for the whole gRPC connect
+                    // timeout.
+                    match time::timeout_at(
+                        time::Instant::from_std(deadline),
+                        endpoint.connect(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(connection)) => {
                             info!("Connected to scheduler at {scheduler_url}");
                             x = Some(connection);
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             warn!(
                                 "Failed to connect to scheduler at {scheduler_url} ({e}); retrying ..."
                             );
                             tokio::time::sleep(time::Duration::from_millis(500)).await;
+                        }
+                        Err(_) => {
+                            warn!(
+                                "Connecting to scheduler at {scheduler_url} did not finish before the deadline"
+                            );
                         }
                     }
                 }
@@ -1266,6 +1280,53 @@ mod tests {
                 .contains("Timed out attempting to connect to scheduler"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn scheduler_connect_timeout_bounds_a_hanging_connect() {
+        // Simulate a scheduler host that drops packets: a listener with a
+        // backlog of one whose accept queue is already full. Further SYNs are
+        // dropped, so a connect attempt to it hangs until the gRPC connect
+        // timeout (20s by default) unless the deadline bounds it.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listener = socket.listen(1).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut queued = Vec::new();
+        for _ in 0..8 {
+            match tokio::time::timeout(
+                Duration::from_millis(200),
+                tokio::net::TcpStream::connect(addr),
+            )
+            .await
+            {
+                Ok(Ok(stream)) => queued.push(stream),
+                _ => break,
+            }
+        }
+
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port: addr.port(),
+            scheduler_connect_timeout_seconds: 1,
+            ..ExecutorProcessConfig::default()
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::start_executor_process(config),
+        )
+        .await
+        .expect("a hanging connect ran past scheduler_connect_timeout_seconds");
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Timed out attempting to connect to scheduler"),
+            "unexpected error: {err}"
+        );
+        drop(queued);
+        drop(listener);
     }
 
     #[test]
