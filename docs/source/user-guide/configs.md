@@ -173,6 +173,9 @@ mode, in which every task of a job is placed up front and stages stream data
 to each other instead of exchanging shuffle files. The scheduler does not run
 pipelined jobs yet.
 
+See the [pipelined execution guide](pipelined-execution.md) for when to use
+the mode and how a pipelined job runs.
+
 <!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.execution.,ballista.pipelined. -->
 
 <!-- prettier-ignore -->
