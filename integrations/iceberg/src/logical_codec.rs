@@ -34,7 +34,7 @@ use iceberg_datafusion::{IcebergCatalogTableProvider, IcebergStaticTableProvider
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::PinnedTable;
-use crate::wire::{self, Frame, TAG_DELEGATED, TableWire};
+use crate::wire::{self, Frame, TableWire};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ProviderWire {
@@ -129,7 +129,6 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                 "Iceberg metadata table {table_ref} isn't supported on Ballista yet"
             );
         } else {
-            buf.push(TAG_DELEGATED);
             return self.inner.try_encode_table_provider(table_ref, node, buf);
         };
         wire::encode(buf, &payload)

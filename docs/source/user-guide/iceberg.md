@@ -112,6 +112,91 @@ keeps each task's plan small.
 Only the node that plans a query talks to a catalog: the client, or the
 scheduler for SQL clients. Executors never need catalog configuration.
 
+## Combining with other table formats
+
+The Iceberg codecs wrap the codecs a session already has, so one query can
+read Iceberg tables alongside tables of another format, such as Delta or Hudi,
+whose codecs are maintained elsewhere. Any codec that follows the same
+convention can be stacked with these in any order:
+
+1. **Wrap an inner codec.** Take the session's existing codec in the
+   constructor rather than Ballista's default, and pass it everything that
+   isn't yours.
+2. **Prefix your own bytes with a unique name.** Iceberg payloads start with
+   `iceberg`. Choose a name for your format, such as `delta`, that no other
+   codec uses and that doesn't start another codec's name.
+3. **Pass everything else through untouched.** When encoding something that
+   isn't yours, write only what the inner codec writes, without adding a
+   marker. When decoding, if the bytes don't start with your prefix, hand all
+   of them to the inner codec.
+
+A logical codec for a hypothetical Delta integration would look like this:
+
+```rust
+/// Rule 2: the name that starts every payload this codec writes.
+const PREFIX: &[u8] = b"delta";
+
+#[derive(Debug)]
+pub struct DeltaLogicalCodec {
+    inner: Arc<dyn LogicalExtensionCodec>,
+}
+
+impl DeltaLogicalCodec {
+    /// Rule 1: wrap whatever codec the session already has.
+    pub fn new(inner: Arc<dyn LogicalExtensionCodec>) -> Self {
+        Self { inner }
+    }
+}
+
+impl LogicalExtensionCodec for DeltaLogicalCodec {
+    fn try_encode_table_provider(
+        &self,
+        table_ref: &TableReference,
+        node: Arc<dyn TableProvider>,
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        let Some(table) = node.downcast_ref::<DeltaTableProvider>() else {
+            // Rule 3: not ours, so write only what the inner codec writes.
+            return self.inner.try_encode_table_provider(table_ref, node, buf);
+        };
+        buf.extend_from_slice(PREFIX);
+        encode_delta_table(table, buf)
+    }
+
+    fn try_decode_table_provider(
+        &self,
+        buf: &[u8],
+        table_ref: &TableReference,
+        schema: SchemaRef,
+        ctx: &TaskContext,
+    ) -> Result<Arc<dyn TableProvider>> {
+        match buf.strip_prefix(PREFIX) {
+            Some(payload) => decode_delta_table(payload, schema),
+            // Rule 3: not ours, so hand over every byte unchanged.
+            None => self.inner.try_decode_table_provider(buf, table_ref, schema, ctx),
+        }
+    }
+
+    // Every other method forwards to `self.inner`, for example:
+    fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {
+        self.inner.try_decode_udf(name, buf)
+    }
+    // ...
+}
+```
+
+A physical codec follows the same pattern in `try_encode` and `try_decode`
+for its scan. Because each codec only claims bytes with its own prefix, the
+codecs can be stacked in either order:
+
+```rust
+let logical = IcebergLogicalCodec::new(Arc::new(DeltaLogicalCodec::new(
+    Arc::new(BallistaLogicalExtensionCodec::default()),
+)));
+```
+
+Every node still needs every codec that a query's tables use.
+
 ## Limitations
 
 - **Reads only.** `INSERT INTO` an Iceberg table fails with "isn't supported

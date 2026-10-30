@@ -21,7 +21,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::sync::{Arc, LazyLock, Mutex};
 
-use datafusion::common::{DataFusionError, exec_datafusion_err, exec_err};
+use datafusion::common::{DataFusionError, exec_datafusion_err};
 use iceberg::io::FileIO;
 use iceberg::spec::{TableMetadata, TableMetadataRef};
 use iceberg::table::Table;
@@ -162,18 +162,18 @@ impl TableWire {
     }
 }
 
-/// Leads a blob that belongs to the inner codec.
-pub(crate) const TAG_DELEGATED: u8 = 0;
-/// Leads a blob that belongs to this crate, JSON-encoded. Also the version of
-/// that JSON: a change that older decoders can't read takes the next tag.
-pub(crate) const TAG_ICEBERG: u8 = 1;
+/// Leads a blob that belongs to this crate, JSON-encoded. Any other blob
+/// belongs to the inner codec and passes through untouched, so codecs for
+/// other formats can be stacked in any order, as long as each has its own
+/// prefix.
+const PREFIX: &[u8] = b"iceberg";
 
 /// Appends `payload` to `buf` as an Iceberg blob.
 pub(crate) fn encode<T: Serialize>(
     buf: &mut Vec<u8>,
     payload: &T,
 ) -> Result<(), DataFusionError> {
-    buf.push(TAG_ICEBERG);
+    buf.extend_from_slice(PREFIX);
     serde_json::to_writer(buf, payload).map_err(json_err)
 }
 
@@ -183,20 +183,15 @@ pub(crate) enum Frame<'a, T> {
     Delegated(&'a [u8]),
 }
 
-/// Splits `buf` by its leading tag, decoding an Iceberg payload as `T`.
+/// Decodes `buf` as `T` if it has this crate's prefix.
 pub(crate) fn decode<T: DeserializeOwned>(
     buf: &[u8],
 ) -> Result<Frame<'_, T>, DataFusionError> {
-    match buf.split_first() {
-        Some((&TAG_ICEBERG, rest)) => serde_json::from_slice(rest)
+    match buf.strip_prefix(PREFIX) {
+        Some(rest) => serde_json::from_slice(rest)
             .map(Frame::Iceberg)
             .map_err(|e| exec_datafusion_err!("invalid ballista-iceberg payload: {e}")),
-        Some((&TAG_DELEGATED, rest)) => Ok(Frame::Delegated(rest)),
-        Some((tag, _)) => exec_err!(
-            "unknown ballista-iceberg codec tag {tag}: was the plan encoded by \
-             another version of ballista-iceberg?"
-        ),
-        None => exec_err!("empty ballista-iceberg codec buffer"),
+        None => Ok(Frame::Delegated(buf)),
     }
 }
 

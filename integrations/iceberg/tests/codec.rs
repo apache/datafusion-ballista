@@ -267,7 +267,7 @@ mod other_nodes {
         let mut buf = Vec::new();
         let plan = Arc::new(EmptyExec::new(schema.clone()));
         physical.try_encode(plan, &mut buf, &DefaultPhysicalProtoConverter {})?;
-        assert_eq!(buf, b"\0inner");
+        assert_eq!(buf, b"inner");
         let decoded =
             physical.try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})?;
         assert_eq!(
@@ -280,7 +280,7 @@ mod other_nodes {
         let mut buf = Vec::new();
         let provider = Arc::new(EmptyTable::new(schema.clone()));
         logical.try_encode_table_provider(&table, provider, &mut buf)?;
-        assert_eq!(buf, b"\0inner");
+        assert_eq!(buf, b"inner");
         let decoded =
             logical.try_decode_table_provider(&buf, &table, schema.clone(), &ctx)?;
         assert_eq!(
@@ -292,31 +292,17 @@ mod other_nodes {
     }
 
     #[test]
-    fn should_reject_malformed_buffers() {
-        let codec = IcebergPhysicalCodec::new(Arc::new(Inner));
-        let decode = |buf: &[u8]| {
-            codec
-                .try_decode(
-                    buf,
-                    &[],
-                    &TaskContext::default(),
-                    &DefaultPhysicalProtoConverter {},
-                )
-                .unwrap_err()
-                .to_string()
-        };
-
+    fn should_reject_malformed_payload() {
+        let err = IcebergPhysicalCodec::new(Arc::new(Inner))
+            .try_decode(
+                b"iceberginner",
+                &[],
+                &TaskContext::default(),
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap_err();
         assert_eq!(
-            decode(b""),
-            "Execution error: empty ballista-iceberg codec buffer"
-        );
-        assert_eq!(
-            decode(b"\x07inner"),
-            "Execution error: unknown ballista-iceberg codec tag 7: was the plan \
-             encoded by another version of ballista-iceberg?"
-        );
-        assert_eq!(
-            decode(b"\x01inner"),
+            err.to_string(),
             "Execution error: invalid ballista-iceberg payload: expected value at line 1 \
              column 1"
         );
