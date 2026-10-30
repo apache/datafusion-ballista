@@ -34,7 +34,7 @@ use iceberg_datafusion::{IcebergCatalogTableProvider, IcebergStaticTableProvider
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::PinnedTable;
-use crate::wire::{self, Frame, TableWire};
+use crate::wire::{self, TableWire};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ProviderWire {
@@ -86,13 +86,10 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
         schema: SchemaRef,
         ctx: &TaskContext,
     ) -> Result<Arc<dyn TableProvider>> {
-        let ProviderWire { table, snapshot_id } = match wire::decode(buf)? {
-            Frame::Iceberg(provider) => provider,
-            Frame::Delegated(rest) => {
-                return self
-                    .inner
-                    .try_decode_table_provider(rest, table_ref, schema, ctx);
-            }
+        let Some(ProviderWire { table, snapshot_id }) = wire::decode(buf)? else {
+            return self
+                .inner
+                .try_decode_table_provider(buf, table_ref, schema, ctx);
         };
         Ok(Arc::new(PinnedTable {
             table: table.load()?,

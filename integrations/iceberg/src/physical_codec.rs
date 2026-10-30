@@ -36,7 +36,7 @@ use iceberg::expr::Predicate;
 use iceberg_datafusion::read::IcebergDataSource;
 use serde::{Deserialize, Serialize};
 
-use crate::wire::{self, Frame, TableWire};
+use crate::wire::{self, TableWire};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ScanWire {
@@ -76,11 +76,8 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         ctx: &TaskContext,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let scan: ScanWire = match wire::decode(buf)? {
-            Frame::Iceberg(scan) => scan,
-            Frame::Delegated(rest) => {
-                return self.inner.try_decode(rest, inputs, ctx, proto_converter);
-            }
+        let Some(scan) = wire::decode::<ScanWire>(buf)? else {
+            return self.inner.try_decode(buf, inputs, ctx, proto_converter);
         };
         let source = IcebergDataSource::builder(scan.table.load()?, scan.schema)
             .with_snapshot_id(scan.snapshot_id)

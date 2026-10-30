@@ -177,22 +177,18 @@ pub(crate) fn encode<T: Serialize>(
     serde_json::to_writer(buf, payload).map_err(json_err)
 }
 
-/// A blob's payload: this crate's, decoded, or the inner codec's bytes.
-pub(crate) enum Frame<'a, T> {
-    Iceberg(T),
-    Delegated(&'a [u8]),
-}
-
-/// Decodes `buf` as `T` if it has this crate's prefix.
+/// Decodes `buf` as `T` if it's an Iceberg blob, or returns `None` if it
+/// belongs to the inner codec.
 pub(crate) fn decode<T: DeserializeOwned>(
     buf: &[u8],
-) -> Result<Frame<'_, T>, DataFusionError> {
-    match buf.strip_prefix(PREFIX) {
-        Some(rest) => serde_json::from_slice(rest)
-            .map(Frame::Iceberg)
-            .map_err(|e| exec_datafusion_err!("invalid ballista-iceberg payload: {e}")),
-        None => Ok(Frame::Delegated(buf)),
-    }
+) -> Result<Option<T>, DataFusionError> {
+    buf.strip_prefix(PREFIX)
+        .map(|rest| {
+            serde_json::from_slice(rest).map_err(|e| {
+                exec_datafusion_err!("invalid ballista-iceberg payload: {e}")
+            })
+        })
+        .transpose()
 }
 
 fn json_err(e: serde_json::Error) -> DataFusionError {
