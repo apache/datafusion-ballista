@@ -107,8 +107,16 @@ class QueryResult:
 class TrinoClient:
     """Minimal client for Trino's HTTP protocol (direct result encoding)."""
 
-    def __init__(self, base_url, catalog, schema=None, session_properties=None,
-                 user="benchmark", source="ballista-benchmarks", opener=None):
+    def __init__(
+        self,
+        base_url,
+        catalog,
+        schema=None,
+        session_properties=None,
+        user="benchmark",
+        source="ballista-benchmarks",
+        opener=None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.headers = {
             "X-Trino-User": user,
@@ -120,10 +128,14 @@ class TrinoClient:
             self.headers["X-Trino-Schema"] = schema
         if session_properties:
             self.headers["X-Trino-Session"] = ",".join(
-                f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in session_properties.items())
+                f"{k}={urllib.parse.quote(str(v), safe='')}"
+                for k, v in session_properties.items()
+            )
         # The coordinator is a cluster-internal address; never go through a proxy.
         # `opener` is only replaced by the tests.
-        self._opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self._opener = opener or urllib.request.build_opener(
+            urllib.request.ProxyHandler({})
+        )
 
     def get_json(self, url):
         return self._call("GET", url)
@@ -138,7 +150,9 @@ class TrinoClient:
         deadline = time.monotonic() + retry_for
         delay = 0.1
         while True:
-            request = urllib.request.Request(url, data=body, method=method, headers=headers or {})
+            request = urllib.request.Request(
+                url, data=body, method=method, headers=headers or {}
+            )
             try:
                 with self._opener.open(request, timeout=120) as response:
                     return json.loads(response.read())
@@ -147,7 +161,9 @@ class TrinoClient:
                 e.close()
                 if e.code in (429, 502, 503, 504) and time.monotonic() < deadline:
                     retry_after = e.headers.get("Retry-After")
-                    time.sleep(float(retry_after) if e.code == 429 and retry_after else delay)
+                    time.sleep(
+                        float(retry_after) if e.code == 429 and retry_after else delay
+                    )
                     delay = min(delay * 2, 2.0)
                     continue
                 raise QueryFailed(f"HTTP {e.code} from {method} {url}: {detail!r}")
@@ -174,13 +190,19 @@ class TrinoClient:
         """
         start = time.monotonic()
         deadline = start + timeout_s
-        doc = self._call("POST", f"{self.base_url}/v1/statement", sql.encode("utf-8"), self.headers)
+        doc = self._call(
+            "POST", f"{self.base_url}/v1/statement", sql.encode("utf-8"), self.headers
+        )
         query_id = doc.get("id")
         columns, rows, row_count, stats = None, [], 0, {}
         while True:
             error = doc.get("error")
             if error:
-                raise QueryFailed(error.get("message", "unknown error"), query_id, error.get("errorName"))
+                raise QueryFailed(
+                    error.get("message", "unknown error"),
+                    query_id,
+                    error.get("errorName"),
+                )
             columns = doc.get("columns") or columns
             data = doc.get("data") or []
             row_count += len(data)
@@ -192,9 +214,13 @@ class TrinoClient:
                 break
             if time.monotonic() > deadline:
                 self._cancel(next_uri)
-                raise QueryTimedOut(f"query {query_id} did not finish within {timeout_s}s")
+                raise QueryTimedOut(
+                    f"query {query_id} did not finish within {timeout_s}s"
+                )
             doc = self._call("GET", next_uri)
-        return QueryResult(query_id, columns, rows, row_count, time.monotonic() - start, stats)
+        return QueryResult(
+            query_id, columns, rows, row_count, time.monotonic() - start, stats
+        )
 
 
 def log(message):
@@ -253,11 +279,15 @@ def split_statements(text):
         statement = statement.strip()
         if not statement:
             continue
-        view = re.fullmatch(r"(?is)create\s+view\s+(\w+)\s*(?:\(([^)]*)\))?\s+as\s+(.*)", statement)
+        view = re.fullmatch(
+            r"(?is)create\s+view\s+(\w+)\s*(?:\(([^)]*)\))?\s+as\s+(.*)", statement
+        )
         if view:
             name, columns, query = view.groups()
             if columns:
-                query = f"SELECT * FROM (\n{query}\n) AS {name}_columns ({columns.strip()})"
+                query = (
+                    f"SELECT * FROM (\n{query}\n) AS {name}_columns ({columns.strip()})"
+                )
             statement = f"CREATE OR REPLACE VIEW {name} AS\n{query}"
         statements.append(statement)
     return statements
@@ -295,19 +325,25 @@ def wait_for_workers(client, expected, timeout_s=900):
             if found >= expected:
                 return found
         if time.monotonic() > deadline:
-            raise RuntimeError(f"only {found}/{expected} workers registered after {timeout_s}s")
+            raise RuntimeError(
+                f"only {found}/{expected} workers registered after {timeout_s}s"
+            )
         time.sleep(5)
 
 
 def table_has_stats(client, catalog, schema, table):
     """True if ANALYZE has already recorded a row count for the table."""
-    result = client.execute(f"SHOW STATS FOR {catalog}.{schema}.{table}", collect_rows=True)
+    result = client.execute(
+        f"SHOW STATS FOR {catalog}.{schema}.{table}", collect_rows=True
+    )
     names = [c["name"] for c in result.columns or []]
     if "column_name" not in names or "row_count" not in names:
         return False
     column, row_count = names.index("column_name"), names.index("row_count")
     # The row with a NULL column_name summarises the whole table.
-    return any(row[column] is None and row[row_count] is not None for row in result.rows)
+    return any(
+        row[column] is None and row[row_count] is not None for row in result.rows
+    )
 
 
 def check_table_readable(client, catalog, schema, table, columns):
@@ -319,18 +355,23 @@ def check_table_readable(client, catalog, schema, table, columns):
     ANALYZE spends time on the table.
     """
     counts = ", ".join(f"count({c})" for c in columns)
-    sql = (f"SELECT count(*), {counts} "
-           f"FROM (SELECT * FROM {catalog}.{schema}.{table} LIMIT {SAMPLE_ROWS})")
+    sql = (
+        f"SELECT count(*), {counts} "
+        f"FROM (SELECT * FROM {catalog}.{schema}.{table} LIMIT {SAMPLE_ROWS})"
+    )
     row = client.execute(sql, timeout_s=SETUP_TIMEOUT_S, collect_rows=True).rows[0]
     sampled = int(row[0])
     if sampled == 0:
-        raise SetupError(f"{table} has no rows: no Parquet files (or, partitioned, no partitions) "
-                         f"were found under its external_location")
+        raise SetupError(
+            f"{table} has no rows: no Parquet files (or, partitioned, no partitions) "
+            f"were found under its external_location"
+        )
     null_columns = [c for c, n in zip(columns, row[1:]) if int(n) < sampled]
     if null_columns:
         raise SetupError(
             f"{table}: NULLs in the first {sampled} rows of {', '.join(null_columns)}. TPC-H has no "
-            f"NULLs, so the Parquet files probably name these columns differently from tpch_tables.py")
+            f"NULLs, so the Parquet files probably name these columns differently from tpch_tables.py"
+        )
 
 
 def setup_tables(client, cfg):
@@ -338,16 +379,28 @@ def setup_tables(client, cfg):
     catalog, schema = cfg["catalog"], cfg["schema"]
     setup = {"tables": {}}
     started = time.monotonic()
-    client.execute(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}", timeout_s=SETUP_TIMEOUT_S)
+    client.execute(
+        f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}", timeout_s=SETUP_TIMEOUT_S
+    )
     for name, _, columns in TPCH_TABLES:
         info = setup["tables"][name] = {}
-        client.execute(table_ddl(name, catalog, schema, cfg["data_path"], cfg["partitioned"], cfg["money_type"]),
-                       timeout_s=SETUP_TIMEOUT_S)
+        client.execute(
+            table_ddl(
+                name,
+                catalog,
+                schema,
+                cfg["data_path"],
+                cfg["partitioned"],
+                cfg["money_type"],
+            ),
+            timeout_s=SETUP_TIMEOUT_S,
+        )
         if partition_column(name, cfg["partitioned"]):
             t0 = time.monotonic()
             client.execute(
                 f"CALL {catalog}.system.sync_partition_metadata('{schema}', '{name}', 'ADD')",
-                timeout_s=SETUP_TIMEOUT_S)
+                timeout_s=SETUP_TIMEOUT_S,
+            )
             info["sync_s"] = round(time.monotonic() - t0, 1)
             log(f"{name}: partitions synced in {info['sync_s']}s")
         check_table_readable(client, catalog, schema, name, [c for c, _ in columns])
@@ -357,7 +410,9 @@ def setup_tables(client, cfg):
                 log(f"{name}: statistics already present, skipping ANALYZE")
             else:
                 t0 = time.monotonic()
-                client.execute(f"ANALYZE {catalog}.{schema}.{name}", timeout_s=SETUP_TIMEOUT_S)
+                client.execute(
+                    f"ANALYZE {catalog}.{schema}.{name}", timeout_s=SETUP_TIMEOUT_S
+                )
                 info["analyze_s"] = round(time.monotonic() - t0, 1)
                 log(f"{name}: ANALYZE took {info['analyze_s']}s")
     setup["seconds"] = round(time.monotonic() - started, 1)
@@ -388,8 +443,15 @@ def describe_error(e):
 
 def is_select(statement):
     """True for a query, False for DDL such as q15's CREATE VIEW and DROP VIEW."""
-    code = [line for line in statement.splitlines() if line.strip() and not line.strip().startswith("--")]
-    return bool(code) and code[0].strip().lstrip("(").split(None, 1)[0].lower() in ("select", "with")
+    code = [
+        line
+        for line in statement.splitlines()
+        if line.strip() and not line.strip().startswith("--")
+    ]
+    return bool(code) and code[0].strip().lstrip("(").split(None, 1)[0].lower() in (
+        "select",
+        "with",
+    )
 
 
 def execute_query(client, number, statements, cfg):
@@ -408,7 +470,9 @@ def execute_query(client, number, statements, cfg):
     result.elapsed = time.monotonic() - start
     expected = cfg["expected_rows"].get(number)
     if expected is not None and result.row_count != expected:
-        raise WrongResult(f"q{number} returned {result.row_count} rows, expected {expected} ({result.query_id})")
+        raise WrongResult(
+            f"q{number} returned {result.row_count} rows, expected {expected} ({result.query_id})"
+        )
     return result
 
 
@@ -449,11 +513,15 @@ def run_query(client, number, statements, cfg, warmup=None):
                 result = execute_query(client, number, statements, cfg)
             except (QueryFailed, QueryTimedOut, WrongResult) as e:
                 record["error"] = describe_error(e)
-                log(f"q{number} iteration {i + 1}/{cfg['iterations']} FAILED: {record['error']}")
+                log(
+                    f"q{number} iteration {i + 1}/{cfg['iterations']} FAILED: {record['error']}"
+                )
                 break
             record["iterations"].append(iteration_record(result))
-            log(f"q{number} iteration {i + 1}/{cfg['iterations']}: {result.elapsed:.2f}s, "
-                f"{result.row_count} rows ({result.query_id})")
+            log(
+                f"q{number} iteration {i + 1}/{cfg['iterations']}: {result.elapsed:.2f}s, "
+                f"{result.row_count} rows ({result.query_id})"
+            )
     print(QUERY_RESULT_PREFIX + json.dumps(record), flush=True)
     return record
 
@@ -464,8 +532,13 @@ def run_suite(cfg, opener=None):
     # schema: the schema they create need not exist yet. Only the benchmark
     # queries, which use bare table names, get the schema and session properties.
     admin = TrinoClient(cfg["trino_url"], cfg["catalog"], opener=opener)
-    client = TrinoClient(cfg["trino_url"], cfg["catalog"], cfg["schema"], cfg["session_properties"],
-                         opener=opener)
+    client = TrinoClient(
+        cfg["trino_url"],
+        cfg["catalog"],
+        cfg["schema"],
+        cfg["session_properties"],
+        opener=opener,
+    )
     summary = {
         "catalog": cfg["catalog"],
         "schema": cfg["schema"],
@@ -478,7 +551,9 @@ def run_suite(cfg, opener=None):
         "queries": [],
     }
     try:
-        summary["trino_version"] = admin.get_json(f"{admin.base_url}/v1/info")["nodeVersion"]["version"]
+        summary["trino_version"] = admin.get_json(f"{admin.base_url}/v1/info")[
+            "nodeVersion"
+        ]["version"]
         log(f"Trino {summary['trino_version']}")
         summary["workers"] = wait_for_workers(admin, cfg["expected_workers"])
         if not cfg["skip_setup"]:
@@ -491,7 +566,9 @@ def run_suite(cfg, opener=None):
 
     warmups = warm_up(client, queries, cfg) if cfg["warmup"] else {}
     for number, statements in queries:
-        summary["queries"].append(run_query(client, number, statements, cfg, warmups.get(number)))
+        summary["queries"].append(
+            run_query(client, number, statements, cfg, warmups.get(number))
+        )
     return summary
 
 
