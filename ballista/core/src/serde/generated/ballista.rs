@@ -475,14 +475,11 @@ pub struct SortShuffleWriterExecNode {
     pub stage_id: u32,
     #[prost(message, optional, tag = "3")]
     pub input: ::core::option::Option<::datafusion_proto::protobuf::PhysicalPlanNode>,
-    /// Hash output partitioning. Unset when `partitioning` carries the scheme.
     #[prost(message, optional, tag = "4")]
     pub output_partitioning: ::core::option::Option<
         ::datafusion_proto::protobuf::PhysicalHashRepartition,
     >,
-    /// Output partitioning for the schemes `output_partitioning` cannot carry
-    /// (range). Hash stages keep using `output_partitioning`, so plans written
-    /// before this field existed decode unchanged. Wins when both are set.
+    /// Range output partitioning; a hash stage sets `output_partitioning` instead.
     #[prost(message, optional, tag = "11")]
     pub partitioning: ::core::option::Option<::datafusion_proto::protobuf::Partitioning>,
     /// Target batch size in rows when materializing buffered shuffle data.

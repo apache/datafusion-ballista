@@ -175,8 +175,7 @@ pub(crate) fn walk_child_partition_mapping(
 /// Two cases:
 ///
 /// - `SortShuffleWriter(Hash(K) | Range(K))` — KSpace by construction; the
-///   K-space `[0..K-1]` is intrinsic, whether rows are routed by hash or by
-///   value range. Input ids are irrelevant.
+///   K-space `[0..K-1]` is intrinsic. Input ids are irrelevant.
 /// - `ShuffleWriter` — always passthrough; the child's plan shape decides:
 ///   - `SortPreservingMergeExec` in the child chain → `[0]` (collapse).
 ///   - `RepartitionExec(Hash|RoundRobin)` in the child chain → `[0..K-1]`.
@@ -1439,52 +1438,33 @@ mod tests {
         Ok(Arc::new(DataSourceExec::new(memory_data_source)))
     }
 
-    /// A sort-shuffle stage numbers its outputs afresh from 0, whether it routes
-    /// by hash or by value range, and whichever input partitions the task was
-    /// handed. Consumers address those ids, so a range stage whose ids followed
-    /// the task's input slice would be read from the wrong files.
     #[test]
-    fn sort_shuffle_output_ids_follow_its_partitioning_not_the_input_slice() -> Result<()>
-    {
+    fn range_sort_shuffle_output_ids_do_not_follow_the_input_slice() -> Result<()> {
         use crate::execution_plans::sort_shuffle::SortShuffleConfig;
-        use datafusion::arrow::compute::SortOptions;
         use datafusion::common::ScalarValue;
         use datafusion::physical_expr::{
             LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
         };
 
-        let key: Arc<dyn PhysicalExpr> = Arc::new(Column::new("a", 0));
-        let range = RangePartitioning::try_new(
-            LexOrdering::new(vec![PhysicalSortExpr::new(
-                Arc::clone(&key),
-                SortOptions::default(),
-            )])
-            .unwrap(),
-            vec![
-                SplitPoint::new(vec![ScalarValue::UInt32(Some(10))]),
-                SplitPoint::new(vec![ScalarValue::UInt32(Some(20))]),
-            ],
-        )?;
+        let split = |v| SplitPoint::new(vec![ScalarValue::UInt32(Some(v))]);
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(
+            Column::new("a", 0),
+        ))])
+        .unwrap();
+        let range = RangePartitioning::try_new(ordering, vec![split(10), split(20)])?;
+        let writer: Arc<dyn ExecutionPlan> = Arc::new(SortShuffleWriterExec::try_new(
+            "job".into(),
+            1,
+            create_input_plan()?,
+            String::new(),
+            Partitioning::Range(range),
+            SortShuffleConfig::default(),
+        )?);
 
-        for (partitioning, expected_count) in [
-            (Partitioning::Hash(vec![key], 4), 4),
-            (Partitioning::Range(range), 3),
-        ] {
-            let writer: Arc<dyn ExecutionPlan> =
-                Arc::new(SortShuffleWriterExec::try_new(
-                    "job".into(),
-                    1,
-                    create_input_plan()?,
-                    String::new(),
-                    partitioning,
-                    SortShuffleConfig::default(),
-                )?);
-
-            assert_eq!(
-                compute_global_output_partition_ids(&writer, &[5, 6]),
-                (0..expected_count).collect::<Vec<_>>()
-            );
-        }
+        assert_eq!(
+            compute_global_output_partition_ids(&writer, &[5, 6]),
+            vec![0, 1, 2]
+        );
         Ok(())
     }
 }

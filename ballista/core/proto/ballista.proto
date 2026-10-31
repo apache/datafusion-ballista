@@ -374,11 +374,8 @@ message SortShuffleWriterExecNode {
   string job_id = 1;
   uint32 stage_id = 2;
   datafusion.PhysicalPlanNode input = 3;
-  // Hash output partitioning. Unset when `partitioning` carries the scheme.
   datafusion.PhysicalHashRepartition output_partitioning = 4;
-  // Output partitioning for the schemes `output_partitioning` cannot carry
-  // (range). Hash stages keep using `output_partitioning`, so plans written
-  // before this field existed decode unchanged. Wins when both are set.
+  // Range output partitioning; a hash stage sets `output_partitioning` instead.
   datafusion.Partitioning partitioning = 11;
   // Target batch size in rows when materializing buffered shuffle data.
   uint64 batch_size = 8;

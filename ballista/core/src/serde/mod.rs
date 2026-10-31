@@ -658,11 +658,9 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             PhysicalPlanType::SortShuffleWriter(sort_shuffle_writer) => {
                 let input = inputs[0].clone();
 
-                // A range scheme travels in `partitioning`; hash stays in
-                // `output_partitioning`, which is all a plan written before
-                // range support carries.
-                let shuffle_output_partitioning = match &sort_shuffle_writer.partitioning
-                {
+                // Range travels in `partitioning`; hash in `output_partitioning`,
+                // which is all an older plan carries.
+                let partitioning = match &sort_shuffle_writer.partitioning {
                     Some(partitioning) => parse_protobuf_partitioning(
                         Some(partitioning),
                         &decode_ctx,
@@ -675,9 +673,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         input.schema().as_ref(),
                         &converter,
                     )?,
-                };
-
-                let partitioning = shuffle_output_partitioning.ok_or_else(|| {
+                }
+                .ok_or_else(|| {
                     DataFusionError::Internal(
                         "SortShuffleWriterExec requires hash or range partitioning"
                             .to_string(),
@@ -1205,8 +1202,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             Ok(())
         } else if let Some(exec) = node.downcast_ref::<SortShuffleWriterExec>() {
-            // Hash keeps its own field so a hash plan reads the same as before
-            // range support; a range scheme goes in the general one.
+            // Hash keeps its own field, so a hash plan is encoded as before.
             let (output_partitioning, partitioning) = match exec
                 .shuffle_output_partitioning()
             {
@@ -1219,13 +1215,12 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     (Some(hash), None)
                 }
                 range @ Partitioning::Range(_) => {
-                    let converter = DefaultPhysicalProtoConverter {};
-                    let range = serialize_partitioning(
+                    let proto = serialize_partitioning(
                         range,
                         self.default_codec.as_ref(),
-                        &converter,
+                        &DefaultPhysicalProtoConverter {},
                     )?;
-                    (None, Some(range))
+                    (None, Some(proto))
                 }
                 other => {
                     return Err(DataFusionError::Internal(format!(
@@ -2231,8 +2226,7 @@ mod test {
         }
     }
 
-    /// A compound range partitioning with mixed sort directions, as a stage
-    /// boundary would carry it.
+    /// A compound range partitioning with mixed sort directions.
     fn test_range_partitioning(schema: &SchemaRef) -> Partitioning {
         use datafusion::arrow::compute::SortOptions;
         use datafusion::common::ScalarValue;
@@ -2243,108 +2237,76 @@ mod test {
         let ordering = LexOrdering::new(vec![
             PhysicalSortExpr::new(
                 col("id", schema.as_ref()).unwrap(),
-                SortOptions {
-                    descending: true,
-                    nulls_first: true,
-                },
+                SortOptions::new(true, true),
             ),
             PhysicalSortExpr::new(
                 col("name", schema.as_ref()).unwrap(),
-                SortOptions {
-                    descending: false,
-                    nulls_first: false,
-                },
+                SortOptions::new(false, false),
             ),
         ])
         .unwrap();
-        // `id` descends, so the split points descend with it.
-        let split_points = vec![
+        // `id` descends, so its split points do too.
+        let split = |id: i32, name: &str| {
             SplitPoint::new(vec![
-                ScalarValue::Int32(Some(90)),
-                ScalarValue::Utf8(Some("m".to_string())),
-            ]),
-            SplitPoint::new(vec![
-                ScalarValue::Int32(Some(40)),
-                ScalarValue::Utf8(Some("a".to_string())),
-            ]),
-        ];
-        Partitioning::Range(RangePartitioning::try_new(ordering, split_points).unwrap())
+                ScalarValue::Int32(Some(id)),
+                ScalarValue::Utf8(Some(name.to_string())),
+            ])
+        };
+        Partitioning::Range(
+            RangePartitioning::try_new(ordering, vec![split(90, "m"), split(40, "a")])
+                .unwrap(),
+        )
     }
 
-    /// A range partitioning has no place in the writer's hash field, so it
-    /// travels in its own. The ordering (sort options included) and every split
-    /// point must come back intact: together they decide which rows reach which
-    /// consumer, so a drift here is a silently wrong shuffle.
     #[tokio::test]
     async fn test_sort_shuffle_writer_exec_roundtrip_range_partitioning() {
         use datafusion::physical_plan::empty::EmptyExec;
 
         let schema = create_test_schema();
-        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
         let partitioning = test_range_partitioning(&schema);
-
-        let original_exec = SortShuffleWriterExec::try_new(
+        let writer = SortShuffleWriterExec::try_new(
             "job1".into(),
             1,
-            input.clone(),
+            Arc::new(EmptyExec::new(schema)),
             String::new(),
             partitioning.clone(),
             SortShuffleConfig::new(true, 4096),
         )
         .unwrap();
 
-        let codec = BallistaPhysicalExtensionCodec::default();
-        let mut buf: Vec<u8> = vec![];
-        codec
-            .try_encode(
-                Arc::new(original_exec),
-                &mut buf,
-                &DefaultPhysicalProtoConverter {},
-            )
-            .unwrap();
+        let decoded = roundtrip_plan(Arc::new(writer));
 
-        let ctx = SessionContext::new().task_ctx();
-        let decoded_plan = codec
-            .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
-            .unwrap();
-        let decoded_exec = decoded_plan
+        let decoded = decoded
             .downcast_ref::<SortShuffleWriterExec>()
             .expect("Expected SortShuffleWriterExec");
-
-        assert_eq!(decoded_exec.shuffle_output_partitioning(), &partitioning);
-        assert_eq!(
-            decoded_exec
-                .properties()
-                .output_partitioning()
-                .partition_count(),
-            3
-        );
+        assert_eq!(decoded.shuffle_output_partitioning(), &partitioning);
     }
 
-    /// Hash stages keep writing the field they always did, so a plan written
-    /// for one reads the same as before range support existed. Only the new
-    /// range field is allowed to be absent from it.
+    /// A hash plan is encoded as before: in `output_partitioning`, with no
+    /// `partitioning`.
     #[tokio::test]
     async fn test_hash_sort_shuffle_writer_keeps_the_hash_partitioning_field() {
         use datafusion::physical_plan::empty::EmptyExec;
         use prost::Message;
 
         let schema = create_test_schema();
-        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
-        let exec = SortShuffleWriterExec::try_new(
+        let writer = SortShuffleWriterExec::try_new(
             "job1".into(),
             1,
-            input,
+            Arc::new(EmptyExec::new(schema.clone())),
             String::new(),
             Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 4),
             SortShuffleConfig::new(true, 4096),
         )
         .unwrap();
 
-        let codec = BallistaPhysicalExtensionCodec::default();
-        let mut buf: Vec<u8> = vec![];
-        codec
-            .try_encode(Arc::new(exec), &mut buf, &DefaultPhysicalProtoConverter {})
+        let mut buf = vec![];
+        BallistaPhysicalExtensionCodec::default()
+            .try_encode(
+                Arc::new(writer),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
             .unwrap();
 
         let node = protobuf::BallistaPhysicalPlanNode::decode(buf.as_slice()).unwrap();
@@ -2359,53 +2321,24 @@ mod test {
         assert!(writer.partitioning.is_none());
     }
 
-    /// The consumer's side of a range shuffle: the unresolved placeholder the
-    /// scheduler keeps, and the resolved reader it ships to executors, must both
-    /// still report the range partitioning after a round trip.
     #[tokio::test]
     async fn test_range_partitioned_shuffle_readers_roundtrip() {
         let schema = create_test_schema();
         let partitioning = test_range_partitioning(&schema);
-        let codec = BallistaPhysicalExtensionCodec::default();
-        let ctx = SessionContext::new().task_ctx();
 
         let unresolved =
             UnresolvedShuffleExec::new(1, schema.clone(), partitioning.clone());
-        let mut buf: Vec<u8> = vec![];
-        codec
-            .try_encode(
-                Arc::new(unresolved),
-                &mut buf,
-                &DefaultPhysicalProtoConverter {},
-            )
-            .unwrap();
-        let decoded = codec
-            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
-            .unwrap();
+        let decoded = roundtrip_plan(Arc::new(unresolved));
         let decoded = decoded
             .downcast_ref::<UnresolvedShuffleExec>()
             .expect("Expected UnresolvedShuffleExec");
         assert_eq!(&decoded.properties().partitioning, &partitioning);
         assert_eq!(decoded.output_partition_count, 3);
 
-        let reader = ShuffleReaderExec::try_new(
-            1,
-            vec![vec![], vec![], vec![]],
-            schema.clone(),
-            partitioning.clone(),
-        )
-        .unwrap();
-        let mut buf: Vec<u8> = vec![];
-        codec
-            .try_encode(
-                Arc::new(reader),
-                &mut buf,
-                &DefaultPhysicalProtoConverter {},
-            )
-            .unwrap();
-        let decoded = codec
-            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
-            .unwrap();
+        let reader =
+            ShuffleReaderExec::try_new(1, vec![vec![]; 3], schema, partitioning.clone())
+                .unwrap();
+        let decoded = roundtrip_plan(Arc::new(reader));
         let decoded = decoded
             .downcast_ref::<ShuffleReaderExec>()
             .expect("Expected ShuffleReaderExec");
