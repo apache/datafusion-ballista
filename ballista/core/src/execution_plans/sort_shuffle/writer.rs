@@ -23,7 +23,7 @@
 //! concurrently and then emits one file holding every bucket, laid out
 //! partition-major so each output partition stays one contiguous range.
 
-use datafusion::arrow::array::Array;
+use datafusion::arrow::array::{Array, AsArray};
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
@@ -44,7 +44,7 @@ use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::ShuffleWritePartition;
 
 use crate::utils::create_write_options;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{SchemaRef, UInt64Type};
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -59,7 +59,7 @@ use datafusion::physical_expr_common::utils::evaluate_expressions_to_arrays;
 use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
-use datafusion::physical_plan::repartition::REPARTITION_RANDOM_STATE;
+use datafusion::physical_plan::repartition::{REPARTITION_RANDOM_STATE, RangeExpr};
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream, Statistics, StatisticsArgs, apply_expression_roots,
@@ -148,7 +148,7 @@ fn encode_buffered_partitions(
 }
 
 /// Coordinator handoff state — same shape as `ShuffleWriterExec`. Each output
-/// hash partition (0..K) gets one `oneshot::Receiver`; the first `execute(N)`
+/// partition (0..K) gets one `oneshot::Receiver`; the first `execute(N)`
 /// call spawns the coordinator, subsequent calls take their receiver and
 /// await the summaries for their output partition.
 struct WriterState {
@@ -169,6 +169,11 @@ impl Debug for WriterState {
 /// Sort-based shuffle writer that produces a single consolidated output file
 /// per input partition with an index file for partition offsets.
 ///
+/// # Routing
+///
+/// Accepts `Hash` or `Range` output partitioning. A range stage routes rows as
+/// `RepartitionExec` does, so output partition `i` holds range `i`.
+///
 /// Under the multi-partition-task model each task's restricted plan carries
 /// input partitions 0..N_local, and different tasks in the same stage share
 /// those local indices. To keep shuffle files unique across tasks the writer
@@ -183,7 +188,7 @@ impl Debug for WriterState {
 /// `execute(k)` call from the executor initializes K oneshot handoffs (one
 /// per output partition) and spawns `run_coordinator`, which spawns M
 /// concurrent tokio tasks — one per local input partition in the task's
-/// slice. Each input writer pulls `child.execute(i)`, hash-buckets rows
+/// slice. Each input writer pulls `child.execute(i)`, buckets rows
 /// into K sub-slices, sorts and spills, and produces one indexed data file.
 /// The coordinator collects M×K per-bucket summaries and re-buckets them
 /// by output partition so each of the K oneshots receives the M summaries
@@ -200,7 +205,7 @@ impl Debug for WriterState {
 /// Data flows bottom → top (child produces, executor consumes), matching
 /// DataFusion's diagram convention for `RepartitionExec`. Arrows point up
 /// with the data. **M and K are independent**: M = the task's slice of the
-/// child's partitions, K = the hash-partition target from the planner.
+/// child's partitions, K = the output partition count from the planner.
 /// Example: M=2, K=3.
 ///
 /// ```text
@@ -231,7 +236,7 @@ impl Debug for WriterState {
 ///           ┌────────────────┐           ┌────────────────┐
 ///           │  input bucketer│           │  input bucketer│
 ///           │      (0)       │           │      (1)       │
-///           │ sort by hash   │           │ sort by hash   │
+///           │ route by key   │           │ route by key   │
 ///           │ bucket, spill  │           │ bucket, spill  │
 ///           │ if needed      │           │ if needed      │
 ///           └────────────────┘           └────────────────┘
@@ -265,7 +270,7 @@ pub struct SortShuffleWriterExec {
     plan: Arc<dyn ExecutionPlan>,
     /// Path to write output streams to
     work_dir: String,
-    /// Shuffle output partitioning (must be Hash partitioning)
+    /// Shuffle output partitioning (Hash or Range)
     shuffle_output_partitioning: Partitioning,
     /// Sort shuffle configuration
     config: SortShuffleConfig,
@@ -434,7 +439,6 @@ impl SortShuffleWriterExec {
         shuffle_output_partitioning: Partitioning,
         config: SortShuffleConfig,
     ) -> Result<Self> {
-        // Sort shuffle only supports hash partitioning
         match &shuffle_output_partitioning {
             // Zero would leave the partition reducer with a zero divisor and
             // `handoffs` empty.
@@ -444,10 +448,10 @@ impl SortShuffleWriterExec {
                         .to_string(),
                 ));
             }
-            Partitioning::Hash(_, _) => {}
+            Partitioning::Hash(_, _) | Partitioning::Range(_) => {}
             other => {
                 return Err(DataFusionError::Plan(format!(
-                    "SortShuffleWriterExec only supports Hash partitioning, got: {other:?}"
+                    "SortShuffleWriterExec only supports Hash and Range partitioning, got: {other:?}"
                 )));
             }
         }
@@ -584,11 +588,8 @@ impl SortShuffleWriterExec {
             let ballista_config = Arc::new(context.session_config().ballista_config());
             let compression_type = ballista_config.shuffle_compression_codec()?;
 
-            let Partitioning::Hash(exprs, num_output_partitions) = partitioning else {
-                return Err(DataFusionError::Internal(
-                    "Expected hash partitioning".to_string(),
-                ));
-            };
+            let num_output_partitions = partitioning.partition_count();
+            let mut router = RowRouter::try_new(partitioning)?;
 
             let mut spill_manager = SpillManager::new(
                 &work_dir,
@@ -612,11 +613,7 @@ impl SortShuffleWriterExec {
                     .with_can_spill(true)
                     .register(&context.runtime_env().memory_pool);
 
-            let mut hash_buffer: Vec<u64> = Vec::new();
             let mut per_partition_rows: Vec<Vec<u32>> = Vec::new();
-            // Fixed for the whole task, so the reducer is built once here
-            // rather than re-derived per batch.
-            let partition_reducer = StrengthReducedU64::new(num_output_partitions as u64);
             let mut spill_events: u64 = 0;
             let mut spill_triggers = SpillTriggerCounts::default();
             // `memory_limit` is a second spill trigger, independent of the
@@ -634,13 +631,7 @@ impl SortShuffleWriterExec {
 
                 // Compute partition assignment for every row.
                 let timer = metrics.repart_time.timer();
-                compute_partition_indices(
-                    &input_batch,
-                    &exprs,
-                    partition_reducer,
-                    &mut hash_buffer,
-                    &mut per_partition_rows,
-                )?;
+                router.assign(&input_batch, &mut per_partition_rows)?;
                 timer.done();
 
                 buffered.push_batch(input_batch, &per_partition_rows);
@@ -925,21 +916,24 @@ impl ExecutionPlan for SortShuffleWriterExec {
         vec![&self.plan]
     }
 
-    /// This writer hashes rows itself rather than relying on an upstream
+    /// This writer routes rows itself rather than relying on an upstream
     /// `RepartitionExec`, so the partitioning expressions are its own.
     fn apply_expressions(
         &self,
         f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
-        // `try_new` rejects every other scheme, so a non-`Hash` partitioning
-        // here means the operator was built around that check.
-        let Partitioning::Hash(exprs, _) = &self.shuffle_output_partitioning else {
-            return internal_err!(
-                "SortShuffleWriterExec only supports Hash partitioning, got: {:?}",
-                self.shuffle_output_partitioning
-            );
-        };
-        apply_expression_roots(exprs, f)
+        match &self.shuffle_output_partitioning {
+            Partitioning::Hash(exprs, _) => apply_expression_roots(exprs, f),
+            Partitioning::Range(range) => apply_expression_roots(
+                range.ordering().iter().map(|sort_expr| &sort_expr.expr),
+                f,
+            ),
+            // `try_new` rejects every other scheme, so reaching this arm means
+            // the operator was built around that check.
+            other => internal_err!(
+                "SortShuffleWriterExec only supports Hash and Range partitioning, got: {other:?}"
+            ),
+        }
     }
 
     fn with_new_children(
@@ -1334,12 +1328,80 @@ fn compute_partition_indices(
         hash_buffer,
     )?;
 
-    out.resize_with(reducer.divisor() as usize, Vec::new);
+    reset_buckets(out, reducer.divisor() as usize);
+    reducer.partition_indices(hash_buffer, out);
+    Ok(())
+}
+
+/// Sizes `out` to `n` empty buckets, keeping each bucket's capacity.
+fn reset_buckets(out: &mut Vec<Vec<u32>>, n: usize) {
+    out.resize_with(n, Vec::new);
     for rows in out.iter_mut() {
         rows.clear();
     }
-    reducer.partition_indices(hash_buffer, out);
+}
+
+/// Range counterpart of [`compute_partition_indices`]: routes rows with
+/// [`RangeExpr`], which shares `BatchPartitioner`'s routing function.
+fn compute_range_partition_indices(
+    batch: &RecordBatch,
+    expr: &RangeExpr,
+    out: &mut Vec<Vec<u32>>,
+) -> Result<()> {
+    let partition_ids = expr.evaluate(batch)?.into_array(batch.num_rows())?;
+    let partition_ids = partition_ids.as_primitive::<UInt64Type>();
+
+    // `RangeExpr` answers with `0..=split_points.len()`.
+    reset_buckets(out, expr.split_points().len() + 1);
+    for (row, &partition) in partition_ids.values().iter().enumerate() {
+        out[partition as usize].push(row as u32);
+    }
     Ok(())
+}
+
+/// Assigns each row of an input batch to an output partition.
+enum RowRouter {
+    Hash {
+        exprs: Vec<Arc<dyn PhysicalExpr>>,
+        reducer: StrengthReducedU64,
+        hash_buffer: Vec<u64>,
+    },
+    Range(RangeExpr),
+}
+
+impl RowRouter {
+    fn try_new(partitioning: Partitioning) -> Result<Self> {
+        match partitioning {
+            Partitioning::Hash(exprs, num_partitions) => Ok(Self::Hash {
+                exprs,
+                reducer: StrengthReducedU64::new(num_partitions as u64),
+                hash_buffer: Vec::new(),
+            }),
+            Partitioning::Range(range) => {
+                let key_exprs = range
+                    .ordering()
+                    .iter()
+                    .map(|sort_expr| Arc::clone(&sort_expr.expr))
+                    .collect();
+                Ok(Self::Range(RangeExpr::try_new(key_exprs, &range)?))
+            }
+            other => internal_err!(
+                "SortShuffleWriterExec only supports Hash and Range partitioning, got: {other:?}"
+            ),
+        }
+    }
+
+    /// Fills `out` with the rows of `batch` bound for each output partition.
+    fn assign(&mut self, batch: &RecordBatch, out: &mut Vec<Vec<u32>>) -> Result<()> {
+        match self {
+            Self::Hash {
+                exprs,
+                reducer,
+                hash_buffer,
+            } => compute_partition_indices(batch, exprs, *reducer, hash_buffer, out),
+            Self::Range(expr) => compute_range_partition_indices(batch, expr, out),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1348,10 +1410,15 @@ mod tests {
     use crate::error::BallistaError;
     use crate::execution_plans::ChaosExec;
     use datafusion::arrow::array::{NullArray, StringArray, UInt32Array};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::compute::SortOptions;
+    use datafusion::arrow::datatypes::{DataType, Field, Int64Type, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::common::ScalarValue;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
+    use datafusion::physical_expr::{
+        LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
+    };
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::prelude::SessionContext;
@@ -2355,5 +2422,211 @@ mod tests {
                 "partition assignment for row {row} differs from BatchPartitioner"
             );
         }
+    }
+
+    /// A range partitioning on the `Int64` key `k`.
+    fn int_range_partitioning(
+        options: SortOptions,
+        split_points: &[i64],
+    ) -> Partitioning {
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
+            Arc::new(Column::new("k", 0)),
+            options,
+        )])
+        .unwrap();
+        let split_points = split_points
+            .iter()
+            .map(|&v| SplitPoint::new(vec![ScalarValue::Int64(Some(v))]))
+            .collect();
+        Partitioning::Range(RangePartitioning::try_new(ordering, split_points).unwrap())
+    }
+
+    /// `(k, id)` rows; `id` makes each row identifiable after a shuffle.
+    fn keyed_batch(rows: &[(Option<i64>, i64)]) -> RecordBatch {
+        use datafusion::arrow::array::Int64Array;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, true),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let keys = Int64Array::from_iter(rows.iter().map(|(k, _)| *k));
+        let ids = Int64Array::from_iter_values(rows.iter().map(|(_, id)| *id));
+        RecordBatch::try_new(schema, vec![Arc::new(keys), Arc::new(ids)]).unwrap()
+    }
+
+    /// The `(k, id)` rows of `batch`.
+    fn rows_of(batch: &RecordBatch) -> Vec<(Option<i64>, i64)> {
+        let keys = batch.column(0).as_primitive::<Int64Type>();
+        let ids = batch.column(1).as_primitive::<Int64Type>();
+        keys.iter().zip(ids.values().iter().copied()).collect()
+    }
+
+    /// Route `batch` through a [`RowRouter`] built for `partitioning`.
+    fn route(partitioning: &Partitioning, batch: &RecordBatch) -> Vec<Vec<u32>> {
+        let mut router = RowRouter::try_new(partitioning.clone()).unwrap();
+        let mut out = Vec::new();
+        router.assign(batch, &mut out).unwrap();
+        out
+    }
+
+    /// Ranges are lower-inclusive: a value equal to a split point opens the next.
+    #[test]
+    fn range_routing_sends_a_row_equal_to_a_split_point_to_the_range_it_opens() {
+        let partitioning =
+            int_range_partitioning(SortOptions::new(false, false), &[10, 20]);
+        let batch = keyed_batch(&[
+            (Some(-5), 0),
+            (Some(9), 1),
+            (Some(10), 2),
+            (Some(11), 3),
+            (Some(19), 4),
+            (Some(20), 5),
+            (Some(21), 6),
+        ]);
+
+        assert_eq!(
+            route(&partitioning, &batch),
+            vec![vec![0, 1], vec![2, 3, 4], vec![5, 6]]
+        );
+    }
+
+    #[test]
+    fn range_partitioning_without_split_points_routes_everything_to_partition_zero() {
+        let partitioning = int_range_partitioning(SortOptions::new(false, false), &[]);
+        let batch = keyed_batch(&[(Some(-1), 0), (None, 1), (Some(1_000), 2)]);
+
+        assert_eq!(route(&partitioning, &batch), vec![vec![0, 1, 2]]);
+    }
+
+    /// Reused buffers must not carry rows over from the previous batch.
+    #[test]
+    fn range_routing_reuses_its_buffers_across_batches() {
+        let partitioning = int_range_partitioning(SortOptions::new(false, false), &[10]);
+        let mut router = RowRouter::try_new(partitioning).unwrap();
+        let mut out = Vec::new();
+
+        router
+            .assign(&keyed_batch(&[(Some(1), 0), (Some(50), 1)]), &mut out)
+            .unwrap();
+        assert_eq!(out, vec![vec![0], vec![1]]);
+
+        router
+            .assign(&keyed_batch(&[(Some(60), 0)]), &mut out)
+            .unwrap();
+        assert_eq!(out, vec![Vec::<u32>::new(), vec![0]]);
+    }
+
+    /// Rows must land where DataFusion's own `BatchPartitioner` puts them, for
+    /// ascending, descending and compound keys.
+    #[test]
+    fn range_routing_matches_batch_partitioner() {
+        use datafusion::physical_plan::metrics::Time;
+        use datafusion::physical_plan::repartition::BatchPartitioner;
+
+        // (k ASC NULLS LAST, id DESC): within one `k`, a larger `id` sorts first.
+        let compound = LexOrdering::new(vec![
+            PhysicalSortExpr::new(
+                Arc::new(Column::new("k", 0)),
+                SortOptions::new(false, false),
+            ),
+            PhysicalSortExpr::new(
+                Arc::new(Column::new("id", 1)),
+                SortOptions::new(true, false),
+            ),
+        ])
+        .unwrap();
+        let split = |k: i64, id: i64| {
+            SplitPoint::new(vec![
+                ScalarValue::Int64(Some(k)),
+                ScalarValue::Int64(Some(id)),
+            ])
+        };
+        let partitionings = [
+            int_range_partitioning(SortOptions::new(false, true), &[-3, 0, 4, 9]),
+            // The split points descend with the key.
+            int_range_partitioning(SortOptions::new(true, false), &[9, 4, 0, -3]),
+            Partitioning::Range(
+                RangePartitioning::try_new(
+                    compound,
+                    vec![split(0, 30), split(0, 10), split(4, 40)],
+                )
+                .unwrap(),
+            ),
+        ];
+
+        // Keys land on, just below and just above the split points, with nulls
+        // mixed in.
+        let rows: Vec<_> = (0..60)
+            .map(|i| ((i % 11 != 0).then_some(i % 17 - 5), i))
+            .collect();
+        for partitioning in &partitionings {
+            let Partitioning::Range(range) = partitioning else {
+                unreachable!()
+            };
+            let batch = keyed_batch(&rows);
+            let ours = route(partitioning, &batch);
+
+            let mut expected = vec![usize::MAX; rows.len()];
+            BatchPartitioner::new_range_partitioner(range, Time::default())
+                .partition(batch, |partition, sub_batch| {
+                    for (_, id) in rows_of(&sub_batch) {
+                        expected[id as usize] = partition;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+
+            for (row, &partition) in expected.iter().enumerate() {
+                assert!(
+                    ours[partition].contains(&(row as u32)),
+                    "{range}: row {row} ({:?}) routed differently from BatchPartitioner",
+                    rows[row].0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sort_shuffle_writer_rejects_partitioning_it_cannot_route() -> Result<()> {
+        let err = SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            create_test_input()?,
+            String::new(),
+            Partitioning::RoundRobinBatch(4),
+            SortShuffleConfig::default(),
+        )
+        .expect_err("round-robin has no key to route by")
+        .to_string();
+
+        assert!(err.contains("Hash and Range"), "actual: {err}");
+        Ok(())
+    }
+
+    /// Expression visitors must reach a range key as they do a hash key.
+    #[test]
+    fn range_partitioned_writer_exposes_its_key_expression() -> Result<()> {
+        let batch = keyed_batch(&[(Some(1), 0)]);
+        let writer = SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            MemorySourceConfig::try_new_exec(
+                &[vec![batch.clone()]],
+                batch.schema(),
+                None,
+            )?,
+            String::new(),
+            int_range_partitioning(SortOptions::new(false, false), &[10]),
+            SortShuffleConfig::default(),
+        )?;
+
+        let mut visited = Vec::new();
+        writer.apply_expressions(&mut |expr| {
+            visited.push(expr.to_string());
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+
+        assert_eq!(visited, vec!["k@0".to_string()]);
+        Ok(())
     }
 }

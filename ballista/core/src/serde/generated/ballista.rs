@@ -515,6 +515,9 @@ pub struct SortShuffleWriterExecNode {
     pub output_partitioning: ::core::option::Option<
         ::datafusion_proto::protobuf::PhysicalHashRepartition,
     >,
+    /// Range output partitioning; a hash stage sets `output_partitioning` instead.
+    #[prost(message, optional, tag = "11")]
+    pub partitioning: ::core::option::Option<::datafusion_proto::protobuf::Partitioning>,
     /// Target batch size in rows when materializing buffered shuffle data.
     #[prost(uint64, tag = "8")]
     pub batch_size: u64,

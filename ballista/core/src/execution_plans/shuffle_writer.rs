@@ -174,8 +174,8 @@ pub(crate) fn walk_child_partition_mapping(
 ///
 /// Two cases:
 ///
-/// - `SortShuffleWriter(Hash(K))` — KSpace by construction; the K-space
-///   `[0..K-1]` is intrinsic. Input ids are irrelevant.
+/// - `SortShuffleWriter(Hash(K) | Range(K))` — KSpace by construction; the
+///   K-space `[0..K-1]` is intrinsic. Input ids are irrelevant.
 /// - `ShuffleWriter` — always passthrough; the child's plan shape decides:
 ///   - `SortPreservingMergeExec` in the child chain → `[0]` (collapse).
 ///   - `RepartitionExec(Hash|RoundRobin)` in the child chain → `[0..K-1]`.
@@ -189,10 +189,7 @@ pub fn compute_global_output_partition_ids(
     global_input_partition_ids: &[usize],
 ) -> Vec<usize> {
     if let Some(w) = stage_plan.downcast_ref::<SortShuffleWriterExec>() {
-        let Partitioning::Hash(_, k) = w.shuffle_output_partitioning() else {
-            unreachable!("SortShuffleWriterExec is Hash-partitioned by construction");
-        };
-        return (0..*k).collect();
+        return (0..w.shuffle_output_partitioning().partition_count()).collect();
     }
     if let Some(w) = stage_plan.downcast_ref::<PipelinedShuffleWriterExec>()
         && let Some(Partitioning::Hash(_, k)) = w.shuffle_output_partitioning()
@@ -1439,5 +1436,35 @@ mod tests {
             Arc::new(MemorySourceConfig::try_new(&partitions, schema, None)?);
 
         Ok(Arc::new(DataSourceExec::new(memory_data_source)))
+    }
+
+    #[test]
+    fn range_sort_shuffle_output_ids_do_not_follow_the_input_slice() -> Result<()> {
+        use crate::execution_plans::sort_shuffle::SortShuffleConfig;
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_expr::{
+            LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
+        };
+
+        let split = |v| SplitPoint::new(vec![ScalarValue::UInt32(Some(v))]);
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(
+            Column::new("a", 0),
+        ))])
+        .unwrap();
+        let range = RangePartitioning::try_new(ordering, vec![split(10), split(20)])?;
+        let writer: Arc<dyn ExecutionPlan> = Arc::new(SortShuffleWriterExec::try_new(
+            "job".into(),
+            1,
+            create_input_plan()?,
+            String::new(),
+            Partitioning::Range(range),
+            SortShuffleConfig::default(),
+        )?);
+
+        assert_eq!(
+            compute_global_output_partition_ids(&writer, &[5, 6]),
+            vec![0, 1, 2]
+        );
+        Ok(())
     }
 }

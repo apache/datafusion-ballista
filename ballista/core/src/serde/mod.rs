@@ -658,16 +658,26 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             PhysicalPlanType::SortShuffleWriter(sort_shuffle_writer) => {
                 let input = inputs[0].clone();
 
-                let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
-                    sort_shuffle_writer.output_partitioning.as_ref(),
-                    &decode_ctx,
-                    input.schema().as_ref(),
-                    &converter,
-                )?;
-
-                let partitioning = shuffle_output_partitioning.ok_or_else(|| {
+                // Range travels in `partitioning`; hash in `output_partitioning`,
+                // which is all an older plan carries.
+                let partitioning = match &sort_shuffle_writer.partitioning {
+                    Some(partitioning) => parse_protobuf_partitioning(
+                        Some(partitioning),
+                        &decode_ctx,
+                        input.schema().as_ref(),
+                        &converter,
+                    )?,
+                    None => parse_protobuf_hash_partitioning(
+                        sort_shuffle_writer.output_partitioning.as_ref(),
+                        &decode_ctx,
+                        input.schema().as_ref(),
+                        &converter,
+                    )?,
+                }
+                .ok_or_else(|| {
                     DataFusionError::Internal(
-                        "SortShuffleWriterExec requires hash partitioning".to_string(),
+                        "SortShuffleWriterExec requires hash or range partitioning"
+                            .to_string(),
                     )
                 })?;
 
@@ -1222,17 +1232,29 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             Ok(())
         } else if let Some(exec) = node.downcast_ref::<SortShuffleWriterExec>() {
-            let output_partitioning = match exec.shuffle_output_partitioning() {
+            // Hash keeps its own field, so a hash plan is encoded as before.
+            let (output_partitioning, partitioning) = match exec
+                .shuffle_output_partitioning()
+            {
                 Partitioning::Hash(exprs, partition_count) => {
-                    Some(serialize_hash_partitioning(
+                    let hash = serialize_hash_partitioning(
                         exprs,
                         *partition_count,
                         self.default_codec.as_ref(),
-                    )?)
+                    )?;
+                    (Some(hash), None)
+                }
+                range @ Partitioning::Range(_) => {
+                    let proto = serialize_partitioning(
+                        range,
+                        self.default_codec.as_ref(),
+                        &DefaultPhysicalProtoConverter {},
+                    )?;
+                    (None, Some(proto))
                 }
                 other => {
                     return Err(DataFusionError::Internal(format!(
-                        "SortShuffleWriterExec requires Hash partitioning, got: {other:?}"
+                        "SortShuffleWriterExec requires Hash or Range partitioning, got: {other:?}"
                     )));
                 }
             };
@@ -1249,6 +1271,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         memory_limit_per_task_bytes: Some(
                             config.memory_limit_per_task_bytes as u64,
                         ),
+                        partitioning,
                     },
                 )),
             };
@@ -2260,6 +2283,125 @@ mod test {
             );
             assert_eq!(decoded_exec.config().batch_size, 4096);
         }
+    }
+
+    /// A compound range partitioning with mixed sort directions.
+    fn test_range_partitioning(schema: &SchemaRef) -> Partitioning {
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_expr::{
+            LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
+        };
+
+        let ordering = LexOrdering::new(vec![
+            PhysicalSortExpr::new(
+                col("id", schema.as_ref()).unwrap(),
+                SortOptions::new(true, true),
+            ),
+            PhysicalSortExpr::new(
+                col("name", schema.as_ref()).unwrap(),
+                SortOptions::new(false, false),
+            ),
+        ])
+        .unwrap();
+        // `id` descends, so its split points do too.
+        let split = |id: i32, name: &str| {
+            SplitPoint::new(vec![
+                ScalarValue::Int32(Some(id)),
+                ScalarValue::Utf8(Some(name.to_string())),
+            ])
+        };
+        Partitioning::Range(
+            RangePartitioning::try_new(ordering, vec![split(90, "m"), split(40, "a")])
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_sort_shuffle_writer_exec_roundtrip_range_partitioning() {
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = create_test_schema();
+        let partitioning = test_range_partitioning(&schema);
+        let writer = SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            Arc::new(EmptyExec::new(schema)),
+            String::new(),
+            partitioning.clone(),
+            SortShuffleConfig::new(true, 4096),
+        )
+        .unwrap();
+
+        let decoded = roundtrip_plan(Arc::new(writer));
+
+        let decoded = decoded
+            .downcast_ref::<SortShuffleWriterExec>()
+            .expect("Expected SortShuffleWriterExec");
+        assert_eq!(decoded.shuffle_output_partitioning(), &partitioning);
+    }
+
+    /// A hash plan is encoded as before: in `output_partitioning`, with no
+    /// `partitioning`.
+    #[tokio::test]
+    async fn test_hash_sort_shuffle_writer_keeps_the_hash_partitioning_field() {
+        use datafusion::physical_plan::empty::EmptyExec;
+        use prost::Message;
+
+        let schema = create_test_schema();
+        let writer = SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            Arc::new(EmptyExec::new(schema.clone())),
+            String::new(),
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 4),
+            SortShuffleConfig::new(true, 4096),
+        )
+        .unwrap();
+
+        let mut buf = vec![];
+        BallistaPhysicalExtensionCodec::default()
+            .try_encode(
+                Arc::new(writer),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
+
+        let node = protobuf::BallistaPhysicalPlanNode::decode(buf.as_slice()).unwrap();
+        let Some(PhysicalPlanType::SortShuffleWriter(writer)) = node.physical_plan_type
+        else {
+            panic!("expected a SortShuffleWriter node");
+        };
+        assert_eq!(
+            writer.output_partitioning.map(|hash| hash.partition_count),
+            Some(4)
+        );
+        assert!(writer.partitioning.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_range_partitioned_shuffle_readers_roundtrip() {
+        let schema = create_test_schema();
+        let partitioning = test_range_partitioning(&schema);
+
+        let unresolved =
+            UnresolvedShuffleExec::new(1, schema.clone(), partitioning.clone());
+        let decoded = roundtrip_plan(Arc::new(unresolved));
+        let decoded = decoded
+            .downcast_ref::<UnresolvedShuffleExec>()
+            .expect("Expected UnresolvedShuffleExec");
+        assert_eq!(&decoded.properties().partitioning, &partitioning);
+        assert_eq!(decoded.output_partition_count, 3);
+
+        let reader =
+            ShuffleReaderExec::try_new(1, vec![vec![]; 3], schema, partitioning.clone())
+                .unwrap();
+        let decoded = roundtrip_plan(Arc::new(reader));
+        let decoded = decoded
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("Expected ShuffleReaderExec");
+        assert_eq!(&decoded.properties().partitioning, &partitioning);
     }
 
     #[tokio::test]
