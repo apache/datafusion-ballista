@@ -66,6 +66,7 @@ message BallistaPhysicalPlanNode {
     PipelinedShuffleWriterExecNode pipelined_shuffle_writer = 18;
     PipelinedShuffleReaderExecNode pipelined_shuffle_reader = 19;
     RuntimeFilterExecNode runtime_filter = 20;
+    PartitionIdRepartitionExecNode partition_id_repartition = 21;
   }
 }
 
@@ -133,6 +134,25 @@ message PipelinedPartitionLocation {
   // The producer task within its stage.
   uint32 task_id = 2;
   ExecutorMetadata executor_meta = 3;
+}
+
+// Where a shuffle finds each row's output partition: the value of an integer
+// column of the shuffle's input, which the shuffle drops before writing.
+message PartitionIdRouting {
+  // Index of the integer input column holding the partition id.
+  uint32 column = 1;
+  // Number of output partitions. Ids must lie in `0..partition_count`.
+  uint32 partition_count = 2;
+}
+
+// Exchange marker that the distributed planner lowers to a stage boundary whose
+// shuffle writer routes rows by an input column instead of hashing them. It never
+// executes. The child plan is plumbed by the framework as `inputs[0]`.
+message PartitionIdRepartitionExecNode {
+  // Index of the integer input column holding the partition id.
+  uint32 partition_id_column = 1;
+  // Number of output partitions.
+  uint32 partition_count = 2;
 }
 
 message DistributedQueryExecNode {
@@ -397,12 +417,18 @@ message SortShuffleWriterExecNode {
   string job_id = 1;
   uint32 stage_id = 2;
   datafusion.PhysicalPlanNode input = 3;
-  // Hash output partitioning. Unset when `partitioning` carries the scheme.
-  datafusion.PhysicalHashRepartition output_partitioning = 4;
-  // Output partitioning for the schemes `output_partitioning` cannot carry
-  // (range). Hash stages keep using `output_partitioning`, so plans written
-  // before this field existed decode unchanged. Wins when both are set.
-  datafusion.Partitioning partitioning = 11;
+  // How rows are assigned to output partitions. Exactly one is set; a writer
+  // that predates a routing sees none of the fields it knows and rejects the
+  // node instead of hashing.
+  oneof routing {
+    // Hash routing. Hash stages always use this field, so a hash plan reads
+    // the same as before the other routings existed.
+    datafusion.PhysicalHashRepartition output_partitioning = 4;
+    // Route by an integer column of the input, computed by the client.
+    PartitionIdRouting partition_id_routing = 10;
+    // Range routing: the schemes `output_partitioning` cannot carry.
+    datafusion.Partitioning partitioning = 11;
+  }
   // Target batch size in rows when materializing buffered shuffle data.
   uint64 batch_size = 8;
   // Per-task buffered-bytes budget at which the writer spills its in-memory

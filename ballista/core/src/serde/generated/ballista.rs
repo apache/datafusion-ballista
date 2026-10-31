@@ -35,7 +35,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -86,10 +86,13 @@ pub mod ballista_physical_plan_node {
         PipelinedShuffleReader(super::PipelinedShuffleReaderExecNode),
         #[prost(message, tag = "20")]
         RuntimeFilter(super::RuntimeFilterExecNode),
+        #[prost(message, tag = "21")]
+        PartitionIdRepartition(super::PartitionIdRepartitionExecNode),
     }
 }
 /// Build taps and probe filters share the expression/id wire contract. A missing
 /// payload on an apply node means pass-through (timeout or unsupported producer).
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RuntimeFilterExecNode {
     #[prost(uint64, tag = "1")]
@@ -103,6 +106,7 @@ pub struct RuntimeFilterExecNode {
 }
 /// Version 2 uses DataFusion batch hashing with seed 0, a fixed 8 KiB Bloom
 /// filter, an optional IN hash set, and MinMax bounds. Merge is a union.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RuntimeFilterPayload {
     #[prost(uint64, tag = "1")]
@@ -184,6 +188,31 @@ pub struct PipelinedPartitionLocation {
     pub task_id: u32,
     #[prost(message, optional, tag = "3")]
     pub executor_meta: ::core::option::Option<ExecutorMetadata>,
+}
+/// Where a shuffle finds each row's output partition: the value of an integer
+/// column of the shuffle's input, which the shuffle drops before writing.
+#[allow(clippy::all)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PartitionIdRouting {
+    /// Index of the integer input column holding the partition id.
+    #[prost(uint32, tag = "1")]
+    pub column: u32,
+    /// Number of output partitions. Ids must lie in `0..partition_count`.
+    #[prost(uint32, tag = "2")]
+    pub partition_count: u32,
+}
+/// Exchange marker that the distributed planner lowers to a stage boundary whose
+/// shuffle writer routes rows by an input column instead of hashing them. It never
+/// executes. The child plan is plumbed by the framework as `inputs\[0\]`.
+#[allow(clippy::all)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PartitionIdRepartitionExecNode {
+    /// Index of the integer input column holding the partition id.
+    #[prost(uint32, tag = "1")]
+    pub partition_id_column: u32,
+    /// Number of output partitions.
+    #[prost(uint32, tag = "2")]
+    pub partition_count: u32,
 }
 #[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -544,16 +573,6 @@ pub struct SortShuffleWriterExecNode {
     pub stage_id: u32,
     #[prost(message, optional, tag = "3")]
     pub input: ::core::option::Option<::datafusion_proto::protobuf::PhysicalPlanNode>,
-    /// Hash output partitioning. Unset when `partitioning` carries the scheme.
-    #[prost(message, optional, tag = "4")]
-    pub output_partitioning: ::core::option::Option<
-        ::datafusion_proto::protobuf::PhysicalHashRepartition,
-    >,
-    /// Output partitioning for the schemes `output_partitioning` cannot carry
-    /// (range). Hash stages keep using `output_partitioning`, so plans written
-    /// before this field existed decode unchanged. Wins when both are set.
-    #[prost(message, optional, tag = "11")]
-    pub partitioning: ::core::option::Option<::datafusion_proto::protobuf::Partitioning>,
     /// Target batch size in rows when materializing buffered shuffle data.
     #[prost(uint64, tag = "8")]
     pub batch_size: u64,
@@ -563,6 +582,31 @@ pub struct SortShuffleWriterExecNode {
     /// before this field existed decodes to the built-in default rather than 0.
     #[prost(uint64, optional, tag = "9")]
     pub memory_limit_per_task_bytes: ::core::option::Option<u64>,
+    /// How rows are assigned to output partitions. Exactly one is set; a writer
+    /// that predates a routing sees none of the fields it knows and rejects the
+    /// node instead of hashing.
+    #[prost(oneof = "sort_shuffle_writer_exec_node::Routing", tags = "4, 10, 11")]
+    pub routing: ::core::option::Option<sort_shuffle_writer_exec_node::Routing>,
+}
+/// Nested message and enum types in `SortShuffleWriterExecNode`.
+pub mod sort_shuffle_writer_exec_node {
+    /// How rows are assigned to output partitions. Exactly one is set; a writer
+    /// that predates a routing sees none of the fields it knows and rejects the
+    /// node instead of hashing.
+    #[allow(clippy::all)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Routing {
+        /// Hash routing. Hash stages always use this field, so a hash plan reads
+        /// the same as before the other routings existed.
+        #[prost(message, tag = "4")]
+        OutputPartitioning(::datafusion_proto::protobuf::PhysicalHashRepartition),
+        /// Route by an integer column of the input, computed by the client.
+        #[prost(message, tag = "10")]
+        PartitionIdRouting(super::PartitionIdRouting),
+        /// Range routing: the schemes `output_partitioning` cannot carry.
+        #[prost(message, tag = "11")]
+        Partitioning(::datafusion_proto::protobuf::Partitioning),
+    }
 }
 /// Passthrough shuffle writer that emits the seekable Arrow IPC file format.
 /// Carries no output partitioning: like `ShuffleWriterExecNode`'s passthrough

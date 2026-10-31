@@ -174,9 +174,9 @@ pub(crate) fn walk_child_partition_mapping(
 ///
 /// Two cases:
 ///
-/// - `SortShuffleWriter(Hash(K) | Range(K))` — KSpace by construction; the
-///   K-space `[0..K-1]` is intrinsic, whether rows are routed by hash or by
-///   value range. Input ids are irrelevant.
+/// - `SortShuffleWriter` — KSpace by construction, however it routes rows (by
+///   hash, by value range, or by partition id); the K-space `[0..K-1]` is
+///   intrinsic. Input ids are irrelevant.
 /// - `ShuffleWriter` — always passthrough; the child's plan shape decides:
 ///   - `SortPreservingMergeExec` in the child chain → `[0]` (collapse).
 ///   - `RepartitionExec(Hash|RoundRobin)` in the child chain → `[0..K-1]`.
@@ -190,7 +190,7 @@ pub fn compute_global_output_partition_ids(
     global_input_partition_ids: &[usize],
 ) -> Vec<usize> {
     if let Some(w) = stage_plan.downcast_ref::<SortShuffleWriterExec>() {
-        return (0..w.shuffle_output_partitioning().partition_count()).collect();
+        return (0..w.routing().partition_count()).collect();
     }
     if let Some(w) = stage_plan.downcast_ref::<PipelinedShuffleWriterExec>()
         && let Some(Partitioning::Hash(_, k)) = w.shuffle_output_partitioning()
