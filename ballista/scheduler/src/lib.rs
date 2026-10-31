@@ -19,6 +19,8 @@
 #![warn(missing_docs)]
 /// REST API endpoints for scheduler operations.
 pub mod api;
+/// Reading materialized `DataFrame::cache()` output back into a query.
+pub mod cache;
 /// Cluster management and executor coordination.
 pub mod cluster;
 /// Scheduler configuration options.

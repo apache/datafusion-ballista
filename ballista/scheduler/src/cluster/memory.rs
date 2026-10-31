@@ -202,24 +202,23 @@ impl ClusterState for InMemoryClusterState {
             }
         }
 
-        //
-        // pull based executor sends `save_executor_metadata`
-        // with all requests, not `ExecutorHeartbeat`, to make it consistent
-        // with push based, registering `ExecutorHeartbeat` every time
-        //
-        let heartbeat = ExecutorHeartbeat {
-            executor_id,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("Time went backwards")
-                .as_secs(),
-            metrics: vec![],
-            status: None,
-            peak_proc_physical_memory: 0,
-            peak_proc_virtual_memory: 0,
-        };
-        self.save_executor_heartbeat(heartbeat).await
-        // Ok(())
+        // A poll refreshes the heartbeat timestamp and keeps the last status,
+        // metrics and peaks; see the `ClusterState::save_executor_metadata`
+        // docs. The entry is updated in place so a heartbeat saved
+        // concurrently isn't overwritten.
+        let timestamp = timestamp_secs();
+        self.heartbeats
+            .entry(executor_id.clone())
+            .and_modify(|heartbeat| heartbeat.timestamp = timestamp)
+            .or_insert_with(|| ExecutorHeartbeat {
+                executor_id,
+                timestamp,
+                metrics: vec![],
+                status: None,
+                peak_proc_physical_memory: 0,
+                peak_proc_virtual_memory: 0,
+            });
+        Ok(())
     }
 
     async fn get_executor_metadata(&self, executor_id: &str) -> Result<ExecutorMetadata> {
@@ -280,6 +279,17 @@ impl ClusterState for InMemoryClusterState {
 
     async fn cluster_state_events(&self) -> Result<ClusterStateEventStream> {
         Ok(Box::pin(self.cluster_event_sender.subscribe()))
+    }
+}
+
+#[cfg(test)]
+impl InMemoryClusterState {
+    /// Drop metadata for `executor_id` while leaving its available vcores.
+    ///
+    /// Simulates a transient miss from a non-memory [`ClusterState`] backend
+    /// after tasks have already been bound (see #2686).
+    pub(crate) fn drop_executor_metadata(&self, executor_id: &str) {
+        self.executors.remove(executor_id);
     }
 }
 
@@ -580,6 +590,18 @@ impl CacheState for InMemoryCacheState {
         Ok(self
             .registry
             .complete_materialization(key, job_id, schema, locations))
+    }
+
+    async fn pending_job(&self, key: &CacheKey) -> Result<Option<JobId>> {
+        Ok(self.registry.pending_job(key))
+    }
+
+    async fn invalidate_if(
+        &self,
+        key: &CacheKey,
+        materializing_job: &JobId,
+    ) -> Result<Option<MaterializedCache>> {
+        Ok(self.registry.invalidate_if(key, materializing_job))
     }
 
     async fn abort_materialization(

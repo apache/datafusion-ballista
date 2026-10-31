@@ -44,16 +44,22 @@ use ballista_core::serde::scheduler::{
 use ballista_core::serde::{BallistaCodec, protobuf};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::DataFusionError;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::{TableProvider, TableType};
+use datafusion::execution::TaskContext;
 use datafusion::execution::context::{SessionConfig, SessionContext};
 use datafusion::functions_aggregate::{count::count, sum::sum};
 use datafusion::logical_expr::{Expr, LogicalPlan, SortExpr};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    SendableRecordBatchStream,
+};
 use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
-use crate::cluster::{BallistaCluster, JobStateEventStream};
+use crate::cluster::{BallistaCluster, CacheState, JobStateEventStream};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{
@@ -521,6 +527,32 @@ impl SchedulerTest {
             status_receiver: Some(status_receiver),
             unreachable_executors: Arc::default(),
         })
+    }
+
+    /// Switches the session's adaptive query planner on or off. The harness pins
+    /// it off; tests of behaviour that must hold under the default planner turn
+    /// it back on.
+    pub fn set_adaptive_planner(&mut self, enabled: bool) {
+        self.session_config = self
+            .session_config
+            .clone()
+            .with_ballista_adaptive_query_planner(enabled);
+    }
+
+    /// Whether `job`'s execution graph is active, which is when the
+    /// scheduler's event handlers (for example, on executor loss) see it. A
+    /// job's status turns `Running` just before this.
+    pub fn is_active(&self, job_id: &JobId) -> bool {
+        self.scheduler
+            .state
+            .task_manager
+            .get_active_execution_graph(job_id)
+            .is_some()
+    }
+
+    /// Returns the scheduler's cache registry.
+    pub fn cache_state(&self) -> Arc<dyn CacheState> {
+        self.scheduler.state.cache_state.clone()
     }
 
     /// Returns the number of pending jobs.
@@ -1295,4 +1327,70 @@ pub fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
         )]));
     }
     DataSourceExec::from_data_source(builder.build())
+}
+
+/// Wraps a plan and fails every attempt to rewrite its children, so tests can
+/// force the plan rewrites done by stage transitions (resolve, rollback) to fail.
+#[derive(Debug)]
+pub struct FailingPlanRewriteExec {
+    input: Arc<dyn ExecutionPlan>,
+}
+
+impl DisplayAs for FailingPlanRewriteExec {
+    fn fmt_as(
+        &self,
+        _t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        write!(f, "FailingPlanRewriteExec")
+    }
+}
+
+impl ExecutionPlan for FailingPlanRewriteExec {
+    fn name(&self) -> &str {
+        "FailingPlanRewriteExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        self.input.properties()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn PhysicalExpr>,
+        ) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        Err(DataFusionError::Internal(
+            "forced plan rewrite failure".to_owned(),
+        ))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        self.input.execute(partition, context)
+    }
+}
+
+/// Wraps `plan` in a [`FailingPlanRewriteExec`] in place and returns the new plan.
+pub fn fail_plan_rewrites(plan: &mut Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let failing_plan: Arc<dyn ExecutionPlan> = Arc::new(FailingPlanRewriteExec {
+        input: Arc::clone(plan),
+    });
+    *plan = Arc::clone(&failing_plan);
+    failing_plan
 }

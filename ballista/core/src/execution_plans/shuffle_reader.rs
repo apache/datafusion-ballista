@@ -940,7 +940,7 @@ fn send_fetch_partitions(
 /// any batch has been yielded downstream can be recovered by fetching again.
 /// Only errors accepted by `should_retry` are retried; anything else is
 /// returned immediately on the first failure.
-async fn with_retry<T, F, Fut>(
+pub(crate) async fn with_retry<T, F, Fut>(
     retries: u8,
     wait_ms: u64,
     should_retry: impl Fn(&BallistaError) -> bool,
@@ -1042,7 +1042,7 @@ fn remote_body_stream(
     Box::pin(RecordBatchStreamAdapter::new(schema, body))
 }
 
-async fn new_ballista_client(
+pub(crate) async fn new_ballista_client(
     host: &str,
     port: u16,
     config: &GrpcClientConfig,

@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -75,7 +75,70 @@ pub mod ballista_physical_plan_node {
         DistributedQuery(super::DistributedQueryExecNode),
         #[prost(message, tag = "17")]
         DistributedExplainAnalyze(super::DistributedExplainAnalyzeExecNode),
+        #[prost(message, tag = "18")]
+        PipelinedShuffleWriter(super::PipelinedShuffleWriterExecNode),
+        #[prost(message, tag = "19")]
+        PipelinedShuffleReader(super::PipelinedShuffleReaderExecNode),
     }
+}
+/// Root of a stage in a pipelined job. Instead of writing shuffle files, it
+/// routes its input into bounded in-memory queues that consumer tasks stream
+/// from over Arrow Flight while the stage runs. The child plan is plumbed by
+/// the framework as `inputs\[0\]`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PipelinedShuffleWriterExecNode {
+    #[prost(string, tag = "1")]
+    pub job_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub stage_id: u32,
+    /// Hash repartitioning of the output. Absent for a passthrough stage, which
+    /// keeps its input partitioning.
+    #[prost(message, optional, tag = "3")]
+    pub output_partitioning: ::core::option::Option<
+        ::datafusion_proto::protobuf::PhysicalHashRepartition,
+    >,
+    /// Every consumer task reads every output partition in full (the build side
+    /// of a broadcast join), so outputs are retained for replay rather than
+    /// handed to a single reader.
+    #[prost(bool, tag = "4")]
+    pub broadcast: bool,
+}
+/// Leaf of a stage in a pipelined job that streams its input from the producer
+/// tasks of an upstream stage while they run.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PipelinedShuffleReaderExecNode {
+    /// One entry per output partition: the producer tasks to stream it from.
+    #[prost(message, repeated, tag = "1")]
+    pub partition: ::prost::alloc::vec::Vec<PipelinedReaderPartition>,
+    #[prost(message, optional, tag = "2")]
+    pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
+    /// The producer stage
+    #[prost(uint32, tag = "3")]
+    pub stage_id: u32,
+    #[prost(message, optional, tag = "4")]
+    pub partitioning: ::core::option::Option<::datafusion_proto::protobuf::Partitioning>,
+    /// A single logical output partition that streams every partition of every
+    /// producer task.
+    #[prost(bool, tag = "5")]
+    pub broadcast: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PipelinedReaderPartition {
+    #[prost(message, repeated, tag = "1")]
+    pub location: ::prost::alloc::vec::Vec<PipelinedPartitionLocation>,
+}
+/// Where a producer task of a pipelined stage serves one of its output
+/// partitions while it runs.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PipelinedPartitionLocation {
+    /// Job, producer stage and global output partition.
+    #[prost(message, optional, tag = "1")]
+    pub partition_id: ::core::option::Option<PartitionId>,
+    /// The producer task within its stage.
+    #[prost(uint32, tag = "2")]
+    pub task_id: u32,
+    #[prost(message, optional, tag = "3")]
+    pub executor_meta: ::core::option::Option<ExecutorMetadata>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedQueryExecNode {
@@ -718,7 +781,7 @@ pub struct Action {
     /// configuration settings
     #[prost(message, repeated, tag = "100")]
     pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
-    #[prost(oneof = "action::ActionType", tags = "3")]
+    #[prost(oneof = "action::ActionType", tags = "3, 4")]
     pub action_type: ::core::option::Option<action::ActionType>,
 }
 /// Nested message and enum types in `Action`.
@@ -728,6 +791,9 @@ pub mod action {
         /// Fetch a partition from an executor
         #[prost(message, tag = "3")]
         FetchPartition(super::FetchPartition),
+        /// Stream a partition from a running pipelined producer task
+        #[prost(message, tag = "4")]
+        FetchPipelinedPartition(super::FetchPipelinedPartition),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -792,6 +858,28 @@ pub struct FetchPartition {
     /// and it is why the range shuffle's index carries byte offsets at all.
     #[prost(message, repeated, tag = "11")]
     pub byte_ranges: ::prost::alloc::vec::Vec<ByteRange>,
+}
+/// Stream one output partition of a running pipelined producer task. The
+/// executor waits a bounded time for the task to start if it has not yet.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FetchPipelinedPartition {
+    #[prost(string, tag = "1")]
+    pub job_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub stage_id: u32,
+    #[prost(uint32, tag = "3")]
+    pub task_id: u32,
+    #[prost(uint32, tag = "4")]
+    pub partition_id: u32,
+    /// The executor serving the partition, for proxies that forward the request.
+    #[prost(string, tag = "5")]
+    pub host: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "6")]
+    pub port: u32,
+    /// How long the executor waits for the producer task to start, from the
+    /// consumer's session. Zero uses the executor's default.
+    #[prost(uint64, tag = "7")]
+    pub registration_timeout_ms: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionLocation {
@@ -1685,6 +1773,11 @@ pub struct SuccessfulJob {
     pub started_at: u64,
     #[prost(uint64, tag = "4")]
     pub ended_at: u64,
+    /// For a pipelined job: where its final stage served each output partition,
+    /// the same as in its running status. A small result can finish before a
+    /// polling client has seen the job running; the client can still read it.
+    #[prost(message, repeated, tag = "5")]
+    pub pipelined_output_locations: ::prost::alloc::vec::Vec<PipelinedPartitionLocation>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct QueuedJob {
@@ -1692,7 +1785,7 @@ pub struct QueuedJob {
     pub queued_at: u64,
 }
 /// TODO: add progress report
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunningJob {
     #[prost(uint64, tag = "1")]
     pub queued_at: u64,
@@ -1700,6 +1793,11 @@ pub struct RunningJob {
     pub started_at: u64,
     #[prost(string, tag = "3")]
     pub scheduler: ::prost::alloc::string::String,
+    /// Set for a pipelined job once its tasks are placed: where the final stage
+    /// serves each output partition. The client streams these while the job is
+    /// still running, since the final stage cannot finish until it is drained.
+    #[prost(message, repeated, tag = "4")]
+    pub pipelined_output_locations: ::prost::alloc::vec::Vec<PipelinedPartitionLocation>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FailedJob {

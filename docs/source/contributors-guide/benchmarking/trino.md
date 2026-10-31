@@ -58,7 +58,14 @@ reviewed by Trino experts.
 
 ## Reproducing
 
-The Trino numbers were collected with the same harness. It creates
-external Hive tables over the Parquet files, syncs their partitions, and runs
-each query once untimed and then three times, one query at a time, through the
-Trino client, with the settings on this page.
+The Trino numbers were collected with the same harness as the Spark numbers.
+[`benchmarks/cluster`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster)
+does the same with the settings on this page: it creates external Hive tables
+over the Parquet files, syncs their partitions, and runs each query once
+untimed and then three times, one query at a time, through Trino's HTTP
+protocol:
+
+```sh
+cd benchmarks/cluster
+python3 run.py --engine trino
+```

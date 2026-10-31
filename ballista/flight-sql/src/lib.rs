@@ -26,5 +26,5 @@ mod session;
 mod ticket;
 
 pub use auth::{AnonymousAuthenticator, Authenticator, Identity};
-pub use backend::{QueryBackend, QueryResult};
+pub use backend::{PipelinedOutput, QueryBackend, QueryResult};
 pub use service::{ANONYMOUS_SESSION, BallistaFlightSqlService};

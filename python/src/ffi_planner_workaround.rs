@@ -36,8 +36,13 @@
 //! `FFI_SessionRef`, mirrored below. It is only valid for the pinned
 //! `datafusion-ffi = "=55.2.0"`.
 //!
-//! TODO: remove once `datafusion-ffi` delegates file formats to
-//! `DefaultLogicalExtensionCodec` in `ForeignLogicalExtensionCodec`.
+//! The same codec also decodes inline Python UDF payloads locally. Decoded
+//! through the session's codec they would come back as foreign UDFs, which
+//! Ballista's codecs cannot inline again, so they would reach the scheduler
+//! by name only.
+//!
+//! TODO: remove the file-format part once `datafusion-ffi` delegates file
+//! formats to `DefaultLogicalExtensionCodec` in `ForeignLogicalExtensionCodec`.
 
 use async_ffi::FfiFuture;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -56,6 +61,7 @@ use datafusion_ffi::util::FFI_Result;
 use datafusion_proto::logical_plan::{
     DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
+use datafusion_python::codec::PythonLogicalCodec;
 use stabby::vec::Vec as SVec;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
@@ -159,6 +165,7 @@ unsafe extern "C" fn create_physical_plan(
     let logical_codec = FFI_LogicalExtensionCodec::new(
         Arc::new(FileFormatFallbackCodec {
             inner: (&layout.logical_codec).into(),
+            python: PythonLogicalCodec::default(),
         }),
         None,
         &task_ctx_provider,
@@ -182,11 +189,23 @@ unsafe extern "C" fn create_physical_plan(
     }
 }
 
+/// Family prefixes of inline Python UDF payloads written by
+/// [`PythonLogicalCodec`], mirroring datafusion-python's `pub(crate)` constants.
+const PY_SCALAR_UDF_FAMILY: &[u8] = b"DFPYUDF";
+const PY_AGG_UDF_FAMILY: &[u8] = b"DFPYUDA";
+const PY_WINDOW_UDF_FAMILY: &[u8] = b"DFPYUDW";
+
 /// Delegates to `inner`, falling back to [`DefaultLogicalExtensionCodec`]
 /// for file formats, which `ForeignLogicalExtensionCodec` cannot carry.
+///
+/// Inline Python UDFs are decoded with a local [`PythonLogicalCodec`], so
+/// they are native to this library and can be inlined again when the plan
+/// is sent to the scheduler.
 #[derive(Debug)]
 struct FileFormatFallbackCodec {
     inner: Arc<dyn LogicalExtensionCodec>,
+    /// Decodes inline Python UDF payloads
+    python: PythonLogicalCodec,
 }
 
 impl LogicalExtensionCodec for FileFormatFallbackCodec {
@@ -246,6 +265,9 @@ impl LogicalExtensionCodec for FileFormatFallbackCodec {
     }
 
     fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {
+        if buf.starts_with(PY_SCALAR_UDF_FAMILY) {
+            return self.python.try_decode_udf(name, buf);
+        }
         self.inner.try_decode_udf(name, buf)
     }
 
@@ -270,6 +292,9 @@ impl LogicalExtensionCodec for FileFormatFallbackCodec {
     }
 
     fn try_decode_udaf(&self, name: &str, buf: &[u8]) -> Result<Arc<AggregateUDF>> {
+        if buf.starts_with(PY_AGG_UDF_FAMILY) {
+            return self.python.try_decode_udaf(name, buf);
+        }
         self.inner.try_decode_udaf(name, buf)
     }
 
@@ -278,6 +303,9 @@ impl LogicalExtensionCodec for FileFormatFallbackCodec {
     }
 
     fn try_decode_udwf(&self, name: &str, buf: &[u8]) -> Result<Arc<WindowUDF>> {
+        if buf.starts_with(PY_WINDOW_UDF_FAMILY) {
+            return self.python.try_decode_udwf(name, buf);
+        }
         self.inner.try_decode_udwf(name, buf)
     }
 
