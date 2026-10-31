@@ -3499,7 +3499,9 @@ mod test {
     async fn losing_own_shuffle_output_restores_the_cache_reader() -> Result<()> {
         /// The own input's stage id, which the cache's build stage shares.
         const OWN_INPUT: usize = 2;
-        fn cache_reader_of(plan: &Arc<dyn ExecutionPlan>) -> Option<&ShuffleReaderExec> {
+        fn cache_reader_of(
+            plan: &Arc<dyn super::ExecutionPlan>,
+        ) -> Option<&ShuffleReaderExec> {
             plan.downcast_ref::<ShuffleReaderExec>()
                 .filter(|reader| is_external_stage_id(reader.stage_id))
                 .or_else(|| plan.children().into_iter().find_map(cache_reader_of))
