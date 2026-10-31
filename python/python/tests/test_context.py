@@ -533,7 +533,7 @@ def test_udf_join_key(cluster):
     # force a partitioned hash join, so both sides shuffle on the udf key
     ctx = BallistaSessionContext(
         address=f"df://{address}:{port}",
-        cluster_config={
+        config={
             "datafusion.optimizer.hash_join_single_partition_threshold": 0,
             "datafusion.optimizer.hash_join_single_partition_threshold_rows": 0,
         },
