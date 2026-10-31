@@ -62,6 +62,12 @@ impl StatsExec {
             cache: Arc::new(cache),
         }
     }
+
+    /// The row count this scan reports, used by the plan-stability fixture to
+    /// fingerprint the leaf without going through `Statistics`.
+    pub fn num_rows(&self) -> usize {
+        self.num_rows
+    }
 }
 
 impl DisplayAs for StatsExec {

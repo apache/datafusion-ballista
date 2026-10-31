@@ -19,18 +19,12 @@ SortShuffleWriterExec: partitioning=Hash([total_revenue@4], 16)
           AggregateExec: mode=FinalPartitioned, gby=[l_suppkey@0 as l_suppkey], aggr=[sum(lineitem.l_extendedprice * 1 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
             UnresolvedShuffleExec: stage=2, partitioning: Hash([l_suppkey@0], 16)
 
-=== Stage 4 ===
-SortShuffleWriterExec: partitioning=Hash([l_suppkey@0], 16)
-  AggregateExec: mode=Partial, gby=[l_suppkey@0 as l_suppkey], aggr=[sum(lineitem.l_extendedprice * 1 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
-    FilterExec: l_shipdate@3 >= 1996-01-01 AND l_shipdate@3 < 1996-04-01, projection=[l_suppkey@0, l_extendedprice@1, l_discount@2]
-      StatsExec: rows=600037902
-
 === Stage 5 ===
 ShuffleWriterExec: partitioning: Hash([l_suppkey@0], 16)
   AggregateExec: mode=Partial, gby=[], aggr=[max(revenue0.total_revenue)]
     ProjectionExec: expr=[sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@1 as total_revenue]
       AggregateExec: mode=FinalPartitioned, gby=[l_suppkey@0 as l_suppkey], aggr=[sum(lineitem.l_extendedprice * 1 - lineitem.l_discount) as sum(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
-        UnresolvedShuffleExec: stage=4, partitioning: Hash([l_suppkey@0], 16)
+        UnresolvedShuffleExec: stage=2, partitioning: Hash([l_suppkey@0], 16)
 
 === Stage 6 ===
 SortShuffleWriterExec: partitioning=Hash([max(revenue0.total_revenue)@0], 16)

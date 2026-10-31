@@ -28,3 +28,4 @@ pub mod join_selection;
 // prunes scan files by statistics at planning time
 // and spreads the survivors over the scan's file groups
 pub mod file_group_balance;
+pub mod reuse_exchange;
