@@ -30,8 +30,11 @@ number, and create a new release branch, such as `branch-0.11`. Once this branch
 back to using GitHub dependencies. The release activity (such as generating the changelog) can then happen on the
 release branch without blocking ongoing development in the `main` branch.
 
-We can cherry-pick commits from the `main` branch into `branch-0.11` as needed and then create new patch releases
-from that branch.
+The release branch then stays open for further releases until the next major version. Fixes and backward-compatible
+features are cherry-picked from `main` into the branch and released as minor releases, such as `55.1.0`, or as patch
+releases, such as `55.1.1`, when they are only fixes. Users then do not have to wait for the next DataFusion release.
+[Versioning and Compatibility](../../docs/source/user-guide/versioning.md) describes which changes can be released this
+way, and [Releasing from an existing release branch](#releasing-from-an-existing-release-branch) describes the process.
 
 This document covers the release of the Rust crates. The Python client in `python/` depends on
 [datafusion-python](https://github.com/apache/datafusion-python), which usually publishes a new major version some
@@ -81,6 +84,9 @@ Although some tasks can only be performed by a PMC member, many tasks can be per
 
 ### Preparing the `main` Branch
 
+This section is for major releases. For a minor or patch release, skip to
+[Releasing from an existing release branch](#releasing-from-an-existing-release-branch).
+
 Before creating a new release:
 
 - We need to ensure that the main branch does not have any GitHub dependencies
@@ -92,6 +98,41 @@ Before creating a new release:
 
 Once the release branch has been created, the `main` branch can immediately go back to depending on DataFusion with a
 GitHub dependency.
+
+### Releasing from an existing release branch
+
+A minor or patch release, such as `55.1.0`, is made from the existing release branch, `branch-55`, instead of a new
+one, and `main` does not need to be prepared. See
+[Versioning and Compatibility](../../docs/source/user-guide/versioning.md) for which changes can go into such a
+release.
+
+1. **Backport changes as they merge.** Contributors cherry-pick fixes and backward-compatible features from `main`
+   onto the release branch, as described in the
+   [development guide](../../docs/source/contributors-guide/development.md#backporting-to-a-release-branch), so that
+   the branch is always close to releasable.
+2. **Propose the release** on dev@datafusion.apache.org when the branch has changes worth shipping. About once a
+   month is a reasonable target. Every release needs a vote, so prefer one release with several changes to several
+   releases with one change each.
+3. **Check the branch** against the previous release, for example `55.0.0`:
+   - `BALLISTA_PROTOCOL_VERSION` in `ballista/core/src/lib.rs` must be unchanged.
+   - No PR merged to the branch may carry the `api-change` label. This should list nothing:
+     `gh pr list --repo apache/datafusion-ballista --base branch-55 --state merged --label api-change`
+   - `docs/source/upgrading/` has no new entries. A change that needs an upgrade note cannot be released in a
+     minor release.
+4. **Bump the version** in a PR against the release branch with `./dev/update_ballista_versions.py 55.1.0`. If there
+   is a newer DataFusion release of the same major version, also update `Cargo.lock` to it, for example with
+   `cargo update`, and run `dev/update_datafusion_proto.py` to re-sync the vendored proto files. Do not pin the patch
+   version in `Cargo.toml`, and leave `python/Cargo.lock` alone: the Python client moves to a new DataFusion release
+   only when datafusion-python supports it.
+5. **Generate the changelog** as described in [Change Log](#change-log), with the previous release as the first
+   argument: `./dev/release/generate-changelog.py 55.0.0 HEAD 55.1.0 > docs/source/changelog/55.1.0.md`. Send the PR
+   to the release branch, then add the same file and the `index.md` entry to `main` in a separate PR so that the docs
+   site lists the release.
+6. **Continue with [Prepare release candidate artifacts](#prepare-release-candidate-artifacts)** using the new
+   version. The remaining steps are the same as for a major release.
+
+The Python client does not have to be released with every minor release. When it has changes to ship, release it from
+the same branch, see its [release process](../../python/dev/release/README.md).
 
 ### Change Log
 
