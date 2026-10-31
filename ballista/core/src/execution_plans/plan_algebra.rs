@@ -36,7 +36,8 @@ use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 
 use crate::execution_plans::{
     BufferExec, PrefixMergeExec, RangeFilterExec, RangeShuffleWriterExec,
-    RuntimeStatsExec, ShuffleWriterExec, SortShuffleWriterExec,
+    RuntimeFilterApplyExec, RuntimeFilterBuildExec, RuntimeStatsExec, ShuffleWriterExec,
+    SortShuffleWriterExec,
 };
 
 /// Whitelisted ops preserve the routing key's row set, values, and
@@ -44,6 +45,7 @@ use crate::execution_plans::{
 pub fn preserves_distribution(plan: &dyn ExecutionPlan) -> bool {
     // Buffered batches replayed verbatim.
     plan.downcast_ref::<BufferExec>().is_some()
+        || plan.is::<RuntimeFilterBuildExec>()
         // Per-partition sort: rows reorder within a partition, row set
         // and counts unchanged. `preserve_partitioning=false` collapses
         // N→1 (like SortPreservingMergeExec), so gate on the flag.
@@ -68,6 +70,7 @@ pub fn preserves_partitioning(plan: &dyn ExecutionPlan) -> bool {
     preserves_distribution(plan)
         // Drops rows, but per-partition — no rows migrate.
         || plan.downcast_ref::<FilterExec>().is_some()
+        || plan.is::<RuntimeFilterApplyExec>()
         // Rewrites columns; partition boundaries untouched.
         || plan.downcast_ref::<ProjectionExec>().is_some()
         // Stats tap; no data mutation.
