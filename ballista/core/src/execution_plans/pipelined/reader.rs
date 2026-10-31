@@ -41,10 +41,11 @@ use super::registry::PipelinedRegistry;
 use crate::client_pool::{BallistaClientPool, SharedClient};
 use crate::config::{BallistaConfig, HTTP2_MAX_WINDOW_BYTES};
 use crate::error::BallistaError;
-use crate::execution_plans::shuffle_reader::{new_ballista_client, with_retry};
+use crate::execution_plans::shuffle_reader::new_ballista_client;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::scheduler::{PipelinedPartitionLocation, TaskKey};
 use crate::utils::GrpcClientConfig;
+use crate::utils::with_retry;
 
 /// The leaf of a stage in a pipelined job. Each output partition streams the
 /// matching partition of every producer task of the upstream stage, while
