@@ -23,7 +23,11 @@ use crate::config::{
     BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
     BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
-    BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
+    BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
+    BALLISTA_SKEW_JOIN_ADVISORY_PARTITION_BYTES, BALLISTA_SKEW_JOIN_ENABLED,
+    BALLISTA_SKEW_JOIN_PARTITION_THRESHOLD_BYTES,
+    BALLISTA_SKEW_JOIN_SKEWED_PARTITION_FACTOR,
+    BALLISTA_SKEW_JOIN_SMALL_PARTITION_FACTOR, BALLISTA_STANDALONE_PARALLELISM,
     BallistaConfig,
 };
 use crate::planner::BallistaQueryPlanner;
@@ -267,6 +271,34 @@ pub trait SessionConfigExt {
     fn ballista_coalesce_merged_partition_factor(&self) -> f64;
     /// Sets the merged-partition early-flush factor (Spark legacy).
     fn with_ballista_coalesce_merged_partition_factor(self, factor: f64) -> Self;
+
+    /// Returns whether the AQE optimize-skewed-join rule is enabled.
+    fn ballista_skew_join_enabled(&self) -> bool;
+    /// Sets whether the AQE optimize-skewed-join rule is enabled.
+    fn with_ballista_skew_join_enabled(self, enabled: bool) -> Self;
+
+    /// Returns the skewed-partition factor (Spark's
+    /// `skewedPartitionFactor`).
+    fn ballista_skew_join_skewed_partition_factor(&self) -> f64;
+    /// Sets the skewed-partition factor.
+    fn with_ballista_skew_join_skewed_partition_factor(self, factor: f64) -> Self;
+
+    /// Returns the absolute skewed-partition byte threshold
+    /// (Spark's `skewedPartitionThresholdInBytes`).
+    fn ballista_skew_join_partition_threshold_bytes(&self) -> usize;
+    /// Sets the absolute skewed-partition byte threshold.
+    fn with_ballista_skew_join_partition_threshold_bytes(self, bytes: usize) -> Self;
+
+    /// Returns the advisory target sub-shard byte size used by the bin-packer
+    /// when splitting a skewed partition.
+    fn ballista_skew_join_advisory_partition_bytes(&self) -> usize;
+    /// Sets the advisory target sub-shard byte size.
+    fn with_ballista_skew_join_advisory_partition_bytes(self, bytes: usize) -> Self;
+
+    /// Returns the tail-merge factor for the skew-join sub-shard bin-packer.
+    fn ballista_skew_join_small_partition_factor(&self) -> f64;
+    /// Sets the tail-merge factor for the skew-join sub-shard bin-packer.
+    fn with_ballista_skew_join_small_partition_factor(self, factor: f64) -> Self;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -618,6 +650,32 @@ impl SessionConfigExt for SessionConfig {
         f64,
         coalesce_merged_partition_factor,
         BALLISTA_COALESCE_MERGED_PARTITION_FACTOR
+    );
+
+    ballista_config_option!(bool, skew_join_enabled, BALLISTA_SKEW_JOIN_ENABLED);
+
+    ballista_config_option!(
+        f64,
+        skew_join_skewed_partition_factor,
+        BALLISTA_SKEW_JOIN_SKEWED_PARTITION_FACTOR
+    );
+
+    ballista_config_option!(
+        usize,
+        skew_join_partition_threshold_bytes,
+        BALLISTA_SKEW_JOIN_PARTITION_THRESHOLD_BYTES
+    );
+
+    ballista_config_option!(
+        usize,
+        skew_join_advisory_partition_bytes,
+        BALLISTA_SKEW_JOIN_ADVISORY_PARTITION_BYTES
+    );
+
+    ballista_config_option!(
+        f64,
+        skew_join_small_partition_factor,
+        BALLISTA_SKEW_JOIN_SMALL_PARTITION_FACTOR
     );
 }
 
