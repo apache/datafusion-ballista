@@ -45,7 +45,7 @@ use datafusion::datasource::physical_plan::{
 };
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::Result;
-use datafusion::physical_expr::Distribution;
+use datafusion::physical_expr::{Distribution, RangePartitioning};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::placeholder_row::PlaceholderRowExec;
@@ -221,6 +221,9 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
 /// - `new.execute(j)` ≡ `plan.execute(indices[j])`
 /// - `Partitioning` kind is preserved (`Hash(exprs, N) → Hash(exprs, |S|)`,
 ///   `RoundRobinBatch(N) → RoundRobinBatch(|S|)`, `Unknown(N) → Unknown(|S|)`).
+///   A `Range` slices its split points along with the partitions; see
+///   [`restrict_range_partitioning`] for the one case, a slice that does not
+///   ascend, where it reports `Unknown(|S|)` instead.
 /// - `new.schema() == plan.schema()`
 ///
 /// `None` means "unrecognised plan type — no idea how." The caller decides
@@ -261,9 +264,17 @@ fn select_output_partitions(
         if reader.broadcast {
             return Ok(Some(plan.clone()));
         }
-        let kept: Vec<Vec<_>> = indices
+        // Keep the indices alongside the locations: a range partitioning
+        // slices its split points by them. An index past the end is dropped,
+        // as it always was.
+        let kept_indices: Vec<usize> = indices
             .iter()
-            .filter_map(|&p| reader.partition.get(p).cloned())
+            .copied()
+            .filter(|&p| p < reader.partition.len())
+            .collect();
+        let kept: Vec<Vec<_>> = kept_indices
+            .iter()
+            .map(|&p| reader.partition[p].clone())
             .collect();
         let partitioning = match reader.properties().output_partitioning() {
             Partitioning::Hash(exprs, _) => Partitioning::Hash(exprs.clone(), kept.len()),
@@ -271,20 +282,8 @@ fn select_output_partitions(
             Partitioning::UnknownPartitioning(_) => {
                 Partitioning::UnknownPartitioning(kept.len())
             }
-            // TODO: map DataFusion's `Partitioning::Range` (new in 55) onto
-            // Ballista's own range shuffle. Restricting one means slicing its
-            // split points alongside the partition slice, the way the
-            // `RangeFilterExec` arm below slices `raw_bounds`; no reader
-            // carries those split points today. Until it does, refuse rather
-            // than downgrade to `UnknownPartitioning`, which would hand back a
-            // reader that under-reports its own partitioning.
-            Partitioning::Range(_) => {
-                return internal_err!(
-                    "cannot restrict a Range-partitioned ShuffleReaderExec \
-                     (stage {}): DataFusion range partitioning is not yet \
-                     mapped onto Ballista's range shuffle",
-                    reader.stage_id
-                );
+            Partitioning::Range(range) => {
+                restrict_range_partitioning(range, &kept_indices)
             }
         };
         let Ok(restricted) = ShuffleReaderExec::try_new(
@@ -398,6 +397,49 @@ fn select_output_partitions(
     }
 
     Ok(None)
+}
+
+/// `range` narrowed to the partitions `kept` selects, in `kept`'s order, so the
+/// restricted reader keeps reporting a range partitioning instead of
+/// downgrading to `UnknownPartitioning`.
+///
+/// Position `j` of the result is old partition `kept[j]`, so the boundary after
+/// it is that partition's upper split point. Everything at `j` is below it, and
+/// everything at `j + 1` is at or above it, because old partition `kept[j + 1]`
+/// starts no earlier than `kept[j]` ends. The last position has no boundary
+/// after it, which leaves one fewer split point than partitions, as
+/// `RangePartitioning` requires.
+///
+/// That only holds while `kept` ascends. A task's slice can run out of order
+/// (a retried partition is queued ahead of a later one that was never lost),
+/// and then positions no longer follow the key order, which no set of split
+/// points describes. An empty selection has no range partitioning either: a
+/// `RangePartitioning` always has at least one partition. Both fall back to
+/// `UnknownPartitioning`, which says less but nothing untrue. That is safe
+/// because a restricted plan is only executed from here on, never re-optimized
+/// against what its readers report, and failing the task instead would turn a
+/// harmless retry ordering into a failed job.
+fn restrict_range_partitioning(
+    range: &RangePartitioning,
+    kept: &[usize],
+) -> Partitioning {
+    let unknown = || Partitioning::UnknownPartitioning(kept.len());
+    let ascends = kept.windows(2).all(|pair| pair[0] < pair[1]);
+    let Some((_, leading)) = kept.split_last().filter(|_| ascends) else {
+        return unknown();
+    };
+    // A split point is missing only if the reader has more partitions than its
+    // own partitioning, which no planner produces; treat it as unknown rather
+    // than guess.
+    let Some(split_points) = leading
+        .iter()
+        .map(|&p| range.split_points().get(p).cloned())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return unknown();
+    };
+    RangePartitioning::try_new(range.ordering().clone(), split_points)
+        .map_or_else(|_| unknown(), Partitioning::Range)
 }
 
 #[cfg(test)]
@@ -750,5 +792,211 @@ mod tests {
         assert_eq!(reader.partition.len(), 2);
         assert_eq!(reader.partition[0][0].partition_id.partition_id, 1);
         assert_eq!(reader.partition[1][0].partition_id.partition_id, 3);
+    }
+
+    // --- Range-partitioned readers ---
+    //
+    // A reader fed by a range shuffle reports `Partitioning::Range`, and
+    // restricting it must slice the split points the same way it slices the
+    // locations, or the restricted reader would claim ranges its partitions do
+    // not hold.
+
+    use datafusion::arrow::compute::SortOptions;
+    use datafusion::common::ScalarValue;
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, SplitPoint};
+
+    /// The key `a`, ascending.
+    fn range_ordering() -> LexOrdering {
+        LexOrdering::new(vec![PhysicalSortExpr::new(
+            Arc::new(Column::new("a", 0)),
+            SortOptions {
+                descending: false,
+                nulls_first: false,
+            },
+        )])
+        .unwrap()
+    }
+
+    /// A reader over `n` partitions where partition `i` holds the keys in
+    /// `[10 * i, 10 * (i + 1))`: split points 10, 20, ... `10 * (n - 1)`.
+    fn range_shuffle_reader(n: usize) -> Arc<dyn ExecutionPlan> {
+        let split_points = (1..n)
+            .map(|i| SplitPoint::new(vec![ScalarValue::Int32(Some(10 * i as i32))]))
+            .collect();
+        let partitions = (0..n).map(|i| vec![create_partition(i)]).collect();
+        Arc::new(
+            ShuffleReaderExec::try_new(
+                1,
+                partitions,
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                Partitioning::Range(
+                    RangePartitioning::try_new(range_ordering(), split_points).unwrap(),
+                ),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The upper bounds of the key ranges a restricted reader reports, in
+    /// partition order; the last partition is unbounded above.
+    fn reported_split_points(plan: &Arc<dyn ExecutionPlan>) -> Vec<i32> {
+        let Partitioning::Range(range) = plan.properties().output_partitioning() else {
+            panic!(
+                "expected a range partitioning, got {}",
+                plan.properties().output_partitioning()
+            );
+        };
+        range
+            .split_points()
+            .iter()
+            .map(|split| match split.values() {
+                [ScalarValue::Int32(Some(v))] => *v,
+                other => panic!("unexpected split point {other:?}"),
+            })
+            .collect()
+    }
+
+    fn location_ids(plan: &Arc<dyn ExecutionPlan>) -> Vec<usize> {
+        plan.downcast_ref::<ShuffleReaderExec>()
+            .expect("expected a ShuffleReaderExec")
+            .partition
+            .iter()
+            .map(|locations| locations[0].partition_id.partition_id)
+            .collect()
+    }
+
+    #[test]
+    fn contiguous_slice_of_a_range_reader_keeps_the_ranges_between_its_split_points() {
+        // Partitions 1 and 2 of [..10) [10..20) [20..30) [30..40) [40..): they
+        // meet at 20, where partition 1 ends.
+        let restricted =
+            restrict_plan_to_partitions(range_shuffle_reader(5), &[1, 2]).unwrap();
+
+        assert_eq!(location_ids(&restricted), vec![1, 2]);
+        assert_eq!(reported_split_points(&restricted), vec![20]);
+        assert_eq!(
+            restricted
+                .properties()
+                .output_partitioning()
+                .partition_count(),
+            2
+        );
+    }
+
+    #[test]
+    fn gapped_slice_of_a_range_reader_splits_at_the_end_of_each_kept_partition() {
+        // Partitions 0 and 3 are not neighbours. The boundary between them can
+        // sit anywhere in the gap; 10, where partition 0 ends, is as good as any
+        // because nothing in the gap is read.
+        let restricted =
+            restrict_plan_to_partitions(range_shuffle_reader(5), &[0, 3]).unwrap();
+
+        assert_eq!(location_ids(&restricted), vec![0, 3]);
+        assert_eq!(reported_split_points(&restricted), vec![10]);
+    }
+
+    #[test]
+    fn single_partition_of_a_range_reader_has_no_split_points() {
+        let restricted =
+            restrict_plan_to_partitions(range_shuffle_reader(5), &[3]).unwrap();
+
+        assert_eq!(location_ids(&restricted), vec![3]);
+        assert_eq!(reported_split_points(&restricted), Vec::<i32>::new());
+        assert_eq!(
+            restricted
+                .properties()
+                .output_partitioning()
+                .partition_count(),
+            1
+        );
+    }
+
+    #[test]
+    fn restricting_a_range_reader_to_every_partition_changes_nothing() {
+        let reader = range_shuffle_reader(4);
+        let restricted =
+            restrict_plan_to_partitions(reader.clone(), &[0, 1, 2, 3]).unwrap();
+
+        assert_eq!(
+            restricted.properties().output_partitioning(),
+            reader.properties().output_partitioning()
+        );
+    }
+
+    /// The ordering, sort options included, is what the split points are
+    /// relative to, so it must come through restriction untouched.
+    #[test]
+    fn restricting_a_range_reader_keeps_its_ordering() {
+        let restricted =
+            restrict_plan_to_partitions(range_shuffle_reader(5), &[1, 2, 4]).unwrap();
+
+        let Partitioning::Range(range) = restricted.properties().output_partitioning()
+        else {
+            panic!("expected a range partitioning");
+        };
+        assert_eq!(range.ordering(), &range_ordering());
+        assert_eq!(reported_split_points(&restricted), vec![20, 30]);
+    }
+
+    /// A task's slice need not ascend: a retried partition is queued ahead of
+    /// later ones. No split points describe partitions that are out of key
+    /// order, so the reader reports an unknown partitioning of the right width
+    /// rather than failing the task or claiming ranges it does not hold.
+    #[test]
+    fn range_reader_with_a_slice_out_of_key_order_reports_unknown_partitioning() {
+        for slice in [vec![3, 1], vec![2, 2], vec![4, 0, 1]] {
+            let restricted =
+                restrict_plan_to_partitions(range_shuffle_reader(5), &slice).unwrap();
+
+            assert_eq!(location_ids(&restricted), slice);
+            assert!(
+                matches!(
+                    restricted.properties().output_partitioning(),
+                    Partitioning::UnknownPartitioning(n) if *n == slice.len()
+                ),
+                "slice {slice:?} reported {}",
+                restricted.properties().output_partitioning()
+            );
+        }
+    }
+
+    /// A union branch the task does not own is restricted to nothing, and a
+    /// range partitioning cannot have zero partitions.
+    #[test]
+    fn range_reader_restricted_to_nothing_has_no_partitions() {
+        let restricted =
+            restrict_plan_to_partitions(range_shuffle_reader(5), &[]).unwrap();
+
+        assert!(location_ids(&restricted).is_empty());
+        assert!(matches!(
+            restricted.properties().output_partitioning(),
+            Partitioning::UnknownPartitioning(0)
+        ));
+    }
+
+    /// The walker rebuilds the operators above the reader around the restricted
+    /// one, so the reader's narrower partitioning has to carry up.
+    #[test]
+    fn operators_above_a_restricted_range_reader_see_its_partition_count() {
+        use datafusion::physical_plan::sorts::sort::SortExec;
+
+        let sorted: Arc<dyn ExecutionPlan> = Arc::new(
+            SortExec::new(range_ordering(), range_shuffle_reader(5))
+                .with_preserve_partitioning(true),
+        );
+
+        let restricted = restrict_plan_to_partitions(sorted, &[2, 3]).unwrap();
+
+        assert_eq!(
+            restricted
+                .properties()
+                .output_partitioning()
+                .partition_count(),
+            2
+        );
+        let reader = restricted.children()[0].clone();
+        assert_eq!(location_ids(&reader), vec![2, 3]);
+        assert_eq!(reported_split_points(&reader), vec![30]);
     }
 }
