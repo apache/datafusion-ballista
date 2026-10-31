@@ -465,6 +465,8 @@ pub struct TaskCompletionExtras {
     /// Per-column statistics folded across this task's shuffle output. Empty
     /// when the executed plan collects none (e.g. non-sort shuffle paths).
     pub column_stats: Vec<TaskColumnStats>,
+    /// Complete distributed runtime filters from build taps.
+    pub runtime_filters: Vec<ballista_core::serde::protobuf::RuntimeFilterPayload>,
 }
 
 /// Converts a task execution result into a [`TaskStatus`] protobuf message.
@@ -485,6 +487,7 @@ pub fn as_task_status(
         runtime_stats,
         window_state,
         column_stats,
+        runtime_filters,
     } = extras;
     let metrics = operator_metrics.unwrap_or_default();
     let task_id = key.task_id;
@@ -511,6 +514,7 @@ pub fn as_task_status(
                     partitions,
                     runtime_stats,
                     task_column_stats: column_stats,
+                    runtime_filters,
                     window_state,
                 })),
             }

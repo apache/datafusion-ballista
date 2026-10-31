@@ -61,9 +61,10 @@ use crate::execution_plans::{
     OrderedRangeRepartitionExec, PartitionGroup, PartitionIdRepartitionExec,
     PartitionedBoundedWindowAggExec, PerPartitionFilterExec, PipelinedShuffleReaderExec,
     PipelinedShuffleWriterExec, PrefixMergeExec, RangeFilterExec, RangeShuffleReaderExec,
-    RangeShuffleWriterExec, RuntimeStatsExec, ScalarOp, ShuffleReaderExec,
-    ShuffleWriterExec, SortShuffleWriterExec, UnorderedRangeRepartitionExec,
-    UnresolvedShuffleExec, WindowApply,
+    RangeShuffleWriterExec, RuntimeFilterApplyExec, RuntimeFilterBuildExec,
+    RuntimeStatsExec, ScalarOp, ShuffleReaderExec, ShuffleWriterExec,
+    SortShuffleWriterExec, UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
+    WindowApply,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -946,6 +947,36 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     Some(chaos_exec.seed),
                 )?))
             }
+            PhysicalPlanType::RuntimeFilter(node) => {
+                let [input] = inputs else {
+                    return datafusion::common::internal_err!(
+                        "RuntimeFilterExec expects one input"
+                    );
+                };
+                let key =
+                    datafusion_proto::physical_plan::from_proto::parse_physical_expr(
+                        node.key
+                            .as_ref()
+                            .ok_or_else(|| proto_error("missing runtime filter key"))?,
+                        ctx,
+                        input.schema().as_ref(),
+                        self,
+                    )?;
+                if node.build {
+                    Ok(Arc::new(RuntimeFilterBuildExec::new(
+                        input.clone(),
+                        node.filter_id,
+                        key,
+                    )))
+                } else {
+                    Ok(Arc::new(RuntimeFilterApplyExec::try_new(
+                        input.clone(),
+                        node.filter_id,
+                        key,
+                        node.payload.clone(),
+                    )?))
+                }
+            }
             PhysicalPlanType::RuntimeStats(node) => {
                 let [input] = inputs else {
                     return Err(DataFusionError::Internal(format!(
@@ -1472,6 +1503,35 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     "failed to encode chaos monkey execution plan: {e:?}"
                 ))
             })?;
+            Ok(())
+        } else if node.is::<RuntimeFilterBuildExec>()
+            || node.is::<RuntimeFilterApplyExec>()
+        {
+            let (filter_id, key, build, payload) =
+                if let Some(exec) = node.downcast_ref::<RuntimeFilterBuildExec>() {
+                    (exec.filter_id, &exec.key, true, None)
+                } else {
+                    let exec = node.downcast_ref::<RuntimeFilterApplyExec>().unwrap();
+                    (exec.filter_id, &exec.key, false, exec.payload.clone())
+                };
+            let key = Some(
+                datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
+                    key,
+                    self.default_codec.as_ref(),
+                )?,
+            );
+            protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::RuntimeFilter(
+                    protobuf::RuntimeFilterExecNode {
+                        filter_id,
+                        key,
+                        build,
+                        payload,
+                    },
+                )),
+            }
+            .encode(buf)
+            .map_err(|e| proto_error(format!("failed to encode runtime filter: {e}")))?;
             Ok(())
         } else if let Some(exec) = node.downcast_ref::<RuntimeStatsExec>() {
             let converter = DefaultPhysicalProtoConverter {};

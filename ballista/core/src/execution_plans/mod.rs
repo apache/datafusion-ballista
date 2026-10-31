@@ -33,6 +33,7 @@ mod range_filter;
 mod range_repartition_common;
 pub mod range_shuffle;
 mod range_shuffle_reader;
+pub mod runtime_filter;
 mod runtime_stats;
 mod shuffle_reader;
 mod shuffle_writer;
@@ -61,13 +62,16 @@ pub use prefix_merge::{FinalizedPartitionState, PrefixMergeExec, ScalarOp, Windo
 pub use range_filter::{InputOrder, RangeBound, RangeFilterExec, WidenedBound};
 pub use range_shuffle::RangeShuffleWriterExec;
 pub use range_shuffle_reader::RangeShuffleReaderExec;
+pub use runtime_filter::{RuntimeFilterApplyExec, RuntimeFilterBuildExec};
 pub use runtime_stats::{
     MergedRuntimeStats, RuntimeStatsExec, TaskRuntimeStats,
     collect_reports as collect_runtime_stats_reports, cut_partitions,
     log_merged_runtime_stats, merge_reports as merge_runtime_stats_reports,
     repartition_routing_expr,
 };
-pub use shuffle_reader::{CoalescePlan, PartitionGroup, ShuffleReaderExec};
+pub use shuffle_reader::{
+    CoalescePlan, PartitionGroup, ShuffleReaderExec, SkewJoinPlan, SkewJoinShard,
+};
 pub use shuffle_reader::{stats_for_partition, stats_for_partitions};
 pub use shuffle_writer::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;
 pub use shuffle_writer::ShuffleWriterExec;

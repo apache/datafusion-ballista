@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -80,8 +80,44 @@ pub mod ballista_physical_plan_node {
         #[prost(message, tag = "19")]
         PipelinedShuffleReader(super::PipelinedShuffleReaderExecNode),
         #[prost(message, tag = "20")]
+        RuntimeFilter(super::RuntimeFilterExecNode),
+        #[prost(message, tag = "21")]
         PartitionIdRepartition(super::PartitionIdRepartitionExecNode),
     }
+}
+/// Build taps and probe filters share the expression/id wire contract. A missing
+/// payload on an apply node means pass-through (timeout or unsupported producer).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RuntimeFilterExecNode {
+    #[prost(uint64, tag = "1")]
+    pub filter_id: u64,
+    #[prost(message, optional, tag = "2")]
+    pub key: ::core::option::Option<::datafusion_proto::protobuf::PhysicalExprNode>,
+    #[prost(bool, tag = "3")]
+    pub build: bool,
+    #[prost(message, optional, tag = "4")]
+    pub payload: ::core::option::Option<RuntimeFilterPayload>,
+}
+/// Version 2 uses DataFusion batch hashing with seed 0, a fixed 8 KiB Bloom
+/// filter, an optional IN hash set, and MinMax bounds. Merge is a union.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RuntimeFilterPayload {
+    #[prost(uint64, tag = "1")]
+    pub filter_id: u64,
+    #[prost(uint32, tag = "2")]
+    pub version: u32,
+    #[prost(bytes = "vec", tag = "3")]
+    pub bloom: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag = "4")]
+    pub has_null: bool,
+    #[prost(bool, tag = "5")]
+    pub has_in_set: bool,
+    #[prost(fixed64, repeated, tag = "6")]
+    pub in_hashes: ::prost::alloc::vec::Vec<u64>,
+    #[prost(message, optional, tag = "7")]
+    pub min: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
+    #[prost(message, optional, tag = "8")]
+    pub max: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
 }
 /// Root of a stage in a pipelined job. Instead of writing shuffle files, it
 /// routes its input into bounded in-memory queues that consumer tasks stream
@@ -1370,6 +1406,8 @@ pub struct SuccessfulTask {
     pub window_state: ::prost::alloc::vec::Vec<WindowStateReport>,
     #[prost(message, repeated, tag = "5")]
     pub task_column_stats: ::prost::alloc::vec::Vec<TaskColumnStats>,
+    #[prost(message, repeated, tag = "6")]
+    pub runtime_filters: ::prost::alloc::vec::Vec<RuntimeFilterPayload>,
 }
 /// One finalized window-aggregate state from a task's
 /// `BoundedWindowAggExec`.

@@ -102,6 +102,13 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
         Vec::new()
     }
 
+    /// Complete runtime filters produced by this task; absent for custom engines.
+    fn collect_runtime_filter_reports(
+        &self,
+    ) -> Vec<ballista_core::serde::protobuf::RuntimeFilterPayload> {
+        Vec::new()
+    }
+
     /// Drain finalized window-aggregate state captured during this task,
     /// already stamped with the global partition each capture belongs to.
     /// Called at task completion, like
@@ -413,6 +420,23 @@ impl QueryStageExecutor for DefaultQueryStageExec {
                 log::warn!(
                     "collect_runtime_stats_reports failed, task will report empty stats: {e}"
                 );
+                Vec::new()
+            }
+        }
+    }
+
+    fn collect_runtime_filter_reports(
+        &self,
+    ) -> Vec<ballista_core::serde::protobuf::RuntimeFilterPayload> {
+        let plan: Arc<dyn ExecutionPlan> = match &self.shuffle_writer {
+            ShuffleWriterVariant::Passthrough(writer) => Arc::new(writer.clone()),
+            ShuffleWriterVariant::Range(writer) => Arc::new(writer.clone()),
+            ShuffleWriterVariant::Sort(writer) => Arc::new(writer.clone()),
+        };
+        match ballista_core::execution_plans::runtime_filter::collect_reports(&plan) {
+            Ok(reports) => reports,
+            Err(error) => {
+                log::warn!("Runtime filter collection failed; bypassing: {error}");
                 Vec::new()
             }
         }
