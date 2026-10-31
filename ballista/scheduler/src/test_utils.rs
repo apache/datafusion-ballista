@@ -1394,3 +1394,240 @@ pub fn fail_plan_rewrites(plan: &mut Arc<dyn ExecutionPlan>) -> Arc<dyn Executio
     *plan = Arc::clone(&failing_plan);
     failing_plan
 }
+
+/// A stand-in for a node defined outside Ballista that holds one payload per
+/// partition. Only the node knows how to restrict them, so the scheduler needs
+/// a resolver to find it.
+pub mod payload {
+    use std::fmt::Formatter;
+    use std::sync::Arc;
+
+    use ballista_core::execution_plans::plan_algebra::{
+        PartitionSliceable, PartitionSliceableResolver, slice_by_global_partition,
+    };
+    use ballista_core::serde::BallistaPhysicalExtensionCodec;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::tree_node::TreeNodeRecursion;
+    use datafusion::common::{DataFusionError, Result, not_impl_err};
+    use datafusion::execution::TaskContext;
+    use datafusion::physical_expr::{
+        Distribution, EquivalenceProperties, Partitioning, PhysicalExpr,
+    };
+    use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+    use datafusion::physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+        SendableRecordBatchStream,
+    };
+    use datafusion_proto::physical_plan::{
+        PhysicalExtensionCodec, PhysicalProtoConverterExtension,
+    };
+
+    /// Prefix of a [`PayloadExec`] on the wire, ahead of its payloads.
+    const WIRE_PREFIX: &[u8] = b"payload-exec:";
+
+    /// One payload per partition. It reads `inputs` partition for partition,
+    /// except those listed in `whole`, which it declares `SinglePartition`.
+    #[derive(Debug)]
+    pub struct PayloadExec {
+        payloads: Vec<String>,
+        inputs: Vec<Arc<dyn ExecutionPlan>>,
+        whole: Vec<usize>,
+        forgets_to_restrict: bool,
+        properties: Arc<PlanProperties>,
+    }
+
+    impl PayloadExec {
+        fn new(
+            payloads: Vec<String>,
+            inputs: Vec<Arc<dyn ExecutionPlan>>,
+            whole: Vec<usize>,
+            forgets_to_restrict: bool,
+        ) -> Self {
+            // The schema of `scan_with_file_groups`, so that the two can be
+            // branches of one `UnionExec`.
+            let schema =
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+            let properties = Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(payloads.len()),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ));
+            Self {
+                payloads,
+                inputs,
+                whole,
+                forgets_to_restrict,
+                properties,
+            }
+        }
+
+        fn strings(payloads: &[&str]) -> Vec<String> {
+            payloads.iter().map(|p| p.to_string()).collect()
+        }
+
+        /// A leaf with one partition per payload.
+        pub fn leaf(payloads: &[&str]) -> Arc<dyn ExecutionPlan> {
+            Arc::new(Self::new(Self::strings(payloads), vec![], vec![], false))
+        }
+
+        /// A node over `inputs`, with one partition per payload.
+        pub fn over(
+            payloads: &[&str],
+            inputs: Vec<Arc<dyn ExecutionPlan>>,
+            whole: &[usize],
+        ) -> Arc<dyn ExecutionPlan> {
+            Arc::new(Self::new(
+                Self::strings(payloads),
+                inputs,
+                whole.to_vec(),
+                false,
+            ))
+        }
+
+        /// A leaf whose restriction hands back all of its payloads, as an
+        /// implementation that forgets to restrict would.
+        pub fn forgets_to_restrict(payloads: &[&str]) -> Arc<dyn ExecutionPlan> {
+            Arc::new(Self::new(Self::strings(payloads), vec![], vec![], true))
+        }
+    }
+
+    /// The payloads of a [`PayloadExec`], one per partition.
+    pub fn payloads_of(plan: &Arc<dyn ExecutionPlan>) -> Vec<String> {
+        plan.downcast_ref::<PayloadExec>()
+            .expect("expected a PayloadExec")
+            .payloads
+            .clone()
+    }
+
+    impl DisplayAs for PayloadExec {
+        fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+            write!(f, "PayloadExec: payloads={:?}", self.payloads)
+        }
+    }
+
+    impl ExecutionPlan for PayloadExec {
+        fn name(&self) -> &str {
+            "PayloadExec"
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            &self.properties
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            self.inputs.iter().collect()
+        }
+
+        fn required_input_distribution(&self) -> Vec<Distribution> {
+            (0..self.inputs.len())
+                .map(|i| {
+                    if self.whole.contains(&i) {
+                        Distribution::SinglePartition
+                    } else {
+                        Distribution::UnspecifiedDistribution
+                    }
+                })
+                .collect()
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            Ok(Arc::new(Self::new(
+                self.payloads.clone(),
+                children,
+                self.whole.clone(),
+                self.forgets_to_restrict,
+            )))
+        }
+
+        fn execute(
+            &self,
+            _partition: usize,
+            _context: Arc<TaskContext>,
+        ) -> Result<SendableRecordBatchStream> {
+            not_impl_err!("PayloadExec is only ever planned")
+        }
+    }
+
+    impl PartitionSliceable for PayloadExec {
+        fn restrict_to_partitions(
+            &self,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+            partitions: &[usize],
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            let payloads = if self.forgets_to_restrict {
+                self.payloads.clone()
+            } else {
+                slice_by_global_partition(
+                    &self.payloads,
+                    partitions,
+                    "PayloadExec",
+                    "payloads",
+                )?
+            };
+            Ok(Arc::new(Self::new(
+                payloads,
+                children,
+                self.whole.clone(),
+                self.forgets_to_restrict,
+            )))
+        }
+    }
+
+    /// A resolver that finds a [`PayloadExec`].
+    pub fn payload_resolver() -> PartitionSliceableResolver {
+        Arc::new(|plan| {
+            plan.downcast_ref::<PayloadExec>()
+                .map(|op| op as &dyn PartitionSliceable)
+        })
+    }
+
+    /// Carries a leaf [`PayloadExec`] and leaves the rest to Ballista's codec.
+    #[derive(Debug, Default)]
+    pub struct PayloadCodec {
+        ballista: BallistaPhysicalExtensionCodec,
+    }
+
+    impl PhysicalExtensionCodec for PayloadCodec {
+        fn try_decode(
+            &self,
+            buf: &[u8],
+            inputs: &[Arc<dyn ExecutionPlan>],
+            ctx: &TaskContext,
+            proto_converter: &dyn PhysicalProtoConverterExtension,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            let Some(payloads) = buf.strip_prefix(WIRE_PREFIX) else {
+                return self.ballista.try_decode(buf, inputs, ctx, proto_converter);
+            };
+            let payloads = std::str::from_utf8(payloads)
+                .map_err(|e| DataFusionError::Internal(e.to_string()))?;
+            let payloads: Vec<&str> =
+                payloads.split(',').filter(|p| !p.is_empty()).collect();
+            Ok(PayloadExec::leaf(&payloads))
+        }
+
+        fn try_encode(
+            &self,
+            node: Arc<dyn ExecutionPlan>,
+            buf: &mut Vec<u8>,
+            proto_converter: &dyn PhysicalProtoConverterExtension,
+        ) -> Result<()> {
+            let Some(exec) = node.downcast_ref::<PayloadExec>() else {
+                return self.ballista.try_encode(node, buf, proto_converter);
+            };
+            buf.extend_from_slice(WIRE_PREFIX);
+            buf.extend_from_slice(exec.payloads.join(",").as_bytes());
+            Ok(())
+        }
+    }
+}

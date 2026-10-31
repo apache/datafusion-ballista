@@ -74,14 +74,20 @@ pub fn preserves_partitioning(plan: &dyn ExecutionPlan) -> bool {
         || plan.downcast_ref::<RuntimeStatsExec>().is_some()
 }
 
-/// Operators carrying data indexed by *global* input partition, which the
-/// scheduler must slice when it restricts a stage plan to one task's
-/// partition subset.
+/// Operators carrying data indexed by *global* partition, which the scheduler
+/// must slice when it restricts a stage plan to one task's partition subset.
+/// A leaf that owns a partition-indexed source qualifies too.
 ///
 /// The executor still never learns its task's global identity — slicing is
 /// how that stays true. After restriction an operator holds a vec covering
 /// exactly the partitions its task will run, in local order, so `execute(k)`
 /// indexes it directly.
+///
+/// Partition `i` of the node must read partition `i` of each child that is
+/// restricted, so a node that maps partitions to children differently, as
+/// `UnionExec` does, cannot use this hook. The restricted node is serialized
+/// with the scheduler's physical extension codec, so what it carries per
+/// partition must survive that round trip.
 ///
 /// Implement this next to the fields being sliced. The alternative — the
 /// scheduler's task builder knowing each operator's internals — means adding
@@ -91,25 +97,34 @@ pub fn preserves_partitioning(plan: &dyn ExecutionPlan) -> bool {
 /// Like the whitelists above, this exists because `ExecutionPlan` has no
 /// "restrict yourself to a subset of input partitions" method. A defaulted
 /// upstream one would let each operator answer for itself and retire
-/// [`as_partition_sliceable`].
+/// [`as_partition_sliceable`] and [`PartitionSliceableResolver`].
 pub trait PartitionSliceable: ExecutionPlan {
-    /// Rebuild over `child` — already restricted to `partitions` — carrying
-    /// only the entries for `partitions`, in that order.
+    /// Rebuild over `children`, carrying only the entries for `partitions`, in
+    /// that order.
+    ///
+    /// The result must have exactly `partitions.len()` output partitions; the
+    /// scheduler rejects any other count. `partitions` is empty for a branch of
+    /// a `UnionExec` that belongs to other tasks: return a node with no
+    /// partitions.
     ///
     /// # Arguments
     ///
-    /// * `child` - this operator's single input, already restricted
-    /// * `partitions` - global input partition indices this task will run
-    fn slice_to_partitions(
+    /// * `children` - this operator's inputs, restricted to `partitions` except
+    ///   any declared
+    ///   [`SinglePartition`](datafusion::physical_expr::Distribution::SinglePartition),
+    ///   which arrive whole; empty for a leaf
+    /// * `partitions` - global partition indices this task will run
+    fn restrict_to_partitions(
         &self,
-        child: Arc<dyn ExecutionPlan>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
         partitions: &[usize],
     ) -> Result<Arc<dyn ExecutionPlan>>;
 }
 
 /// Hand-maintained whitelist of [`PartitionSliceable`] operators, for the
 /// same reason as the property whitelists above: `dyn ExecutionPlan` can't
-/// be downcast to an arbitrary trait.
+/// be downcast to an arbitrary trait. Operators defined outside this crate are
+/// found through a [`PartitionSliceableResolver`].
 pub fn as_partition_sliceable(
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Option<&dyn PartitionSliceable> {
@@ -120,6 +135,41 @@ pub fn as_partition_sliceable(
         return Some(op);
     }
     None
+}
+
+/// Looks up the [`PartitionSliceable`] of a node that [`as_partition_sliceable`]
+/// does not list, so the scheduler can restrict `ExecutionPlan` nodes of your
+/// own. Set it with `SchedulerConfig::with_partition_sliceable_resolver`.
+///
+/// It is asked after the built-in list, and never about a node that is read
+/// whole: one below a collapse, or declared `SinglePartition` by its parent. It
+/// is called for most nodes of every task's plan as tasks are launched, so keep
+/// it cheap, typically a `downcast_ref` to your own types.
+pub type PartitionSliceableResolver = Arc<
+    dyn for<'a> Fn(&'a Arc<dyn ExecutionPlan>) -> Option<&'a dyn PartitionSliceable>
+        + Send
+        + Sync,
+>;
+
+/// Unwraps the only child that a single-input operator's
+/// [`restrict_to_partitions`](PartitionSliceable::restrict_to_partitions)
+/// receives.
+///
+/// # Arguments
+///
+/// * `owner` - operator name, for the error message
+/// * `children` - the children `restrict_to_partitions` received
+pub fn single_child(
+    owner: &str,
+    children: Vec<Arc<dyn ExecutionPlan>>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let [child] = <[_; 1]>::try_from(children).map_err(|children| {
+        DataFusionError::Internal(format!(
+            "{owner}: expected 1 child to restrict, got {}",
+            children.len()
+        ))
+    })?;
+    Ok(child)
 }
 
 /// Take `values[global]` for each global partition index, in task-local
