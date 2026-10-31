@@ -25,8 +25,8 @@ use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
     DistributedExchangeRule, NormalizeInterleaveRule, OptimizeSkewedJoinRule,
-    ParallelWindowRule, PinSubmittedShufflesRule, PrefixWindowRule, PropagateEmptyExecRule,
-    SelectJoinRule,
+    ParallelWindowRule, PinSubmittedShufflesRule, PrefixWindowRule,
+    PropagateEmptyExecRule, SelectJoinRule,
 };
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
