@@ -40,7 +40,7 @@ use ballista_core::execution_plans::plan_algebra::{
     PartitionSliceableResolver, as_partition_sliceable,
 };
 use ballista_core::execution_plans::{RangeShuffleReaderExec, ShuffleReaderExec};
-use datafusion::common::{internal_err, plan_err};
+use datafusion::common::plan_err;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::physical_plan::{
     FileGroup, FileScanConfig, FileScanConfigBuilder,

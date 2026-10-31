@@ -332,7 +332,7 @@ async fn run_task(
     let ctx = SessionContext::new();
 
     // Scheduler.
-    let restricted = restrict_plan_to_partitions(Arc::clone(stage), slice)?;
+    let restricted = restrict_plan_to_partitions(Arc::clone(stage), slice, None)?;
     let global_output_partition_ids = compute_global_output_partition_ids(stage, slice);
 
     // Wire.
