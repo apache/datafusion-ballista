@@ -95,6 +95,45 @@ async fn should_keep_submitted_shuffle_under_extension_operator()
     Ok(())
 }
 
+/// A range repartition placed by the client is kept too. Nothing derives one
+/// back from a requirement, and the consumer's partitions are only in key order
+/// as a whole if each of them holds one range.
+#[tokio::test]
+async fn should_keep_submitted_range_shuffle_under_extension_operator()
+-> datafusion::common::Result<()> {
+    use datafusion::arrow::compute::SortOptions;
+    use datafusion::common::ScalarValue;
+    use datafusion::physical_expr::{
+        LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
+    };
+
+    let ctx = physical_context(false);
+    let scan = ctx.table("t").await?.create_physical_plan().await?;
+    let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
+        Arc::new(Column::new("c", 2)),
+        SortOptions::default(),
+    )])
+    .unwrap();
+    let range = RangePartitioning::try_new(
+        ordering,
+        vec![SplitPoint::new(vec![ScalarValue::Int32(Some(2))])],
+    )?;
+    let shuffle: Arc<dyn ExecutionPlan> =
+        Arc::new(RepartitionExec::try_new(scan, Partitioning::Range(range))?);
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(OpaqueExec::new(shuffle));
+
+    let planner = AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into())?;
+
+    assert_plan!(planner.plan.as_ref(), @ r"
+    AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
+      OpaqueExec
+        ExchangeExec: partitioning=Range([c@2 ASC], [(2)], 2), plan_id=0, stage_id=pending, stage_resolved=false
+          DataSourceExec: partitions=1, partition_sizes=[1]
+    ");
+
+    Ok(())
+}
+
 /// Coalescing a shuffle changes how many partitions its consumer sees. That
 /// is only safe for operators the rule knows to be indifferent to the count;
 /// an extension operator may not be, so the group it feeds is left alone.
