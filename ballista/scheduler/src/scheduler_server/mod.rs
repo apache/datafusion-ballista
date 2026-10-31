@@ -483,9 +483,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         .await
     }
 
-    /// Submit an already-built physical plan for distributed execution. The physical
-    /// plan is planned with the static distributed planner; adaptive query planning
-    /// (AQE) is not available for this path.
+    /// Submit an already-built physical plan for distributed execution. The plan
+    /// goes through adaptive query planning (AQE) when
+    /// `ballista.planner.adaptive.enabled` is set, and through the static
+    /// distributed planner otherwise, like a logical submission.
     pub async fn submit_physical_plan(
         &self,
         job_name: &str,
@@ -964,6 +965,71 @@ mod test {
                 .task_manager
                 .get_active_execution_graph(&job_id)
                 .is_some()
+        );
+
+        Ok(())
+    }
+
+    // With AQE on (the default), a physical-plan submission is planned
+    // adaptively, just like a logical one.
+    #[tokio::test]
+    async fn test_submit_physical_plan_uses_adaptive_planner() -> Result<()> {
+        use crate::state::aqe::execution_plan::AdaptiveDatafusionExec;
+
+        let logical_plan = test_plan();
+        let total_vcores = 4;
+
+        let scheduler = test_scheduler(TaskSchedulingPolicy::PullStaged).await?;
+
+        let executors = test_executors(total_vcores);
+        for (executor_metadata, executor_data) in executors {
+            scheduler
+                .state
+                .executor_manager
+                .register_executor(executor_metadata, executor_data)
+                .await?;
+        }
+
+        let config = SessionConfig::new_with_ballista()
+            .with_target_partitions(total_vcores)
+            .with_ballista_adaptive_query_planner(true);
+
+        let ctx = scheduler
+            .state
+            .session_manager
+            .create_or_update_session("session_id", &config)
+            .await?;
+
+        let physical_plan = ctx.state().create_physical_plan(&logical_plan).await?;
+
+        let job_id: JobId = "adaptive_physical_job".into();
+
+        scheduler
+            .state
+            .task_manager
+            .queue_job(&job_id, "", timestamp_millis())?;
+
+        scheduler
+            .state
+            .task_manager
+            .submit_physical_plan(&job_id, "", ctx, physical_plan, 0, None)
+            .await
+            .expect("submitting physical plan");
+
+        let graph = scheduler
+            .state
+            .task_manager
+            .get_active_execution_graph(&job_id)
+            .expect("graph in the cache");
+        let graph = graph.read().await;
+
+        // The adaptive planner wraps the whole plan in its own root node; the
+        // static planner leaves DataFusion's root in place.
+        assert!(
+            graph.physical_plan().is::<AdaptiveDatafusionExec>(),
+            "expected an adaptive plan, got:\n{}",
+            datafusion::physical_plan::displayable(graph.physical_plan().as_ref())
+                .indent(false)
         );
 
         Ok(())

@@ -38,7 +38,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-mod aqe;
+pub(crate) mod aqe;
 /// Links the jobs behind a `DataFrame::cache()` query so none of them blocks.
 pub(crate) mod cache_linker;
 /// Cross-job registry of materialized `DataFrame::cache()` results.

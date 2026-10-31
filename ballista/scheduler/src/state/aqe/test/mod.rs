@@ -25,6 +25,8 @@ mod coalesce_rule;
 mod job_failure;
 /// covers join selection tests
 mod join_selection;
+/// Adaptive planning of a submitted physical plan
+mod physical_submission;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
 /// Regression tests for range-repartition planning end-to-end
