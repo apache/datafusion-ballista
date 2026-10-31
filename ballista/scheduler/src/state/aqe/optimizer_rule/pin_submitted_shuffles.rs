@@ -23,8 +23,12 @@
 //! submits a physical plan placed its hash repartitions on purpose, and the
 //! operators around them may be extension nodes that declare no requirement
 //! DataFusion could derive the repartition back from. [`PinSubmittedShufflesRule`]
-//! runs once, before the first replan, and turns every hash `RepartitionExec`
-//! into an [`ExchangeExec`]: a stage boundary the rest of the chain keeps.
+//! runs once, before the first replan, and turns every hash or range
+//! `RepartitionExec` into an [`ExchangeExec`]: a stage boundary the rest of the
+//! chain keeps. A range repartition matters even more than a hash one: nothing
+//! derives it back, and without it a consumer that sorts each partition no
+//! longer sorts the whole result. One that must preserve the order of its
+//! input is left alone, since a shuffle cannot do that.
 //!
 //! A `CoalescePartitionsExec` is not pinned. DataFusion re-derives it from the
 //! consumer's `required_input_distribution`, so an extension operator that
@@ -39,8 +43,8 @@ use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Turns the hash repartitions of a submitted physical plan into stage
-/// boundaries before DataFusion's optimizers can remove them.
+/// Turns the hash and range repartitions of a submitted physical plan into
+/// stage boundaries before DataFusion's optimizers can remove them.
 #[derive(Debug, Default)]
 pub struct PinSubmittedShufflesRule {
     plan_id_generator: Arc<AtomicUsize>,
@@ -64,7 +68,12 @@ impl PhysicalOptimizerRule for PinSubmittedShufflesRule {
                     return Ok(Transformed::no(node));
                 };
                 let partitioning = repartition.partitioning();
-                if !matches!(partitioning, Partitioning::Hash(_, _)) {
+                let pinned = match partitioning {
+                    Partitioning::Hash(_, _) => true,
+                    Partitioning::Range(_) => !repartition.preserve_order(),
+                    _ => false,
+                };
+                if !pinned {
                     return Ok(Transformed::no(node));
                 }
                 Ok(Transformed::yes(Arc::new(ExchangeExec::new(
