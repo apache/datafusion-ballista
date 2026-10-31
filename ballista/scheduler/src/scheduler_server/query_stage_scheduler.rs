@@ -20,14 +20,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ballista_core::JobId;
+use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::protobuf::{FailedJob, JobStatus, job_status};
+use ballista_core::utils::panic_payload_message;
+use ballista_core::{JobId, JobStatusSubscriber};
+use datafusion::prelude::SessionContext;
+use futures::FutureExt;
 use log::{debug, error, info, trace, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
-use ballista_core::utils::panic_payload_message;
-use futures::FutureExt;
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::config::{SchedulerConfig, WorkAvailableReason};
@@ -38,7 +40,7 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::event::{Admission, QueryStageSchedulerEvent, SubmitPlan};
 #[cfg(feature = "rest-api")]
 use crate::scheduler_server::event_log;
 
@@ -193,546 +195,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         _rx_event: &mpsc::Receiver<QueryStageSchedulerEvent>,
     ) -> Result<()> {
         #[cfg(feature = "rest-api")]
-        if let Some(log) = &self.event_log {
-            match &event {
-                QueryStageSchedulerEvent::JobSubmitted {
-                    job_id,
-                    queued_at,
-                    submitted_at,
-                } => {
-                    if let Some(graph) = self.event_log_graph(job_id).await {
-                        log.append(
-                            job_id.as_str(),
-                            event_log::job_start_event(&graph, *queued_at, *submitted_at),
-                        );
-                    }
-                }
-                QueryStageSchedulerEvent::TaskUpdating(executor_id, statuses) => {
-                    for (job_id, group) in group_by_job(statuses) {
-                        // Borrow the live graph read-only just long enough to
-                        // map each task's operator metrics onto its stage
-                        // plan; cloning the graph per status batch (as
-                        // `event_log_graph` does for the rarer job events)
-                        // would be far too costly here.
-                        let graph = self
-                            .state
-                            .task_manager
-                            .get_active_execution_graph(&JobId::new(job_id.as_str()));
-                        let guard = match &graph {
-                            Some(graph) => Some(graph.read().await),
-                            None => None,
-                        };
-                        let stages = guard.as_ref().map(|graph| graph.stages());
-                        for ev in event_log::task_end_events(executor_id, &group, stages)
-                        {
-                            log.append(&job_id, ev);
-                        }
-                    }
-                }
-                // The three terminal events below each close out the job's log.
-                // `finish_job` runs even when no `JobEnd` could be built, so a
-                // job that cannot be recorded still releases its file handle;
-                // such a log has no `JobEnd` line and the history server skips
-                // it rather than serving a half-written job. `finish_job` also
-                // renames the file from `.eventlog.running` to `.eventlog`, so
-                // a job whose `finish_job` never runs (the scheduler process is
-                // killed first) leaves a `.running`-suffixed file behind
-                // permanently — nothing else will ever rename it.
-                QueryStageSchedulerEvent::JobFinished {
-                    job_id,
-                    queued_at,
-                    completed_at,
-                } => {
-                    if let Some(graph) = self.event_log_graph(job_id).await {
-                        log.append_final(
-                            job_id.as_str(),
-                            event_log::job_end_event(
-                                &graph,
-                                ballista_history::event::JobEndStatus::Succeeded,
-                                *queued_at,
-                                *completed_at,
-                            ),
-                        )
-                        .await;
-                    }
-                    log.finish_job(job_id.as_str()).await;
-                }
-                QueryStageSchedulerEvent::JobRunningFailed {
-                    job_id,
-                    fail_message,
-                    queued_at,
-                    failed_at,
-                } => {
-                    if let Some(graph) = self.event_log_graph(job_id).await {
-                        log.append_final(
-                            job_id.as_str(),
-                            event_log::job_end_event(
-                                &graph,
-                                ballista_history::event::JobEndStatus::Failed(
-                                    fail_message.clone(),
-                                ),
-                                *queued_at,
-                                *failed_at,
-                            ),
-                        )
-                        .await;
-                    }
-                    log.finish_job(job_id.as_str()).await;
-                }
-                QueryStageSchedulerEvent::JobCancel(job_id) => {
-                    // Cancellation is terminal: the handler below drops the
-                    // graph, so this is the last point at which the job can be
-                    // recorded. Without this the log would never receive a
-                    // `JobEnd`, leaving the cancelled job invisible to the
-                    // history server and its file handle open for the life of
-                    // the process.
-                    if let Some(graph) = self.event_log_graph(job_id).await {
-                        log.append_final(
-                            job_id.as_str(),
-                            event_log::job_cancel_event(
-                                &graph,
-                                ballista_core::utils::get_current_time() as u64,
-                            ),
-                        )
-                        .await;
-                    }
-                    log.finish_job(job_id.as_str()).await;
-                }
-                // `JobPlanningFailed` is deliberately absent: it is only posted
-                // when `submit_job` fails, i.e. instead of `JobSubmitted`, so
-                // the job has neither an execution graph nor an open log file.
-                _ => {}
-            }
-        }
+        self.record_event_log(&event).await;
 
         let mut time_recorder = None;
         if self.config.scheduler_event_expected_processing_duration > 0 {
             time_recorder = Some((Instant::now(), event.clone()));
         };
         let event_sender = EventSender::new(tx_event.clone());
-        match event {
-            QueryStageSchedulerEvent::JobQueued {
-                job_id,
-                job_name,
-                session_ctx,
-                plan,
-                queued_at,
-                subscriber,
-                admission,
-            } => {
-                info!("Job queued: [{job_id}]");
-
-                if let Err(e) = self
-                    .state
-                    .task_manager
-                    .queue_job(&job_id, &job_name, queued_at)
-                {
-                    error!("Fail to queue job {job_id} due to {e:?}");
-                    return Ok(());
-                }
-
-                let state = self.state.clone();
-                tokio::spawn(async move {
-                    // Held until planning has registered the job as running, or
-                    // has failed.
-                    let _admission = admission;
-                    // Planning runs user code (table providers, optimizer
-                    // rules), and a panic must fail the job rather than strand
-                    // it as queued, which would also keep a draining scheduler
-                    // from ever going idle.
-                    let planned = AssertUnwindSafe(state.submit_job(
-                        &job_id,
-                        &job_name,
-                        session_ctx,
-                        &plan,
-                        queued_at,
-                        subscriber.clone(),
-                    ))
-                    .catch_unwind()
-                    .await
-                    .unwrap_or_else(|payload| {
-                        Err(BallistaError::Internal(format!(
-                            "planning panicked: {}",
-                            panic_payload_message(payload)
-                        )))
-                    });
-                    let event = if let Err(e) = planned {
-                        let error = e.to_string();
-                        let fail_message = format!("Error planning job {job_id}: {e:?}");
-
-                        // this is a corner case, as most of job status changes are handled in
-                        // job state, after job is submitted to job state
-                        if let Some(subscriber) = subscriber {
-                            let timestamp = timestamp_millis();
-                            let job_status = JobStatus {
-                                job_id: job_id.clone().into(),
-                                job_name,
-                                status: Some(ballista_core::serde::protobuf::job_status::Status::Failed(
-                                    FailedJob { error, queued_at, started_at: timestamp, ended_at: timestamp }
-                                ))
-                            };
-
-                            if matches!(
-                                subscriber.try_send(job_status),
-                                Err(TrySendError::Full(_))
-                            ) {
-                                error!(
-                                    "jobs notification subscriber for job {} is blocked, can't deliver status update, job notification will be missed",
-                                    job_id
-                                )
-                            }
-                        }
-
-                        error!("{}", fail_message);
-                        QueryStageSchedulerEvent::JobPlanningFailed {
-                            job_id,
-                            fail_message,
-                            queued_at,
-                            failed_at: timestamp_millis(),
-                        }
-                    } else {
-                        QueryStageSchedulerEvent::JobSubmitted {
-                            job_id,
-                            queued_at,
-                            submitted_at: timestamp_millis(),
-                        }
-                    };
-                    if let Err(e) = event_sender.post_event(event).await {
-                        error!("Fail to send event due to {e}");
-                    }
-                });
-            }
-            QueryStageSchedulerEvent::JobSubmitted {
-                job_id,
-                queued_at,
-                submitted_at,
-            } => {
-                self.metrics_collector
-                    .record_submitted(&job_id, queued_at, submitted_at);
-
-                info!("Job submitted: [{job_id}]");
-
-                if self.state.config.is_push_staged_scheduling() {
-                    event_sender
-                        .post_event(QueryStageSchedulerEvent::ReviveOffers)
-                        .await?;
-                }
-
-                // The graph was revived before caching, so the job's tasks
-                // are already visible to polling executors.
-                if let Some(callback) = &self.config.on_work_available {
-                    callback(WorkAvailableReason::JobSubmitted { job_id });
-                }
-            }
-            QueryStageSchedulerEvent::JobPlanningFailed {
-                job_id,
-                fail_message,
-                queued_at,
-                failed_at,
-            } => {
-                self.metrics_collector
-                    .record_failed(&job_id, queued_at, failed_at);
-
-                error!("Job {job_id} failed: {fail_message}");
-                // Release a cache claim this job owned and fail what waited on it.
-                self.state
-                    .on_job_terminal(
-                        &job_id,
-                        JobEnd::Failed(&fail_message),
-                        &event_sender,
-                    )
-                    .await;
-                if let Err(e) = self
-                    .state
-                    .task_manager
-                    .fail_unscheduled_job(&job_id, fail_message)
-                    .await
-                {
-                    error!(
-                        "Fail to invoke fail_unscheduled_job for job {job_id} due to {e:?}"
-                    );
-                }
-            }
-            QueryStageSchedulerEvent::JobFinished {
-                job_id,
-                queued_at,
-                completed_at,
-            } => {
-                self.metrics_collector
-                    .record_completed(&job_id, queued_at, completed_at);
-
-                info!("Job finished successfully: [{job_id}]");
-                // Record a cache this job built while its graph is active, and
-                // before cleanup, so its pin is in place.
-                self.state
-                    .on_job_terminal(&job_id, JobEnd::Finished, &event_sender)
-                    .await;
-                // Vcores a pipelined job held for its whole life.
-                let executor_manager = self.state.executor_manager.clone();
-                let refund_vcores = self.state.config.is_push_staged_scheduling();
-                let sender = event_sender.clone();
-                let release_reservation = move |reservation| async move {
-                    if refund_vcores {
-                        executor_manager.unbind_tasks(reservation).await?;
-                        sender
-                            .post_event(QueryStageSchedulerEvent::ReviveOffers)
-                            .await?;
-                    }
-                    Ok(())
-                };
-                let intermediate_stage_ids = match self
-                    .state
-                    .task_manager
-                    .succeed_job(&job_id, release_reservation)
-                    .await
-                {
-                    Ok(intermediate_stage_ids) => intermediate_stage_ids,
-                    Err(e) => {
-                        error!(
-                            "Fail to invoke succeed_job for job {job_id} due to {e:?}"
-                        );
-                        vec![]
-                    }
-                };
-                self.state
-                    .clean_up_successful_job(job_id, intermediate_stage_ids)
-                    .await;
-            }
-            QueryStageSchedulerEvent::JobRunningFailed {
-                job_id,
-                fail_message,
-                queued_at,
-                failed_at,
-            } => {
-                self.metrics_collector
-                    .record_failed(&job_id, queued_at, failed_at);
-
-                error!("Job failed: [{job_id}]");
-                // Release a cache claim this job owned and fail what waited on it.
-                self.state
-                    .on_job_terminal(
-                        &job_id,
-                        JobEnd::Failed(&fail_message),
-                        &event_sender,
-                    )
-                    .await;
-                if let Err(e) = self.abort_job(&job_id, fail_message).await {
-                    error!("Fail to abort job {job_id} due to {e:?}");
-                }
-                self.state.clean_up_failed_job(job_id);
-                self.revive_after_abort(&event_sender).await?;
-            }
-            QueryStageSchedulerEvent::JobUpdated(job_id) => {
-                debug!("Job updated, job_id: [{job_id}]");
-                match self.state.task_manager.update_job(&job_id).await {
-                    Ok(new_tasks) => {
-                        // update_job revived the graph: the new tasks are
-                        // already visible to polling executors.
-                        if new_tasks > 0
-                            && let Some(callback) = &self.config.on_work_available
-                        {
-                            callback(WorkAvailableReason::NewStagesRunnable { job_id });
-                        }
-                    }
-                    Err(e) => {
-                        error!("Fail to invoke update_job for job {job_id} due to {e:?}");
-                    }
-                }
-            }
-            QueryStageSchedulerEvent::JobCancel(job_id) => {
-                self.metrics_collector.record_cancelled(&job_id);
-
-                info!("Job cancelled: [{job_id}]");
-                if let Err(e) = self.abort_job(&job_id, "Cancelled".to_owned()).await {
-                    error!("Fail to cancel job {job_id} due to {e:?}");
-                }
-                // A held job was never submitted, so `abort_job` cannot end it.
-                self.state
-                    .on_job_terminal(&job_id, JobEnd::Cancelled, &event_sender)
-                    .await;
-                self.state.clean_up_failed_job(job_id);
-                self.revive_after_abort(&event_sender).await?;
-            }
-            QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
-                trace!(
-                    "processing task status updates from {executor_id}: {tasks_status:?}"
-                );
-
-                let num_status = tasks_status.len();
-                if self.state.config.is_push_staged_scheduling() {
-                    // Refund the vcores each completing task consumed at bind
-                    // time (see `bind_one` in `cluster/mod.rs`). Refunding
-                    // one vcore per task would leak leftovers under the
-                    // multi-partition-task model, draining executor budgets
-                    // to 1 vcore over the course of a query.
-                    let vcores_freed = self
-                        .state
-                        .task_manager
-                        .take_vcores_for_statuses(&executor_id, &tasks_status);
-                    self.state
-                        .executor_manager
-                        .unbind_tasks(vec![(executor_id.clone(), vcores_freed)])
-                        .await?;
-                }
-                match self
-                    .state
-                    .update_task_statuses(&executor_id, tasks_status)
-                    .await
-                {
-                    Ok(stage_events) => {
-                        if self.state.config.is_push_staged_scheduling() {
-                            event_sender
-                                .post_event(QueryStageSchedulerEvent::ReviveOffers)
-                                .await?;
-                        }
-
-                        for stage_event in stage_events {
-                            event_sender.post_event(stage_event).await?;
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            "Failed to update {num_status} task statuses for Executor {executor_id}: {e:?}"
-                        );
-                    }
-                }
-            }
-            QueryStageSchedulerEvent::ReviveOffers => {
-                self.state.revive_offers(event_sender).await?;
-            }
-            QueryStageSchedulerEvent::ExecutorLost(executor_id, _) => {
-                match self.state.task_manager.executor_lost(&executor_id).await {
-                    Ok(outcome) => {
-                        let tasks = outcome.tasks_to_cancel;
-                        if !tasks.is_empty()
-                            && let Err(e) = self
-                                .state
-                                .executor_manager
-                                .cancel_running_tasks(tasks)
-                                .await
-                        {
-                            warn!("Fail to cancel running tasks due to {e:?}");
-                        }
-                        for (job_id, fail_message, queued_at) in outcome.failed_jobs {
-                            event_sender
-                                .post_event(QueryStageSchedulerEvent::JobRunningFailed {
-                                    job_id,
-                                    fail_message,
-                                    queued_at,
-                                    failed_at: timestamp_millis(),
-                                })
-                                .await?;
-                        }
-                        if self.state.config.is_push_staged_scheduling() {
-                            event_sender
-                                .post_event(QueryStageSchedulerEvent::ReviveOffers)
-                                .await?;
-                        }
-                    }
-                    Err(e) => {
-                        let msg = format!(
-                            "TaskManager error to handle Executor {executor_id} lost: {e}"
-                        );
-                        error!("{msg}");
-                    }
-                }
-
-                // If that was the last executor, the running jobs whose tasks were
-                // just reset can no longer make progress — there is nothing to
-                // schedule them onto. Rather than hang forever, wait a bounded
-                // grace period for an executor to (re)register (e.g. a rolling
-                // restart) and then fail any job still running on an empty cluster.
-                // Only fires for executors that were actually present, so jobs
-                // merely queued waiting for their first executor (autoscaling cold
-                // start) are never affected.
-                // See https://github.com/apache/datafusion-ballista/issues/2029
-                //
-                // `no_executor_check_pending` collapses the burst of `ExecutorLost`
-                // events produced when a whole cluster dies at once into a single
-                // timer, so each running job is failed at most once.
-                if self.state.executor_manager.get_alive_executors().is_empty()
-                    && !self.no_executor_check_pending.swap(true, Ordering::SeqCst)
-                {
-                    let state = self.state.clone();
-                    let sender = event_sender.clone();
-                    let pending = self.no_executor_check_pending.clone();
-                    let grace = Duration::from_secs(
-                        state.config.no_executors_grace_period_seconds,
-                    );
-                    let lost_at = timestamp_millis();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(grace).await;
-
-                        // An executor may have (re)registered during the grace
-                        // window; if so the reset tasks will be scheduled onto it
-                        // and there is nothing to fail.
-                        if state.executor_manager.get_alive_executors().is_empty() {
-                            for job_id in
-                                state.task_manager.get_running_job_cache().keys()
-                            {
-                                // Re-read the live status right before failing: a
-                                // job that finished during the grace window must
-                                // not be failed, and a job planned *after* the
-                                // cluster went empty (started_at > lost_at) has its
-                                // own window and must not inherit this one.
-                                let queued_at = match state
-                                    .task_manager
-                                    .get_job_status(job_id)
-                                    .await
-                                {
-                                    Ok(Some(JobStatus {
-                                        status: Some(job_status::Status::Running(running)),
-                                        ..
-                                    })) if running.started_at <= lost_at => {
-                                        running.queued_at
-                                    }
-                                    _ => continue,
-                                };
-
-                                let fail_message = format!(
-                                    "all executors were lost and no executor re-registered within {}s; no executors remain to run the tasks for this job",
-                                    grace.as_secs()
-                                );
-                                warn!("Failing job {job_id}: {fail_message}");
-                                if let Err(e) = sender
-                                    .post_event(
-                                        QueryStageSchedulerEvent::JobRunningFailed {
-                                            job_id: job_id.clone(),
-                                            fail_message,
-                                            queued_at,
-                                            failed_at: timestamp_millis(),
-                                        },
-                                    )
-                                    .await
-                                {
-                                    error!(
-                                        "Fail to post JobRunningFailed for job {job_id}: {e:?}"
-                                    );
-                                }
-                            }
-                        }
-
-                        // Cleared last, so the whole burst of `ExecutorLost` events
-                        // that a simultaneous cluster death produces collapses into
-                        // this single check — even when the grace period is 0.
-                        pending.store(false, Ordering::SeqCst);
-                    });
-                }
-            }
-            QueryStageSchedulerEvent::CancelTasks(tasks) => {
-                if let Err(e) = self
-                    .state
-                    .executor_manager
-                    .cancel_running_tasks(tasks)
-                    .await
-                {
-                    warn!("Fail to cancel running tasks due to {e:?}");
-                }
-            }
-            QueryStageSchedulerEvent::JobDataClean(job_id) => {
-                self.state.executor_manager.clean_up_job_data(job_id);
-            }
-        }
+        self.dispatch(event, event_sender).await?;
         if let Some((start, ec)) = time_recorder {
             let duration = start.elapsed();
             if duration.ge(&Duration::from_micros(
@@ -750,6 +220,691 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
     fn on_error(&self, error: BallistaError) {
         error!("Error received by QueryStageScheduler: {error:?}");
+    }
+}
+
+impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
+    /// Routes an event to its handler.
+    async fn dispatch(
+        &self,
+        event: QueryStageSchedulerEvent,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        match event {
+            QueryStageSchedulerEvent::JobQueued {
+                job_id,
+                job_name,
+                session_ctx,
+                plan,
+                queued_at,
+                subscriber,
+                admission,
+            } => {
+                self.on_job_queued(
+                    job_id,
+                    job_name,
+                    session_ctx,
+                    plan,
+                    queued_at,
+                    subscriber,
+                    admission,
+                    event_sender,
+                );
+            }
+            QueryStageSchedulerEvent::JobSubmitted {
+                job_id,
+                queued_at,
+                submitted_at,
+            } => {
+                self.on_job_submitted(job_id, queued_at, submitted_at, event_sender)
+                    .await?;
+            }
+            QueryStageSchedulerEvent::JobPlanningFailed {
+                job_id,
+                fail_message,
+                queued_at,
+                failed_at,
+            } => {
+                self.on_job_planning_failed(
+                    job_id,
+                    fail_message,
+                    queued_at,
+                    failed_at,
+                    event_sender,
+                )
+                .await;
+            }
+            QueryStageSchedulerEvent::JobFinished {
+                job_id,
+                queued_at,
+                completed_at,
+            } => {
+                self.on_job_finished(job_id, queued_at, completed_at, event_sender)
+                    .await;
+            }
+            QueryStageSchedulerEvent::JobRunningFailed {
+                job_id,
+                fail_message,
+                queued_at,
+                failed_at,
+            } => {
+                self.on_job_running_failed(
+                    job_id,
+                    fail_message,
+                    queued_at,
+                    failed_at,
+                    event_sender,
+                )
+                .await?;
+            }
+            QueryStageSchedulerEvent::JobUpdated(job_id) => {
+                self.on_job_updated(job_id).await;
+            }
+            QueryStageSchedulerEvent::JobCancel(job_id) => {
+                self.on_job_cancel(job_id, event_sender).await?;
+            }
+            QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
+                self.on_task_updating(executor_id, tasks_status, event_sender)
+                    .await?;
+            }
+            QueryStageSchedulerEvent::ReviveOffers => {
+                self.state.revive_offers(event_sender).await?;
+            }
+            QueryStageSchedulerEvent::ExecutorLost(executor_id, _) => {
+                self.on_executor_lost(executor_id, event_sender).await?;
+            }
+            QueryStageSchedulerEvent::CancelTasks(tasks) => {
+                if let Err(e) = self
+                    .state
+                    .executor_manager
+                    .cancel_running_tasks(tasks)
+                    .await
+                {
+                    warn!("Fail to cancel running tasks due to {e:?}");
+                }
+            }
+            QueryStageSchedulerEvent::JobDataClean(job_id) => {
+                self.state.executor_manager.clean_up_job_data(job_id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Tees a scheduler event into the job's event log, if one is configured.
+    #[cfg(feature = "rest-api")]
+    async fn record_event_log(&self, event: &QueryStageSchedulerEvent) {
+        let Some(log) = &self.event_log else {
+            return;
+        };
+        match event {
+            QueryStageSchedulerEvent::JobSubmitted {
+                job_id,
+                queued_at,
+                submitted_at,
+            } => {
+                if let Some(graph) = self.event_log_graph(job_id).await {
+                    log.append(
+                        job_id.as_str(),
+                        event_log::job_start_event(&graph, *queued_at, *submitted_at),
+                    );
+                }
+            }
+            QueryStageSchedulerEvent::TaskUpdating(executor_id, statuses) => {
+                for (job_id, group) in group_by_job(statuses) {
+                    // Borrow the live graph read-only just long enough to
+                    // map each task's operator metrics onto its stage
+                    // plan; cloning the graph per status batch (as
+                    // `event_log_graph` does for the rarer job events)
+                    // would be far too costly here.
+                    let graph = self
+                        .state
+                        .task_manager
+                        .get_active_execution_graph(&JobId::new(job_id.as_str()));
+                    let guard = match &graph {
+                        Some(graph) => Some(graph.read().await),
+                        None => None,
+                    };
+                    let stages = guard.as_ref().map(|graph| graph.stages());
+                    for ev in event_log::task_end_events(executor_id, &group, stages) {
+                        log.append(&job_id, ev);
+                    }
+                }
+            }
+            QueryStageSchedulerEvent::JobFinished {
+                job_id,
+                queued_at,
+                completed_at,
+            } => {
+                self.finish_event_log(log, job_id, |graph| {
+                    event_log::job_end_event(
+                        graph,
+                        ballista_history::event::JobEndStatus::Succeeded,
+                        *queued_at,
+                        *completed_at,
+                    )
+                })
+                .await;
+            }
+            QueryStageSchedulerEvent::JobRunningFailed {
+                job_id,
+                fail_message,
+                queued_at,
+                failed_at,
+            } => {
+                self.finish_event_log(log, job_id, |graph| {
+                    event_log::job_end_event(
+                        graph,
+                        ballista_history::event::JobEndStatus::Failed(
+                            fail_message.clone(),
+                        ),
+                        *queued_at,
+                        *failed_at,
+                    )
+                })
+                .await;
+            }
+            QueryStageSchedulerEvent::JobCancel(job_id) => {
+                // Cancellation is terminal: the handler drops the graph, so
+                // this is the last point at which the job can be recorded.
+                // Without this the log would never receive a `JobEnd`, leaving
+                // the cancelled job invisible to the history server and its
+                // file handle open for the life of the process.
+                self.finish_event_log(log, job_id, |graph| {
+                    event_log::job_cancel_event(
+                        graph,
+                        ballista_core::utils::get_current_time() as u64,
+                    )
+                })
+                .await;
+            }
+            // `JobPlanningFailed` is deliberately absent: it is only posted
+            // when `submit_job` fails, i.e. instead of `JobSubmitted`, so
+            // the job has neither an execution graph nor an open log file.
+            _ => {}
+        }
+    }
+
+    /// Closes out a job's event log for one of the three terminal events
+    /// (`JobFinished`, `JobRunningFailed`, `JobCancel`).
+    ///
+    /// `finish_job` runs even when no final event could be built, so a job
+    /// that cannot be recorded still releases its file handle; such a log has
+    /// no `JobEnd` line and the history server skips it rather than serving a
+    /// half-written job. `finish_job` also renames the file from
+    /// `.eventlog.running` to `.eventlog`, so a job whose `finish_job` never
+    /// runs (the scheduler process is killed first) leaves a
+    /// `.running`-suffixed file behind permanently — nothing else will ever
+    /// rename it.
+    #[cfg(feature = "rest-api")]
+    async fn finish_event_log<F>(
+        &self,
+        log: &ballista_history::writer::EventLogWriter,
+        job_id: &JobId,
+        final_event: F,
+    ) where
+        F: FnOnce(
+            &crate::state::execution_graph::ExecutionGraphBox,
+        ) -> ballista_history::event::HistoryEvent,
+    {
+        if let Some(graph) = self.event_log_graph(job_id).await {
+            log.append_final(job_id.as_str(), final_event(&graph)).await;
+        }
+        log.finish_job(job_id.as_str()).await;
+    }
+
+    /// Marks the job as queued and plans it on a background task, which
+    /// posts `JobSubmitted` or `JobPlanningFailed` when planning is done.
+    #[allow(clippy::too_many_arguments)]
+    fn on_job_queued(
+        &self,
+        job_id: JobId,
+        job_name: String,
+        session_ctx: Arc<SessionContext>,
+        plan: Box<SubmitPlan>,
+        queued_at: u64,
+        subscriber: Option<JobStatusSubscriber>,
+        admission: Admission,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+    ) {
+        info!("Job queued: [{job_id}]");
+
+        if let Err(e) = self
+            .state
+            .task_manager
+            .queue_job(&job_id, &job_name, queued_at)
+        {
+            error!("Fail to queue job {job_id} due to {e:?}");
+            return;
+        }
+
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            // Held until planning has registered the job as running, or
+            // has failed.
+            let _admission = admission;
+            // Planning runs user code (table providers, optimizer
+            // rules), and a panic must fail the job rather than strand
+            // it as queued, which would also keep a draining scheduler
+            // from ever going idle.
+            let planned = AssertUnwindSafe(state.submit_job(
+                &job_id,
+                &job_name,
+                session_ctx,
+                &plan,
+                queued_at,
+                subscriber.clone(),
+            ))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|payload| {
+                Err(BallistaError::Internal(format!(
+                    "planning panicked: {}",
+                    panic_payload_message(payload)
+                )))
+            });
+            let event = if let Err(e) = planned {
+                let error = e.to_string();
+                let fail_message = format!("Error planning job {job_id}: {e:?}");
+
+                // this is a corner case, as most of job status changes are handled in
+                // job state, after job is submitted to job state
+                if let Some(subscriber) = subscriber {
+                    notify_planning_failed(
+                        &subscriber,
+                        &job_id,
+                        job_name,
+                        error,
+                        queued_at,
+                    );
+                }
+
+                error!("{}", fail_message);
+                QueryStageSchedulerEvent::JobPlanningFailed {
+                    job_id,
+                    fail_message,
+                    queued_at,
+                    failed_at: timestamp_millis(),
+                }
+            } else {
+                QueryStageSchedulerEvent::JobSubmitted {
+                    job_id,
+                    queued_at,
+                    submitted_at: timestamp_millis(),
+                }
+            };
+            if let Err(e) = event_sender.post_event(event).await {
+                error!("Fail to send event due to {e}");
+            }
+        });
+    }
+
+    async fn on_job_submitted(
+        &self,
+        job_id: JobId,
+        queued_at: u64,
+        submitted_at: u64,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        self.metrics_collector
+            .record_submitted(&job_id, queued_at, submitted_at);
+
+        info!("Job submitted: [{job_id}]");
+
+        if self.state.config.is_push_staged_scheduling() {
+            event_sender
+                .post_event(QueryStageSchedulerEvent::ReviveOffers)
+                .await?;
+        }
+
+        // The graph was revived before caching, so the job's tasks
+        // are already visible to polling executors.
+        if let Some(callback) = &self.config.on_work_available {
+            callback(WorkAvailableReason::JobSubmitted { job_id });
+        }
+        Ok(())
+    }
+
+    async fn on_job_planning_failed(
+        &self,
+        job_id: JobId,
+        fail_message: String,
+        queued_at: u64,
+        failed_at: u64,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+    ) {
+        self.metrics_collector
+            .record_failed(&job_id, queued_at, failed_at);
+
+        error!("Job {job_id} failed: {fail_message}");
+        // Release a cache claim this job owned and fail what waited on it.
+        self.state
+            .on_job_terminal(&job_id, JobEnd::Failed(&fail_message), &event_sender)
+            .await;
+        if let Err(e) = self
+            .state
+            .task_manager
+            .fail_unscheduled_job(&job_id, fail_message)
+            .await
+        {
+            error!("Fail to invoke fail_unscheduled_job for job {job_id} due to {e:?}");
+        }
+    }
+
+    async fn on_job_finished(
+        &self,
+        job_id: JobId,
+        queued_at: u64,
+        completed_at: u64,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+    ) {
+        self.metrics_collector
+            .record_completed(&job_id, queued_at, completed_at);
+
+        info!("Job finished successfully: [{job_id}]");
+        // Record a cache this job built while its graph is active, and
+        // before cleanup, so its pin is in place.
+        self.state
+            .on_job_terminal(&job_id, JobEnd::Finished, &event_sender)
+            .await;
+        // Vcores a pipelined job held for its whole life.
+        let executor_manager = self.state.executor_manager.clone();
+        let refund_vcores = self.state.config.is_push_staged_scheduling();
+        let sender = event_sender.clone();
+        let release_reservation = move |reservation| async move {
+            if refund_vcores {
+                executor_manager.unbind_tasks(reservation).await?;
+                sender
+                    .post_event(QueryStageSchedulerEvent::ReviveOffers)
+                    .await?;
+            }
+            Ok(())
+        };
+        let intermediate_stage_ids = match self
+            .state
+            .task_manager
+            .succeed_job(&job_id, release_reservation)
+            .await
+        {
+            Ok(intermediate_stage_ids) => intermediate_stage_ids,
+            Err(e) => {
+                error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
+                vec![]
+            }
+        };
+        self.state
+            .clean_up_successful_job(job_id, intermediate_stage_ids)
+            .await;
+    }
+
+    async fn on_job_running_failed(
+        &self,
+        job_id: JobId,
+        fail_message: String,
+        queued_at: u64,
+        failed_at: u64,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        self.metrics_collector
+            .record_failed(&job_id, queued_at, failed_at);
+
+        error!("Job failed: [{job_id}]");
+        // Release a cache claim this job owned and fail what waited on it.
+        self.state
+            .on_job_terminal(&job_id, JobEnd::Failed(&fail_message), &event_sender)
+            .await;
+        if let Err(e) = self.abort_job(&job_id, fail_message).await {
+            error!("Fail to abort job {job_id} due to {e:?}");
+        }
+        self.state.clean_up_failed_job(job_id);
+        self.revive_after_abort(&event_sender).await
+    }
+
+    async fn on_job_updated(&self, job_id: JobId) {
+        debug!("Job updated, job_id: [{job_id}]");
+        match self.state.task_manager.update_job(&job_id).await {
+            Ok(new_tasks) => {
+                // update_job revived the graph: the new tasks are
+                // already visible to polling executors.
+                if new_tasks > 0
+                    && let Some(callback) = &self.config.on_work_available
+                {
+                    callback(WorkAvailableReason::NewStagesRunnable { job_id });
+                }
+            }
+            Err(e) => {
+                error!("Fail to invoke update_job for job {job_id} due to {e:?}");
+            }
+        }
+    }
+
+    async fn on_job_cancel(
+        &self,
+        job_id: JobId,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        self.metrics_collector.record_cancelled(&job_id);
+
+        info!("Job cancelled: [{job_id}]");
+        if let Err(e) = self.abort_job(&job_id, "Cancelled".to_owned()).await {
+            error!("Fail to cancel job {job_id} due to {e:?}");
+        }
+        // A held job was never submitted, so `abort_job` cannot end it.
+        self.state
+            .on_job_terminal(&job_id, JobEnd::Cancelled, &event_sender)
+            .await;
+        self.state.clean_up_failed_job(job_id);
+        self.revive_after_abort(&event_sender).await
+    }
+
+    async fn on_task_updating(
+        &self,
+        executor_id: String,
+        tasks_status: Vec<TaskStatus>,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        trace!("processing task status updates from {executor_id}: {tasks_status:?}");
+
+        let num_status = tasks_status.len();
+        if self.state.config.is_push_staged_scheduling() {
+            // Refund the vcores each completing task consumed at bind
+            // time (see `bind_one` in `cluster/mod.rs`). Refunding
+            // one vcore per task would leak leftovers under the
+            // multi-partition-task model, draining executor budgets
+            // to 1 vcore over the course of a query.
+            let vcores_freed = self
+                .state
+                .task_manager
+                .take_vcores_for_statuses(&executor_id, &tasks_status);
+            self.state
+                .executor_manager
+                .unbind_tasks(vec![(executor_id.clone(), vcores_freed)])
+                .await?;
+        }
+        match self
+            .state
+            .update_task_statuses(&executor_id, tasks_status)
+            .await
+        {
+            Ok(stage_events) => {
+                if self.state.config.is_push_staged_scheduling() {
+                    event_sender
+                        .post_event(QueryStageSchedulerEvent::ReviveOffers)
+                        .await?;
+                }
+
+                for stage_event in stage_events {
+                    event_sender.post_event(stage_event).await?;
+                }
+            }
+            Err(e) => {
+                error!(
+                    "Failed to update {num_status} task statuses for Executor {executor_id}: {e:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn on_executor_lost(
+        &self,
+        executor_id: String,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        match self.state.task_manager.executor_lost(&executor_id).await {
+            Ok(outcome) => {
+                let tasks = outcome.tasks_to_cancel;
+                if !tasks.is_empty()
+                    && let Err(e) = self
+                        .state
+                        .executor_manager
+                        .cancel_running_tasks(tasks)
+                        .await
+                {
+                    warn!("Fail to cancel running tasks due to {e:?}");
+                }
+                for (job_id, fail_message, queued_at) in outcome.failed_jobs {
+                    event_sender
+                        .post_event(QueryStageSchedulerEvent::JobRunningFailed {
+                            job_id,
+                            fail_message,
+                            queued_at,
+                            failed_at: timestamp_millis(),
+                        })
+                        .await?;
+                }
+                if self.state.config.is_push_staged_scheduling() {
+                    event_sender
+                        .post_event(QueryStageSchedulerEvent::ReviveOffers)
+                        .await?;
+                }
+            }
+            Err(e) => {
+                let msg = format!(
+                    "TaskManager error to handle Executor {executor_id} lost: {e}"
+                );
+                error!("{msg}");
+            }
+        }
+
+        // If that was the last executor, the running jobs whose tasks were
+        // just reset can no longer make progress — there is nothing to
+        // schedule them onto. Rather than hang forever, wait a bounded
+        // grace period for an executor to (re)register (e.g. a rolling
+        // restart) and then fail any job still running on an empty cluster.
+        // Only fires for executors that were actually present, so jobs
+        // merely queued waiting for their first executor (autoscaling cold
+        // start) are never affected.
+        // See https://github.com/apache/datafusion-ballista/issues/2029
+        //
+        // `no_executor_check_pending` collapses the burst of `ExecutorLost`
+        // events produced when a whole cluster dies at once into a single
+        // timer, so each running job is failed at most once.
+        if self.state.executor_manager.get_alive_executors().is_empty()
+            && !self.no_executor_check_pending.swap(true, Ordering::SeqCst)
+        {
+            self.schedule_no_executor_check(event_sender);
+        }
+        Ok(())
+    }
+
+    /// Spawns the grace-period timer armed when the last executor is lost:
+    /// after `no_executors_grace_period_seconds`, every job still running on
+    /// an empty cluster is failed. Clears `no_executor_check_pending` when done.
+    fn schedule_no_executor_check(
+        &self,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+    ) {
+        let state = self.state.clone();
+        let pending = self.no_executor_check_pending.clone();
+        let grace = Duration::from_secs(state.config.no_executors_grace_period_seconds);
+        let lost_at = timestamp_millis();
+        tokio::spawn(async move {
+            tokio::time::sleep(grace).await;
+
+            // An executor may have (re)registered during the grace
+            // window; if so the reset tasks will be scheduled onto it
+            // and there is nothing to fail.
+            if state.executor_manager.get_alive_executors().is_empty() {
+                fail_jobs_without_executors(&state, &event_sender, grace, lost_at).await;
+            }
+
+            // Cleared last, so the whole burst of `ExecutorLost` events
+            // that a simultaneous cluster death produces collapses into
+            // this single check — even when the grace period is 0.
+            pending.store(false, Ordering::SeqCst);
+        });
+    }
+}
+
+/// Fails every job that was already running when the cluster went empty
+/// (at `lost_at`) and is still running now.
+async fn fail_jobs_without_executors<
+    T: 'static + AsLogicalPlan,
+    U: 'static + AsExecutionPlan,
+>(
+    state: &SchedulerState<T, U>,
+    sender: &EventSender<QueryStageSchedulerEvent>,
+    grace: Duration,
+    lost_at: u64,
+) {
+    for job_id in state.task_manager.get_running_job_cache().keys() {
+        // Re-read the live status right before failing: a
+        // job that finished during the grace window must
+        // not be failed, and a job planned *after* the
+        // cluster went empty (started_at > lost_at) has its
+        // own window and must not inherit this one.
+        let queued_at = match state.task_manager.get_job_status(job_id).await {
+            Ok(Some(JobStatus {
+                status: Some(job_status::Status::Running(running)),
+                ..
+            })) if running.started_at <= lost_at => running.queued_at,
+            _ => continue,
+        };
+
+        let fail_message = format!(
+            "all executors were lost and no executor re-registered within {}s; no executors remain to run the tasks for this job",
+            grace.as_secs()
+        );
+        warn!("Failing job {job_id}: {fail_message}");
+        if let Err(e) = sender
+            .post_event(QueryStageSchedulerEvent::JobRunningFailed {
+                job_id: job_id.clone(),
+                fail_message,
+                queued_at,
+                failed_at: timestamp_millis(),
+            })
+            .await
+        {
+            error!("Fail to post JobRunningFailed for job {job_id}: {e:?}");
+        }
+    }
+}
+
+/// Tells a job status subscriber that its job failed during planning.
+fn notify_planning_failed(
+    subscriber: &JobStatusSubscriber,
+    job_id: &JobId,
+    job_name: String,
+    error: String,
+    queued_at: u64,
+) {
+    let timestamp = timestamp_millis();
+    let job_status = JobStatus {
+        job_id: job_id.clone().into(),
+        job_name,
+        status: Some(job_status::Status::Failed(FailedJob {
+            error,
+            queued_at,
+            started_at: timestamp,
+            ended_at: timestamp,
+        })),
+    };
+
+    if matches!(subscriber.try_send(job_status), Err(TrySendError::Full(_))) {
+        error!(
+            "jobs notification subscriber for job {} is blocked, can't deliver status update, job notification will be missed",
+            job_id
+        )
     }
 }
 
