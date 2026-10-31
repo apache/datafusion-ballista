@@ -39,7 +39,11 @@ def table(runs, labels):
     queries = sorted({q["query"] for run in runs for q in run["queries"]})
     by_query = [{q["query"]: q for q in run["queries"]} for run in runs]
     header = "| Query | " + " | ".join(f"{label} (s)" for label in labels) + " |"
-    rule = "| ----: | " + " | ".join("-" * max(len(label) + 4, 5) + ":" for label in labels) + " |"
+    rule = (
+        "| ----: | "
+        + " | ".join("-" * max(len(label) + 4, 5) + ":" for label in labels)
+        + " |"
+    )
     lines = [header, rule]
     totals = [0.0] * len(runs)
     complete = [True] * len(runs)
@@ -60,9 +64,16 @@ def table(runs, labels):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("results", nargs="+", help="Result files written by run.py")
-    parser.add_argument("--label", action="append", default=[], help="Column heading, once per file in order")
+    parser.add_argument(
+        "--label",
+        action="append",
+        default=[],
+        help="Column heading, once per file in order",
+    )
     args = parser.parse_args()
     if args.label and len(args.label) != len(args.results):
         sys.exit("give --label once per result file, or not at all")

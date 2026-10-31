@@ -296,14 +296,13 @@ async fn test_sort_merge_join_two_tables_repartition() -> datafusion::common::Re
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
-      ProjectionExec: expr=[id@0 as id, val@2 as val]
-        SortMergeJoinExec: join_type=Inner, on=[(id@0, id@0)]
-          SortExec: expr=[id@0 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=0, stage_resolved=true
-              DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
-          SortExec: expr=[id@0 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=1, stage_resolved=true
-              DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+      SortMergeJoinExec: join_type=Inner, on=[(id@0, id@0)], projection=[id@0, val@2]
+        SortExec: expr=[id@0 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=0, stage_resolved=true
+            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+        SortExec: expr=[id@0 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=1, stage_resolved=true
+            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
 
     let (stages, cancellable) = planner.actionable_stages()?;
@@ -314,14 +313,13 @@ async fn test_sort_merge_join_two_tables_repartition() -> datafusion::common::Re
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
     AdaptiveDatafusionExec: is_final=true, plan_id=3, stage_id=2, stage_resolved=false
-      ProjectionExec: expr=[id@0 as id, val@2 as val]
-        SortMergeJoinExec: join_type=Inner, on=[(id@0, id@0)]
-          SortExec: expr=[id@0 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=0, stage_resolved=true
-              DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
-          SortExec: expr=[id@0 ASC], preserve_partitioning=[true]
-            ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=1, stage_resolved=true
-              DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+      SortMergeJoinExec: join_type=Inner, on=[(id@0, id@0)], projection=[id@0, val@2]
+        SortExec: expr=[id@0 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=1, stage_id=0, stage_resolved=true
+            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+        SortExec: expr=[id@0 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([id@0], 4), plan_id=2, stage_id=1, stage_resolved=true
+            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
     ");
 
     Ok(())

@@ -278,22 +278,6 @@ impl ExecutionPlan for ChaosExec {
             Ok(None)
         }
     }
-
-    fn with_preserve_order(
-        &self,
-        preserve_order: bool,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        let new_input = self.input.with_preserve_order(preserve_order)?;
-        Some(Arc::new(
-            Self::new(
-                new_input,
-                self.failure_probability,
-                &self.fault_type,
-                Some(self.seed),
-            )
-            .ok()?,
-        ))
-    }
 }
 
 fn parse_delay_ms(fault_type: &str) -> u64 {

@@ -45,10 +45,18 @@ COLUMNS = [{"name": "c", "type": "bigint"}]
 
 
 def stats(state):
-    return {"state": state, "elapsedTimeMillis": 1500, "queuedTimeMillis": 100,
-            "planningTimeMillis": 200, "cpuTimeMillis": 9000, "processedRows": 1000,
-            "processedBytes": 4096, "physicalInputBytes": 2048, "peakMemoryBytes": 1 << 20,
-            "spilledBytes": 0}
+    return {
+        "state": state,
+        "elapsedTimeMillis": 1500,
+        "queuedTimeMillis": 100,
+        "planningTimeMillis": 200,
+        "cpuTimeMillis": 9000,
+        "processedRows": 1000,
+        "processedBytes": 4096,
+        "physicalInputBytes": 2048,
+        "peakMemoryBytes": 1 << 20,
+        "spilledBytes": 0,
+    }
 
 
 class Response:
@@ -74,24 +82,28 @@ class FakeTrino:
     def __init__(self, workers=2):
         self.workers = workers
         self.polls_until_workers = 1  # system.runtime.nodes undercounts this many times
-        self.statements = []          # every statement received, in order
-        self.cancelled = []           # query ids that got a DELETE
-        self.schema_headers = {}      # statement -> the X-Trino-Schema header it was sent with
-        self.null_columns = set()     # columns the sample check finds NULL (a misnamed column)
-        self.empty_tables = set()     # tables the sample check finds no rows in
+        self.statements = []  # every statement received, in order
+        self.cancelled = []  # query ids that got a DELETE
+        self.schema_headers = {}  # statement -> the X-Trino-Schema header it was sent with
+        self.null_columns = (
+            set()
+        )  # columns the sample check finds NULL (a misnamed column)
+        self.empty_tables = set()  # tables the sample check finds no rows in
         self.analyzed = set()
-        self.fail_marker = None       # statements containing this fail
-        self.hang_marker = None       # statements containing this never finish
-        self.unavailable = 0          # answer this many requests with 503 first
+        self.fail_marker = None  # statements containing this fail
+        self.hang_marker = None  # statements containing this never finish
+        self.unavailable = 0  # answer this many requests with 503 first
         self.queries = {}
 
     # urllib opener interface
     def open(self, request, timeout=None):
         if self.unavailable > 0:
             self.unavailable -= 1
-            self._raise(request.full_url, 503, {"message": "Trino server is still initializing"})
+            self._raise(
+                request.full_url, 503, {"message": "Trino server is still initializing"}
+            )
         method, url = request.get_method(), request.full_url
-        path = url[len(BASE):]
+        path = url[len(BASE) :]
         if method == "GET" and path == "/v1/info":
             return Response({"nodeVersion": {"version": "483"}, "starting": False})
         if method == "POST" and path == "/v1/statement":
@@ -108,8 +120,13 @@ class FakeTrino:
 
     @staticmethod
     def _raise(url, code, doc):
-        raise urllib.error.HTTPError(url, code, "error", email.message.Message(),
-                                     io.BytesIO(json.dumps(doc).encode()))
+        raise urllib.error.HTTPError(
+            url,
+            code,
+            "error",
+            email.message.Message(),
+            io.BytesIO(json.dumps(doc).encode()),
+        )
 
     def _next_uri(self, qid, page):
         return f"{BASE}/v1/statement/{qid}/{page}"
@@ -117,10 +134,19 @@ class FakeTrino:
     def _page(self, qid, page):
         statement = self.queries[qid]
         if self.hang_marker and self.hang_marker in statement:
-            return {"id": qid, "nextUri": self._next_uri(qid, page + 1), "stats": stats("RUNNING")}
+            return {
+                "id": qid,
+                "nextUri": self._next_uri(qid, page + 1),
+                "stats": stats("RUNNING"),
+            }
         if page < 3:  # two pages of rows, then the final document
-            return {"id": qid, "nextUri": self._next_uri(qid, page + 1), "columns": COLUMNS,
-                    "data": [[1], [2]], "stats": stats("RUNNING")}
+            return {
+                "id": qid,
+                "nextUri": self._next_uri(qid, page + 1),
+                "columns": COLUMNS,
+                "data": [[1], [2]],
+                "stats": stats("RUNNING"),
+            }
         return {"id": qid, "columns": COLUMNS, "stats": stats("FINISHED")}
 
     def _post(self, statement):
@@ -128,34 +154,75 @@ class FakeTrino:
         qid = f"q{len(self.statements)}"
         self.queries[qid] = statement
         if statement.rstrip().endswith(";"):
-            return {"id": qid, "error": {"message": "mismatched input ';'", "errorName": "SYNTAX_ERROR"}}
+            return {
+                "id": qid,
+                "error": {
+                    "message": "mismatched input ';'",
+                    "errorName": "SYNTAX_ERROR",
+                },
+            }
         if self.fail_marker and self.fail_marker in statement:
-            return {"id": qid, "stats": stats("FAILED"),
-                    "error": {"message": "Query exceeded per-node memory limit",
-                              "errorName": "EXCEEDED_LOCAL_MEMORY_LIMIT"}}
+            return {
+                "id": qid,
+                "stats": stats("FAILED"),
+                "error": {
+                    "message": "Query exceeded per-node memory limit",
+                    "errorName": "EXCEEDED_LOCAL_MEMORY_LIMIT",
+                },
+            }
         if "system.runtime.nodes" in statement:
             count = self.workers if self.polls_until_workers == 0 else 0
             self.polls_until_workers = max(0, self.polls_until_workers - 1)
-            return {"id": qid, "columns": COLUMNS, "data": [[count]], "stats": stats("FINISHED")}
+            return {
+                "id": qid,
+                "columns": COLUMNS,
+                "data": [[count]],
+                "stats": stats("FINISHED"),
+            }
         if statement.startswith("SHOW STATS FOR"):
             table = statement.rsplit(".", 1)[-1]
-            columns = [{"name": n, "type": "x"} for n in
-                       ("column_name", "data_size", "distinct_values_count", "nulls_fraction",
-                        "row_count", "low_value", "high_value")]
+            columns = [
+                {"name": n, "type": "x"}
+                for n in (
+                    "column_name",
+                    "data_size",
+                    "distinct_values_count",
+                    "nulls_fraction",
+                    "row_count",
+                    "low_value",
+                    "high_value",
+                )
+            ]
             row_count = 100.0 if table in self.analyzed else None
-            return {"id": qid, "columns": columns, "stats": stats("FINISHED"),
-                    "data": [["x", None, 1.0, 0.0, None, None, None],
-                             [None, None, None, None, row_count, None, None]]}
+            return {
+                "id": qid,
+                "columns": columns,
+                "stats": stats("FINISHED"),
+                "data": [
+                    ["x", None, 1.0, 0.0, None, None, None],
+                    [None, None, None, None, row_count, None, None],
+                ],
+            }
         if statement.startswith("ANALYZE"):
             self.analyzed.add(statement.rsplit(".", 1)[-1])
-            return {"id": qid, "columns": COLUMNS, "data": [[100]], "stats": stats("FINISHED")}
+            return {
+                "id": qid,
+                "columns": COLUMNS,
+                "data": [[100]],
+                "stats": stats("FINISHED"),
+            }
         if statement.startswith("SELECT count(*), count("):
             # The runner's check that a table's columns are not NULL.
             table = re.search(r"FROM \w+\.\w+\.(\w+) LIMIT", statement).group(1)
             columns = re.findall(r"count\((\w+)\)", statement)
             sampled = 0 if table in self.empty_tables else 10000
             counts = [0 if c in self.null_columns else sampled for c in columns]
-            return {"id": qid, "columns": COLUMNS, "data": [[sampled] + counts], "stats": stats("FINISHED")}
+            return {
+                "id": qid,
+                "columns": COLUMNS,
+                "data": [[sampled] + counts],
+                "stats": stats("FINISHED"),
+            }
         if statement.startswith(("CREATE", "CALL", "DROP")):
             return {"id": qid, "stats": stats("FINISHED")}
         # An ordinary query starts QUEUED; its rows come from the nextUri pages.
@@ -166,16 +233,31 @@ class RunnerTest(unittest.TestCase):
     def setUp(self):
         self.trino = FakeTrino()
         self.tmp = tempfile.TemporaryDirectory()
-        for name, sql in {"q01.sql": "-- using default substitutions\nselect 1 from lineitem;\n",
-                          "q02.sql": "select 2 from part\n", "s1.sql": "select 'ignored'"}.items():
+        for name, sql in {
+            "q01.sql": "-- using default substitutions\nselect 1 from lineitem;\n",
+            "q02.sql": "select 2 from part\n",
+            "s1.sql": "select 'ignored'",
+        }.items():
             with open(os.path.join(self.tmp.name, name), "w") as f:
                 f.write(sql)
         self.cfg = {
-            "trino_url": BASE, "catalog": "hive", "schema": "tpch", "data_path": "s3://bucket/data/",
-            "expected_workers": 2, "iterations": 2, "queries": [], "queries_dir": self.tmp.name,
-            "analyze": True, "partitioned": True, "money_type": "decimal(15, 2)",
-            "warmup": False, "skip_setup": False, "query_timeout_s": 30,
-            "session_properties": {}, "scale_factor": 1000, "expected_rows": {},
+            "trino_url": BASE,
+            "catalog": "hive",
+            "schema": "tpch",
+            "data_path": "s3://bucket/data/",
+            "expected_workers": 2,
+            "iterations": 2,
+            "queries": [],
+            "queries_dir": self.tmp.name,
+            "analyze": True,
+            "partitioned": True,
+            "money_type": "decimal(15, 2)",
+            "warmup": False,
+            "skip_setup": False,
+            "query_timeout_s": 30,
+            "session_properties": {},
+            "scale_factor": 1000,
+            "expected_rows": {},
         }
         # No real waiting in the retry and polling loops.
         self._sleep = rq.time.sleep
@@ -196,7 +278,9 @@ class RunnerTest(unittest.TestCase):
         self.assertNotIn("error", summary)
         self.assertEqual(summary["trino_version"], "483")
         self.assertEqual(summary["workers"], 2)
-        self.assertEqual([q["query"] for q in summary["queries"]], [1, 2])  # s1.sql ignored
+        self.assertEqual(
+            [q["query"] for q in summary["queries"]], [1, 2]
+        )  # s1.sql ignored
         first = summary["queries"][0]
         self.assertIsNone(first["error"])
         self.assertEqual(len(first["iterations"]), 2)
@@ -210,7 +294,12 @@ class RunnerTest(unittest.TestCase):
         # A trailing semicolon would make real Trino reject the statement.
         self.assertFalse(any(s.rstrip().endswith(";") for s in self.trino.statements))
         # The leading comment line is kept.
-        self.assertTrue(any(s.startswith("-- using default substitutions") for s in self.trino.statements))
+        self.assertTrue(
+            any(
+                s.startswith("-- using default substitutions")
+                for s in self.trino.statements
+            )
+        )
 
         # One external table per TPC-H table, partition column last.
         ddl = self.statements("CREATE TABLE")
@@ -219,7 +308,7 @@ class RunnerTest(unittest.TestCase):
         self.assertIn("external_location = 's3://bucket/data/lineitem'", lineitem)
         self.assertIn("partitioned_by = ARRAY['l_shipdate']", lineitem)
         self.assertLess(lineitem.index("l_comment"), lineitem.index("l_shipdate date"))
-        self.assertEqual(len(self.statements("CALL")), 4)   # the four partitioned tables
+        self.assertEqual(len(self.statements("CALL")), 4)  # the four partitioned tables
         self.assertEqual(len(self.statements("ANALYZE")), len(TPCH_TABLES))
 
     def test_unpartitioned_data_declares_no_partitions(self):
@@ -233,31 +322,44 @@ class RunnerTest(unittest.TestCase):
     def test_money_type_is_declared(self):
         self.cfg["money_type"] = "decimal(12, 2)"
         self.run_suite()
-        lineitem = next(s for s in self.statements("CREATE TABLE") if "hive.tpch.lineitem" in s)
+        lineitem = next(
+            s for s in self.statements("CREATE TABLE") if "hive.tpch.lineitem" in s
+        )
         self.assertIn("l_extendedprice decimal(12, 2)", lineitem)
         self.assertIn("l_orderkey bigint", lineitem)
 
     def test_multi_statement_query_runs_every_statement_and_counts_the_select(self):
         with open(os.path.join(self.tmp.name, "q15.sql"), "w") as f:
-            f.write("create view revenue0 (supplier_no, total_revenue) as\n"
-                    "  select l_suppkey, sum(l_extendedprice) from lineitem group by l_suppkey;\n\n"
-                    "select s_suppkey from supplier, revenue0 where s_suppkey = supplier_no;\n\n"
-                    "drop view revenue0;")
+            f.write(
+                "create view revenue0 (supplier_no, total_revenue) as\n"
+                "  select l_suppkey, sum(l_extendedprice) from lineitem group by l_suppkey;\n\n"
+                "select s_suppkey from supplier, revenue0 where s_suppkey = supplier_no;\n\n"
+                "drop view revenue0;"
+            )
         self.cfg["queries"] = ["q15"]
         (q15,) = self.run_suite()["queries"]
         self.assertIsNone(q15["error"])
-        self.assertEqual(q15["iterations"][0]["row_count"], 4)   # the SELECT's rows
+        self.assertEqual(q15["iterations"][0]["row_count"], 4)  # the SELECT's rows
         self.assertEqual(len(self.statements("CREATE OR REPLACE VIEW revenue0 AS")), 2)
         self.assertEqual(len(self.statements("drop view revenue0")), 2)
 
     def test_create_view_column_list_moves_to_a_derived_table(self):
         create, select = rq.split_statements(
-            "create view revenue0 (supplier_no, total_revenue) as\nselect a, b from t;\nselect 1;")
-        self.assertTrue(create.startswith("CREATE OR REPLACE VIEW revenue0 AS\nSELECT * FROM (\nselect a, b from t"))
-        self.assertTrue(create.endswith(") AS revenue0_columns (supplier_no, total_revenue)"))
+            "create view revenue0 (supplier_no, total_revenue) as\nselect a, b from t;\nselect 1;"
+        )
+        self.assertTrue(
+            create.startswith(
+                "CREATE OR REPLACE VIEW revenue0 AS\nSELECT * FROM (\nselect a, b from t"
+            )
+        )
+        self.assertTrue(
+            create.endswith(") AS revenue0_columns (supplier_no, total_revenue)")
+        )
         self.assertEqual(select, "select 1")
-        self.assertEqual(rq.split_statements("create view v as select 1"),
-                         ["CREATE OR REPLACE VIEW v AS\nselect 1"])
+        self.assertEqual(
+            rq.split_statements("create view v as select 1"),
+            ["CREATE OR REPLACE VIEW v AS\nselect 1"],
+        )
 
     def test_is_select_skips_comments(self):
         self.assertTrue(rq.is_select("-- q1\nselect 1"))
@@ -270,7 +372,9 @@ class RunnerTest(unittest.TestCase):
         self.trino.statements.clear()
         self.run_suite()
         self.assertEqual(self.statements("ANALYZE"), [])
-        self.assertEqual(len(self.statements("CALL")), 4)  # the sync is still issued; it is cheap
+        self.assertEqual(
+            len(self.statements("CALL")), 4
+        )  # the sync is still issued; it is cheap
 
     def test_no_analyze(self):
         self.cfg["analyze"] = False
@@ -282,7 +386,7 @@ class RunnerTest(unittest.TestCase):
         self.trino.fail_marker = "select 1 from"
         q1, q2 = self.run_suite()["queries"]
         self.assertIn("EXCEEDED_LOCAL_MEMORY_LIMIT", q1["error"])
-        self.assertEqual(q1["iterations"], [])            # stops at the first failed iteration
+        self.assertEqual(q1["iterations"], [])  # stops at the first failed iteration
         self.assertIsNone(q2["error"])
         self.assertEqual(len(q2["iterations"]), 2)
 
@@ -291,13 +395,15 @@ class RunnerTest(unittest.TestCase):
         self.cfg["query_timeout_s"] = 10
         ticks = itertools.count()
         orig = rq.time.monotonic
-        rq.time.monotonic = lambda: next(ticks)   # the clock advances one "second" per reading
+        rq.time.monotonic = lambda: next(
+            ticks
+        )  # the clock advances one "second" per reading
         try:
             q1, q2 = self.run_suite()["queries"]
         finally:
             rq.time.monotonic = orig
         self.assertIn("QueryTimedOut", q1["error"])
-        self.assertEqual(len(self.trino.cancelled), 1)   # only the query that hung
+        self.assertEqual(len(self.trino.cancelled), 1)  # only the query that hung
         self.assertIsNone(q2["error"])
         self.assertEqual(len(q2["iterations"]), 2)
 
@@ -310,7 +416,7 @@ class RunnerTest(unittest.TestCase):
     def test_gives_up_on_persistent_503(self):
         self.trino.unavailable = 10**6
         client = rq.TrinoClient(BASE, "hive", "tpch", opener=self.trino)
-        clock = iter(range(0, 1000, 20))     # each call to monotonic() advances 20s
+        clock = iter(range(0, 1000, 20))  # each call to monotonic() advances 20s
         orig = rq.time.monotonic
         rq.time.monotonic = lambda: next(clock)
         try:
@@ -347,8 +453,14 @@ class RunnerTest(unittest.TestCase):
         # The schema is created by the setup, so the setup cannot depend on it existing.
         self.run_suite()
         headers = self.trino.schema_headers
-        setup = [s for s in headers if s.startswith(("CREATE", "CALL", "ANALYZE", "SHOW STATS", "SELECT count(*), count("))
-                 or "system.runtime.nodes" in s]
+        setup = [
+            s
+            for s in headers
+            if s.startswith(
+                ("CREATE", "CALL", "ANALYZE", "SHOW STATS", "SELECT count(*), count(")
+            )
+            or "system.runtime.nodes" in s
+        ]
         self.assertTrue(setup)
         self.assertEqual({headers[s] for s in setup}, {None})
         queries = [s for s in headers if "from lineitem" in s or "from part" in s]
@@ -357,8 +469,11 @@ class RunnerTest(unittest.TestCase):
 
     def benchmark_statements(self):
         """The benchmark queries that were sent, in order, as query numbers."""
-        return [1 if "from lineitem" in s else 2 for s in self.trino.statements
-                if "from lineitem" in s or "from part" in s]
+        return [
+            1 if "from lineitem" in s else 2
+            for s in self.trino.statements
+            if "from lineitem" in s or "from part" in s
+        ]
 
     def test_warmup_runs_each_query_once_before_the_timed_iterations(self):
         self.cfg["warmup"] = True
@@ -366,8 +481,10 @@ class RunnerTest(unittest.TestCase):
         # One untimed pass over all the queries, then the timed iterations query by query.
         self.assertEqual(self.benchmark_statements(), [1, 2, 1, 1, 2, 2])
         q1 = summary["queries"][0]
-        self.assertEqual(len(q1["iterations"]), 2)              # the warm-up is not one of them
-        self.assertEqual(q1["warmup"], {"elapsed": q1["warmup"]["elapsed"], "error": None})
+        self.assertEqual(len(q1["iterations"]), 2)  # the warm-up is not one of them
+        self.assertEqual(
+            q1["warmup"], {"elapsed": q1["warmup"]["elapsed"], "error": None}
+        )
         self.assertIsNotNone(q1["warmup"]["elapsed"])
         self.assertTrue(summary["warmup"])
 
@@ -384,12 +501,17 @@ class RunnerTest(unittest.TestCase):
         self.assertIn("EXCEEDED_LOCAL_MEMORY_LIMIT", q1["error"])
         self.assertEqual(q1["iterations"], [])
         self.assertEqual(q1["warmup"]["error"], q1["error"])
-        self.assertEqual(self.benchmark_statements().count(1), 1)   # once, in the warm-up: it would only fail again
+        self.assertEqual(
+            self.benchmark_statements().count(1), 1
+        )  # once, in the warm-up: it would only fail again
         self.assertIsNone(q2["error"])
         self.assertEqual(len(q2["iterations"]), 2)
 
     def test_wrong_row_count_fails_the_query(self):
-        self.cfg["expected_rows"] = {1: 5, 2: 4}      # the fake returns 4 rows for every query
+        self.cfg["expected_rows"] = {
+            1: 5,
+            2: 4,
+        }  # the fake returns 4 rows for every query
         q1, q2 = self.run_suite()["queries"]
         self.assertIn("WrongResult", q1["error"])
         self.assertIn("returned 4 rows, expected 5", q1["error"])
@@ -429,10 +551,21 @@ class RunnerTest(unittest.TestCase):
     def test_sample_check_runs_between_the_partition_sync_and_analyze(self):
         self.run_suite()
         statements = self.trino.statements
-        sync = next(i for i, s in enumerate(statements) if s.startswith("CALL") and "'lineitem'" in s)
-        sample = next(i for i, s in enumerate(statements)
-                      if s.startswith("SELECT count(*), count(") and ".lineitem LIMIT" in s)
-        analyze = next(i for i, s in enumerate(statements) if s.startswith("ANALYZE") and s.endswith(".lineitem"))
+        sync = next(
+            i
+            for i, s in enumerate(statements)
+            if s.startswith("CALL") and "'lineitem'" in s
+        )
+        sample = next(
+            i
+            for i, s in enumerate(statements)
+            if s.startswith("SELECT count(*), count(") and ".lineitem LIMIT" in s
+        )
+        analyze = next(
+            i
+            for i, s in enumerate(statements)
+            if s.startswith("ANALYZE") and s.endswith(".lineitem")
+        )
         self.assertLess(sync, sample)
         self.assertLess(sample, analyze)
 
@@ -449,9 +582,17 @@ class RunnerTest(unittest.TestCase):
         self.assertFalse(rq.table_has_stats(NoColumns(), "hive", "tpch", "lineitem"))
 
     def test_session_properties_are_sent(self):
-        client = rq.TrinoClient(BASE, "hive", "tpch",
-                                {"join_distribution_type": "BROADCAST", "a": "b c"}, opener=self.trino)
-        self.assertEqual(client.headers["X-Trino-Session"], "join_distribution_type=BROADCAST,a=b%20c")
+        client = rq.TrinoClient(
+            BASE,
+            "hive",
+            "tpch",
+            {"join_distribution_type": "BROADCAST", "a": "b c"},
+            opener=self.trino,
+        )
+        self.assertEqual(
+            client.headers["X-Trino-Session"],
+            "join_distribution_type=BROADCAST,a=b%20c",
+        )
 
     def test_query_number(self):
         for name in ("q01", "q1", "Q1", "1", "01"):
@@ -461,8 +602,16 @@ class RunnerTest(unittest.TestCase):
             rq.query_number("tpcds")
 
     def test_config_from_env(self):
-        cfg = rq.config_from_env({"QUERIES": "q1,q06", "SESSION_PROPERTIES": "a=1,b=2", "ANALYZE": "1",
-                                  "EXPECTED_WORKERS": "32", "PARTITIONED": "1", "MONEY_TYPE": "decimal(12, 2)"})
+        cfg = rq.config_from_env(
+            {
+                "QUERIES": "q1,q06",
+                "SESSION_PROPERTIES": "a=1,b=2",
+                "ANALYZE": "1",
+                "EXPECTED_WORKERS": "32",
+                "PARTITIONED": "1",
+                "MONEY_TYPE": "decimal(12, 2)",
+            }
+        )
         self.assertEqual(cfg["queries"], ["q1", "q06"])
         self.assertEqual(cfg["session_properties"], {"a": "1", "b": "2"})
         self.assertTrue(cfg["analyze"])
@@ -480,12 +629,15 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(cfg["expected_rows"][11], 0)
         self.assertFalse(rq.config_from_env({"WARMUP": "0"})["warmup"])
 
-    def test_config_can_turn_row_checks_off_and_unknown_scale_factors_are_unchecked(self):
+    def test_config_can_turn_row_checks_off_and_unknown_scale_factors_are_unchecked(
+        self,
+    ):
         self.assertEqual(rq.config_from_env({"CHECK_ROWS": "0"})["expected_rows"], {})
         self.assertEqual(rq.config_from_env({"SCALE_FACTOR": "1"})["expected_rows"], {})
 
     def test_expected_row_counts_cover_the_queries_that_can_be_checked(self):
         from tpch_expected_rows import SF1000
+
         # q13 and q20 grow with the scale factor, so nothing is known about them at SF1000.
         self.assertEqual(set(SF1000), set(range(1, 23)) - {13, 20})
         self.assertTrue(all(isinstance(n, int) and n >= 0 for n in SF1000.values()))

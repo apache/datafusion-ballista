@@ -10,12 +10,11 @@ SortShuffleWriterExec: partitioning=Hash([o_orderkey@0], 16)
 === Stage 3 ===
 SortShuffleWriterExec: partitioning=Hash([l_shipmode@0], 16)
   AggregateExec: mode=Partial, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
-    ProjectionExec: expr=[l_shipmode@1 as l_shipmode, o_orderpriority@3 as o_orderpriority]
-      SortMergeJoinExec: join_type=Inner, on=[(l_orderkey@0, o_orderkey@0)]
-        SortExec: expr=[l_orderkey@0 ASC], preserve_partitioning=[true]
-          UnresolvedShuffleExec: stage=1, partitioning: Hash([l_orderkey@0], 16)
-        SortExec: expr=[o_orderkey@0 ASC], preserve_partitioning=[true]
-          UnresolvedShuffleExec: stage=2, partitioning: Hash([o_orderkey@0], 16)
+    SortMergeJoinExec: join_type=Inner, on=[(l_orderkey@0, o_orderkey@0)], projection=[l_shipmode@1, o_orderpriority@3]
+      SortExec: expr=[l_orderkey@0 ASC], preserve_partitioning=[true]
+        UnresolvedShuffleExec: stage=1, partitioning: Hash([l_orderkey@0], 16)
+      SortExec: expr=[o_orderkey@0 ASC], preserve_partitioning=[true]
+        UnresolvedShuffleExec: stage=2, partitioning: Hash([o_orderkey@0], 16)
 
 === Stage 4 ===
 ShuffleWriterExec: partitioning: Hash([l_shipmode@0], 16)
