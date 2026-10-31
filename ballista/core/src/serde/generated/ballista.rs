@@ -31,7 +31,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -79,6 +79,8 @@ pub mod ballista_physical_plan_node {
         PipelinedShuffleWriter(super::PipelinedShuffleWriterExecNode),
         #[prost(message, tag = "19")]
         PipelinedShuffleReader(super::PipelinedShuffleReaderExecNode),
+        #[prost(message, tag = "20")]
+        PartitionIdRepartition(super::PartitionIdRepartitionExecNode),
     }
 }
 /// Root of a stage in a pipelined job. Instead of writing shuffle files, it
@@ -139,6 +141,29 @@ pub struct PipelinedPartitionLocation {
     pub task_id: u32,
     #[prost(message, optional, tag = "3")]
     pub executor_meta: ::core::option::Option<ExecutorMetadata>,
+}
+/// Where a shuffle finds each row's output partition: the value of an integer
+/// column of the shuffle's input, which the shuffle drops before writing.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PartitionIdRouting {
+    /// Index of the integer input column holding the partition id.
+    #[prost(uint32, tag = "1")]
+    pub column: u32,
+    /// Number of output partitions. Ids must lie in `0..partition_count`.
+    #[prost(uint32, tag = "2")]
+    pub partition_count: u32,
+}
+/// Exchange marker that the distributed planner lowers to a stage boundary whose
+/// shuffle writer routes rows by an input column instead of hashing them. It never
+/// executes. The child plan is plumbed by the framework as `inputs\[0\]`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PartitionIdRepartitionExecNode {
+    /// Index of the integer input column holding the partition id.
+    #[prost(uint32, tag = "1")]
+    pub partition_id_column: u32,
+    /// Number of output partitions.
+    #[prost(uint32, tag = "2")]
+    pub partition_count: u32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedQueryExecNode {
@@ -475,10 +500,6 @@ pub struct SortShuffleWriterExecNode {
     pub stage_id: u32,
     #[prost(message, optional, tag = "3")]
     pub input: ::core::option::Option<::datafusion_proto::protobuf::PhysicalPlanNode>,
-    #[prost(message, optional, tag = "4")]
-    pub output_partitioning: ::core::option::Option<
-        ::datafusion_proto::protobuf::PhysicalHashRepartition,
-    >,
     /// Target batch size in rows when materializing buffered shuffle data.
     #[prost(uint64, tag = "8")]
     pub batch_size: u64,
@@ -488,6 +509,24 @@ pub struct SortShuffleWriterExecNode {
     /// before this field existed decodes to the built-in default rather than 0.
     #[prost(uint64, optional, tag = "9")]
     pub memory_limit_per_task_bytes: ::core::option::Option<u64>,
+    /// How rows are assigned to output partitions. A writer that predates
+    /// `partition_id_routing` sees neither field and rejects the node instead of
+    /// hashing.
+    #[prost(oneof = "sort_shuffle_writer_exec_node::Routing", tags = "4, 10")]
+    pub routing: ::core::option::Option<sort_shuffle_writer_exec_node::Routing>,
+}
+/// Nested message and enum types in `SortShuffleWriterExecNode`.
+pub mod sort_shuffle_writer_exec_node {
+    /// How rows are assigned to output partitions. A writer that predates
+    /// `partition_id_routing` sees neither field and rejects the node instead of
+    /// hashing.
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Routing {
+        #[prost(message, tag = "4")]
+        OutputPartitioning(::datafusion_proto::protobuf::PhysicalHashRepartition),
+        #[prost(message, tag = "10")]
+        PartitionIdRouting(super::PartitionIdRouting),
+    }
 }
 /// Passthrough shuffle writer that emits the seekable Arrow IPC file format.
 /// Carries no output partitioning: like `ShuffleWriterExecNode`'s passthrough
