@@ -678,7 +678,7 @@ standard DataFusion settings.</p>
 <tr class="row-odd"><td><p>ballista.standalone.task_scheduling_policy</p></td>
 <td><p>Utf8</p></td>
 <td><p>pull-staged</p></td>
-<td><p>Task scheduling policy of a standalone in-process cluster: <code class="docutils literal notranslate"><span class="pre">pull-staged</span></code>, where the executor polls the scheduler for work, or <code class="docutils literal notranslate"><span class="pre">push-staged</span></code>, where the scheduler pushes tasks to the executor.</p></td>
+<td><p>Task scheduling policy of a standalone in-process cluster: <code class="docutils literal notranslate"><span class="pre">pull-staged</span></code>, where the executor polls the scheduler for work, or <code class="docutils literal notranslate"><span class="pre">push-staged</span></code>, where the scheduler pushes tasks to the executor. <code class="docutils literal notranslate"><span class="pre">ballista.execution.mode</span> <span class="pre">=</span> <span class="pre">pipelined</span></code> always uses <code class="docutils literal notranslate"><span class="pre">push-staged</span></code>.</p></td>
 </tr>
 </tbody>
 </table>
@@ -773,8 +773,7 @@ explanation of the sort-based shuffle writer.</p>
 <h2>Pipelined Execution Settings<a class="headerlink" href="#pipelined-execution-settings" title="Link to this heading">#</a></h2>
 <p>These session-level keys select and tune the experimental pipelined execution
 mode, in which every task of a job is placed up front and stages stream data
-to each other instead of exchanging shuffle files. The scheduler does not run
-pipelined jobs yet.</p>
+to each other instead of exchanging shuffle files.</p>
 <!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.execution.,ballista.pipelined. -->
 <!-- prettier-ignore -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -789,7 +788,7 @@ pipelined jobs yet.</p>
 <tr class="row-even"><td><p>ballista.execution.mode</p></td>
 <td><p>Utf8</p></td>
 <td><p>blocking</p></td>
-<td><p>How a job’s stages exchange data. <code class="docutils literal notranslate"><span class="pre">blocking</span></code> runs stages one after another and passes data between them through shuffle files. <code class="docutils literal notranslate"><span class="pre">pipelined</span></code> (experimental) places every task of the job up front and streams record batches between stages over Arrow Flight. It has lower latency, but a failed task fails the job instead of being retried, and a job waits until it can reserve the vcores of its widest stage all at once. <code class="docutils literal notranslate"><span class="pre">pipelined</span></code> requires push-staged scheduling, and the scheduler does not run it yet.</p></td>
+<td><p>How a job’s stages exchange data. <code class="docutils literal notranslate"><span class="pre">blocking</span></code> runs stages one after another and passes data between them through shuffle files. <code class="docutils literal notranslate"><span class="pre">pipelined</span></code> (experimental) places every task of the job up front and streams record batches between stages over Arrow Flight. It has lower latency, but a failed task fails the job instead of being retried, and a job waits until it can reserve the vcores of its widest stage all at once. <code class="docutils literal notranslate"><span class="pre">pipelined</span></code> requires push-staged scheduling.</p></td>
 </tr>
 <tr class="row-odd"><td><p>ballista.pipelined.queue_capacity</p></td>
 <td><p>UInt64</p></td>
