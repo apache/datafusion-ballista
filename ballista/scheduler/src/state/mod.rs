@@ -513,14 +513,17 @@ mod tests {
     use crate::scheduler_server::timestamp_millis;
     use crate::state::executor_manager::ExecutorManager;
     use crate::state::task_manager::TaskLauncher;
-    use crate::test_utils::test_cluster_context;
+    use crate::test_utils::payload::{
+        PayloadCodec, PayloadExec, payload_resolver, payloads_of,
+    };
+    use crate::test_utils::{mock_executor, test_cluster_context};
     use ballista_core::extension::SessionConfigExt;
-    use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::MultiTaskDefinition;
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
         ExecutorSpecification,
     };
+    use ballista_core::serde::{BallistaCodec, BallistaLogicalExtensionCodec};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::execution::context::SessionConfig;
     use datafusion::functions_aggregate::sum::sum;
@@ -844,6 +847,169 @@ mod tests {
             unassigned_slots,
             vec![("executor-1".to_string(), bound_vcores)]
         );
+
+        Ok(())
+    }
+
+    /// Keeps the task definitions it is handed, and rejects none.
+    #[derive(Default)]
+    struct CapturingLauncher {
+        launched: std::sync::Mutex<Vec<MultiTaskDefinition>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskLauncher for CapturingLauncher {
+        async fn launch_tasks(
+            &self,
+            _executor: &ExecutorMetadata,
+            tasks: Vec<MultiTaskDefinition>,
+            _executor_manager: &ExecutorManager,
+        ) -> Result<HashSet<JobId>> {
+            self.launched.lock().unwrap().extend(tasks);
+            Ok(HashSet::new())
+        }
+    }
+
+    /// Submits a job of one four-partition `PayloadExec` and binds it to two
+    /// executors of two vcores each, which splits its stage into two tasks.
+    async fn bind_split_payload_stage(
+        config: SchedulerConfig,
+        launcher: Arc<CapturingLauncher>,
+    ) -> Result<(
+        SchedulerState<LogicalPlanNode, PhysicalPlanNode>,
+        JobId,
+        Vec<BoundTask>,
+    )> {
+        let job_id = JobId::from("job-payload");
+        let codec = BallistaCodec::new(
+            Arc::new(BallistaLogicalExtensionCodec::default()),
+            Arc::new(PayloadCodec::default()),
+        );
+        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerState::new_with_task_launcher(
+                test_cluster_context(),
+                codec,
+                "localhost:50050".to_owned(),
+                Arc::new(config),
+                launcher,
+            );
+
+        for executor in ["executor-1", "executor-2"] {
+            let metadata = ExecutorMetadata {
+                specification: ExecutorSpecification::default().with_vcores(2),
+                ..mock_executor(executor.to_string())
+            };
+            let data = ExecutorData {
+                executor_id: executor.to_string(),
+                total_vcores: 2,
+                available_vcores: 2,
+            };
+            state
+                .executor_manager
+                .register_executor(metadata, data)
+                .await?;
+        }
+
+        let ctx = state
+            .session_manager
+            .create_or_update_session("session", &SessionConfig::new_with_ballista())
+            .await?;
+        state
+            .task_manager
+            .queue_job(&job_id, "", timestamp_millis())?;
+        state
+            .task_manager
+            .submit_physical_plan(
+                &job_id,
+                "",
+                ctx,
+                PayloadExec::leaf(&["p0", "p1", "p2", "p3"]),
+                timestamp_millis(),
+                None,
+            )
+            .await?;
+
+        let bound = state
+            .executor_manager
+            .bind_schedulable_tasks(state.task_manager.get_running_job_cache())
+            .await?;
+        let mut slices: Vec<_> = bound
+            .iter()
+            .map(|(_, task)| task.global_input_partition_ids.clone())
+            .collect();
+        slices.sort();
+        assert_eq!(slices, [[0, 1], [2, 3]], "the stage is split in two");
+
+        // As `revive_offers` does between binding and launching.
+        state.task_manager.record_task_reservations(&bound);
+
+        Ok((state, job_id, bound))
+    }
+
+    /// Launches `bound`, returning the vcores refunded and the jobs failed.
+    async fn launch(
+        state: &SchedulerState<LogicalPlanNode, PhysicalPlanNode>,
+        bound: Vec<BoundTask>,
+    ) -> Result<(u32, HashSet<JobId>)> {
+        let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
+        let sender = EventSender::new(tx_event);
+        let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
+        Ok((unassigned_slots.iter().map(|(_, n)| *n).sum(), failed_jobs))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_fails_a_job_whose_split_stage_holds_a_leaf_nobody_can_restrict()
+    -> Result<()> {
+        let launcher = Arc::new(CapturingLauncher::default());
+        let (state, job_id, bound) =
+            bind_split_payload_stage(SchedulerConfig::default(), launcher.clone())
+                .await?;
+        let vcores: u32 = bound.iter().map(|(_, task)| task.vcores_consumed).sum();
+
+        let (freed, failed_jobs) = launch(&state, bound).await?;
+
+        assert_eq!(failed_jobs, HashSet::from([job_id]));
+        assert_eq!(freed, vcores, "the tasks' vcores are refunded");
+        assert!(launcher.launched.lock().unwrap().is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_restricts_the_leaf_through_the_configured_resolver()
+    -> Result<()> {
+        let launcher = Arc::new(CapturingLauncher::default());
+        let config = SchedulerConfig::default()
+            .with_partition_sliceable_resolver(payload_resolver());
+        let (state, _job_id, bound) =
+            bind_split_payload_stage(config, launcher.clone()).await?;
+
+        let (freed, failed_jobs) = launch(&state, bound).await?;
+
+        assert!(failed_jobs.is_empty());
+        assert_eq!(freed, 0, "every task was launched, so no slot is refunded");
+
+        // Decode what the executors would, with the codec the scheduler used.
+        let task_ctx = SessionContext::new().task_ctx();
+        let mut shipped: Vec<Vec<String>> = launcher
+            .launched
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|definition| {
+                let plan = PhysicalPlanNode::try_decode(&definition.plan)
+                    .and_then(|node| {
+                        node.try_into_physical_plan(
+                            &task_ctx,
+                            state.codec.physical_extension_codec(),
+                        )
+                    })
+                    .expect("the executor can decode the plan");
+                payloads_of(plan.children()[0])
+            })
+            .collect();
+        shipped.sort();
+        assert_eq!(shipped, [["p0", "p1"], ["p2", "p3"]]);
 
         Ok(())
     }
