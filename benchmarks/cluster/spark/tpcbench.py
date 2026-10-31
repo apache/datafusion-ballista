@@ -56,13 +56,41 @@ RESULTS_MARKER = "===RESULTS-JSON-FILE==="
 QUERY_RESULT_PREFIX = "SPARK-QUERY-RESULT "
 
 TABLES = {
-    "tpch": ["customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier"],
+    "tpch": [
+        "customer",
+        "lineitem",
+        "nation",
+        "orders",
+        "part",
+        "partsupp",
+        "region",
+        "supplier",
+    ],
     "tpcds": [
-        "call_center", "catalog_page", "catalog_returns", "catalog_sales", "customer",
-        "customer_address", "customer_demographics", "date_dim", "household_demographics",
-        "income_band", "inventory", "item", "promotion", "reason", "ship_mode", "store",
-        "store_returns", "store_sales", "time_dim", "warehouse", "web_page", "web_returns",
-        "web_sales", "web_site",
+        "call_center",
+        "catalog_page",
+        "catalog_returns",
+        "catalog_sales",
+        "customer",
+        "customer_address",
+        "customer_demographics",
+        "date_dim",
+        "household_demographics",
+        "income_band",
+        "inventory",
+        "item",
+        "promotion",
+        "reason",
+        "ship_mode",
+        "store",
+        "store_returns",
+        "store_sales",
+        "time_dim",
+        "warehouse",
+        "web_page",
+        "web_returns",
+        "web_sales",
+        "web_site",
     ],
 }
 NUM_QUERIES = {"tpch": 22, "tpcds": 99}
@@ -95,14 +123,24 @@ def register_tables(spark, benchmark, data_path):
 def column_renames(benchmark, columns):
     if benchmark != "tpcds":
         return []
-    return [(spec, generated) for spec, generated in TPCDS_COLUMN_RENAMES
-            if generated in columns and spec not in columns]
+    return [
+        (spec, generated)
+        for spec, generated in TPCDS_COLUMN_RENAMES
+        if generated in columns and spec not in columns
+    ]
 
 
 def is_select(statement):
     """True for a query, False for DDL such as q15's CREATE VIEW and DROP VIEW."""
-    code = [line for line in statement.splitlines() if line.strip() and not line.strip().startswith("--")]
-    return bool(code) and code[0].strip().lstrip("(").split(None, 1)[0].lower() in ("select", "with")
+    code = [
+        line
+        for line in statement.splitlines()
+        if line.strip() and not line.strip().startswith("--")
+    ]
+    return bool(code) and code[0].strip().lstrip("(").split(None, 1)[0].lower() in (
+        "select",
+        "with",
+    )
 
 
 def load_statements(queries_dir, number, renames):
@@ -115,7 +153,11 @@ def load_statements(queries_dir, number, renames):
     for statement in text.split(";"):
         statement = statement.strip()
         if statement:
-            statements.append(re.sub(r"(?i)^create\s+view\b", "CREATE OR REPLACE TEMP VIEW", statement))
+            statements.append(
+                re.sub(
+                    r"(?i)^create\s+view\b", "CREATE OR REPLACE TEMP VIEW", statement
+                )
+            )
     return statements
 
 
@@ -151,13 +193,21 @@ def run_query(spark, args, number, statements, expected_rows):
             elapsed, row_count = execute(spark, args.benchmark, number, statements)
             expected = expected_rows.get(number)
             if expected is not None and row_count != expected:
-                raise RuntimeError(f"q{number} returned {row_count} rows, expected {expected}")
+                raise RuntimeError(
+                    f"q{number} returned {row_count} rows, expected {expected}"
+                )
         except Exception as e:  # noqa: BLE001 - a failed query must not stop the suite
             record["error"] = describe_error(e)
-            log(f"q{number} iteration {i + 1}/{args.iterations} FAILED: {record['error']}")
+            log(
+                f"q{number} iteration {i + 1}/{args.iterations} FAILED: {record['error']}"
+            )
             break
-        record["iterations"].append({"elapsed": round(elapsed, 3), "row_count": row_count})
-        log(f"q{number} iteration {i + 1}/{args.iterations}: {elapsed:.2f}s, {row_count} rows")
+        record["iterations"].append(
+            {"elapsed": round(elapsed, 3), "row_count": row_count}
+        )
+        log(
+            f"q{number} iteration {i + 1}/{args.iterations}: {elapsed:.2f}s, {row_count} rows"
+        )
     print(QUERY_RESULT_PREFIX + json.dumps(record), flush=True)
     return record
 
@@ -168,20 +218,38 @@ def selected_queries(benchmark, queries):
     numbers = [int(q.strip().lstrip("qQ")) for q in queries.split(",") if q.strip()]
     for n in numbers:
         if not 1 <= n <= NUM_QUERIES[benchmark]:
-            raise SystemExit(f"{benchmark} has queries 1 to {NUM_QUERIES[benchmark]}, not {n}")
+            raise SystemExit(
+                f"{benchmark} has queries 1 to {NUM_QUERIES[benchmark]}, not {n}"
+            )
     return numbers
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--benchmark", choices=sorted(TABLES), required=True)
-    parser.add_argument("--data", required=True, help="Directory with one subdirectory of Parquet files per table")
-    parser.add_argument("--queries", required=True, help="Directory with the q1.sql ... qN.sql files")
-    parser.add_argument("--query", help="Comma-separated query numbers to run (default: all)")
+    parser.add_argument(
+        "--data",
+        required=True,
+        help="Directory with one subdirectory of Parquet files per table",
+    )
+    parser.add_argument(
+        "--queries", required=True, help="Directory with the q1.sql ... qN.sql files"
+    )
+    parser.add_argument(
+        "--query", help="Comma-separated query numbers to run (default: all)"
+    )
     parser.add_argument("--iterations", type=int, default=2)
-    parser.add_argument("--scale-factor", type=int, default=1000,
-                        help="Selects the expected TPC-H row counts (default: 1000)")
-    parser.add_argument("--no-check-rows", action="store_true", help="Do not check the row counts")
+    parser.add_argument(
+        "--scale-factor",
+        type=int,
+        default=1000,
+        help="Selects the expected TPC-H row counts (default: 1000)",
+    )
+    parser.add_argument(
+        "--no-check-rows", action="store_true", help="Do not check the row counts"
+    )
     args = parser.parse_args()
 
     numbers = selected_queries(args.benchmark, args.query)
@@ -197,19 +265,39 @@ def main():
         "benchmark": args.benchmark,
         "iterations": args.iterations,
         "row_checks": sorted(expected_rows),
-        "spark_conf": {k: v for k, v in sorted(conf.items()) if k.startswith(("spark.sql.", "spark.comet.",
-                       "spark.executor.", "spark.memory.", "spark.shuffle.", "spark.plugins",
-                       "spark.serializer", "spark.io.", "spark.kubernetes.executor."))},
+        "spark_conf": {
+            k: v
+            for k, v in sorted(conf.items())
+            if k.startswith(
+                (
+                    "spark.sql.",
+                    "spark.comet.",
+                    "spark.executor.",
+                    "spark.memory.",
+                    "spark.shuffle.",
+                    "spark.plugins",
+                    "spark.serializer",
+                    "spark.io.",
+                    "spark.kubernetes.executor.",
+                )
+            )
+        },
         "queries": [],
     }
-    log(f"Spark {spark.version}, {args.benchmark} queries {numbers[0]}..{numbers[-1]} x {args.iterations}")
+    log(
+        f"Spark {spark.version}, {args.benchmark} queries {numbers[0]}..{numbers[-1]} x {args.iterations}"
+    )
     try:
-        renames = column_renames(args.benchmark, register_tables(spark, args.benchmark, args.data))
+        renames = column_renames(
+            args.benchmark, register_tables(spark, args.benchmark, args.data)
+        )
         if renames:
             summary["column_renames"] = renames
         for number in numbers:
             statements = load_statements(args.queries, number, renames)
-            summary["queries"].append(run_query(spark, args, number, statements, expected_rows))
+            summary["queries"].append(
+                run_query(spark, args, number, statements, expected_rows)
+            )
     except Exception as e:  # noqa: BLE001 - report a setup failure in the summary
         summary["error"] = f"{type(e).__name__}: {e}"[:1000]
         log(f"setup failed: {summary['error']}")
