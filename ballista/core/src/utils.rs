@@ -34,7 +34,7 @@ use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, metrics};
 use futures::StreamExt;
-use log::{debug, error, info};
+use log::{error, info, warn};
 use std::any::Any;
 use std::borrow::Cow;
 use std::future::Future;
@@ -70,7 +70,7 @@ where
             Ok(value) => return Ok(value),
             Err(error) if attempt < retries && should_retry(&error) => {
                 attempt += 1;
-                debug!(
+                warn!(
                     "retrying operation (attempt {attempt}/{retries}) after error: {error:?}"
                 );
                 if wait_ms > 0 {
