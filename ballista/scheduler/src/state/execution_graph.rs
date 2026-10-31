@@ -1912,14 +1912,6 @@ mod test {
         self, ExecutionError, FailedTask, FetchPartitionError, IoError, JobStatus,
         TaskKilled, failed_task, job_status, task_status,
     };
-    use datafusion::common::tree_node::TreeNodeRecursion;
-    use datafusion::common::{DataFusionError, Result as DataFusionResult};
-    use datafusion::execution::TaskContext;
-    use datafusion::physical_expr::PhysicalExpr;
-    use datafusion::physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
-        SendableRecordBatchStream,
-    };
 
     use crate::cache::CACHE_DATA_LOST;
     use crate::cache::{EXTERNAL_STAGE_ID_BASE, is_external_stage_id};
@@ -1929,7 +1921,7 @@ mod test {
     use crate::state::execution_stage::ExecutionStage;
     use crate::state::execution_stage::StageOutput;
     use crate::test_utils::{
-        mock_completed_task, mock_executor, mock_failed_task,
+        fail_plan_rewrites, mock_completed_task, mock_executor, mock_failed_task,
         revive_graph_and_complete_next_stage,
         revive_graph_and_complete_next_stage_with_executor, test_aggregation_plan,
         test_coalesce_plan, test_join_plan, test_two_aggregations_plan,
@@ -1949,69 +1941,6 @@ mod test {
     use datafusion::physical_plan::union::UnionExec;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion::test_util::scan_empty_with_partitions;
-
-    #[derive(Debug)]
-    struct FailingPlanRewriteExec {
-        input: Arc<dyn ExecutionPlan>,
-    }
-
-    impl DisplayAs for FailingPlanRewriteExec {
-        fn fmt_as(
-            &self,
-            _t: DisplayFormatType,
-            f: &mut std::fmt::Formatter,
-        ) -> std::fmt::Result {
-            write!(f, "FailingPlanRewriteExec")
-        }
-    }
-
-    impl ExecutionPlan for FailingPlanRewriteExec {
-        fn name(&self) -> &str {
-            "FailingPlanRewriteExec"
-        }
-
-        fn properties(&self) -> &Arc<PlanProperties> {
-            self.input.properties()
-        }
-
-        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-            vec![&self.input]
-        }
-
-        fn apply_expressions(
-            &self,
-            _f: &mut dyn FnMut(
-                &Arc<dyn PhysicalExpr>,
-            ) -> DataFusionResult<TreeNodeRecursion>,
-        ) -> DataFusionResult<TreeNodeRecursion> {
-            Ok(TreeNodeRecursion::Continue)
-        }
-
-        fn with_new_children(
-            self: Arc<Self>,
-            _children: Vec<Arc<dyn ExecutionPlan>>,
-        ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-            Err(DataFusionError::Internal(
-                "forced plan rewrite failure".to_owned(),
-            ))
-        }
-
-        fn execute(
-            &self,
-            partition: usize,
-            context: Arc<TaskContext>,
-        ) -> DataFusionResult<SendableRecordBatchStream> {
-            self.input.execute(partition, context)
-        }
-    }
-
-    fn fail_plan_rewrites(plan: &mut Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        let failing_plan: Arc<dyn ExecutionPlan> = Arc::new(FailingPlanRewriteExec {
-            input: Arc::clone(plan),
-        });
-        *plan = Arc::clone(&failing_plan);
-        failing_plan
-    }
 
     #[tokio::test]
     async fn test_intermediate_stage_ids() {
