@@ -181,8 +181,9 @@ pub(crate) fn walk_child_partition_mapping(
 ///
 /// Two cases:
 ///
-/// - `SortShuffleWriter(Hash(K))` — KSpace by construction; the K-space
-///   `[0..K-1]` is intrinsic. Input ids are irrelevant.
+/// - `SortShuffleWriter(Hash(K) | Range(K))` — KSpace by construction; the
+///   K-space `[0..K-1]` is intrinsic, whether rows are routed by hash or by
+///   value range. Input ids are irrelevant.
 /// - `ShuffleWriter` — always passthrough; the child's plan shape decides:
 ///   - `SortPreservingMergeExec` in the child chain → `[0]` (collapse).
 ///   - `RepartitionExec(Hash|RoundRobin)` in the child chain → `[0..K-1]`.
@@ -196,10 +197,7 @@ pub fn compute_global_output_partition_ids(
     global_input_partition_ids: &[usize],
 ) -> Vec<usize> {
     if let Some(w) = stage_plan.downcast_ref::<SortShuffleWriterExec>() {
-        let Partitioning::Hash(_, k) = w.shuffle_output_partitioning() else {
-            unreachable!("SortShuffleWriterExec is Hash-partitioned by construction");
-        };
-        return (0..*k).collect();
+        return (0..w.shuffle_output_partitioning().partition_count()).collect();
     }
     if let Some(w) = stage_plan.downcast_ref::<PipelinedShuffleWriterExec>()
         && let Some(Partitioning::Hash(_, k)) = w.shuffle_output_partitioning()
@@ -1697,6 +1695,55 @@ mod tests {
             .count();
         // Standard error is 3.3% here.
         assert!((80..=120).contains(&distinct), "estimated {distinct}");
+        Ok(())
+    }
+
+    /// A sort-shuffle stage numbers its outputs afresh from 0, whether it routes
+    /// by hash or by value range, and whichever input partitions the task was
+    /// handed. Consumers address those ids, so a range stage whose ids followed
+    /// the task's input slice would be read from the wrong files.
+    #[test]
+    fn sort_shuffle_output_ids_follow_its_partitioning_not_the_input_slice() -> Result<()>
+    {
+        use crate::execution_plans::sort_shuffle::SortShuffleConfig;
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_expr::{
+            LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
+        };
+
+        let key: Arc<dyn PhysicalExpr> = Arc::new(Column::new("a", 0));
+        let range = RangePartitioning::try_new(
+            LexOrdering::new(vec![PhysicalSortExpr::new(
+                Arc::clone(&key),
+                SortOptions::default(),
+            )])
+            .unwrap(),
+            vec![
+                SplitPoint::new(vec![ScalarValue::UInt32(Some(10))]),
+                SplitPoint::new(vec![ScalarValue::UInt32(Some(20))]),
+            ],
+        )?;
+
+        for (partitioning, expected_count) in [
+            (Partitioning::Hash(vec![key], 4), 4),
+            (Partitioning::Range(range), 3),
+        ] {
+            let writer: Arc<dyn ExecutionPlan> =
+                Arc::new(SortShuffleWriterExec::try_new(
+                    "job".into(),
+                    1,
+                    create_input_plan()?,
+                    String::new(),
+                    partitioning,
+                    SortShuffleConfig::default(),
+                )?);
+
+            assert_eq!(
+                compute_global_output_partition_ids(&writer, &[5, 6]),
+                (0..expected_count).collect::<Vec<_>>()
+            );
+        }
         Ok(())
     }
 }
