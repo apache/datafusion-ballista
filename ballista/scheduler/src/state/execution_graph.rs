@@ -199,7 +199,12 @@ pub trait ExecutionGraph: Debug {
     /// `Running` with no status updates ever arriving. See #2691.
     ///
     /// Returns `true` when the task was still `Running` and was reset.
-    fn reset_unlaunched_task(&mut self, key: &TaskKey) -> bool;
+    ///
+    /// The default implementation resets nothing and returns `false`, so
+    /// existing out-of-tree implementations keep compiling.
+    fn reset_unlaunched_task(&mut self, _key: &TaskKey) -> bool {
+        false
+    }
 
     /// Whether a stage that has not finished reads cache data (an external
     /// input) held on `executor_id`. The graph cannot re-run another job's
