@@ -635,22 +635,47 @@ standard DataFusion settings.</p>
 <td><p>true</p></td>
 <td><p>Enables the AQE propagate-empty-relation rule. Injects EmptyExec into the plan where an input is known to be empty, such as one side of a join, allowing downstream work to be skipped.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.scheduler.max_partitions_per_task</p></td>
+<tr class="row-odd"><td><p>ballista.planner.skew_join.advisory_partition_bytes</p></td>
+<td><p>UInt64</p></td>
+<td><p>67108864</p></td>
+<td><p>Advisory target sub-shard byte size used by the bin-packer when splitting a skewed partition.</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.planner.skew_join.enabled</p></td>
+<td><p>Boolean</p></td>
+<td><p>false</p></td>
+<td><p>Enables the AQE optimize-skewed-join rule (Spark’s OptimizeSkewedJoin). Disabled by default — opt in for workloads where per-key skew creates straggler tasks on join inputs. Requires datafusion.optimizer.enable_dynamic_filter_pushdown=false.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.planner.skew_join.partition_threshold_bytes</p></td>
+<td><p>UInt64</p></td>
+<td><p>268435456</p></td>
+<td><p>Absolute byte threshold below which a partition is never split (Spark’s skewedPartitionThresholdInBytes).</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.planner.skew_join.skewed_partition_factor</p></td>
+<td><p>Float64</p></td>
+<td><p>5.0</p></td>
+<td><p>Multiplier over per-side median below which a partition is not considered skewed (Spark’s skewedPartitionFactor).</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.planner.skew_join.small_partition_factor</p></td>
+<td><p>Float64</p></td>
+<td><p>0.2</p></td>
+<td><p>Tail-merge factor for the skew-join sub-shard bin-packer (Spark legacy).</p></td>
+</tr>
+<tr class="row-even"><td><p>ballista.scheduler.max_partitions_per_task</p></td>
 <td><p>UInt64</p></td>
 <td><p>0</p></td>
 <td><p>Upper bound on the number of input partitions packed into a single task’s <code class="docutils literal notranslate"><span class="pre">partition_slice</span></code>. <code class="docutils literal notranslate"><span class="pre">0</span></code> (default) means unbounded — the scheduler fills each task up to the executor’s free vcore count. <code class="docutils literal notranslate"><span class="pre">1</span></code> means one task per input partition. Does not apply to collapse stages, which must pack their full pending queue into a single task for correctness.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.scheduler.share_file_statistics_cache</p></td>
+<tr class="row-odd"><td><p>ballista.scheduler.share_file_statistics_cache</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
 <td><p>Shares one file statistics cache across all jobs the scheduler plans, so a job reuses the statistics earlier jobs read from Parquet footers instead of reading every footer again. A cached entry is only used while the file’s size and modification time still match, which misses a file rewritten in place without changing either. Set to false to keep this session’s jobs off the shared cache.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.standalone.parallelism</p></td>
+<tr class="row-even"><td><p>ballista.standalone.parallelism</p></td>
 <td><p>UInt16</p></td>
 <td><p>number of available CPU cores</p></td>
 <td><p>Number of vcores advertised by the standalone in-process executor.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.standalone.task_scheduling_policy</p></td>
+<tr class="row-odd"><td><p>ballista.standalone.task_scheduling_policy</p></td>
 <td><p>Utf8</p></td>
 <td><p>pull-staged</p></td>
 <td><p>Task scheduling policy of a standalone in-process cluster: <code class="docutils literal notranslate"><span class="pre">pull-staged</span></code>, where the executor polls the scheduler for work, or <code class="docutils literal notranslate"><span class="pre">push-staged</span></code>, where the scheduler pushes tasks to the executor.</p></td>
@@ -659,6 +684,18 @@ standard DataFusion settings.</p>
 </table>
 </div>
 <!-- END GENERATED CONFIG REFERENCE -->
+</section>
+<section id="skewed-joins">
+<h3>Skewed joins<a class="headerlink" href="#skewed-joins" title="Link to this heading">#</a></h3>
+<p>Enable <code class="docutils literal notranslate"><span class="pre">ballista.planner.skew_join.enabled</span></code> and disable
+<code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.enable_dynamic_filter_pushdown</span></code> to split large, skewed
+hash buckets into parallel join tasks. Splitting is limited to mapper outputs;
+a bucket with only one output cannot be subdivided.</p>
+<p>The rule supports one partitioned join per stage. It skips paths requiring complete
+groups or a fixed row limit, ordered shuffle inputs, and intermediate stages
+that do not repartition their output. Partial aggregation above the join remains
+eligible because the final aggregate merges its groups after the shuffle. Coalescing takes priority when it has already grouped the
+join inputs.</p>
 </section>
 </section>
 <section id="shuffle-settings">
@@ -916,6 +953,7 @@ manage the whole cluster are also needed to be taken care of.</p>
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-configuration-settings">Ballista Configuration Settings</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#session-settings">Session Settings</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#skewed-joins">Skewed joins</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-settings">Shuffle Settings</a></li>
