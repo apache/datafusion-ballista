@@ -2,6 +2,7 @@
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
 /// Ballista Logical Plan
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BallistaLogicalPlanNode {
     #[prost(oneof = "ballista_logical_plan_node::LogicalPlanType", tags = "1")]
@@ -11,12 +12,14 @@ pub struct BallistaLogicalPlanNode {
 }
 /// Nested message and enum types in `BallistaLogicalPlanNode`.
 pub mod ballista_logical_plan_node {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum LogicalPlanType {
         #[prost(message, tag = "1")]
         CacheNode(super::LogicalPlanCacheNode),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogicalPlanCacheNode {
     #[prost(string, tag = "1")]
@@ -27,6 +30,7 @@ pub struct LogicalPlanCacheNode {
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
 /// Ballista Physical Plan
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BallistaPhysicalPlanNode {
     #[prost(
@@ -39,6 +43,7 @@ pub struct BallistaPhysicalPlanNode {
 }
 /// Nested message and enum types in `BallistaPhysicalPlanNode`.
 pub mod ballista_physical_plan_node {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum PhysicalPlanType {
         #[prost(message, tag = "1")]
@@ -85,6 +90,7 @@ pub mod ballista_physical_plan_node {
 /// routes its input into bounded in-memory queues that consumer tasks stream
 /// from over Arrow Flight while the stage runs. The child plan is plumbed by
 /// the framework as `inputs\[0\]`.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PipelinedShuffleWriterExecNode {
     #[prost(string, tag = "1")]
@@ -105,6 +111,7 @@ pub struct PipelinedShuffleWriterExecNode {
 }
 /// Leaf of a stage in a pipelined job that streams its input from the producer
 /// tasks of an upstream stage while they run.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PipelinedShuffleReaderExecNode {
     /// One entry per output partition: the producer tasks to stream it from.
@@ -122,6 +129,7 @@ pub struct PipelinedShuffleReaderExecNode {
     #[prost(bool, tag = "5")]
     pub broadcast: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PipelinedReaderPartition {
     #[prost(message, repeated, tag = "1")]
@@ -129,6 +137,7 @@ pub struct PipelinedReaderPartition {
 }
 /// Where a producer task of a pipelined stage serves one of its output
 /// partitions while it runs.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PipelinedPartitionLocation {
     /// Job, producer stage and global output partition.
@@ -140,6 +149,7 @@ pub struct PipelinedPartitionLocation {
     #[prost(message, optional, tag = "3")]
     pub executor_meta: ::core::option::Option<ExecutorMetadata>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedQueryExecNode {
     #[prost(string, tag = "1")]
@@ -153,6 +163,7 @@ pub struct DistributedQueryExecNode {
 }
 /// Wraps a DistributedQueryExec (its single input) and fetches the job
 /// metrics from the scheduler once the query has completed.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DistributedExplainAnalyzeExecNode {
     #[prost(string, tag = "1")]
@@ -169,6 +180,7 @@ pub struct DistributedExplainAnalyzeExecNode {
 /// internals). Discovery of cut boundaries is identical to the unordered
 /// variant — walk the child subtree for a matching `RuntimeStatsExec`, snap
 /// its T-Digest.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OrderedRangeRepartitionExecNode {
     /// Lexicographic ORDER BY. Routing keys off the first entry; the full
@@ -189,6 +201,7 @@ pub struct OrderedRangeRepartitionExecNode {
 ///   (only when order_by is non-empty)
 ///   Downstream operators inside the same Ballista task read the stats via a
 ///   child-tree walk. The child plan is plumbed by the framework as `inputs\[0\]`.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RuntimeStatsExecNode {
     /// Optional lexicographic ORDER BY. Empty means row-count-only mode
@@ -207,6 +220,7 @@ pub struct RuntimeStatsExecNode {
 /// improvement for u64, but only 25% on f64 due to mantissas being effectively
 /// random. Ultimately it was decided that a more complex encoder is not worth
 /// the added complexity in this PR. We can revisit the decision in the future.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SortKeySketchState {
     /// KLL's nominal top-level compactor capacity
@@ -249,6 +263,7 @@ pub struct SortKeySketchState {
 }
 /// Flow-control operator with an operator-mode enum. The child plan is
 /// plumbed by the framework as `inputs\[0\]` during decode.
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BufferExecNode {
     #[prost(enumeration = "BufferMode", tag = "1")]
@@ -259,6 +274,7 @@ pub struct BufferExecNode {
 /// routes each row to one of K output partitions using cuts discovered at
 /// runtime from a sibling RuntimeStatsExec's quantile sketch. The child
 /// plan is plumbed by the framework as `inputs\[0\]`.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnorderedRangeRepartitionExecNode {
     /// Lexicographic ORDER BY carried through from the wrapping window
@@ -277,6 +293,7 @@ pub struct UnorderedRangeRepartitionExecNode {
 /// boolean expression applied to input partition `k`. Requires
 /// `predicates.len() == input_partition_count`. The child plan is
 /// plumbed by the framework as `inputs\[0\]` during decode.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PerPartitionFilterExecNode {
     #[prost(message, repeated, tag = "1")]
@@ -292,6 +309,7 @@ pub struct PerPartitionFilterExecNode {
 /// range to include a boundary "context" band (bounded RANGE-frame windows).
 /// The child plan is plumbed by the framework as `inputs\[0\]` during decode.
 /// Serialization requires bounds to be resolved.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RangeFilterExecNode {
     #[prost(message, optional, tag = "1")]
@@ -325,6 +343,7 @@ pub mod range_filter_exec_node {
     /// reorder the rows the placement was stated against. `unordered_nulls_first`
     /// states the side without demanding an order, which is what leaves an
     /// unordered range-repartition upstream legal.
+    #[allow(clippy::all)]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum InputOrder {
         #[prost(bool, tag = "5")]
@@ -336,6 +355,7 @@ pub mod range_filter_exec_node {
 /// An arrow `SortOptions`, which has no proto of its own in the DataFusion
 /// descriptors — `PhysicalSortExprNode` carries the pair inline beside an
 /// expression this message's users already have.
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SortOptions {
     #[prost(bool, tag = "1")]
@@ -345,6 +365,7 @@ pub struct SortOptions {
 }
 /// Half-open `[lo, hi)` cut range for one input partition. Either side may be
 /// unset to signal ±∞.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RangeBound {
     #[prost(message, optional, tag = "1")]
@@ -354,6 +375,7 @@ pub struct RangeBound {
 }
 /// Applies scheduler-computed prefix state to a window-aggregate column, so
 /// each range-disjoint task's local running aggregate becomes a global one.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PrefixMergeExecNode {
     /// One entry per output column needing correction. Empty makes the operator
@@ -368,6 +390,7 @@ pub struct PrefixMergeExecNode {
     pub per_partition_state: ::prost::alloc::vec::Vec<FinalizedPartitionStateNode>,
 }
 /// How to correct one window-function output column.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WindowApplyNode {
     #[prost(oneof = "window_apply_node::Apply", tags = "1, 2")]
@@ -375,6 +398,7 @@ pub struct WindowApplyNode {
 }
 /// Nested message and enum types in `WindowApplyNode`.
 pub mod window_apply_node {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Apply {
         #[prost(message, tag = "1")]
@@ -384,6 +408,7 @@ pub mod window_apply_node {
     }
 }
 /// Fast path: combine each row's value with a per-partition scalar.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ScalarWindowApplyNode {
     #[prost(enumeration = "ScalarOpNode", tag = "1")]
@@ -397,6 +422,7 @@ pub struct ScalarWindowApplyNode {
 /// Fallback path: seed a fresh accumulator from the prefix state and replay
 /// each row through it. Needed where a row's output is not itself a valid
 /// partial state — AVG, and sketch-backed aggregates like approx_distinct.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AggregateWindowApplyNode {
     /// Resolved from the executor's function registry on decode.
@@ -412,11 +438,13 @@ pub struct AggregateWindowApplyNode {
     pub window_expr_index: u32,
 }
 /// Prefix state for one input partition: one slot per window expression.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FinalizedPartitionStateNode {
     #[prost(message, repeated, tag = "1")]
     pub slots: ::prost::alloc::vec::Vec<AggregateStateSlotNode>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AggregateStateSlotNode {
     /// Unset when that window expression published no state — a non-aggregate
@@ -424,6 +452,7 @@ pub struct AggregateStateSlotNode {
     #[prost(message, optional, tag = "1")]
     pub state: ::core::option::Option<AggregateStateNode>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AggregateStateNode {
     #[prost(message, repeated, tag = "1")]
@@ -435,6 +464,7 @@ pub struct AggregateStateNode {
 /// The child plan is plumbed by the framework as `inputs\[0\]` during decode.
 /// `input_order_mode` and `can_repartition` are hardcoded on the decode side
 /// per the rule's shape gates; only `window_expr` needs to cross the wire.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionedBoundedWindowAggExecNode {
     #[prost(message, repeated, tag = "1")]
@@ -442,6 +472,7 @@ pub struct PartitionedBoundedWindowAggExecNode {
         ::datafusion_proto::protobuf::PhysicalWindowExprNode,
     >,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChaosExecNode {
     #[prost(double, tag = "1")]
@@ -451,6 +482,7 @@ pub struct ChaosExecNode {
     #[prost(uint64, tag = "3")]
     pub seed: u64,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleWriterExecNode {
     /// TODO it seems redundant to provide job and stage id here since we also have them
@@ -467,6 +499,7 @@ pub struct ShuffleWriterExecNode {
     >,
 }
 /// Sort-based shuffle writer that produces consolidated files with index
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SortShuffleWriterExecNode {
     #[prost(string, tag = "1")]
@@ -492,6 +525,7 @@ pub struct SortShuffleWriterExecNode {
 /// Passthrough shuffle writer that emits the seekable Arrow IPC file format.
 /// Carries no output partitioning: like `ShuffleWriterExecNode`'s passthrough
 /// case it writes its input's partitioning through, one file per partition.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RangeShuffleWriterExecNode {
     #[prost(string, tag = "1")]
@@ -501,6 +535,7 @@ pub struct RangeShuffleWriterExecNode {
     #[prost(message, optional, tag = "3")]
     pub input: ::core::option::Option<::datafusion_proto::protobuf::PhysicalPlanNode>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnresolvedShuffleExecNode {
     #[prost(uint32, tag = "1")]
@@ -517,6 +552,7 @@ pub struct UnresolvedShuffleExecNode {
     #[prost(message, optional, tag = "8")]
     pub coalesce: ::core::option::Option<CoalescePlan>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderExecNode {
     #[prost(message, repeated, tag = "1")]
@@ -536,6 +572,7 @@ pub struct ShuffleReaderExecNode {
     #[prost(message, optional, tag = "7")]
     pub coalesce: ::core::option::Option<CoalescePlan>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderPartition {
     /// each partition of a shuffle read can read data from multiple locations
@@ -545,6 +582,7 @@ pub struct ShuffleReaderPartition {
 /// Ordering-preserving shuffle reader. Reuses `ShuffleReaderPartition` for the
 /// M-shape source layout. Partitioning is derived from `partition.len()`
 /// (always `UnknownPartitioning`, range-partitioned by `merge_ordering`).
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RangeShuffleReaderExecNode {
     #[prost(message, repeated, tag = "1")]
@@ -571,6 +609,7 @@ pub struct RangeShuffleReaderExecNode {
 }
 /// CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
 /// Empty when no coalesce is applied (the optional field on the parent message is absent).
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CoalescePlan {
     /// Original number of upstream partitions (M) before coalescing. Required for EXPLAIN's "K of M" rendering.
@@ -582,6 +621,7 @@ pub struct CoalescePlan {
 }
 /// One coalesced output partition's source list: a set of upstream partition indices in \[0, upstream_partition_count).
 /// Default algorithm produces only contiguous indices, but proto allows arbitrary index sets for future strategies.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PartitionGroup {
     #[prost(uint32, repeated, tag = "1")]
@@ -590,6 +630,7 @@ pub struct PartitionGroup {
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
 /// Ballista Scheduling
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionGraph {
     #[prost(string, tag = "1")]
@@ -617,6 +658,7 @@ pub struct ExecutionGraph {
     #[prost(uint64, tag = "13")]
     pub queued_at: u64,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StageAttempts {
     #[prost(uint32, tag = "1")]
@@ -624,6 +666,7 @@ pub struct StageAttempts {
     #[prost(uint32, repeated, tag = "2")]
     pub stage_attempt_num: ::prost::alloc::vec::Vec<u32>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionGraphStage {
     #[prost(oneof = "execution_graph_stage::StageType", tags = "1, 2, 3, 4")]
@@ -631,6 +674,7 @@ pub struct ExecutionGraphStage {
 }
 /// Nested message and enum types in `ExecutionGraphStage`.
 pub mod execution_graph_stage {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum StageType {
         #[prost(message, tag = "1")]
@@ -643,6 +687,7 @@ pub mod execution_graph_stage {
         FailedStage(super::FailedStage),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnResolvedStage {
     #[prost(uint32, tag = "1")]
@@ -660,6 +705,7 @@ pub struct UnResolvedStage {
         ::prost::alloc::string::String,
     >,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResolvedStage {
     #[prost(uint32, tag = "1")]
@@ -679,6 +725,7 @@ pub struct ResolvedStage {
         ::prost::alloc::string::String,
     >,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuccessfulStage {
     #[prost(uint32, tag = "1")]
@@ -698,6 +745,7 @@ pub struct SuccessfulStage {
     #[prost(uint32, tag = "9")]
     pub stage_attempt_num: u32,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FailedStage {
     #[prost(uint32, tag = "1")]
@@ -717,6 +765,7 @@ pub struct FailedStage {
     #[prost(uint32, tag = "9")]
     pub stage_attempt_num: u32,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskInfo {
     #[prost(uint32, tag = "1")]
@@ -743,6 +792,7 @@ pub struct TaskInfo {
 }
 /// Nested message and enum types in `TaskInfo`.
 pub mod task_info {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Status {
         #[prost(message, tag = "8")]
@@ -753,6 +803,7 @@ pub mod task_info {
         Successful(super::SuccessfulTask),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GraphStageInput {
     #[prost(uint32, tag = "1")]
@@ -762,6 +813,7 @@ pub struct GraphStageInput {
     #[prost(bool, tag = "3")]
     pub complete: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskInputPartitions {
     #[prost(uint32, tag = "1")]
@@ -769,6 +821,7 @@ pub struct TaskInputPartitions {
     #[prost(message, repeated, tag = "2")]
     pub partition_location: ::prost::alloc::vec::Vec<PartitionLocation>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct KeyValuePair {
     #[prost(string, tag = "1")]
@@ -776,6 +829,7 @@ pub struct KeyValuePair {
     #[prost(string, optional, tag = "2")]
     pub value: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Action {
     /// configuration settings
@@ -786,6 +840,7 @@ pub struct Action {
 }
 /// Nested message and enum types in `Action`.
 pub mod action {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum ActionType {
         /// Fetch a partition from an executor
@@ -796,6 +851,7 @@ pub mod action {
         FetchPipelinedPartition(super::FetchPipelinedPartition),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutePartition {
     #[prost(string, tag = "1")]
@@ -816,6 +872,7 @@ pub struct ExecutePartition {
     >,
 }
 /// A half-open byte range of a file: `[offset, offset + length)`.
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ByteRange {
     #[prost(uint64, tag = "1")]
@@ -823,6 +880,7 @@ pub struct ByteRange {
     #[prost(uint64, tag = "2")]
     pub length: u64,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FetchPartition {
     #[prost(string, tag = "1")]
@@ -861,6 +919,7 @@ pub struct FetchPartition {
 }
 /// Stream one output partition of a running pipelined producer task. The
 /// executor waits a bounded time for the task to start if it has not yet.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FetchPipelinedPartition {
     #[prost(string, tag = "1")]
@@ -881,6 +940,7 @@ pub struct FetchPipelinedPartition {
     #[prost(uint64, tag = "7")]
     pub registration_timeout_ms: u64,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionLocation {
     /// partition_id of the map stage who produces the shuffle.
@@ -899,6 +959,7 @@ pub struct PartitionLocation {
     pub is_sort_shuffle: bool,
 }
 /// Unique identifier for a materialized partition of data
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PartitionId {
     #[prost(string, tag = "1")]
@@ -917,6 +978,7 @@ pub struct PartitionId {
 /// use these to name shuffle files with global identity (via
 /// `create_shuffle_path`) so downstream reads have a stable, canonical
 /// address regardless of how the scheduler split the work.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskId {
     #[prost(uint32, tag = "1")]
@@ -938,6 +1000,7 @@ pub struct TaskId {
     #[prost(uint32, tag = "5")]
     pub vcores_consumed: u32,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionStats {
     #[prost(int64, tag = "1")]
@@ -949,6 +1012,7 @@ pub struct PartitionStats {
     #[prost(message, repeated, tag = "4")]
     pub column_stats: ::prost::alloc::vec::Vec<ColumnStats>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ColumnStats {
     #[prost(message, optional, tag = "1")]
@@ -960,11 +1024,13 @@ pub struct ColumnStats {
     #[prost(uint32, tag = "4")]
     pub distinct_count: u32,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OperatorMetricsSet {
     #[prost(message, repeated, tag = "1")]
     pub metrics: ::prost::alloc::vec::Vec<OperatorMetric>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NamedCount {
     #[prost(string, tag = "1")]
@@ -972,6 +1038,7 @@ pub struct NamedCount {
     #[prost(uint64, tag = "2")]
     pub value: u64,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NamedGauge {
     #[prost(string, tag = "1")]
@@ -979,6 +1046,7 @@ pub struct NamedGauge {
     #[prost(uint64, tag = "2")]
     pub value: u64,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NamedTime {
     #[prost(string, tag = "1")]
@@ -986,6 +1054,7 @@ pub struct NamedTime {
     #[prost(uint64, tag = "2")]
     pub value: u64,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NamedPruningMetrics {
     #[prost(string, tag = "1")]
@@ -995,6 +1064,7 @@ pub struct NamedPruningMetrics {
     #[prost(uint64, tag = "3")]
     pub matched: u64,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NamedRatio {
     #[prost(string, tag = "1")]
@@ -1004,6 +1074,7 @@ pub struct NamedRatio {
     #[prost(uint64, tag = "3")]
     pub total: u64,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OperatorMetric {
     /// Local partition index within the reporting task's plan (0..slice_len-1).
@@ -1019,6 +1090,7 @@ pub struct OperatorMetric {
 }
 /// Nested message and enum types in `OperatorMetric`.
 pub mod operator_metric {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Metric {
         #[prost(uint64, tag = "1")]
@@ -1054,6 +1126,7 @@ pub mod operator_metric {
     }
 }
 /// Used by scheduler
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorMetadata {
     #[prost(string, tag = "1")]
@@ -1071,6 +1144,7 @@ pub struct ExecutorMetadata {
 }
 /// Used for scheduler-executor
 /// communication
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorRegistration {
     #[prost(string, tag = "1")]
@@ -1092,6 +1166,7 @@ pub struct ExecutorRegistration {
     #[prost(uint32, tag = "7")]
     pub ballista_protocol_version: u32,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorHeartbeat {
     #[prost(string, tag = "1")]
@@ -1108,6 +1183,7 @@ pub struct ExecutorHeartbeat {
     #[prost(uint64, tag = "6")]
     pub peak_proc_virtual_memory: u64,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorMetric {
     /// TODO add more metrics
@@ -1117,6 +1193,7 @@ pub struct ExecutorMetric {
 /// Nested message and enum types in `ExecutorMetric`.
 pub mod executor_metric {
     /// TODO add more metrics
+    #[allow(clippy::all)]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Metric {
         #[prost(uint64, tag = "1")]
@@ -1147,6 +1224,7 @@ pub mod executor_metric {
         AllocatedMemory(u64),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorStatus {
     #[prost(oneof = "executor_status::Status", tags = "1, 2, 3, 4")]
@@ -1154,6 +1232,7 @@ pub struct ExecutorStatus {
 }
 /// Nested message and enum types in `ExecutorStatus`.
 pub mod executor_status {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Status {
         #[prost(string, tag = "1")]
@@ -1166,6 +1245,7 @@ pub mod executor_status {
         Terminating(::prost::alloc::string::String),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorSpecification {
     #[prost(message, repeated, tag = "1")]
@@ -1176,6 +1256,7 @@ pub struct ExecutorSpecification {
 /// spark.executor.cores. Not physical `nproc`: may over- or under-subscribe.
 /// One task per executor drives this many DataFusion partitions in parallel
 /// through one plan-Arc.
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorResource {
     #[prost(oneof = "executor_resource::Resource", tags = "1")]
@@ -1183,12 +1264,14 @@ pub struct ExecutorResource {
 }
 /// Nested message and enum types in `ExecutorResource`.
 pub mod executor_resource {
+    #[allow(clippy::all)]
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Resource {
         #[prost(uint32, tag = "1")]
         Vcores(u32),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorOperatingSystemSpecification {
     #[prost(string, tag = "1")]
@@ -1213,6 +1296,7 @@ pub struct ExecutorOperatingSystemSpecification {
 /// One instance per executor. Tracks free vcores for scheduler-side task
 /// binding. See ExecutorResource for the vcore definition (YARN vcores or
 /// Spark's spark.executor.cores).
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AvailableVcores {
     #[prost(string, tag = "1")]
@@ -1220,11 +1304,13 @@ pub struct AvailableVcores {
     #[prost(uint32, tag = "2")]
     pub vcores: u32,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorVcores {
     #[prost(message, repeated, tag = "1")]
     pub vcores: ::prost::alloc::vec::Vec<AvailableVcores>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorData {
     #[prost(string, tag = "1")]
@@ -1232,6 +1318,7 @@ pub struct ExecutorData {
     #[prost(message, repeated, tag = "2")]
     pub resources: ::prost::alloc::vec::Vec<ExecutorResourcePair>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorResourcePair {
     #[prost(message, optional, tag = "1")]
@@ -1239,11 +1326,13 @@ pub struct ExecutorResourcePair {
     #[prost(message, optional, tag = "2")]
     pub available: ::core::option::Option<ExecutorResource>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RunningTask {
     #[prost(string, tag = "1")]
     pub executor_id: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FailedTask {
     #[prost(string, tag = "1")]
@@ -1258,6 +1347,7 @@ pub struct FailedTask {
 }
 /// Nested message and enum types in `FailedTask`.
 pub mod failed_task {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum FailedReason {
         #[prost(message, tag = "4")]
@@ -1277,6 +1367,7 @@ pub mod failed_task {
 }
 /// Per-column statistics for one task's shuffle output. An empty list on
 /// SuccessfulTask means stats were not collected for that task.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskColumnStats {
     /// Index into the output schema's fields.
@@ -1287,6 +1378,7 @@ pub struct TaskColumnStats {
     #[prost(message, repeated, tag = "3")]
     pub sketches: ::prost::alloc::vec::Vec<ColumnSketch>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ColumnSketch {
     #[prost(enumeration = "SketchType", tag = "1")]
@@ -1294,6 +1386,7 @@ pub struct ColumnSketch {
     #[prost(bytes = "vec", tag = "2")]
     pub data: ::prost::alloc::vec::Vec<u8>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuccessfulTask {
     #[prost(string, tag = "1")]
@@ -1334,6 +1427,7 @@ pub struct SuccessfulTask {
 }
 /// One finalized window-aggregate state from a task's
 /// `BoundedWindowAggExec`.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WindowStateReport {
     /// The stage's *global* output partition this state belongs to.
@@ -1356,6 +1450,7 @@ pub struct WindowStateReport {
     pub state: ::prost::alloc::vec::Vec<::datafusion_proto_common::ScalarValue>,
 }
 /// One report per `RuntimeStatsExec` in the executed plan.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RuntimeStatsReport {
     /// What the operator was sampling. Empty = row-count-only mode. When
@@ -1379,6 +1474,7 @@ pub struct RuntimeStatsReport {
     pub sketch: ::core::option::Option<SortKeySketchState>,
 }
 /// One partition's observations from a `RuntimeStatsExec`.
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RuntimeStatsPartitionEntry {
     #[prost(uint32, tag = "1")]
@@ -1403,8 +1499,10 @@ pub struct RuntimeStatsPartitionEntry {
     #[prost(uint64, tag = "6")]
     pub null_count: u64,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionError {}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FetchPartitionError {
     #[prost(string, tag = "1")]
@@ -1414,14 +1512,19 @@ pub struct FetchPartitionError {
     #[prost(uint32, tag = "3")]
     pub map_partition_id: u32,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct IoError {}
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorLost {}
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResultLost {}
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskKilled {}
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ShuffleWritePartition {
     #[prost(uint64, tag = "1")]
@@ -1437,6 +1540,7 @@ pub struct ShuffleWritePartition {
     #[prost(bool, tag = "7")]
     pub is_sort_shuffle: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskStatus {
     /// Task's append-order slot in `RunningStage.task_infos`; (job_id,
@@ -1464,6 +1568,7 @@ pub struct TaskStatus {
 }
 /// Nested message and enum types in `TaskStatus`.
 pub mod task_status {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Status {
         #[prost(message, tag = "9")]
@@ -1474,6 +1579,7 @@ pub mod task_status {
         Successful(super::SuccessfulTask),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PollWorkParams {
     #[prost(message, optional, tag = "1")]
@@ -1494,6 +1600,7 @@ pub struct PollWorkParams {
 /// resets partitioning: the writer walks its child plan to detect
 /// SortPreservingMergeExec or RepartitionExec::Hash and picks the right
 /// global mapping).
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskDefinition {
     #[prost(uint32, tag = "1")]
@@ -1522,6 +1629,7 @@ pub struct TaskDefinition {
     pub vcores_consumed: u32,
 }
 /// A set of tasks in the same stage
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MultiTaskDefinition {
     #[prost(message, repeated, tag = "1")]
@@ -1541,6 +1649,7 @@ pub struct MultiTaskDefinition {
     #[prost(message, repeated, tag = "9")]
     pub props: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct JobSessionConfig {
     #[prost(string, tag = "1")]
@@ -1548,6 +1657,7 @@ pub struct JobSessionConfig {
     #[prost(message, repeated, tag = "2")]
     pub configs: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PollWorkResult {
     #[prost(message, repeated, tag = "1")]
@@ -1555,16 +1665,19 @@ pub struct PollWorkResult {
     #[prost(message, repeated, tag = "2")]
     pub jobs_to_clean: ::prost::alloc::vec::Vec<CleanJobDataParams>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RegisterExecutorParams {
     #[prost(message, optional, tag = "1")]
     pub metadata: ::core::option::Option<ExecutorRegistration>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RegisterExecutorResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HeartBeatParams {
     #[prost(string, tag = "1")]
@@ -1576,12 +1689,14 @@ pub struct HeartBeatParams {
     #[prost(message, optional, tag = "4")]
     pub metadata: ::core::option::Option<ExecutorRegistration>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HeartBeatResult {
     /// TODO it's from Spark for BlockManager
     #[prost(bool, tag = "1")]
     pub reregister: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StopExecutorParams {
     #[prost(string, tag = "1")]
@@ -1593,8 +1708,10 @@ pub struct StopExecutorParams {
     #[prost(bool, tag = "3")]
     pub force: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StopExecutorResult {}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorStoppedParams {
     #[prost(string, tag = "1")]
@@ -1603,8 +1720,10 @@ pub struct ExecutorStoppedParams {
     #[prost(string, tag = "2")]
     pub reason: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorStoppedResult {}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateTaskStatusParams {
     #[prost(string, tag = "1")]
@@ -1613,11 +1732,13 @@ pub struct UpdateTaskStatusParams {
     #[prost(message, repeated, tag = "2")]
     pub task_status: ::prost::alloc::vec::Vec<TaskStatus>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateTaskStatusResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteQueryParams {
     #[prost(string, tag = "3")]
@@ -1634,6 +1755,7 @@ pub struct ExecuteQueryParams {
 }
 /// Nested message and enum types in `ExecuteQueryParams`.
 pub mod execute_query_params {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Query {
         #[prost(bytes, tag = "1")]
@@ -1648,6 +1770,7 @@ pub mod execute_query_params {
         PhysicalPlan(::prost::alloc::vec::Vec<u8>),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateUpdateSessionParams {
     #[prost(string, tag = "2")]
@@ -1655,11 +1778,13 @@ pub struct CreateUpdateSessionParams {
     #[prost(message, repeated, tag = "1")]
     pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateUpdateSessionResult {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateSessionParams {
     #[prost(string, tag = "1")]
@@ -1667,26 +1792,31 @@ pub struct UpdateSessionParams {
     #[prost(message, repeated, tag = "2")]
     pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateSessionResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RemoveSessionParams {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RemoveSessionResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecuteSqlParams {
     #[prost(string, tag = "1")]
     pub sql: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecuteQueryResult {
     #[prost(string, tag = "3")]
@@ -1696,6 +1826,7 @@ pub struct ExecuteQueryResult {
 }
 /// Nested message and enum types in `ExecuteQueryResult`.
 pub mod execute_query_result {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "1")]
@@ -1704,6 +1835,7 @@ pub mod execute_query_result {
         Failure(super::ExecuteQueryFailureResult),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecuteQuerySuccessResult {
     #[prost(string, tag = "1")]
@@ -1711,6 +1843,7 @@ pub struct ExecuteQuerySuccessResult {
     #[prost(string, tag = "2")]
     pub session_id: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecuteQueryFailureResult {
     #[prost(oneof = "execute_query_failure_result::Failure", tags = "1, 2, 3")]
@@ -1718,6 +1851,7 @@ pub struct ExecuteQueryFailureResult {
 }
 /// Nested message and enum types in `ExecuteQueryFailureResult`.
 pub mod execute_query_failure_result {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Failure {
         #[prost(string, tag = "1")]
@@ -1728,16 +1862,19 @@ pub mod execute_query_failure_result {
         SqlParsingFailure(::prost::alloc::string::String),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetJobStatusParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetJobMetricsParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct JobStageMetrics {
     #[prost(uint32, tag = "1")]
@@ -1747,6 +1884,7 @@ pub struct JobStageMetrics {
     #[prost(message, repeated, tag = "3")]
     pub operators: ::prost::alloc::vec::Vec<OperatorWithMetrics>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OperatorWithMetrics {
     #[prost(uint32, tag = "1")]
@@ -1758,11 +1896,13 @@ pub struct OperatorWithMetrics {
     #[prost(message, repeated, tag = "4")]
     pub metrics: ::prost::alloc::vec::Vec<OperatorMetric>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetJobMetricsResult {
     #[prost(message, repeated, tag = "1")]
     pub stages: ::prost::alloc::vec::Vec<JobStageMetrics>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuccessfulJob {
     #[prost(message, repeated, tag = "1")]
@@ -1779,12 +1919,14 @@ pub struct SuccessfulJob {
     #[prost(message, repeated, tag = "5")]
     pub pipelined_output_locations: ::prost::alloc::vec::Vec<PipelinedPartitionLocation>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct QueuedJob {
     #[prost(uint64, tag = "1")]
     pub queued_at: u64,
 }
 /// TODO: add progress report
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunningJob {
     #[prost(uint64, tag = "1")]
@@ -1799,6 +1941,7 @@ pub struct RunningJob {
     #[prost(message, repeated, tag = "4")]
     pub pipelined_output_locations: ::prost::alloc::vec::Vec<PipelinedPartitionLocation>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FailedJob {
     #[prost(string, tag = "1")]
@@ -1810,6 +1953,7 @@ pub struct FailedJob {
     #[prost(uint64, tag = "4")]
     pub ended_at: u64,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct JobStatus {
     #[prost(string, tag = "5")]
@@ -1821,6 +1965,7 @@ pub struct JobStatus {
 }
 /// Nested message and enum types in `JobStatus`.
 pub mod job_status {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Status {
         #[prost(message, tag = "1")]
@@ -1833,6 +1978,7 @@ pub mod job_status {
         Successful(super::SuccessfulJob),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetJobStatusResult {
     #[prost(message, optional, tag = "1")]
@@ -1842,6 +1988,7 @@ pub struct GetJobStatusResult {
 }
 /// Nested message and enum types in `GetJobStatusResult`.
 pub mod get_job_status_result {
+    #[allow(clippy::all)]
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum FlightProxy {
         #[prost(bool, tag = "2")]
@@ -1850,21 +1997,25 @@ pub mod get_job_status_result {
         External(::prost::alloc::string::String),
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FilePartitionMetadata {
     #[prost(string, repeated, tag = "1")]
     pub filename: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CancelJobParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CancelJobResult {
     #[prost(bool, tag = "1")]
     pub cancelled: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CleanJobDataParams {
     #[prost(string, tag = "1")]
@@ -1874,8 +2025,10 @@ pub struct CleanJobDataParams {
     #[prost(uint32, repeated, tag = "2")]
     pub remove_stage_ids: ::prost::alloc::vec::Vec<u32>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CleanJobDataResult {}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LaunchTaskParams {
     /// Allow to launch a task set to an executor at once
@@ -1885,6 +2038,7 @@ pub struct LaunchTaskParams {
     #[prost(string, tag = "2")]
     pub scheduler_endpoint: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LaunchMultiTaskParams {
     /// Allow to launch a task set to an executor at once
@@ -1894,12 +2048,14 @@ pub struct LaunchMultiTaskParams {
     #[prost(string, tag = "2")]
     pub scheduler_endpoint: ::prost::alloc::string::String,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LaunchTaskResult {
     /// TODO when part of the task set are scheduled successfully
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LaunchMultiTaskResult {
     /// Job IDs the executor could not decode/validate. These jobs are failed
@@ -1908,16 +2064,19 @@ pub struct LaunchMultiTaskResult {
     #[prost(string, repeated, tag = "2")]
     pub failed_jobs: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelTasksParams {
     #[prost(message, repeated, tag = "1")]
     pub task_infos: ::prost::alloc::vec::Vec<RunningTaskInfo>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CancelTasksResult {
     #[prost(bool, tag = "1")]
     pub cancelled: bool,
 }
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RemoveJobDataParams {
     #[prost(string, tag = "1")]
@@ -1927,8 +2086,10 @@ pub struct RemoveJobDataParams {
     #[prost(uint32, repeated, tag = "2")]
     pub remove_stage_ids: ::prost::alloc::vec::Vec<u32>,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RemoveJobDataResult {}
+#[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RunningTaskInfo {
     /// Per-stage append-order slot; (job_id, stage_id, task_id) is globally
@@ -1940,6 +2101,7 @@ pub struct RunningTaskInfo {
     #[prost(uint32, tag = "3")]
     pub stage_id: u32,
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum BufferMode {
@@ -1969,6 +2131,7 @@ impl BufferMode {
     }
 }
 /// How a scalar offset combines with a row's existing value.
+#[allow(clippy::all)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ScalarOpNode {
@@ -2005,6 +2168,7 @@ impl ScalarOpNode {
 /// How a shuffle writer laid its output out on disk. Selects the path shape,
 /// and with it how a client parses the index beside the data. It says nothing
 /// about the framing of the bytes inside the data file.
+#[allow(clippy::all)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ShuffleLayout {
@@ -2038,6 +2202,7 @@ impl ShuffleLayout {
 /// Which of the files making up a shuffle output is being asked for. Which
 /// index sits beside the data, and how to read it, follows from the layout, so
 /// it is not spelled out here.
+#[allow(clippy::all)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ShuffleFileKind {
@@ -2064,6 +2229,7 @@ impl ShuffleFileKind {
         }
     }
 }
+#[allow(clippy::all)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum SketchType {
