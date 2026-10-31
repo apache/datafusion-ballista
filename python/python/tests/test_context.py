@@ -465,6 +465,25 @@ def test_register_record_batches(ctx):
     assert result.to_pydict() == {"s": [15]}
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="BallistaCacheFactory is not installed on python sessions, cache() "
+    "falls back to an in-memory table which cannot be serialized",
+)
+@pytest.mark.parametrize("cache_noop", [True, False])
+def test_dataframe_cache(cluster, cache_noop):
+    (address, port) = cluster
+    ctx = BallistaSessionContext(
+        address=f"df://{address}:{port}",
+        config=BallistaSessionConfig().with_cache_noop(cache_noop),
+    )
+    cached = ctx.read_csv(TEST_CSV, has_header=True).cache()
+    assert sorted_pydict(to_table(cached)) == {"a": EXPECTED_A, "b": EXPECTED_B}
+
+    result = to_table(cached.filter(col("a") > lit(3)))
+    assert sorted_pydict(result) == {"a": [4, 5], "b": [-5, -6]}
+
+
 #
 # udfs
 #
