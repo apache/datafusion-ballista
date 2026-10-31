@@ -34,6 +34,8 @@ mod plan_to_stages;
 mod range_repartition;
 /// Multi-pass coverage for staging a join's build side before deciding the join
 mod stage_build_side;
+/// Failed stage transitions leave the stage in the graph
+mod stage_transitions;
 /// A table whose statistics are declared rather than measured
 mod stats_table;
 

@@ -33,13 +33,12 @@ use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
 use super::super::shuffle_writer::{
-    ColumnStatsCollector, result_schema, sketched_columns, summaries_to_batch,
+    ColumnStatsCollector, handoff_stream, sketched_columns, take_handoff,
 };
 use super::super::shuffle_writer_trait::ShuffleWriter;
 use super::buffer::BufferedBatches;
 use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
-use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use super::spill::SpillManager;
 use crate::JobId;
 use crate::extension::SessionConfigExt;
@@ -62,13 +61,12 @@ use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 use datafusion::physical_plan::repartition::REPARTITION_RANDOM_STATE;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream, Statistics, StatisticsArgs, apply_expression_roots,
     displayable, statistics::ChildStats,
 };
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use log::{debug, warn};
 
 /// Result of finalizing shuffle output: (data_path, index_path, partition_write_stats)
@@ -123,44 +121,27 @@ struct EncodedPartitions {
 fn encode_buffered_partitions(
     buffered: &mut BufferedBatches,
     schema: &SchemaRef,
-    config: &SortShuffleConfig,
     opts: &datafusion::arrow::ipc::writer::IpcWriteOptions,
 ) -> Result<EncodedPartitions> {
     let num_partitions = buffered.num_partitions();
-    let (batches, indices) = buffered.take();
+    let mut encoded = vec![Vec::new(); num_partitions];
+    let mut stats = vec![EncodedStats::default(); num_partitions];
 
-    let mut encoded = Vec::with_capacity(num_partitions);
-    let mut stats = Vec::with_capacity(num_partitions);
-
-    for partition_indices in indices.iter() {
-        let mut buf: Vec<u8> = Vec::new();
-        let (mut num_batches, mut num_rows, mut num_bytes) = (0u64, 0u64, 0u64);
-
-        if !partition_indices.is_empty() {
-            let iter = PartitionedBatchIterator::new(
-                &batches,
-                partition_indices,
-                config.batch_size,
-            );
-            let mut writer =
-                StreamWriter::try_new_with_options(&mut buf, schema, opts.clone())?;
-            for result in iter {
-                let batch = result?;
-                num_rows += batch.num_rows() as u64;
-                num_bytes += batch.get_array_memory_size() as u64;
-                num_batches += 1;
-                writer.write(&batch)?;
-            }
-            writer.finish()?;
+    // One writer open at a time: each holds its own compression context.
+    buffered.drain(|partition, batches| {
+        let mut writer =
+            StreamWriter::try_new_with_options(Vec::new(), schema, opts.clone())?;
+        let stat = &mut stats[partition];
+        for batch in batches {
+            let batch = batch?;
+            stat.num_rows += batch.num_rows() as u64;
+            stat.num_bytes += batch.get_array_memory_size() as u64;
+            stat.num_batches += 1;
+            writer.write(&batch)?;
         }
-
-        encoded.push(buf);
-        stats.push(EncodedStats {
-            num_batches,
-            num_rows,
-            num_bytes,
-        });
-    }
+        encoded[partition] = writer.into_inner()?;
+        Ok(())
+    })?;
 
     Ok(EncodedPartitions { encoded, stats })
 }
@@ -627,8 +608,11 @@ impl SortShuffleWriterExec {
             )
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-            let mut buffered =
-                BufferedBatches::new(num_output_partitions, schema.clone());
+            let mut buffered = BufferedBatches::new(
+                num_output_partitions,
+                schema.clone(),
+                config.batch_size,
+            );
 
             let mut reservation =
                 MemoryConsumer::new(format!("SortShuffleWriter[{input_partition}]"))
@@ -642,13 +626,8 @@ impl SortShuffleWriterExec {
             let partition_reducer = StrengthReducedU64::new(num_output_partitions as u64);
             let mut spill_events: u64 = 0;
             let mut spill_triggers = SpillTriggerCounts::default();
-            // Absolute buffered-bytes counter, independent of the runtime
-            // `MemoryPool`. When `memory_limit` is non-zero it caps this counter
-            // as a second spill trigger; a `memory_limit` of 0 disables the cap
-            // so spilling is driven solely by memory-pool pressure.
-            let mut buffered_bytes: usize = 0;
-            // A limit of 0 disables the per-task budget, leaving the runtime
-            // `MemoryPool` as the sole spill trigger.
+            // `memory_limit` is a second spill trigger, independent of the
+            // `MemoryPool`; 0 disables it.
             let memory_limit = config.memory_limit_per_task_bytes;
             let per_task_budget_enabled = memory_limit > 0;
 
@@ -667,22 +646,14 @@ impl SortShuffleWriterExec {
                 )?;
                 timer.done();
 
-                // Estimate memory growth: input batch + index Vec growth.
-                let mut growth = input_batch.get_array_memory_size();
-                let before = buffered.indices_allocated_size();
                 buffered.push_batch(input_batch, &per_partition_rows);
-                let after = buffered.indices_allocated_size();
-                growth += after.saturating_sub(before);
+                let buffered_bytes = buffered.memory_size();
 
-                // Mirror the growth in the runtime pool reservation so the pool
-                // sees this writer's memory usage. A rejected grow means the
-                // pool is under pressure and has *not* accounted for the batch
-                // just buffered, so spill instead of holding memory the pool
-                // believes is free. Spilling flushes that batch to disk and
-                // frees the reservation, which is the response a spillable
-                // consumer owes the pool.
-                let pool_rejected_growth = reservation.try_grow(growth).is_err();
-                buffered_bytes = buffered_bytes.saturating_add(growth);
+                // Mirror the buffered bytes in the pool. A refused resize
+                // means the pool has not accounted for the rows just
+                // buffered, so spill them and free the reservation.
+                let pool_rejected_growth =
+                    reservation.try_resize(buffered_bytes).is_err();
                 let budget_reached =
                     per_task_budget_enabled && buffered_bytes >= memory_limit;
 
@@ -694,10 +665,8 @@ impl SortShuffleWriterExec {
                         &mut buffered,
                         &mut spill_manager,
                         &mut reservation,
-                        config.batch_size,
                     )?;
                     spill_timer.done();
-                    buffered_bytes = 0;
 
                     if event_batches > 0 {
                         spill_events += 1;
@@ -774,7 +743,7 @@ impl SortShuffleWriterExec {
             // compression cost stays parallel across the task's inputs.
             let opts = create_write_options(compression_type)?;
             let EncodedPartitions { encoded, stats } =
-                encode_buffered_partitions(&mut buffered, &schema, &config, &opts)?;
+                encode_buffered_partitions(&mut buffered, &schema, &opts)?;
 
             Ok(InputPartitionOutput {
                 encoded,
@@ -787,8 +756,7 @@ impl SortShuffleWriterExec {
     }
 }
 
-/// Spills *all* buffered partitions: for each partition, materializes its
-/// indices through `PartitionedBatchIterator` and appends each yielded batch
+/// Spills *all* buffered partitions: appends each partition's buffered rows
 /// to that partition's spill file. After this call, `buffered.is_empty()` is
 /// true and `reservation.size() == 0`.
 ///
@@ -799,28 +767,22 @@ fn spill_all_partitions(
     buffered: &mut BufferedBatches,
     spill_manager: &mut SpillManager,
     reservation: &mut MemoryReservation,
-    batch_size: usize,
 ) -> Result<(u64, u64)> {
     if buffered.is_empty() {
         return Ok((0, 0));
     }
     let mut batches_written: u64 = 0;
     let mut bytes_written: u64 = 0;
-    let (batches, indices) = buffered.take();
-    for (partition_id, partition_indices) in indices.iter().enumerate() {
-        if partition_indices.is_empty() {
-            continue;
-        }
-        let iter = PartitionedBatchIterator::new(&batches, partition_indices, batch_size);
-        for result in iter {
-            let batch = result?;
+    buffered.drain(|partition_id, batches| {
+        for batch in batches {
             let written = spill_manager
-                .spill(partition_id, &batch)
+                .spill(partition_id, &batch?)
                 .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
             batches_written += 1;
             bytes_written += written;
         }
-    }
+        Ok(())
+    })?;
     reservation.free();
     Ok((batches_written, bytes_written))
 }
@@ -1023,67 +985,33 @@ impl ExecutionPlan for SortShuffleWriterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let schema = result_schema();
-
-        let mut state = self.state.lock().map_err(|_| {
+        let mut guard = self.state.lock().map_err(|_| {
             DataFusionError::Internal(
                 "SortShuffleWriterExec state mutex poisoned".to_owned(),
             )
         })?;
+        let state = &mut *guard;
+        let rx = take_handoff(
+            "SortShuffleWriterExec",
+            &mut state.initialized,
+            &mut state.handoffs,
+            partition,
+            |senders| {
+                let writer = self.clone();
+                tokio::spawn(async move {
+                    run_coordinator(writer, context, senders).await;
+                });
+            },
+        )?;
+        drop(guard);
 
-        if !state.initialized {
-            state.initialized = true;
-            let k = state.handoffs.len();
-            let mut senders: Vec<oneshot::Sender<Result<Vec<ShuffleWritePartition>>>> =
-                Vec::with_capacity(k);
-            for slot in state.handoffs.iter_mut() {
-                let (tx, rx) = oneshot::channel();
-                senders.push(tx);
-                *slot = Some(rx);
-            }
-            let writer = self.clone();
-            let ctx = context.clone();
-            tokio::spawn(async move {
-                run_coordinator(writer, ctx, senders).await;
-            });
-        }
-
-        let rx = state
-            .handoffs
-            .get_mut(partition)
-            .and_then(Option::take)
-            .ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "SortShuffleWriterExec: execute({partition}) called twice or out of range (have {} partitions)",
-                    state.handoffs.len()
-                ))
-            })?;
-        drop(state);
-
-        let work_dir = self.work_dir.clone();
-        let job_id = self.job_id.clone();
-        let stage_id = self.stage_id;
-        let schema_captured = schema.clone();
-
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            schema,
-            futures::stream::once(async move {
-                let summaries = rx.await.map_err(|_| {
-                    DataFusionError::Internal(
-                        "SortShuffleWriterExec coordinator dropped without sending"
-                            .to_owned(),
-                    )
-                })??;
-                summaries_to_batch(
-                    summaries,
-                    schema_captured,
-                    &work_dir,
-                    &job_id,
-                    stage_id,
-                )
-            })
-            .try_flatten(),
-        )))
+        Ok(handoff_stream(
+            "SortShuffleWriterExec",
+            rx,
+            self.work_dir.clone(),
+            self.job_id.clone(),
+            self.stage_id,
+        ))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -1426,6 +1354,7 @@ mod tests {
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::prelude::{SessionConfig, SessionContext};
+    use futures::TryStreamExt;
     use tempfile::TempDir;
 
     fn create_test_input() -> Result<Arc<dyn ExecutionPlan>> {

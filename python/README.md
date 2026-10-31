@@ -35,8 +35,8 @@ release. See the
 > returns a standard `datafusion.SessionContext` and queries created from it
 > are executed on the Ballista cluster.
 >
-> Some features are still being worked on, such as support for Python UDFs
-> and custom extension codecs. See the known limitations below.
+> Some features are still being worked on, such as support for custom
+> extension codecs. See the known limitations below.
 >
 > Progress has been tracked at [#2618](https://github.com/apache/datafusion-ballista/issues/2618)
 >
@@ -81,7 +81,9 @@ Known limitations and inefficiencies of the current approach:
 - A `SessionConfig` passed as `config` is used locally only. Use `cluster_config` for settings that
   should reach the cluster.
 - Anything requiring custom `datafusion_proto::logical_plan::LogicalExtensionCodec`.
-- No support for `UDF` as DataFusion Python does not serialise them.
+- Python UDFs (scalar, aggregate and window) are serialised with the plan using `cloudpickle`, so
+  they do not need to be registered on the cluster. Scheduler and executors have to run the same
+  Python minor version as the client, and everything the UDF imports has to be installed there.
 - A Ballista connection will be created for each request.
 
 ### Example DataFrame Usage

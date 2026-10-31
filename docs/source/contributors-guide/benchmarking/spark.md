@@ -54,22 +54,16 @@ The matching Ballista executor runs `--vcores=8` on the same
 
 ## Reproducing
 
-Until the harness is added, the closest public equivalent is
-`tpcbench.py` from
-[apache/datafusion-benchmarks](https://github.com/apache/datafusion-benchmarks),
-with the settings above and stock Spark 4.1 defaults for everything else:
+With the scripts in
+[`benchmarks/cluster`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster),
+after setting up `cluster.toml` as its README describes:
 
 ```sh
-spark-submit \
-  --master <master> \
-  --conf spark.executor.instances=32 \
-  --conf spark.executor.cores=16 \
-  --conf spark.executor.memory=64G \
-  --conf spark.executor.memoryOverhead=10G \
-  --conf spark.sql.shuffle.partitions=512 \
-  tpcbench.py \
-    --benchmark tpch \
-    --data s3a://<bucket>/tpch/sf1000 \
-    --format parquet \
-    --iterations 2
+cd benchmarks/cluster
+python3 run.py --engine spark
 ```
+
+The settings above are in `benchmarks/cluster/conf/spark.conf`. The driver runs
+`spark/tpcbench.py` in client mode in a Kubernetes Job, and Spark starts the
+executors with a volume each for shuffle files, from the storage class in
+`cluster.toml`.
