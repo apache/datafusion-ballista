@@ -334,10 +334,12 @@ fn disposition(plan: &LogicalPlan) -> Result<Disposition, Status> {
         // Other DDL only edits the session catalog, and `SET`-style statements
         // only edit session config; neither has anything to distribute.
         LogicalPlan::Ddl(_) | LogicalPlan::Statement(_) => Disposition::RunOnScheduler,
-        // `SHOW ...` and anything else reading `information_schema` describes
-        // the catalog held here. There is nothing to distribute, and the
-        // physical form of those scans cannot be serialized for an executor,
-        // so distributing one would hand the client a job that never runs.
+        // `SHOW ...` and `DESCRIBE` describe the catalog and config held here.
+        // There is nothing to distribute, and their physical form cannot be
+        // serialized for an executor, so distributing one would hand the
+        // client a job that never runs.
+        LogicalPlan::Show(_) => Disposition::RunOnScheduler,
+        // Anything reading `information_schema` is the same story.
         _ if scans_only_information_schema(plan)
             .map_err(|error| Status::unimplemented(error.to_string()))? =>
         {
@@ -913,6 +915,65 @@ fn prepared_handle(bytes: &[u8]) -> Result<String, Status> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use datafusion::prelude::SessionConfig;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A session holding one table, `tt`. `SHOW` needs `information_schema`.
+    async fn context_with_table() -> Result<SessionContext, Box<dyn std::error::Error>> {
+        let ctx = SessionContext::new_with_config(
+            SessionConfig::new().with_information_schema(true),
+        );
+        ctx.sql("CREATE TABLE tt (c0 INT, c1 INT)")
+            .await?
+            .collect()
+            .await?;
+        Ok(ctx)
+    }
+
+    /// `SHOW` and `DESCRIBE` plan to a streaming table that reads the session's
+    /// catalog and that the physical codec cannot serialize, so distributing one
+    /// fails the job on the cluster. They must run where the catalog is.
+    #[tokio::test]
+    async fn catalog_statements_run_on_the_scheduler() -> TestResult {
+        let ctx = context_with_table().await?;
+
+        for sql in [
+            "SHOW TABLES",
+            "SHOW COLUMNS FROM tt",
+            "SHOW CREATE TABLE tt",
+            "SHOW ALL",
+            "DESCRIBE tt",
+            "SELECT table_name FROM information_schema.tables",
+        ] {
+            let plan = ctx.state().create_logical_plan(sql).await?;
+            assert_eq!(disposition(&plan)?, Disposition::RunOnScheduler, "{sql}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn queries_over_user_tables_are_distributed() -> TestResult {
+        let ctx = context_with_table().await?;
+
+        let plan = ctx.state().create_logical_plan("SELECT c0 FROM tt").await?;
+        assert_eq!(disposition(&plan)?, Disposition::Distribute);
+        Ok(())
+    }
+
+    /// Running a catalog statement on the scheduler has to answer from the
+    /// session's catalog, not just be routed there.
+    #[tokio::test]
+    async fn show_tables_lists_the_session_catalog() -> TestResult {
+        let ctx = context_with_table().await?;
+
+        let plan = ctx.state().create_logical_plan("SHOW TABLES").await?;
+        let (_, batches) = execute_locally(&ctx, plan).await?;
+
+        let listing = arrow::util::pretty::pretty_format_batches(&batches)?.to_string();
+        assert!(listing.contains(" tt "), "{listing}");
+        Ok(())
+    }
 
     #[test]
     fn a_refusal_that_is_a_status_keeps_its_code() {
