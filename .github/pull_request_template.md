@@ -23,5 +23,5 @@ If there are user-facing changes then we may require documentation to be updated
 -->
 
 <!--
-If there are any breaking changes to public APIs, please add the `api change` label.
+If there are any breaking changes to public APIs, please add the `api-change` label. Such changes, and any other change that needs an entry in the upgrade guide, wait for the next major release instead of being backported to the release branch.
 -->
