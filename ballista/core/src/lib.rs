@@ -39,6 +39,11 @@ pub const BALLISTA_VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// Zero is reserved as the proto-default "unset" value, produced by executors
 /// that predate this field — it never matches a real scheduler version.
+///
+/// Clients are not covered by this check. They are checked by major version
+/// instead (see [`crate::version`]), so a change that also reaches clients,
+/// such as the shuffle fetch they use to read results, must keep working for
+/// older clients of the same major version.
 pub const BALLISTA_PROTOCOL_VERSION: u32 = 3;
 
 /// Prints the current Ballista version to stdout.
@@ -93,10 +98,18 @@ pub mod planner;
 pub mod registry;
 /// Serialization and deserialization for Ballista messages and plans.
 pub mod serde;
+/// Serves partition fetches over Arrow Flight.
+pub mod serving;
+/// Graceful shutdown coordination for long-running server components.
+pub mod shutdown;
 /// Quantile sketching of a fixed-width `ORDER BY` key, NULLs included.
 pub mod sort_key;
+/// Shared test and benchmark fixtures, such as the TPC-H table schemas.
+pub mod test_utils;
 /// General utility functions for Ballista operations.
 pub mod utils;
+/// Version checks between Ballista clients and schedulers.
+pub mod version;
 
 ///
 /// [RuntimeProducer] is a factory which creates runtime [RuntimeEnv]

@@ -49,10 +49,27 @@ github:
     main:
       required_pull_request_reviews:
         required_approving_review_count: 1
+      required_status_checks:
+        # `TPC Required Checks` is the aggregator job in
+        # .github/workflows/tpc.yml. It is deliberately the only entry: the
+        # TPC-H and TPC-DS jobs are skipped on pull requests that do not carry
+        # a `run-tpch` / `run-tpcds` label, and a skipped job publishes under a
+        # different name than a run one, so neither can be required directly.
+        # On a pull request it passes; in the merge queue it requires both
+        # suites, which is the point of the queue.
+        #
+        # Careful when editing this list. A context that never reports blocks
+        # every merge to main, including the merge that would fix this file,
+        # and recovering from that needs an INFRA Jira ticket.
+        contexts:
+          - "TPC Required Checks"
     branch-53:
       required_pull_request_reviews:
         required_approving_review_count: 1
     branch-54:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
+    branch-55:
       required_pull_request_reviews:
         required_approving_review_count: 1
   # publishes the content of the `asf-site` branch to
@@ -70,6 +87,49 @@ github:
         - root
       restrict_deletion: true
       restrict_force_push: true
+    # GitHub's merge queue. Classic `protected_branches` above cannot express
+    # it, but .asf.yaml rulesets accept a raw Rulesets API payload, so no INFRA
+    # ticket is needed. Same approach as apache/datafusion-comet.
+    #
+    # Only the default branch is queued. Merge queue rules do not support
+    # wildcard ref patterns, so the release branches keep plain branch
+    # protection.
+    - name: Merge Queue
+      target: branch
+      enforcement: active
+      bypass_actors:
+        # apache/root - ASF Infra, so a wedged queue can always be recovered.
+        - actor_id: 118420
+          actor_type: Team
+          bypass_mode: always
+      conditions:
+        ref_name:
+          include:
+            - "~DEFAULT_BRANCH"
+          exclude: []
+      rules:
+        - type: merge_queue
+          parameters:
+            # Matches enabled_merge_buttons above: squash is the only method
+            # the repository allows.
+            merge_method: SQUASH
+            # Every entry's own build has to be green, not just the last one's.
+            grouping_strategy: ALLGREEN
+            # How many merge_group builds run at once. Each entry gets its own
+            # build of itself plus everything ahead of it, and the merge limits
+            # below do not combine those builds, so this is the throughput
+            # dial. Each build is five benchmark jobs on ASF runners.
+            max_entries_to_build: 2
+            # These only cap how many already-green entries land in one merge.
+            # No minimum and no wait, so a lone PR merges the moment its build
+            # is green.
+            min_entries_to_merge: 1
+            min_entries_to_merge_wait_minutes: 0
+            max_entries_to_merge: 1
+            # How long the queue waits for a required check to report before
+            # treating it as failed and evicting the entry. A passing run is
+            # 10-20 minutes, so this is mostly headroom for runner queue times.
+            check_response_timeout_minutes: 180
   pull_requests:
     # enable updating head branches of pull requests
     allow_update_branch: true

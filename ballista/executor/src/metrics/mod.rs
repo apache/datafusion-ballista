@@ -17,8 +17,114 @@
 
 use crate::execution_engine::QueryStageExecutor;
 use ballista_core::JobId;
-use log::debug;
-use std::{fmt::Display, sync::Arc};
+use ballista_core::serde::protobuf::{ExecutorMetric, executor_metric};
+use datafusion::execution::memory_pool::MemoryPool;
+use log::{debug, warn};
+use memory_stats::memory_stats;
+use parking_lot::Mutex;
+use std::{
+    fmt::Display,
+    sync::{Arc, Weak},
+};
+use sysinfo::{MemoryRefreshKind, System};
+
+/// Shared, observational memory metrics for a single executor process.
+///
+/// Pools are held weakly and shared pools are counted once. Sampling copies live pools
+/// before calling [`MemoryPool::reserved`], so pool callbacks run outside the registry lock.
+#[derive(Clone, Default)]
+pub struct ExecutorMemoryMetrics {
+    inner: Arc<Mutex<MemoryMetricsState>>,
+}
+
+/// Reads a process's outstanding allocated bytes.
+type AllocatedBytesSource = Arc<dyn Fn() -> usize + Send + Sync>;
+
+#[derive(Default)]
+struct MemoryMetricsState {
+    initialized: bool,
+    pool_size: Option<u64>,
+    pools: Vec<Weak<dyn MemoryPool>>,
+    allocated_bytes: Option<AllocatedBytesSource>,
+}
+
+/// A point-in-time view of executor memory pool usage.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ExecutorMemoryUsage {
+    /// Resolved executor-wide pool budget in bytes; `None` means unbounded.
+    /// Per-task limits are sized from this budget according to their vcore claims.
+    pub pool_size: Option<u64>,
+    /// Sum of current reservations across distinct live task pools, in bytes.
+    pub reserved: usize,
+    /// Number of distinct live pools, including shared pools retained by session runtimes.
+    pub pool_count: usize,
+}
+
+impl ExecutorMemoryMetrics {
+    pub(crate) fn set_pool_size(&self, pool_size: Option<u64>) {
+        let mut state = self.inner.lock();
+        state.pool_size = pool_size;
+        state.initialized = true;
+    }
+
+    pub(crate) fn register(&self, pool: &Arc<dyn MemoryPool>) {
+        let reference = Arc::downgrade(pool);
+        let mut state = self.inner.lock();
+        state.pools.retain(|pool| pool.strong_count() != 0);
+        if !state.pools.iter().any(|pool| pool.ptr_eq(&reference)) {
+            state.pools.push(reference);
+        }
+    }
+
+    /// Sets where [`Self::allocated_bytes`] reads the process's outstanding
+    /// allocated bytes from, such as
+    /// [`crate::alloc_accounting::current_balance`]. Only set it when the
+    /// process's global allocator actually does that accounting.
+    pub fn set_allocated_bytes_source(
+        &self,
+        source: impl Fn() -> usize + Send + Sync + 'static,
+    ) {
+        self.inner.lock().allocated_bytes = Some(Arc::new(source));
+    }
+
+    /// Outstanding allocated bytes in the process, or `None` when no source
+    /// was set with [`Self::set_allocated_bytes_source`].
+    pub fn allocated_bytes(&self) -> Option<usize> {
+        let source = self.inner.lock().allocated_bytes.clone();
+        source.map(|source| source())
+    }
+
+    /// Samples the resolved budget and current pool reservations.
+    ///
+    /// Returns `None` before executor memory pool initialization. Reservation reads are
+    /// not atomic across pools and may race with tasks reserving or releasing memory.
+    pub fn snapshot(&self) -> Option<ExecutorMemoryUsage> {
+        let (pool_size, pools) = {
+            let mut state = self.inner.lock();
+            if !state.initialized {
+                return None;
+            }
+            let mut pools = Vec::with_capacity(state.pools.len());
+            state.pools.retain(|reference| {
+                if let Some(pool) = reference.upgrade() {
+                    pools.push(pool);
+                    true
+                } else {
+                    false
+                }
+            });
+            (state.pool_size, pools)
+        };
+
+        Some(ExecutorMemoryUsage {
+            pool_size,
+            reserved: pools
+                .iter()
+                .fold(0_usize, |total, pool| total.saturating_add(pool.reserved())),
+            pool_count: pools.len(),
+        })
+    }
+}
 
 /// `ExecutorMetricsCollector` records metrics for `ShuffleWriteExec`
 /// after they are executed.
@@ -84,11 +190,265 @@ impl Display for ExecutorMetricCollectionPolicy {
     }
 }
 
+impl ExecutorMetricCollectionPolicy {
+    /// Samples the executor metrics this policy selects, for a heartbeat.
+    pub(crate) fn collect(self) -> Vec<ExecutorMetric> {
+        match self {
+            ExecutorMetricCollectionPolicy::SystemOnly => {
+                let mut executor_system = System::new_all();
+                executor_system
+                    .refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
+
+                let system_metrics = vec![
+                    ExecutorMetric {
+                        metric: Some(executor_metric::Metric::TotalMemory(
+                            executor_system.total_memory(),
+                        )),
+                    },
+                    ExecutorMetric {
+                        metric: Some(executor_metric::Metric::AvailableMemory(
+                            executor_system.available_memory(),
+                        )),
+                    },
+                    ExecutorMetric {
+                        metric: Some(executor_metric::Metric::UsedMemory(
+                            executor_system.used_memory(),
+                        )),
+                    },
+                ];
+                system_metrics
+            }
+            ExecutorMetricCollectionPolicy::ProcessOnly => {
+                if let Some(usage) = memory_stats() {
+                    let process_metrics = vec![
+                        ExecutorMetric {
+                            metric: Some(executor_metric::Metric::ProcPhysicalMemory(
+                                usage.physical_mem as u64,
+                            )),
+                        },
+                        ExecutorMetric {
+                            metric: Some(executor_metric::Metric::ProcVirtualMemory(
+                                usage.virtual_mem as u64,
+                            )),
+                        },
+                    ];
+                    process_metrics
+                } else {
+                    warn!("Could not get current process memory usage!");
+                    let process_metrics: Vec<ExecutorMetric> = vec![];
+                    process_metrics
+                }
+            }
+            ExecutorMetricCollectionPolicy::SystemAndProcess => {
+                if let Some(usage) = memory_stats() {
+                    let mut process_metrics = vec![
+                        ExecutorMetric {
+                            metric: Some(executor_metric::Metric::ProcPhysicalMemory(
+                                usage.physical_mem as u64,
+                            )),
+                        },
+                        ExecutorMetric {
+                            metric: Some(executor_metric::Metric::ProcVirtualMemory(
+                                usage.virtual_mem as u64,
+                            )),
+                        },
+                    ];
+                    let mut executor_system = System::new_all();
+                    executor_system.refresh_memory_specifics(
+                        MemoryRefreshKind::nothing().with_ram(),
+                    );
+
+                    let system_metrics = vec![
+                        ExecutorMetric {
+                            metric: Some(executor_metric::Metric::TotalMemory(
+                                executor_system.total_memory(),
+                            )),
+                        },
+                        ExecutorMetric {
+                            metric: Some(executor_metric::Metric::AvailableMemory(
+                                executor_system.available_memory(),
+                            )),
+                        },
+                        ExecutorMetric {
+                            metric: Some(executor_metric::Metric::UsedMemory(
+                                executor_system.used_memory(),
+                            )),
+                        },
+                    ];
+                    process_metrics.extend(system_metrics);
+
+                    process_metrics
+                } else {
+                    warn!(
+                        "Could not get current process memory usage! Defauling to system-wide metrics"
+                    );
+                    let mut executor_system = System::new_all();
+                    executor_system.refresh_memory_specifics(
+                        MemoryRefreshKind::nothing().with_ram(),
+                    );
+
+                    let system_metrics = vec![
+                        ExecutorMetric {
+                            metric: Some(executor_metric::Metric::TotalMemory(
+                                executor_system.total_memory(),
+                            )),
+                        },
+                        ExecutorMetric {
+                            metric: Some(executor_metric::Metric::AvailableMemory(
+                                executor_system.available_memory(),
+                            )),
+                        },
+                        ExecutorMetric {
+                            metric: Some(executor_metric::Metric::UsedMemory(
+                                executor_system.used_memory(),
+                            )),
+                        },
+                    ];
+                    system_metrics
+                }
+            }
+            ExecutorMetricCollectionPolicy::Off => vec![],
+        }
+    }
+}
+
 #[cfg(feature = "build-binary")]
 impl std::str::FromStr for ExecutorMetricCollectionPolicy {
     type Err = String;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         clap::ValueEnum::from_str(s, true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::execution::memory_pool::{
+        GreedyMemoryPool, MemoryConsumer, MemoryReservation, UnboundedMemoryPool,
+    };
+
+    #[test]
+    fn reports_budget_only_after_initialization() {
+        let metrics = ExecutorMemoryMetrics::default();
+        assert_eq!(metrics.snapshot(), None);
+        metrics.set_pool_size(Some(1024));
+        assert_eq!(
+            metrics.snapshot(),
+            Some(ExecutorMemoryUsage {
+                pool_size: Some(1024),
+                reserved: 0,
+                pool_count: 0,
+            })
+        );
+        metrics.set_pool_size(None);
+        assert_eq!(metrics.snapshot().unwrap().pool_size, None);
+    }
+
+    #[test]
+    fn sums_reservations_and_deduplicates_shared_pools() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(Some(1024));
+        let first: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(512));
+        let second: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(512));
+        metrics.register(&first);
+        metrics.register(&first.clone());
+        metrics.register(&second);
+        let first_reservation = MemoryConsumer::new("first").register(&first);
+        let second_reservation = MemoryConsumer::new("second").register(&second);
+        first_reservation.try_grow(128).unwrap();
+        second_reservation.try_grow(256).unwrap();
+        assert_eq!(metrics.snapshot().unwrap().reserved, 384);
+        assert_eq!(metrics.snapshot().unwrap().pool_count, 2);
+        first_reservation.shrink(64);
+        assert_eq!(metrics.snapshot().unwrap().reserved, 320);
+        drop(first_reservation);
+        drop(second_reservation);
+        assert_eq!(metrics.snapshot().unwrap().reserved, 0);
+        drop(first);
+        drop(second);
+        assert_eq!(metrics.snapshot().unwrap().pool_count, 0);
+    }
+
+    #[test]
+    fn reservations_keep_pools_visible_but_registry_does_not() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(None);
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        metrics.register(&pool);
+        let reservation = MemoryConsumer::new("held").register(&pool);
+        reservation.try_grow(128).unwrap();
+        drop(pool);
+        assert_eq!(metrics.snapshot().unwrap().reserved, 128);
+        assert_eq!(metrics.snapshot().unwrap().pool_count, 1);
+        drop(reservation);
+        assert_eq!(metrics.snapshot().unwrap().pool_count, 0);
+    }
+
+    #[test]
+    fn registration_prunes_expired_pools() {
+        let metrics = ExecutorMemoryMetrics::default();
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        metrics.register(&pool);
+        drop(pool);
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        metrics.register(&pool);
+        assert_eq!(metrics.inner.lock().pools.len(), 1);
+    }
+
+    struct LockCheckingPool {
+        state: Arc<Mutex<MemoryMetricsState>>,
+        inner: UnboundedMemoryPool,
+    }
+
+    impl std::fmt::Debug for LockCheckingPool {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("LockCheckingPool")
+        }
+    }
+
+    impl Display for LockCheckingPool {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("LockCheckingPool")
+        }
+    }
+
+    impl MemoryPool for LockCheckingPool {
+        fn name(&self) -> &str {
+            "LockCheckingPool"
+        }
+
+        fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+            self.inner.grow(reservation, additional);
+        }
+
+        fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+            self.inner.shrink(reservation, shrink);
+        }
+
+        fn try_grow(
+            &self,
+            reservation: &MemoryReservation,
+            additional: usize,
+        ) -> datafusion::error::Result<()> {
+            self.inner.try_grow(reservation, additional)
+        }
+
+        fn reserved(&self) -> usize {
+            assert!(self.state.try_lock().is_some());
+            self.inner.reserved()
+        }
+    }
+
+    #[test]
+    fn samples_pools_outside_registry_lock() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(None);
+        let pool: Arc<dyn MemoryPool> = Arc::new(LockCheckingPool {
+            state: metrics.inner.clone(),
+            inner: UnboundedMemoryPool::default(),
+        });
+        metrics.register(&pool);
+        assert_eq!(metrics.snapshot().unwrap().reserved, 0);
     }
 }

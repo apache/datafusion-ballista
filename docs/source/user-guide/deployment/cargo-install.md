@@ -27,6 +27,13 @@ cargo install --locked ballista-scheduler
 cargo install --locked ballista-executor
 ```
 
+If clients cannot reach the executors, also install the result service, which serves them query
+results instead (see [Fetching Query Results](../scheduler.md#fetching-query-results)):
+
+```bash
+cargo install --locked ballista-result-service
+```
+
 With these crates installed, it is now possible to start a scheduler process.
 
 ```bash
@@ -45,30 +52,10 @@ The executor will bind to port 50051 by default. Additional executors can be sta
 manually specifying a bind port. For example:
 
 ```bash
-RUST_LOG=info ballista-executor --bind-port 50052
+RUST_LOG=info ballista-executor --bind-port 50054 --bind-grpc-port 50055 --bind-health-port 50056
 ```
 
-## Installing with Optional Features
-
-Ballista supports optional features that can be enabled during installation using the `--features` flag.
-
-### Spark-Compatible Functions
-
-To enable Spark-compatible scalar, aggregate, and window functions from the `datafusion-spark` crate:
-
-```bash
-# Install scheduler with spark-compat feature
-cargo install --locked --features spark-compat ballista-scheduler
-
-# Install executor with spark-compat feature
-cargo install --locked --features spark-compat ballista-executor
-
-# Install CLI with spark-compat feature
-cargo install --locked --features spark-compat ballista-cli
-```
-
-When the `spark-compat` feature is enabled, additional functions like `sha1`, `expm1`, `sha2`, and others become available in SQL queries.
-
-> **Note:** The `spark-compat` feature provides Spark-compatible expressions and functions only, not full Apache Spark API compatibility.
-
-For more details about Spark-compatible functions, see [Spark-Compatible Functions](../spark-compatible-functions.md).
+Each executor binds three ports — Arrow Flight (`--bind-port`, default 50051),
+gRPC (`--bind-grpc-port`, default 50052), and HTTP health
+(`--bind-health-port`, default 50053) — so every port must be moved, not just
+the first.

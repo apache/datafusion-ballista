@@ -22,19 +22,24 @@
 Ballista support for datafusion python.
 
 This project is tracked under its own `Cargo.toml` and is intentionally not part of the default Cargo workspace so
-that it doesn't cause overhead for maintainers of the main Ballista codebase. Its version is bumped in lockstep with
-the workspace crates by `dev/update_ballista_versions.py`, and the wheels are built against the in-repo ballista
-crates via `path` dependencies (not crates.io), so an RC can produce wheels for an unpublished version.
+that it doesn't cause overhead for maintainers of the main Ballista codebase. It is released separately from the Rust
+crates, built against the `ballista` crates published on crates.io, once datafusion-python has published a matching
+release. See the
+[Python client release process](https://github.com/apache/datafusion-ballista/blob/main/python/dev/release/README.md).
 
 ## Creating a SessionContext
 
 > [!IMPORTANT]
-> Current approach is to support datafusion python API, there are know limitations of current approach,
-> with some cases producing errors.
 >
-> We are trying to come up with the best approach to support ballista python interface.
+> Ballista supports the DataFusion Python API natively: `BallistaSessionContext`
+> returns a standard `datafusion.SessionContext` and queries created from it
+> are executed on the Ballista cluster.
 >
-> More details could be found at [#1142](https://github.com/apache/datafusion-ballista/issues/1142)
+> Some features are still being worked on, such as support for custom
+> extension codecs. See the known limitations below.
+>
+> Progress has been tracked at [#2618](https://github.com/apache/datafusion-ballista/issues/2618)
+>
 
 Creates a new context which connects to a Ballista scheduler process.
 
@@ -62,12 +67,23 @@ df : DataFrame = ctx.sql("select * from t limit 5")
 df.show()
 ```
 
+Session and Ballista settings are set with the `cluster_config` argument:
+
+```python
+ctx = BallistaSessionContext(
+    "df://localhost:50050",
+    cluster_config={"datafusion.execution.target_partitions": "256"},
+)
+```
+
 Known limitations and inefficiencies of the current approach:
 
-- The client's `SessionConfig` is not propagated to Ballista.
-- Ballista-specific configuration cannot be set.
+- A `SessionConfig` passed as `config` is used locally only. Use `cluster_config` for settings that
+  should reach the cluster.
 - Anything requiring custom `datafusion_proto::logical_plan::LogicalExtensionCodec`.
-- No support for `UDF` as DataFusion Python does not serialise them.
+- Python UDFs (scalar, aggregate and window) are serialised with the plan using `cloudpickle`, so
+  they do not need to be registered on the cluster. Scheduler and executors have to run the same
+  Python minor version as the client, and everything the UDF imports has to be installed there.
 - A Ballista connection will be created for each request.
 
 ### Example DataFrame Usage
@@ -85,7 +101,8 @@ Check [DataFusion python](https://datafusion.apache.org/python/) provides more e
 
 PyBallista provides first-class Jupyter notebook support with SQL magic commands and rich HTML rendering.
 
-### Install Jupyter extras first:
+### Install Jupyter extras first
+
 ```bash
 pip install "ballista[jupyter]"
 ```
@@ -151,22 +168,37 @@ SELECT * FROM orders WHERE status = 'pending'
 Visualize query execution plans directly in notebooks:
 
 ```python
+from ballista.jupyter import explain_visual
+
 df = ctx.sql("SELECT * FROM orders WHERE amount > 100")
-df.explain_visual()  # Displays SVG visualization
+explain_visual(df)  # Displays SVG visualization
 
 # With runtime statistics
-df.explain_visual(analyze=True)
+explain_visual(df, analyze=True)
 ```
 
 > **Note:** Full SVG visualization requires graphviz to be installed (`brew install graphviz` on macOS).
 
 ### Progress Indicators
 
-For long-running queries, use `collect_with_progress()` to see execution status:
+For long-running queries, use `collect_with_progress()` to see execution status.
+In Jupyter it displays elapsed time while the query runs:
 
 ```python
+from ballista.jupyter import collect_with_progress
+
 df = ctx.sql("SELECT * FROM large_table")
-batches = df.collect_with_progress()
+batches = collect_with_progress(df)
+```
+
+Outside Jupyter, or to handle progress yourself, pass a callback:
+
+```python
+def my_callback(status: str, progress: float):
+    # progress is -1.0 while running, 1.0 when completed
+    print(f"{status}: {progress}")
+
+batches = collect_with_progress(df, callback=my_callback, poll_interval=1.0)
 ```
 
 ### Example Notebooks

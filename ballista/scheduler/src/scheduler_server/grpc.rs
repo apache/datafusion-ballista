@@ -16,7 +16,6 @@
 // under the License.
 
 use axum::extract::ConnectInfo;
-use ballista_core::BALLISTA_PROTOCOL_VERSION;
 use ballista_core::config::BALLISTA_JOB_NAME;
 use ballista_core::error::{BallistaError, Result as BResult};
 use ballista_core::extension::SessionConfigHelperExt;
@@ -35,6 +34,8 @@ use ballista_core::serde::protobuf::{
     execute_query_failure_result, execute_query_result, executor_metric::Metric,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
+use ballista_core::version;
+use ballista_core::{BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::{Stream, StreamExt};
@@ -59,6 +60,7 @@ use datafusion::prelude::SessionContext;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
 
 use crate::metrics::record_protocol_mismatch;
@@ -80,6 +82,24 @@ fn check_protocol_version(metadata: &ExecutorRegistration) -> Result<(), Status>
         "protocol version mismatch: scheduler={}, executor={}",
         BALLISTA_PROTOCOL_VERSION, metadata.ballista_protocol_version,
     )))
+}
+
+/// Rejects a job submission from a client whose major version differs from
+/// the scheduler's. See [`ballista_core::version`].
+fn check_client_version(metadata: &MetadataMap) -> Result<(), Status> {
+    let client_version = version::version_from_metadata(metadata);
+    version::check_compatibility(client_version, Some(BALLISTA_VERSION)).map_err(|msg| {
+        info!("Rejecting job submission: {msg}");
+        Status::failed_precondition(msg)
+    })
+}
+
+/// Wraps a response to a job submission, adding the scheduler's version so
+/// the client can check it.
+fn versioned_response<R>(message: R) -> Response<R> {
+    let mut response = Response::new(message);
+    version::insert_version_header(response.metadata_mut());
+    response
 }
 
 fn executor_registration_error(e: BallistaError) -> Status {
@@ -286,9 +306,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     os_info: metadata.os_info.unwrap().into(),
                 };
 
-                self.do_register_executor(metadata)
-                    .await
-                    .map_err(executor_registration_error)?;
+                // A pull-based executor can heartbeat before its first poll.
+                // Register it the way a poll would, without the vcore
+                // inventory that only push-based scheduling uses.
+                if self.state.config.is_push_staged_scheduling() {
+                    self.do_register_executor(metadata)
+                        .await
+                        .map_err(executor_registration_error)?;
+                } else {
+                    self.state
+                        .executor_manager
+                        .save_executor_metadata(metadata)
+                        .await
+                        .map_err(executor_registration_error)?;
+                }
             } else {
                 return Err(Status::invalid_argument(format!(
                     "The registration spec for executor {executor_id} is not included"
@@ -427,6 +458,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: tonic::Request<ExecuteQueryParams>,
     ) -> std::result::Result<tonic::Response<Self::ExecuteQueryPushStream>, tonic::Status>
     {
+        check_client_version(request.metadata())?;
         let query_params = request.into_inner();
         if let ExecuteQueryParams {
             query: Some(query),
@@ -478,20 +510,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             let job_id = self
                 .submit_plan(&job_name, session_ctx, &plan, Some(subscriber))
                 .await
-                .map_err(|e| {
-                    let msg =
-                        format!("Failed to send JobQueued event for {job_name}: {e:?}");
-
-                    error!("{msg}");
-
-                    Status::internal(msg)
-                })?;
+                .map_err(|e| self.submit_error(&job_name, e))?;
 
             debug!(
                 "execution query (PUSH) job submitted - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}"
             );
 
-            Ok(Response::new(Box::pin(stream)))
+            Ok(versioned_response(Box::pin(stream)))
         } else {
             Err(Status::internal(
                 "Error processing request, invalid message",
@@ -503,6 +528,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<ExecuteQueryParams>,
     ) -> Result<Response<ExecuteQueryResult>, Status> {
+        check_client_version(request.metadata())?;
         let query_params = request.into_inner();
         if let ExecuteQueryParams {
             query: Some(query),
@@ -533,7 +559,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 Err(e) => {
                     let msg = format!("Could not parse plan: {e}");
                     error!("{msg}");
-                    return Ok(Response::new(ExecuteQueryResult {
+                    return Ok(versioned_response(ExecuteQueryResult {
                                 operation_id,
                                 result: Some(execute_query_result::Result::Failure(
                                     ExecuteQueryFailureResult {
@@ -553,19 +579,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             let job_id = self
                 .submit_plan(&job_name, session_ctx, &plan, None)
                 .await
-                .map_err(|e| {
-                    let msg =
-                        format!("Failed to send JobQueued event for {job_name}: {e:?}");
-                    error!("{msg}");
-
-                    Status::internal(msg)
-                })?;
+                .map_err(|e| self.submit_error(&job_name, e))?;
 
             info!(
                 "execution query, job submitted - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}"
             );
 
-            Ok(Response::new(ExecuteQueryResult {
+            Ok(versioned_response(ExecuteQueryResult {
                 operation_id,
                 result: Some(execute_query_result::Result::Success(
                     ExecuteQuerySuccessResult {
@@ -809,6 +829,20 @@ fn extract_connect_info<T>(request: &Request<T>) -> Option<ConnectInfo<SocketAdd
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
+    /// The status for a job that couldn't be submitted. A refusal that already
+    /// is a status, such as `Unavailable` while the scheduler is shutting down,
+    /// keeps its code, so a client knows to submit elsewhere.
+    fn submit_error(&self, job_name: &str, e: BallistaError) -> Status {
+        match e {
+            BallistaError::GrpcError(status) => *status,
+            e => {
+                let msg = format!("Failed to send JobQueued event for {job_name}: {e:?}");
+                error!("{msg}");
+                Status::internal(msg)
+            }
+        }
+    }
+
     async fn create_context(
         &self,
         settings: &[KeyValuePair],
@@ -887,6 +921,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// Where clients should fetch result partitions from over Arrow Flight,
     /// advertised in job-status responses. An explicitly advertised endpoint
     /// wins over the embedded proxy, so a load balancer can front it.
+    #[allow(deprecated)]
     fn flight_proxy_config(&self) -> Option<FlightProxy> {
         let config = &self.state.config;
         match config
@@ -906,30 +941,33 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use datafusion::prelude::SessionContext;
+    use datafusion_proto::logical_plan::{AsLogicalPlan, DefaultLogicalExtensionCodec};
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
-    use tonic::{Code, Request};
+    use tonic::{Code, Request, Response};
 
     #[cfg(feature = "substrait")]
     use {
-        ballista_core::serde::protobuf::ExecuteQueryParams,
-        ballista_core::serde::protobuf::execute_query_params::Query,
-        datafusion::prelude::{SessionConfig, SessionContext},
+        ballista_core::version::insert_version_header,
+        datafusion::prelude::SessionConfig,
         datafusion_substrait::serializer::serialize_bytes,
     };
 
     use crate::config::SchedulerConfig;
     use crate::metrics::default_metrics_collector;
-    use ballista_core::BALLISTA_PROTOCOL_VERSION;
     use ballista_core::error::BallistaError;
     use ballista_core::serde::BallistaCodec;
+    use ballista_core::serde::protobuf::execute_query_params::Query;
     use ballista_core::serde::protobuf::{
-        ExecutorRegistration, ExecutorStatus, ExecutorStoppedParams, HeartBeatParams,
-        PollWorkParams, RegisterExecutorParams, executor_status,
+        ExecuteQueryParams, ExecutorMetric, ExecutorRegistration, ExecutorStatus,
+        ExecutorStoppedParams, HeartBeatParams, PollWorkParams, RegisterExecutorParams,
+        execute_query_result, executor_metric, executor_status,
     };
     use ballista_core::serde::scheduler::{
         ExecutorOperatingSystemSpecification, ExecutorSpecification,
     };
+    use ballista_core::{BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION};
 
     use crate::state::SchedulerState;
     use crate::test_utils::await_condition;
@@ -1198,6 +1236,69 @@ mod test {
         Ok(())
     }
 
+    /// A pull-based executor reports its status and metrics through
+    /// heartbeats while it polls for work; its polls must not erase them.
+    #[tokio::test]
+    async fn test_pull_executor_heartbeats_survive_polls() -> Result<(), BallistaError> {
+        let config = SchedulerConfig::default().with_scheduler_policy(
+            ballista_core::config::TaskSchedulingPolicy::PullStaged,
+        );
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(config),
+                default_metrics_collector().unwrap(),
+            );
+        scheduler.init().await?;
+        let exec_meta = exec_meta_with_version(BALLISTA_PROTOCOL_VERSION);
+        let memory = |bytes| ExecutorMetric {
+            metric: Some(executor_metric::Metric::ProcPhysicalMemory(bytes)),
+        };
+
+        let active = executor_status::Status::Active("".to_string());
+        let terminating = executor_status::Status::Terminating("".to_string());
+
+        // The heartbeater can reach the scheduler before the first poll.
+        for (bytes, status) in [(3000, active), (1000, terminating.clone())] {
+            scheduler
+                .heart_beat_from_executor(Request::new(HeartBeatParams {
+                    executor_id: exec_meta.id.clone(),
+                    metrics: vec![memory(bytes)],
+                    status: Some(ExecutorStatus {
+                        status: Some(status),
+                    }),
+                    metadata: Some(exec_meta.clone()),
+                }))
+                .await
+                .expect("Received error response");
+        }
+        scheduler
+            .poll_work(Request::new(PollWorkParams {
+                metadata: Some(exec_meta.clone()),
+                num_free_vcores: 0,
+                task_status: vec![],
+            }))
+            .await
+            .expect("Received error response");
+
+        let heartbeat = scheduler
+            .state
+            .executor_manager
+            .get_executor_hearbeat(&exec_meta.id)
+            .expect("heartbeat");
+        assert_eq!(
+            heartbeat.status,
+            Some(ExecutorStatus {
+                status: Some(terminating)
+            })
+        );
+        assert_eq!(heartbeat.metrics, vec![memory(1000)]);
+        assert_eq!(heartbeat.peak_proc_physical_memory, 3000);
+        Ok(())
+    }
+
     async fn scheduler_for_protocol_test()
     -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>, BallistaError> {
         let cluster = test_cluster_context();
@@ -1408,6 +1509,8 @@ mod test {
     }
 
     #[tokio::test]
+    // Still covers the deprecated embedded-proxy flag until it is removed.
+    #[allow(deprecated)]
     async fn flight_proxy_config_reflects_explicit_flag_and_endpoint() {
         use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
 
@@ -1462,6 +1565,162 @@ mod test {
             server(cfg).flight_proxy_config(),
             Some(FlightProxy::Local(true))
         );
+    }
+
+    /// Bytes that don't decode as a plan. A submission carrying them fails in
+    /// plan parsing, unless the version check rejects it first.
+    const UNPARSEABLE_PLAN: [u8; 4] = [0xFF; 4];
+
+    async fn test_scheduler()
+    -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>, BallistaError> {
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(SchedulerConfig::default()),
+                default_metrics_collector().unwrap(),
+            );
+        scheduler.init().await?;
+        Ok(scheduler)
+    }
+
+    /// `SELECT 1`, encoded the way a client submits a logical plan.
+    async fn select_one() -> Vec<u8> {
+        let plan = SessionContext::new()
+            .sql("SELECT 1")
+            .await
+            .unwrap()
+            .into_unoptimized_plan();
+        let mut buf = vec![];
+        LogicalPlanNode::try_from_logical_plan(&plan, &DefaultLogicalExtensionCodec {})
+            .unwrap()
+            .try_encode(&mut buf)
+            .unwrap();
+        buf
+    }
+
+    /// A job submission for `plan` from a client reporting `client_version`.
+    fn job_submission(
+        plan: Vec<u8>,
+        client_version: &str,
+    ) -> Request<ExecuteQueryParams> {
+        let mut request = Request::new(ExecuteQueryParams {
+            query: Some(Query::LogicalPlan(plan)),
+            settings: vec![],
+            session_id: uuid::Uuid::new_v4().to_string(),
+            operation_id: uuid::Uuid::now_v7().to_string(),
+        });
+        request
+            .metadata_mut()
+            .insert("ballista-version", client_version.parse().unwrap());
+        request
+    }
+
+    fn reported_version<T>(response: &Response<T>) -> Option<&str> {
+        response
+            .metadata()
+            .get("ballista-version")
+            .and_then(|v| v.to_str().ok())
+    }
+
+    #[tokio::test]
+    async fn execute_query_is_unavailable_while_the_scheduler_drains()
+    -> Result<(), BallistaError> {
+        let scheduler = test_scheduler().await?;
+        scheduler.start_draining();
+
+        let request = job_submission(select_one().await, BALLISTA_VERSION);
+        let status = scheduler.execute_query(request).await.unwrap_err();
+
+        assert_eq!(status.code(), Code::Unavailable);
+        assert!(
+            status.message().contains("shutting down"),
+            "{}",
+            status.message()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn execute_query_rejects_client_with_different_major_version()
+    -> Result<(), BallistaError> {
+        let scheduler = test_scheduler().await?;
+
+        let request = job_submission(UNPARSEABLE_PLAN.to_vec(), "1.0.0");
+        let status = scheduler.execute_query(request).await.unwrap_err();
+
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert!(
+            status.message().contains("client 1.0.0"),
+            "{}",
+            status.message()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn execute_query_push_rejects_client_with_different_major_version()
+    -> Result<(), BallistaError> {
+        let scheduler = test_scheduler().await?;
+
+        let request = job_submission(UNPARSEABLE_PLAN.to_vec(), "1.0.0");
+        let Err(status) = scheduler.execute_query_push(request).await else {
+            panic!("a client with a different major version should be rejected");
+        };
+
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert!(
+            status.message().contains("client 1.0.0"),
+            "{}",
+            status.message()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn execute_query_reports_scheduler_version() -> Result<(), BallistaError> {
+        let scheduler = test_scheduler().await?;
+
+        let request = job_submission(select_one().await, BALLISTA_VERSION);
+        let response = scheduler.execute_query(request).await?;
+
+        assert_eq!(reported_version(&response), Some(BALLISTA_VERSION));
+        assert!(matches!(
+            response.into_inner().result,
+            Some(execute_query_result::Result::Success(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn execute_query_reports_scheduler_version_when_plan_fails_to_parse()
+    -> Result<(), BallistaError> {
+        // The client checks the version before it looks at the result.
+        let scheduler = test_scheduler().await?;
+
+        let request = job_submission(UNPARSEABLE_PLAN.to_vec(), BALLISTA_VERSION);
+        let response = scheduler.execute_query(request).await?;
+
+        assert_eq!(reported_version(&response), Some(BALLISTA_VERSION));
+        assert!(matches!(
+            response.into_inner().result,
+            Some(execute_query_result::Result::Failure(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn execute_query_push_reports_scheduler_version() -> Result<(), BallistaError> {
+        let scheduler = test_scheduler().await?;
+
+        let request = job_submission(select_one().await, BALLISTA_VERSION);
+        let Ok(response) = scheduler.execute_query_push(request).await else {
+            panic!("a client with the same version should be accepted");
+        };
+
+        assert_eq!(reported_version(&response), Some(BALLISTA_VERSION));
+        Ok(())
     }
 
     #[tokio::test]
@@ -1528,12 +1787,13 @@ mod test {
         )
         .await?;
 
-        let execute_query_request = Request::new(ExecuteQueryParams {
+        let mut execute_query_request = Request::new(ExecuteQueryParams {
             session_id: uuid::Uuid::new_v4().to_string(),
             settings: vec![],
             operation_id: uuid::Uuid::now_v7().to_string(),
             query: Some(Query::SubstraitPlan(serialized_substrait_plan)),
         });
+        insert_version_header(execute_query_request.metadata_mut());
         let response = scheduler.execute_query(execute_query_request).await?;
         response
             .into_inner()

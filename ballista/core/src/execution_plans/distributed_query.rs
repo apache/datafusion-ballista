@@ -19,15 +19,19 @@ use crate::JobId;
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::error::BallistaError;
-use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
+use crate::extension::{
+    BallistaConfigGrpcEndpoint, BallistaGrpcMetadataInterceptor, SessionConfigExt,
+};
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
-    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
-    PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
-    scheduler_grpc_client::SchedulerGrpcClient,
+    CancelJobParams, ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult,
+    KeyValuePair, PartitionLocation, execute_query_params::Query, execute_query_result,
+    job_status, scheduler_grpc_client::SchedulerGrpcClient,
 };
-use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
+use crate::serde::protobuf::{ExecutorMetadata, RunningJob, SuccessfulJob};
+use crate::serde::scheduler::PipelinedPartitionLocation;
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
+use crate::version;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -48,13 +52,18 @@ use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
+use futures::stream::BoxStream;
 use futures::{Stream, StreamExt, TryStreamExt};
 use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::fmt::Debug;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
+use tonic::metadata::MetadataMap;
+use tonic::service::interceptor::InterceptedService;
+use tonic::transport::Channel;
 use url::Url;
 
 /// This operator sends a logical plan to a Ballista scheduler for execution and
@@ -135,6 +144,26 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
             metrics: ExecutionPlanMetricsSet::new(),
             job_id: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Returns the Ballista scheduler URL.
+    pub fn scheduler_url(&self) -> &str {
+        &self.scheduler_url
+    }
+
+    /// Returns the Ballista configuration.
+    pub fn config(&self) -> &BallistaConfig {
+        &self.config
+    }
+
+    /// Returns the logical plan to execute.
+    pub fn plan(&self) -> &LogicalPlan {
+        &self.plan
+    }
+
+    /// Returns the session id.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
     }
 
     /// Returns the scheduler job id after the query has been accepted.
@@ -305,19 +334,34 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         let metric_total_bytes =
             MetricBuilder::new(&self.metrics).counter("transferred_bytes", partition);
 
-        let session_config = context.session_config().clone();
+        let session_config = context.session_config();
 
-        if session_config.ballista_config().client_pull() {
+        // Prefer the BallistaConfig registered on the task's session config.
+        // It can be missing when the task context comes from a session not
+        // set up by Ballista (as seen with Ballista Python), so fall back to
+        // the config this plan was created with.
+        let bc = session_config
+            .options()
+            .extensions
+            .get::<BallistaConfig>()
+            .unwrap_or(&self.config);
+
+        let grpc_config = GrpcClientConfig::from(bc);
+
+        if bc.client_pull() {
             let stream = futures::stream::once(execute_query_pull(
                 self.scheduler_url.clone(),
                 self.session_id.clone(),
                 query,
-                self.config.grpc_client_max_message_size(),
-                GrpcClientConfig::from(&self.config),
+                bc.grpc_client_max_message_size(),
+                grpc_config,
                 Arc::new(self.metrics.clone()),
                 Arc::clone(&self.job_id),
                 partition,
-                session_config,
+                session_config.ballista_grpc_interceptor(),
+                session_config.ballista_override_create_grpc_client_endpoint(),
+                bc.use_tls(),
+                bc.pipelined_registration_timeout(),
             ))
             .try_flatten()
             .inspect(move |batch| {
@@ -337,12 +381,15 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             let stream = futures::stream::once(execute_query_push(
                 self.scheduler_url.clone(),
                 query,
-                self.config.grpc_client_max_message_size(),
-                GrpcClientConfig::from(&self.config),
+                bc.grpc_client_max_message_size(),
+                grpc_config,
                 Arc::new(self.metrics.clone()),
                 Arc::clone(&self.job_id),
                 partition,
-                session_config,
+                session_config.ballista_grpc_interceptor(),
+                session_config.ballista_override_create_grpc_client_endpoint(),
+                bc.use_tls(),
+                bc.pipelined_registration_timeout(),
             ))
             .try_flatten()
             .inspect(move |batch| {
@@ -409,25 +456,37 @@ pub async fn execute_physical_plan<U: 'static + AsExecutionPlan>(
         operation_id,
     };
 
-    let max_message_size = config.grpc_client_max_message_size();
-    let grpc_config = GrpcClientConfig::from(config);
     let metrics = Arc::new(ExecutionPlanMetricsSet::new());
     let job_id_handle = Arc::new(Mutex::new(None));
     let partition = 0;
 
+    // Prefer the BallistaConfig registered on the task's session config.
+    // It can be missing when the task context comes from a session not
+    // set up by Ballista (as seen with Ballista Python), so fall back to
+    // the config this plan was created with.
+    let bc = session_config
+        .options()
+        .extensions
+        .get::<BallistaConfig>()
+        .unwrap_or(config);
+    let grpc_config = GrpcClientConfig::from(bc);
+
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>> =
-        if session_config.ballista_config().client_pull() {
+        if bc.client_pull() {
             Box::pin(
                 execute_query_pull(
                     scheduler_url,
                     session_id,
                     query,
-                    max_message_size,
+                    bc.grpc_client_max_message_size(),
                     grpc_config,
                     metrics,
                     job_id_handle,
                     partition,
-                    session_config,
+                    session_config.ballista_grpc_interceptor(),
+                    session_config.ballista_override_create_grpc_client_endpoint(),
+                    bc.use_tls(),
+                    bc.pipelined_registration_timeout(),
                 )
                 .await?,
             )
@@ -436,12 +495,15 @@ pub async fn execute_physical_plan<U: 'static + AsExecutionPlan>(
                 execute_query_push(
                     scheduler_url,
                     query,
-                    max_message_size,
+                    bc.grpc_client_max_message_size(),
                     grpc_config,
                     metrics,
                     job_id_handle,
                     partition,
-                    session_config,
+                    session_config.ballista_grpc_interceptor(),
+                    session_config.ballista_override_create_grpc_client_endpoint(),
+                    bc.use_tls(),
+                    bc.pipelined_registration_timeout(),
                 )
                 .await?,
             )
@@ -451,20 +513,329 @@ pub async fn execute_physical_plan<U: 'static + AsExecutionPlan>(
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
 }
 
-/// Logs a warning if the scheduler's advertised version (from the `server`
-/// response header, e.g. `ballista/1.2.3`) doesn't match this client's.
-fn check_scheduler_version<T>(response: &tonic::Response<T>) {
-    let expected = format!("ballista/{}", crate::BALLISTA_VERSION);
-    if let Some(server) = response
-        .metadata()
-        .get("server")
-        .and_then(|v| v.to_str().ok())
-        && server != expected
+type SchedulerClient =
+    SchedulerGrpcClient<InterceptedService<Channel, BallistaGrpcMetadataInterceptor>>;
+
+/// Wraps a job submission with this client's version, which schedulers
+/// require from 55.0.0 on. See [`crate::version`].
+fn job_submission_request(
+    query: ExecuteQueryParams,
+) -> tonic::Request<ExecuteQueryParams> {
+    let mut request = tonic::Request::new(query);
+    version::insert_version_header(request.metadata_mut());
+    request
+}
+
+/// Checks the version the scheduler reported in its response to a job
+/// submission. A different major version is an error, and a different minor
+/// or patch version only logs a warning.
+fn check_scheduler_version(client_version: &str, metadata: &MetadataMap) -> Result<()> {
+    let scheduler_version = version::version_from_metadata(metadata);
+    version::check_compatibility(Some(client_version), scheduler_version)
+        .map_err(DataFusionError::Execution)?;
+    if let Some(scheduler_version) = scheduler_version
+        && scheduler_version != client_version
     {
         warn!(
-            "Scheduler version mismatch: scheduler reports '{server}', client is '{expected}'"
+            "Scheduler version {scheduler_version} differs from client version {client_version}"
         );
     }
+    Ok(())
+}
+
+/// Cancels a job whose results the client won't read. A failure is only
+/// logged, since the caller is already returning an error.
+async fn cancel_job(scheduler: &mut SchedulerClient, job_id: &str) {
+    if let Err(e) = scheduler
+        .cancel_job(CancelJobParams {
+            job_id: job_id.to_owned(),
+        })
+        .await
+    {
+        warn!("Failed to cancel job {job_id}: {e}");
+    }
+}
+
+/// How the client reaches the final stage of a pipelined job.
+#[derive(Clone)]
+struct PipelinedFetch {
+    max_message_size: usize,
+    scheduler_url: String,
+    flight_proxy: Option<FlightProxy>,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    use_tls: bool,
+    io_retries_times: u8,
+    io_retry_wait_time_ms: u64,
+    registration_timeout: Duration,
+}
+
+/// Streams a pipelined job's results: every output partition of its final
+/// stage at once, while the job runs. The final stage cannot finish until it
+/// has been read, so the partitions must be read concurrently rather than
+/// one after another.
+///
+/// One connection is opened per executor (or per proxy) and every partition
+/// it serves is multiplexed over it. If `failure` reports that the job
+/// failed, the stream ends with that error. If the stream is dropped before
+/// it ends, the job is cancelled through `scheduler`.
+fn pipelined_results(
+    job_id: JobId,
+    locations: Vec<crate::serde::protobuf::PipelinedPartitionLocation>,
+    fetch: PipelinedFetch,
+    failure: Option<tokio::sync::oneshot::Receiver<String>>,
+    scheduler: Option<SchedulerClient>,
+) -> Result<BoxStream<'static, Result<RecordBatch>>> {
+    let locations = locations
+        .into_iter()
+        .map(|location| {
+            location.try_into().map_err(|e: BallistaError| {
+                DataFusionError::Internal(format!(
+                    "invalid pipelined output location for job {job_id}: {e}"
+                ))
+            })
+        })
+        .collect::<Result<Vec<PipelinedPartitionLocation>>>()?;
+
+    let mut by_endpoint: std::collections::BTreeMap<
+        (String, u16),
+        Vec<PipelinedPartitionLocation>,
+    > = Default::default();
+    for location in locations {
+        let executor_meta: ExecutorMetadata = location.executor_meta.clone().into();
+        let endpoint = get_client_host_port(
+            &executor_meta,
+            &fetch.scheduler_url,
+            &fetch.flight_proxy,
+        )?;
+        by_endpoint.entry(endpoint).or_default().push(location);
+    }
+
+    let per_endpoint = by_endpoint
+        .into_iter()
+        .map(move |((host, port), locations)| {
+            let fetch = fetch.clone();
+            futures::stream::once(async move {
+                let client = BallistaClient::try_new(
+                    &host,
+                    port,
+                    fetch.max_message_size,
+                    fetch.use_tls,
+                    fetch.customize_endpoint.clone(),
+                    fetch.io_retries_times,
+                    fetch.io_retry_wait_time_ms,
+                    0,
+                    0,
+                )
+                .await
+                .map_err(BallistaError::into_datafusion)?;
+                let partitions = locations.into_iter().map(move |location| {
+                    let mut client = client.clone();
+                    let timeout = fetch.registration_timeout;
+                    futures::stream::once(async move {
+                        client
+                            .fetch_pipelined_partition(&location, timeout)
+                            .await
+                            .map_err(BallistaError::into_datafusion)
+                    })
+                    .try_flatten()
+                    .boxed()
+                });
+                Ok::<_, DataFusionError>(futures::stream::select_all(partitions))
+            })
+            .try_flatten()
+            .boxed()
+        });
+    let data = futures::stream::select_all(per_endpoint).boxed();
+    Ok(Box::pin(PipelinedResults::new(
+        job_id, data, failure, scheduler,
+    )))
+}
+
+/// How long a pipelined result stream whose fetch failed waits for the job's
+/// own failure, which says better what went wrong.
+const JOB_FAILURE_GRACE: Duration = Duration::from_secs(5);
+
+/// A pipelined job's result stream, cut short with the job's error if the
+/// scheduler reports that it failed, and cancelling the job if it is dropped
+/// before reading every batch, whether early or after a failed fetch.
+struct PipelinedResults {
+    job_id: JobId,
+    /// The fetches of the job's final stage, dropped once the stream ends so
+    /// their connections close.
+    data: Option<BoxStream<'static, Result<RecordBatch>>>,
+    failure: Option<tokio::sync::oneshot::Receiver<String>>,
+    /// A fetch failed: its error, reported unless the job's own failure
+    /// arrives before the deadline.
+    fetch_error: Option<(DataFusionError, std::pin::Pin<Box<tokio::time::Sleep>>)>,
+    /// How long to wait for the job's failure after a fetch fails.
+    failure_grace: Duration,
+    /// Cancels the job when the stream is dropped, unless it is cleared
+    /// because the job has nothing left to cancel: every batch was read, or
+    /// the job failed.
+    scheduler: Option<SchedulerClient>,
+}
+
+impl PipelinedResults {
+    fn new(
+        job_id: JobId,
+        data: BoxStream<'static, Result<RecordBatch>>,
+        failure: Option<tokio::sync::oneshot::Receiver<String>>,
+        scheduler: Option<SchedulerClient>,
+    ) -> Self {
+        Self {
+            job_id,
+            data: Some(data),
+            failure,
+            fetch_error: None,
+            failure_grace: JOB_FAILURE_GRACE,
+            scheduler,
+        }
+    }
+}
+
+impl Stream for PipelinedResults {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use std::task::Poll;
+        loop {
+            if self.data.is_none() {
+                return Poll::Ready(None);
+            }
+            if let Some(failure) = self.failure.as_mut() {
+                match std::pin::Pin::new(failure).poll(cx) {
+                    Poll::Ready(Ok(reason)) => {
+                        self.data = None;
+                        self.scheduler = None;
+                        let msg = format!("Job {} failed: {reason}", self.job_id);
+                        error!("{msg}");
+                        return Poll::Ready(Some(Err(DataFusionError::Execution(msg))));
+                    }
+                    // The watcher stopped without seeing a failure.
+                    Poll::Ready(Err(_)) => self.failure = None,
+                    Poll::Pending => {}
+                }
+            }
+            let still_watching = self.failure.is_some();
+            if let Some((_, deadline)) = self.fetch_error.as_mut() {
+                if still_watching && deadline.as_mut().poll(cx).is_pending() {
+                    return Poll::Pending;
+                }
+                self.data = None;
+                let error = self.fetch_error.take().map(|(error, _)| error);
+                return Poll::Ready(error.map(Err));
+            }
+            let Some(data) = self.data.as_mut() else {
+                return Poll::Ready(None);
+            };
+            match data.poll_next_unpin(cx) {
+                // A fetch usually fails because the job did, and the scheduler
+                // cleaned up the producer it read from. The job's error says
+                // why, so give it a moment to arrive.
+                Poll::Ready(Some(Err(error))) if still_watching => {
+                    let deadline = Box::pin(tokio::time::sleep(self.failure_grace));
+                    self.fetch_error = Some((error, deadline));
+                }
+                Poll::Ready(Some(Err(error))) => {
+                    self.data = None;
+                    return Poll::Ready(Some(Err(error)));
+                }
+                Poll::Ready(None) => {
+                    self.data = None;
+                    self.scheduler = None;
+                    return Poll::Ready(None);
+                }
+                other => return other,
+            }
+        }
+    }
+}
+
+impl Drop for PipelinedResults {
+    /// A client that stops reading early, or whose fetch failed, gets no
+    /// more of the job, and its producers would otherwise run on until they
+    /// notice. Cancel it, which frees its vcores at once.
+    fn drop(&mut self) {
+        if let Some(mut scheduler) = self.scheduler.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            let job_id = self.job_id.clone();
+            runtime.spawn(async move {
+                info!(
+                    "Result stream of pipelined job {job_id} dropped before its end; cancelling it"
+                );
+                cancel_job(&mut scheduler, job_id.as_str()).await;
+            });
+        }
+    }
+}
+
+/// How often a pipelined job's status is polled for a failure while its
+/// results stream. Slower than the blocking client's polling: the stream's
+/// end already says the job succeeded, and a failed fetch waits
+/// [`JOB_FAILURE_GRACE`] for the job's error.
+const PIPELINED_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Runs `watch` in the background and sends the job failure it returns, if
+/// any, to the returned receiver. Stops early once the receiver is dropped.
+fn report_job_failure(
+    watch: impl Future<Output = Option<String>> + Send + 'static,
+) -> tokio::sync::oneshot::Receiver<String> {
+    let (mut tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        tokio::select! {
+            failure = watch => {
+                if let Some(reason) = failure {
+                    let _ = tx.send(reason);
+                }
+            }
+            _ = tx.closed() => {}
+        }
+    });
+    rx
+}
+
+/// Follows the rest of a pushed status stream, reporting the error if the job
+/// fails. Stops quietly when it succeeds or the stream ends.
+fn watch_pushed_status(
+    mut statuses: tonic::Streaming<GetJobStatusResult>,
+) -> tokio::sync::oneshot::Receiver<String> {
+    report_job_failure(async move {
+        while let Some(Ok(item)) = statuses.next().await {
+            match item.status.and_then(|status| status.status) {
+                Some(job_status::Status::Failed(failed)) => return Some(failed.error),
+                Some(job_status::Status::Successful(_)) => return None,
+                _ => {}
+            }
+        }
+        None
+    })
+}
+
+/// Polls a job's status until it finishes, reporting the error if it fails.
+fn watch_pulled_status(
+    mut scheduler: SchedulerClient,
+    job_id: JobId,
+) -> tokio::sync::oneshot::Receiver<String> {
+    report_job_failure(async move {
+        loop {
+            let status = scheduler
+                .get_job_status(GetJobStatusParams {
+                    job_id: job_id.clone().into(),
+                })
+                .await;
+            match status.map(|r| r.into_inner().status.and_then(|s| s.status)) {
+                Ok(Some(job_status::Status::Failed(failed))) => {
+                    return Some(failed.error);
+                }
+                Ok(Some(job_status::Status::Successful(_))) | Err(_) => return None,
+                Ok(_) => tokio::time::sleep(PIPELINED_STATUS_POLL_INTERVAL).await,
+            }
+        }
+    })
 }
 
 /// Client will periodically invoke scheduler to check
@@ -480,12 +851,11 @@ async fn execute_query_pull(
     metrics: Arc<ExecutionPlanMetricsSet>,
     job_id_handle: Arc<Mutex<Option<JobId>>>,
     partition: usize,
-    session_config: SessionConfig,
-) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
-    let grpc_interceptor = session_config.ballista_grpc_interceptor();
-    let customize_endpoint =
-        session_config.ballista_override_create_grpc_client_endpoint();
-    let use_tls = session_config.ballista_use_tls();
+    grpc_interceptor: Arc<BallistaGrpcMetadataInterceptor>,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    use_tls: bool,
+    registration_timeout: Duration,
+) -> Result<BoxStream<'static, Result<RecordBatch>>> {
     let io_retries_times = grpc_config.io_retries_times;
     let io_retry_wait_time_ms = grpc_config.io_retry_wait_time_ms;
 
@@ -517,20 +887,30 @@ async fn execute_query_pull(
     .max_decoding_message_size(max_message_size);
 
     let query_response = scheduler
-        .execute_query(query)
+        .execute_query(job_submission_request(query))
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-    check_scheduler_version(&query_response);
+    let version_check =
+        check_scheduler_version(crate::BALLISTA_VERSION, query_response.metadata());
     let query_result = query_response.into_inner();
 
     let query_result = match query_result.result.unwrap() {
         execute_query_result::Result::Success(success_result) => success_result,
         execute_query_result::Result::Failure(failure_result) => {
+            // A version mismatch is the likelier cause, so report it first.
+            version_check?;
             return Err(DataFusionError::Execution(format!(
                 "Fail to execute query due to {failure_result:?}"
             )));
         }
     };
+
+    if let Err(e) = version_check {
+        // A scheduler older than 55.0.0 doesn't check versions, so it has
+        // already queued the job.
+        cancel_job(&mut scheduler, &query_result.job_id).await;
+        return Err(e);
+    }
 
     assert_eq!(
         session_id, query_result.session_id,
@@ -555,6 +935,7 @@ async fn execute_query_pull(
         let status = status.and_then(|s| s.status);
         let wait_future = tokio::time::sleep(Duration::from_millis(50));
         let has_status_change = prev_status != status;
+        let running = matches!(status, Some(job_status::Status::Running(_)));
         match status {
             None => {
                 if has_status_change {
@@ -569,6 +950,43 @@ async fn execute_query_pull(
                 }
                 wait_future.await;
                 prev_status = status;
+            }
+            Some(
+                job_status::Status::Running(RunningJob {
+                    pipelined_output_locations,
+                    ..
+                })
+                | job_status::Status::Successful(SuccessfulJob {
+                    pipelined_output_locations,
+                    ..
+                }),
+            ) if !pipelined_output_locations.is_empty() => {
+                // A job that finished before this client saw it running still
+                // serves its results from its final stage until it is cleaned
+                // up, and has nothing left to watch or cancel.
+                info!(
+                    "Pipelined job {job_id} is {}; streaming its results",
+                    if running { "running" } else { "finished" }
+                );
+                let failure = running
+                    .then(|| watch_pulled_status(scheduler.clone(), job_id.clone()));
+                let scheduler = running.then(|| scheduler.clone());
+                break pipelined_results(
+                    job_id,
+                    pipelined_output_locations,
+                    PipelinedFetch {
+                        max_message_size,
+                        scheduler_url,
+                        flight_proxy,
+                        customize_endpoint,
+                        use_tls,
+                        io_retries_times,
+                        io_retry_wait_time_ms,
+                        registration_timeout,
+                    },
+                    failure,
+                    scheduler,
+                );
             }
             Some(job_status::Status::Running(_)) => {
                 if has_status_change {
@@ -636,7 +1054,7 @@ async fn execute_query_pull(
                     futures::stream::once(f).try_flatten()
                 });
 
-                break Ok(futures::stream::iter(streams).flatten());
+                break Ok(futures::stream::iter(streams).flatten().boxed());
             }
         };
     }
@@ -653,12 +1071,11 @@ async fn execute_query_push(
     metrics: Arc<ExecutionPlanMetricsSet>,
     job_id_handle: Arc<Mutex<Option<JobId>>>,
     partition: usize,
-    session_config: SessionConfig,
-) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
-    let grpc_interceptor = session_config.ballista_grpc_interceptor();
-    let customize_endpoint =
-        session_config.ballista_override_create_grpc_client_endpoint();
-    let use_tls = session_config.ballista_use_tls();
+    grpc_interceptor: Arc<BallistaGrpcMetadataInterceptor>,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    use_tls: bool,
+    registration_timeout: Duration,
+) -> Result<BoxStream<'static, Result<RecordBatch>>> {
     let io_retries_times = grpc_config.io_retries_times;
     let io_retry_wait_time_ms = grpc_config.io_retry_wait_time_ms;
 
@@ -690,11 +1107,29 @@ async fn execute_query_push(
     .max_decoding_message_size(max_message_size);
 
     let query_push_response = scheduler
-        .execute_query_push(query)
+        .execute_query_push(job_submission_request(query))
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-    check_scheduler_version(&query_push_response);
+    let version_check =
+        check_scheduler_version(crate::BALLISTA_VERSION, query_push_response.metadata());
     let mut query_status_stream = query_push_response.into_inner();
+
+    if let Err(e) = version_check {
+        // A scheduler older than 55.0.0 doesn't check versions, so it has
+        // already queued the job. The job id only arrives with the first
+        // status update, which can take until planning finishes, so cancel
+        // the job in the background rather than hold up the error.
+        tokio::spawn(async move {
+            if let Some(Ok(GetJobStatusResult {
+                status: Some(status),
+                ..
+            })) = query_status_stream.next().await
+            {
+                cancel_job(&mut scheduler, &status.job_id).await;
+            }
+        });
+        return Err(e);
+    }
 
     let mut prev_status: Option<job_status::Status> = None;
 
@@ -724,6 +1159,7 @@ async fn execute_query_push(
         }
         let status = status.and_then(|s| s.status);
         let has_status_change = prev_status != status;
+        let running = matches!(status, Some(job_status::Status::Running(_)));
         match status {
             None => {
                 if has_status_change {
@@ -736,6 +1172,42 @@ async fn execute_query_push(
                     info!("Job {job_id} is queued...");
                 }
                 prev_status = status;
+            }
+            Some(
+                job_status::Status::Running(RunningJob {
+                    pipelined_output_locations,
+                    ..
+                })
+                | job_status::Status::Successful(SuccessfulJob {
+                    pipelined_output_locations,
+                    ..
+                }),
+            ) if !pipelined_output_locations.is_empty() => {
+                // A job that finished before this client saw it running still
+                // serves its results from its final stage until it is cleaned
+                // up, and has nothing left to watch or cancel.
+                info!(
+                    "Pipelined job {job_id} is {}; streaming its results",
+                    if running { "running" } else { "finished" }
+                );
+                let failure = running.then(|| watch_pushed_status(query_status_stream));
+                let scheduler = running.then(|| scheduler.clone());
+                break pipelined_results(
+                    job_id,
+                    pipelined_output_locations,
+                    PipelinedFetch {
+                        max_message_size,
+                        scheduler_url,
+                        flight_proxy,
+                        customize_endpoint,
+                        use_tls,
+                        io_retries_times,
+                        io_retry_wait_time_ms,
+                        registration_timeout,
+                    },
+                    failure,
+                    scheduler,
+                );
             }
             Some(job_status::Status::Running(_)) => {
                 if has_status_change {
@@ -802,7 +1274,7 @@ async fn execute_query_push(
                     futures::stream::once(f).try_flatten()
                 });
 
-                break Ok(futures::stream::iter(streams).flatten());
+                break Ok(futures::stream::iter(streams).flatten().boxed());
             }
         };
     }
@@ -907,20 +1379,466 @@ async fn fetch_partition(
 
 #[cfg(test)]
 mod test {
-    use crate::JobId;
     use crate::config::BallistaConfig;
     use crate::execution_plans::distributed_query::{
-        DistributedQueryExec, get_client_host_port,
+        DistributedQueryExec, PipelinedResults, check_scheduler_version,
+        execute_query_pull, execute_query_push, get_client_host_port,
+        job_submission_request,
     };
-    use crate::serde::protobuf::ExecutorMetadata;
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
+    use crate::serde::protobuf::scheduler_grpc_server::{
+        SchedulerGrpc, SchedulerGrpcServer,
+    };
+    use crate::serde::protobuf::{
+        CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
+        CreateUpdateSessionParams, CreateUpdateSessionResult, ExecuteQueryParams,
+        ExecuteQueryResult, ExecuteQuerySuccessResult, ExecutorMetadata,
+        ExecutorStoppedParams, ExecutorStoppedResult, GetJobMetricsParams,
+        GetJobMetricsResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
+        HeartBeatResult, JobStatus, PollWorkParams, PollWorkResult,
+        RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
+        RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
+        execute_query_result,
+    };
+    use crate::utils::GrpcClientConfig;
+    use crate::{BALLISTA_VERSION, JobId};
     use datafusion::logical_expr::LogicalPlan;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::displayable;
+    use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
     use datafusion::prelude::SessionConfig;
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use futures::stream::BoxStream;
+    use futures::{Stream, StreamExt, TryStreamExt};
+    use parking_lot::Mutex;
+    use std::pin::Pin;
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::metadata::MetadataMap;
+    use tonic::{Request, Response, Status};
+
+    #[test]
+    fn job_submission_request_carries_client_version() {
+        let request = job_submission_request(ExecuteQueryParams::default());
+
+        assert_eq!(
+            request
+                .metadata()
+                .get("ballista-version")
+                .and_then(|v| v.to_str().ok()),
+            Some(BALLISTA_VERSION)
+        );
+    }
+
+    #[test]
+    fn scheduler_version_is_read_from_response_header() {
+        let mut metadata = MetadataMap::new();
+        metadata.insert("ballista-version", "55.3.0".parse().unwrap());
+
+        assert!(check_scheduler_version("55.0.0", &metadata).is_ok());
+        assert!(check_scheduler_version("56.0.0", &metadata).is_err());
+    }
+
+    #[test]
+    fn scheduler_without_version_header_is_incompatible() {
+        // Schedulers older than 55.0.0 don't report their version.
+        assert!(check_scheduler_version("55.0.0", &MetadataMap::new()).is_err());
+    }
+
+    /// A scheduler that accepts every job without checking the client's
+    /// version, reports version 1.0.0, and records the jobs it is asked to
+    /// cancel.
+    #[derive(Clone, Default)]
+    struct IncompatibleScheduler {
+        cancelled: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl IncompatibleScheduler {
+        /// Serves the scheduler on a local port and returns its URL.
+        async fn start(&self) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(
+                tonic::transport::Server::builder()
+                    .add_service(SchedulerGrpcServer::new(self.clone()))
+                    .serve_with_incoming(TcpListenerStream::new(listener)),
+            );
+            url
+        }
+
+        fn cancelled(&self) -> Vec<String> {
+            self.cancelled.lock().clone()
+        }
+    }
+
+    fn reporting_version_1<T>(message: T) -> Response<T> {
+        let mut response = Response::new(message);
+        response
+            .metadata_mut()
+            .insert("ballista-version", "1.0.0".parse().unwrap());
+        response
+    }
+
+    type GrpcResult<T> = std::result::Result<Response<T>, Status>;
+
+    fn not_called<T>() -> GrpcResult<T> {
+        Err(Status::unimplemented("not called before the version check"))
+    }
+
+    #[tonic::async_trait]
+    impl SchedulerGrpc for IncompatibleScheduler {
+        type ExecuteQueryPushStream = Pin<
+            Box<
+                dyn Stream<Item = std::result::Result<GetJobStatusResult, Status>> + Send,
+            >,
+        >;
+
+        async fn execute_query(
+            &self,
+            request: Request<ExecuteQueryParams>,
+        ) -> GrpcResult<ExecuteQueryResult> {
+            let session_id = request.into_inner().session_id;
+            Ok(reporting_version_1(ExecuteQueryResult {
+                operation_id: String::new(),
+                result: Some(execute_query_result::Result::Success(
+                    ExecuteQuerySuccessResult {
+                        job_id: "pull-job".to_owned(),
+                        session_id,
+                    },
+                )),
+            }))
+        }
+
+        async fn execute_query_push(
+            &self,
+            _request: Request<ExecuteQueryParams>,
+        ) -> GrpcResult<Self::ExecuteQueryPushStream> {
+            let first_status = GetJobStatusResult {
+                status: Some(JobStatus {
+                    job_id: "push-job".to_owned(),
+                    ..Default::default()
+                }),
+                flight_proxy: None,
+            };
+            Ok(reporting_version_1(Box::pin(futures::stream::iter([Ok(
+                first_status,
+            )]))))
+        }
+
+        async fn cancel_job(
+            &self,
+            request: Request<CancelJobParams>,
+        ) -> GrpcResult<CancelJobResult> {
+            self.cancelled.lock().push(request.into_inner().job_id);
+            Ok(Response::new(CancelJobResult { cancelled: true }))
+        }
+
+        async fn poll_work(
+            &self,
+            _: Request<PollWorkParams>,
+        ) -> GrpcResult<PollWorkResult> {
+            not_called()
+        }
+
+        async fn register_executor(
+            &self,
+            _: Request<RegisterExecutorParams>,
+        ) -> GrpcResult<RegisterExecutorResult> {
+            not_called()
+        }
+
+        async fn heart_beat_from_executor(
+            &self,
+            _: Request<HeartBeatParams>,
+        ) -> GrpcResult<HeartBeatResult> {
+            not_called()
+        }
+
+        async fn update_task_status(
+            &self,
+            _: Request<UpdateTaskStatusParams>,
+        ) -> GrpcResult<UpdateTaskStatusResult> {
+            not_called()
+        }
+
+        async fn create_update_session(
+            &self,
+            _: Request<CreateUpdateSessionParams>,
+        ) -> GrpcResult<CreateUpdateSessionResult> {
+            not_called()
+        }
+
+        async fn remove_session(
+            &self,
+            _: Request<RemoveSessionParams>,
+        ) -> GrpcResult<RemoveSessionResult> {
+            not_called()
+        }
+
+        async fn get_job_status(
+            &self,
+            _: Request<GetJobStatusParams>,
+        ) -> GrpcResult<GetJobStatusResult> {
+            not_called()
+        }
+
+        async fn get_job_metrics(
+            &self,
+            _: Request<GetJobMetricsParams>,
+        ) -> GrpcResult<GetJobMetricsResult> {
+            not_called()
+        }
+
+        async fn executor_stopped(
+            &self,
+            _: Request<ExecutorStoppedParams>,
+        ) -> GrpcResult<ExecutorStoppedResult> {
+            not_called()
+        }
+
+        async fn clean_job_data(
+            &self,
+            _: Request<CleanJobDataParams>,
+        ) -> GrpcResult<CleanJobDataResult> {
+            not_called()
+        }
+    }
+
+    fn job_submission() -> ExecuteQueryParams {
+        ExecuteQueryParams {
+            session_id: "session".to_owned(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn pull_cancels_job_accepted_by_incompatible_scheduler() {
+        let scheduler = IncompatibleScheduler::default();
+        let url = scheduler.start().await;
+        let config = BallistaConfig::default();
+
+        let result = execute_query_pull(
+            url,
+            "session".to_owned(),
+            job_submission(),
+            config.grpc_client_max_message_size(),
+            GrpcClientConfig::from(&config),
+            Arc::new(ExecutionPlanMetricsSet::new()),
+            Arc::new(Mutex::new(None)),
+            0,
+            Default::default(),
+            None,
+            false,
+            config.pipelined_registration_timeout(),
+        )
+        .await;
+
+        let Err(err) = result else {
+            panic!("an incompatible scheduler should be an error");
+        };
+        assert!(err.to_string().contains("scheduler 1.0.0"), "{err}");
+        assert_eq!(scheduler.cancelled(), ["pull-job"]);
+    }
+
+    #[tokio::test]
+    async fn push_cancels_job_accepted_by_incompatible_scheduler() {
+        let scheduler = IncompatibleScheduler::default();
+        let url = scheduler.start().await;
+        let config = BallistaConfig::default();
+
+        let result = execute_query_push(
+            url,
+            job_submission(),
+            config.grpc_client_max_message_size(),
+            GrpcClientConfig::from(&config),
+            Arc::new(ExecutionPlanMetricsSet::new()),
+            Arc::new(Mutex::new(None)),
+            0,
+            Default::default(),
+            None,
+            false,
+            config.pipelined_registration_timeout(),
+        )
+        .await;
+
+        let Err(err) = result else {
+            panic!("an incompatible scheduler should be an error");
+        };
+        assert!(err.to_string().contains("scheduler 1.0.0"), "{err}");
+
+        // The job is cancelled in the background once its id arrives.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while scheduler.cancelled().is_empty() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(scheduler.cancelled(), ["push-job"]);
+    }
+
+    fn one_row_batch() -> datafusion::arrow::record_batch::RecordBatch {
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        datafusion::arrow::record_batch::RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap()
+    }
+
+    /// A fetch that fails with `message`, then never yields again.
+    fn failing_fetch(
+        message: &str,
+    ) -> BoxStream<
+        'static,
+        datafusion::error::Result<datafusion::arrow::record_batch::RecordBatch>,
+    > {
+        futures::stream::iter(vec![Err(datafusion::error::DataFusionError::Execution(
+            message.to_owned(),
+        ))])
+        .chain(futures::stream::pending())
+        .boxed()
+    }
+
+    #[tokio::test]
+    async fn pipelined_results_end_with_the_job_failure() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Results that never arrive, as when the final stage's producer died.
+        let mut results = PipelinedResults::new(
+            "job".into(),
+            futures::stream::pending::<datafusion::error::Result<_>>().boxed(),
+            Some(rx),
+            None,
+        );
+        tx.send("task 0 of stage 1 failed".to_owned()).unwrap();
+        let err = results.next().await.unwrap().unwrap_err();
+        assert!(err.to_string().contains("Job job failed: task 0"), "{err}");
+        assert!(results.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn pipelined_results_pass_data_through_when_the_job_succeeds() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        // The watcher saw the job succeed and stopped without a failure.
+        drop(tx);
+        let batches = PipelinedResults::new(
+            "job".into(),
+            futures::stream::iter(vec![Ok(one_row_batch()), Ok(one_row_batch())]).boxed(),
+            Some(rx),
+            None,
+        )
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+        assert_eq!(batches.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn pipelined_results_prefer_the_job_failure_to_a_fetch_error() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        // The job failed and its producers were cleaned up, so the fetch
+        // fails first, with an error that does not say why.
+        let mut results = PipelinedResults::new(
+            "job".into(),
+            failing_fetch("job job has finished on this executor"),
+            Some(rx),
+            None,
+        );
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            tx.send("task 0 of stage 1 failed: divide by zero".to_owned())
+        });
+        let err = results.next().await.unwrap().unwrap_err();
+        assert!(err.to_string().contains("divide by zero"), "{err}");
+        assert!(results.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn pipelined_results_report_a_fetch_error_the_job_does_not_explain() {
+        // The watcher saw the job end without failing.
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        drop(tx);
+        let mut results = PipelinedResults::new(
+            "job".into(),
+            failing_fetch("connection reset"),
+            Some(rx),
+            None,
+        );
+        let err = results.next().await.unwrap().unwrap_err();
+        assert!(err.to_string().contains("connection reset"), "{err}");
+
+        // The watcher has not heard anything within the grace period.
+        let (_tx, rx) = tokio::sync::oneshot::channel::<String>();
+        let mut results = PipelinedResults::new(
+            "job".into(),
+            failing_fetch("connection reset"),
+            Some(rx),
+            None,
+        );
+        results.failure_grace = Duration::from_millis(20);
+        let err = results.next().await.unwrap().unwrap_err();
+        assert!(err.to_string().contains("connection reset"), "{err}");
+        assert!(results.next().await.is_none());
+    }
+
+    async fn scheduler_client(url: String) -> super::SchedulerClient {
+        let channel = tonic::transport::Endpoint::from_shared(url)
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        crate::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient::with_interceptor(
+            channel,
+            crate::extension::BallistaGrpcMetadataInterceptor::default(),
+        )
+    }
+
+    /// A client that stops reading, or whose fetch failed, gets no more of the
+    /// job, so dropping its result stream before the end cancels the job;
+    /// reading it to the end does not.
+    #[tokio::test]
+    async fn dropping_pipelined_results_early_cancels_the_job() {
+        let scheduler = IncompatibleScheduler::default();
+        let url = scheduler.start().await;
+
+        let finished = PipelinedResults::new(
+            "finished".into(),
+            futures::stream::iter(vec![Ok(one_row_batch())]).boxed(),
+            None,
+            Some(scheduler_client(url.clone()).await),
+        );
+        assert_eq!(finished.try_collect::<Vec<_>>().await.unwrap().len(), 1);
+
+        let mut abandoned = PipelinedResults::new(
+            "abandoned".into(),
+            futures::stream::iter(vec![Ok(one_row_batch())])
+                .chain(futures::stream::pending())
+                .boxed(),
+            None,
+            Some(scheduler_client(url.clone()).await),
+        );
+        abandoned.next().await.unwrap().unwrap();
+        drop(abandoned);
+
+        let mut fetch_failed = PipelinedResults::new(
+            "fetch-failed".into(),
+            failing_fetch("connection reset"),
+            None,
+            Some(scheduler_client(url).await),
+        );
+        fetch_failed.next().await.unwrap().unwrap_err();
+        assert!(fetch_failed.next().await.is_none());
+        drop(fetch_failed);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while scheduler.cancelled().len() < 2 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let mut cancelled = scheduler.cancelled();
+        cancelled.sort();
+        assert_eq!(cancelled, ["abandoned", "fetch-failed"]);
+    }
 
     #[test]
     fn test_client_host_port() {

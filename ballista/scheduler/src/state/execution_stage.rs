@@ -15,14 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::common::ColumnStatistics;
+use datafusion::common::stats::Precision;
+use datafusion::config::ConfigOptions;
+use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use datafusion::config::ConfigOptions;
-use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
 //use datafusion::physical_optimizer::join_selection::JoinSelection;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -31,10 +32,11 @@ use datafusion::physical_plan::{ExecutionPlan, Metric};
 use datafusion::prelude::SessionConfig;
 use log::{debug, warn};
 
+use crate::cache::is_external_stage_id;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
-    RangeShuffleWriterExec, ShuffleWriterExec, SortShuffleWriterExec, TaskRuntimeStats,
-    TaskWindowState,
+    RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
+    TaskRuntimeStats, TaskWindowState,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
@@ -267,6 +269,9 @@ pub struct SuccessfulStage {
     pub stage_metrics: Vec<MetricsSet>,
     /// [SessionConfig] used for this stage
     pub session_config: Arc<SessionConfig>,
+    /// Per-column stats, one entry per output-schema column. `null_count` is
+    /// `Exact` only when every successful task reported that column.
+    pub output_column_stats: Vec<ColumnStatistics>,
 }
 
 /// If a stage fails, it will be with an error message
@@ -665,6 +670,35 @@ impl RunningStage {
             warn!("The metrics for stage {} should not be none", self.stage_id);
             vec![]
         });
+        let num_columns = self.plan.schema().fields().len();
+        let mut output_column_stats = vec![
+            ColumnStatistics {
+                null_count: Precision::Exact(0),
+                ..ColumnStatistics::new_unknown()
+            };
+            num_columns
+        ];
+        for info in self.task_infos.iter() {
+            let task_status::Status::Successful(task_status) = &info.task_status else {
+                continue;
+            };
+            let mut reported = vec![false; num_columns];
+            for col_stats in &task_status.task_column_stats {
+                let column = col_stats.column as usize;
+                if let Some(slot) = output_column_stats.get_mut(column) {
+                    slot.null_count = slot
+                        .null_count
+                        .add(&Precision::Exact(col_stats.null_count as usize));
+                    reported[column] = true;
+                }
+            }
+            for (slot, reported) in output_column_stats.iter_mut().zip(reported) {
+                if !reported {
+                    slot.null_count = Precision::Absent;
+                }
+            }
+        }
+
         SuccessfulStage {
             stage_id: self.stage_id,
             stage_attempt_num: self.stage_attempt_num,
@@ -675,6 +709,7 @@ impl RunningStage {
             task_infos,
             stage_metrics,
             session_config: self.session_config.clone(),
+            output_column_stats,
         }
     }
 
@@ -1345,6 +1380,72 @@ fn stage_input_partitions(plan: &Arc<dyn ExecutionPlan>) -> usize {
     .max(1)
 }
 
+/// The inputs `plan` reads from outside its job, e.g. a cache read: a complete
+/// [`StageOutput`] per external [`ShuffleReaderExec`]. As stage inputs, rollback
+/// and re-resolution restore them like any other input.
+pub(crate) fn external_inputs(plan: &dyn ExecutionPlan) -> HashMap<usize, StageOutput> {
+    fn collect(plan: &dyn ExecutionPlan, inputs: &mut HashMap<usize, StageOutput>) {
+        if let Some(reader) = plan.downcast_ref::<ShuffleReaderExec>()
+            && is_external_stage_id(reader.stage_id)
+        {
+            let output = inputs.entry(reader.stage_id).or_default();
+            for (partition, locations) in reader.partition.iter().enumerate() {
+                output
+                    .partition_locations
+                    .entry(partition)
+                    .or_default()
+                    .extend(locations.iter().cloned());
+            }
+            output.complete = true;
+        }
+        for child in plan.children() {
+            collect(child.as_ref(), inputs);
+        }
+    }
+    let mut inputs = HashMap::new();
+    collect(plan, &mut inputs);
+    inputs
+}
+
+/// Whether `inputs` hold external (cache) data on `executor_id`.
+pub(crate) fn reads_external_data_on(
+    inputs: &HashMap<usize, StageOutput>,
+    executor_id: &str,
+) -> bool {
+    inputs.iter().any(|(id, output)| {
+        is_external_stage_id(*id)
+            && output
+                .partition_locations
+                .values()
+                .flatten()
+                .any(|location| location.executor_meta.id == executor_id)
+    })
+}
+
+/// Whether a failed fetch was for external (cache) data in `inputs`: one of
+/// their locations is on `executor_id` with the stage and partition the executor
+/// reported. The report has no job id, so when one of the job's own locations
+/// matches too, the failure counts as external.
+pub(crate) fn is_external_fetch_failure(
+    inputs: &HashMap<usize, StageOutput>,
+    executor_id: &str,
+    stage_id: usize,
+    partition_id: usize,
+) -> bool {
+    inputs.iter().any(|(id, output)| {
+        is_external_stage_id(*id)
+            && output
+                .partition_locations
+                .values()
+                .flatten()
+                .any(|location| {
+                    location.executor_meta.id == executor_id
+                        && location.partition_id.stage_id == stage_id
+                        && location.partition_id.partition_id == partition_id
+                })
+    })
+}
+
 /// This data structure collects the partition locations for an `ExecutionStage`.
 /// Each `ExecutionStage` will hold a `StageOutput`s for each of its child stages.
 /// When all tasks for the child stage are complete, it will mark the `StageOutput`
@@ -1416,7 +1517,8 @@ impl StageOutput {
 mod tests {
     use super::*;
     use ballista_core::serde::protobuf::{
-        OperatorMetric, SuccessfulTask, TaskStatus, operator_metric, task_status,
+        OperatorMetric, SuccessfulTask, TaskColumnStats, TaskStatus, operator_metric,
+        task_status,
     };
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::prelude::SessionConfig;
@@ -1449,6 +1551,7 @@ mod tests {
                 executor_id: "executor-1".to_string(),
                 partitions: vec![],
                 runtime_stats: vec![],
+                task_column_stats: vec![],
                 window_state: vec![],
             })),
             metrics: vec![],
@@ -1507,6 +1610,105 @@ mod tests {
             global_input_partition_ids: partitions,
             vcores_consumed,
         });
+    }
+
+    /// Build a running stage over a two-column schema plus a successful task
+    /// reporting the given per-column null counts.
+    fn stage_with_col_stats(tasks: Vec<Vec<TaskColumnStats>>) -> RunningStage {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, true),
+            Field::new("b", DataType::UInt32, true),
+        ]));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
+        let mut stage = RunningStage::new(
+            1,
+            0,
+            plan,
+            tasks.len(),
+            vec![],
+            HashMap::new(),
+            Arc::new(SessionConfig::default()),
+        );
+        for (task_id, task_column_stats) in tasks.into_iter().enumerate() {
+            stage.task_infos.push(TaskInfo {
+                task_id,
+                scheduled_time: 50,
+                launch_time: 100,
+                start_exec_time: 200,
+                end_exec_time: 300,
+                finish_time: 300,
+                task_status: task_status::Status::Successful(SuccessfulTask {
+                    executor_id: "executor-1".to_string(),
+                    partitions: vec![],
+                    runtime_stats: vec![],
+                    task_column_stats,
+                    window_state: vec![],
+                }),
+                global_input_partition_ids: vec![task_id],
+                vcores_consumed: 1,
+            });
+        }
+        stage
+    }
+
+    fn col(column: u32, null_count: u64) -> TaskColumnStats {
+        TaskColumnStats {
+            column,
+            null_count,
+            sketches: vec![],
+        }
+    }
+
+    #[test]
+    fn test_to_successful_folds_column_null_counts_across_tasks() {
+        let stage = stage_with_col_stats(vec![
+            vec![col(0, 1), col(1, 2)],
+            vec![col(0, 3), col(1, 4)],
+        ]);
+        let successful = stage.to_successful();
+        assert_eq!(
+            successful.output_column_stats[0].null_count,
+            Precision::Exact(4)
+        );
+        assert_eq!(
+            successful.output_column_stats[1].null_count,
+            Precision::Exact(6)
+        );
+    }
+
+    #[test]
+    fn test_to_successful_marks_unreported_column_absent() {
+        // Second task reports only column 0 (e.g. an older executor); column 1
+        // must degrade to Absent rather than silently undercounting as Exact.
+        let stage =
+            stage_with_col_stats(vec![vec![col(0, 1), col(1, 2)], vec![col(0, 3)]]);
+        let successful = stage.to_successful();
+        assert_eq!(
+            successful.output_column_stats[0].null_count,
+            Precision::Exact(4)
+        );
+        assert_eq!(
+            successful.output_column_stats[1].null_count,
+            Precision::Absent
+        );
+    }
+
+    #[test]
+    fn test_to_successful_skips_column_past_schema_width() {
+        // Column index past the 2-wide output schema must be skipped by
+        // get_mut, not panic (the fold runs on the stage event loop).
+        let stage = stage_with_col_stats(vec![vec![col(0, 1), col(5, 9)]]);
+        let successful = stage.to_successful();
+        assert_eq!(successful.output_column_stats.len(), 2);
+        assert_eq!(
+            successful.output_column_stats[0].null_count,
+            Precision::Exact(1)
+        );
+        assert_eq!(
+            successful.output_column_stats[1].null_count,
+            Precision::Absent
+        );
     }
 
     /// Verify that a normal status update transitions the task to Successful.
@@ -1885,6 +2087,7 @@ mod tests {
                     executor_id: executor.to_string(),
                     partitions: vec![],
                     runtime_stats: vec![],
+                    task_column_stats: vec![],
                     window_state: vec![],
                 });
             stage.append_runtime_stats_reports(

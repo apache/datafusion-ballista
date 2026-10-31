@@ -25,45 +25,24 @@ The Ballista CLI allows SQL queries to be executed by an in-process DataFusion c
 Ballista context.
 
 ```ignore
-USAGE:
-    ballista-cli [OPTIONS]
+Command Line Client for Ballista distributed query engine.
 
-OPTIONS:
-    -c, --batch-size <BATCH_SIZE>
-            The batch size of each query, or use Ballista default
+Usage: ballista-cli [OPTIONS]
 
-        --color
-            Enables console syntax highlighting
-
-        --vcores <VCORES>
-            Virtual cores for the local Ballista executor. Default: all available physical cores.
-
-    -f, --file <FILE>...
-            Execute commands from file(s), then exit
-
-        --format <FORMAT>
-            [default: table] [possible values: csv, tsv, table, json, nd-json, automatic]
-
-    -h, --help
-            Print help information
-
-        --host <HOST>
-            Ballista scheduler host
-
-    -p, --data-path <DATA_PATH>
-            Path to your data, default to current directory
-
-        --port <PORT>
-            Ballista scheduler port
-
-    -q, --quiet
-            Reduce printing other than the results and work quietly
-
-    -r, --rc <RC>...
-            Run the provided files on startup instead of ~/.ballistarc
-
-    -V, --version
-            Print version information
+Options:
+  -p, --data-path <DATA_PATH>    Path to your data, default to current directory
+  -c, --batch-size <BATCH_SIZE>  The batch size of each query, or use Ballista default
+      --vcores <VCORES>          Virtual cores for the local Ballista executor. Default: all available physical cores.
+  -f, --file [<FILE>...]         Execute commands from file(s), then exit
+  -r, --rc [<RC>...]             Run the provided files on startup instead of ~/.ballistarc
+      --format <FORMAT>          [default: table] [possible values: csv, tsv, table, json, nd-json, automatic]
+      --host <HOST>              Ballista scheduler host
+      --port <PORT>              Ballista scheduler port
+  -q, --quiet                    Reduce printing other than the results and work quietly
+      --color                    Enables console syntax highlighting
+      --tui                      Enables terminal user interface
+  -h, --help                     Print help
+  -V, --version                  Print version
 ```
 
 ## Example
@@ -77,7 +56,7 @@ $ echo "1,2" > data.csv
 ```sql,ignore
 $ ballista-cli
 
-Ballista CLI v0.12.0
+Ballista CLI v54.0.0
 
 > CREATE EXTERNAL TABLE foo (a INT, b INT) STORED AS CSV LOCATION 'data.csv';
 0 rows in set. Query took 0.001 seconds.

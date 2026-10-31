@@ -22,20 +22,20 @@
 //! heartbeat communication, and status reporting.
 
 use ballista_core::BALLISTA_VERSION;
-use memory_stats::memory_stats;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use sysinfo::{MemoryRefreshKind, System};
 use tokio::sync::mpsc;
 
 use log::{debug, error, info, warn};
 use tonic::transport::Channel;
+use tonic::transport::server::TcpIncoming;
 use tonic::{Request, Response, Status};
 
 use ballista_core::error::BallistaError;
+use ballista_core::execution_plans::PipelinedShuffleWriterExec;
 use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
@@ -67,7 +67,7 @@ use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::executor_process::{ExecutorProcessConfig, remove_job_data};
 use crate::health::ExecutorHealth;
-use crate::metrics::ExecutorMetricCollectionPolicy;
+use crate::metrics::{ExecutorMemoryMetrics, ExecutorMetricCollectionPolicy};
 use crate::shutdown::ShutdownNotifier;
 use crate::{TaskCompletionExtras, TaskExecutionTimes, as_task_status};
 
@@ -107,6 +107,43 @@ struct CuratorTaskStatus {
 ///
 /// Returns a handle to the server task that can be awaited for completion.
 pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
+    scheduler: SchedulerGrpcClient<Channel>,
+    config: Arc<ExecutorProcessConfig>,
+    executor: Arc<Executor>,
+    codec: BallistaCodec<T, U>,
+    stop_send: mpsc::Sender<bool>,
+    shutdown_noti: &ShutdownNotifier,
+    health: ExecutorHealth,
+) -> Result<ServerHandle, BallistaError> {
+    // The listening socket is bound here rather than inside the spawned task,
+    // because registration with the scheduler makes the scheduler dial this
+    // port back to check connectivity. Binding lazily inside the server future
+    // let that callback lose the race and get ECONNREFUSED, which fails
+    // registration and takes the executor down with it.
+    let addr = format!("{}:{}", config.bind_host, executor.metadata.grpc_port);
+    let addr = addr.parse().unwrap();
+    let incoming = create_grpc_server_incoming(addr, &config.grpc_server_config)?;
+    info!("Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {addr:?}");
+    startup_with_incoming(
+        scheduler,
+        config,
+        executor,
+        codec,
+        stop_send,
+        shutdown_noti,
+        health,
+        incoming,
+    )
+    .await
+}
+
+/// Like [`startup`], but serves the executor gRPC service on `incoming`, a
+/// socket the caller has already bound to `executor.metadata.grpc_port`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn startup_with_incoming<
+    T: 'static + AsLogicalPlan,
+    U: 'static + AsExecutionPlan,
+>(
     mut scheduler: SchedulerGrpcClient<Channel>,
     config: Arc<ExecutorProcessConfig>,
     executor: Arc<Executor>,
@@ -114,6 +151,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     stop_send: mpsc::Sender<bool>,
     shutdown_noti: &ShutdownNotifier,
     health: ExecutorHealth,
+    incoming: TcpIncoming,
 ) -> Result<ServerHandle, BallistaError> {
     let channel_buf_size = executor.vcores * 50;
     let (tx_task, rx_task) = mpsc::channel::<CuratorTaskDefinition>(channel_buf_size);
@@ -136,23 +174,9 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         health,
     );
 
-    // 1. Start executor grpc service
-    //
-    // The listening socket is bound here rather than inside the spawned task,
-    // because step 2 registers with the scheduler and the scheduler dials this
-    // port back to check connectivity. Binding lazily inside the server future
-    // let that callback lose the race and get ECONNREFUSED, which fails
-    // registration and takes the executor down with it.
+    // 1. Start executor grpc service on the already-bound socket
     let server = {
-        let executor_meta = executor.metadata.clone();
-        let addr = format!("{}:{}", config.bind_host, executor_meta.grpc_port);
-        let addr = addr.parse().unwrap();
         let grpc_server_config = config.grpc_server_config.clone();
-
-        let incoming = create_grpc_server_incoming(addr, &grpc_server_config)?;
-        info!(
-            "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {addr:?}"
-        );
         let server = ExecutorGrpcServer::new(executor_server.clone())
             .max_encoding_message_size(config.grpc_max_encoding_message_size as usize)
             .max_decoding_message_size(config.grpc_max_decoding_message_size as usize);
@@ -335,20 +359,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     ///
     /// Returns `true` iff any scheduler acknowledged the heartbeat.
     async fn heartbeat(&self) -> bool {
-        let status = if TERMINATING.load(Ordering::Acquire) {
-            executor_status::Status::Terminating(String::default())
-        } else {
-            executor_status::Status::Active(String::default())
-        };
-
-        let heartbeat_params = HeartBeatParams {
-            executor_id: self.executor.metadata.id.clone(),
-            metrics: self.get_executor_metrics(),
-            status: Some(ExecutorStatus {
-                status: Some(status),
-            }),
-            metadata: Some(self.executor.metadata.clone()),
-        };
+        let heartbeat_params =
+            heartbeat_params(&self.executor, self.metric_collection_policy);
         let mut scheduler = self.scheduler_to_register.clone();
         match scheduler
             .heart_beat_from_executor(heartbeat_params.clone())
@@ -410,6 +422,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             task_id,
         };
 
+        let pipelined = plan.downcast_ref::<PipelinedShuffleWriterExec>().is_some();
         let exec = self.executor.execution_engine.create_query_stage_exec(
             job_id.clone(),
             stage_id,
@@ -420,11 +433,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             &task.session_config,
         );
 
-        let runtime = self.executor.produce_runtime_for_session(
-            &task.session_id,
-            &task.session_config,
-            task.vcores_consumed,
-        );
+        // A pipelined task's `vcores_consumed` is its job's reservation on
+        // this executor, which all the job's tasks here share.
+        let runtime = if pipelined {
+            self.executor.produce_runtime_for_pipelined_task(
+                job_id.as_str(),
+                &task.session_id,
+                &task.session_config,
+                task.vcores_consumed,
+            )
+        } else {
+            self.executor.produce_runtime_for_session(
+                &task.session_id,
+                &task.session_config,
+                task.vcores_consumed,
+            )
+        };
 
         match (exec, runtime) {
             (Ok(exec), Ok(runtime)) => {
@@ -465,6 +489,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .collect::<Result<Vec<_>, BallistaError>>()
                     .ok();
                 let runtime_stats = exec.collect_runtime_stats_reports();
+                let column_stats = exec.collect_column_stats();
                 // Collect only when the task otherwise succeeded: a failed task's
                 // partial state is meaningless, and its own error is the useful one.
                 // A collection failure fails the task — these are load-bearing for the
@@ -499,6 +524,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                         operator_metrics,
                         runtime_stats,
                         window_state,
+                        column_stats,
                     },
                 );
 
@@ -539,126 +565,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .await;
             }
         };
-    }
-
-    /// Getting executor's metrics
-    fn get_executor_metrics(&self) -> Vec<ExecutorMetric> {
-        match self.metric_collection_policy {
-            ExecutorMetricCollectionPolicy::SystemOnly => {
-                let mut executor_system = System::new_all();
-                executor_system
-                    .refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
-
-                let system_metrics = vec![
-                    ExecutorMetric {
-                        metric: Some(executor_metric::Metric::TotalMemory(
-                            executor_system.total_memory(),
-                        )),
-                    },
-                    ExecutorMetric {
-                        metric: Some(executor_metric::Metric::AvailableMemory(
-                            executor_system.available_memory(),
-                        )),
-                    },
-                    ExecutorMetric {
-                        metric: Some(executor_metric::Metric::UsedMemory(
-                            executor_system.used_memory(),
-                        )),
-                    },
-                ];
-                system_metrics
-            }
-            ExecutorMetricCollectionPolicy::ProcessOnly => {
-                if let Some(usage) = memory_stats() {
-                    let process_metrics = vec![
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::ProcPhysicalMemory(
-                                usage.physical_mem as u64,
-                            )),
-                        },
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::ProcVirtualMemory(
-                                usage.virtual_mem as u64,
-                            )),
-                        },
-                    ];
-                    process_metrics
-                } else {
-                    warn!("Could not get current process memory usage!");
-                    let process_metrics: Vec<ExecutorMetric> = vec![];
-                    process_metrics
-                }
-            }
-            ExecutorMetricCollectionPolicy::SystemAndProcess => {
-                if let Some(usage) = memory_stats() {
-                    let mut process_metrics = vec![
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::ProcPhysicalMemory(
-                                usage.physical_mem as u64,
-                            )),
-                        },
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::ProcVirtualMemory(
-                                usage.virtual_mem as u64,
-                            )),
-                        },
-                    ];
-                    let mut executor_system = System::new_all();
-                    executor_system.refresh_memory_specifics(
-                        MemoryRefreshKind::nothing().with_ram(),
-                    );
-
-                    let system_metrics = vec![
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::TotalMemory(
-                                executor_system.total_memory(),
-                            )),
-                        },
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::AvailableMemory(
-                                executor_system.available_memory(),
-                            )),
-                        },
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::UsedMemory(
-                                executor_system.used_memory(),
-                            )),
-                        },
-                    ];
-                    process_metrics.extend(system_metrics);
-
-                    process_metrics
-                } else {
-                    warn!(
-                        "Could not get current process memory usage! Defauling to system-wide metrics"
-                    );
-                    let mut executor_system = System::new_all();
-                    executor_system.refresh_memory_specifics(
-                        MemoryRefreshKind::nothing().with_ram(),
-                    );
-
-                    let system_metrics = vec![
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::TotalMemory(
-                                executor_system.total_memory(),
-                            )),
-                        },
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::AvailableMemory(
-                                executor_system.available_memory(),
-                            )),
-                        },
-                        ExecutorMetric {
-                            metric: Some(executor_metric::Metric::UsedMemory(
-                                executor_system.used_memory(),
-                            )),
-                        },
-                    ];
-                    system_metrics
-                }
-            }
-            ExecutorMetricCollectionPolicy::Off => vec![],
-        }
     }
 }
 
@@ -1016,6 +922,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         let params = request.into_inner();
         let job_id = params.job_id.into();
 
+        self.executor
+            .remove_pipelined_job_data(&job_id, &params.remove_stage_ids);
         remove_job_data(&self.executor.work_dir, &job_id, &params.remove_stage_ids)
             .await
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -1024,5 +932,148 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
     }
 }
 
+/// The heartbeat an executor sends to the scheduler, whether it schedules by
+/// push or by pull: its status and its metrics, as selected by the policy.
+pub(crate) fn heartbeat_params(
+    executor: &Executor,
+    policy: ExecutorMetricCollectionPolicy,
+) -> HeartBeatParams {
+    let status = if TERMINATING.load(Ordering::Acquire) {
+        executor_status::Status::Terminating(String::default())
+    } else {
+        executor_status::Status::Active(String::default())
+    };
+
+    HeartBeatParams {
+        executor_id: executor.metadata.id.clone(),
+        metrics: executor_metrics(policy, executor.memory_metrics()),
+        status: Some(ExecutorStatus {
+            status: Some(status),
+        }),
+        metadata: Some(executor.metadata.clone()),
+    }
+}
+
+/// The metrics an executor sends in a heartbeat: host or process memory, as
+/// selected by the policy, and the executor's memory metrics.
+fn executor_metrics(
+    policy: ExecutorMetricCollectionPolicy,
+    memory_metrics: Option<&ExecutorMemoryMetrics>,
+) -> Vec<ExecutorMetric> {
+    let mut metrics = policy.collect();
+    metrics.extend(heartbeat_memory_metrics(policy, memory_metrics));
+    metrics
+}
+
+/// The executor's memory metrics to send in a heartbeat. These are process
+/// metrics, so they're only sent when the policy collects process metrics and
+/// the executor was started with memory metrics.
+fn heartbeat_memory_metrics(
+    policy: ExecutorMetricCollectionPolicy,
+    metrics: Option<&ExecutorMemoryMetrics>,
+) -> Vec<ExecutorMetric> {
+    match (policy, metrics) {
+        (
+            ExecutorMetricCollectionPolicy::ProcessOnly
+            | ExecutorMetricCollectionPolicy::SystemAndProcess,
+            Some(metrics),
+        ) => executor_memory_metrics(metrics),
+        _ => vec![],
+    }
+}
+
+/// Converts a snapshot of executor-wide memory usage into heartbeat metrics.
+///
+/// Reports nothing until the executor has resolved its memory pool. The pool
+/// capacity is left out when the pool is unbounded, and allocated bytes when
+/// the process's allocator doesn't count them.
+fn executor_memory_metrics(metrics: &ExecutorMemoryMetrics) -> Vec<ExecutorMetric> {
+    let Some(usage) = metrics.snapshot() else {
+        return vec![];
+    };
+    let mut values = vec![executor_metric::Metric::MemoryPoolReserved(
+        usage.reserved as u64,
+    )];
+    if let Some(capacity) = usage.pool_size {
+        values.push(executor_metric::Metric::MemoryPoolSize(capacity));
+    }
+    if let Some(allocated) = metrics.allocated_bytes() {
+        values.push(executor_metric::Metric::AllocatedMemory(allocated as u64));
+    }
+    values
+        .into_iter()
+        .map(|metric| ExecutorMetric {
+            metric: Some(metric),
+        })
+        .collect()
+}
+
 #[cfg(test)]
-mod test {}
+mod test {
+    use super::*;
+    use datafusion::execution::memory_pool::{FairSpillPool, MemoryConsumer, MemoryPool};
+
+    fn values(metrics: Vec<ExecutorMetric>) -> Vec<executor_metric::Metric> {
+        metrics.into_iter().filter_map(|m| m.metric).collect()
+    }
+
+    #[test]
+    fn reports_nothing_before_the_pool_is_initialized() {
+        let metrics = ExecutorMemoryMetrics::default();
+        assert!(executor_memory_metrics(&metrics).is_empty());
+    }
+
+    #[test]
+    fn reports_reserved_pool_size_and_allocated_bytes() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(Some(4096));
+        metrics.set_allocated_bytes_source(|| 12_345);
+        let pool: Arc<dyn MemoryPool> = Arc::new(FairSpillPool::new(4096));
+        metrics.register(&pool);
+        let reservation = MemoryConsumer::new("r").register(&pool);
+        reservation.try_grow(1000).unwrap();
+
+        assert_eq!(
+            values(executor_memory_metrics(&metrics)),
+            vec![
+                executor_metric::Metric::MemoryPoolReserved(1000),
+                executor_metric::Metric::MemoryPoolSize(4096),
+                executor_metric::Metric::AllocatedMemory(12_345),
+            ]
+        );
+    }
+
+    #[test]
+    fn sends_memory_metrics_only_when_collecting_process_metrics() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(Some(4096));
+
+        for policy in [
+            ExecutorMetricCollectionPolicy::ProcessOnly,
+            ExecutorMetricCollectionPolicy::SystemAndProcess,
+        ] {
+            assert_eq!(heartbeat_memory_metrics(policy, Some(&metrics)).len(), 2);
+        }
+        for policy in [
+            ExecutorMetricCollectionPolicy::SystemOnly,
+            ExecutorMetricCollectionPolicy::Off,
+        ] {
+            assert!(heartbeat_memory_metrics(policy, Some(&metrics)).is_empty());
+        }
+        assert!(
+            heartbeat_memory_metrics(ExecutorMetricCollectionPolicy::ProcessOnly, None)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn omits_pool_size_when_unbounded_and_allocated_without_a_source() {
+        let metrics = ExecutorMemoryMetrics::default();
+        metrics.set_pool_size(None);
+
+        assert_eq!(
+            values(executor_memory_metrics(&metrics)),
+            vec![executor_metric::Metric::MemoryPoolReserved(0)]
+        );
+    }
+}

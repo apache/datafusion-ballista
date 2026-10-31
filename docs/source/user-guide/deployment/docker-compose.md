@@ -42,11 +42,27 @@ Creating network "ballista-benchmarks_default" with the default driver
 Creating ballista-benchmarks_ballista-scheduler_1 ... done
 Creating ballista-benchmarks_ballista-executor_1  ... done
 Attaching to ballista-benchmarks_ballista-scheduler_1, ballista-benchmarks_ballista-executor_1
-ballista-scheduler_1  | INFO ballista_scheduler: Ballista v52.0.0 Scheduler listening on 0.0.0.0:50050
-ballista-executor_1   | INFO ballista_executor: Ballista v52.0.0 Rust Executor listening on 0.0.0.0:50051
+ballista-scheduler_1  | INFO ballista_scheduler::scheduler_process: Ballista Scheduler v54.0.0 (DataFusion v55.1.0) listening on 0.0.0.0:50050
+ballista-executor_1   | INFO ballista_executor::executor_process: Built-in arrow flight server listening on: 0.0.0.0:50051 max_encoding_size: 16777216 max_decoding_size: 16777216
 ```
 
 The scheduler listens on port 50050 and this is the port that clients will need to connect to.
+
+## Stop the Cluster
+
+Stop the scheduler first, so that its active jobs can finish while the executors
+are still running:
+
+```bash
+docker-compose stop ballista-scheduler
+docker-compose down
+```
+
+`docker-compose down` alone stops the executors first, because they depend on
+the scheduler, so a job that is still running loses its executors before the
+scheduler can finish it. The scheduler waits for its active jobs for up to 25
+seconds by default (`--graceful-shutdown-timeout-seconds`), and
+`docker-compose.yml` gives it 30 seconds before Docker kills it.
 
 ## Connect from the Ballista CLI
 

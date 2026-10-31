@@ -44,21 +44,28 @@ use ballista_core::serde::scheduler::{
 use ballista_core::serde::{BallistaCodec, protobuf};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::DataFusionError;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::{TableProvider, TableType};
+use datafusion::execution::TaskContext;
 use datafusion::execution::context::{SessionConfig, SessionContext};
 use datafusion::functions_aggregate::{count::count, sum::sum};
 use datafusion::logical_expr::{Expr, LogicalPlan, SortExpr};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    SendableRecordBatchStream,
+};
 use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
-use crate::cluster::{BallistaCluster, JobStateEventStream};
+use crate::cluster::{BallistaCluster, CacheState, JobStateEventStream};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionStage, StaticExecutionGraph, TaskDescription,
 };
+use ballista_core::test_utils::tpch::tpch_schema;
 use ballista_core::utils::{default_config_producer, default_session_builder};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
@@ -100,6 +107,32 @@ impl TableProvider for ExplodingTableProvider {
     }
 }
 
+/// A table whose scan panics, for planning that fails by panicking rather than
+/// by returning an error.
+#[derive(Debug)]
+pub struct PanickingTableProvider;
+
+#[async_trait::async_trait]
+impl TableProvider for PanickingTableProvider {
+    fn schema(&self) -> SchemaRef {
+        Arc::new(Schema::empty())
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _ctx: &dyn Session,
+        _projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        panic!("PanickingTableProvider just panics!")
+    }
+}
+
 /// Utility for running some async check multiple times to verify a condition. It will run the check
 /// at the specified interval up to a maximum of the specified iterations.
 pub async fn await_condition<Fut: Future<Output = Result<bool>>, F: Fn() -> Fut>(
@@ -138,7 +171,7 @@ pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
     let config = SessionConfig::new().with_target_partitions(default_shuffle_partitions);
     let ctx = SessionContext::new_with_config(config);
     for &table in TPCH_TABLES {
-        let schema = get_tpch_schema(table);
+        let schema = tpch_schema(table);
         let options = CsvReadOptions::new()
             .schema(&schema)
             .delimiter(b'|')
@@ -148,102 +181,6 @@ pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
         ctx.register_csv(table, dir, options).await?;
     }
     Ok(ctx)
-}
-
-/// Returns the schema for a TPC-H table by name.
-pub fn get_tpch_schema(table: &str) -> Schema {
-    // note that the schema intentionally uses signed integers so that any generated Parquet
-    // files can also be used to benchmark tools that only support signed integers, such as
-    // Apache Spark
-
-    match table {
-        "part" => Schema::new(vec![
-            Field::new("p_partkey", DataType::Int64, false),
-            Field::new("p_name", DataType::Utf8, false),
-            Field::new("p_mfgr", DataType::Utf8, false),
-            Field::new("p_brand", DataType::Utf8, false),
-            Field::new("p_type", DataType::Utf8, false),
-            Field::new("p_size", DataType::Int32, false),
-            Field::new("p_container", DataType::Utf8, false),
-            Field::new("p_retailprice", DataType::Decimal128(15, 2), false),
-            Field::new("p_comment", DataType::Utf8, false),
-        ]),
-
-        "supplier" => Schema::new(vec![
-            Field::new("s_suppkey", DataType::Int64, false),
-            Field::new("s_name", DataType::Utf8, false),
-            Field::new("s_address", DataType::Utf8, false),
-            Field::new("s_nationkey", DataType::Int64, false),
-            Field::new("s_phone", DataType::Utf8, false),
-            Field::new("s_acctbal", DataType::Decimal128(15, 2), false),
-            Field::new("s_comment", DataType::Utf8, false),
-        ]),
-
-        "partsupp" => Schema::new(vec![
-            Field::new("ps_partkey", DataType::Int64, false),
-            Field::new("ps_suppkey", DataType::Int64, false),
-            Field::new("ps_availqty", DataType::Int32, false),
-            Field::new("ps_supplycost", DataType::Decimal128(15, 2), false),
-            Field::new("ps_comment", DataType::Utf8, false),
-        ]),
-
-        "customer" => Schema::new(vec![
-            Field::new("c_custkey", DataType::Int64, false),
-            Field::new("c_name", DataType::Utf8, false),
-            Field::new("c_address", DataType::Utf8, false),
-            Field::new("c_nationkey", DataType::Int64, false),
-            Field::new("c_phone", DataType::Utf8, false),
-            Field::new("c_acctbal", DataType::Decimal128(15, 2), false),
-            Field::new("c_mktsegment", DataType::Utf8, false),
-            Field::new("c_comment", DataType::Utf8, false),
-        ]),
-
-        "orders" => Schema::new(vec![
-            Field::new("o_orderkey", DataType::Int64, false),
-            Field::new("o_custkey", DataType::Int64, false),
-            Field::new("o_orderstatus", DataType::Utf8, false),
-            Field::new("o_totalprice", DataType::Decimal128(15, 2), false),
-            Field::new("o_orderdate", DataType::Date32, false),
-            Field::new("o_orderpriority", DataType::Utf8, false),
-            Field::new("o_clerk", DataType::Utf8, false),
-            Field::new("o_shippriority", DataType::Int32, false),
-            Field::new("o_comment", DataType::Utf8, false),
-        ]),
-
-        "lineitem" => Schema::new(vec![
-            Field::new("l_orderkey", DataType::Int64, false),
-            Field::new("l_partkey", DataType::Int64, false),
-            Field::new("l_suppkey", DataType::Int64, false),
-            Field::new("l_linenumber", DataType::Int32, false),
-            Field::new("l_quantity", DataType::Decimal128(15, 2), false),
-            Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),
-            Field::new("l_discount", DataType::Decimal128(15, 2), false),
-            Field::new("l_tax", DataType::Decimal128(15, 2), false),
-            Field::new("l_returnflag", DataType::Utf8, false),
-            Field::new("l_linestatus", DataType::Utf8, false),
-            Field::new("l_shipdate", DataType::Date32, false),
-            Field::new("l_commitdate", DataType::Date32, false),
-            Field::new("l_receiptdate", DataType::Date32, false),
-            Field::new("l_shipinstruct", DataType::Utf8, false),
-            Field::new("l_shipmode", DataType::Utf8, false),
-            Field::new("l_comment", DataType::Utf8, false),
-        ]),
-
-        "nation" => Schema::new(vec![
-            Field::new("n_nationkey", DataType::Int64, false),
-            Field::new("n_name", DataType::Utf8, false),
-            Field::new("n_regionkey", DataType::Int64, false),
-            Field::new("n_comment", DataType::Utf8, false),
-        ]),
-
-        "region" => Schema::new(vec![
-            Field::new("r_regionkey", DataType::Int64, false),
-            Field::new("r_name", DataType::Utf8, false),
-            Field::new("r_comment", DataType::Utf8, false),
-        ]),
-
-        _ => unimplemented!(),
-    }
 }
 
 /// Trait for running tasks in tests.
@@ -309,6 +246,7 @@ pub fn default_task_runner() -> impl TaskRunner {
                     executor_id: executor_id.clone(),
                     partitions: partitions.clone(),
                     runtime_stats: vec![],
+                    task_column_stats: vec![],
                     window_state: vec![],
                 })),
             });
@@ -591,6 +529,32 @@ impl SchedulerTest {
         })
     }
 
+    /// Switches the session's adaptive query planner on or off. The harness pins
+    /// it off; tests of behaviour that must hold under the default planner turn
+    /// it back on.
+    pub fn set_adaptive_planner(&mut self, enabled: bool) {
+        self.session_config = self
+            .session_config
+            .clone()
+            .with_ballista_adaptive_query_planner(enabled);
+    }
+
+    /// Whether `job`'s execution graph is active, which is when the
+    /// scheduler's event handlers (for example, on executor loss) see it. A
+    /// job's status turns `Running` just before this.
+    pub fn is_active(&self, job_id: &JobId) -> bool {
+        self.scheduler
+            .state
+            .task_manager
+            .get_active_execution_graph(job_id)
+            .is_some()
+    }
+
+    /// Returns the scheduler's cache registry.
+    pub fn cache_state(&self) -> Arc<dyn CacheState> {
+        self.scheduler.state.cache_state.clone()
+    }
+
     /// Returns the number of pending jobs.
     pub fn pending_job_number(&self) -> usize {
         self.scheduler.pending_job_number()
@@ -599,6 +563,11 @@ impl SchedulerTest {
     /// Returns the number of running jobs.
     pub fn running_job_number(&self) -> usize {
         self.scheduler.running_job_number()
+    }
+
+    /// Returns the number of jobs being submitted, pending or running.
+    pub fn active_job_number(&self) -> usize {
+        self.scheduler.active_job_number()
     }
 
     /// Returns job state events from the underlying scheduler.
@@ -1296,6 +1265,7 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
             executor_id: executor_id.to_owned(),
             partitions,
             runtime_stats: vec![],
+            task_column_stats: vec![],
             window_state: vec![],
         })),
     }
@@ -1357,4 +1327,70 @@ pub fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
         )]));
     }
     DataSourceExec::from_data_source(builder.build())
+}
+
+/// Wraps a plan and fails every attempt to rewrite its children, so tests can
+/// force the plan rewrites done by stage transitions (resolve, rollback) to fail.
+#[derive(Debug)]
+pub struct FailingPlanRewriteExec {
+    input: Arc<dyn ExecutionPlan>,
+}
+
+impl DisplayAs for FailingPlanRewriteExec {
+    fn fmt_as(
+        &self,
+        _t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        write!(f, "FailingPlanRewriteExec")
+    }
+}
+
+impl ExecutionPlan for FailingPlanRewriteExec {
+    fn name(&self) -> &str {
+        "FailingPlanRewriteExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        self.input.properties()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn PhysicalExpr>,
+        ) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        Err(DataFusionError::Internal(
+            "forced plan rewrite failure".to_owned(),
+        ))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        self.input.execute(partition, context)
+    }
+}
+
+/// Wraps `plan` in a [`FailingPlanRewriteExec`] in place and returns the new plan.
+pub fn fail_plan_rewrites(plan: &mut Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let failing_plan: Arc<dyn ExecutionPlan> = Arc::new(FailingPlanRewriteExec {
+        input: Arc::clone(plan),
+    });
+    *plan = Arc::clone(&failing_plan);
+    failing_plan
 }

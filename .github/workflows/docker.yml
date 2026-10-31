@@ -16,37 +16,34 @@
 # under the License.
 
 name: Docker
+
+permissions:
+  contents: read
+  packages: write
+
+# Building the images means a full release build of the scheduler, executor
+# and result service, which takes around 45 minutes. Pull requests only run it
+# when the Docker artifacts change. The nightly run catches Rust changes that
+# break the image build (for example a renamed binary) before a release tag
+# depends on it.
 on:
   pull_request:
     paths:
-      - "ballista/**"
-      - "ballista-cli/**"
-      - "benchmarks/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
       - "dev/docker/**"
       - "dev/build-ballista-docker.sh"
+      - "dev/build-ballista-executables.sh"
+      - "dev/build-set-env.sh"
       - ".github/workflows/docker.yml"
-      # docs-only changes cannot affect this job; exclusions are applied last
-      - "!**/*.md"
   push:
-    branches: [ "main" ]
-    paths:
-      - "ballista/**"
-      - "ballista-cli/**"
-      - "benchmarks/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "dev/docker/**"
-      - "dev/build-ballista-docker.sh"
-      - ".github/workflows/docker.yml"
-      # docs-only changes cannot affect this job; exclusions are applied last
-      - "!**/*.md"
+    # The script below performs stricter validation before publishing. This
+    # filter also excludes the separately released python-* tags.
+    tags: ["[0-9]*"]
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  group: ${{ github.repository }}-${{ github.head_ref || github.ref }}-${{ github.workflow }}
   cancel-in-progress: true
 
 jobs:
@@ -68,7 +65,7 @@ jobs:
           rustup update stable
           rustup toolchain install stable
           rustup default stable
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 #2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
       - name: Run script
         run: |
           git config --global --add safe.directory /__w/datafusion-ballista/datafusion-ballista
@@ -78,31 +75,71 @@ jobs:
           docker tag apache/datafusion-ballista-standalone:latest ghcr.io/apache/datafusion-ballista-standalone:latest
           docker tag apache/datafusion-ballista-executor:latest ghcr.io/apache/datafusion-ballista-executor:latest
           docker tag apache/datafusion-ballista-scheduler:latest ghcr.io/apache/datafusion-ballista-scheduler:latest
+          docker tag apache/datafusion-ballista-result-service:latest ghcr.io/apache/datafusion-ballista-result-service:latest
 
-          # release dockers only when there is a release tag
-          export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
-          if [[ $DOCKER_TAG =~ ^[0-9\.]+(-rc[0-9]+)?$ ]]
+          # Publish Docker images only for Rust release tags. Use the triggering
+          # ref instead of git describe because the final and RC tags can point
+          # at the same commit.
+          export DOCKER_TAG="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "$DOCKER_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]]
           then
 
-            docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
+            docker login ghcr.io --username "$DOCKER_USER" --password-stdin <<< "$DOCKER_PASS"
 
             echo "publishing docker tag $DOCKER_TAG"
 
-            docker tag apache/datafusion-ballista-standalone:latest ghcr.io/apache/datafusion-ballista-standalone:$DOCKER_TAG
-            docker tag apache/datafusion-ballista-executor:latest ghcr.io/apache/datafusion-ballista-executor:$DOCKER_TAG
-            docker tag apache/datafusion-ballista-scheduler:latest ghcr.io/apache/datafusion-ballista-scheduler:$DOCKER_TAG
+            docker tag apache/datafusion-ballista-standalone:latest "ghcr.io/apache/datafusion-ballista-standalone:${DOCKER_TAG}"
+            docker tag apache/datafusion-ballista-executor:latest "ghcr.io/apache/datafusion-ballista-executor:${DOCKER_TAG}"
+            docker tag apache/datafusion-ballista-scheduler:latest "ghcr.io/apache/datafusion-ballista-scheduler:${DOCKER_TAG}"
+            docker tag apache/datafusion-ballista-result-service:latest "ghcr.io/apache/datafusion-ballista-result-service:${DOCKER_TAG}"
 
-            docker push ghcr.io/apache/datafusion-ballista-standalone:$DOCKER_TAG
-            docker push ghcr.io/apache/datafusion-ballista-executor:$DOCKER_TAG
-            docker push ghcr.io/apache/datafusion-ballista-scheduler:$DOCKER_TAG
+            docker push "ghcr.io/apache/datafusion-ballista-standalone:${DOCKER_TAG}"
+            docker push "ghcr.io/apache/datafusion-ballista-executor:${DOCKER_TAG}"
+            docker push "ghcr.io/apache/datafusion-ballista-scheduler:${DOCKER_TAG}"
+            docker push "ghcr.io/apache/datafusion-ballista-result-service:${DOCKER_TAG}"
 
-            echo "publishing docker tag latest"
+            # An RC has not passed the ASF vote yet, so it must not replace the
+            # latest approved release.
+            if [[ ! "$DOCKER_TAG" =~ -rc[0-9]+$ ]]
+            then
+              echo "publishing docker tag latest"
 
-            docker push ghcr.io/apache/datafusion-ballista-standalone:latest
-            docker push ghcr.io/apache/datafusion-ballista-executor:latest
-            docker push ghcr.io/apache/datafusion-ballista-scheduler:latest
+              docker push ghcr.io/apache/datafusion-ballista-standalone:latest
+              docker push ghcr.io/apache/datafusion-ballista-executor:latest
+              docker push ghcr.io/apache/datafusion-ballista-scheduler:latest
+              docker push ghcr.io/apache/datafusion-ballista-result-service:latest
+            fi
 
           fi
         env:
           DOCKER_USER: ${{ github.actor }}
           DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
+
+  # Nobody watches the nightly run, so a failure files an issue. Repeated
+  # failures comment on the open issue instead of filing a new one each night.
+  report_nightly_failure:
+    name: Report Nightly Failure
+    needs: build_docker
+    if: failure() && github.event_name == 'schedule' && github.repository == 'apache/datafusion-ballista'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: File or update issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="Nightly Docker image build failed"
+          BODY="The nightly Docker image build failed on \`${GITHUB_SHA}\`: ${RUN_URL}"
+
+          ISSUE=$(gh issue list --state open --search "in:title \"${TITLE}\"" \
+            --json number,title --jq "map(select(.title == \"${TITLE}\")) | .[0].number // empty")
+
+          if [[ -n "$ISSUE" ]]
+          then
+            gh issue comment "$ISSUE" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
+          fi

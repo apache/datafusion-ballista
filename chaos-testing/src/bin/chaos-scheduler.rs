@@ -21,9 +21,10 @@
 //! Mirrors `examples/examples/custom-scheduler.rs`.
 
 use ballista_core::error::BallistaError;
+use ballista_core::utils::shutdown_signal;
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::SchedulerConfig;
-use ballista_scheduler::scheduler_process::start_server;
+use ballista_scheduler::scheduler_process::start_server_with_shutdown;
 use chaos_testing::registry::chaos_session_state;
 use std::net::AddrParseError;
 use std::sync::Arc;
@@ -43,6 +44,7 @@ fn env_or(key: &str, default: &str) -> String {
 async fn main() -> ballista_core::error::Result<()> {
     env_logger::init();
 
+    #[allow(deprecated)]
     let config = SchedulerConfig {
         // In the process harness these default to loopback; under Kubernetes the
         // scheduler must bind all interfaces and advertise its Service name.
@@ -67,12 +69,16 @@ async fn main() -> ballista_core::error::Result<()> {
             "CHAOS_NO_EXECUTORS_GRACE_SECONDS",
             1,
         ),
-        // Under Kubernetes the client is outside the cluster and cannot reach
-        // executor pod IPs to fetch results. Setting this (to "true" in the k8s
-        // manifest) starts an embedded flight proxy on the scheduler and makes
-        // clients fetch results through the scheduler instead of directly from
-        // executors. Unset in the process harness -> false -> no proxy.
+        graceful_shutdown_timeout_seconds: env_parsed(
+            "CHAOS_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS",
+            25,
+        ),
+        // The deprecated embedded proxy, for the harness's proxy fetch mode.
         enable_embedded_flight_proxy: env_parsed("CHAOS_EMBEDDED_FLIGHT_PROXY", false),
+        // The harness's result service, for its result-service fetch mode.
+        advertise_flight_endpoint: std::env::var("CHAOS_ADVERTISE_FLIGHT_ENDPOINT")
+            .ok()
+            .filter(|s| !s.is_empty()),
         override_session_builder: Some(Arc::new(chaos_session_state)),
         ..Default::default()
     };
@@ -83,5 +89,5 @@ async fn main() -> ballista_core::error::Result<()> {
         .map_err(|e: AddrParseError| BallistaError::Configuration(e.to_string()))?;
 
     let cluster = BallistaCluster::new_from_config(&config).await?;
-    start_server(cluster, addr, Arc::new(config)).await
+    start_server_with_shutdown(cluster, addr, Arc::new(config), shutdown_signal).await
 }

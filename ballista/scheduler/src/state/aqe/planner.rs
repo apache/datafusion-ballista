@@ -14,6 +14,8 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+use crate::cache::is_external_stage_id;
+use crate::physical_optimizer::file_group_balance::BalanceAndPruneFileGroups;
 use crate::physical_optimizer::filter_pushdown::FilterPushdown;
 use crate::planner::DefaultDistributedPlanner;
 use crate::state::aqe::adapter::BallistaAdapter;
@@ -34,8 +36,6 @@ use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
 use datafusion::common::{HashMap, exec_err};
 use datafusion::error::DataFusionError;
-#[cfg(test)]
-use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
@@ -52,7 +52,7 @@ use tokio::time::Instant;
 type PhysicalOptimizerRuleRef =
     Arc<dyn datafusion::physical_optimizer::PhysicalOptimizerRule + Send + Sync>;
 
-type RunnableStages = Option<Vec<AdaptiveStageInfo>>;
+pub(super) type RunnableStages = Option<Vec<AdaptiveStageInfo>>;
 type CancellableStageIds = HashSet<usize>;
 
 /// The `AdaptivePlanner` struct is responsible for managing the execution of distributed
@@ -117,32 +117,6 @@ impl AdaptivePlanner {
             job_id,
             runnable_stage_output: HashMap::new(),
         })
-    }
-    /// Creates a new `AdaptivePlanner` with default physical optimizer rules.
-    ///
-    /// # Arguments
-    ///
-    /// * `session_config` - The session configuration for the job.
-    /// * `plan` - The physical execution plan for the job.
-    /// * `job_id` - The unique identifier for the job.
-    ///
-    /// # Returns
-    /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
-    #[cfg(test)]
-    pub fn try_from_plan(
-        session_config: &SessionConfig,
-        plan: Arc<dyn ExecutionPlan>,
-        job_id: JobId,
-    ) -> common::Result<Self> {
-        let plan_id_generator = Arc::new(AtomicUsize::new(0));
-        let state_builder = SessionStateBuilder::new_with_default_features()
-            .with_config(session_config.clone());
-        Self::try_new_with_optimizers(
-            state_builder,
-            plan,
-            job_id,
-            Self::default_optimizers(plan_id_generator),
-        )
     }
 
     /// Creates a new `AdaptivePlanner` with default physical optimizer rules.
@@ -389,16 +363,6 @@ impl AdaptivePlanner {
 
         Ok(())
     }
-    /// Retrieves the runnable stages from the current plan.
-    ///
-    /// # Returns
-    /// A `Result` containing the runnable stages or `None` if no stages are runnable.
-    #[cfg(test)]
-    pub(crate) fn runnable_stages(&mut self) -> common::Result<RunnableStages> {
-        let (runnable_stages, _) = self.actionable_stages()?;
-
-        Ok(runnable_stages)
-    }
 
     /// Returns a tuple of `(RunnableStages, CancellableStageIds)`:
     /// - `RunnableStages`: A list of executable stages, or `None` if no more stages can run
@@ -461,6 +425,7 @@ impl AdaptivePlanner {
                 match exec.downcast_ref::<ExchangeExec>() {
                     Some(exchange) if exchange.inactive_stage => continue,
                     Some(exchange) if exchange.stage_id().is_none() => {
+                        debug_assert!(!is_external_stage_id(self.stage_id_generator));
                         exchange.set_stage_id(self.stage_id_generator);
                         // keeping stage in stage cache
                         // so we can process updates
@@ -491,6 +456,7 @@ impl AdaptivePlanner {
                 // previously
                 Ok(Some(vec![self.plan.clone()]))
             } else {
+                debug_assert!(!is_external_stage_id(self.stage_id_generator));
                 root.set_stage_id(self.stage_id_generator);
                 root.set_final_plan();
                 // keeping stage in stage cache
@@ -509,43 +475,11 @@ impl AdaptivePlanner {
             exec_err!("Plan root is not a AdaptiveDatafusionExec")
         }
     }
-    /// Inspects and retrieves the IDs of runnable stages for testing purposes.
-    ///
-    /// # Returns
-    /// A `Result` containing a set of runnable stage IDs.
-    #[cfg(test)]
-    pub(crate) fn inspect_runnable_stages(
-        &self,
-    ) -> common::Result<std::collections::HashSet<usize>> {
-        let mut runnable_stages = Vec::new();
-        Self::find_runnable_exchanges(&self.plan, &mut runnable_stages);
-
-        runnable_stages
-            .into_iter()
-            .map(|exec| {
-                exec.downcast_ref::<ExchangeExec>()
-                    .ok_or_else(|| {
-                        datafusion::common::DataFusionError::Plan(
-                            "ExchangeExec expected".into(),
-                        )
-                    })
-                    .map(|e| e.stage_id().unwrap())
-            })
-            .collect()
-    }
-    /// Retrieves the current physical plan.
-    ///
-    /// # Returns
-    /// A reference to the current physical plan.
-    #[cfg(test)]
-    pub fn current_plan(&self) -> &dyn ExecutionPlan {
-        self.plan.as_ref()
-    }
     /// Returns the default set of physical optimizer rules.
     ///
     /// # Returns
     /// A vector of default physical optimizer rules.
-    fn default_optimizers(
+    pub(super) fn default_optimizers(
         plan_id_generator: Arc<AtomicUsize>,
     ) -> Vec<PhysicalOptimizerRuleRef> {
         let mut physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> =
@@ -632,6 +566,10 @@ impl AdaptivePlanner {
     ) -> Vec<PhysicalOptimizerRuleRef> {
         vec![
             Arc::new(FilterPushdown::new()),
+            // Needs the predicate `FilterPushdown` leaves on each scan. Runs
+            // before DataFusion's own chain so its file-scan repartitioning
+            // sees the pruned files.
+            Arc::new(BalanceAndPruneFileGroups::new()),
             Arc::new(DelayJoinSelectionRule::new(plan_id_generator)),
             Arc::new(ChaosCreatingRule::default()),
         ]
@@ -662,7 +600,7 @@ impl AdaptivePlanner {
     ///
     /// # Returns
     /// A boolean indicating whether the current node or its children are runnable.
-    fn find_runnable_exchanges(
+    pub(super) fn find_runnable_exchanges(
         node: &Arc<dyn ExecutionPlan>,
         runnable_stages: &mut Vec<Arc<dyn ExecutionPlan>>,
     ) -> bool {

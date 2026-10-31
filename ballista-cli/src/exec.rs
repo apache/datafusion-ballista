@@ -114,6 +114,9 @@ pub async fn exec_from_repl(
         match rl.readline("❯ ") {
             Ok(line) if line.starts_with('\\') => {
                 rl.add_history_entry(line.trim_end()).unwrap();
+                // Write each entry as it's added, so the history survives the
+                // CLI being stopped.
+                rl.append_history(".history").ok();
                 let command = line.split_whitespace().collect::<Vec<_>>().join(" ");
                 if let Ok(cmd) = &command[1..].parse::<Command>() {
                     match cmd {
@@ -151,6 +154,7 @@ pub async fn exec_from_repl(
             }
             Ok(line) => {
                 rl.add_history_entry(line.trim_end()).unwrap();
+                rl.append_history(".history").ok();
                 match exec_and_print(ctx, &print_options, line).await {
                     Ok(_) => {}
                     Err(err) => eprintln!("{err:?}"),

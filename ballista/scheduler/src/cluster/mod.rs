@@ -15,12 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
+use crate::cluster::memory::{
+    InMemoryCacheState, InMemoryClusterState, InMemoryJobState,
+};
 use crate::config::{SchedulerConfig, TaskDistributionPolicy};
 use crate::scheduler_server::SessionBuilder;
+use crate::state::cache_registry::{
+    BeginOutcome, CacheKey, CompleteOutcome, MaterializedCache,
+};
 use crate::state::execution_graph::{
     ExecutionGraphBox, TaskDescription, create_task_info,
 };
+use crate::state::session_manager::share_file_statistics_cache;
 use crate::state::task_manager::JobInfoCache;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::Result;
@@ -28,9 +34,11 @@ use ballista_core::execution_plans::{RangeShuffleReaderExec, ShuffleReaderExec};
 use ballista_core::serde::protobuf::{
     AvailableVcores, ExecutorHeartbeat, JobStatus, job_status,
 };
+use ballista_core::serde::scheduler::PartitionLocation;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, TaskKey};
 use ballista_core::utils::{default_config_producer, default_session_builder};
 use ballista_core::{ConfigProducer, JobId, JobStatusSubscriber};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::Stream;
@@ -76,10 +84,15 @@ pub struct BallistaCluster {
     cluster_state: Arc<dyn ClusterState>,
     /// State for tracking jobs and their execution progress.
     job_state: Arc<dyn JobState>,
+    /// State for tracking materialized `DataFrame::cache()` results.
+    cache_state: Arc<dyn CacheState>,
 }
 
 impl BallistaCluster {
-    /// Creates a new `BallistaCluster` with the given state backends.
+    /// Creates a new `BallistaCluster` with the given cluster and job state
+    /// backends and the default in-memory cache state. Use
+    /// [`with_cache_state`](Self::with_cache_state) to supply a custom cache
+    /// backend.
     pub fn new(
         cluster_state: Arc<dyn ClusterState>,
         job_state: Arc<dyn JobState>,
@@ -87,10 +100,24 @@ impl BallistaCluster {
         Self {
             cluster_state,
             job_state,
+            cache_state: Arc::new(InMemoryCacheState::default()),
         }
     }
 
+    /// Overrides the cache state backend, returning the updated cluster. Lets a
+    /// caller plug in a custom [`CacheState`] without changing [`new`](Self::new).
+    pub fn with_cache_state(mut self, cache_state: Arc<dyn CacheState>) -> Self {
+        self.cache_state = cache_state;
+        self
+    }
+
     /// Creates a new `BallistaCluster` with in-memory state backends.
+    ///
+    /// Its job state builds every session around one shared file statistics
+    /// cache, see [`share_file_statistics_cache`], unless the session sets
+    /// `ballista.scheduler.share_file_statistics_cache` to `false`. To keep a
+    /// cache per session for all sessions, pass an [`InMemoryJobState`] to
+    /// [`BallistaCluster::new`].
     pub fn new_memory(
         scheduler: impl Into<String>,
         session_builder: SessionBuilder,
@@ -100,9 +127,10 @@ impl BallistaCluster {
             cluster_state: Arc::new(InMemoryClusterState::default()),
             job_state: Arc::new(InMemoryJobState::new(
                 scheduler,
-                session_builder,
+                share_file_statistics_cache(session_builder),
                 config_producer,
             )),
+            cache_state: Arc::new(InMemoryCacheState::default()),
         }
     }
 
@@ -135,6 +163,11 @@ impl BallistaCluster {
     /// Returns the job state backend.
     pub fn job_state(&self) -> Arc<dyn JobState> {
         self.job_state.clone()
+    }
+
+    /// Returns the cache state backend.
+    pub fn cache_state(&self) -> Arc<dyn CacheState> {
+        self.cache_state.clone()
     }
 }
 
@@ -188,6 +221,19 @@ pub trait ClusterState: Send + Sync + 'static {
     ) -> Result<()>;
 
     /// Saves executor metadata, overwriting any existing metadata for the executor ID.
+    ///
+    /// Pull-based executors call this with every poll instead of registering
+    /// through [`Self::register_executor`], so the call also acts as a liveness
+    /// signal. An implementation must refresh the executor's heartbeat
+    /// timestamp here, since [`ExecutorManager`](crate::state::executor_manager::ExecutorManager)
+    /// uses it to decide whether the executor is still alive.
+    ///
+    /// It must not reset the rest of the heartbeat. Status, metrics and peak
+    /// memory come from the executor's own periodic
+    /// [`save_executor_heartbeat`](Self::save_executor_heartbeat) calls, and a
+    /// poll must keep the last values it saved. If the executor has no
+    /// heartbeat yet, insert one with the current timestamp and empty status
+    /// and metrics.
     async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()>;
 
     /// Returns executor metadata for the given executor ID.
@@ -356,6 +402,94 @@ pub trait JobState: Send + Sync {
     fn produce_config(&self) -> SessionConfig;
 }
 
+/// Scheduler-side metadata store for materialized `DataFrame::cache()` results —
+/// the mapping from a cache key to the shuffle partition locations of its output.
+///
+/// This is the third piece of scheduler state alongside [`ClusterState`] and
+/// [`JobState`], and follows the same shape: an async trait with an in-memory
+/// implementation today ([`InMemoryCacheState`])
+/// and an [`init`](CacheState::init) hook so a future durable backend (e.g. one
+/// backed by an object store) can rehydrate entries on startup. The methods are
+/// `async` even though the in-memory backend does no I/O, so a durable backend
+/// slots in without changing any signatures.
+///
+/// A cache *miss* is simply [`lookup`](CacheState::lookup) returning `None` (the
+/// key is absent, or materialization is still in flight); a *hit* is `Some`.
+#[async_trait::async_trait]
+pub trait CacheState: Send + Sync + 'static {
+    /// Initializes the backend. A no-op for the in-memory backend; durable
+    /// backends load previously persisted entries here.
+    async fn init(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Returns the materialized data for `key`, or `None` on a miss (absent or
+    /// still materializing).
+    async fn lookup(&self, key: &CacheKey) -> Result<Option<MaterializedCache>>;
+
+    /// Attempts to claim `key` for materialization by `job_id`, deduplicating
+    /// concurrent first-time misses to a single [`BeginOutcome::Claimed`].
+    async fn begin_materialization(
+        &self,
+        key: CacheKey,
+        job_id: JobId,
+    ) -> Result<BeginOutcome>;
+
+    /// Records the materialized shuffle locations for `key`, promoting a
+    /// matching pending claim. Returns [`CompleteOutcome::Stale`] if no such
+    /// claim exists so the caller can discard the orphaned output.
+    async fn complete_materialization(
+        &self,
+        key: CacheKey,
+        job_id: JobId,
+        schema: SchemaRef,
+        locations: Vec<Vec<PartitionLocation>>,
+    ) -> Result<CompleteOutcome>;
+
+    /// The job materializing `key`, if it is pending.
+    async fn pending_job(&self, key: &CacheKey) -> Result<Option<JobId>>;
+
+    /// Drops a pending claim for `key` owned by `job_id` (materialization job
+    /// failed/cancelled). Returns whether a claim was removed. Called from the
+    /// job failure and cancel handlers.
+    async fn abort_materialization(&self, key: &CacheKey, job_id: &JobId)
+    -> Result<bool>;
+
+    /// Invalidates a single entry; the next [`lookup`](CacheState::lookup) is a
+    /// miss. Returns the removed materialized entry (if any) so the caller can
+    /// unpin its shuffle data.
+    async fn invalidate(&self, key: &CacheKey) -> Result<Option<MaterializedCache>>;
+
+    /// Invalidates `key` only while it is still `materializing_job`'s,
+    /// atomically: use it when acting on an entry seen earlier.
+    async fn invalidate_if(
+        &self,
+        key: &CacheKey,
+        materializing_job: &JobId,
+    ) -> Result<Option<MaterializedCache>>;
+
+    /// Invalidates every entry holding a partition on `executor_id` (the
+    /// executor-loss policy) and returns the removed entries so the caller can
+    /// unpin their shuffle data.
+    async fn invalidate_executor(
+        &self,
+        executor_id: &str,
+    ) -> Result<Vec<(CacheKey, MaterializedCache)>>;
+
+    /// Removes every entry owned by `session_id` (session teardown) and returns
+    /// the removed materialized entries so the caller can unpin their shuffle
+    /// data.
+    async fn remove_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<(CacheKey, MaterializedCache)>>;
+
+    /// Returns the `(job_id, stage_id)` shuffle stages that must be pinned past
+    /// normal cleanup because they back a cache entry. Consumed by job-data
+    /// cleanup, which skips these stages.
+    async fn pinned_stages(&self) -> Result<HashSet<(JobId, usize)>>;
+}
+
 /// Whether this stage's plan contains a collapse — any operator whose
 /// `output_partitioning().partition_count() == 1` (`CoalescePartitionsExec`,
 /// `SortPreservingMergeExec`, `AggregateExec(Final, gby=[])`,
@@ -512,10 +646,63 @@ fn bind_one(
     Some((executor_id, task_desc))
 }
 
-pub(crate) async fn bind_task_bias(
+/// How [`bind_tasks_with`] picks the executor for the next task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindStrategy {
+    /// Keep packing tasks onto the current (largest) executor until its
+    /// vcore budget is drained, then move on to the next one.
+    Bias,
+    /// Hand each task to the next executor in the rotation, so multiple
+    /// running stages each get one executor per round.
+    RoundRobin,
+}
+
+impl BindStrategy {
+    fn name(self) -> &'static str {
+        match self {
+            BindStrategy::Bias => "bias",
+            BindStrategy::RoundRobin => "round robin",
+        }
+    }
+
+    /// Index of the executor that should receive the next task, starting the
+    /// search at `start`. `None` means no executor has vcores left.
+    fn pick(self, budgets: &[&mut AvailableVcores], start: usize) -> Option<usize> {
+        match self {
+            BindStrategy::Bias => (start..budgets.len()).find(|&i| budgets[i].vcores > 0),
+            BindStrategy::RoundRobin => next_with_capacity(budgets, start),
+        }
+    }
+
+    /// Where the next search starts after a task was bound to `picked`.
+    fn advance(self, picked: usize, len: usize) -> usize {
+        match self {
+            BindStrategy::Bias => picked,
+            BindStrategy::RoundRobin => (picked + 1) % len,
+        }
+    }
+}
+
+/// Circular scan for the first executor with free vcores, starting at
+/// `start` and wrapping around once. Returns `None` when `budgets` is empty
+/// or every executor is drained.
+fn next_with_capacity(budgets: &[&mut AvailableVcores], start: usize) -> Option<usize> {
+    let len = budgets.len();
+    (0..len)
+        .map(|offset| (start + offset) % len)
+        .find(|&i| budgets[i].vcores > 0)
+}
+
+/// Shared driver behind [`bind_task_bias`] and [`bind_task_round_robin`].
+///
+/// Walks the running jobs and their running stages, skipping stages for which
+/// `if_skip` returns true, and binds tasks to executors chosen by `strategy`
+/// until either every stage is drained or no executor has vcores left.
+async fn bind_tasks_with(
     mut budgets: Vec<&mut AvailableVcores>,
     running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
+    strategy: BindStrategy,
 ) -> Vec<BoundTask> {
     let mut schedulable_tasks: Vec<BoundTask> = vec![];
 
@@ -524,9 +711,8 @@ pub(crate) async fn bind_task_bias(
         return schedulable_tasks;
     }
 
-    // Bias: give each stage the biggest exec available. Sort descending
-    // so bind_one keeps packing tasks onto the largest executor until its
-    // vcore budget is drained.
+    // Order by vcores desc: bias packs the largest executor first, round
+    // robin starts its rotation there.
     budgets.sort_by(|a, b| Ord::cmp(&b.vcores, &a.vcores));
 
     let mut idx = 0usize;
@@ -541,21 +727,24 @@ pub(crate) async fn bind_task_bias(
         while let Some(running_stage) = graph.fetch_running_stage(&black_list) {
             if if_skip(running_stage.plan.clone()) {
                 debug!(
-                    "Will skip stage {}/{} for bias task binding",
-                    job_id, running_stage.stage_id
+                    "Will skip stage {}/{} for {} task binding",
+                    job_id,
+                    running_stage.stage_id,
+                    strategy.name()
                 );
                 black_list.push(running_stage.stage_id);
                 continue;
             }
-            while idx < budgets.len() {
-                while idx < budgets.len() && budgets[idx].vcores == 0 {
-                    idx += 1;
-                }
-                if idx >= budgets.len() {
+            loop {
+                let Some(picked) = strategy.pick(&budgets, idx) else {
                     return schedulable_tasks;
-                }
+                };
+                idx = picked;
                 match bind_one(running_stage, &session_id, job_id, &mut *budgets[idx]) {
-                    Some(bound) => schedulable_tasks.push(bound),
+                    Some(bound) => {
+                        schedulable_tasks.push(bound);
+                        idx = strategy.advance(idx, budgets.len());
+                    }
                     None => break, // stage's pending is drained
                 }
             }
@@ -565,62 +754,24 @@ pub(crate) async fn bind_task_bias(
     schedulable_tasks
 }
 
-pub(crate) async fn bind_task_round_robin(
-    mut budgets: Vec<&mut AvailableVcores>,
+/// Bias: give each stage the biggest executor available, packing tasks onto
+/// it until its vcore budget is drained.
+pub(crate) async fn bind_task_bias(
+    budgets: Vec<&mut AvailableVcores>,
     running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
     if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
 ) -> Vec<BoundTask> {
-    let mut schedulable_tasks: Vec<BoundTask> = vec![];
+    bind_tasks_with(budgets, running_jobs, if_skip, BindStrategy::Bias).await
+}
 
-    if budgets.iter().all(|b| b.vcores == 0) {
-        debug!("No executor vcores available for task binding");
-        return schedulable_tasks;
-    }
-
-    // Round-robin across execs so multiple running stages each get one
-    // exec per rotation. Order by vcores desc so the largest exec goes
-    // first in the rotation.
-    budgets.sort_by(|a, b| Ord::cmp(&b.vcores, &a.vcores));
-
-    let mut idx = 0usize;
-    for (job_id, job_info) in running_jobs.iter() {
-        if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
-            debug!("Job {job_id} is not in running status and will be skipped");
-            continue;
-        }
-        let mut graph = job_info.execution_graph.write().await;
-        let session_id = graph.session_id().to_string();
-        let mut black_list = vec![];
-        while let Some(running_stage) = graph.fetch_running_stage(&black_list) {
-            if if_skip(running_stage.plan.clone()) {
-                debug!(
-                    "Will skip stage {}/{} for round robin task binding",
-                    job_id, running_stage.stage_id
-                );
-                black_list.push(running_stage.stage_id);
-                continue;
-            }
-            loop {
-                let mut scanned = 0usize;
-                while budgets[idx].vcores == 0 {
-                    idx = (idx + 1) % budgets.len();
-                    scanned += 1;
-                    if scanned >= budgets.len() {
-                        return schedulable_tasks;
-                    }
-                }
-                match bind_one(running_stage, &session_id, job_id, &mut *budgets[idx]) {
-                    Some(bound) => {
-                        schedulable_tasks.push(bound);
-                        idx = (idx + 1) % budgets.len();
-                    }
-                    None => break, // stage's pending is drained
-                }
-            }
-        }
-    }
-
-    schedulable_tasks
+/// Round robin across executors so multiple running stages each get one
+/// executor per rotation, starting from the largest.
+pub(crate) async fn bind_task_round_robin(
+    budgets: Vec<&mut AvailableVcores>,
+    running_jobs: Arc<HashMap<JobId, JobInfoCache>>,
+    if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
+) -> Vec<BoundTask> {
+    bind_tasks_with(budgets, running_jobs, if_skip, BindStrategy::RoundRobin).await
 }
 
 /// User provided task distribution policy
@@ -668,7 +819,10 @@ mod test {
     };
 
     use crate::cluster::stage_has_input_collapse;
-    use crate::cluster::{BoundTask, bind_task_bias, bind_task_round_robin};
+    use crate::cluster::{
+        BindStrategy, BoundTask, bind_task_bias, bind_task_round_robin,
+        next_with_capacity,
+    };
     use crate::state::execution_graph::{ExecutionGraph, StaticExecutionGraph};
     use crate::state::task_manager::JobInfoCache;
     use crate::test_utils::{
@@ -925,5 +1079,64 @@ mod test {
             !stage_has_input_collapse(&root),
             "a range-shuffle reader is a stage boundary, not an input collapse",
         );
+    }
+
+    fn vcores(values: &[u32]) -> Vec<AvailableVcores> {
+        values
+            .iter()
+            .enumerate()
+            .map(|(i, &vcores)| AvailableVcores {
+                executor_id: format!("exec-{i}"),
+                vcores,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn next_with_capacity_handles_empty_and_drained_budgets() {
+        let mut empty = vcores(&[]);
+        let empty_ref: Vec<&mut AvailableVcores> = empty.iter_mut().collect();
+        assert_eq!(next_with_capacity(&empty_ref, 0), None);
+
+        let mut drained = vcores(&[0, 0, 0]);
+        let drained_ref: Vec<&mut AvailableVcores> = drained.iter_mut().collect();
+        for start in 0..3 {
+            assert_eq!(next_with_capacity(&drained_ref, start), None);
+        }
+    }
+
+    #[test]
+    fn next_with_capacity_wraps_around() {
+        let mut budgets = vcores(&[2, 0, 0, 1]);
+        let budgets_ref: Vec<&mut AvailableVcores> = budgets.iter_mut().collect();
+        assert_eq!(next_with_capacity(&budgets_ref, 0), Some(0));
+        assert_eq!(next_with_capacity(&budgets_ref, 1), Some(3));
+        assert_eq!(next_with_capacity(&budgets_ref, 3), Some(3));
+
+        let mut only_first = vcores(&[4, 0, 0]);
+        let only_first_ref: Vec<&mut AvailableVcores> = only_first.iter_mut().collect();
+        assert_eq!(next_with_capacity(&only_first_ref, 2), Some(0));
+    }
+
+    #[test]
+    fn next_with_capacity_single_executor() {
+        let mut busy = vcores(&[3]);
+        let busy_ref: Vec<&mut AvailableVcores> = busy.iter_mut().collect();
+        assert_eq!(next_with_capacity(&busy_ref, 0), Some(0));
+
+        let mut idle = vcores(&[0]);
+        let idle_ref: Vec<&mut AvailableVcores> = idle.iter_mut().collect();
+        assert_eq!(next_with_capacity(&idle_ref, 0), None);
+    }
+
+    #[test]
+    fn bias_strategy_never_wraps_back() {
+        let mut budgets = vcores(&[2, 0, 1]);
+        let budgets_ref: Vec<&mut AvailableVcores> = budgets.iter_mut().collect();
+        assert_eq!(BindStrategy::Bias.pick(&budgets_ref, 0), Some(0));
+        assert_eq!(BindStrategy::Bias.pick(&budgets_ref, 1), Some(2));
+        assert_eq!(BindStrategy::Bias.pick(&budgets_ref, 3), None);
+        assert_eq!(BindStrategy::Bias.advance(2, 3), 2);
+        assert_eq!(BindStrategy::RoundRobin.advance(2, 3), 0);
     }
 }

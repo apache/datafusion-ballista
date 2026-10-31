@@ -148,6 +148,20 @@ the auto-sized pool uses; it accepts a value in `(0.0, 1.0]` and defaults to
 Because operators spill to disk rather than fail, make sure the executor's
 `--work-dir` has enough scratch space to absorb spills under memory pressure.
 
+DataFusion caps spill files at 100 GB per runtime by default, and a query that
+spills more fails with "The used disk space during the spilling process has
+exceeded the allowable limit". Large sorts and sort-merge joins can exceed this
+at high scale factors. Raise the cap with `--max-temp-directory-size`, which
+takes the same size values as `--memory-pool-size`:
+
+```sh
+ballista-executor --memory-pool-size 48GB --max-temp-directory-size 1TB
+```
+
+The limit applies to each session's runtime on the executor, shared by that
+session's tasks. Setting `datafusion.runtime.max_temp_directory_size` on the
+client has no effect on executors.
+
 ## Join Strategy
 
 How Ballista picks a join depends on whether adaptive query execution is on.
@@ -272,14 +286,14 @@ The following session-level keys tune its behavior:
 
 <!-- END GENERATED CONFIG REFERENCE -->
 
-## Adaptive Query Execution (Experimental)
+## Adaptive Query Execution
 
-Ballista has experimental support for adaptive query execution (AQE), where the
-scheduler re-runs the DataFusion physical optimizer between query stages. This
-lets the planner make decisions using statistics collected from completed
-stages rather than relying solely on pre-execution estimates.
+Ballista runs adaptive query execution (AQE) by default: the scheduler re-runs
+the DataFusion physical optimizer between query stages. This lets the planner
+make decisions using statistics collected from completed stages rather than
+relying solely on pre-execution estimates.
 
-AQE is enabled by default. To fall back to the static distributed planner, set
+To fall back to the static distributed planner, set
 `ballista.planner.adaptive.enabled` to `false` on your `SessionConfig`:
 
 ```rust
@@ -304,14 +318,14 @@ let session_config = SessionConfig::new_with_ballista()
 
 When AQE is enabled, the scheduler builds the stage DAG incrementally. As each
 shuffle stage completes, the planner re-optimizes the remaining plan and emits
-the next set of runnable stages. Two adaptive optimizations are currently
-implemented:
+the next set of runnable stages. The following adaptive optimizations are
+currently implemented:
 
-- **Join reordering.** Uses runtime row counts from completed stages so the
-  smaller side drives the join.
-- **Broadcast join selection.** When a join input's runtime size falls under
-  `ballista.optimizer.broadcast_join_threshold_bytes` (or the row-count
-  fallback), the smaller side is broadcast (`CollectLeft`) instead of shuffled.
+- **Join selection.** Each join is resolved from the runtime statistics of its
+  completed input stages. The smaller side, compared by byte size and falling
+  back to row count when sizes are unavailable, becomes the build side. When it
+  falls under `ballista.optimizer.broadcast_join_threshold_bytes` (or the
+  row-count fallback), it is broadcast (`CollectLeft`) instead of shuffled.
   Null-aware anti joins use `CollectLeft` with a single probe task because their
   state cannot be coordinated across executors. A known oversized build side is
   rejected instead of producing an incorrect distributed result. In practice
@@ -319,9 +333,28 @@ implemented:
   `ballista.optimizer.not_in_subquery_rewrite` (enabled by default) rewrites
   them into a fully distributable anti join plus a one-row count aggregate
   during logical optimization.
+- **Build-side staging.** When a join's build side has only an estimated size,
+  the join type can be broadcast, the probe side is at least
+  `ballista.optimizer.stage_build_side_min_probe_ratio` times larger (10 by
+  default), and the estimate is no more than
+  `ballista.optimizer.stage_build_side_max_estimate_multiple` times the broadcast
+  threshold (32 by default), AQE shuffles the build side on its own first and
+  reads back its measured size before choosing the join. A side that turns out
+  small enough is broadcast, so the much larger probe side is never shuffled.
+  Enabled by default; set `ballista.optimizer.stage_build_side` to `false` to
+  shuffle both sides at once.
 - **Empty stage elimination.** When a completed stage produces zero rows, its
   downstream exchange is replaced with an empty execution node, and emptiness
   is propagated up the plan so downstream stages are skipped entirely.
+- **Shuffle-partition coalescing.** Adjacent small output partitions of a
+  completed stage are merged so the next stage runs fewer, larger tasks.
+  Disabled by default; enable with `ballista.planner.coalesce.enabled` and tune
+  with the `ballista.planner.coalesce.*` keys documented in
+  [Configuration](configs.md).
+- **Parallel windows.** Bounded `RANGE`-frame windows are rewritten into a
+  distributed range shuffle so `BoundedWindowAggExec` is not a serial
+  bottleneck. Disabled by default; enable with
+  `ballista.planner.parallel_window.enabled`.
 
 ### Current limitations
 
@@ -329,13 +362,41 @@ The implementation covers the happy path only. The following are known to be
 missing or incomplete:
 
 - Executor failure handling on the AQE path ([#1986](https://github.com/apache/datafusion-ballista/issues/1986))
-- Dynamic coalescing of shuffle partitions ([#1987](https://github.com/apache/datafusion-ballista/issues/1987))
 - Switching from hash join to sort-merge join based on runtime statistics ([#1988](https://github.com/apache/datafusion-ballista/issues/1988))
 - Switching from streaming aggregation to hash aggregation based on runtime statistics ([#1989](https://github.com/apache/datafusion-ballista/issues/1989))
 
-Until these gaps are closed, AQE should be used for testing and experimentation
-rather than production workloads. See [issue #1359](https://github.com/apache/datafusion-ballista/issues/1359)
-for the tracking epic and ongoing work.
+Set `ballista.planner.adaptive.enabled` to `false` to fall back to the static
+distributed planner if you hit one of these. See
+[issue #1359](https://github.com/apache/datafusion-ballista/issues/1359) for the
+tracking epic and ongoing work.
+
+## Caching DataFrames
+
+`DataFrame::cache()` does nothing by default (`ballista.cache.noop = true`).
+With it turned off, the first action on a cached DataFrame runs the cached part
+as a job of its own and keeps its output on the executors; later actions in the
+same session read that output instead of recomputing it.
+
+```rust
+ctx.sql("SET ballista.cache.noop = false").await?;
+let cached = ctx.table("t").await?.filter(col("x").gt(lit(5)))?.cache().await?;
+cached.clone().count().await?; // builds the cache, then reads it
+cached.collect().await?;       // reads it
+```
+
+- Cached data is shuffle output on the executors. If a query loses part of it
+  (an executor holding it is lost, or a fetch from it fails), the query fails
+  with "lost DataFrame::cache() data; retry the query", and the retry rebuilds
+  the cache.
+- Cached data is not evicted yet: it is kept until it is found lost, so cache
+  only what you reuse.
+- `EXPLAIN` of a cached DataFrame never builds it.
+- An operator can turn caching off for the whole cluster with the scheduler's
+  `--disable-dataframe-cache` flag; cached DataFrames are then computed as part
+  of each query.
+
+See the [DataFrame cache design](../contributors-guide/dataframe-cache.md) for
+how it works.
 
 ## Push-based vs Pull-based Task Scheduling
 
@@ -345,14 +406,14 @@ which is the best for your use case.
 Pull-based scheduling works in a similar way to Apache Spark and push-based scheduling can result in lower latency.
 
 The scheduling policy can be specified in the `--scheduler-policy` parameter when starting the scheduler and executor
-processes. The default is `pull-staged`.
+processes. Both processes must be configured with the same policy. The default is `push-staged`.
 
 ## Viewing Query Plans and Metrics
 
 The scheduler provides a REST API for monitoring jobs. See the
 [scheduler documentation](scheduler.md) for more information.
 
-> This is optional scheduler feature which should be enabled with rest-api feature
+> These endpoints require the scheduler's `rest-api` feature, which is enabled by default.
 
 To download a query plan in dot format from the scheduler, submit a request to the following API endpoint
 

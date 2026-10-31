@@ -24,9 +24,10 @@
 use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::execution_plans::{
-    RangeShuffleReaderExec, RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriterExec,
+    PipelinedShuffleReaderExec, PipelinedShuffleWriterExec, RangeShuffleReaderExec,
+    RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriterExec,
 };
-use ballista_core::serde::protobuf::ShuffleWritePartition;
+use ballista_core::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
 use ballista_core::serde::scheduler::PartitionStats;
 use ballista_core::{JobId, utils};
 use datafusion::arrow::array::{
@@ -119,6 +120,15 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
     ) -> Result<Vec<ballista_core::serde::protobuf::WindowStateReport>> {
         Ok(Vec::new())
     }
+
+    /// Collect per-column statistics folded across this task's shuffle output.
+    /// Called at task completion, like [`Self::collect_runtime_stats_reports`],
+    /// and rides the same `SuccessfulTask` message. An empty list means stats
+    /// weren't collected. Default returns empty — implementers override to drain
+    /// counts stashed during execution.
+    fn collect_column_stats(&self) -> Vec<TaskColumnStats> {
+        Vec::new()
+    }
 }
 
 /// Default execution engine using DataFusion's ShuffleWriterExec.
@@ -167,6 +177,17 @@ impl ExecutionEngine for DefaultExecutionEngine {
                             reader.with_work_dir(work_dir.to_string()),
                         ))),
                     }
+                } else if let Some(reader) =
+                    p.downcast_ref::<PipelinedShuffleReaderExec>()
+                {
+                    // The registry for co-located producers comes from the
+                    // task's session configuration at execution time.
+                    match &self.client_pool {
+                        Some(client_pool) => Ok(Transformed::yes(Arc::new(
+                            reader.clone().with_client_pool(client_pool.clone()),
+                        ))),
+                        None => Ok(Transformed::no(p)),
+                    }
                 } else if let Some(reader) = p.downcast_ref::<RangeShuffleReaderExec>() {
                     match &self.client_pool {
                         Some(client_pool) => Ok(Transformed::yes(Arc::new(
@@ -192,9 +213,16 @@ impl ExecutionEngine for DefaultExecutionEngine {
             .data;
 
         // the query plan created by the scheduler always starts with a shuffle
-        // writer (ShuffleWriterExec, RangeShuffleWriterExec, or
-        // SortShuffleWriterExec)
-        if plan.downcast_ref::<ShuffleWriterExec>().is_some() {
+        // writer (ShuffleWriterExec, RangeShuffleWriterExec,
+        // SortShuffleWriterExec, or, for a pipelined job,
+        // PipelinedShuffleWriterExec)
+        if let Some(writer) = plan.downcast_ref::<PipelinedShuffleWriterExec>() {
+            let writer = writer
+                .clone()
+                .with_task_id(task_id)
+                .with_global_output_partition_ids(global_output_partition_ids);
+            Ok(Arc::new(PipelinedQueryStageExec::new(writer)))
+        } else if plan.downcast_ref::<ShuffleWriterExec>().is_some() {
             let exec = ShuffleWriterExec::try_new(
                 job_id,
                 stage_id,
@@ -236,7 +264,8 @@ impl ExecutionEngine for DefaultExecutionEngine {
         } else {
             Err(DataFusionError::Internal(
                 "Plan passed to new_query_stage_exec is not a ShuffleWriterExec, \
-                 RangeShuffleWriterExec, or SortShuffleWriterExec"
+                 RangeShuffleWriterExec, SortShuffleWriterExec, or \
+                 PipelinedShuffleWriterExec"
                     .to_string(),
             ))
         }
@@ -354,6 +383,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
             result.is_ok(),
             DisplayableExecutionPlan::with_metrics(plan_arc.as_ref()).indent(true)
         );
+
         result
     }
 
@@ -413,6 +443,64 @@ impl QueryStageExecutor for DefaultQueryStageExec {
                 )
             })
             .collect()
+    }
+
+    fn collect_column_stats(&self) -> Vec<TaskColumnStats> {
+        // Only the sort writer stashes per-column null counts during its drain
+        // loop; the passthrough/range paths report none for now.
+        match &self.shuffle_writer {
+            ShuffleWriterVariant::Sort(writer) => writer
+                .column_null_counts()
+                .into_iter()
+                .enumerate()
+                .map(|(column, null_count)| TaskColumnStats {
+                    column: column as u32,
+                    null_count,
+                    sketches: vec![],
+                })
+                .collect(),
+            _ => vec![],
+        }
+    }
+}
+
+/// Runs a task of a pipelined job: its writer streams the task's output to
+/// consumers through the executor's pipelined registry instead of writing
+/// shuffle files.
+#[derive(Debug)]
+pub struct PipelinedQueryStageExec {
+    writer: PipelinedShuffleWriterExec,
+}
+
+impl PipelinedQueryStageExec {
+    /// Creates a query stage executor around a pipelined writer.
+    pub fn new(writer: PipelinedShuffleWriterExec) -> Self {
+        Self { writer }
+    }
+}
+
+impl Display for PipelinedQueryStageExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PipelinedQueryStageExec:\n{}",
+            DisplayableExecutionPlan::new(&self.writer).indent(true)
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl QueryStageExecutor for PipelinedQueryStageExec {
+    async fn execute_query_stage(
+        &self,
+        _task_id: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<Vec<ShuffleWritePartition>> {
+        self.writer.execute_pipelined(context).await
+    }
+
+    fn collect_plan_metrics(&self) -> Vec<MetricsSet> {
+        utils::collect_plan_metrics(&self.writer)
     }
 }
 

@@ -19,12 +19,17 @@
 #![warn(missing_docs)]
 /// REST API endpoints for scheduler operations.
 pub mod api;
+/// Reading materialized `DataFrame::cache()` output back into a query.
+pub mod cache;
 /// Cluster management and executor coordination.
 pub mod cluster;
 /// Scheduler configuration options.
 pub mod config;
 /// Display utilities for execution plans and state.
 pub mod display;
+/// Binds the Arrow Flight SQL frontend to this scheduler.
+#[cfg(feature = "flight-sql")]
+mod flight_sql;
 /// Standalone history server: serves `/api/*` from stored event logs.
 #[cfg(feature = "rest-api")]
 pub mod history;

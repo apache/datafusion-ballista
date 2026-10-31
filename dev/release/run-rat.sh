@@ -18,6 +18,13 @@
 # under the License.
 #
 
+# Usage: run-rat.sh <directory or tarball> [<path prefix>]
+#
+# The exclude list uses paths relative to the repository root. When the target
+# holds a subdirectory of the repository, e.g. the Python client tarball, pass
+# that subdirectory (python/) as the prefix so its files are matched against
+# the exclude list under their repository paths.
+
 RAT_VERSION=0.13
 
 # download apache rat
@@ -40,7 +47,7 @@ if ! $RAT $1 > rat.txt; then
   exit 1
 fi
 
-python3 $RELEASE_DIR/check-rat-report.py $RELEASE_DIR/rat_exclude_files.txt rat.txt > filtered_rat.txt
+python3 $RELEASE_DIR/check-rat-report.py $RELEASE_DIR/rat_exclude_files.txt rat.txt "${2:-}" > filtered_rat.txt
 CHECK_STATUS=$?
 cat filtered_rat.txt
 UNAPPROVED=`grep -c "NOT APPROVED" filtered_rat.txt`

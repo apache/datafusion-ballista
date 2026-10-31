@@ -22,12 +22,17 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
-if len(sys.argv) != 3:
-    sys.stderr.write("Usage: %s exclude_globs.lst rat_report.xml\n" % sys.argv[0])
+if len(sys.argv) not in (3, 4):
+    sys.stderr.write(
+        "Usage: %s exclude_globs.lst rat_report.xml [path_prefix]\n" % sys.argv[0]
+    )
     sys.exit(1)
 
 exclude_globs_filename = sys.argv[1]
 xml_filename = sys.argv[2]
+# prepended to each file name so that files from a subdirectory of the
+# repository, e.g. the python/ tarball, match the repository-relative globs
+path_prefix = sys.argv[3] if len(sys.argv) == 4 else ""
 
 globs = [line.strip() for line in open(exclude_globs_filename, "r")]
 
@@ -40,7 +45,7 @@ for r in resources:
     approvals = r.findall("license-approval")
     if not approvals or approvals[0].attrib["name"] == "true":
         continue
-    clean_name = re.sub("^[^/]+/", "", r.attrib["name"])
+    clean_name = path_prefix + re.sub("^[^/]+/", "", r.attrib["name"])
     excluded = False
     for g in globs:
         if fnmatch.fnmatch(clean_name, g):

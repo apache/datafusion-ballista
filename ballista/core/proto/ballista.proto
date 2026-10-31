@@ -61,7 +61,70 @@ message BallistaPhysicalPlanNode {
     RangeFilterExecNode range_filter = 13;
     PrefixMergeExecNode prefix_merge = 14;
     RangeShuffleWriterExecNode range_shuffle_writer = 15;
+    DistributedQueryExecNode distributed_query = 16;
+    DistributedExplainAnalyzeExecNode distributed_explain_analyze = 17;
+    PipelinedShuffleWriterExecNode pipelined_shuffle_writer = 18;
+    PipelinedShuffleReaderExecNode pipelined_shuffle_reader = 19;
   }
+}
+
+// Root of a stage in a pipelined job. Instead of writing shuffle files, it
+// routes its input into bounded in-memory queues that consumer tasks stream
+// from over Arrow Flight while the stage runs. The child plan is plumbed by
+// the framework as `inputs[0]`.
+message PipelinedShuffleWriterExecNode {
+  string job_id = 1;
+  uint32 stage_id = 2;
+  // Hash repartitioning of the output. Absent for a passthrough stage, which
+  // keeps its input partitioning.
+  datafusion.PhysicalHashRepartition output_partitioning = 3;
+  // Every consumer task reads every output partition in full (the build side
+  // of a broadcast join), so outputs are retained for replay rather than
+  // handed to a single reader.
+  bool broadcast = 4;
+}
+
+// Leaf of a stage in a pipelined job that streams its input from the producer
+// tasks of an upstream stage while they run.
+message PipelinedShuffleReaderExecNode {
+  // One entry per output partition: the producer tasks to stream it from.
+  repeated PipelinedReaderPartition partition = 1;
+  datafusion_common.Schema schema = 2;
+  // The producer stage
+  uint32 stage_id = 3;
+  datafusion.Partitioning partitioning = 4;
+  // A single logical output partition that streams every partition of every
+  // producer task.
+  bool broadcast = 5;
+}
+
+message PipelinedReaderPartition {
+  repeated PipelinedPartitionLocation location = 1;
+}
+
+// Where a producer task of a pipelined stage serves one of its output
+// partitions while it runs.
+message PipelinedPartitionLocation {
+  // Job, producer stage and global output partition.
+  PartitionId partition_id = 1;
+  // The producer task within its stage.
+  uint32 task_id = 2;
+  ExecutorMetadata executor_meta = 3;
+}
+
+message DistributedQueryExecNode {
+  string scheduler_url = 1;
+  repeated KeyValuePair settings = 2;
+  bytes logical_plan = 3;
+  string session_id = 4;
+}
+
+// Wraps a DistributedQueryExec (its single input) and fetches the job
+// metrics from the scheduler once the query has completed.
+message DistributedExplainAnalyzeExecNode {
+  string scheduler_url = 1;
+  datafusion_common.Schema schema = 2;
+  bool verbose = 3;
 }
 
 // Value-range router over N locally-sorted overlapping input partitions.
@@ -505,6 +568,8 @@ message Action {
   oneof ActionType {
     // Fetch a partition from an executor
     FetchPartition fetch_partition = 3;
+    // Stream a partition from a running pipelined producer task
+    FetchPipelinedPartition fetch_pipelined_partition = 4;
   }
 
   // configuration settings
@@ -581,6 +646,21 @@ message FetchPartition {
   // shape, which reads as data-vs-index once a file_kind exists beside it.
   reserved 8;
   reserved "is_sort_shuffle";
+}
+
+// Stream one output partition of a running pipelined producer task. The
+// executor waits a bounded time for the task to start if it has not yet.
+message FetchPipelinedPartition {
+  string job_id = 1;
+  uint32 stage_id = 2;
+  uint32 task_id = 3;
+  uint32 partition_id = 4;
+  // The executor serving the partition, for proxies that forward the request.
+  string host = 5;
+  uint32 port = 6;
+  // How long the executor waits for the producer task to start, from the
+  // consumer's session. Zero uses the executor's default.
+  uint64 registration_timeout_ms = 7;
 }
 
 message PartitionLocation {
@@ -748,6 +828,15 @@ message ExecutorMetric {
     uint64 proc_virtual_memory = 5;
     uint64 peak_physical_memory = 6;
     uint64 peak_virtual_memory = 7;
+    // Bytes currently reserved across the memory pools of the executor's
+    // running tasks.
+    uint64 memory_pool_reserved = 8;
+    // The executor's total memory pool budget, in bytes. Absent when the
+    // pool is unbounded.
+    uint64 memory_pool_size = 9;
+    // Outstanding bytes allocated by the executor process, as counted by its
+    // global allocator. Includes memory the pools do not track.
+    uint64 allocated_memory = 10;
   }
 }
 
@@ -829,6 +918,25 @@ message FailedTask {
   }
 }
 
+// Per-column statistics for one task's shuffle output. An empty list on
+// SuccessfulTask means stats were not collected for that task.
+message TaskColumnStats {
+  // Index into the output schema's fields.
+  uint32 column      = 1;
+  uint64 null_count  = 2;
+  repeated ColumnSketch sketches = 3;
+}
+
+message ColumnSketch {
+  SketchType type = 1;
+  bytes data = 2;
+}
+
+enum SketchType {
+  SKETCH_TYPE_UNSPECIFIED = 0;
+  SKETCH_TYPE_HLL = 1;
+}
+
 message SuccessfulTask {
   string executor_id = 1;
   // TODO tasks are currently always shuffle writes but this will not always be the case
@@ -859,6 +967,7 @@ message SuccessfulTask {
   // (`sort_shuffle::get_index_path`), and send only a reference here. That
   // keeps the completion message fixed-size regardless of aggregate.
   repeated WindowStateReport window_state = 4;
+  repeated TaskColumnStats task_column_stats = 5;
 }
 
 // One finalized window-aggregate state from a task's
@@ -1182,6 +1291,10 @@ message SuccessfulJob {
   uint64 queued_at = 2;
   uint64 started_at = 3;
   uint64 ended_at = 4;
+  // For a pipelined job: where its final stage served each output partition,
+  // the same as in its running status. A small result can finish before a
+  // polling client has seen the job running; the client can still read it.
+  repeated PipelinedPartitionLocation pipelined_output_locations = 5;
 }
 
 message QueuedJob {
@@ -1193,6 +1306,10 @@ message RunningJob {
   uint64 queued_at = 1;
   uint64 started_at = 2;
   string scheduler = 3;
+  // Set for a pipelined job once its tasks are placed: where the final stage
+  // serves each output partition. The client streams these while the job is
+  // still running, since the final stage cannot finish until it is drained.
+  repeated PipelinedPartitionLocation pipelined_output_locations = 4;
 }
 
 message FailedJob {

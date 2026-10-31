@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::cache::is_external_stage_id;
 use ballista_core::JobId;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
@@ -332,6 +333,7 @@ impl DefaultDistributedPlanner {
     /// Generate a new stage ID
     fn next_stage_id(&mut self) -> usize {
         self.next_stage_id += 1;
+        debug_assert!(!is_external_stage_id(self.next_stage_id));
         self.next_stage_id
     }
 

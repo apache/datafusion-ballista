@@ -36,7 +36,7 @@ Our source code is hosted on
 [GitHub](https://github.com/apache/datafusion-ballista). More information on contributing is in
 the [Contribution Guide](https://github.com/apache/datafusion-ballista/blob/main/CONTRIBUTING.md)
 , and we have curated a [good-first-issue](https://github.com/apache/datafusion-ballista/contribute)
-list to help you get started. You can find datafusion's major designs in docs/source/specification.
+list to help you get started.
 
 We use GitHub issues for maintaining a queue of development work and as the
 public record. We often use Google docs, Github issues and pull requests for

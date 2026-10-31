@@ -29,6 +29,7 @@ use crate::config::{
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
+use crate::utils::redact_config_value;
 use datafusion::common::DFSchemaRef;
 use datafusion::execution::context::{QueryPlanner, SessionConfig, SessionState};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -57,45 +58,21 @@ use uuid::Uuid;
 pub type EndpointOverrideFn =
     Arc<dyn Fn(Endpoint) -> Result<Endpoint, Box<dyn Error + Send + Sync>> + Send + Sync>;
 
-#[cfg(feature = "spark-compat")]
-use datafusion_spark::{
-    all_default_aggregate_functions as spark_aggregate_functions,
-    all_default_scalar_functions as spark_scalar_functions,
-    all_default_window_functions as spark_window_functions,
-};
-
-/// Returns scalar functions for Ballista (DataFusion defaults + Spark when enabled)
+/// Returns scalar functions for Ballista (DataFusion defaults)
 pub fn ballista_scalar_functions() -> Vec<Arc<ScalarUDF>> {
-    #[allow(unused_mut)]
     let mut functions = all_default_functions();
     functions.append(&mut all_default_nested_functions());
-
-    #[cfg(feature = "spark-compat")]
-    functions.extend(spark_scalar_functions());
-
     functions
 }
 
-/// Returns aggregate functions for Ballista (DataFusion defaults + Spark when enabled)
+/// Returns aggregate functions for Ballista (DataFusion defaults)
 pub fn ballista_aggregate_functions() -> Vec<Arc<AggregateUDF>> {
-    #[allow(unused_mut)]
-    let mut functions = all_default_aggregate_functions();
-
-    #[cfg(feature = "spark-compat")]
-    functions.extend(spark_aggregate_functions());
-
-    functions
+    all_default_aggregate_functions()
 }
 
-/// Returns window functions for Ballista (DataFusion defaults + Spark when enabled)
+/// Returns window functions for Ballista (DataFusion defaults)
 pub fn ballista_window_functions() -> Vec<Arc<WindowUDF>> {
-    #[allow(unused_mut)]
-    let mut functions = all_default_window_functions();
-
-    #[cfg(feature = "spark-compat")]
-    functions.extend(spark_window_functions());
-
-    functions
+    all_default_window_functions()
 }
 
 /// Provides methods which adapt [SessionState]
@@ -665,7 +642,10 @@ impl SessionConfigHelperExt for SessionConfig {
                 c.key != "datafusion.sql_parser.enable_options_value_normalization"
             })
             .map(|datafusion::config::ConfigEntry { key, value, .. }| {
-                log::trace!("sending configuration key: `{key}`, value`{value:?}`");
+                log::trace!(
+                    "sending configuration key: `{key}`, value`{:?}`",
+                    value.as_deref().map(|v| redact_config_value(key, v))
+                );
                 KeyValuePair {
                     key: key.to_owned(),
                     value: value.clone(),
@@ -685,14 +665,16 @@ impl SessionConfigHelperExt for SessionConfig {
             match value {
                 Some(value) => {
                     log::trace!(
-                        "setting up configuration key: `{key}`, value: `{value:?}`"
+                        "setting up configuration key: `{key}`, value: `{:?}`",
+                        redact_config_value(key, value)
                     );
                     if let Err(e) = self.options_mut().set(key, value) {
                         // there is not much we can do about this error at the moment.
                         // it used to be warning but it gets very verbose
                         // as even datafusion properties can't be parsed
                         log::debug!(
-                            "could not set configuration key: `{key}`, value: `{value:?}`, reason: {e}"
+                            "could not set configuration key: `{key}`, value: `{:?}`, reason: {e}",
+                            redact_config_value(key, value)
                         )
                     }
                 }
@@ -1260,7 +1242,7 @@ mod test {
         );
     }
 
-    // Tests for helper functions that register DataFusion + Spark functions
+    // Tests for helper functions that register DataFusion functions
 
     #[test]
     fn test_ballista_functions_include_datafusion() {
@@ -1288,42 +1270,6 @@ mod test {
         assert!(window_funcs.iter().any(|f| f.name() == "dense_rank"));
     }
 
-    #[test]
-    #[cfg(not(feature = "spark-compat"))]
-    fn test_ballista_functions_without_spark() {
-        use super::{
-            ballista_aggregate_functions, ballista_scalar_functions,
-            ballista_window_functions,
-        };
-
-        // Scalar functions should NOT include Spark functions
-        let scalar_funcs = ballista_scalar_functions();
-        assert!(!scalar_funcs.iter().any(|f| f.name() == "sha1"));
-        assert!(!scalar_funcs.iter().any(|f| f.name() == "expm1"));
-
-        // All function types should have baseline DataFusion functions
-        assert!(!ballista_aggregate_functions().is_empty());
-        assert!(!ballista_window_functions().is_empty());
-    }
-
-    #[test]
-    #[cfg(feature = "spark-compat")]
-    fn test_ballista_functions_with_spark() {
-        use super::{
-            ballista_aggregate_functions, ballista_scalar_functions,
-            ballista_window_functions,
-        };
-
-        // Scalar functions should include Spark functions
-        let scalar_funcs = ballista_scalar_functions();
-        assert!(scalar_funcs.iter().any(|f| f.name() == "sha1"));
-        assert!(scalar_funcs.iter().any(|f| f.name() == "expm1"));
-
-        // All function types should have functions available
-        assert!(!ballista_aggregate_functions().is_empty());
-        assert!(!ballista_window_functions().is_empty());
-    }
-
     #[tokio::test]
     async fn test_ballista_functions_with_session_state() {
         use super::{
@@ -1342,25 +1288,5 @@ mod test {
         assert!(state.scalar_functions().contains_key("abs"));
         assert!(state.aggregate_functions().contains_key("count"));
         assert!(state.window_functions().contains_key("row_number"));
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "spark-compat")]
-    async fn test_ballista_spark_functions_with_session_state() {
-        use super::{
-            ballista_aggregate_functions, ballista_scalar_functions,
-            ballista_window_functions,
-        };
-
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_scalar_functions(ballista_scalar_functions())
-            .with_aggregate_functions(ballista_aggregate_functions())
-            .with_window_functions(ballista_window_functions())
-            .build();
-
-        // Verify Spark functions are registered in SessionState
-        assert!(state.scalar_functions().contains_key("sha1"));
-        assert!(state.scalar_functions().contains_key("expm1"));
     }
 }

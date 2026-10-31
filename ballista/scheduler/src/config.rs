@@ -85,14 +85,17 @@ pub struct Config {
         alias = "advertise-flight-sql-endpoint",
         num_args = 0..=1,
         default_missing_value = "",
-        help = "Address advertised to clients for fetching result partitions over Arrow Flight. Use 'HOST:PORT' to point clients at that address, e.g. a load balancer or a standalone proxy in front of the executors. Passing the flag with no value is deprecated; use --enable-embedded-flight-proxy to start the embedded proxy instead. The old name --advertise-flight-sql-endpoint is a deprecated alias."
+        help = "Address advertised to clients for fetching result partitions over Arrow Flight. Use 'HOST:PORT' to point clients at a result service (ballista-result-service), or a load balancer in front of one, instead of the executors. Passing the flag with no value starts the deprecated embedded proxy, and is itself deprecated. The old name --advertise-flight-sql-endpoint is a deprecated alias."
     )]
     pub advertise_flight_endpoint: Option<String>,
     /// Start an embedded Arrow Flight proxy on the scheduler host/port.
+    ///
+    /// Deprecated, and to be removed in 57.0.0: run a result service and point
+    /// `--advertise-flight-endpoint` at it instead.
     #[arg(
         long,
         default_value_t = false,
-        help = "Start an embedded Arrow Flight proxy on the scheduler, so clients can fetch result partitions through the scheduler instead of connecting to executors directly. Independent of --advertise-flight-endpoint: if that is set to a non-empty address, clients are pointed at it rather than at this scheduler."
+        help = "Deprecated, to be removed in 57.0.0: run a result service (ballista-result-service) and point --advertise-flight-endpoint at it instead. Starts an embedded Arrow Flight proxy on the scheduler, so clients fetch result partitions through the scheduler instead of connecting to executors directly. Independent of --advertise-flight-endpoint: if that is set to a non-empty address, clients are pointed at it rather than at this scheduler."
     )]
     pub enable_embedded_flight_proxy: bool,
     /// Namespace for the ballista cluster.
@@ -154,7 +157,7 @@ pub struct Config {
         help = "Delayed interval for cleaning up finished job state."
     )]
     pub finished_job_state_clean_up_interval_seconds: u64,
-    /// Task distribution policy (bias, round-robin, consistent-hash).
+    /// Task distribution policy (bias, round-robin).
     #[arg(
         long,
         default_value_t = crate::config::TaskDistribution::default(),
@@ -251,6 +254,17 @@ pub struct Config {
         help = "Interval, in seconds, to check expired or dead executors."
     )]
     pub expire_dead_executor_interval_seconds: u64,
+    /// Bound, in seconds, on how long the scheduler takes to shut down after a
+    /// shutdown signal: first to let its active jobs finish while taking no new
+    /// ones, then to drain in-flight requests and embedded Flight-proxy result
+    /// streams. It exits with an error if the bound passes first (0 = wait as
+    /// long as it takes).
+    #[arg(
+        long,
+        default_value_t = 25,
+        help = "Time in seconds the scheduler takes to shut down after a shutdown signal (SIGTERM/Ctrl-C): first to let active jobs finish while taking no new ones, then to drain in-flight requests and embedded Flight-proxy result streams. It exits with an error if the time passes first; 0 waits as long as it takes. Keep this below your orchestrator's termination grace period (e.g. Kubernetes' default terminationGracePeriodSeconds=30) so this timeout can fire before a SIGKILL does, and long enough for your jobs."
+    )]
+    pub graceful_shutdown_timeout_seconds: u64,
     /// Grace period in seconds to wait for an executor to (re)appear after the
     /// cluster has lost its last executor before failing the running jobs.
     #[arg(
@@ -258,11 +272,12 @@ pub struct Config {
         help = "Grace period, in seconds, to wait for an executor to (re)register after the last executor is lost before failing running jobs. Prevents jobs from hanging forever when every executor dies, while still tolerating a transient total loss (e.g. a rolling restart). Must be >= the executor heartbeat interval, or an executor removed by a transient task-launch failure may not re-register before this elapses; defaults to --executor-timeout-seconds (which is always longer than the heartbeat interval). Set to 0 to fail as soon as the loss is observed."
     )]
     pub no_executors_grace_period_seconds: Option<u64>,
-    /// Minimum number of registered executors before /readyz returns 200
+    /// Minimum number of registered executors before /readyz returns 200. It
+    /// returns 503 while the scheduler is shutting down, whatever the count.
     #[arg(
         long,
         default_value_t = 1,
-        help = "Minimum number of registered executors before the scheduler's /readyz probe returns 200. Set to 0 to always report ready."
+        help = "Minimum number of registered executors before the scheduler's /readyz probe returns 200. Set to 0 to report ready regardless of executors. /readyz returns 503 while the scheduler is shutting down."
     )]
     pub min_ready_executors: usize,
     /// Number of failures attempts before task is considered failed
@@ -279,6 +294,14 @@ pub struct Config {
         help = "Number of attempts before stage is considered failed."
     )]
     pub stage_max_failures: usize,
+    #[cfg(feature = "flight-sql")]
+    /// Serve Arrow Flight SQL on the scheduler's gRPC port.
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Serve Arrow Flight SQL on the scheduler port, so JDBC/ODBC/ADBC clients can run SQL against the cluster. Clients are not authenticated unless SchedulerConfig::with_flight_sql_authenticator is set, and even then the port is not secured, so keep it on a trusted network."
+    )]
+    pub flight_sql: bool,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     #[arg(
@@ -287,6 +310,13 @@ pub struct Config {
         help = "Should the REST API be disabled"
     )]
     pub disable_rest_api: bool,
+    /// Run `DataFrame::cache()` queries uncached
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Run DataFrame::cache() queries uncached, whatever clients request: each cached subplan is computed as part of the query instead of being materialized and kept"
+    )]
+    pub disable_dataframe_cache: bool,
     #[cfg(feature = "rest-api")]
     /// Comma-separated list of allowed origins for CORS
     #[arg(
@@ -338,14 +368,14 @@ pub struct SchedulerConfig {
     /// The delayed interval for cleaning up finished job state stored in the backend, 0 means the cleaning up is disabled.
     pub finished_job_state_clean_up_interval_seconds: u64,
     /// The address advertised to clients for fetching result partitions over
-    /// Arrow Flight, for example a load balancer or a standalone proxy sitting
-    /// in front of the executors.
+    /// Arrow Flight, for example a result service (`ballista-result-service`)
+    /// or a load balancer in front of one.
     ///
     /// This is plain Arrow Flight, not Flight SQL, which was removed in
     /// <https://github.com/apache/datafusion-ballista/pull/1228>.
     ///
-    /// An empty string is treated as unset. Setting this does not start any
-    /// proxy; see [`Self::enable_embedded_flight_proxy`] for that.
+    /// An empty string is treated as unset. Setting this does not start
+    /// anything on the scheduler.
     pub advertise_flight_endpoint: Option<String>,
     /// Whether to start an embedded Arrow Flight proxy on the scheduler's own
     /// host and port, so clients can fetch result partitions through the
@@ -356,6 +386,12 @@ pub struct SchedulerConfig {
     /// *told*. When a non-empty endpoint is also set it takes precedence for
     /// the advertisement, which is how you put a load balancer in front of an
     /// embedded proxy.
+    ///
+    /// The scheduler logs a warning at startup while this is set.
+    #[deprecated(
+        since = "56.0.0",
+        note = "the embedded proxy puts result traffic on the scheduler and will be removed in 57.0.0; run `ballista-result-service` and set `advertise_flight_endpoint` instead"
+    )]
     pub enable_embedded_flight_proxy: bool,
     /// If provided, submitted jobs which do not have tasks scheduled will be resubmitted after `job_resubmit_interval_ms`
     /// milliseconds
@@ -375,6 +411,12 @@ pub struct SchedulerConfig {
     pub executor_timeout_seconds: u64,
     /// The interval to check expired or dead executors
     pub expire_dead_executor_interval_seconds: u64,
+    /// Bound, in seconds, on how long the scheduler takes to shut down after a
+    /// shutdown signal: first to let its active jobs finish while taking no new
+    /// ones, then to drain in-flight requests and embedded Flight-proxy result
+    /// streams. It exits with an error if the bound passes first (0 = wait as
+    /// long as it takes).
+    pub graceful_shutdown_timeout_seconds: u64,
     /// Grace period in seconds to wait for an executor to (re)register after the
     /// cluster has lost its last executor before failing the running jobs. This
     /// bounds the otherwise-unbounded wait so that a total executor loss fails
@@ -399,12 +441,30 @@ pub struct SchedulerConfig {
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
     /// Whether to use TLS when connecting to executors (for flight proxy)
     pub use_tls: bool,
-    /// Minimum number of registered executors before /readyz returns 200
+    /// Minimum number of registered executors before /readyz returns 200. It
+    /// returns 503 while the scheduler is shutting down, whatever the count.
     pub min_ready_executors: usize,
     /// Number of failures attempts before task is considered failed
     pub task_max_failures: usize,
     /// Number of failures attempts before stage is considered failed
     pub stage_max_failures: usize,
+    /// Whether to serve Arrow Flight SQL on the scheduler's gRPC port.
+    ///
+    /// The frontend subsumes the plain Flight result proxy when enabled, so
+    /// Ballista's own clients keep working on the same port.
+    #[cfg(feature = "flight-sql")]
+    pub flight_sql: bool,
+    /// Authenticates Arrow Flight SQL handshakes.
+    ///
+    /// Without one the frontend accepts every client and they share one
+    /// session. With one, each authenticated client gets a session of its own.
+    /// This isolates clients from one another; it does not secure the port,
+    /// which also serves the scheduler's gRPC and REST APIs and Ballista's own
+    /// partition fetches without authentication. Keep the scheduler on a
+    /// trusted network either way.
+    #[cfg(feature = "flight-sql")]
+    pub override_flight_sql_authenticator:
+        Option<Arc<dyn ballista_flight_sql::Authenticator>>,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
     pub disable_rest_api: bool,
@@ -424,9 +484,14 @@ pub struct SchedulerConfig {
     pub on_work_available: Option<OnWorkAvailableFn>,
     /// Job id generator to be used by this scheduler
     pub job_id_generator: Option<Arc<dyn JobIdGenerator>>,
+    /// Runs `DataFrame::cache()` queries uncached, whatever clients request: each
+    /// cached subplan is computed as part of the query instead of being
+    /// materialized. Lets an operator turn caching off for the cluster.
+    pub disable_dataframe_cache: bool,
 }
 
 impl Default for SchedulerConfig {
+    #[allow(deprecated)]
     fn default() -> Self {
         Self {
             namespace: String::default(),
@@ -449,6 +514,7 @@ impl Default for SchedulerConfig {
             grpc_client_max_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
+            graceful_shutdown_timeout_seconds: 25,
             // Defaults to `executor_timeout_seconds` so the grace is always >=
             // the executor heartbeat interval (see the field doc).
             no_executors_grace_period_seconds: 180,
@@ -461,6 +527,10 @@ impl Default for SchedulerConfig {
             min_ready_executors: 1,
             task_max_failures: 4,
             stage_max_failures: 4,
+            #[cfg(feature = "flight-sql")]
+            flight_sql: false,
+            #[cfg(feature = "flight-sql")]
+            override_flight_sql_authenticator: None,
             #[cfg(feature = "rest-api")]
             disable_rest_api: false,
             #[cfg(feature = "rest-api")]
@@ -472,6 +542,7 @@ impl Default for SchedulerConfig {
             web_tui_route: String::from("/"),
             on_work_available: None,
             job_id_generator: None,
+            disable_dataframe_cache: false,
         }
     }
 }
@@ -481,6 +552,7 @@ impl SchedulerConfig {
     ///
     /// Suspicious combinations are logged as warnings rather than rejected,
     /// since small values are legitimate for fail-fast setups and tests.
+    #[allow(deprecated)]
     pub fn validate(&self) -> ballista_core::error::Result<()> {
         if self.scheduler_id.trim().is_empty() {
             return Err(ballista_core::error::BallistaError::Configuration(
@@ -512,8 +584,15 @@ impl SchedulerConfig {
         if self.advertise_flight_endpoint.as_deref() == Some("") {
             warn!(
                 "advertise_flight_endpoint is set to an empty string, which is treated \
-                 as unset. If you meant to start the embedded flight proxy, use \
-                 with_enable_embedded_flight_proxy(true)."
+                 as unset. To point clients at a result service, set it to that \
+                 service's address."
+            );
+        }
+        if self.flight_sql_enabled() && self.enable_embedded_flight_proxy {
+            info!(
+                "Both flight_sql and enable_embedded_flight_proxy are set; the Flight \
+                 SQL frontend serves partition fetches on the scheduler port, so no \
+                 separate proxy is started."
             );
         }
         // Not a misconfiguration: running the embedded proxy while advertising a load
@@ -601,12 +680,23 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the bound on how long the scheduler takes to shut down: to let its
+    /// active jobs finish, then to drain in-flight requests and embedded
+    /// Flight-proxy result streams.
+    pub fn with_graceful_shutdown_timeout_seconds(
+        mut self,
+        graceful_shutdown_timeout_seconds: u64,
+    ) -> Self {
+        self.graceful_shutdown_timeout_seconds = graceful_shutdown_timeout_seconds;
+        self
+    }
+
     /// Sets the Arrow Flight endpoint advertised to clients for fetching result
-    /// partitions.
+    /// partitions, typically a result service or a load balancer in front of
+    /// one.
     ///
     /// An empty string is treated as unset. (Previously an empty value enabled
-    /// the embedded flight proxy; use
-    /// [`Self::with_enable_embedded_flight_proxy`] for that)
+    /// the embedded flight proxy, which is now deprecated.)
     pub fn with_advertise_flight_endpoint(mut self, endpoint: Option<String>) -> Self {
         self.advertise_flight_endpoint = endpoint.filter(|e| !e.is_empty());
         self
@@ -626,9 +716,46 @@ impl SchedulerConfig {
     ///
     /// This is independent of [`Self::with_advertise_flight_endpoint`]: it
     /// controls whether the proxy runs, not what clients are told to connect to.
+    #[deprecated(
+        since = "56.0.0",
+        note = "the embedded proxy puts result traffic on the scheduler and will be removed in 57.0.0; run `ballista-result-service` and use `with_advertise_flight_endpoint` instead"
+    )]
+    #[allow(deprecated)]
     pub fn with_enable_embedded_flight_proxy(mut self, enable: bool) -> Self {
         self.enable_embedded_flight_proxy = enable;
         self
+    }
+
+    /// Sets whether to serve Arrow Flight SQL on the scheduler's gRPC port.
+    #[cfg(feature = "flight-sql")]
+    pub fn with_flight_sql(mut self, enable: bool) -> Self {
+        self.flight_sql = enable;
+        self
+    }
+
+    /// Sets the authenticator for Arrow Flight SQL handshakes.
+    #[cfg(feature = "flight-sql")]
+    pub fn with_flight_sql_authenticator(
+        mut self,
+        authenticator: Arc<dyn ballista_flight_sql::Authenticator>,
+    ) -> Self {
+        self.override_flight_sql_authenticator = Some(authenticator);
+        self
+    }
+
+    /// Whether the Arrow Flight SQL frontend should be served.
+    ///
+    /// Always false when the `flight-sql` feature is off, so callers can ask
+    /// without repeating the `cfg` themselves.
+    pub fn flight_sql_enabled(&self) -> bool {
+        #[cfg(feature = "flight-sql")]
+        {
+            self.flight_sql
+        }
+        #[cfg(not(feature = "flight-sql"))]
+        {
+            false
+        }
     }
 
     /// Sets the task distribution policy.
@@ -680,6 +807,12 @@ impl SchedulerConfig {
         override_config_producer: ConfigProducer,
     ) -> Self {
         self.override_config_producer = Some(override_config_producer);
+        self
+    }
+
+    /// Runs `DataFrame::cache()` queries uncached when `disable` is true.
+    pub fn with_disable_dataframe_cache(mut self, disable: bool) -> Self {
+        self.disable_dataframe_cache = disable;
         self
     }
 
@@ -783,6 +916,7 @@ pub enum TaskDistributionPolicy {
 impl TryFrom<Config> for SchedulerConfig {
     type Error = ballista_core::error::BallistaError;
 
+    #[allow(deprecated)]
     fn try_from(opt: Config) -> Result<Self, Self::Error> {
         let task_distribution = match opt.task_distribution {
             TaskDistribution::Bias => TaskDistributionPolicy::Bias,
@@ -795,9 +929,10 @@ impl TryFrom<Config> for SchedulerConfig {
             match opt.advertise_flight_endpoint {
                 Some(ref s) if s.is_empty() => {
                     warn!(
-                        "Passing --advertise-flight-endpoint with an empty value to \
-                        enable the embedded flight proxy is deprecated and will be \
-                        removed in a future release; use --enable-embedded-flight-proxy"
+                        "Passing --advertise-flight-endpoint with an empty value \
+                        starts the embedded flight proxy, which is deprecated and will \
+                        be removed in 57.0.0; run ballista-result-service and pass its \
+                        address to --advertise-flight-endpoint instead"
                     );
                     (None, true)
                 }
@@ -833,6 +968,7 @@ impl TryFrom<Config> for SchedulerConfig {
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
                 .expire_dead_executor_interval_seconds,
+            graceful_shutdown_timeout_seconds: opt.graceful_shutdown_timeout_seconds,
             // Default to the executor-liveness timeout when unset, so the grace
             // is always >= the executor heartbeat interval and a transiently
             // removed but healthy executor can re-register before it elapses.
@@ -848,6 +984,10 @@ impl TryFrom<Config> for SchedulerConfig {
             min_ready_executors: opt.min_ready_executors,
             task_max_failures: opt.task_max_failures,
             stage_max_failures: opt.stage_max_failures,
+            #[cfg(feature = "flight-sql")]
+            flight_sql: opt.flight_sql,
+            #[cfg(feature = "flight-sql")]
+            override_flight_sql_authenticator: None,
             #[cfg(feature = "rest-api")]
             disable_rest_api: opt.disable_rest_api,
             #[cfg(feature = "rest-api")]
@@ -859,6 +999,7 @@ impl TryFrom<Config> for SchedulerConfig {
             web_tui_route: opt.web_tui_route,
             on_work_available: None,
             job_id_generator: None,
+            disable_dataframe_cache: opt.disable_dataframe_cache,
         };
 
         Ok(config)
@@ -880,6 +1021,22 @@ mod tests {
             "grace {} must be >= executor_timeout {}",
             cfg.no_executors_grace_period_seconds,
             cfg.executor_timeout_seconds,
+        );
+    }
+
+    /// The scheduler waits for whole jobs, so it gets longer than the executor and
+    /// the result service. It stays under the 30 seconds that Kubernetes allows a
+    /// pod by default, so the time limit passes before the kubelet's SIGKILL.
+    #[cfg(feature = "build-binary")]
+    #[test]
+    fn graceful_shutdown_timeout_defaults_to_25_seconds_on_the_cli_and_in_code() {
+        use clap::Parser;
+        let from_cli =
+            SchedulerConfig::try_from(Config::parse_from(["scheduler"])).unwrap();
+        assert_eq!(from_cli.graceful_shutdown_timeout_seconds, 25);
+        assert_eq!(
+            SchedulerConfig::default().graceful_shutdown_timeout_seconds,
+            25
         );
     }
 
@@ -949,6 +1106,7 @@ mod tests {
 
     #[cfg(feature = "build-binary")]
     #[test]
+    #[allow(deprecated)]
     fn cli_bare_advertise_endpoint_enables_embedded_proxy() {
         use clap::Parser;
         let opt = Config::parse_from(["scheduler", "--advertise-flight-endpoint"]);
@@ -960,6 +1118,7 @@ mod tests {
 
     #[cfg(feature = "build-binary")]
     #[test]
+    #[allow(deprecated)]
     fn cli_explicit_embedded_proxy_flag() {
         use clap::Parser;
         let opt = Config::parse_from(["scheduler", "--enable-embedded-flight-proxy"]);
@@ -970,6 +1129,7 @@ mod tests {
 
     #[cfg(feature = "build-binary")]
     #[test]
+    #[allow(deprecated)]
     fn cli_deprecated_flight_sql_alias_still_parses() {
         use clap::Parser;
         // The pre-rename flag name keeps working, both with and without a value.
@@ -993,6 +1153,7 @@ mod tests {
 
     #[cfg(feature = "build-binary")]
     #[test]
+    #[allow(deprecated)]
     fn cli_endpoint_and_embedded_proxy_are_independent() {
         use clap::Parser;
         let opt = Config::parse_from([
@@ -1012,6 +1173,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn empty_advertise_endpoint_is_treated_as_unset() {
         let cfg = SchedulerConfig::default()
             .with_advertise_flight_endpoint(Some(String::new()));

@@ -16,8 +16,12 @@
 // under the License.
 
 use crate::cluster::{
-    BoundTask, ClusterState, ExecutorSlot, JobState, JobStateEvent, JobStateEventStream,
-    JobStatus, TaskDistributionPolicy, bind_task_bias, bind_task_round_robin,
+    BoundTask, CacheState, ClusterState, ExecutorSlot, JobState, JobStateEvent,
+    JobStateEventStream, JobStatus, TaskDistributionPolicy, bind_task_bias,
+    bind_task_round_robin,
+};
+use crate::state::cache_registry::{
+    BeginOutcome, CacheKey, CacheRegistry, CompleteOutcome, MaterializedCache,
 };
 use crate::state::execution_graph::ExecutionGraphBox;
 use ballista_core::error::{BallistaError, Result};
@@ -25,9 +29,11 @@ use ballista_core::serde::protobuf::{
     AvailableVcores, ExecutorHeartbeat, ExecutorStatus, FailedJob, QueuedJob,
     executor_status,
 };
+use ballista_core::serde::scheduler::PartitionLocation;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::{ConfigProducer, JobId, JobStatusSubscriber};
 use dashmap::DashMap;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use tokio::sync::mpsc::error::TrySendError;
 
@@ -196,24 +202,23 @@ impl ClusterState for InMemoryClusterState {
             }
         }
 
-        //
-        // pull based executor sends `save_executor_metadata`
-        // with all requests, not `ExecutorHeartbeat`, to make it consistent
-        // with push based, registering `ExecutorHeartbeat` every time
-        //
-        let heartbeat = ExecutorHeartbeat {
-            executor_id,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("Time went backwards")
-                .as_secs(),
-            metrics: vec![],
-            status: None,
-            peak_proc_physical_memory: 0,
-            peak_proc_virtual_memory: 0,
-        };
-        self.save_executor_heartbeat(heartbeat).await
-        // Ok(())
+        // A poll refreshes the heartbeat timestamp and keeps the last status,
+        // metrics and peaks; see the `ClusterState::save_executor_metadata`
+        // docs. The entry is updated in place so a heartbeat saved
+        // concurrently isn't overwritten.
+        let timestamp = timestamp_secs();
+        self.heartbeats
+            .entry(executor_id.clone())
+            .and_modify(|heartbeat| heartbeat.timestamp = timestamp)
+            .or_insert_with(|| ExecutorHeartbeat {
+                executor_id,
+                timestamp,
+                metrics: vec![],
+                status: None,
+                peak_proc_physical_memory: 0,
+                peak_proc_virtual_memory: 0,
+            });
+        Ok(())
     }
 
     async fn get_executor_metadata(&self, executor_id: &str) -> Result<ExecutorMetadata> {
@@ -274,6 +279,17 @@ impl ClusterState for InMemoryClusterState {
 
     async fn cluster_state_events(&self) -> Result<ClusterStateEventStream> {
         Ok(Box::pin(self.cluster_event_sender.subscribe()))
+    }
+}
+
+#[cfg(test)]
+impl InMemoryClusterState {
+    /// Drop metadata for `executor_id` while leaving its available vcores.
+    ///
+    /// Simulates a transient miss from a non-memory [`ClusterState`] backend
+    /// after tasks have already been bound (see #2686).
+    pub(crate) fn drop_executor_metadata(&self, executor_id: &str) {
+        self.executors.remove(executor_id);
     }
 }
 
@@ -539,17 +555,104 @@ impl JobState for InMemoryJobState {
     }
 }
 
+/// In-memory [`CacheState`] backend — the only implementation today.
+///
+/// A thin async wrapper over the synchronous, unit-tested `CacheRegistry`,
+/// mirroring how [`InMemoryJobState`] wraps its maps. A durable backend would be
+/// a sibling type implementing [`CacheState`] whose `init` loads persisted
+/// entries; no caller changes needed.
+#[derive(Debug, Default)]
+pub struct InMemoryCacheState {
+    registry: CacheRegistry,
+}
+
+#[async_trait::async_trait]
+impl CacheState for InMemoryCacheState {
+    async fn lookup(&self, key: &CacheKey) -> Result<Option<MaterializedCache>> {
+        Ok(self.registry.lookup(key))
+    }
+
+    async fn begin_materialization(
+        &self,
+        key: CacheKey,
+        job_id: JobId,
+    ) -> Result<BeginOutcome> {
+        Ok(self.registry.begin_materialization(key, job_id))
+    }
+
+    async fn complete_materialization(
+        &self,
+        key: CacheKey,
+        job_id: JobId,
+        schema: SchemaRef,
+        locations: Vec<Vec<PartitionLocation>>,
+    ) -> Result<CompleteOutcome> {
+        Ok(self
+            .registry
+            .complete_materialization(key, job_id, schema, locations))
+    }
+
+    async fn pending_job(&self, key: &CacheKey) -> Result<Option<JobId>> {
+        Ok(self.registry.pending_job(key))
+    }
+
+    async fn invalidate_if(
+        &self,
+        key: &CacheKey,
+        materializing_job: &JobId,
+    ) -> Result<Option<MaterializedCache>> {
+        Ok(self.registry.invalidate_if(key, materializing_job))
+    }
+
+    async fn abort_materialization(
+        &self,
+        key: &CacheKey,
+        job_id: &JobId,
+    ) -> Result<bool> {
+        Ok(self.registry.abort_materialization(key, job_id))
+    }
+
+    async fn invalidate(&self, key: &CacheKey) -> Result<Option<MaterializedCache>> {
+        Ok(self.registry.invalidate(key))
+    }
+
+    async fn invalidate_executor(
+        &self,
+        executor_id: &str,
+    ) -> Result<Vec<(CacheKey, MaterializedCache)>> {
+        Ok(self.registry.invalidate_executor(executor_id))
+    }
+
+    async fn remove_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<(CacheKey, MaterializedCache)>> {
+        Ok(self.registry.remove_session(session_id))
+    }
+
+    async fn pinned_stages(&self) -> Result<HashSet<(JobId, usize)>> {
+        Ok(self.registry.pinned_stages())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
 
-    use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
+    use crate::cluster::memory::{
+        InMemoryCacheState, InMemoryClusterState, InMemoryJobState,
+    };
     use crate::cluster::test_util::{test_job_lifecycle, test_job_planning_failure};
-    use crate::cluster::{ClusterState, ClusterStateEvent, JobState, JobStateEvent};
+    use crate::cluster::{
+        BallistaCluster, CacheState, ClusterState, ClusterStateEvent, JobState,
+        JobStateEvent,
+    };
+    use crate::state::cache_registry::{BeginOutcome, CacheKey};
     use crate::test_utils::{
         test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
     };
     use ballista_core::JobId;
+    use ballista_core::config::BALLISTA_SCHEDULER_SHARE_FILE_STATISTICS_CACHE;
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::JobStatus;
     use ballista_core::serde::scheduler::{
@@ -557,7 +660,9 @@ mod test {
         ExecutorSpecification,
     };
     use ballista_core::utils::{default_config_producer, default_session_builder};
-    use datafusion::prelude::SessionConfig;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use datafusion::dataframe::DataFrameWriteOptions;
+    use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
     use futures::StreamExt;
     use tokio::sync::Barrier;
 
@@ -859,5 +964,158 @@ mod test {
         assert_eq!(expected, result);
 
         Ok(())
+    }
+
+    /// Every query gets a new session, so planning a scan only avoids
+    /// re-reading file footers if statistics outlive the session that
+    /// collected them.
+    #[tokio::test]
+    async fn test_in_memory_sessions_share_file_statistics() -> Result<()> {
+        let state = BallistaCluster::new_memory(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        )
+        .job_state();
+        let config = SessionConfig::new();
+
+        let caches = |ctx: &SessionContext| {
+            let cache_manager = &ctx.runtime_env().cache_manager;
+            (
+                cache_manager.get_file_statistic_cache().unwrap(),
+                cache_manager.get_list_files_cache().unwrap(),
+            )
+        };
+        let first = state.create_or_update_session("session_0", &config).await?;
+        let second = state.create_or_update_session("session_1", &config).await?;
+        let (stats_0, list_0) = caches(&first);
+        let (stats_1, list_1) = caches(&second);
+
+        assert!(Arc::ptr_eq(&stats_0, &stats_1));
+        // Each job lists the files itself, so that cached statistics are
+        // checked against the files as they are now.
+        assert!(!Arc::ptr_eq(&list_0, &list_1));
+
+        Ok(())
+    }
+
+    /// A session that turns sharing off keeps a statistics cache of its own,
+    /// and the sessions that share do not get it.
+    #[tokio::test]
+    async fn test_in_memory_sessions_opt_out_of_shared_file_statistics() -> Result<()> {
+        let state = BallistaCluster::new_memory(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        )
+        .job_state();
+        let opted_out = default_config_producer()
+            .set_bool(BALLISTA_SCHEDULER_SHARE_FILE_STATISTICS_CACHE, false);
+        let shared = default_config_producer();
+
+        let stats = |ctx: &SessionContext| {
+            ctx.runtime_env()
+                .cache_manager
+                .get_file_statistic_cache()
+                .unwrap()
+        };
+        // Built first, so its cache would become the shared one if it took part.
+        let own = state
+            .create_or_update_session("session_0", &opted_out)
+            .await?;
+        let first = state.create_or_update_session("session_1", &shared).await?;
+        let second = state.create_or_update_session("session_2", &shared).await?;
+
+        assert!(!Arc::ptr_eq(&stats(&own), &stats(&first)));
+        assert!(Arc::ptr_eq(&stats(&first), &stats(&second)));
+
+        Ok(())
+    }
+
+    /// Shared statistics must not outlive the file they describe: `COUNT(*)`
+    /// is answered from exact statistics, so stale ones give a wrong result.
+    #[tokio::test]
+    async fn test_in_memory_sessions_reread_changed_files() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("part-0.parquet");
+        // Given up front, as it is in a plan the scheduler decodes, so no file
+        // is read to infer it.
+        let schema = Schema::new(vec![Field::new("a", DataType::Int64, true)]);
+
+        let state = BallistaCluster::new_memory(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        )
+        .job_state();
+        let config = default_config_producer().with_collect_statistics(true);
+
+        for (session_id, rows) in [("session_0", 1), ("session_1", 2)] {
+            SessionContext::new()
+                .sql(&format!(
+                    "SELECT value AS a FROM generate_series(1, {rows})"
+                ))
+                .await?
+                .write_parquet(file.to_str().unwrap(), DataFrameWriteOptions::new(), None)
+                .await?;
+
+            let ctx = state.create_or_update_session(session_id, &config).await?;
+            ctx.register_parquet(
+                "t",
+                dir.path().to_str().unwrap(),
+                ParquetReadOptions::default().schema(&schema),
+            )
+            .await?;
+            assert_eq!(rows, ctx.table("t").await?.count().await?);
+        }
+
+        Ok(())
+    }
+
+    fn schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
+    }
+
+    // The registry logic is covered in state::cache_registry; these just prove
+    // the async backend delegates and that the cluster wires it up.
+
+    #[tokio::test]
+    async fn backend_delegates_miss_hit_invalidate() {
+        let state = InMemoryCacheState::default();
+        let key = CacheKey::new("s1", "c1");
+
+        assert!(state.lookup(&key).await.unwrap().is_none());
+        let claimed = state.begin_materialization(key.clone(), "j".into()).await;
+        assert_eq!(claimed.unwrap(), BeginOutcome::Claimed);
+        assert!(state.lookup(&key).await.unwrap().is_none()); // still pending
+
+        state
+            .complete_materialization(key.clone(), "j".into(), schema(), vec![])
+            .await
+            .unwrap();
+        assert!(state.lookup(&key).await.unwrap().is_some());
+
+        state.invalidate(&key).await.unwrap();
+        assert!(state.lookup(&key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cluster_exposes_cache_state() {
+        let cluster = BallistaCluster::new_memory(
+            "localhost:50050",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        );
+        let key = CacheKey::new("s1", "c1");
+        let cache = cluster.cache_state();
+        cache
+            .begin_materialization(key.clone(), "j".into())
+            .await
+            .unwrap();
+        cache
+            .complete_materialization(key.clone(), "j".into(), schema(), vec![])
+            .await
+            .unwrap();
+        assert!(cache.lookup(&key).await.unwrap().is_some());
     }
 }

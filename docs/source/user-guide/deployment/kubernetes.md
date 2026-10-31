@@ -54,6 +54,14 @@ docker push <your-repo>/datafusion-ballista-scheduler:latest
 docker push <your-repo>/datafusion-ballista-executor:latest
 ```
 
+If clients will fetch results from outside the cluster, also publish the result service image (see
+[Serving Results to Clients Outside the Cluster](#serving-results-to-clients-outside-the-cluster)):
+
+```bash
+docker tag apache/datafusion-ballista-result-service:latest <your-repo>/datafusion-ballista-result-service:latest
+docker push <your-repo>/datafusion-ballista-result-service:latest
+```
+
 ## Create Persistent Volume and Persistent Volume Claim
 
 Copy the following yaml to a `pv.yaml` file and apply to the cluster to create a persistent volume and a persistent
@@ -141,8 +149,6 @@ spec:
   ports:
     - port: 50050
       name: scheduler
-    - port: 80
-      name: scheduler-ui
   selector:
     app: ballista-scheduler
 ---
@@ -169,10 +175,23 @@ spec:
         app: ballista-scheduler
         ballista-cluster: ballista
     spec:
+      # Leaves 10s of headroom after the preStop sleep (5s) and the shutdown
+      # bound (45s).
+      terminationGracePeriodSeconds: 60
       containers:
         - name: ballista-scheduler
           image: <your-repo>/datafusion-ballista-scheduler:latest
-          args: ["--bind-port=50050"]
+          args:
+            - "--bind-port=50050"
+            # After SIGTERM, refuse new jobs and give the active ones, then
+            # in-flight requests, up to 45s to finish.
+            - "--graceful-shutdown-timeout-seconds=45"
+          lifecycle:
+            # Keeps accepting connections until the Service stops routing to
+            # the pod, as for the result service below.
+            preStop:
+              sleep:
+                seconds: 5
           ports:
             - containerPort: 50050
               name: flight
@@ -262,6 +281,7 @@ kubectl apply -f cluster.yaml
 This should show the following output:
 
 ```
+service/ballista-scheduler-registration created
 service/ballista-scheduler created
 deployment.apps/ballista-scheduler created
 deployment.apps/ballista-executor created
@@ -281,9 +301,9 @@ You can view the scheduler logs with `kubectl logs ballista-scheduler-<pod-id>`:
 
 ```
 $ kubectl logs ballista-scheduler-<pod-id>
-INFO ballista_scheduler::scheduler_process: Ballista v52.0.0 Scheduler listening on 0.0.0.0:50050
-INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "b5e81711-1c5c-46ec-8522-d8b359793188", host: "10.1.23.149", port: 50051 }
-INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "816e4502-a876-4ed8-b33f-86d243dcf63f", host: "10.1.23.150", port: 50051 }
+INFO ballista_scheduler::scheduler_process: Ballista Scheduler v54.0.0 (DataFusion v55.1.0) listening on 0.0.0.0:50050
+INFO ballista_scheduler::scheduler_server::grpc: Received register executor request for ExecutorRegistration { id: "b5e81711-1c5c-46ec-8522-d8b359793188", host: None, port: 50051, grpc_port: 50052, ... }
+INFO ballista_scheduler::scheduler_server::grpc: Received register executor request for ExecutorRegistration { id: "816e4502-a876-4ed8-b33f-86d243dcf63f", host: None, port: 50051, grpc_port: 50052, ... }
 ```
 
 ## Health Probes and Rolling Upgrades
@@ -297,7 +317,8 @@ Both the scheduler and executor expose two Kubernetes-style HTTP probe endpoints
   executor fleet down with it in a restart cascade.
 - **`/readyz`** — readiness. Returns `200 OK` when the pod is prepared to
   accept traffic (scheduler: at least `--min-ready-executors` executors
-  registered; executor: last heartbeat to the scheduler succeeded).
+  registered and not shutting down; executor: last heartbeat to the scheduler
+  succeeded).
   A failing `/readyz` removes the pod from `Service` endpoints but does
   **not** trigger a restart, so it is safe to gate on cluster state.
 
@@ -316,6 +337,38 @@ so the operator (or Deployment controller) can bring a matching version up.
 
 Bump `BALLISTA_PROTOCOL_VERSION` only on releases that change the
 executor↔scheduler wire format. Most releases will not bump it.
+
+### Stopping executors
+
+Executors finish their running tasks before exiting on SIGTERM, for up to
+`--graceful-shutdown-timeout-seconds` (10 by default). After that they abort and exit with an error.
+If tasks can run longer, raise that limit, set the executor pods' `terminationGracePeriodSeconds`
+above it, and raise the scheduler's `--executor-termination-grace-period` (30 by default) to at
+least the same, so the scheduler doesn't count a draining executor as lost.
+
+### Stopping the scheduler
+
+On SIGTERM the scheduler fails `/readyz` and refuses new jobs with
+`Unavailable`, while it keeps serving executors and clients so the jobs it has
+can finish. It then closes its connections, gives in-flight requests and result
+streams the rest of `--graceful-shutdown-timeout-seconds`, and exits. Jobs still
+running when that time passes are lost, because the scheduler keeps its state in
+memory.
+
+Once the scheduler has no jobs left, it closes its connections, including those
+of result fetches through the embedded Flight proxy (deprecated) and Flight SQL.
+The tickets carry everything needed to fetch the partition, so with two or more
+schedulers behind the client-facing Service, another one serves such a fetch.
+The result service doesn't involve the scheduler at all. A job's status, and the
+Flight SQL results the scheduler computed itself, are kept only by the
+scheduler that ran the job.
+
+The time limit defaults to 25 seconds, which fits inside the 30 seconds
+Kubernetes gives a pod by default. If your jobs can run longer, raise it, and
+set the pod's `terminationGracePeriodSeconds` above it, as the scheduler
+manifest above does with 45 and 60 seconds. The grace period also covers the
+5-second `preStop` sleep, which is why the manifest leaves 10 seconds of
+headroom.
 
 ### Rolling both Deployments together
 
@@ -365,7 +418,13 @@ their connection and re-register through `ballista-scheduler-registration`,
 which is what makes the incoming pod Ready. With `maxUnavailable: 0` the
 outgoing pod cannot be retired until the incoming one is Ready, and it cannot
 become Ready while the executors are still attached to the pod it is replacing.
-The cost is a short window with no scheduler, so queries in flight fail.
+
+The cost is a window with no Ready scheduler. The outgoing pod keeps its
+executors attached while it drains, so the incoming pod is not Ready until the
+outgoing one exits. That takes as long as its active jobs need, up to the 5-second
+`preStop` sleep plus `--graceful-shutdown-timeout-seconds` (45 in the manifest
+above). New jobs are refused with `Unavailable` meanwhile, and jobs still running
+when the time passes are lost.
 
 This is not `type: Recreate`. With `replicas: 3` Kubernetes still rolls one
 scheduler at a time and keeps the other two serving.
@@ -393,6 +452,225 @@ Use the following command to set up port-forwarding.
 kubectl port-forward service/ballista-scheduler 50050:50050
 ```
 
+## Serving Results to Clients Outside the Cluster
+
+Port forwarding the scheduler is enough to submit queries, but by default clients fetch query
+results directly from the executors, and executor pods are not reachable from outside the cluster.
+Deploy a result service that clients can reach, and have the scheduler point them at it. See
+[Fetching Query Results](../scheduler.md#fetching-query-results) for how it works.
+
+Save the following as `result-service.yaml`:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ballista-result-service
+spec:
+  ports:
+    - port: 50055
+      name: flight
+      # Plaintext HTTP/2, so a Gateway API route speaks gRPC to the pods.
+      appProtocol: kubernetes.io/h2c
+  selector:
+    app: ballista-result-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ballista-result-service
+spec:
+  # Replicas are interchangeable: each forwards any fetch to the executor that
+  # holds the partition and keeps no state, so scale with result traffic.
+  replicas: 2
+  # Start a replacement before stopping an old pod, so rollouts keep capacity.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: ballista-result-service
+  template:
+    metadata:
+      labels:
+        app: ballista-result-service
+        ballista-cluster: ballista
+    spec:
+      # Prefer placing replicas on different nodes, so they don't share a
+      # node's network bandwidth.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: ballista-result-service
+      # Leaves 10s of headroom after the preStop sleep (5s) and the drain
+      # bound (45s).
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: ballista-result-service
+          image: <your-repo>/datafusion-ballista-result-service:latest
+          args:
+            - "--bind-port=50055"
+            # After SIGTERM, stop accepting connections and give in-flight
+            # result streams up to 45s to finish.
+            - "--graceful-shutdown-timeout-seconds=45"
+          lifecycle:
+            # Kubernetes removes a terminating pod from the Service's endpoints
+            # in parallel with shutting it down, and kube-proxy and gateways
+            # learn of the removal asynchronously, so new connections can still
+            # arrive for a few seconds. Sleeping keeps the pod accepting them
+            # until routing catches up; SIGTERM follows once the hook returns.
+            preStop:
+              sleep:
+                seconds: 5
+          ports:
+            - containerPort: 50055
+              name: flight
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 50055
+            failureThreshold: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 50055
+            failureThreshold: 3
+            periodSeconds: 5
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ballista-result-service
+spec:
+  # Node drains evict at most one replica at a time.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ballista-result-service
+```
+
+When a pod is replaced or moved to another node, Kubernetes removes it from the Service's
+endpoints at the same time as it starts shutting the pod down. kube-proxy and any gateway pick up
+that removal asynchronously, so for a few seconds new connections can still be routed to the pod.
+The `preStop` sleep keeps the pod accepting connections during that window. On SIGTERM, which
+follows the sleep, it stops accepting connections and lets in-flight result streams finish, for up
+to `--graceful-shutdown-timeout-seconds` (10 by default), before exiting. The rolling-update
+strategy and the PodDisruptionBudget keep at least one replica serving throughout.
+
+Then add `--advertise-flight-endpoint` to the scheduler container's `args` in `cluster.yaml`. Which
+address to advertise depends on how clients reach the cluster.
+
+### Through port forwarding
+
+For a client on your own machine, forward a local port to the result service as well as to the
+scheduler, and advertise the local address:
+
+```yaml
+args: ["--bind-port=50050", "--advertise-flight-endpoint=127.0.0.1:50055"]
+```
+
+```bash
+kubectl apply -f result-service.yaml
+kubectl apply -f cluster.yaml
+kubectl port-forward service/ballista-scheduler 50050:50050 &
+kubectl port-forward service/ballista-result-service 50055:50055 &
+```
+
+`kubectl port-forward` sends all traffic to a single pod, so use this for testing only.
+
+### Through a TLS-terminating gateway
+
+The result service doesn't authenticate result fetches, and it connects to executors in
+plaintext. Make the gateway reachable only by trusted clients, for example through an internal
+load balancer or the gateway's access restrictions, and limit what the service can reach as
+described in [Restricting what the result service can reach](#restricting-what-the-result-service-can-reach).
+
+In production, expose the result service through the [Gateway API] with a Gateway that terminates
+TLS and a `GRPCRoute` to the result service, and advertise the gateway's address. TLS covers the
+connections from clients to the gateway. Behind it, the result service pods serve plaintext and
+connect to executors in plaintext.
+
+```yaml
+args:
+  - "--bind-port=50050"
+  - "--advertise-flight-endpoint=ballista-results.example.com:443"
+```
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ballista-results
+spec:
+  gatewayClassName: <your-gateway-class>
+  listeners:
+    - name: grpc
+      protocol: HTTPS
+      port: 443
+      hostname: ballista-results.example.com
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: ballista-results-tls
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: ballista-result-service
+spec:
+  parentRefs:
+    - name: ballista-results
+  hostnames:
+    - ballista-results.example.com
+  rules:
+    - backendRefs:
+        - name: ballista-result-service
+          port: 50055
+```
+
+Result streams are long-lived, so make sure the gateway implementation's idle and stream timeouts
+allow for the largest result. Clients fetch results over TLS by setting `ballista.client.use_tls`
+to `true`, with TLS roots for the gateway's certificate supplied through a gRPC endpoint override.
+That takes a client built with one of tonic's TLS features, as in the [mTLS cluster example].
+
+[gateway api]: https://gateway-api.sigs.k8s.io/
+[mtls cluster example]: https://github.com/apache/datafusion-ballista/blob/main/examples/examples/mtls-cluster.rs
+
+### Restricting what the result service can reach
+
+The result service checks no credentials, and it dials whichever executor address a fetch ticket
+names without checking that the address belongs to the cluster, so a forged ticket can make it
+connect to an arbitrary host. Keep it on networks you trust and, where your cluster enforces
+network policies, allow it to connect only to the executors' Arrow Flight port:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ballista-result-service-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: ballista-result-service
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ballista-executor
+      ports:
+        - port: 50051
+          protocol: TCP
+```
+
+If executors register with host names rather than pod IPs (`--external-host`), also allow DNS.
+
 ## Deleting the Ballista Cluster
 
 Run the following kubectl command to delete the cluster.
@@ -401,11 +679,20 @@ Run the following kubectl command to delete the cluster.
 kubectl delete -f cluster.yaml
 ```
 
+If you deployed a result service, delete it too:
+
+```bash
+kubectl delete -f result-service.yaml
+```
+
 ## Autoscaling Executors
 
 Ballista supports autoscaling for executors through [Keda](http://keda.sh). Keda allows for the scaling of a
 deployment through custom metrics which are exposed through the Ballista scheduler, and it
 can even scale the number of executors down to 0 if there is no activity in the cluster.
+
+> This is an optional scheduler feature. The scheduler must be built with the `keda-scaler` feature
+> for the external scaler endpoint to exist, and the published images are built without it.
 
 Keda can be installed in your kubernetes cluster through a single command line:
 

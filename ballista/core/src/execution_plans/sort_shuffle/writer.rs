@@ -23,6 +23,7 @@
 //! concurrently and then emits one file holding every bucket, laid out
 //! partition-major so each output partition stays one contiguous range.
 
+use datafusion::arrow::array::Array;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
@@ -32,12 +33,11 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
-use super::super::shuffle_writer::{result_schema, summaries_to_batch};
+use super::super::shuffle_writer::{handoff_stream, take_handoff};
 use super::super::shuffle_writer_trait::ShuffleWriter;
 use super::buffer::BufferedBatches;
 use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
-use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use super::spill::SpillManager;
 use crate::JobId;
 use crate::extension::SessionConfigExt;
@@ -60,13 +60,12 @@ use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 use datafusion::physical_plan::repartition::REPARTITION_RANDOM_STATE;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream, Statistics, StatisticsArgs, apply_expression_roots,
     displayable, statistics::ChildStats,
 };
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use log::{debug, warn};
 
 /// Result of finalizing shuffle output: (data_path, index_path, partition_write_stats)
@@ -92,6 +91,8 @@ struct InputPartitionOutput {
     /// Kept alive so the pool keeps accounting for this input until the
     /// consolidated write has consumed its buffers.
     _reservation: MemoryReservation,
+    // collect null counts for better planning
+    null_counts: Vec<u64>,
 }
 
 /// What one output partition's encoded rows amount to.
@@ -121,44 +122,27 @@ struct EncodedPartitions {
 fn encode_buffered_partitions(
     buffered: &mut BufferedBatches,
     schema: &SchemaRef,
-    config: &SortShuffleConfig,
     opts: &datafusion::arrow::ipc::writer::IpcWriteOptions,
 ) -> Result<EncodedPartitions> {
     let num_partitions = buffered.num_partitions();
-    let (batches, indices) = buffered.take();
+    let mut encoded = vec![Vec::new(); num_partitions];
+    let mut stats = vec![EncodedStats::default(); num_partitions];
 
-    let mut encoded = Vec::with_capacity(num_partitions);
-    let mut stats = Vec::with_capacity(num_partitions);
-
-    for partition_indices in indices.iter() {
-        let mut buf: Vec<u8> = Vec::new();
-        let (mut num_batches, mut num_rows, mut num_bytes) = (0u64, 0u64, 0u64);
-
-        if !partition_indices.is_empty() {
-            let iter = PartitionedBatchIterator::new(
-                &batches,
-                partition_indices,
-                config.batch_size,
-            );
-            let mut writer =
-                StreamWriter::try_new_with_options(&mut buf, schema, opts.clone())?;
-            for result in iter {
-                let batch = result?;
-                num_rows += batch.num_rows() as u64;
-                num_bytes += batch.get_array_memory_size() as u64;
-                num_batches += 1;
-                writer.write(&batch)?;
-            }
-            writer.finish()?;
+    // One writer open at a time: each holds its own compression context.
+    buffered.drain(|partition, batches| {
+        let mut writer =
+            StreamWriter::try_new_with_options(Vec::new(), schema, opts.clone())?;
+        let stat = &mut stats[partition];
+        for batch in batches {
+            let batch = batch?;
+            stat.num_rows += batch.num_rows() as u64;
+            stat.num_bytes += batch.get_array_memory_size() as u64;
+            stat.num_batches += 1;
+            writer.write(&batch)?;
         }
-
-        encoded.push(buf);
-        stats.push(EncodedStats {
-            num_batches,
-            num_rows,
-            num_bytes,
-        });
-    }
+        encoded[partition] = writer.into_inner()?;
+        Ok(())
+    })?;
 
     Ok(EncodedPartitions { encoded, stats })
 }
@@ -170,6 +154,7 @@ fn encode_buffered_partitions(
 struct WriterState {
     initialized: bool,
     handoffs: Vec<Option<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>>>,
+    column_null_counts: Vec<u64>,
 }
 
 impl Debug for WriterState {
@@ -496,6 +481,7 @@ impl SortShuffleWriterExec {
             state: Arc::new(Mutex::new(WriterState {
                 initialized: false,
                 handoffs: (0..output_partition_count).map(|_| None).collect(),
+                column_null_counts: Vec::new(),
             })),
         })
     }
@@ -506,6 +492,15 @@ impl SortShuffleWriterExec {
     pub fn with_task_id(mut self, task_id: usize) -> Self {
         self.task_id = task_id;
         self
+    }
+
+    /// Compute null counts for each column. This will be enhanced in future to add further
+    /// col stats for better query planning
+    pub fn column_null_counts(&self) -> Vec<u64> {
+        self.state
+            .lock()
+            .map(|s| s.column_null_counts.clone())
+            .unwrap_or_default()
     }
 
     /// Task id (append-order slot within the stage) this writer instance
@@ -606,8 +601,11 @@ impl SortShuffleWriterExec {
             )
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-            let mut buffered =
-                BufferedBatches::new(num_output_partitions, schema.clone());
+            let mut buffered = BufferedBatches::new(
+                num_output_partitions,
+                schema.clone(),
+                config.batch_size,
+            );
 
             let mut reservation =
                 MemoryConsumer::new(format!("SortShuffleWriter[{input_partition}]"))
@@ -621,19 +619,18 @@ impl SortShuffleWriterExec {
             let partition_reducer = StrengthReducedU64::new(num_output_partitions as u64);
             let mut spill_events: u64 = 0;
             let mut spill_triggers = SpillTriggerCounts::default();
-            // Absolute buffered-bytes counter, independent of the runtime
-            // `MemoryPool`. When `memory_limit` is non-zero it caps this counter
-            // as a second spill trigger; a `memory_limit` of 0 disables the cap
-            // so spilling is driven solely by memory-pool pressure.
-            let mut buffered_bytes: usize = 0;
-            // A limit of 0 disables the per-task budget, leaving the runtime
-            // `MemoryPool` as the sole spill trigger.
+            // `memory_limit` is a second spill trigger, independent of the
+            // `MemoryPool`; 0 disables it.
             let memory_limit = config.memory_limit_per_task_bytes;
             let per_task_budget_enabled = memory_limit > 0;
+            let mut null_counts = vec![0u64; schema.fields().len()];
 
             while let Some(result) = stream.next().await {
                 let input_batch = result?;
                 metrics.input_rows.add(input_batch.num_rows());
+                for (i, col) in input_batch.columns().iter().enumerate() {
+                    null_counts[i] += col.logical_null_count() as u64;
+                }
 
                 // Compute partition assignment for every row.
                 let timer = metrics.repart_time.timer();
@@ -646,22 +643,14 @@ impl SortShuffleWriterExec {
                 )?;
                 timer.done();
 
-                // Estimate memory growth: input batch + index Vec growth.
-                let mut growth = input_batch.get_array_memory_size();
-                let before = buffered.indices_allocated_size();
                 buffered.push_batch(input_batch, &per_partition_rows);
-                let after = buffered.indices_allocated_size();
-                growth += after.saturating_sub(before);
+                let buffered_bytes = buffered.memory_size();
 
-                // Mirror the growth in the runtime pool reservation so the pool
-                // sees this writer's memory usage. A rejected grow means the
-                // pool is under pressure and has *not* accounted for the batch
-                // just buffered, so spill instead of holding memory the pool
-                // believes is free. Spilling flushes that batch to disk and
-                // frees the reservation, which is the response a spillable
-                // consumer owes the pool.
-                let pool_rejected_growth = reservation.try_grow(growth).is_err();
-                buffered_bytes = buffered_bytes.saturating_add(growth);
+                // Mirror the buffered bytes in the pool. A refused resize
+                // means the pool has not accounted for the rows just
+                // buffered, so spill them and free the reservation.
+                let pool_rejected_growth =
+                    reservation.try_resize(buffered_bytes).is_err();
                 let budget_reached =
                     per_task_budget_enabled && buffered_bytes >= memory_limit;
 
@@ -673,10 +662,8 @@ impl SortShuffleWriterExec {
                         &mut buffered,
                         &mut spill_manager,
                         &mut reservation,
-                        config.batch_size,
                     )?;
                     spill_timer.done();
-                    buffered_bytes = 0;
 
                     if event_batches > 0 {
                         spill_events += 1;
@@ -753,7 +740,7 @@ impl SortShuffleWriterExec {
             // compression cost stays parallel across the task's inputs.
             let opts = create_write_options(compression_type)?;
             let EncodedPartitions { encoded, stats } =
-                encode_buffered_partitions(&mut buffered, &schema, &config, &opts)?;
+                encode_buffered_partitions(&mut buffered, &schema, &opts)?;
 
             Ok(InputPartitionOutput {
                 encoded,
@@ -761,13 +748,13 @@ impl SortShuffleWriterExec {
                 spill_manager,
                 schema,
                 _reservation: reservation,
+                null_counts,
             })
         }
     }
 }
 
-/// Spills *all* buffered partitions: for each partition, materializes its
-/// indices through `PartitionedBatchIterator` and appends each yielded batch
+/// Spills *all* buffered partitions: appends each partition's buffered rows
 /// to that partition's spill file. After this call, `buffered.is_empty()` is
 /// true and `reservation.size() == 0`.
 ///
@@ -778,28 +765,22 @@ fn spill_all_partitions(
     buffered: &mut BufferedBatches,
     spill_manager: &mut SpillManager,
     reservation: &mut MemoryReservation,
-    batch_size: usize,
 ) -> Result<(u64, u64)> {
     if buffered.is_empty() {
         return Ok((0, 0));
     }
     let mut batches_written: u64 = 0;
     let mut bytes_written: u64 = 0;
-    let (batches, indices) = buffered.take();
-    for (partition_id, partition_indices) in indices.iter().enumerate() {
-        if partition_indices.is_empty() {
-            continue;
-        }
-        let iter = PartitionedBatchIterator::new(&batches, partition_indices, batch_size);
-        for result in iter {
-            let batch = result?;
+    buffered.drain(|partition_id, batches| {
+        for batch in batches {
             let written = spill_manager
-                .spill(partition_id, &batch)
+                .spill(partition_id, &batch?)
                 .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
             batches_written += 1;
             bytes_written += written;
         }
-    }
+        Ok(())
+    })?;
     reservation.free();
     Ok((batches_written, bytes_written))
 }
@@ -1002,67 +983,33 @@ impl ExecutionPlan for SortShuffleWriterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let schema = result_schema();
-
-        let mut state = self.state.lock().map_err(|_| {
+        let mut guard = self.state.lock().map_err(|_| {
             DataFusionError::Internal(
                 "SortShuffleWriterExec state mutex poisoned".to_owned(),
             )
         })?;
+        let state = &mut *guard;
+        let rx = take_handoff(
+            "SortShuffleWriterExec",
+            &mut state.initialized,
+            &mut state.handoffs,
+            partition,
+            |senders| {
+                let writer = self.clone();
+                tokio::spawn(async move {
+                    run_coordinator(writer, context, senders).await;
+                });
+            },
+        )?;
+        drop(guard);
 
-        if !state.initialized {
-            state.initialized = true;
-            let k = state.handoffs.len();
-            let mut senders: Vec<oneshot::Sender<Result<Vec<ShuffleWritePartition>>>> =
-                Vec::with_capacity(k);
-            for slot in state.handoffs.iter_mut() {
-                let (tx, rx) = oneshot::channel();
-                senders.push(tx);
-                *slot = Some(rx);
-            }
-            let writer = self.clone();
-            let ctx = context.clone();
-            tokio::spawn(async move {
-                run_coordinator(writer, ctx, senders).await;
-            });
-        }
-
-        let rx = state
-            .handoffs
-            .get_mut(partition)
-            .and_then(Option::take)
-            .ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "SortShuffleWriterExec: execute({partition}) called twice or out of range (have {} partitions)",
-                    state.handoffs.len()
-                ))
-            })?;
-        drop(state);
-
-        let work_dir = self.work_dir.clone();
-        let job_id = self.job_id.clone();
-        let stage_id = self.stage_id;
-        let schema_captured = schema.clone();
-
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            schema,
-            futures::stream::once(async move {
-                let summaries = rx.await.map_err(|_| {
-                    DataFusionError::Internal(
-                        "SortShuffleWriterExec coordinator dropped without sending"
-                            .to_owned(),
-                    )
-                })??;
-                summaries_to_batch(
-                    summaries,
-                    schema_captured,
-                    &work_dir,
-                    &job_id,
-                    stage_id,
-                )
-            })
-            .try_flatten(),
-        )))
+        Ok(handoff_stream(
+            "SortShuffleWriterExec",
+            rx,
+            self.work_dir.clone(),
+            self.job_id.clone(),
+            self.stage_id,
+        ))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -1159,6 +1106,21 @@ async fn run_coordinator(
         }
     }
     writes.abort_all();
+
+    // Fold each input partition's per-column null counts into the task-level
+    // total and publish it on the shared state for `execute_query_stage`.
+    let mut column_null_counts: Vec<u64> = Vec::new();
+    for output in outputs.iter() {
+        if column_null_counts.len() < output.null_counts.len() {
+            column_null_counts.resize(output.null_counts.len(), 0);
+        }
+        for (slot, n) in column_null_counts.iter_mut().zip(&output.null_counts) {
+            *slot += n;
+        }
+    }
+    if let Ok(mut state) = writer.state.lock() {
+        state.column_null_counts = column_null_counts;
+    }
 
     // Every input partition has finished bucketing; emit the task's single
     // data file from all of them, then describe each output partition once.
@@ -1385,7 +1347,7 @@ mod tests {
     use super::*;
     use crate::error::BallistaError;
     use crate::execution_plans::ChaosExec;
-    use datafusion::arrow::array::{StringArray, UInt32Array};
+    use datafusion::arrow::array::{NullArray, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::datasource::memory::MemorySourceConfig;
@@ -1393,6 +1355,7 @@ mod tests {
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::prelude::SessionContext;
+    use futures::TryStreamExt;
     use tempfile::TempDir;
 
     fn create_test_input() -> Result<Arc<dyn ExecutionPlan>> {
@@ -2039,6 +2002,123 @@ mod tests {
             assert!(seen.contains(&k), "key {k} missing from round-trip");
         }
 
+        Ok(())
+    }
+
+    /// Build a sort-shuffle writer over `partitions`, drive every output
+    /// partition to completion (which is what publishes the task-level column
+    /// stats onto the shared state), and return the per-column null counts.
+    async fn collect_null_counts(
+        schema: SchemaRef,
+        partitions: Vec<Vec<RecordBatch>>,
+        hash_col: &str,
+        num_output_partitions: usize,
+    ) -> Result<Vec<u64>> {
+        let source = Arc::new(MemorySourceConfig::try_new(
+            &partitions,
+            schema.clone(),
+            None,
+        )?);
+        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(source));
+        let task_ctx = SessionContext::new().task_ctx();
+        let work_dir = TempDir::new()?;
+        let col_idx = schema.index_of(hash_col)?;
+
+        let writer = Arc::new(SortShuffleWriterExec::try_new(
+            "null_count_job".into(),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_string(),
+            Partitioning::Hash(
+                vec![Arc::new(Column::new(hash_col, col_idx))],
+                num_output_partitions,
+            ),
+            SortShuffleConfig::default(),
+        )?);
+
+        for r in drive_partition_results(writer.clone(), task_ctx).await {
+            r.expect("partition drive should succeed");
+        }
+        Ok(writer.column_null_counts())
+    }
+
+    #[tokio::test]
+    async fn column_null_counts_fold_across_inputs() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, true),
+            Field::new("b", DataType::Utf8, true),
+        ]));
+        // Per batch: "a" has 1 null, "b" has 2.
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(vec![Some(1), None, Some(3)])),
+                Arc::new(StringArray::from(vec![None, None, Some("x")])),
+            ],
+        )?;
+        // Two input partitions of the same batch -> the coordinator must SUM
+        // them: "a" = 1x2 = 2, "b" = 2x2 = 4. Also proves the shared-state
+        // read-back (we assert on the original Arc, not the driven clone) and
+        // that nulls are counted over the whole batch despite hashing on "a".
+        let partitions = vec![vec![batch.clone()], vec![batch]];
+        let counts = collect_null_counts(schema, partitions, "a", 2).await?;
+        assert_eq!(counts, vec![2, 4]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn column_null_counts_zero_for_fully_populated_column() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, false),
+            Field::new("b", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(vec![Some(1), Some(2), Some(3)])),
+                Arc::new(StringArray::from(vec![Some("p"), None, Some("q")])),
+            ],
+        )?;
+        let counts = collect_null_counts(schema, vec![vec![batch]], "a", 2).await?;
+        assert_eq!(counts, vec![0, 1]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn column_null_counts_empty_input_is_schema_width_zeros() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, true),
+            Field::new("b", DataType::Utf8, true),
+        ]));
+        // A zero-row batch: the accumulator is still schema-width and the
+        // coordinator's fold still runs, yielding zeros rather than an empty vec.
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(Vec::<Option<u32>>::new())),
+                Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            ],
+        )?;
+        let counts = collect_null_counts(schema, vec![vec![batch]], "a", 2).await?;
+        assert_eq!(counts, vec![0, 0]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn column_null_counts_counts_logical_nulls_for_null_type() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, true),
+            Field::new("n", DataType::Null, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(vec![Some(1), Some(2), Some(3)])),
+                Arc::new(NullArray::new(3)),
+            ],
+        )?;
+        let counts = collect_null_counts(schema, vec![vec![batch]], "a", 2).await?;
+        assert_eq!(counts, vec![0, 3]);
         Ok(())
     }
 
