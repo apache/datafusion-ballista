@@ -286,6 +286,49 @@ The following session-level keys tune its behavior:
 
 <!-- END GENERATED CONFIG REFERENCE -->
 
+### Partition-id shuffles
+
+A hash shuffle assigns rows to partitions with DataFusion's hash. That is
+consistent within a job, so joins and aggregations over shuffled inputs are
+correct, but it can't match data already partitioned by another function. Spark
+partitions by Murmur3, for example, and a Spark-bucketed table read without a
+shuffle only lines up with a shuffled input if the shuffle places rows the same
+way.
+
+A client that submits its own physical plan can do the placement itself. Put a
+`PartitionIdRepartitionExec` where a hash `RepartitionExec` would go, and have
+the plan below it compute each row's output partition into an integer column:
+
+```rust
+use ballista_core::execution_plans::PartitionIdRepartitionExec;
+
+// `plan` produces (key, value, pid): the id is column 2, and there are 8
+// output partitions.
+let shuffle = PartitionIdRepartitionExec::try_new(plan, 2, 8)?;
+```
+
+Output partition `i` holds exactly the rows whose id is `i`. The id column is
+dropped before the rows are written, so whatever reads the shuffle sees the
+input's columns without it (the id can't be the input's only column). A null,
+negative or out-of-range id fails the task.
+
+Some things to keep in mind:
+
+- The node only marks the boundary and can't be executed. The static planner
+  replaces it with a stage that ends in the sort-based writer. The adaptive
+  planner rejects it, because it may coalesce or re-plan an exchange's
+  partitions, which would break the placement. Set
+  `ballista.planner.adaptive.enabled` to `false` if a plan containing the node
+  would otherwise be planned adaptively.
+- The shuffle's output is reported as unknown partitioning, whatever function
+  produced the ids, so operators that require hash-partitioned input won't see
+  their requirement met. Put the node under operators that declare no
+  distribution requirement, such as a fragment node that does its joins and
+  aggregations internally.
+- `BallistaPhysicalExtensionCodec` serializes the node, so a plan that contains
+  it can be submitted over gRPC. A custom physical codec only needs to delegate
+  to it, as in the [extensions example](extensions-example.md).
+
 ## Adaptive Query Execution
 
 Ballista runs adaptive query execution (AQE) by default: the scheduler re-runs
