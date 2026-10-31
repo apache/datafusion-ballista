@@ -32,6 +32,7 @@ use ballista_core::config::ExecutionMode;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::execution_plans::compute_global_output_partition_ids;
+use ballista_core::execution_plans::plan_algebra::PartitionSliceableResolver;
 use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
@@ -149,6 +150,9 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     task_max_failures: usize,
     /// Maximum number of failure attempts for stage-level retry before the stage is considered failed.
     stage_max_failures: usize,
+    /// Resolver for nodes Ballista does not know. See
+    /// [`SchedulerConfig::partition_sliceable_resolver`].
+    partition_sliceable_resolver: Option<PartitionSliceableResolver>,
 }
 
 /// Contains the execution graph and cached data to improve performance
@@ -200,19 +204,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         scheduler_endpoint: String,
         config: Arc<SchedulerConfig>,
     ) -> Self {
-        Self {
+        Self::with_launcher(
             state,
             codec,
-            scheduler_id: scheduler_id.clone(),
-            active_job_cache: Arc::new(DashMap::new()),
-            outstanding_task_reservations: Arc::new(DashMap::new()),
-            launcher: Arc::new(DefaultTaskLauncher::new(scheduler_endpoint)),
-            task_max_failures: config.task_max_failures,
-            stage_max_failures: config.stage_max_failures,
-        }
+            scheduler_id,
+            Arc::new(DefaultTaskLauncher::new(scheduler_endpoint)),
+            config,
+        )
     }
 
-    #[allow(dead_code)]
+    /// Creates a new `TaskManager` that launches its tasks with `launcher`.
     pub(crate) fn with_launcher(
         state: Arc<dyn JobState>,
         codec: BallistaCodec<T, U>,
@@ -229,6 +230,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             launcher,
             task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
+            partition_sliceable_resolver: config.partition_sliceable_resolver.clone(),
         }
     }
 
@@ -878,6 +880,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// ShuffleReader partitions) to this task's assigned slice, then encoded
     /// fresh. No shared-plan cache — each task gets its own bytes because
     /// each task's plan is different.
+    ///
+    /// Fails if the plan holds a leaf that cannot be restricted to the slice.
     #[allow(dead_code)]
     pub fn prepare_task_definition(
         &self,
@@ -892,6 +896,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let restricted = restrict_plan_to_partitions(
                 task.plan.clone(),
                 &task.global_input_partition_ids,
+                self.partition_sliceable_resolver.as_ref(),
             )?;
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(
@@ -1013,6 +1018,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let restricted = restrict_plan_to_partitions(
                 task.plan.clone(),
                 &task.global_input_partition_ids,
+                self.partition_sliceable_resolver.as_ref(),
             )?;
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(restricted, codec)?;
