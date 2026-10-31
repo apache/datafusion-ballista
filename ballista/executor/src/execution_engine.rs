@@ -451,8 +451,8 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         &self,
     ) -> Result<Vec<ballista_core::serde::protobuf::WindowStateReport>> {
         // Both partitioning-preserving writers can sit over a window; the sort
-        // writer is Hash-partitioned by construction, which the prefix rewrite
-        // never plants.
+        // writer repartitions (by hash or range), which the prefix rewrite never
+        // plants.
         let captured = match &self.shuffle_writer {
             ShuffleWriterVariant::Passthrough(writer) => writer.collect_window_state()?,
             ShuffleWriterVariant::Range(writer) => writer.collect_window_state(),
