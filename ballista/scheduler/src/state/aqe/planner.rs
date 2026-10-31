@@ -25,7 +25,8 @@ use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
     DistributedExchangeRule, NormalizeInterleaveRule, OptimizeSkewedJoinRule,
-    ParallelWindowRule, PrefixWindowRule, PropagateEmptyExecRule, SelectJoinRule,
+    ParallelWindowRule, PinSubmittedShufflesRule, PrefixWindowRule, PropagateEmptyExecRule,
+    SelectJoinRule,
 };
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
@@ -174,6 +175,55 @@ impl AdaptivePlanner {
         let state_builder = SessionStateBuilder::from(ctx.state());
         Self::try_new_with_optimizers(
             state_builder,
+            plan,
+            job_id,
+            Self::default_optimizers(plan_id_generator),
+        )
+    }
+
+    /// Creates a new `AdaptivePlanner` over an already-built physical plan,
+    /// with the default physical optimizer rules.
+    ///
+    /// This is the physical-plan counterpart of [`Self::try_new`]: the
+    /// plan-preparation rules that `try_new` runs while planning the logical
+    /// plan are applied to `plan` once here, then the plan is handed to the
+    /// adaptive optimizer chain. There is no logical plan, so `EXPLAIN` is not
+    /// handled on this path.
+    ///
+    /// The submitter placed the plan's hash repartitions deliberately, so they
+    /// are pinned as stage boundaries first ([`PinSubmittedShufflesRule`]);
+    /// otherwise DataFusion's `EnforceDistribution` would drop any that no
+    /// operator requirement asks for, such as one feeding an extension node.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - The session context
+    /// * `plan` - The physical plan for the job.
+    /// * `job_id` - The unique identifier for the job.
+    pub fn try_new_from_physical(
+        ctx: &SessionContext,
+        plan: Arc<dyn ExecutionPlan>,
+        job_id: JobId,
+    ) -> common::Result<Self> {
+        let plan_id_generator = Arc::new(AtomicUsize::new(0));
+
+        let mut preparation_optimizers =
+            Self::plan_preparation_optimizers(plan_id_generator.clone());
+        preparation_optimizers.push(Arc::new(PinSubmittedShufflesRule::new(
+            plan_id_generator.clone(),
+        )));
+        let plan_preparation_state = Self::create_session_state(
+            SessionStateBuilder::from(ctx.state()),
+            preparation_optimizers,
+        );
+        let plan = DefaultPhysicalPlanner::default().optimize_physical_plan(
+            plan,
+            &plan_preparation_state,
+            |_, _| {},
+        )?;
+
+        Self::try_new_with_optimizers(
+            SessionStateBuilder::from(ctx.state()),
             plan,
             job_id,
             Self::default_optimizers(plan_id_generator),
