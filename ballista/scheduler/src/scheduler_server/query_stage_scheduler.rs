@@ -32,7 +32,6 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
 use tokio::sync::mpsc::error::TrySendError;
 
-use crate::cache::CACHE_DATA_LOST;
 use crate::config::{SchedulerConfig, WorkAvailableReason};
 use crate::metrics::SchedulerMetricsCollector;
 use crate::scheduler_server::timestamp_millis;
@@ -133,6 +132,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                 },
             )
             .await?;
+        Ok(())
+    }
+
+    /// Offers the vcores an aborted job gave back to the jobs waiting for
+    /// them. A pipelined job waiting to be placed needs this: the scheduling
+    /// pass that follows a task status report runs before the job failure that
+    /// report causes, and nothing else may come along to run another.
+    async fn revive_after_abort(
+        &self,
+        event_sender: &EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        if self.state.config.is_push_staged_scheduling() {
+            event_sender
+                .post_event(QueryStageSchedulerEvent::ReviveOffers)
+                .await?;
+        }
         Ok(())
     }
 
@@ -280,13 +295,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                     failed_at,
                     event_sender,
                 )
-                .await;
+                .await?;
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
                 self.on_job_updated(job_id).await;
             }
             QueryStageSchedulerEvent::JobCancel(job_id) => {
-                self.on_job_cancel(job_id, event_sender).await;
+                self.on_job_cancel(job_id, event_sender).await?;
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
                 self.on_task_updating(executor_id, tasks_status, event_sender)
@@ -591,14 +606,31 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         self.state
             .on_job_terminal(&job_id, JobEnd::Finished, &event_sender)
             .await;
-        let intermediate_stage_ids =
-            match self.state.task_manager.succeed_job(&job_id).await {
-                Ok(ids) => ids,
-                Err(e) => {
-                    error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
-                    vec![]
-                }
-            };
+        // Vcores a pipelined job held for its whole life.
+        let executor_manager = self.state.executor_manager.clone();
+        let refund_vcores = self.state.config.is_push_staged_scheduling();
+        let sender = event_sender.clone();
+        let release_reservation = move |reservation| async move {
+            if refund_vcores {
+                executor_manager.unbind_tasks(reservation).await?;
+                sender
+                    .post_event(QueryStageSchedulerEvent::ReviveOffers)
+                    .await?;
+            }
+            Ok(())
+        };
+        let intermediate_stage_ids = match self
+            .state
+            .task_manager
+            .succeed_job(&job_id, release_reservation)
+            .await
+        {
+            Ok(intermediate_stage_ids) => intermediate_stage_ids,
+            Err(e) => {
+                error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
+                vec![]
+            }
+        };
         self.state
             .clean_up_successful_job(job_id, intermediate_stage_ids)
             .await;
@@ -611,7 +643,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         queued_at: u64,
         failed_at: u64,
         event_sender: EventSender<QueryStageSchedulerEvent>,
-    ) {
+    ) -> Result<()> {
         self.metrics_collector
             .record_failed(&job_id, queued_at, failed_at);
 
@@ -624,6 +656,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             error!("Fail to abort job {job_id} due to {e:?}");
         }
         self.state.clean_up_failed_job(job_id);
+        self.revive_after_abort(&event_sender).await
     }
 
     async fn on_job_updated(&self, job_id: JobId) {
@@ -648,7 +681,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         &self,
         job_id: JobId,
         event_sender: EventSender<QueryStageSchedulerEvent>,
-    ) {
+    ) -> Result<()> {
         self.metrics_collector.record_cancelled(&job_id);
 
         info!("Job cancelled: [{job_id}]");
@@ -660,6 +693,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             .on_job_terminal(&job_id, JobEnd::Cancelled, &event_sender)
             .await;
         self.state.clean_up_failed_job(job_id);
+        self.revive_after_abort(&event_sender).await
     }
 
     async fn on_task_updating(
@@ -717,7 +751,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         event_sender: EventSender<QueryStageSchedulerEvent>,
     ) -> Result<()> {
         match self.state.task_manager.executor_lost(&executor_id).await {
-            Ok((tasks, lost_cache)) => {
+            Ok(outcome) => {
+                let tasks = outcome.tasks_to_cancel;
                 if !tasks.is_empty()
                     && let Err(e) = self
                         .state
@@ -727,23 +762,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                 {
                     warn!("Fail to cancel running tasks due to {e:?}");
                 }
-                if self.state.config.is_push_staged_scheduling() {
-                    event_sender
-                        .post_event(QueryStageSchedulerEvent::ReviveOffers)
-                        .await?;
-                }
-                // Cache data is another job's output, which a job's
-                // graph cannot re-run: fail the jobs that lost it.
-                for (job_id, queued_at) in lost_cache {
+                for (job_id, fail_message, queued_at) in outcome.failed_jobs {
                     event_sender
                         .post_event(QueryStageSchedulerEvent::JobRunningFailed {
-                            fail_message: format!(
-                                "Job {job_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
-                            ),
                             job_id,
+                            fail_message,
                             queued_at,
                             failed_at: timestamp_millis(),
                         })
+                        .await?;
+                }
+                if self.state.config.is_push_staged_scheduling() {
+                    event_sender
+                        .post_event(QueryStageSchedulerEvent::ReviveOffers)
                         .await?;
                 }
             }

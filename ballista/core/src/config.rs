@@ -281,7 +281,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string()))
             .with_doc_default("number of available CPU cores"),
         ConfigEntry::new(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY.to_string(),
-                         "Task scheduling policy of a standalone in-process cluster: `pull-staged`, where the executor polls the scheduler for work, or `push-staged`, where the scheduler pushes tasks to the executor.".to_string(),
+                         "Task scheduling policy of a standalone in-process cluster: `pull-staged`, where the executor polls the scheduler for work, or `push-staged`, where the scheduler pushes tasks to the executor. `ballista.execution.mode = pipelined` always uses `push-staged`.".to_string(),
                          DataType::Utf8, Some(TaskSchedulingPolicy::PullStaged.to_string())),
         ConfigEntry::new(BALLISTA_CACHE_NOOP.to_string(),
                          "When true (the default), DataFrame::cache() does nothing. When false, the first action on a cached DataFrame materializes it in the cluster, and later actions read it back instead of recomputing it".to_string(),
@@ -580,7 +580,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
              has lower latency, but a failed task fails the job instead of \
              being retried, and a job waits until it can reserve the vcores \
              of its widest stage all at once. `pipelined` requires push-staged \
-             scheduling, and the scheduler does not run it yet."
+             scheduling."
                 .to_string(),
             DataType::Utf8,
             Some(ExecutionMode::Blocking.to_string()),
@@ -822,9 +822,15 @@ impl BallistaConfig {
     }
 
     /// Returns the task scheduling policy of a standalone in-process cluster.
+    ///
+    /// Pipelined execution places all of a job's tasks at once, which only
+    /// push-staged scheduling can do, so it overrides the configured policy.
     pub fn standalone_task_scheduling_policy(
         &self,
     ) -> std::result::Result<TaskSchedulingPolicy, DataFusionError> {
+        if self.execution_mode()? == ExecutionMode::Pipelined {
+            return Ok(TaskSchedulingPolicy::PushStaged);
+        }
         match self
             .get_string_setting(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY)
             .trim()
@@ -1420,6 +1426,23 @@ mod tests {
             err.to_string()
                 .contains("invalid standalone task scheduling policy eager")
         );
+
+        // Pipelined execution needs push-staged, whatever the policy says.
+        config
+            .options_mut()
+            .set(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY, "pull-staged")
+            .unwrap();
+        config
+            .options_mut()
+            .set(BALLISTA_EXECUTION_MODE, "pipelined")
+            .unwrap();
+        assert!(matches!(
+            config
+                .ballista_config()
+                .standalone_task_scheduling_policy()
+                .unwrap(),
+            TaskSchedulingPolicy::PushStaged
+        ));
     }
 
     #[test]

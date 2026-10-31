@@ -149,6 +149,36 @@ impl ExecutorManager {
         self.cluster_state.unbind_tasks(executor_slots).await
     }
 
+    /// The executors a pipelined job can be placed on, keyed by id: every
+    /// alive executor, with its metadata and current free vcores.
+    pub(crate) async fn placement_candidates(
+        &self,
+    ) -> Result<(
+        HashMap<String, ExecutorMetadata>,
+        Vec<protobuf::AvailableVcores>,
+    )> {
+        let alive = self.get_alive_executors();
+        let metadata = self
+            .cluster_state
+            .registered_executor_metadata()
+            .await
+            .into_iter()
+            .filter(|metadata| alive.contains(&metadata.id))
+            .map(|metadata| (metadata.id.clone(), metadata))
+            .collect();
+        let available = self.cluster_state.available_vcores(Some(&alive)).await?;
+        Ok((metadata, available))
+    }
+
+    /// Takes the given vcores from their executors all at once, or none at
+    /// all. Returns whether the reservation was made.
+    pub(crate) async fn reserve_vcores(
+        &self,
+        reservation: &[ExecutorSlot],
+    ) -> Result<bool> {
+        self.cluster_state.reserve_vcores(reservation).await
+    }
+
     /// Sends RPC requests to executors to cancel the specified running tasks.
     pub async fn cancel_running_tasks(&self, tasks: Vec<RunningTaskInfo>) -> Result<()> {
         let mut tasks_to_cancel: HashMap<String, Vec<protobuf::RunningTaskInfo>> =

@@ -74,9 +74,10 @@ pub async fn new_standalone_scheduler_from_state(
 /// Creates a standalone scheduler with custom session builder, config producer, and codec.
 ///
 /// The scheduler waits for executors to poll it for work, unless
-/// `ballista.standalone.task_scheduling_policy` is `push-staged`: then it
-/// pushes tasks to executors, which a standalone executor started from the
-/// same configuration supports.
+/// `ballista.standalone.task_scheduling_policy` is `push-staged` or the
+/// configuration asks for pipelined execution: then it pushes tasks to
+/// executors, which a standalone executor started from the same
+/// configuration supports.
 ///
 /// Returns the socket address the scheduler is listening on.
 pub async fn new_standalone_scheduler_with_builder(

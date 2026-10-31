@@ -50,6 +50,15 @@ jobs:
           - label: "AQE on, multi-partition tasks"
             planner_args: "-c ballista.planner.adaptive.enabled=true -c ballista.scheduler.max_partitions_per_task=0"
             slug: "aqe-on-mpt"
+          # The cluster runs push-staged (the binaries' default), which
+          # pipelined execution requires. A pipelined job runs all its stages
+          # at once, so all of their sorts share the executor's memory pool at
+          # the same time: 2GB is not enough for q8's sort-merge joins over 16
+          # partitions per stage.
+          - label: "pipelined"
+            planner_args: "-c ballista.execution.mode=pipelined"
+            slug: "pipelined"
+            executor_memory: "8GB"
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -80,6 +89,7 @@ jobs:
         # Same expression the log-upload step globs, so the two cannot drift.
         env:
           CLUSTER_DIR: ${{ runner.temp }}
+          EXECUTOR_MEMORY: ${{ matrix.executor_memory || '2GB' }}
         run: ci/scripts/ballista_cluster.sh start
 
       - name: Run TPC-H queries against Ballista cluster

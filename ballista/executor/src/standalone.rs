@@ -88,7 +88,8 @@ pub async fn new_standalone_executor_from_state(
 ///
 /// The executor binds to a random available port on localhost. It polls the
 /// scheduler for work, unless `ballista.standalone.task_scheduling_policy` is
-/// `push-staged`: then it registers with the scheduler and takes the tasks the
+/// `push-staged` or the configuration asks for pipelined execution: then it
+/// registers with the scheduler and takes the tasks the
 /// scheduler pushes to it, and expects a standalone scheduler started from the
 /// same configuration.
 pub async fn new_standalone_executor_from_builder(

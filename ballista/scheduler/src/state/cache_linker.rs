@@ -586,6 +586,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         };
         let (schema, locations) = {
             let graph = graph.read().await;
+            // Cache builds run blocking (see `SchedulerState::submit_job`); a
+            // pipelined job streams its output and leaves nothing to record.
+            if graph.as_pipelined().is_some() {
+                return Err(
+                    "it ran pipelined, which leaves no output to cache".to_owned()
+                );
+            }
             (
                 graph.physical_plan().schema(),
                 shape_locations(graph.output_locations()),
@@ -765,12 +772,12 @@ mod tests {
     use crate::test_utils::{
         MetricEvent, SchedulerTest, TaskRunnerFn, TestMetricsCollector,
     };
-    use ballista_core::config::TaskSchedulingPolicy;
+    use ballista_core::config::{BALLISTA_EXECUTION_MODE, TaskSchedulingPolicy};
     use ballista_core::extension::BallistaCacheNode;
     use ballista_core::serde::protobuf::job_status::Status;
     use ballista_core::serde::protobuf::{
-        ExecutionError, FailedTask, MultiTaskDefinition, TaskId, TaskStatus, failed_task,
-        task_status,
+        ExecutionError, FailedTask, FetchPartitionError, MultiTaskDefinition, TaskId,
+        TaskStatus, failed_task, task_status,
     };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
@@ -1149,6 +1156,134 @@ mod tests {
             .executor_meta
             .id
             .clone()
+    }
+
+    /// A pipelined session builds its caches as blocking jobs, which leave
+    /// shuffle files to cache, and reads them as pipelined jobs.
+    #[tokio::test]
+    async fn a_pipelined_session_builds_its_cache_blocking() {
+        let (mut test, metrics) = scheduler_test(None).await;
+        test.set_session_option(BALLISTA_EXECUTION_MODE, "pipelined")
+            .unwrap();
+        let plan = cache_over("c1", scan());
+
+        let read = test.submit("query", &plan).await.unwrap();
+        assert!(is_successful(&finish(&mut test, &read).await));
+        let entry = test
+            .cache_state()
+            .lookup(&CacheKey::new("session", "c1"))
+            .await
+            .unwrap()
+            .expect("the cache entry is recorded");
+        assert!(entry.locations.iter().flatten().next().is_some());
+
+        let again = test.submit("again", &plan).await.unwrap();
+        assert!(is_successful(&finish(&mut test, &again).await));
+        assert_eq!(completed_jobs(&metrics), 3, "one build, two reads");
+    }
+
+    /// An executor holding the cache's data is lost while a pipelined read job
+    /// runs: the job fails naming the loss, and a retry rebuilds the cache.
+    #[tokio::test]
+    async fn losing_an_executor_with_cache_data_fails_a_pipelined_query() {
+        let (mut test, _metrics) = scheduler_test(None).await;
+        let plan = cache_over("c1", scan());
+        // Built under the default (blocking) mode, so the build can be
+        // stepped while the read job is held.
+        let read = test.submit("query", &plan).await.unwrap();
+        let entry = build(&mut test, "c1").await;
+        finish(&mut test, &read).await;
+
+        test.set_session_option(BALLISTA_EXECUTION_MODE, "pipelined")
+            .unwrap();
+        let read = test.submit("pipelined", &plan).await.unwrap();
+        wait_until_running(&test, &read).await;
+        let holder = holder_of(&entry);
+        test.lose_executor(&holder).await.unwrap();
+
+        let error = failure(&finish(&mut test, &read).await);
+        assert!(error.contains(CACHE_DATA_LOST), "{error}");
+
+        let retry = test.submit("retry", &plan).await.unwrap();
+        assert!(is_successful(&finish(&mut test, &retry).await));
+        let rebuilt = test
+            .cache_state()
+            .lookup(&CacheKey::new("session", "c1"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(rebuilt.materializing_job, entry.materializing_job);
+    }
+
+    /// A pipelined read job fails to fetch cache data whose executor is still
+    /// alive: the job fails naming the loss, so the build is dropped and a
+    /// retry rebuilds it rather than failing the same way.
+    #[tokio::test]
+    async fn a_lost_cache_fetch_fails_a_pipelined_query_and_drops_the_cache() {
+        let lost: Arc<
+            std::sync::Mutex<Option<ballista_core::serde::scheduler::PartitionLocation>>,
+        > = Arc::default();
+        let runner = {
+            let lost = lost.clone();
+            let succeed = crate::test_utils::default_task_runner();
+            TaskRunnerFn::new(move |executor: String, task: MultiTaskDefinition| {
+                use crate::test_utils::TaskRunner;
+                let Some(location) = lost.lock().unwrap().clone() else {
+                    return succeed.run(executor, task);
+                };
+                let now = timestamp_millis();
+                task.task_ids
+                    .into_iter()
+                    .map(|TaskId { task_id, .. }| TaskStatus {
+                        task_id,
+                        job_id: task.job_id.clone(),
+                        stage_id: task.stage_id,
+                        stage_attempt_num: task.stage_attempt_num,
+                        launch_time: now,
+                        start_exec_time: now,
+                        end_exec_time: now,
+                        metrics: vec![],
+                        status: Some(task_status::Status::Failed(FailedTask {
+                            error: "fetch failed".to_owned(),
+                            retryable: false,
+                            count_to_failures: false,
+                            failed_reason: Some(
+                                failed_task::FailedReason::FetchPartitionError(
+                                    FetchPartitionError {
+                                        executor_id: location.executor_meta.id.clone(),
+                                        map_stage_id: location.partition_id.stage_id
+                                            as u32,
+                                        map_partition_id: location
+                                            .partition_id
+                                            .partition_id
+                                            as u32,
+                                    },
+                                ),
+                            ),
+                        })),
+                    })
+                    .collect()
+            })
+        };
+        let (mut test, _metrics) = scheduler_test(Some(Arc::new(runner))).await;
+        test.set_session_option(BALLISTA_EXECUTION_MODE, "pipelined")
+            .unwrap();
+        let plan = cache_over("c1", scan());
+        let read = test.submit("query", &plan).await.unwrap();
+        assert!(is_successful(&finish(&mut test, &read).await));
+        let key = CacheKey::new("session", "c1");
+        let entry = test.cache_state().lookup(&key).await.unwrap().unwrap();
+
+        *lost.lock().unwrap() = entry.locations.iter().flatten().next().cloned();
+        let read = test.submit("lost", &plan).await.unwrap();
+        let error = failure(&finish(&mut test, &read).await);
+        assert!(error.contains(CACHE_DATA_LOST), "{error}");
+
+        *lost.lock().unwrap() = None;
+        let retry = test.submit("retry", &plan).await.unwrap();
+        assert!(is_successful(&finish(&mut test, &retry).await));
+        let rebuilt = test.cache_state().lookup(&key).await.unwrap().unwrap();
+        assert_ne!(rebuilt.materializing_job, entry.materializing_job);
     }
 
     /// A cache a held job reads goes stale while it waits for another cache:

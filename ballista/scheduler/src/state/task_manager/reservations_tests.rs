@@ -219,7 +219,13 @@ async fn executor_loss_discards_only_lost_executor_reservations() -> Result<()> 
     ]);
     // Neither job has a cached graph: executor cleanup must use the ledger.
     assert!(manager.active_job_cache.is_empty());
-    assert!(manager.executor_lost("executor-1").await?.0.is_empty());
+    assert!(
+        manager
+            .executor_lost("executor-1")
+            .await?
+            .tasks_to_cancel
+            .is_empty()
+    );
     assert_eq!(manager.outstanding_task_reservations.len(), 1);
     assert_eq!(
         manager.take_vcores_for_statuses("executor-1", &[completed(&lost)]),

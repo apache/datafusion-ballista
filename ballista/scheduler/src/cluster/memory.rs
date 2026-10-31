@@ -105,6 +105,43 @@ impl ClusterState for InMemoryClusterState {
         Ok(bound_tasks)
     }
 
+    async fn available_vcores(
+        &self,
+        executors: Option<&HashSet<String>>,
+    ) -> Result<Vec<AvailableVcores>> {
+        let guard = self.available_vcores.lock().await;
+        Ok(guard
+            .values()
+            .filter(|data| {
+                executors
+                    .map(|executors| executors.contains(&data.executor_id))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn reserve_vcores(&self, reservation: &[ExecutorSlot]) -> Result<bool> {
+        let mut needed: HashMap<&str, u32> = HashMap::new();
+        for (executor_id, vcores) in reservation {
+            *needed.entry(executor_id.as_str()).or_default() += vcores;
+        }
+        let mut guard = self.available_vcores.lock().await;
+        let fits = needed.iter().all(|(executor_id, vcores)| {
+            guard
+                .get(*executor_id)
+                .is_some_and(|data| data.vcores >= *vcores)
+        });
+        if fits {
+            for (executor_id, vcores) in needed {
+                if let Some(data) = guard.get_mut(executor_id) {
+                    data.vcores -= vcores;
+                }
+            }
+        }
+        Ok(fits)
+    }
+
     async fn unbind_tasks(&self, executor_slots: Vec<ExecutorSlot>) -> Result<()> {
         let mut increments = HashMap::new();
         for (executor_id, num_vcores) in executor_slots {
