@@ -23,7 +23,6 @@
 //! concurrently and then emits one file holding every bucket, laid out
 //! partition-major so each output partition stays one contiguous range.
 
-use datafusion::arrow::array::Array;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
@@ -33,7 +32,9 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
-use super::super::shuffle_writer::{handoff_stream, take_handoff};
+use super::super::shuffle_writer::{
+    ColumnStatsCollector, handoff_stream, sketched_columns, take_handoff,
+};
 use super::super::shuffle_writer_trait::ShuffleWriter;
 use super::buffer::BufferedBatches;
 use super::config::SortShuffleConfig;
@@ -41,7 +42,7 @@ use super::index::ShuffleIndex;
 use super::spill::SpillManager;
 use crate::JobId;
 use crate::extension::SessionConfigExt;
-use crate::serde::protobuf::ShuffleWritePartition;
+use crate::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
 
 use crate::utils::create_write_options;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -91,8 +92,6 @@ struct InputPartitionOutput {
     /// Kept alive so the pool keeps accounting for this input until the
     /// consolidated write has consumed its buffers.
     _reservation: MemoryReservation,
-    // collect null counts for better planning
-    null_counts: Vec<u64>,
 }
 
 /// What one output partition's encoded rows amount to.
@@ -154,7 +153,6 @@ fn encode_buffered_partitions(
 struct WriterState {
     initialized: bool,
     handoffs: Vec<Option<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>>>,
-    column_null_counts: Vec<u64>,
 }
 
 impl Debug for WriterState {
@@ -290,6 +288,8 @@ pub struct SortShuffleWriterExec {
     /// it spawns per-input-partition write tasks) participates in the
     /// same coordinator.
     state: Arc<Mutex<WriterState>>,
+    /// Statistics of the rows this task wrote, shared with clones.
+    column_stats: ColumnStatsCollector,
 }
 
 impl Clone for SortShuffleWriterExec {
@@ -306,6 +306,7 @@ impl Clone for SortShuffleWriterExec {
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             state: self.state.clone(),
+            column_stats: self.column_stats.clone(),
         }
     }
 }
@@ -481,8 +482,8 @@ impl SortShuffleWriterExec {
             state: Arc::new(Mutex::new(WriterState {
                 initialized: false,
                 handoffs: (0..output_partition_count).map(|_| None).collect(),
-                column_null_counts: Vec::new(),
             })),
+            column_stats: ColumnStatsCollector::default(),
         })
     }
 
@@ -494,13 +495,17 @@ impl SortShuffleWriterExec {
         self
     }
 
-    /// Compute null counts for each column. This will be enhanced in future to add further
-    /// col stats for better query planning
+    /// Per-column null counts over all rows this task wrote, one per column
+    /// of the output schema. Empty until the task has written.
     pub fn column_null_counts(&self) -> Vec<u64> {
-        self.state
-            .lock()
-            .map(|s| s.column_null_counts.clone())
-            .unwrap_or_default()
+        self.column_stats.null_counts()
+    }
+
+    /// Per-column statistics over all rows this task wrote, as reported to
+    /// the scheduler: a null count for every column and an HLL sketch for
+    /// each hash-partitioning key column. Empty until the task has written.
+    pub fn column_stats(&self) -> Vec<TaskColumnStats> {
+        self.column_stats.task_column_stats()
     }
 
     /// Task id (append-order slot within the stage) this writer instance
@@ -577,9 +582,11 @@ impl SortShuffleWriterExec {
         let stage_id = self.stage_id;
         let partitioning = self.shuffle_output_partitioning.clone();
         let task_id = self.task_id;
+        let column_stats = self.column_stats.clone();
 
         async move {
-            let mut stream = plan.execute(input_partition, context.clone())?;
+            let mut stream =
+                column_stats.count(plan.execute(input_partition, context.clone())?);
             let schema = stream.schema();
             let ballista_config = Arc::new(context.session_config().ballista_config());
             let compression_type = ballista_config.shuffle_compression_codec()?;
@@ -623,14 +630,10 @@ impl SortShuffleWriterExec {
             // `MemoryPool`; 0 disables it.
             let memory_limit = config.memory_limit_per_task_bytes;
             let per_task_budget_enabled = memory_limit > 0;
-            let mut null_counts = vec![0u64; schema.fields().len()];
 
             while let Some(result) = stream.next().await {
                 let input_batch = result?;
                 metrics.input_rows.add(input_batch.num_rows());
-                for (i, col) in input_batch.columns().iter().enumerate() {
-                    null_counts[i] += col.logical_null_count() as u64;
-                }
 
                 // Compute partition assignment for every row.
                 let timer = metrics.repart_time.timer();
@@ -748,7 +751,6 @@ impl SortShuffleWriterExec {
                 spill_manager,
                 schema,
                 _reservation: reservation,
-                null_counts,
             })
         }
     }
@@ -1076,6 +1078,16 @@ async fn run_coordinator(
         .output_partitioning()
         .partition_count();
 
+    writer.column_stats.reset(
+        writer.plan.schema().fields().len(),
+        &sketched_columns(
+            &writer.shuffle_output_partitioning,
+            ctx.session_config()
+                .ballista_config()
+                .shuffle_collect_distinct_counts(),
+        ),
+    );
+
     // Spawn per-input-partition write tasks concurrently — this matches the
     // parallelism main's design achieved by having DataFusion drive
     // `execute(0..M)` concurrently.
@@ -1106,21 +1118,6 @@ async fn run_coordinator(
         }
     }
     writes.abort_all();
-
-    // Fold each input partition's per-column null counts into the task-level
-    // total and publish it on the shared state for `execute_query_stage`.
-    let mut column_null_counts: Vec<u64> = Vec::new();
-    for output in outputs.iter() {
-        if column_null_counts.len() < output.null_counts.len() {
-            column_null_counts.resize(output.null_counts.len(), 0);
-        }
-        for (slot, n) in column_null_counts.iter_mut().zip(&output.null_counts) {
-            *slot += n;
-        }
-    }
-    if let Ok(mut state) = writer.state.lock() {
-        state.column_null_counts = column_null_counts;
-    }
 
     // Every input partition has finished bucketing; emit the task's single
     // data file from all of them, then describe each output partition once.
@@ -1347,6 +1344,8 @@ mod tests {
     use super::*;
     use crate::error::BallistaError;
     use crate::execution_plans::ChaosExec;
+    use crate::hll::HyperLogLog;
+    use crate::serde::protobuf::SketchType;
     use datafusion::arrow::array::{NullArray, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
@@ -1354,7 +1353,7 @@ mod tests {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::expressions::Column;
-    use datafusion::prelude::SessionContext;
+    use datafusion::prelude::{SessionConfig, SessionContext};
     use futures::TryStreamExt;
     use tempfile::TempDir;
 
@@ -2040,6 +2039,73 @@ mod tests {
             r.expect("partition drive should succeed");
         }
         Ok(writer.column_null_counts())
+    }
+
+    /// Drive a sort-shuffle writer hash-partitioned on "a" over two input
+    /// partitions whose "a" values overlap (0..1000 and 500..1500), and return
+    /// the column stats it reports.
+    async fn collect_column_stats(config: SessionConfig) -> Result<Vec<TaskColumnStats>> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, false),
+            Field::new("b", DataType::UInt32, false),
+        ]));
+        let batch = |range: std::ops::Range<u32>| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(UInt32Array::from_iter_values(range.clone())),
+                    Arc::new(UInt32Array::from_iter_values(range)),
+                ],
+            )
+        };
+        let partitions = vec![vec![batch(0..1000)?], vec![batch(500..1500)?]];
+        let source = Arc::new(MemorySourceConfig::try_new(
+            &partitions,
+            schema.clone(),
+            None,
+        )?);
+        let work_dir = TempDir::new()?;
+        let writer = Arc::new(SortShuffleWriterExec::try_new(
+            "distinct_count_job".into(),
+            1,
+            Arc::new(DataSourceExec::new(source)),
+            work_dir.path().to_str().unwrap().to_string(),
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
+            SortShuffleConfig::default(),
+        )?);
+        let task_ctx = SessionContext::new_with_config(config).task_ctx();
+        for r in drive_partition_results(writer.clone(), task_ctx).await {
+            r.expect("partition drive should succeed");
+        }
+        Ok(writer.column_stats())
+    }
+
+    // Only the hash key is sketched, and the sketch covers every input
+    // partition the task drained.
+    #[tokio::test]
+    async fn column_stats_sketch_the_hash_key_across_inputs() -> Result<()> {
+        let stats = collect_column_stats(SessionConfig::new_with_ballista()).await?;
+        assert_eq!(stats.len(), 2);
+        let [sketch] = stats[0].sketches.as_slice() else {
+            panic!("expected one sketch on the hash key, got {:?}", stats[0]);
+        };
+        assert_eq!(sketch.r#type, SketchType::Hll as i32);
+        let distinct = HyperLogLog::from_bytes(&sketch.data).unwrap().count();
+        assert!((1425..=1575).contains(&distinct), "estimated {distinct}");
+        assert!(stats[1].sketches.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn column_stats_skip_sketches_when_disabled() -> Result<()> {
+        let config = SessionConfig::new_with_ballista().set_bool(
+            crate::config::BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS,
+            false,
+        );
+        let stats = collect_column_stats(config).await?;
+        assert_eq!(stats.len(), 2);
+        assert!(stats.iter().all(|s| s.sketches.is_empty()));
+        Ok(())
     }
 
     #[tokio::test]

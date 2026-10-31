@@ -38,10 +38,11 @@ use ballista_core::execution_plans::{
     RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
     TaskRuntimeStats, TaskWindowState,
 };
+use ballista_core::hll::HyperLogLog;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
-    FailedTask, OperatorMetricsSet, ResultLost, RuntimeStatsReport, SuccessfulTask,
-    TaskKilled, TaskStatus, WindowStateReport,
+    FailedTask, OperatorMetricsSet, ResultLost, RuntimeStatsReport, SketchType,
+    SuccessfulTask, TaskKilled, TaskStatus, WindowStateReport,
 };
 use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::PartitionLocation;
@@ -670,34 +671,6 @@ impl RunningStage {
             warn!("The metrics for stage {} should not be none", self.stage_id);
             vec![]
         });
-        let num_columns = self.plan.schema().fields().len();
-        let mut output_column_stats = vec![
-            ColumnStatistics {
-                null_count: Precision::Exact(0),
-                ..ColumnStatistics::new_unknown()
-            };
-            num_columns
-        ];
-        for info in self.task_infos.iter() {
-            let task_status::Status::Successful(task_status) = &info.task_status else {
-                continue;
-            };
-            let mut reported = vec![false; num_columns];
-            for col_stats in &task_status.task_column_stats {
-                let column = col_stats.column as usize;
-                if let Some(slot) = output_column_stats.get_mut(column) {
-                    slot.null_count = slot
-                        .null_count
-                        .add(&Precision::Exact(col_stats.null_count as usize));
-                    reported[column] = true;
-                }
-            }
-            for (slot, reported) in output_column_stats.iter_mut().zip(reported) {
-                if !reported {
-                    slot.null_count = Precision::Absent;
-                }
-            }
-        }
 
         SuccessfulStage {
             stage_id: self.stage_id,
@@ -709,8 +682,73 @@ impl RunningStage {
             task_infos,
             stage_metrics,
             session_config: self.session_config.clone(),
-            output_column_stats,
+            output_column_stats: self.output_column_stats(),
         }
+    }
+
+    /// Per-column statistics over everything the stage's successful tasks
+    /// wrote, one entry per output-schema column. `null_count` is `Exact` only
+    /// when every successful task reported that column. `distinct_count` is an
+    /// `Inexact` estimate from the tasks' merged HLL sketches, and only set
+    /// when every successful task sketched that column.
+    pub fn output_column_stats(&self) -> Vec<ColumnStatistics> {
+        let num_columns = self.plan.schema().fields().len();
+        let mut output_column_stats = vec![
+            ColumnStatistics {
+                null_count: Precision::Exact(0),
+                ..ColumnStatistics::new_unknown()
+            };
+            num_columns
+        ];
+        // `None` once some successful task didn't sketch the column.
+        let mut sketches: Vec<Option<HyperLogLog>> =
+            vec![Some(HyperLogLog::new()); num_columns];
+        let mut any_successful = false;
+        for info in self.task_infos.iter() {
+            let task_status::Status::Successful(task_status) = &info.task_status else {
+                continue;
+            };
+            any_successful = true;
+            let mut reported = vec![false; num_columns];
+            let mut sketched = vec![false; num_columns];
+            for col_stats in &task_status.task_column_stats {
+                let column = col_stats.column as usize;
+                let Some(slot) = output_column_stats.get_mut(column) else {
+                    continue;
+                };
+                slot.null_count = slot
+                    .null_count
+                    .add(&Precision::Exact(col_stats.null_count as usize));
+                reported[column] = true;
+                let hll = col_stats
+                    .sketches
+                    .iter()
+                    .filter(|sketch| sketch.r#type == SketchType::Hll as i32)
+                    .find_map(|sketch| HyperLogLog::from_bytes(&sketch.data));
+                if let (Some(hll), Some(merged)) = (hll, &mut sketches[column]) {
+                    merged.merge(&hll);
+                    sketched[column] = true;
+                }
+            }
+            for (slot, reported) in output_column_stats.iter_mut().zip(reported) {
+                if !reported {
+                    slot.null_count = Precision::Absent;
+                }
+            }
+            for (sketch, sketched) in sketches.iter_mut().zip(sketched) {
+                if !sketched {
+                    *sketch = None;
+                }
+            }
+        }
+        if any_successful {
+            for (slot, sketch) in output_column_stats.iter_mut().zip(sketches) {
+                if let Some(sketch) = sketch {
+                    slot.distinct_count = Precision::Inexact(sketch.count());
+                }
+            }
+        }
+        output_column_stats
     }
 
     /// Converts this running stage to a failed stage. Still-running tasks are recorded
@@ -1517,8 +1555,8 @@ impl StageOutput {
 mod tests {
     use super::*;
     use ballista_core::serde::protobuf::{
-        OperatorMetric, SuccessfulTask, TaskColumnStats, TaskStatus, operator_metric,
-        task_status,
+        ColumnSketch, OperatorMetric, SuccessfulTask, TaskColumnStats, TaskStatus,
+        operator_metric, task_status,
     };
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::prelude::SessionConfig;
@@ -1707,6 +1745,61 @@ mod tests {
         );
         assert_eq!(
             successful.output_column_stats[1].null_count,
+            Precision::Absent
+        );
+    }
+
+    /// A column stat carrying an HLL sketch of `values`.
+    fn sketched_col(column: u32, values: std::ops::Range<i64>) -> TaskColumnStats {
+        let mut hll = HyperLogLog::new();
+        hll.update(
+            &datafusion::arrow::array::Int64Array::from_iter_values(values),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        TaskColumnStats {
+            column,
+            null_count: 0,
+            sketches: vec![ColumnSketch {
+                r#type: SketchType::Hll as i32,
+                data: hll.as_bytes().to_vec(),
+            }],
+        }
+    }
+
+    #[test]
+    fn test_to_successful_merges_distinct_count_sketches() {
+        // Overlapping key ranges: the union has 1000 distinct values, not the
+        // 1500 a sum of per-task counts would give.
+        let stage = stage_with_col_stats(vec![
+            vec![sketched_col(0, 0..1000), col(1, 0)],
+            vec![sketched_col(0, 500..1000), col(1, 0)],
+        ]);
+        let successful = stage.to_successful();
+        let Precision::Inexact(distinct) =
+            successful.output_column_stats[0].distinct_count
+        else {
+            panic!(
+                "expected an inexact distinct count, got {:?}",
+                successful.output_column_stats[0].distinct_count
+            );
+        };
+        assert!((950..=1050).contains(&distinct), "estimated {distinct}");
+        assert_eq!(
+            successful.output_column_stats[1].distinct_count,
+            Precision::Absent
+        );
+    }
+
+    #[test]
+    fn test_to_successful_leaves_distinct_count_absent_if_a_task_did_not_sketch() {
+        let stage = stage_with_col_stats(vec![
+            vec![sketched_col(0, 0..1000), col(1, 0)],
+            vec![col(0, 0), col(1, 0)],
+        ]);
+        let successful = stage.to_successful();
+        assert_eq!(
+            successful.output_column_stats[0].distinct_count,
             Precision::Absent
         );
     }
