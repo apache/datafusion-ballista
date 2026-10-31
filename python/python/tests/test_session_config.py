@@ -173,67 +173,182 @@ def test_set_overrides_ballista_defaults():
     assert settings[key] == "7"
 
 
-@pytest.mark.parametrize(
-    "method, value, key, expected",
-    [
-        ("with_job_name", "test_job", "ballista.job.name", "test_job"),
-        (
-            "with_shuffle_reader_maximum_concurrent_requests",
-            7,
-            "ballista.shuffle.max_concurrent_read_requests",
-            "7",
-        ),
-        (
-            "with_shuffle_reader_force_remote_read",
-            True,
-            "ballista.shuffle.force_remote_read",
-            "true",
-        ),
-        (
-            "with_adaptive_query_planner",
-            True,
-            "ballista.planner.adaptive.enabled",
-            "true",
-        ),
-        (
-            "with_broadcast_join_threshold_bytes",
-            1024,
-            "ballista.optimizer.broadcast_join_threshold_bytes",
-            "1024",
-        ),
-        (
-            "with_coalesce_small_partition_factor",
-            0.5,
-            "ballista.planner.coalesce.small_partition_factor",
-            "0.5",
-        ),
-        (
-            "with_shuffle_compression_codec",
-            "zstd",
-            "ballista.shuffle.compression.codec",
-            "zstd",
-        ),
-        (
-            "with_grpc_client_http2_keepalive_interval_seconds",
-            42,
-            "ballista.client.grpc_http2_keepalive_interval_seconds",
-            "42",
-        ),
-        (
-            "with_share_file_statistics_cache",
-            False,
-            "ballista.scheduler.share_file_statistics_cache",
-            "false",
-        ),
-    ],
-)
-def test_typed_setters(method, value, key, expected):
+# values differ from defaults, so a setter using a wrong key does not pass
+_TYPED_SETTERS = [
+    ("with_target_partitions", "datafusion.execution.target_partitions", "3"),
+    ("with_job_name", "ballista.job.name", "test_job"),
+    ("with_standalone_parallelism", "ballista.standalone.parallelism", "1234"),
+    ("with_cache_noop", "ballista.cache.noop", "false"),
+    (
+        "with_shuffle_reader_maximum_concurrent_requests",
+        "ballista.shuffle.max_concurrent_read_requests",
+        "7",
+    ),
+    (
+        "with_shuffle_reader_force_remote_read",
+        "ballista.shuffle.force_remote_read",
+        "true",
+    ),
+    (
+        "with_shuffle_reader_remote_prefer_flight",
+        "ballista.shuffle.remote_read_prefer_flight",
+        "true",
+    ),
+    (
+        "with_shuffle_reader_max_bytes_in_flight",
+        "ballista.shuffle.reader.max_bytes_in_flight",
+        "1024",
+    ),
+    (
+        "with_shuffle_reader_max_blocks_in_flight_per_address",
+        "ballista.shuffle.reader.max_blocks_in_flight_per_address",
+        "7",
+    ),
+    (
+        "with_shuffle_reader_default_block_size_bytes",
+        "ballista.shuffle.reader.default_block_size_bytes",
+        "1024",
+    ),
+    (
+        "with_shuffle_sort_based_batch_size",
+        "ballista.shuffle.sort_based.batch_size",
+        "1024",
+    ),
+    (
+        "with_shuffle_writer_channel_capacity",
+        "ballista.shuffle.writer_channel_capacity",
+        "7",
+    ),
+    (
+        "with_shuffle_sort_based_memory_limit_per_task_bytes",
+        "ballista.shuffle.sort_based.memory_limit_per_task_bytes",
+        "1024",
+    ),
+    ("with_shuffle_compression_codec", "ballista.shuffle.compression.codec", "zstd"),
+    (
+        "with_grpc_client_initial_connection_window_size",
+        "ballista.client.initial_connection_window_size",
+        "1024",
+    ),
+    (
+        "with_grpc_client_initial_stream_window_size",
+        "ballista.client.initial_stream_window_size",
+        "1024",
+    ),
+    (
+        "with_grpc_client_max_message_size",
+        "ballista.client.grpc_max_message_size",
+        "1024",
+    ),
+    (
+        "with_grpc_client_connect_timeout_seconds",
+        "ballista.client.grpc_connect_timeout_seconds",
+        "42",
+    ),
+    ("with_grpc_client_timeout_seconds", "ballista.client.grpc_timeout_seconds", "42"),
+    (
+        "with_grpc_client_tcp_keepalive_seconds",
+        "ballista.client.grpc_tcp_keepalive_seconds",
+        "42",
+    ),
+    (
+        "with_grpc_client_http2_keepalive_interval_seconds",
+        "ballista.client.grpc_http2_keepalive_interval_seconds",
+        "42",
+    ),
+    ("with_client_pull", "ballista.client.pull", "true"),
+    ("with_use_tls", "ballista.client.use_tls", "true"),
+    ("with_io_retries_times", "ballista.client.io_retries_times", "7"),
+    ("with_io_retry_wait_time_ms", "ballista.client.io_retry_wait_time_ms", "42"),
+    ("with_adaptive_query_planner", "ballista.planner.adaptive.enabled", "false"),
+    ("with_adaptive_join_enabled", "ballista.planner.adaptive_join.enabled", "false"),
+    ("with_coalesce_enabled", "ballista.planner.coalesce.enabled", "true"),
+    (
+        "with_coalesce_target_partition_bytes",
+        "ballista.planner.coalesce.target_partition_bytes",
+        "1024",
+    ),
+    (
+        "with_coalesce_small_partition_factor",
+        "ballista.planner.coalesce.small_partition_factor",
+        "0.5",
+    ),
+    (
+        "with_coalesce_merged_partition_factor",
+        "ballista.planner.coalesce.merged_partition_factor",
+        "1.5",
+    ),
+    (
+        "with_propagate_empty_enabled",
+        "ballista.planner.propagate_empty.enabled",
+        "false",
+    ),
+    (
+        "with_parallel_window_enabled",
+        "ballista.planner.parallel_window.enabled",
+        "true",
+    ),
+    (
+        "with_broadcast_join_threshold_bytes",
+        "ballista.optimizer.broadcast_join_threshold_bytes",
+        "1024",
+    ),
+    (
+        "with_broadcast_join_threshold_rows",
+        "ballista.optimizer.broadcast_join_threshold_rows",
+        "1024",
+    ),
+    (
+        "with_hash_join_max_build_partition_bytes",
+        "ballista.optimizer.hash_join_max_build_partition_bytes",
+        "1024",
+    ),
+    ("with_stage_build_side", "ballista.optimizer.stage_build_side", "false"),
+    (
+        "with_stage_build_side_min_probe_ratio",
+        "ballista.optimizer.stage_build_side_min_probe_ratio",
+        "7",
+    ),
+    (
+        "with_stage_build_side_max_estimate_multiple",
+        "ballista.optimizer.stage_build_side_max_estimate_multiple",
+        "7",
+    ),
+    (
+        "with_not_in_subquery_rewrite",
+        "ballista.optimizer.not_in_subquery_rewrite",
+        "false",
+    ),
+    (
+        "with_balance_scan_file_groups",
+        "ballista.optimizer.balance_scan_file_groups",
+        "false",
+    ),
+    ("with_max_partitions_per_task", "ballista.scheduler.max_partitions_per_task", "7"),
+    (
+        "with_share_file_statistics_cache",
+        "ballista.scheduler.share_file_statistics_cache",
+        "false",
+    ),
+]
+
+
+def test_typed_setters_are_all_tested():
+    setters = {name for name in dir(BallistaSessionConfig) if name.startswith("with_")}
+
+    assert setters == {method for method, _, _ in _TYPED_SETTERS}
+
+
+@pytest.mark.parametrize("method, key, value", _TYPED_SETTERS)
+def test_typed_setters(method, key, value):
+    assert _settings(BallistaSessionConfig().build()).get(key) != value
+
     config = BallistaSessionConfig()
     assert getattr(config, method)(value) is config
 
     settings = _settings(config.build())
 
-    assert settings[key] == expected
+    assert settings[key] == value
 
 
 def test_setters_chain():
