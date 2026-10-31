@@ -209,6 +209,7 @@ def BallistaSessionContext(
         Union["BallistaSessionConfig", SessionConfig, Dict[str, ConfigValue]]
     ] = None,
     runtime: Optional[RuntimeEnvBuilder] = None,
+    cluster_config: Optional[Dict[str, ConfigValue]] = None,
 ) -> SessionContext:
     """
     Create a DataFusion ``SessionContext`` that executes queries on a Ballista cluster.
@@ -228,13 +229,17 @@ def BallistaSessionContext(
             support are overridden with Ballista defaults, see
             ``BallistaSessionConfig``.
         runtime: Optional runtime environment used by the local session.
+        cluster_config: Deprecated since 56.0.0 and will be removed in 57.0.0,
+            use ``config``. Merged into ``config``, taking precedence on
+            conflicts. Can not be used with ``BallistaSessionConfig``.
 
     Returns:
         A ``SessionContext`` configured with the Ballista query planner.
 
     Raises:
         ValueError: If a ``config`` key does not start with ``datafusion.`` or
-            ``ballista.``, or is an unknown ``ballista.*`` key.
+            ``ballista.``, or is an unknown ``ballista.*`` key, or if
+            ``cluster_config`` is used with ``BallistaSessionConfig``.
 
     Examples:
         Connect to a scheduler and run SQL:
@@ -284,6 +289,9 @@ def BallistaSessionContext(
         ...     config=BallistaSessionConfig().with_target_partitions(32),
         ... )
     """
+    if cluster_config is not None:
+        config = _merge_cluster_config(config, cluster_config)
+
     if not isinstance(config, BallistaSessionConfig):
         config = BallistaSessionConfig(config)
 
@@ -665,3 +673,28 @@ class BallistaSessionConfig:
     ) -> "BallistaSessionConfig":
         """Plan jobs with the scheduler-wide file statistics cache."""
         return self.set("ballista.scheduler.share_file_statistics_cache", enabled)
+
+
+# TODO: remove with `cluster_config` argument in 57.0.0
+def _merge_cluster_config(
+    config: Optional[
+        Union[BallistaSessionConfig, SessionConfig, Dict[str, ConfigValue]]
+    ],
+    cluster_config: Dict[str, ConfigValue],
+) -> BallistaSessionConfig:
+    # stacklevel points at the caller of `BallistaSessionContext`, python shows
+    # `DeprecationWarning` by default only if it is attributed to `__main__`
+    warnings.warn(
+        "`cluster_config` is deprecated and will be removed in 57.0.0, use `config`",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    if isinstance(config, BallistaSessionConfig):
+        raise ValueError(
+            "`cluster_config` can not be used with `BallistaSessionConfig`, "
+            "set the options on `BallistaSessionConfig` instead"
+        )
+    merged = BallistaSessionConfig(config)
+    for key, value in cluster_config.items():
+        merged.set(key, value)
+    return merged

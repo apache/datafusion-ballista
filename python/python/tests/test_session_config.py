@@ -23,6 +23,7 @@ from ballista._internal_ballista import (
 )
 from ballista.extension import (
     _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS,
+    _merge_cluster_config,
     BallistaSessionConfig,
 )
 from datafusion import SessionConfig, SessionContext
@@ -422,3 +423,85 @@ def test_client_options_set(make_config):
 
     for key in _CLIENT_OPTIONS:
         assert settings[key] == "true", key
+
+
+# TODO: remove in 57.0.0, with `cluster_config` argument
+
+
+def _merged_settings(config, cluster_config) -> dict:
+    with pytest.warns(DeprecationWarning, match="cluster_config"):
+        merged = _merge_cluster_config(config, cluster_config)
+    return _settings(merged.build())
+
+
+@_USER_CONFIGS
+def test_cluster_config_merged(make_config):
+    settings = _merged_settings(
+        make_config(),
+        {"datafusion.execution.batch_size": 1234, "ballista.job.name": "test_job"},
+    )
+
+    assert settings["datafusion.execution.batch_size"] == "1234"
+    assert settings["ballista.job.name"] == "test_job"
+
+
+def test_cluster_config_overrides_dict():
+    settings = _merged_settings(
+        {
+            "datafusion.execution.batch_size": 1,
+            "ballista.job.name": "from_config",
+        },
+        {"datafusion.execution.batch_size": 1234},
+    )
+
+    assert settings["datafusion.execution.batch_size"] == "1234"
+    assert settings["ballista.job.name"] == "from_config"
+
+
+def test_cluster_config_does_not_change_dict():
+    config = {"datafusion.execution.batch_size": 1}
+
+    _merged_settings(config, {"datafusion.execution.batch_size": 1234})
+
+    assert config == {"datafusion.execution.batch_size": 1}
+
+
+def test_cluster_config_overrides_default_with_session_config():
+    settings = _merged_settings(
+        SessionConfig().with_batch_size(1234),
+        {"datafusion.execution.target_partitions": 128},
+    )
+
+    assert settings["datafusion.execution.target_partitions"] == "128"
+    assert settings["datafusion.execution.batch_size"] == "1234"
+
+
+def test_cluster_config_converts_values():
+    settings = _merged_settings(
+        None,
+        {
+            "ballista.client.pull": True,
+            "ballista.shuffle.max_concurrent_read_requests": 7,
+        },
+    )
+
+    assert settings["ballista.client.pull"] == "true"
+    assert settings["ballista.shuffle.max_concurrent_read_requests"] == "7"
+
+
+def test_cluster_config_does_not_override_restricted_options():
+    settings = _merged_settings(None, {"datafusion.optimizer.prefer_hash_join": True})
+
+    assert settings["datafusion.optimizer.prefer_hash_join"] == "false"
+
+
+def test_cluster_config_rejects_unsupported_prefix():
+    with pytest.warns(DeprecationWarning), pytest.raises(ValueError):
+        _merge_cluster_config(None, {"unknown.option": "1"})
+
+
+def test_cluster_config_rejects_ballista_session_config():
+    config = BallistaSessionConfig().with_job_name("test_job")
+
+    with pytest.warns(DeprecationWarning), pytest.raises(ValueError):
+        _merge_cluster_config(config, {"ballista.client.pull": True})

@@ -18,6 +18,7 @@
 import gzip
 import json
 import shutil
+import warnings
 
 from ballista import (
     BallistaConfigExtension,
@@ -231,6 +232,63 @@ def test_with_target_partitions(cluster):
     plan = "\n".join(result.column("plan").to_pylist())
     # final aggregation stage runs with configured number of partitions
     assert "SuccessfulStage[stage_id=1, partitions=3]" in plan
+
+
+# TODO: remove in 57.0.0, with `cluster_config` argument
+
+
+def test_cluster_config(cluster):
+    (address, port) = cluster
+    with pytest.warns(DeprecationWarning, match="cluster_config") as record:
+        ctx = BallistaSessionContext(
+            address=f"df://{address}:{port}",
+            cluster_config={"datafusion.execution.batch_size": 2},
+        )
+    # warning points at the caller, otherwise python hides it in scripts
+    assert record[0].filename == __file__
+
+    ctx.register_parquet("t", TEST_PARQUET)
+    result = to_table(ctx.sql("SELECT count(*) AS c FROM t"))
+    assert result.to_pydict() == {"c": [8]}
+
+
+def test_cluster_config_reaches_cluster(cluster):
+    (address, port) = cluster
+    with pytest.warns(DeprecationWarning):
+        ctx = BallistaSessionContext(
+            address=f"df://{address}:{port}",
+            cluster_config={"datafusion.execution.target_partitions": 3},
+        )
+    ctx.register_parquet("t", TEST_PARQUET)
+    result = to_table(
+        ctx.sql("EXPLAIN ANALYZE SELECT bool_col, count(*) FROM t GROUP BY bool_col")
+    )
+
+    plan = "\n".join(result.column("plan").to_pylist())
+    assert "SuccessfulStage[stage_id=1, partitions=3]" in plan
+
+
+def test_cluster_config_with_session_config(cluster):
+    (address, port) = cluster
+    with pytest.warns(DeprecationWarning):
+        ctx = BallistaSessionContext(
+            address=f"df://{address}:{port}",
+            config=SessionConfig().with_batch_size(2),
+            cluster_config={"ballista.job.name": "test_job"},
+        )
+    ctx.register_parquet("t", TEST_PARQUET)
+    result = to_table(ctx.sql("SELECT count(*) AS c FROM t"))
+    assert result.to_pydict() == {"c": [8]}
+
+
+def test_no_deprecation_warning_without_cluster_config(cluster):
+    (address, port) = cluster
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        BallistaSessionContext(
+            address=f"df://{address}:{port}",
+            config={"ballista.job.name": "test_job"},
+        )
 
 
 def test_sql_explain_analyze(ctx):
