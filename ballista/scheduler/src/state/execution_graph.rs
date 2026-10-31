@@ -1937,6 +1937,7 @@ mod test {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
     use datafusion::logical_expr::col;
+    use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::Partitioning;
     use datafusion::physical_plan::union::UnionExec;
     use datafusion::prelude::{SessionConfig, SessionContext};
