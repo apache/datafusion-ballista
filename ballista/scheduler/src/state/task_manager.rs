@@ -600,6 +600,41 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .sum()
     }
 
+    /// Return bound-but-never-launched tasks to pending in their job graphs.
+    ///
+    /// Complements [`Self::take_task_reservations`]: after a metadata miss
+    /// the vcore budget is refunded, but the tasks themselves were already
+    /// recorded as `Running` at bind time. Without this reset they stay
+    /// stranded until the executor is lost (#2691).
+    pub(crate) async fn reset_unlaunched_tasks(
+        &self,
+        tasks: &[TaskDescription],
+    ) -> usize {
+        let mut by_job: HashMap<JobId, Vec<&TaskDescription>> = HashMap::new();
+        for task in tasks {
+            by_job
+                .entry(task.key.job_id.clone())
+                .or_default()
+                .push(task);
+        }
+        let mut reset = 0;
+        for (job_id, job_tasks) in by_job {
+            let Some(graph) = self.get_active_execution_graph(&job_id) else {
+                warn!(
+                    "Fail to find job {job_id} in the active cache while resetting unlaunched tasks"
+                );
+                continue;
+            };
+            let mut graph = graph.write().await;
+            for task in job_tasks {
+                if graph.reset_unlaunched_task(&task.key) {
+                    reset += 1;
+                }
+            }
+        }
+        reset
+    }
+
     /// Update given task statuses in the respective job and return a tuple containing:
     /// 1. A list of QueryStageSchedulerEvent to publish.
     /// 2. A list of reservations that can now be offered.

@@ -396,6 +396,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         error!(
                             "Failed to launch new task, could not get executor metadata: {e}"
                         );
+                        // Bound tasks were already marked Running at bind
+                        // time. Return them to pending before refunding
+                        // vcores, otherwise they hang forever (#2691).
+                        let reset = state
+                            .task_manager
+                            .reset_unlaunched_tasks(&reservations)
+                            .await;
+                        if reset > 0 {
+                            debug!(
+                                "Reset {reset} unlaunched task(s) on executor {executor_id} after metadata miss"
+                            );
+                        }
                         // Refund like the rejected-launch branch: the executor
                         // stays registered, so its reserved vcores must go
                         // back into the budget (see #2686).
@@ -835,6 +847,14 @@ mod tests {
         let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
         let sender = EventSender::new(tx_event);
         state.task_manager.record_task_reservations(&bound);
+
+        let available_before =
+            state.task_manager.get_available_task_count(&job_id).await?;
+        assert_eq!(
+            available_before, 0,
+            "bind should have consumed all pending partitions"
+        );
+
         let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
 
         assert!(failed_jobs.is_empty());
@@ -843,6 +863,14 @@ mod tests {
         assert_eq!(
             unassigned_slots,
             vec![("executor-1".to_string(), bound_vcores)]
+        );
+
+        // #2691: tasks must be pending again so revive can reschedule them.
+        let available_after =
+            state.task_manager.get_available_task_count(&job_id).await?;
+        assert!(
+            available_after > 0,
+            "unlaunched tasks should return to pending after a metadata miss, got {available_after}"
         );
 
         Ok(())

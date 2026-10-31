@@ -41,7 +41,7 @@ use ballista_core::serde::protobuf::{
     FailedJob, FailedTask, JobStatus, ResultLost, RunningJob, SuccessfulJob, TaskStatus,
     job_status, task_status,
 };
-use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
+use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation, TaskKey};
 use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::context::SessionContext;
@@ -1336,6 +1336,13 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                 return Ok((reset, tasks_to_cancel));
             }
         }
+    }
+
+    fn reset_unlaunched_task(&mut self, key: &TaskKey) -> bool {
+        crate::state::execution_graph::reset_unlaunched_task_in_stages(
+            &mut self.stages,
+            key,
+        )
     }
 
     /// Convert unresolved stage to be resolved
