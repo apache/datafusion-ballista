@@ -38,7 +38,6 @@ mod reader;
 mod spill;
 mod writer;
 
-pub use buffer::BufferedBatches;
 pub use config::SortShuffleConfig;
 pub use index::ShuffleIndex;
 pub use reader::{get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition};

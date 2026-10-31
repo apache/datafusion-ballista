@@ -39,6 +39,7 @@ use ferroid::id::SnowflakeMastodonId;
 use ferroid::time::MonotonicClock;
 use tokio::sync::broadcast;
 
+use crate::cache::{contains_cache, strip_caches};
 use crate::cluster::{BallistaCluster, ClusterStateEventStream, JobStateEventStream};
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
@@ -96,7 +97,7 @@ pub trait JobIdGenerator: Sync + Send {
 
 /// A monotonically increasing sortable snowflake job id generator
 /// which does not capture machine id as part result.
-struct DefaultJobGenerator {
+pub(crate) struct DefaultJobGenerator {
     generator: AtomicSnowflakeGenerator<SnowflakeMastodonId, MonotonicClock>,
 }
 
@@ -248,10 +249,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             query_stage_scheduler.clone(),
         );
 
-        let generator = config
-            .job_id_generator
-            .clone()
-            .unwrap_or_else(|| Arc::new(DefaultJobGenerator::default()));
+        // The state's generator, which also names cache build jobs.
+        let generator = state.job_id_generator.clone();
 
         info!("Scheduler id: {scheduler_id}");
         info!("Scheduler callback endpoint: {scheduler_endpoint}");
@@ -414,6 +413,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 
     /// Shared entry point for logical and physical submissions.
+    ///
+    /// A plan holding `DataFrame::cache()` nodes returns the read job's id at
+    /// once; its caches are built as jobs of their own.
     pub async fn submit_plan(
         &self,
         job_name: &str,
@@ -423,6 +425,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     ) -> Result<JobId> {
         log::debug!("Received submit request for job {job_name}");
         let admission = self.admit()?;
+
+        // Caches run inline if disabled, and are never built for EXPLAIN.
+        let rewritten = match plan {
+            SubmitPlan::Logical(logical) if contains_cache(logical) => {
+                if self.state.config.disable_dataframe_cache {
+                    Some(SubmitPlan::Logical(strip_caches(logical)?))
+                } else if matches!(logical, LogicalPlan::Explain(_)) {
+                    Some(SubmitPlan::Logical(
+                        self.state.explain_cache_plan(logical).await?,
+                    ))
+                } else {
+                    let sender = self.query_stage_event_loop.get_sender()?;
+                    return self
+                        .state
+                        .submit_cache_plan(
+                            &sender, job_name, ctx, logical, subscriber, admission,
+                        )
+                        .await;
+                }
+            }
+            _ => None,
+        };
+        let plan = rewritten.as_ref().unwrap_or(plan);
+
         let job_id: JobId = self.generator.next_id().await.into();
         self.query_stage_event_loop
             .get_sender()?
@@ -842,6 +868,47 @@ mod test {
         for output_location in final_graph.output_locations() {
             assert_eq!(output_location.executor_meta.host, "localhost1".to_owned())
         }
+
+        Ok(())
+    }
+
+    // Pipelined execution is not wired into the scheduler yet, so a session
+    // that asks for it must be refused rather than planned as blocking.
+    #[tokio::test]
+    async fn test_pipelined_execution_mode_is_rejected() -> Result<()> {
+        let scheduler = test_scheduler(TaskSchedulingPolicy::PushStaged).await?;
+
+        let config = SessionConfig::new_with_ballista()
+            .set_str(ballista_core::config::BALLISTA_EXECUTION_MODE, "pipelined");
+        let ctx = scheduler
+            .state
+            .session_manager
+            .create_or_update_session("session_id", &config)
+            .await?;
+
+        let job_id: JobId = "pipelined_job".into();
+        scheduler
+            .state
+            .task_manager
+            .queue_job(&job_id, "", timestamp_millis())?;
+
+        let err = scheduler
+            .state
+            .task_manager
+            .submit_job(&job_id, "", ctx, &test_plan(), 0, None)
+            .await
+            .expect_err("a pipelined job should be rejected");
+        assert!(
+            err.to_string().contains("pipelined is not supported yet"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            scheduler
+                .state
+                .task_manager
+                .get_active_execution_graph(&job_id)
+                .is_none()
+        );
 
         Ok(())
     }

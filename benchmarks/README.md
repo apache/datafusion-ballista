@@ -225,6 +225,13 @@ delta percent, suite totals, and row-count agreement:
 cargo run --release --bin tpch compare baseline.json candidate.json
 ```
 
+## Comparing Ballista with Spark, Comet and Trino on Kubernetes
+
+[`cluster/`](cluster/README.md) has scripts that run TPC-H and TPC-DS on a
+Kubernetes cluster with Ballista, Spark, Spark + Comet or Trino, with the same
+cluster shape and data for each. They reproduce the results on the
+[benchmarking page](../docs/source/contributors-guide/benchmarking/index.md).
+
 ## Running the Ballista Benchmarks on docker-compose
 
 The `docker-compose.yml` at the repo root brings up one scheduler and two
