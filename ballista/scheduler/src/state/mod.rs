@@ -1005,7 +1005,12 @@ mod tests {
                         )
                     })
                     .expect("the executor can decode the plan");
-                payloads_of(plan.children()[0])
+                // The writer's input can come wrapped in a `CooperativeExec`.
+                let mut input = plan.children()[0];
+                while input.name() == "CooperativeExec" {
+                    input = input.children()[0];
+                }
+                payloads_of(input)
             })
             .collect();
         shipped.sort();
