@@ -480,6 +480,11 @@ pub struct SortShuffleWriterExecNode {
     pub output_partitioning: ::core::option::Option<
         ::datafusion_proto::protobuf::PhysicalHashRepartition,
     >,
+    /// Output partitioning for the schemes `output_partitioning` cannot carry
+    /// (range). Hash stages keep using `output_partitioning`, so plans written
+    /// before this field existed decode unchanged. Wins when both are set.
+    #[prost(message, optional, tag = "11")]
+    pub partitioning: ::core::option::Option<::datafusion_proto::protobuf::Partitioning>,
     /// Target batch size in rows when materializing buffered shuffle data.
     #[prost(uint64, tag = "8")]
     pub batch_size: u64,
@@ -489,11 +494,6 @@ pub struct SortShuffleWriterExecNode {
     /// before this field existed decodes to the built-in default rather than 0.
     #[prost(uint64, optional, tag = "9")]
     pub memory_limit_per_task_bytes: ::core::option::Option<u64>,
-    /// Output partitioning for the schemes `output_partitioning` cannot carry
-    /// (range). Hash stages keep using `output_partitioning`, so plans written
-    /// before this field existed decode unchanged. Wins when both are set.
-    #[prost(message, optional, tag = "10")]
-    pub partitioning: ::core::option::Option<::datafusion_proto::protobuf::Partitioning>,
 }
 /// Passthrough shuffle writer that emits the seekable Arrow IPC file format.
 /// Carries no output partitioning: like `ShuffleWriterExecNode`'s passthrough
