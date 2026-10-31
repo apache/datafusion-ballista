@@ -1552,6 +1552,7 @@ mod tests {
                 partitions: vec![],
                 runtime_stats: vec![],
                 task_column_stats: vec![],
+                runtime_filters: vec![],
                 window_state: vec![],
             })),
             metrics: vec![],
@@ -1643,6 +1644,7 @@ mod tests {
                     partitions: vec![],
                     runtime_stats: vec![],
                     task_column_stats,
+                    runtime_filters: vec![],
                     window_state: vec![],
                 }),
                 global_input_partition_ids: vec![task_id],
@@ -2088,6 +2090,7 @@ mod tests {
                     partitions: vec![],
                     runtime_stats: vec![],
                     task_column_stats: vec![],
+                    runtime_filters: vec![],
                     window_state: vec![],
                 });
             stage.append_runtime_stats_reports(
