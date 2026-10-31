@@ -23,7 +23,6 @@
 //! concurrently and then emits one file holding every bucket, laid out
 //! partition-major so each output partition stays one contiguous range.
 
-use datafusion::arrow::array::Array;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
@@ -33,7 +32,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
-use super::super::shuffle_writer::{handoff_stream, take_handoff};
+use super::super::shuffle_writer::{ColumnNullCounts, handoff_stream, take_handoff};
 use super::super::shuffle_writer_trait::ShuffleWriter;
 use super::buffer::BufferedBatches;
 use super::config::SortShuffleConfig;
@@ -91,8 +90,6 @@ struct InputPartitionOutput {
     /// Kept alive so the pool keeps accounting for this input until the
     /// consolidated write has consumed its buffers.
     _reservation: MemoryReservation,
-    // collect null counts for better planning
-    null_counts: Vec<u64>,
 }
 
 /// What one output partition's encoded rows amount to.
@@ -154,7 +151,6 @@ fn encode_buffered_partitions(
 struct WriterState {
     initialized: bool,
     handoffs: Vec<Option<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>>>,
-    column_null_counts: Vec<u64>,
 }
 
 impl Debug for WriterState {
@@ -290,6 +286,8 @@ pub struct SortShuffleWriterExec {
     /// it spawns per-input-partition write tasks) participates in the
     /// same coordinator.
     state: Arc<Mutex<WriterState>>,
+    /// Null counts of the rows this task wrote, shared with clones.
+    column_null_counts: ColumnNullCounts,
 }
 
 impl Clone for SortShuffleWriterExec {
@@ -306,6 +304,7 @@ impl Clone for SortShuffleWriterExec {
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             state: self.state.clone(),
+            column_null_counts: self.column_null_counts.clone(),
         }
     }
 }
@@ -481,8 +480,8 @@ impl SortShuffleWriterExec {
             state: Arc::new(Mutex::new(WriterState {
                 initialized: false,
                 handoffs: (0..output_partition_count).map(|_| None).collect(),
-                column_null_counts: Vec::new(),
             })),
+            column_null_counts: ColumnNullCounts::default(),
         })
     }
 
@@ -494,13 +493,10 @@ impl SortShuffleWriterExec {
         self
     }
 
-    /// Compute null counts for each column. This will be enhanced in future to add further
-    /// col stats for better query planning
+    /// Per-column null counts over all rows this task wrote, one per column
+    /// of the output schema. Empty until the task has written.
     pub fn column_null_counts(&self) -> Vec<u64> {
-        self.state
-            .lock()
-            .map(|s| s.column_null_counts.clone())
-            .unwrap_or_default()
+        self.column_null_counts.get()
     }
 
     /// Task id (append-order slot within the stage) this writer instance
@@ -577,9 +573,11 @@ impl SortShuffleWriterExec {
         let stage_id = self.stage_id;
         let partitioning = self.shuffle_output_partitioning.clone();
         let task_id = self.task_id;
+        let null_counts = self.column_null_counts.clone();
 
         async move {
-            let mut stream = plan.execute(input_partition, context.clone())?;
+            let mut stream =
+                null_counts.count(plan.execute(input_partition, context.clone())?);
             let schema = stream.schema();
             let ballista_config = Arc::new(context.session_config().ballista_config());
             let compression_type = ballista_config.shuffle_compression_codec()?;
@@ -623,14 +621,10 @@ impl SortShuffleWriterExec {
             // `MemoryPool`; 0 disables it.
             let memory_limit = config.memory_limit_per_task_bytes;
             let per_task_budget_enabled = memory_limit > 0;
-            let mut null_counts = vec![0u64; schema.fields().len()];
 
             while let Some(result) = stream.next().await {
                 let input_batch = result?;
                 metrics.input_rows.add(input_batch.num_rows());
-                for (i, col) in input_batch.columns().iter().enumerate() {
-                    null_counts[i] += col.logical_null_count() as u64;
-                }
 
                 // Compute partition assignment for every row.
                 let timer = metrics.repart_time.timer();
@@ -748,7 +742,6 @@ impl SortShuffleWriterExec {
                 spill_manager,
                 schema,
                 _reservation: reservation,
-                null_counts,
             })
         }
     }
@@ -1076,6 +1069,10 @@ async fn run_coordinator(
         .output_partitioning()
         .partition_count();
 
+    writer
+        .column_null_counts
+        .reset(writer.plan.schema().fields().len());
+
     // Spawn per-input-partition write tasks concurrently — this matches the
     // parallelism main's design achieved by having DataFusion drive
     // `execute(0..M)` concurrently.
@@ -1106,21 +1103,6 @@ async fn run_coordinator(
         }
     }
     writes.abort_all();
-
-    // Fold each input partition's per-column null counts into the task-level
-    // total and publish it on the shared state for `execute_query_stage`.
-    let mut column_null_counts: Vec<u64> = Vec::new();
-    for output in outputs.iter() {
-        if column_null_counts.len() < output.null_counts.len() {
-            column_null_counts.resize(output.null_counts.len(), 0);
-        }
-        for (slot, n) in column_null_counts.iter_mut().zip(&output.null_counts) {
-            *slot += n;
-        }
-    }
-    if let Ok(mut state) = writer.state.lock() {
-        state.column_null_counts = column_null_counts;
-    }
 
     // Every input partition has finished bucketing; emit the task's single
     // data file from all of them, then describe each output partition once.

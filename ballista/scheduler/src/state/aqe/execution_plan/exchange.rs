@@ -19,7 +19,7 @@ use ballista_core::execution_plans::{
     CoalescePlan, stats_for_partition, stats_for_partitions,
 };
 use ballista_core::serde::scheduler::PartitionLocation;
-use datafusion::common::ScalarValue;
+use datafusion::common::{ColumnStatistics, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::Statistics;
 use datafusion::{
@@ -86,6 +86,11 @@ pub struct ExchangeExec {
     /// can not be assumed.
     shuffle_partitions: Arc<Mutex<Option<Vec<Vec<PartitionLocation>>>>>,
 
+    /// Per-column statistics the stage's tasks reported for everything they
+    /// wrote, one entry per output column. Set alongside `shuffle_partitions`
+    /// when the stage completes, and shared with clones the same way.
+    column_statistics: Arc<Mutex<Option<Vec<ColumnStatistics>>>>,
+
     /// Per-stage coalesce decision attached to this Exchange by
     /// `CoalescePartitionsRule` before adapter conversion.
     ///
@@ -138,6 +143,7 @@ impl ExchangeExec {
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
             false,
             false,
         )
@@ -156,6 +162,7 @@ impl ExchangeExec {
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
             true,
             false,
         )
@@ -168,6 +175,7 @@ impl ExchangeExec {
             plan_id,
             self.stage_id.clone(),
             self.shuffle_partitions.clone(),
+            self.column_statistics.clone(),
             self.coalesce.clone(),
             self.range_repartition_routing.clone(),
             true,
@@ -185,6 +193,7 @@ impl ExchangeExec {
         plan_id: usize,
         stage_id: Arc<AtomicI64>,
         stage_partitions: Arc<Mutex<Option<Vec<Vec<PartitionLocation>>>>>,
+        column_statistics: Arc<Mutex<Option<Vec<ColumnStatistics>>>>,
         coalesce: Arc<Mutex<Option<Arc<CoalescePlan>>>>,
         range_repartition_routing: Arc<Mutex<Option<RangeRepartitionRouting>>>,
         broadcast: bool,
@@ -215,6 +224,7 @@ impl ExchangeExec {
             plan_id,
             stage_id,
             shuffle_partitions: stage_partitions,
+            column_statistics,
             partitioning,
             coalesce,
             range_repartition_routing,
@@ -244,6 +254,13 @@ impl ExchangeExec {
     ///   the `PartitionLocation`s for a shuffle partition.
     pub fn resolve_shuffle_partitions(&self, partitions: Vec<Vec<PartitionLocation>>) {
         self.shuffle_partitions.lock().replace(partitions);
+    }
+
+    /// Stores the per-column statistics the stage reported for its output, one
+    /// entry per column of this exchange's schema. They are reported only once
+    /// the shuffle partitions are resolved too.
+    pub fn resolve_column_statistics(&self, column_statistics: Vec<ColumnStatistics>) {
+        self.column_statistics.lock().replace(column_statistics);
     }
 
     /// Checks whether the shuffle partitions have been resolved.
@@ -436,6 +453,7 @@ impl ExecutionPlan for ExchangeExec {
                 // Carry the coalesce slot so a transform-rebuilt parent chain
                 // doesn't lose the rule's decision.
                 self.shuffle_partitions.clone(),
+                self.column_statistics.clone(),
                 self.coalesce.clone(),
                 self.range_repartition_routing.clone(),
                 self.broadcast,
@@ -487,13 +505,21 @@ impl ExecutionPlan for ExchangeExec {
                     );
                     stat_for_partition.map(Arc::new)
                 } else {
-                    let stats_for_partitions = stats_for_partitions(
+                    let mut stats_for_partitions = stats_for_partitions(
                         schema.fields().len(),
                         partition_locations
                             .iter()
                             .flatten()
                             .map(|loc| loc.partition_stats),
                     );
+                    // Column statistics are totals over the stage's output, so
+                    // they describe the exchange as a whole but no one
+                    // partition of it.
+                    if let Some(columns) = self.column_statistics.lock().as_ref()
+                        && columns.len() == schema.fields().len()
+                    {
+                        stats_for_partitions.column_statistics = columns.clone();
+                    }
                     trace!(
                         "shuffle reader at stage: {:?} returned statistics for all partitions: {:?}",
                         self.stage_id, stats_for_partitions
@@ -609,5 +635,109 @@ mod range_repartition_routing_tests {
             .range_repartition_routing()
             .expect("routing must survive with_new_children");
         assert_eq!(recovered.cuts, cuts_f64([10.0, 20.0, 30.0]));
+    }
+}
+
+#[cfg(test)]
+mod column_statistics_tests {
+    //! The stage's per-column output statistics parked on `ExchangeExec`, and
+    //! what `partition_statistics` reports from them.
+    use super::*;
+    use crate::state::aqe::test::{mock_partitions_with_size, null_count_statistics};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::stats::Precision;
+    use datafusion::physical_plan::StatisticsArgs;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::statistics::StatisticsContext;
+    use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
+
+    fn source() -> Arc<dyn ExecutionPlan> {
+        Arc::new(EmptyExec::new(Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Utf8, true),
+        ]))))
+    }
+
+    /// An exchange over two partitions of 10 and 20 rows whose stage reported
+    /// the given column statistics.
+    fn resolved(columns: Vec<ColumnStatistics>) -> Arc<ExchangeExec> {
+        let exchange = Arc::new(ExchangeExec::new(
+            source(),
+            Some(Partitioning::UnknownPartitioning(2)),
+            0,
+        ));
+        exchange.resolve_column_statistics(columns);
+        exchange.resolve_shuffle_partitions(
+            [
+                mock_partitions_with_size(10, 80),
+                mock_partitions_with_size(20, 160),
+            ]
+            .concat(),
+        );
+        exchange
+    }
+
+    fn stats_of(plan: &dyn ExecutionPlan, partition: Option<usize>) -> Arc<Statistics> {
+        StatisticsContext::new()
+            .compute(plan, &StatisticsArgs::new().with_partition(partition))
+            .unwrap()
+    }
+
+    fn null_count_of(stats: &Statistics, column: usize) -> Precision<usize> {
+        stats.column_statistics[column].null_count
+    }
+
+    #[test]
+    fn reports_the_stage_column_statistics_for_the_whole_exchange() {
+        let stats = stats_of(resolved(null_count_statistics(&[3, 0])).as_ref(), None);
+
+        assert_eq!(stats.num_rows, Precision::Exact(30));
+        assert_eq!(null_count_of(&stats, 0), Precision::Exact(3));
+        assert_eq!(null_count_of(&stats, 1), Precision::Exact(0));
+    }
+
+    // A stage total says nothing about how the nulls fell across partitions.
+    #[test]
+    fn leaves_a_single_partition_column_statistics_unknown() {
+        let stats = stats_of(resolved(null_count_statistics(&[3, 0])).as_ref(), Some(1));
+
+        assert_eq!(null_count_of(&stats, 0), Precision::Absent);
+    }
+
+    #[test]
+    fn ignores_column_statistics_that_do_not_match_the_schema() {
+        let stats = stats_of(resolved(null_count_statistics(&[3])).as_ref(), None);
+
+        assert_eq!(stats.column_statistics.len(), 2);
+        assert_eq!(null_count_of(&stats, 0), Precision::Absent);
+    }
+
+    #[test]
+    fn unresolved_exchange_has_unknown_column_statistics() {
+        let exchange = ExchangeExec::new(source(), None, 0);
+        exchange.resolve_column_statistics(null_count_statistics(&[3, 0]));
+
+        let stats = stats_of(&exchange, None);
+        assert_eq!(null_count_of(&stats, 0), Precision::Absent);
+    }
+
+    // Rules rebuild exchanges with `with_new_children` and turn them into
+    // broadcasts with `to_broadcast`; both must keep the statistics.
+    #[test]
+    fn rebuilt_and_broadcast_exchanges_keep_the_column_statistics() {
+        let exchange = resolved(null_count_statistics(&[3, 0]));
+
+        let rebuilt = Arc::clone(&exchange)
+            .replace_children(
+                vec![source()],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .unwrap();
+        let broadcast = exchange.to_broadcast(1);
+
+        for plan in [rebuilt, Arc::new(broadcast) as Arc<dyn ExecutionPlan>] {
+            let stats = stats_of(plan.as_ref(), None);
+            assert_eq!(null_count_of(&stats, 0), Precision::Exact(3));
+        }
     }
 }

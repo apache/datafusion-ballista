@@ -55,9 +55,12 @@ use datafusion::physical_plan::metrics::{
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics, StatisticsArgs, statistics::ChildStats,
+    RecordBatchStream, SendableRecordBatchStream, Statistics, StatisticsArgs,
+    statistics::ChildStats,
 };
-use futures::TryStreamExt;
+use futures::{Stream, StreamExt, TryStreamExt};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -243,6 +246,83 @@ pub(crate) struct WriterState {
         Vec<Option<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>>>,
 }
 
+/// Per-column logical null counts over everything a writer wrote. Clones share
+/// the counts, so the executor can read them from its copy of the writer once
+/// the task has finished.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ColumnNullCounts(Arc<Mutex<Vec<u64>>>);
+
+impl ColumnNullCounts {
+    /// Zeroes the counts and sizes them for `num_columns` columns.
+    pub(crate) fn reset(&self, num_columns: usize) {
+        if let Ok(mut counts) = self.0.lock() {
+            *counts = vec![0; num_columns];
+        }
+    }
+
+    /// Wraps `stream` so the nulls in every batch it yields are added to these
+    /// counts. Each stream counts on its own and adds its total when dropped,
+    /// so the partitions a task drains concurrently don't share a lock per
+    /// batch.
+    pub(crate) fn count(
+        &self,
+        stream: SendableRecordBatchStream,
+    ) -> SendableRecordBatchStream {
+        let num_columns = stream.schema().fields().len();
+        Box::pin(NullCountingStream {
+            input: stream,
+            counts: vec![0; num_columns],
+            total: self.clone(),
+        })
+    }
+
+    /// The counts, one per column of the written schema.
+    pub(crate) fn get(&self) -> Vec<u64> {
+        self.0
+            .lock()
+            .map(|counts| counts.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// See [`ColumnNullCounts::count`].
+struct NullCountingStream {
+    input: SendableRecordBatchStream,
+    counts: Vec<u64>,
+    total: ColumnNullCounts,
+}
+
+impl Stream for NullCountingStream {
+    type Item = Result<RecordBatch>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let poll = this.input.poll_next_unpin(cx);
+        if let Poll::Ready(Some(Ok(batch))) = &poll {
+            for (slot, column) in this.counts.iter_mut().zip(batch.columns()) {
+                *slot += column.logical_null_count() as u64;
+            }
+        }
+        poll
+    }
+}
+
+impl RecordBatchStream for NullCountingStream {
+    fn schema(&self) -> SchemaRef {
+        self.input.schema()
+    }
+}
+
+impl Drop for NullCountingStream {
+    fn drop(&mut self) {
+        if let Ok(mut total) = self.total.0.lock() {
+            for (slot, n) in total.iter_mut().zip(&self.counts) {
+                *slot += n;
+            }
+        }
+    }
+}
+
 impl Debug for WriterState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WriterState")
@@ -376,6 +456,8 @@ pub struct ShuffleWriterExec {
     /// clone of the writer produced by `with_new_children` participates in
     /// the same coordinator.
     state: Arc<Mutex<WriterState>>,
+    /// Null counts of the rows this task wrote, shared with clones.
+    column_null_counts: ColumnNullCounts,
 }
 
 impl Clone for ShuffleWriterExec {
@@ -390,6 +472,7 @@ impl Clone for ShuffleWriterExec {
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             state: self.state.clone(),
+            column_null_counts: self.column_null_counts.clone(),
         }
     }
 }
@@ -479,6 +562,7 @@ impl ShuffleWriterExec {
                 initialized: false,
                 handoffs: (0..output_partition_count).map(|_| None).collect(),
             })),
+            column_null_counts: ColumnNullCounts::default(),
         })
     }
 
@@ -514,6 +598,12 @@ impl ShuffleWriterExec {
     /// Global partition slice this writer instance is bound to.
     pub fn global_output_partition_ids(&self) -> &[usize] {
         &self.global_output_partition_ids
+    }
+
+    /// Per-column null counts over all rows this task wrote, one per column
+    /// of the output schema. Empty until the task has written.
+    pub fn column_null_counts(&self) -> Vec<u64> {
+        self.column_null_counts.get()
     }
 
     /// Drain every window-state collector in this stage, translating each
@@ -568,12 +658,14 @@ impl ShuffleWriterExec {
         let partition_map =
             walk_child_partition_mapping(&plan, &self.global_output_partition_ids);
         let metrics = self.metrics.clone();
+        let null_counts = self.column_null_counts.clone();
 
         async move {
             let now = Instant::now();
             let config = context.session_config().ballista_config();
             let compression_type = config.shuffle_compression_codec()?;
             let channel_capacity = config.shuffle_writer_channel_capacity();
+            null_counts.reset(plan.schema().fields().len());
 
             // Passthrough shuffle: drain each of the child's output
             // partitions into its own file. All K must drain
@@ -608,7 +700,8 @@ impl ShuffleWriterExec {
 
                 debug!("Writing results to {path:?}");
 
-                let mut stream = plan.execute(local_input_partition, context.clone())?;
+                let mut stream = null_counts
+                    .count(plan.execute(local_input_partition, context.clone())?);
                 handles.spawn(async move {
                     let stats = utils::write_stream_to_disk(
                         &mut stream,
@@ -1415,6 +1508,43 @@ mod tests {
             result.is_err(),
             "expected create_dir_all failure in writer to propagate"
         );
+        Ok(())
+    }
+
+    // Null counts are summed over every partition the task drains, per column
+    // of the written schema.
+    #[tokio::test]
+    async fn column_null_counts_fold_across_partitions() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, true),
+            Field::new("b", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(vec![None, Some(3), None])),
+                Arc::new(StringArray::from(vec![Some("x"), Some("y"), None])),
+            ],
+        )?;
+        let partitions = vec![vec![batch.clone(), batch.clone()], vec![batch]];
+        let input = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
+            &partitions,
+            schema,
+            None,
+        )?)));
+
+        let work_dir = TempDir::new()?;
+        let writer = Arc::new(ShuffleWriterExec::try_new(
+            JobId::new("jobOne"),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_owned(),
+        )?);
+        assert!(writer.column_null_counts().is_empty());
+
+        drive_all_partitions(writer.clone(), SessionContext::new().task_ctx()).await?;
+
+        assert_eq!(writer.column_null_counts(), vec![6, 3]);
         Ok(())
     }
 
