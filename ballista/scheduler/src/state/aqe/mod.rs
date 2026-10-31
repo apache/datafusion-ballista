@@ -200,6 +200,7 @@ impl AdaptiveExecutionGraph {
                     queued_at,
                     started_at,
                     scheduler: scheduler_id.to_string(),
+                    pipelined_output_locations: vec![],
                 })),
             },
             queued_at,
@@ -1338,13 +1339,10 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     /// Convert unresolved stage to be resolved
     fn resolve_stage(&mut self, stage_id: usize) -> ballista_core::error::Result<bool> {
-        if let Some(ExecutionStage::UnResolved(stage)) = self.stages.remove(&stage_id) {
-            self.stages.insert(
-                stage_id,
-                ExecutionStage::Resolved(
-                    stage.to_resolved(self.session_config.options())?,
-                ),
-            );
+        if let Some(ExecutionStage::UnResolved(stage)) = self.stages.get(&stage_id) {
+            let resolved_stage = stage.to_resolved(self.session_config.options())?;
+            self.stages
+                .insert(stage_id, ExecutionStage::Resolved(resolved_stage));
             Ok(true)
         } else {
             warn!(
@@ -1396,7 +1394,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         stage_id: usize,
         failure_reasons: HashSet<String>,
     ) -> ballista_core::error::Result<Vec<RunningTaskInfo>> {
-        if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
+        if let Some(ExecutionStage::Running(stage)) = self.stages.get(&stage_id) {
             let running_tasks = stage
                 .running_tasks()
                 .into_iter()
@@ -1407,10 +1405,9 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                     executor_id,
                 })
                 .collect();
-            self.stages.insert(
-                stage_id,
-                ExecutionStage::UnResolved(stage.to_unresolved(failure_reasons)?),
-            );
+            let unresolved_stage = stage.to_unresolved(failure_reasons)?;
+            self.stages
+                .insert(stage_id, ExecutionStage::UnResolved(unresolved_stage));
             Ok(running_tasks)
         } else {
             warn!(
@@ -1427,9 +1424,10 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         &mut self,
         stage_id: usize,
     ) -> ballista_core::error::Result<bool> {
-        if let Some(ExecutionStage::Resolved(stage)) = self.stages.remove(&stage_id) {
+        if let Some(ExecutionStage::Resolved(stage)) = self.stages.get(&stage_id) {
+            let unresolved_stage = stage.to_unresolved()?;
             self.stages
-                .insert(stage_id, ExecutionStage::UnResolved(stage.to_unresolved()?));
+                .insert(stage_id, ExecutionStage::UnResolved(unresolved_stage));
             Ok(true)
         } else {
             warn!(
@@ -1499,6 +1497,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                 queued_at: self.queued_at,
                 started_at: self.start_time,
                 ended_at: self.end_time,
+                pipelined_output_locations: vec![],
             })),
         };
 

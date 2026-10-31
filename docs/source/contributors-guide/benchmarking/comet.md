@@ -42,15 +42,15 @@ left at Comet's defaults.
 
 ## Reproducing
 
-Start from the [Spark](spark.md) `spark-submit` command, add the Comet JAR to
-the driver and executor classpath (see the
-[Comet installation guide](https://datafusion.apache.org/comet/user-guide/latest/installation.html))
-and add the settings above:
+Build the Comet image from `benchmarks/cluster/docker/comet.Dockerfile`, which
+adds the Comet JAR to the Spark image (see the
+[Comet installation guide](https://datafusion.apache.org/comet/user-guide/latest/installation.html)),
+then run:
 
 ```sh
-  --conf spark.plugins=org.apache.spark.CometPlugin \
-  --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-  --conf spark.memory.offHeap.enabled=true \
-  --conf spark.memory.offHeap.size=32G \
-  --conf spark.comet.exec.memoryPool.fraction=0.8
+cd benchmarks/cluster
+python3 run.py --engine comet
 ```
+
+The settings above are in `benchmarks/cluster/conf/comet.conf`, on top of the
+[Spark](spark.md) settings.

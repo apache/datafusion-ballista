@@ -282,6 +282,17 @@ impl ClusterState for InMemoryClusterState {
     }
 }
 
+#[cfg(test)]
+impl InMemoryClusterState {
+    /// Drop metadata for `executor_id` while leaving its available vcores.
+    ///
+    /// Simulates a transient miss from a non-memory [`ClusterState`] backend
+    /// after tasks have already been bound (see #2686).
+    pub(crate) fn drop_executor_metadata(&self, executor_id: &str) {
+        self.executors.remove(executor_id);
+    }
+}
+
 /// Implementation of `JobState` which keeps all state in memory. If using `InMemoryJobState`
 /// no job state will be shared between schedulers
 pub struct InMemoryJobState {

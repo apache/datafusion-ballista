@@ -26,6 +26,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
 use arrow_flight::sql::client::FlightSqlServiceClient;
@@ -40,11 +41,13 @@ use async_trait::async_trait;
 use ballista_core::error::Result;
 use ballista_core::flight_proxy_service::BallistaFlightProxyService;
 use ballista_core::serde::decode_protobuf;
-use ballista_core::serde::protobuf::{ExecutorMetadata, PartitionId, PartitionLocation};
+use ballista_core::serde::protobuf::{
+    ExecutorMetadata, PartitionId, PartitionLocation, PipelinedPartitionLocation,
+};
 use ballista_core::serde::scheduler::{
     Action as BallistaAction, ShuffleFileKind, ShuffleLayout,
 };
-use ballista_flight_sql::backend::{QueryBackend, QueryResult};
+use ballista_flight_sql::backend::{PipelinedOutput, QueryBackend, QueryResult};
 use ballista_flight_sql::{
     ANONYMOUS_SESSION, AnonymousAuthenticator, Authenticator, BallistaFlightSqlService,
     Identity,
@@ -66,6 +69,8 @@ use tonic::{Code, Request, Status};
 struct StubBackend {
     sessions: DashMap<String, Arc<SessionContext>>,
     executed: DashMap<String, usize>,
+    /// Report jobs as pipelined: running, with their final stage's locations.
+    pipelined: bool,
 }
 
 const JOB_ID: &str = "job-1";
@@ -96,6 +101,37 @@ impl QueryBackend for StubBackend {
     ) -> Result<QueryResult> {
         *self.executed.entry(JOB_ID.to_string()).or_insert(0) += 1;
 
+        let executor_meta = ExecutorMetadata {
+            id: "executor-1".to_string(),
+            host: "executor-host".to_string(),
+            port: 50051,
+            grpc_port: 50052,
+            specification: None,
+            os_info: None,
+        };
+        if self.pipelined {
+            let pipelined_partitions = (0..PARTITIONS)
+                .map(|partition_id| PipelinedPartitionLocation {
+                    partition_id: Some(PartitionId {
+                        job_id: JOB_ID.to_string(),
+                        stage_id: 3,
+                        partition_id,
+                    }),
+                    task_id: partition_id + 10,
+                    executor_meta: Some(executor_meta.clone()),
+                })
+                .collect();
+            return Ok(QueryResult {
+                job_id: JOB_ID.to_string(),
+                schema: Arc::new(plan.schema().as_arrow().clone()),
+                partitions: vec![],
+                pipelined: Some(PipelinedOutput {
+                    partitions: pipelined_partitions,
+                    registration_timeout: Duration::from_secs(7),
+                }),
+            });
+        }
+
         let partitions = (0..PARTITIONS)
             .map(|partition_id| PartitionLocation {
                 map_partition_id: 0,
@@ -122,6 +158,7 @@ impl QueryBackend for StubBackend {
             job_id: JOB_ID.to_string(),
             schema: Arc::new(plan.schema().as_arrow().clone()),
             partitions,
+            pipelined: None,
         })
     }
 }
@@ -271,6 +308,65 @@ async fn select_produces_one_endpoint_per_partition_with_no_location() {
         (0..PARTITIONS as usize).collect(),
         "each endpoint must name a different partition"
     );
+}
+
+/// A pipelined job's partitions are served through one endpoint, read
+/// together: a client reading separate endpoints one at a time would stall
+/// the job, which cannot finish one partition before the others are read.
+#[tokio::test]
+async fn pipelined_select_serves_every_partition_through_one_endpoint() {
+    let backend = Arc::new(StubBackend {
+        pipelined: true,
+        ..Default::default()
+    });
+    register_table(&backend, ANONYMOUS_SESSION).await;
+    let service = make_service(backend.clone());
+
+    let info = service
+        .get_flight_info_statement(statement("SELECT id FROM people"), descriptor())
+        .await
+        .expect("query planned and submitted")
+        .into_inner();
+    assert_eq!(info.endpoint.len(), 1);
+    assert!(info.endpoint[0].location.is_empty());
+
+    // Tag, then length-prefixed parts: the schema, then one fetch action per
+    // partition.
+    let handle = statement_ticket(&info, 0).statement_handle;
+    let mut rest = &handle[1..];
+    let mut parts = vec![];
+    while !rest.is_empty() {
+        let len = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
+        parts.push(rest[4..4 + len].to_vec());
+        rest = &rest[4 + len..];
+    }
+    let schema = Schema::try_from(arrow_flight::IpcMessage(parts[0].clone().into()))
+        .expect("handle starts with the result schema");
+    assert_eq!(schema, info.clone().try_decode_schema().unwrap());
+
+    let mut seen = HashSet::new();
+    for part in &parts[1..] {
+        let action = decode_protobuf(part).expect("a Ballista action");
+        let BallistaAction::FetchPipelinedPartition {
+            job_id,
+            stage_id,
+            task_id,
+            partition_id,
+            host,
+            port,
+            registration_timeout_ms,
+        } = action
+        else {
+            panic!("expected a FetchPipelinedPartition action, got {action:?}");
+        };
+        assert_eq!(job_id.to_string(), JOB_ID);
+        assert_eq!(stage_id, 3);
+        assert_eq!(task_id, partition_id + 10);
+        assert_eq!((host.as_str(), port), ("executor-host", 50051));
+        assert_eq!(registration_timeout_ms, 7000);
+        seen.insert(partition_id);
+    }
+    assert_eq!(seen, (0..PARTITIONS as usize).collect());
 }
 
 #[tokio::test]
