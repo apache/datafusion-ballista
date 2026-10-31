@@ -87,6 +87,14 @@ Table of content
    contributors-guide/benchmarking/index
    Source code <https://github.com/apache/datafusion-ballista/>
 
+.. _toc.about:
+
+.. toctree::
+   :maxdepth: 1
+   :caption: About
+
+   Comparison with DataFusion Distributed <about/datafusion-distributed-comparison>
+
 .. _toc.community:
 
 .. toctree::

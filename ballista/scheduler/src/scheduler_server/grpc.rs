@@ -306,9 +306,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     os_info: metadata.os_info.unwrap().into(),
                 };
 
-                self.do_register_executor(metadata)
-                    .await
-                    .map_err(executor_registration_error)?;
+                // A pull-based executor can heartbeat before its first poll.
+                // Register it the way a poll would, without the vcore
+                // inventory that only push-based scheduling uses.
+                if self.state.config.is_push_staged_scheduling() {
+                    self.do_register_executor(metadata)
+                        .await
+                        .map_err(executor_registration_error)?;
+                } else {
+                    self.state
+                        .executor_manager
+                        .save_executor_metadata(metadata)
+                        .await
+                        .map_err(executor_registration_error)?;
+                }
             } else {
                 return Err(Status::invalid_argument(format!(
                     "The registration spec for executor {executor_id} is not included"
@@ -949,9 +960,9 @@ mod test {
     use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::execute_query_params::Query;
     use ballista_core::serde::protobuf::{
-        ExecuteQueryParams, ExecutorRegistration, ExecutorStatus, ExecutorStoppedParams,
-        HeartBeatParams, PollWorkParams, RegisterExecutorParams, execute_query_result,
-        executor_status,
+        ExecuteQueryParams, ExecutorMetric, ExecutorRegistration, ExecutorStatus,
+        ExecutorStoppedParams, HeartBeatParams, PollWorkParams, RegisterExecutorParams,
+        execute_query_result, executor_metric, executor_status,
     };
     use ballista_core::serde::scheduler::{
         ExecutorOperatingSystemSpecification, ExecutorSpecification,
@@ -1222,6 +1233,69 @@ mod test {
         assert_eq!(stored_executor.specification.vcores, 2);
         assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
+        Ok(())
+    }
+
+    /// A pull-based executor reports its status and metrics through
+    /// heartbeats while it polls for work; its polls must not erase them.
+    #[tokio::test]
+    async fn test_pull_executor_heartbeats_survive_polls() -> Result<(), BallistaError> {
+        let config = SchedulerConfig::default().with_scheduler_policy(
+            ballista_core::config::TaskSchedulingPolicy::PullStaged,
+        );
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(config),
+                default_metrics_collector().unwrap(),
+            );
+        scheduler.init().await?;
+        let exec_meta = exec_meta_with_version(BALLISTA_PROTOCOL_VERSION);
+        let memory = |bytes| ExecutorMetric {
+            metric: Some(executor_metric::Metric::ProcPhysicalMemory(bytes)),
+        };
+
+        let active = executor_status::Status::Active("".to_string());
+        let terminating = executor_status::Status::Terminating("".to_string());
+
+        // The heartbeater can reach the scheduler before the first poll.
+        for (bytes, status) in [(3000, active), (1000, terminating.clone())] {
+            scheduler
+                .heart_beat_from_executor(Request::new(HeartBeatParams {
+                    executor_id: exec_meta.id.clone(),
+                    metrics: vec![memory(bytes)],
+                    status: Some(ExecutorStatus {
+                        status: Some(status),
+                    }),
+                    metadata: Some(exec_meta.clone()),
+                }))
+                .await
+                .expect("Received error response");
+        }
+        scheduler
+            .poll_work(Request::new(PollWorkParams {
+                metadata: Some(exec_meta.clone()),
+                num_free_vcores: 0,
+                task_status: vec![],
+            }))
+            .await
+            .expect("Received error response");
+
+        let heartbeat = scheduler
+            .state
+            .executor_manager
+            .get_executor_hearbeat(&exec_meta.id)
+            .expect("heartbeat");
+        assert_eq!(
+            heartbeat.status,
+            Some(ExecutorStatus {
+                status: Some(terminating)
+            })
+        );
+        assert_eq!(heartbeat.metrics, vec![memory(1000)]);
+        assert_eq!(heartbeat.peak_proc_physical_memory, 3000);
         Ok(())
     }
 
