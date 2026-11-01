@@ -93,6 +93,5 @@ cargo run --release --bin tpch -- benchmark ballista \
 The runner sets `target_partitions` from `--partitions` and enables
 `collect_statistics`; everything else is left at its default.
 
-For the pipelined column, start the scheduler with `--scheduler-policy
-push-staged` and the executors with `--task-scheduling-policy push-staged`,
+For the pipelined column, start the scheduler with `--scheduler-policy push-staged` and the executors with `--task-scheduling-policy push-staged`,
 and add `-c ballista.execution.mode=pipelined` to the runner command.
