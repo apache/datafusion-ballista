@@ -41,6 +41,7 @@ ignored = [
 [dependencies]
 # CLI-only deps (DataFusion/Ballista) — gated by `cli` feature
 ballista = { workspace = true, features = ["standalone"], optional = true }
+ballista-core = { workspace = true, optional = true }
 datafusion = { workspace = true, optional = true }
 datafusion-cli = { workspace = true, optional = true }
 mimalloc = { workspace = true, optional = true }
@@ -79,7 +80,7 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 web-sys = { version = "0.3", optional = true, default-features = false, features = ["Window", "Document", "Location"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "parking_lot"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "parking_lot", "signal"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
@@ -89,6 +90,7 @@ default = ["cli", "tui"]
 
 cli = [
     "dep:ballista",
+    "dep:ballista-core",
     "dep:datafusion",
     "dep:datafusion-cli",
     "dep:mimalloc",

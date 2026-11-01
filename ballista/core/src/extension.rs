@@ -23,7 +23,11 @@ use crate::config::{
     BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
     BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
-    BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
+    BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
+    BALLISTA_SKEW_JOIN_ADVISORY_PARTITION_BYTES, BALLISTA_SKEW_JOIN_ENABLED,
+    BALLISTA_SKEW_JOIN_PARTITION_THRESHOLD_BYTES,
+    BALLISTA_SKEW_JOIN_SKEWED_PARTITION_FACTOR,
+    BALLISTA_SKEW_JOIN_SMALL_PARTITION_FACTOR, BALLISTA_STANDALONE_PARALLELISM,
     BallistaConfig,
 };
 use crate::planner::BallistaQueryPlanner;
@@ -58,45 +62,21 @@ use uuid::Uuid;
 pub type EndpointOverrideFn =
     Arc<dyn Fn(Endpoint) -> Result<Endpoint, Box<dyn Error + Send + Sync>> + Send + Sync>;
 
-#[cfg(feature = "spark-compat")]
-use datafusion_spark::{
-    all_default_aggregate_functions as spark_aggregate_functions,
-    all_default_scalar_functions as spark_scalar_functions,
-    all_default_window_functions as spark_window_functions,
-};
-
-/// Returns scalar functions for Ballista (DataFusion defaults + Spark when enabled)
+/// Returns scalar functions for Ballista (DataFusion defaults)
 pub fn ballista_scalar_functions() -> Vec<Arc<ScalarUDF>> {
-    #[allow(unused_mut)]
     let mut functions = all_default_functions();
     functions.append(&mut all_default_nested_functions());
-
-    #[cfg(feature = "spark-compat")]
-    functions.extend(spark_scalar_functions());
-
     functions
 }
 
-/// Returns aggregate functions for Ballista (DataFusion defaults + Spark when enabled)
+/// Returns aggregate functions for Ballista (DataFusion defaults)
 pub fn ballista_aggregate_functions() -> Vec<Arc<AggregateUDF>> {
-    #[allow(unused_mut)]
-    let mut functions = all_default_aggregate_functions();
-
-    #[cfg(feature = "spark-compat")]
-    functions.extend(spark_aggregate_functions());
-
-    functions
+    all_default_aggregate_functions()
 }
 
-/// Returns window functions for Ballista (DataFusion defaults + Spark when enabled)
+/// Returns window functions for Ballista (DataFusion defaults)
 pub fn ballista_window_functions() -> Vec<Arc<WindowUDF>> {
-    #[allow(unused_mut)]
-    let mut functions = all_default_window_functions();
-
-    #[cfg(feature = "spark-compat")]
-    functions.extend(spark_window_functions());
-
-    functions
+    all_default_window_functions()
 }
 
 /// Provides methods which adapt [SessionState]
@@ -291,6 +271,34 @@ pub trait SessionConfigExt {
     fn ballista_coalesce_merged_partition_factor(&self) -> f64;
     /// Sets the merged-partition early-flush factor (Spark legacy).
     fn with_ballista_coalesce_merged_partition_factor(self, factor: f64) -> Self;
+
+    /// Returns whether the AQE optimize-skewed-join rule is enabled.
+    fn ballista_skew_join_enabled(&self) -> bool;
+    /// Sets whether the AQE optimize-skewed-join rule is enabled.
+    fn with_ballista_skew_join_enabled(self, enabled: bool) -> Self;
+
+    /// Returns the skewed-partition factor (Spark's
+    /// `skewedPartitionFactor`).
+    fn ballista_skew_join_skewed_partition_factor(&self) -> f64;
+    /// Sets the skewed-partition factor.
+    fn with_ballista_skew_join_skewed_partition_factor(self, factor: f64) -> Self;
+
+    /// Returns the absolute skewed-partition byte threshold
+    /// (Spark's `skewedPartitionThresholdInBytes`).
+    fn ballista_skew_join_partition_threshold_bytes(&self) -> usize;
+    /// Sets the absolute skewed-partition byte threshold.
+    fn with_ballista_skew_join_partition_threshold_bytes(self, bytes: usize) -> Self;
+
+    /// Returns the advisory target sub-shard byte size used by the bin-packer
+    /// when splitting a skewed partition.
+    fn ballista_skew_join_advisory_partition_bytes(&self) -> usize;
+    /// Sets the advisory target sub-shard byte size.
+    fn with_ballista_skew_join_advisory_partition_bytes(self, bytes: usize) -> Self;
+
+    /// Returns the tail-merge factor for the skew-join sub-shard bin-packer.
+    fn ballista_skew_join_small_partition_factor(&self) -> f64;
+    /// Sets the tail-merge factor for the skew-join sub-shard bin-packer.
+    fn with_ballista_skew_join_small_partition_factor(self, factor: f64) -> Self;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -642,6 +650,32 @@ impl SessionConfigExt for SessionConfig {
         f64,
         coalesce_merged_partition_factor,
         BALLISTA_COALESCE_MERGED_PARTITION_FACTOR
+    );
+
+    ballista_config_option!(bool, skew_join_enabled, BALLISTA_SKEW_JOIN_ENABLED);
+
+    ballista_config_option!(
+        f64,
+        skew_join_skewed_partition_factor,
+        BALLISTA_SKEW_JOIN_SKEWED_PARTITION_FACTOR
+    );
+
+    ballista_config_option!(
+        usize,
+        skew_join_partition_threshold_bytes,
+        BALLISTA_SKEW_JOIN_PARTITION_THRESHOLD_BYTES
+    );
+
+    ballista_config_option!(
+        usize,
+        skew_join_advisory_partition_bytes,
+        BALLISTA_SKEW_JOIN_ADVISORY_PARTITION_BYTES
+    );
+
+    ballista_config_option!(
+        f64,
+        skew_join_small_partition_factor,
+        BALLISTA_SKEW_JOIN_SMALL_PARTITION_FACTOR
     );
 }
 
@@ -1258,7 +1292,7 @@ mod test {
         );
     }
 
-    // Tests for helper functions that register DataFusion + Spark functions
+    // Tests for helper functions that register DataFusion functions
 
     #[test]
     fn test_ballista_functions_include_datafusion() {
@@ -1286,42 +1320,6 @@ mod test {
         assert!(window_funcs.iter().any(|f| f.name() == "dense_rank"));
     }
 
-    #[test]
-    #[cfg(not(feature = "spark-compat"))]
-    fn test_ballista_functions_without_spark() {
-        use super::{
-            ballista_aggregate_functions, ballista_scalar_functions,
-            ballista_window_functions,
-        };
-
-        // Scalar functions should NOT include Spark functions
-        let scalar_funcs = ballista_scalar_functions();
-        assert!(!scalar_funcs.iter().any(|f| f.name() == "sha1"));
-        assert!(!scalar_funcs.iter().any(|f| f.name() == "expm1"));
-
-        // All function types should have baseline DataFusion functions
-        assert!(!ballista_aggregate_functions().is_empty());
-        assert!(!ballista_window_functions().is_empty());
-    }
-
-    #[test]
-    #[cfg(feature = "spark-compat")]
-    fn test_ballista_functions_with_spark() {
-        use super::{
-            ballista_aggregate_functions, ballista_scalar_functions,
-            ballista_window_functions,
-        };
-
-        // Scalar functions should include Spark functions
-        let scalar_funcs = ballista_scalar_functions();
-        assert!(scalar_funcs.iter().any(|f| f.name() == "sha1"));
-        assert!(scalar_funcs.iter().any(|f| f.name() == "expm1"));
-
-        // All function types should have functions available
-        assert!(!ballista_aggregate_functions().is_empty());
-        assert!(!ballista_window_functions().is_empty());
-    }
-
     #[tokio::test]
     async fn test_ballista_functions_with_session_state() {
         use super::{
@@ -1340,25 +1338,5 @@ mod test {
         assert!(state.scalar_functions().contains_key("abs"));
         assert!(state.aggregate_functions().contains_key("count"));
         assert!(state.window_functions().contains_key("row_number"));
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "spark-compat")]
-    async fn test_ballista_spark_functions_with_session_state() {
-        use super::{
-            ballista_aggregate_functions, ballista_scalar_functions,
-            ballista_window_functions,
-        };
-
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_scalar_functions(ballista_scalar_functions())
-            .with_aggregate_functions(ballista_aggregate_functions())
-            .with_window_functions(ballista_window_functions())
-            .build();
-
-        // Verify Spark functions are registered in SessionState
-        assert!(state.scalar_functions().contains_key("sha1"));
-        assert!(state.scalar_functions().contains_key("expm1"));
     }
 }

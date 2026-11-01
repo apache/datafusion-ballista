@@ -58,7 +58,7 @@ use log::{debug, error};
 
 use crate::error::{BallistaError, Result};
 use crate::serde::scheduler::PartitionStats;
-use crate::utils::create_write_options;
+use crate::utils::{compact_sparse_view_columns, create_write_options};
 
 /// Leading bytes of an Arrow IPC file: the `ARROW1` magic plus two padding
 /// bytes. An IPC stream opens with a continuation marker instead, so the two
@@ -235,7 +235,7 @@ where
             let mut batches_written = 0;
             while let Some(batch) = rx.blocking_recv() {
                 let timer = write_metric.timer();
-                writer.write(&batch)?;
+                writer.write(&compact_sparse_view_columns(batch)?)?;
                 batches_written += 1;
                 timer.done();
             }
@@ -311,7 +311,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::{DictionaryArray, Int32Array, StringArray};
+    use datafusion::arrow::array::{
+        AsArray, DictionaryArray, Int32Array, StringArray, StringViewArray,
+    };
     use datafusion::arrow::datatypes::{DataType, Field, Int32Type, Schema};
     use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::arrow::ipc::{Message, root_as_message};
@@ -464,6 +466,39 @@ mod tests {
         assert_eq!(reader.num_batches(), layout.record_batches.len());
         let read_back: Vec<RecordBatch> = reader.map(|b| b.unwrap()).collect();
         assert_eq!(read_back, batches, "round trip must preserve the batches");
+    }
+
+    /// A sort can emit rows that still hold the data buffers of every row
+    /// they were merged from. The IPC writer serializes whole data buffers, so
+    /// the file has to be written from compacted columns.
+    #[tokio::test]
+    async fn writes_only_referenced_view_bytes() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("data-0.arrow");
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Utf8View,
+            false,
+        )]));
+        let strings = StringViewArray::from_iter_values(
+            (0..1000).map(|i| format!("a string too long to inline {i:04}")),
+        );
+        // 2 rows backed by a data buffer that holds all 1000 strings
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(strings)])
+            .unwrap()
+            .slice(10, 2);
+
+        write_batches(&path, vec![batch.clone()]).await;
+
+        let read_back: Vec<RecordBatch> =
+            open_ipc_file(&path).unwrap().map(|b| b.unwrap()).collect();
+        assert_eq!(read_back, vec![batch.clone()]);
+        let written = read_back[0].column(0).as_string_view();
+        let written_bytes: usize = written.data_buffers().iter().map(|b| b.len()).sum();
+        assert_eq!(
+            written_bytes,
+            batch.column(0).as_string_view().total_buffer_bytes_used()
+        );
     }
 
     /// Format detection decides which reader opens a shuffle file, so it has

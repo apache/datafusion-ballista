@@ -27,19 +27,22 @@
 //! locations into Flight endpoints.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
 use ballista_core::error::Result;
-use ballista_core::serde::protobuf::PartitionLocation;
+use ballista_core::serde::protobuf::{PartitionLocation, PipelinedPartitionLocation};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 
-/// A distributed query that ran to completion.
+/// The result of a distributed query, ready to fetch.
 ///
-/// The partitions are shuffle outputs still sitting on the executors that
-/// produced them; the frontend turns each one into a `FlightEndpoint` whose
-/// ticket the client redeems with `DoGet`.
+/// Usually the query ran to completion, and `partitions` are shuffle outputs
+/// still sitting on the executors that produced them; the frontend turns each
+/// one into a `FlightEndpoint` whose ticket the client redeems with `DoGet`.
+/// A pipelined job (`ballista.execution.mode = pipelined`) instead streams its
+/// result while it runs, from `pipelined`.
 #[derive(Debug)]
 pub struct QueryResult {
     /// Scheduler-assigned id of the job that produced the result.
@@ -50,6 +53,20 @@ pub struct QueryResult {
     pub schema: SchemaRef,
     /// One entry per output partition, in the order the scheduler reported.
     pub partitions: Vec<PartitionLocation>,
+    /// Set for a pipelined job, whose result is read while it runs instead of
+    /// from `partitions`.
+    pub pipelined: Option<PipelinedOutput>,
+}
+
+/// Where a running pipelined job serves its result.
+#[derive(Debug)]
+pub struct PipelinedOutput {
+    /// Where the job's final stage serves each output partition. The job
+    /// cannot finish until every one of them has been read.
+    pub partitions: Vec<PipelinedPartitionLocation>,
+    /// How long a fetch of one of `partitions` waits for the task that
+    /// serves it to start.
+    pub registration_timeout: Duration,
 }
 
 /// Submits queries on behalf of a protocol frontend.
@@ -72,7 +89,8 @@ pub trait QueryBackend: Send + Sync + 'static {
     async fn close_session(&self, session_id: &str) -> Result<()>;
 
     /// Submits `plan` for distributed execution and resolves once the job
-    /// reaches a terminal state.
+    /// reaches a terminal state, or, for a pipelined job, once it is running:
+    /// a pipelined job cannot finish until its result has been read.
     ///
     /// Returns `Err` if the job failed or was cancelled.
     ///

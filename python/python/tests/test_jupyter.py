@@ -185,7 +185,7 @@ class TestBallistaMagicsConnected:
         connected_magics._tables()  # no assertion needed beyond "does not raise"
 
     def test_execute_sql_returns_dataframe(self, connected_magics):
-        """Test executing a SQL query returns a DistributedDataFrame."""
+        """Test executing a SQL query returns a DataFrame."""
         result = connected_magics._execute_sql("SELECT 1 as value")
         assert result is not None
 
@@ -217,12 +217,12 @@ class TestBallistaMagicsConnected:
             assert "SELECT 1" in captured.out
 
     def test_sql_magic_line_returns_dataframe(self, connected_magics):
-        """Test %sql line magic returns a DistributedDataFrame."""
+        """Test %sql line magic returns a DataFrame."""
         result = connected_magics.sql("SELECT 1 as value")
         assert result is not None
 
     def test_sql_magic_cell_returns_dataframe(self, connected_magics):
-        """Test %%sql cell magic returns a DistributedDataFrame."""
+        """Test %%sql cell magic returns a DataFrame."""
         result = connected_magics.sql("", cell="SELECT 1 as value")
         assert result is not None
 

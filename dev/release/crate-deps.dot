@@ -19,18 +19,25 @@ digraph G {
 
     ballista_core
     ballista_api_types
+    ballista_flight_sql
     ballista_history
     ballista_scheduler
     ballista_executor
+    ballista_result_service
     ballista
     ballista_cli
 
     ballista_scheduler -> ballista_core
     ballista_scheduler -> ballista_api_types
+    ballista_scheduler -> ballista_flight_sql
+
+    ballista_flight_sql -> ballista_core
 
     ballista_history -> ballista_api_types
 
     ballista_executor -> ballista_core
+
+    ballista_result_service -> ballista_core
 
     ballista -> ballista_core
     ballista -> ballista_scheduler

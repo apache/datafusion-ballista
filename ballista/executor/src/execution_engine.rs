@@ -24,7 +24,8 @@
 use ballista_core::client_pool::BallistaClientPool;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::execution_plans::{
-    RangeShuffleReaderExec, RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriterExec,
+    PipelinedShuffleReaderExec, PipelinedShuffleWriterExec, RangeShuffleReaderExec,
+    RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriterExec,
 };
 use ballista_core::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
 use ballista_core::serde::scheduler::PartitionStats;
@@ -98,6 +99,13 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
     fn collect_runtime_stats_reports(
         &self,
     ) -> Vec<ballista_core::serde::protobuf::RuntimeStatsReport> {
+        Vec::new()
+    }
+
+    /// Complete runtime filters produced by this task; absent for custom engines.
+    fn collect_runtime_filter_reports(
+        &self,
+    ) -> Vec<ballista_core::serde::protobuf::RuntimeFilterPayload> {
         Vec::new()
     }
 
@@ -176,6 +184,17 @@ impl ExecutionEngine for DefaultExecutionEngine {
                             reader.with_work_dir(work_dir.to_string()),
                         ))),
                     }
+                } else if let Some(reader) =
+                    p.downcast_ref::<PipelinedShuffleReaderExec>()
+                {
+                    // The registry for co-located producers comes from the
+                    // task's session configuration at execution time.
+                    match &self.client_pool {
+                        Some(client_pool) => Ok(Transformed::yes(Arc::new(
+                            reader.clone().with_client_pool(client_pool.clone()),
+                        ))),
+                        None => Ok(Transformed::no(p)),
+                    }
                 } else if let Some(reader) = p.downcast_ref::<RangeShuffleReaderExec>() {
                     match &self.client_pool {
                         Some(client_pool) => Ok(Transformed::yes(Arc::new(
@@ -201,9 +220,16 @@ impl ExecutionEngine for DefaultExecutionEngine {
             .data;
 
         // the query plan created by the scheduler always starts with a shuffle
-        // writer (ShuffleWriterExec, RangeShuffleWriterExec, or
-        // SortShuffleWriterExec)
-        if plan.downcast_ref::<ShuffleWriterExec>().is_some() {
+        // writer (ShuffleWriterExec, RangeShuffleWriterExec,
+        // SortShuffleWriterExec, or, for a pipelined job,
+        // PipelinedShuffleWriterExec)
+        if let Some(writer) = plan.downcast_ref::<PipelinedShuffleWriterExec>() {
+            let writer = writer
+                .clone()
+                .with_task_id(task_id)
+                .with_global_output_partition_ids(global_output_partition_ids);
+            Ok(Arc::new(PipelinedQueryStageExec::new(writer)))
+        } else if plan.downcast_ref::<ShuffleWriterExec>().is_some() {
             let exec = ShuffleWriterExec::try_new(
                 job_id,
                 stage_id,
@@ -245,7 +271,8 @@ impl ExecutionEngine for DefaultExecutionEngine {
         } else {
             Err(DataFusionError::Internal(
                 "Plan passed to new_query_stage_exec is not a ShuffleWriterExec, \
-                 RangeShuffleWriterExec, or SortShuffleWriterExec"
+                 RangeShuffleWriterExec, SortShuffleWriterExec, or \
+                 PipelinedShuffleWriterExec"
                     .to_string(),
             ))
         }
@@ -403,6 +430,23 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         }
     }
 
+    fn collect_runtime_filter_reports(
+        &self,
+    ) -> Vec<ballista_core::serde::protobuf::RuntimeFilterPayload> {
+        let plan: Arc<dyn ExecutionPlan> = match &self.shuffle_writer {
+            ShuffleWriterVariant::Passthrough(writer) => Arc::new(writer.clone()),
+            ShuffleWriterVariant::Range(writer) => Arc::new(writer.clone()),
+            ShuffleWriterVariant::Sort(writer) => Arc::new(writer.clone()),
+        };
+        match ballista_core::execution_plans::runtime_filter::collect_reports(&plan) {
+            Ok(reports) => reports,
+            Err(error) => {
+                log::warn!("Runtime filter collection failed; bypassing: {error}");
+                Vec::new()
+            }
+        }
+    }
+
     fn collect_window_state_reports(
         &self,
     ) -> Result<Vec<ballista_core::serde::protobuf::WindowStateReport>> {
@@ -441,6 +485,46 @@ impl QueryStageExecutor for DefaultQueryStageExec {
                 .collect(),
             _ => vec![],
         }
+    }
+}
+
+/// Runs a task of a pipelined job: its writer streams the task's output to
+/// consumers through the executor's pipelined registry instead of writing
+/// shuffle files.
+#[derive(Debug)]
+pub struct PipelinedQueryStageExec {
+    writer: PipelinedShuffleWriterExec,
+}
+
+impl PipelinedQueryStageExec {
+    /// Creates a query stage executor around a pipelined writer.
+    pub fn new(writer: PipelinedShuffleWriterExec) -> Self {
+        Self { writer }
+    }
+}
+
+impl Display for PipelinedQueryStageExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PipelinedQueryStageExec:\n{}",
+            DisplayableExecutionPlan::new(&self.writer).indent(true)
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl QueryStageExecutor for PipelinedQueryStageExec {
+    async fn execute_query_stage(
+        &self,
+        _task_id: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<Vec<ShuffleWritePartition>> {
+        self.writer.execute_pipelined(context).await
+    }
+
+    fn collect_plan_metrics(&self) -> Vec<MetricsSet> {
+        utils::collect_plan_metrics(&self.writer)
     }
 }
 

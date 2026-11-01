@@ -32,6 +32,8 @@ const FACT_FILES: i64 = 8;
 /// is what creates the multi-stage plan the HA paths need.
 const DIM_KEYS: i64 = 50;
 
+pub const LARGE_RESULT_ROWS: usize = (FACT_FILES * FACT_ROWS * DIM_KEYS) as usize;
+
 /// A small deterministic Parquet dataset: `facts(key, value)` joined to
 /// `dims(key, name)`.
 pub struct Fixture {
@@ -134,6 +136,11 @@ impl Fixture {
          ORDER BY f.value"
     }
 
+    pub fn large_result_query() -> &'static str {
+        "SELECT f.value, d.key FROM facts f CROSS JOIN dims d \
+         ORDER BY f.value, d.key"
+    }
+
     /// The same query with a chaos UDF spliced into the WHERE clause.
     ///
     /// `injection` is a complete `chaos_*(...)` call returning BOOLEAN. Its own
@@ -159,6 +166,21 @@ impl Fixture {
              FROM facts f JOIN dims d ON f.key = d.key \
              WHERE {injection} IS NOT NULL \
              GROUP BY d.name ORDER BY d.name"
+        )
+    }
+
+    /// A grouped aggregate whose final-aggregate stage feeds a sorted merge.
+    pub fn partial_reduce_query() -> &'static str {
+        "SELECT key, COUNT(*) AS n, SUM(value) AS total \
+         FROM facts GROUP BY key ORDER BY key"
+    }
+
+    pub fn partial_reduce_chaos_query(injection: &str) -> String {
+        format!(
+            "SELECT key, COUNT(*) AS n, SUM(value) AS total \
+             FROM facts GROUP BY key \
+             HAVING {injection} IS NOT NULL \
+             ORDER BY key"
         )
     }
 

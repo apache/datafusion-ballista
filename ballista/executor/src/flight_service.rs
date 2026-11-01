@@ -19,17 +19,22 @@
 
 use ballista_core::JobId;
 use ballista_core::execution_plans::create_shuffle_path;
+use ballista_core::execution_plans::pipelined::PipelinedRegistry;
 use ballista_core::execution_plans::range_shuffle::{
     index_path as range_index_path, is_ipc_file, open_ipc_file,
 };
-use ballista_core::serde::scheduler::{ByteRange, ShuffleFileKind, ShuffleLayout};
+use ballista_core::serde::scheduler::{
+    ByteRange, ShuffleFileKind, ShuffleLayout, TaskKey,
+};
 use datafusion::arrow::ipc::reader::StreamReader;
 use std::convert::TryFrom;
 use std::fs::File;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio_util::io::ReaderStream;
 
-use arrow_flight::encode::FlightDataEncoderBuilder;
+use arrow_flight::encode::{DictionaryHandling, FlightDataEncoderBuilder};
 use arrow_flight::error::FlightError;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::sort_shuffle::{
@@ -37,6 +42,9 @@ use ballista_core::execution_plans::sort_shuffle::{
 };
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
+use ballista_core::serving::{
+    BoxedFlightStream, ResultBackend, from_ballista_err, serve_do_get,
+};
 use datafusion::arrow::ipc::CompressionType;
 
 use arrow_flight::{
@@ -64,42 +72,106 @@ use tonic::{Request, Response, Status, Streaming};
 /// via the `IO_BLOCK_TRANSPORT` action.
 #[derive(Clone)]
 pub struct BallistaFlightService {
-    work_dir: String,
+    backend: LocalDiskBackend,
 }
 
 impl BallistaFlightService {
     /// Creates a new BallistaFlightService instance.
     pub fn new(work_dir: String) -> Self {
-        Self { work_dir }
+        Self {
+            backend: LocalDiskBackend {
+                work_dir,
+                pipelined_registry: None,
+            },
+        }
+    }
+
+    /// Also serves the output partitions of the pipelined tasks running on
+    /// this executor. Without it, pipelined fetches are refused.
+    pub fn with_pipelined_registry(mut self, registry: Arc<PipelinedRegistry>) -> Self {
+        self.backend.pipelined_registry = Some(registry);
+        self
     }
 }
 
-type BoxedFlightStream<T> =
-    Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
+/// How long a pipelined fetch waits for its producer task when the request
+/// does not say.
+const DEFAULT_PIPELINED_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// shuffle file block transfer size    
+/// shuffle file block transfer size
 const BLOCK_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
 
+/// A [`ResultBackend`] that serves shuffle partitions from the executor's
+/// work directory, and pipelined partitions from its registry.
+#[derive(Clone)]
+struct LocalDiskBackend {
+    work_dir: String,
+    pipelined_registry: Option<Arc<PipelinedRegistry>>,
+}
+
 #[tonic::async_trait]
-impl FlightService for BallistaFlightService {
-    type DoActionStream = BoxedFlightStream<arrow_flight::Result>;
-    type DoExchangeStream = BoxedFlightStream<FlightData>;
-    type DoGetStream = BoxedFlightStream<FlightData>;
-    type DoPutStream = BoxedFlightStream<PutResult>;
-    type HandshakeStream = BoxedFlightStream<HandshakeResponse>;
-    type ListActionsStream = BoxedFlightStream<ActionType>;
-    type ListFlightsStream = BoxedFlightStream<FlightInfo>;
-
-    async fn do_get(
+impl ResultBackend for LocalDiskBackend {
+    async fn fetch(
         &self,
-        request: Request<Ticket>,
-    ) -> Result<Response<Self::DoGetStream>, Status> {
-        let ticket = request.into_inner();
-
-        let action =
-            decode_protobuf(&ticket.ticket).map_err(|e| from_ballista_err(&e))?;
-
+        action: BallistaAction,
+        _ticket: Ticket,
+    ) -> Result<BoxedFlightStream<FlightData>, Status> {
         match &action {
+            BallistaAction::FetchPipelinedPartition {
+                job_id,
+                stage_id,
+                task_id,
+                partition_id,
+                registration_timeout_ms,
+                ..
+            } => {
+                let registry = self.pipelined_registry.clone().ok_or_else(|| {
+                    Status::unimplemented(
+                        "this executor's Flight service does not serve pipelined partitions",
+                    )
+                })?;
+                let key = TaskKey {
+                    job_id: job_id.clone(),
+                    stage_id: *stage_id,
+                    task_id: *task_id,
+                };
+                let partition = *partition_id;
+                let timeout = if *registration_timeout_ms > 0 {
+                    Duration::from_millis(*registration_timeout_ms)
+                } else {
+                    DEFAULT_PIPELINED_REGISTRATION_TIMEOUT
+                };
+                debug!("FetchPipelinedPartition {key} partition {partition}");
+                // Respond at once and wait for the producer inside the body,
+                // so a consumer that arrives before its producer is not
+                // timed out by its client's request deadline.
+                let stream = futures::stream::once(async move {
+                    let opened = registry
+                        .open(&key, partition, timeout)
+                        .await
+                        .map_err(|e| Status::internal(e.to_string()))?;
+                    let options = IpcWriteOptions::default()
+                        .try_with_compression(opened.compression)
+                        .map_err(|e| from_arrow_err(&e))?;
+                    let schema = opened.stream.schema();
+                    let batches = opened
+                        .stream
+                        .map_err(|e| FlightError::from(ArrowError::from(e)));
+                    Ok::<_, Status>(
+                        FlightDataEncoderBuilder::new()
+                            .with_schema(schema)
+                            .with_options(options)
+                            // Keep dictionary columns dictionary-encoded: the
+                            // reader declares the producer's schema, which a
+                            // hydrated stream would not match.
+                            .with_dictionary_handling(DictionaryHandling::Resend)
+                            .build(batches)
+                            .map_err(|err| Status::from_error(Box::new(err))),
+                    )
+                })
+                .try_flatten();
+                Ok(Box::pin(stream) as BoxedFlightStream<FlightData>)
+            }
             BallistaAction::FetchPartition {
                 job_id,
                 stage_id,
@@ -153,9 +225,9 @@ impl FlightService for BallistaFlightService {
                         .build(stream)
                         .map_err(|err| Status::from_error(Box::new(err)));
 
-                    return Ok(Response::new(
-                        Box::pin(flight_data_stream) as Self::DoGetStream
-                    ));
+                    return Ok(
+                        Box::pin(flight_data_stream) as BoxedFlightStream<FlightData>
+                    );
                 }
 
                 let (tx, rx) = channel(2);
@@ -209,11 +281,27 @@ impl FlightService for BallistaFlightService {
                     .build(ReceiverStream::new(rx))
                     .map_err(|err| Status::from_error(Box::new(err)));
 
-                Ok(Response::new(
-                    Box::pin(flight_data_stream) as Self::DoGetStream
-                ))
+                Ok(Box::pin(flight_data_stream) as BoxedFlightStream<FlightData>)
             }
         }
+    }
+}
+
+#[tonic::async_trait]
+impl FlightService for BallistaFlightService {
+    type DoActionStream = BoxedFlightStream<arrow_flight::Result>;
+    type DoExchangeStream = BoxedFlightStream<FlightData>;
+    type DoGetStream = BoxedFlightStream<FlightData>;
+    type DoPutStream = BoxedFlightStream<PutResult>;
+    type HandshakeStream = BoxedFlightStream<HandshakeResponse>;
+    type ListActionsStream = BoxedFlightStream<ActionType>;
+    type ListFlightsStream = BoxedFlightStream<FlightInfo>;
+
+    async fn do_get(
+        &self,
+        request: Request<Ticket>,
+    ) -> Result<Response<Self::DoGetStream>, Status> {
+        serve_do_get(&self.backend, request).await
     }
 
     async fn get_schema(
@@ -303,7 +391,7 @@ impl FlightService for BallistaFlightService {
                         ..
                     } => {
                         let path = resolve_fetch_path(
-                            &self.work_dir,
+                            &self.backend.work_dir,
                             job_id,
                             *stage_id,
                             *partition_id,
@@ -333,6 +421,11 @@ impl FlightService for BallistaFlightService {
                         };
 
                         Ok(Response::new(stream))
+                    }
+                    BallistaAction::FetchPipelinedPartition { .. } => {
+                        Err(Status::invalid_argument(
+                            "pipelined partitions are served by do_get, not IO_BLOCK_TRANSPORT",
+                        ))
                     }
                 }
             }
@@ -583,6 +676,120 @@ fn from_arrow_err(e: &ArrowError) -> Status {
     Status::internal(format!("ArrowError: {e:?}"))
 }
 
-fn from_ballista_err(e: &ballista_core::error::BallistaError) -> Status {
-    Status::internal(format!("Ballista Error: {e:?}"))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_flight::decode::FlightRecordBatchStream;
+    use ballista_core::execution_plans::{PipelinedRegistry, PipelinedShuffleWriterExec};
+    use ballista_core::serde::encode_protobuf;
+    use datafusion::arrow::array::Int64Array;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::prelude::{SessionConfig, SessionContext};
+
+    fn fetch_ticket(partition_id: usize) -> Ticket {
+        let action = BallistaAction::FetchPipelinedPartition {
+            job_id: "job".into(),
+            stage_id: 1,
+            task_id: 0,
+            partition_id,
+            host: "localhost".to_owned(),
+            port: 0,
+            registration_timeout_ms: 5_000,
+        };
+        Ticket {
+            ticket: encode_protobuf(action).unwrap().into(),
+        }
+    }
+
+    /// Runs a pipelined writer over `batch` while fetching its partition 0
+    /// through the Flight service, and returns the batches the fetch read.
+    async fn fetch_while_writing(batch: RecordBatch) -> Vec<RecordBatch> {
+        let input = MemorySourceConfig::try_new_exec(
+            &[vec![batch.clone()]],
+            batch.schema(),
+            None,
+        )
+        .unwrap();
+        let registry = Arc::new(PipelinedRegistry::new("executor"));
+        let writer =
+            PipelinedShuffleWriterExec::try_new("job".into(), 1, input, None, false)
+                .unwrap();
+        let service = BallistaFlightService::new("/tmp".to_owned())
+            .with_pipelined_registry(registry.clone());
+
+        // The fetch arrives before the producer starts and waits for it.
+        let fetch = async {
+            let response = service
+                .do_get(Request::new(fetch_ticket(0)))
+                .await
+                .unwrap()
+                .into_inner();
+            FlightRecordBatchStream::new_from_flight_data(response.map_err(Into::into))
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap()
+        };
+        let ctx = SessionContext::new_with_config(
+            SessionConfig::new().with_extension(registry),
+        )
+        .task_ctx();
+        let (batches, write) = tokio::join!(fetch, writer.execute_pipelined(ctx));
+        write.unwrap();
+        batches
+    }
+
+    #[tokio::test]
+    async fn do_get_streams_a_running_pipelined_partition() {
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from((0..100).collect::<Vec<i64>>()))],
+        )
+        .unwrap();
+        let batches = fetch_while_writing(batch).await;
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 100);
+    }
+
+    /// Arrow Flight hydrates dictionary columns by default, which would hand a
+    /// remote reader a different type than the producer's schema declares.
+    #[tokio::test]
+    async fn do_get_keeps_pipelined_dictionary_columns_dictionary_encoded() {
+        use datafusion::arrow::array::{Array, DictionaryArray};
+        use datafusion::arrow::datatypes::UInt16Type;
+
+        let dictionary =
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "d",
+            dictionary.clone(),
+            false,
+        )]));
+        let values: DictionaryArray<UInt16Type> =
+            vec!["a", "b", "a", "c"].into_iter().collect();
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
+
+        let batches = fetch_while_writing(batch).await;
+        assert_eq!(batches.len(), 1);
+        let column = batches[0].column(0);
+        assert_eq!(column.data_type(), &dictionary);
+        let column = column
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap();
+        assert_eq!(column.len(), 4);
+        assert_eq!(column.values().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn do_get_refuses_pipelined_partitions_without_a_registry() {
+        let service = BallistaFlightService::new("/tmp".to_owned());
+        let status = service
+            .do_get(Request::new(fetch_ticket(0)))
+            .await
+            .err()
+            .expect("a pipelined fetch needs a registry");
+        assert_eq!(status.code(), tonic::Code::Unimplemented);
+    }
 }

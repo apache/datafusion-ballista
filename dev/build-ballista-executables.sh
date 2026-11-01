@@ -18,14 +18,15 @@
 # under the License.
 
 # Build the binaries that the per-image Dockerfiles
-# (ballista-scheduler/executor/benchmarks) COPY into the runtime images.
+# (ballista-scheduler/executor/result-service/benchmarks) COPY into the
+# runtime images.
 #
 # This used to run `cargo build` inside a builder container; the host build
 # is simpler and avoids dragging a separate Rust toolchain image along. Run
 # this on a host with the project's Rust toolchain available (see
 # rust-toolchain.toml).
 #
-# Three separate invocations - `--bin` filters cargo's target list globally,
+# Separate invocations - `--bin` filters cargo's target list globally,
 # so a single call with multiple `--bin` flags still skips binaries whose
 # `required-features` aren't enabled across the whole selection. Cargo reuses
 # compiled dependencies across invocations, so this is not meaningfully slower
@@ -37,6 +38,7 @@ RELEASE_FLAG="${RELEASE_FLAG:=release}"
 
 cargo build --profile "$RELEASE_FLAG" -p ballista-scheduler  --bin ballista-scheduler
 cargo build --profile "$RELEASE_FLAG" -p ballista-executor   --bin ballista-executor
+cargo build --profile "$RELEASE_FLAG" -p ballista-result-service --bin ballista-result-service
 
 if test -z "${CI}"; then
   cargo build --profile "$RELEASE_FLAG" -p ballista-cli        --bin ballista-cli

@@ -24,7 +24,9 @@ use std::time::Duration;
 use arrow::array::RecordBatch;
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::ipc::writer::IpcWriteOptions;
-use arrow_flight::encode::FlightDataEncoderBuilder;
+use arrow_flight::decode::FlightRecordBatchStream;
+use arrow_flight::encode::{DictionaryHandling, FlightDataEncoderBuilder};
+use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::sql::server::FlightSqlService;
 use arrow_flight::sql::{
@@ -56,7 +58,7 @@ use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 
 use crate::auth::{AnonymousAuthenticator, Authenticator};
-use crate::backend::QueryBackend;
+use crate::backend::{PipelinedOutput, QueryBackend};
 use crate::metadata;
 use crate::session::{LocalResult, Prepared, SessionStore};
 use crate::ticket::StatementHandle;
@@ -243,6 +245,22 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
             .await
             .map_err(query_failed)?;
 
+        if let Some(pipelined) = &result.pipelined {
+            let handle = pipelined_handle(&result.schema, pipelined).map_err(|e| {
+                Status::internal(format!("invalid pipelined partition location: {e}"))
+            })?;
+            log::debug!(
+                "flight-sql: pipelined job {} streams {} partition(s) through one endpoint",
+                result.job_id,
+                pipelined.partitions.len()
+            );
+            return build_flight_info(
+                &result.schema,
+                vec![Self::endpoint(handle)],
+                descriptor,
+            );
+        }
+
         let endpoints = result
             .partitions
             .into_iter()
@@ -421,6 +439,48 @@ fn partition_handle(
     Ok(StatementHandle::Partition(encoded.encode_to_vec()))
 }
 
+/// Turns a pipelined job's final-stage partitions into one handle, which
+/// `DoGet` redeems by streaming every partition at once.
+fn pipelined_handle(
+    schema: &Schema,
+    pipelined: &PipelinedOutput,
+) -> Result<StatementHandle, BallistaError> {
+    let IpcMessage(schema) =
+        SchemaAsIpc::new(schema, &IpcWriteOptions::default()).try_into()?;
+    let registration_timeout_ms = pipelined.registration_timeout.as_millis() as u64;
+    let actions = pipelined
+        .partitions
+        .iter()
+        .map(|location| {
+            let partition_id = location.partition_id.as_ref().ok_or_else(|| {
+                BallistaError::Internal(
+                    "pipelined partition location has no partition id".to_string(),
+                )
+            })?;
+            let executor = location.executor_meta.as_ref().ok_or_else(|| {
+                BallistaError::Internal(
+                    "pipelined partition location has no executor metadata".to_string(),
+                )
+            })?;
+            let action = BallistaAction::FetchPipelinedPartition {
+                job_id: partition_id.job_id.clone().into(),
+                stage_id: partition_id.stage_id as usize,
+                task_id: location.task_id as usize,
+                partition_id: partition_id.partition_id as usize,
+                host: executor.host.clone(),
+                port: executor.port as u16,
+                registration_timeout_ms,
+            };
+            let encoded: protobuf::Action = action.try_into()?;
+            Ok(encoded.encode_to_vec())
+        })
+        .collect::<Result<Vec<_>, BallistaError>>()?;
+    Ok(StatementHandle::Pipelined {
+        schema: schema.to_vec(),
+        actions,
+    })
+}
+
 fn build_flight_info(
     schema: &Schema,
     endpoints: Vec<FlightEndpoint>,
@@ -460,7 +520,15 @@ fn invalid_ticket(e: impl std::fmt::Display) -> Status {
 
 fn query_failed(e: BallistaError) -> Status {
     // Keep the job's error in the message, so the client sees why it failed.
-    Status::internal(format!("query execution failed: {e}"))
+    match e {
+        // A refusal that is already a status, such as `Unavailable` from a
+        // scheduler that is shutting down, keeps its code.
+        BallistaError::GrpcError(status) => Status::new(
+            status.code(),
+            format!("query execution failed: {}", status.message()),
+        ),
+        e => Status::internal(format!("query execution failed: {e}")),
+    }
 }
 
 fn encode_schema(schema: &Schema) -> Result<Vec<u8>, Status> {
@@ -665,6 +733,36 @@ impl<B: QueryBackend> FlightSqlService for BallistaFlightSqlService<B> {
                         })?;
                 Ok(batch_response(result.schema, result.batches))
             }
+            StatementHandle::Pipelined { schema, actions } => {
+                let schema = Arc::new(
+                    Schema::try_from(IpcMessage(schema.into()))
+                        .map_err(invalid_ticket)?,
+                );
+                // Open every partition before reading any: the job cannot
+                // finish one partition until the others are being read.
+                let partitions =
+                    futures::future::try_join_all(actions.into_iter().map(|action| {
+                        self.proxy.do_get(Request::new(Ticket {
+                            ticket: action.into(),
+                        }))
+                    }))
+                    .await?;
+                let batches = futures::stream::select_all(partitions.into_iter().map(
+                    |partition| {
+                        FlightRecordBatchStream::new_from_flight_data(
+                            partition.into_inner().map_err(FlightError::from),
+                        )
+                    },
+                ));
+                // Dictionary columns stay dictionary-encoded, as the schema
+                // the client was promised declares them.
+                let stream = FlightDataEncoderBuilder::new()
+                    .with_schema(schema)
+                    .with_dictionary_handling(DictionaryHandling::Resend)
+                    .build(batches)
+                    .map_err(Status::from);
+                Ok(Response::new(Box::pin(stream) as DoGetStream))
+            }
         }
     }
 
@@ -815,6 +913,27 @@ fn prepared_handle(bytes: &[u8]) -> Result<String, Status> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn a_refusal_that_is_a_status_keeps_its_code() {
+        let refusal = BallistaError::GrpcError(Box::new(Status::unavailable(
+            "the scheduler is shutting down",
+        )));
+        let status = query_failed(refusal);
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert!(
+            status.message().contains("the scheduler is shutting down"),
+            "{}",
+            status.message()
+        );
+    }
+
+    #[test]
+    fn other_failures_are_internal() {
+        let status = query_failed(BallistaError::General("boom".to_string()));
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert!(status.message().contains("boom"), "{}", status.message());
+    }
 
     #[test]
     fn bearer_token_is_read_case_insensitively() {

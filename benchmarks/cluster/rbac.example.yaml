@@ -1,0 +1,50 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# What the Spark driver needs to run its executors: in client mode it creates
+# the executor pods, a ConfigMap for them and, with a storage class, their
+# shuffle volumes. Ballista and Trino only need the service account to exist.
+#
+#   kubectl -n ballista-benchmarks apply -f rbac.example.yaml
+#
+# Grant it read access to the data separately, for example by annotating the
+# service account with an IAM role (eks.amazonaws.com/role-arn).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: benchmark
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spark-driver
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "persistentvolumeclaims"]
+    verbs: ["create", "get", "list", "watch", "delete", "deletecollection", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spark-driver
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spark-driver
+subjects:
+  - kind: ServiceAccount
+    name: benchmark

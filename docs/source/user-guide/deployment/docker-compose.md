@@ -48,6 +48,22 @@ ballista-executor_1   | INFO ballista_executor::executor_process: Built-in arrow
 
 The scheduler listens on port 50050 and this is the port that clients will need to connect to.
 
+## Stop the Cluster
+
+Stop the scheduler first, so that its active jobs can finish while the executors
+are still running:
+
+```bash
+docker-compose stop ballista-scheduler
+docker-compose down
+```
+
+`docker-compose down` alone stops the executors first, because they depend on
+the scheduler, so a job that is still running loses its executors before the
+scheduler can finish it. The scheduler waits for its active jobs for up to 25
+seconds by default (`--graceful-shutdown-timeout-seconds`), and
+`docker-compose.yml` gives it 30 seconds before Docker kills it.
+
 ## Connect from the Ballista CLI
 
 ```shell

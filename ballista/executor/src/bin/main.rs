@@ -17,6 +17,7 @@
 
 //! Ballista Rust executor binary.
 
+use ballista_core::RuntimeProducer;
 use ballista_core::config::LogRotationPolicy;
 use ballista_core::error::BallistaError;
 use ballista_core::object_store::{
@@ -25,7 +26,7 @@ use ballista_core::object_store::{
 use ballista_executor::alloc_accounting::{AccountingAllocator, current_balance};
 use ballista_executor::config::Config;
 use ballista_executor::executor_process::{
-    ExecutorProcessConfig, start_executor_process_with_memory_metrics,
+    ExecutorProcessConfig, start_executor_process_with_memory_metrics, with_spill_dir,
 };
 use ballista_executor::health::spawn_health_server;
 use ballista_executor::metrics::ExecutorMemoryMetrics;
@@ -56,7 +57,13 @@ async fn main() -> ballista_core::error::Result<()> {
 
     let mut config: ExecutorProcessConfig = opt.try_into()?;
     config.override_config_producer = Some(Arc::new(session_config_with_s3_support));
-    config.override_runtime_producer = Some(Arc::new(runtime_env_with_s3_support));
+    let s3_runtime: RuntimeProducer = Arc::new(runtime_env_with_s3_support);
+    // Spill under --work-dir, as the executor's default runtime does, rather
+    // than in the OS temp dir the S3 runtime would otherwise use.
+    config.override_runtime_producer = Some(match config.work_dir.clone() {
+        Some(work_dir) => with_spill_dir(s3_runtime, work_dir),
+        None => s3_runtime,
+    });
 
     let rust_log = env::var(EnvFilter::DEFAULT_ENV);
     let log_filter =
@@ -92,6 +99,9 @@ async fn main() -> ballista_core::error::Result<()> {
     }
 
     let memory_metrics = ExecutorMemoryMetrics::default();
+    // This binary installs `AccountingAllocator` as its global allocator, so
+    // its balance can be reported alongside the pool usage.
+    memory_metrics.set_allocated_bytes_source(current_balance);
     let logging_metrics = memory_metrics.clone();
     let memory_logging = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
@@ -106,7 +116,8 @@ async fn main() -> ballista_core::error::Result<()> {
                 log::info!(
                     "Ballista executor memory usage: allocated {:.1} MiB, \
                      reserved {:.1} MiB, pool size {pool_size} ({} live pools)",
-                    current_balance() as f64 / (1024.0 * 1024.0),
+                    logging_metrics.allocated_bytes().unwrap_or_default() as f64
+                        / (1024.0 * 1024.0),
                     usage.reserved as f64 / (1024.0 * 1024.0),
                     usage.pool_count,
                 );

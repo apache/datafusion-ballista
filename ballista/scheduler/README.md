@@ -55,7 +55,6 @@ and `examples/examples/custom-scheduler.rs`.
 | `prometheus-metrics`       | No      | Prometheus metrics behind `GET /api/metrics`                 |
 | `graphviz-support`         | No      | SVG plan rendering for `GET /api/job/{id}/dot_svg`           |
 | `keda-scaler`              | No      | KEDA external-scaler endpoint for executor autoscale         |
-| `spark-compat`             | No      | Registers Spark-compatible functions                         |
 | `disable-stage-plan-cache` | No      | Disables stage plan caching, for plan-rewrite work           |
 
 ## Documentation

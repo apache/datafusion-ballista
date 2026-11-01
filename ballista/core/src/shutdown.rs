@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Graceful shutdown coordination for executor components.
+//! Graceful shutdown coordination for long-running server components.
 //!
 //! This module provides primitives for coordinating shutdown across multiple
 //! async components. Based on the mini-redis example from Tokio.

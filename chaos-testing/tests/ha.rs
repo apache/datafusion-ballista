@@ -17,8 +17,8 @@
 
 //! End-to-end high-availability scenarios against a real multi-process cluster.
 //!
-//! Every scenario runs under both AQE settings. The AQE-on axis is where bugs are
-//! expected: a resubmitted stage under AQE is re-planned against runtime
+//! Query-recovery scenarios run under both AQE settings. The AQE-on axis is where
+//! bugs are expected: a resubmitted stage under AQE is re-planned against runtime
 //! statistics, so a re-run map stage can come back with a different plan than the
 //! one whose output was lost.
 //!
@@ -28,8 +28,19 @@
 
 mod common;
 
+use ballista::prelude::SessionConfigExt;
+use chaos_testing::fetch::ResultFetch;
+use chaos_testing::fixture::{Fixture, LARGE_RESULT_ROWS};
 use common::ChaosRun;
+use datafusion::arrow::util::pretty::pretty_format_batches;
+use datafusion::functions_aggregate::expr_fn::{count, sum};
+use datafusion::logical_expr::JoinType;
+use datafusion::prelude::{col, lit};
+use futures::TryStreamExt;
 use rstest::rstest;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::timeout;
 
 /// The cluster must agree with local DataFusion before any fault is injected.
 /// Every recovery scenario asserts against this baseline, so if it is wrong,
@@ -56,8 +67,6 @@ async fn baseline_matches_local_datafusion(#[case] aqe: bool) {
 fn ballista_chaos_query_baseline() -> &'static str {
     chaos_testing::fixture::Fixture::baseline_query()
 }
-
-use chaos_testing::fixture::Fixture;
 
 /// Scenario A: one retryable (IO) fault, budget 1.
 ///
@@ -180,8 +189,6 @@ async fn panicking_task_fails_the_job_but_the_executor_survives(#[case] aqe: boo
         .expect("cluster must still be healthy after a panicking task");
     assert_eq!(after, expected);
 }
-
-use std::time::Duration;
 
 /// Scenario D: SIGKILL an executor while it is running tasks.
 ///
@@ -416,5 +423,302 @@ async fn killing_every_executor_terminates_the_job(#[case] aqe: bool) {
     assert!(
         msg.contains("executor"),
         "failure should name the executor loss, got: {err}"
+    );
+}
+
+/// Scenario H: SIGTERM an executor while the client is fetching final results.
+///
+/// Receiving the first batch means task execution has finished and the client is
+/// reading the final Flight response. Graceful shutdown must let that response
+/// finish before the executor exits.
+///
+/// Regression test for #2357.
+#[tokio::test]
+async fn final_results_survive_sigterm() {
+    let mut run = ChaosRun::start(false, 1).await;
+    let ctx = run.clone_ctx();
+    let config = ctx
+        .copied_config()
+        .with_target_partitions(1)
+        .with_ballista_override_create_grpc_client_endpoint(Arc::new(|endpoint| {
+            Ok(endpoint
+                .initial_stream_window_size(16 * 1024)
+                .http2_adaptive_window(false))
+        }));
+    *ctx.state_ref().write().config_mut() = config;
+
+    timeout(Duration::from_secs(120), async {
+        let df = ctx.sql(Fixture::large_result_query()).await.unwrap();
+        let mut stream = df.execute_stream().await.unwrap();
+        let mut rows = stream.try_next().await.unwrap().unwrap().num_rows();
+        assert!(
+            rows < LARGE_RESULT_ROWS,
+            "result must span multiple batches"
+        );
+
+        run.cluster.terminate_executor(0).unwrap();
+        run.cluster
+            .await_executor_count(0)
+            .await
+            .expect("scheduler must deregister the terminating executor");
+
+        while let Some(batch) = stream.try_next().await.unwrap_or_else(|e| {
+            panic!(
+                "result stream failed after {rows}/{LARGE_RESULT_ROWS} rows: {e}\n{}",
+                run.cluster.log_tails()
+            )
+        }) {
+            rows += batch.num_rows();
+        }
+        assert_eq!(rows, LARGE_RESULT_ROWS, "result was truncated");
+        assert!(run.cluster.await_executor_exit(0).await.unwrap().success());
+    })
+    .await
+    .expect("query and shutdown must not hang");
+}
+
+/// Scenario I: SIGTERM the scheduler while a client is fetching final results
+/// through its embedded Flight proxy.
+///
+/// Receiving the first batch means the client is mid-fetch through the
+/// scheduler's proxy. Graceful scheduler shutdown must let that fetch finish
+/// before the scheduler exits, instead of severing it immediately.
+#[tokio::test]
+async fn scheduler_final_results_survive_sigterm() {
+    let mut run =
+        ChaosRun::start_with_result_fetch(false, 1, ResultFetch::SchedulerProxy).await;
+    let ctx = run.clone_ctx();
+    let config = ctx
+        .copied_config()
+        .with_target_partitions(1)
+        .with_ballista_override_create_grpc_client_endpoint(Arc::new(|endpoint| {
+            Ok(endpoint
+                .initial_stream_window_size(16 * 1024)
+                .http2_adaptive_window(false))
+        }));
+    *ctx.state_ref().write().config_mut() = config;
+
+    timeout(Duration::from_secs(120), async {
+        let df = ctx.sql(Fixture::large_result_query()).await.unwrap();
+        let mut stream = df.execute_stream().await.unwrap();
+        let mut rows = stream.try_next().await.unwrap().unwrap().num_rows();
+        assert!(
+            rows < LARGE_RESULT_ROWS,
+            "result must span multiple batches"
+        );
+
+        run.cluster.terminate_scheduler().unwrap();
+
+        while let Some(batch) = stream.try_next().await.unwrap_or_else(|e| {
+            panic!(
+                "result stream failed after {rows}/{LARGE_RESULT_ROWS} rows: {e}\n{}",
+                run.cluster.log_tails()
+            )
+        }) {
+            rows += batch.num_rows();
+        }
+        assert_eq!(rows, LARGE_RESULT_ROWS, "result was truncated");
+        assert!(run.cluster.await_scheduler_exit().await.unwrap().success());
+    })
+    .await
+    .expect("query and shutdown must not hang");
+}
+
+/// Scenario J: SIGTERM the scheduler while a job is running.
+///
+/// The scheduler must report not ready and refuse new jobs, keep serving the
+/// executor and the client so the running job finishes with the right result,
+/// and only then exit.
+#[tokio::test]
+async fn scheduler_finishes_its_running_job_before_exiting() {
+    let mut run = ChaosRun::start(false, 1).await;
+    let expected = run.local_baseline().await;
+
+    // Hold the scan stage open, so the job is still running after SIGTERM.
+    let sql = Fixture::chaos_query("chaos_delay(f.key >= 0, 300)");
+    let query = tokio::spawn({
+        let ctx = run.clone_ctx();
+        async move { ctx.sql(&sql).await?.collect().await }
+    });
+
+    let job_id = run.cluster.running_job_id().await.expect("job must appear");
+    run.cluster
+        .await_stage_running(&job_id, 1)
+        .await
+        .expect("delayed stage must start running");
+
+    run.cluster.terminate_scheduler().unwrap();
+    run.cluster
+        .await_scheduler_not_ready()
+        .await
+        .expect("scheduler must report that it is draining");
+
+    let refused = run.sql(Fixture::baseline_query()).await.unwrap_err();
+    assert!(refused.contains("shutting down"), "{refused}");
+
+    let batches = timeout(Duration::from_secs(120), query)
+        .await
+        .expect("the running job must not hang")
+        .expect("query task must not panic")
+        .expect("the running job must finish while the scheduler drains");
+    let actual = datafusion::arrow::util::pretty::pretty_format_batches(&batches)
+        .unwrap()
+        .to_string();
+    assert_eq!(actual, expected, "result must match the baseline");
+
+    assert!(run.cluster.await_scheduler_exit().await.unwrap().success());
+}
+
+/// Scenario K: a stage loses its input after some of its tasks finished.
+///
+/// `chaos_delay` in `HAVING` slows each final-aggregate task after its fetch, so
+/// the kill of a map-side executor lands once some of them have pushed output
+/// to the sorted merge. The rest fail to fetch, the stage re-runs every task,
+/// and the merge must not read the earlier attempt's output as well. As in
+/// Scenario E, a 60s executor timeout makes the loss a fetch failure. Static
+/// planner only: the adaptive graph fails such a job instead of re-running it.
+#[tokio::test]
+async fn stage_losing_input_after_partial_success_is_recovered() {
+    let mut run = ChaosRun::start_with(false, 2, 60).await;
+    let expected = run.local_sql(Fixture::partial_reduce_query()).await;
+    run.sql("SET datafusion.execution.target_partitions = 16")
+        .await
+        .expect("set target partitions");
+
+    let sql = Fixture::partial_reduce_chaos_query("chaos_delay(COUNT(*) > 0, 300)");
+    let query = tokio::spawn({
+        let ctx = run.clone_ctx();
+        async move { ctx.sql(&sql).await?.collect().await }
+    });
+
+    // Static planning: stage 1 is the partial aggregate, stage 2 the final one.
+    let job_id = run.cluster.running_job_id().await.expect("job must appear");
+    run.cluster
+        .await_stage_task_successful(&job_id, 2)
+        .await
+        .expect("a final-aggregate task must succeed before the kill");
+    let victim = run
+        .cluster
+        .executor_with_shuffle_output(&job_id, 1)
+        .expect("an executor must hold map output");
+    run.cluster.kill_executor(victim).expect("kill executor");
+
+    let batches = match tokio::time::timeout(Duration::from_secs(180), query).await {
+        Ok(result) => result.expect("query task must not panic"),
+        Err(_) => panic!(
+            "query must not hang\n{}",
+            run.cluster.diagnostics(&job_id).await
+        ),
+    }
+    .unwrap_or_else(|e| panic!("query must recover: {e}"));
+    assert_eq!(
+        datafusion::arrow::util::pretty::pretty_format_batches(&batches)
+            .unwrap()
+            .to_string(),
+        expected,
+        "a re-run stage must not add its earlier attempt's output"
+    );
+}
+
+/// Scenario L: SIGKILL the executor holding a `DataFrame::cache()`, then query it.
+///
+/// As in Scenario E, the kill lands after the data is written and before the
+/// stage reading it starts, with a 60s executor timeout so the scheduler still
+/// lists the dead executor: the query hits the cache, and its read must fail.
+/// The read job cannot re-run another job's output, so it must fail with a clear
+/// error instead of hanging, under both planners; the cache is dropped, so the
+/// next query rebuilds it and returns the baseline result.
+#[rstest]
+#[case::aqe_off(false)]
+#[case::aqe_on(true)]
+#[tokio::test]
+async fn executor_holding_a_cache_killed_before_it_is_read_fails_cleanly(
+    #[case] aqe: bool,
+) {
+    let mut run = ChaosRun::start_with(aqe, 2, 60).await;
+    let expected = run.local_baseline().await;
+    run.sql("SET ballista.cache.noop = false")
+        .await
+        .expect("enable DataFrame::cache()");
+
+    let ctx = run.clone_ctx();
+    let cached = ctx
+        .sql("SELECT key, value FROM facts ORDER BY key, value")
+        .await
+        .unwrap()
+        .cache()
+        .await
+        .unwrap();
+    let before = run.cluster.job_ids().await.unwrap();
+    cached.clone().count().await.expect("build the cache");
+
+    // The first action runs a build job, then a job reading it.
+    let first: Vec<String> = run
+        .cluster
+        .job_ids()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|id| !before.contains(id))
+        .collect();
+    assert_eq!(first.len(), 2, "the first action must build, then read");
+    let build_job = &first[0];
+    let victim = run
+        .cluster
+        .executor_with_final_output(build_job)
+        .unwrap_or_else(|| panic!("no executor holds the cache of job {build_job}"));
+    run.cluster
+        .kill_executor(victim)
+        .unwrap_or_else(|e| panic!("kill executor {victim}: {e}"));
+
+    // The baseline query, over the cache instead of `facts`.
+    let over_cache = || {
+        let cached = cached.clone();
+        let ctx = ctx.clone();
+        async move {
+            cached
+                .join(
+                    ctx.table("dims").await?,
+                    JoinType::Inner,
+                    &["key"],
+                    &["key"],
+                    None,
+                )?
+                .aggregate(
+                    vec![col("name")],
+                    vec![count(lit(1)).alias("n"), sum(col("value")).alias("total")],
+                )?
+                .sort(vec![col("name").sort(true, false)])?
+                .collect()
+                .await
+        }
+    };
+
+    let known = run.cluster.job_ids().await.unwrap();
+    let result = match timeout(Duration::from_secs(120), over_cache()).await {
+        Ok(result) => result,
+        Err(_) => {
+            let jobs = run.cluster.job_ids().await.unwrap();
+            let read_job = jobs.iter().find(|id| !known.contains(id)).unwrap();
+            panic!(
+                "query must not hang after the cache is lost\n{}",
+                run.cluster.diagnostics(read_job).await
+            )
+        }
+    };
+    let err = result.expect_err("losing the cache's data must fail the query");
+    assert!(
+        err.to_string().contains("lost DataFrame::cache() data"),
+        "failure should name the lost cache data, got: {err}"
+    );
+
+    let batches = timeout(Duration::from_secs(120), over_cache())
+        .await
+        .expect("the retry must not hang")
+        .expect("the retry must rebuild the cache");
+    assert_eq!(
+        pretty_format_batches(&batches).unwrap().to_string(),
+        expected,
+        "the retry must return the baseline result"
     );
 }

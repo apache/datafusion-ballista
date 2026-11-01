@@ -1351,7 +1351,6 @@ mod tests {
             keda_support: false,
             prometheus_support: false,
             graphviz_support: false,
-            spark_support: false,
             scheduling_policy: "round-robin".to_string(),
         }
     }

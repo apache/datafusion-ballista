@@ -125,6 +125,14 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                     log::debug!("create_physical_plan - handling empty exec");
                     Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
                 }
+                LogicalPlan::DescribeTable(_) => {
+                    // The plan already carries the table schema resolved from
+                    // this context's catalog, and it cannot be serialized, so
+                    // it is planned here rather than on the cluster.
+                    self.local_planner
+                        .create_physical_plan(logical_plan, session_state)
+                        .await
+                }
                 LogicalPlan::Analyze(analyze) => {
                     log::debug!(
                         "create_physical_plan - handling explain analyze statement"
@@ -300,6 +308,33 @@ mod test {
             assert!(scans_only_information_schema(&plan).is_err(), "{sql}");
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_plan_describe_table_locally() -> Result<()> {
+        let ctx = context();
+        ctx.sql("CREATE TABLE tt (c0 INT, c1 INT)")
+            .await?
+            .show()
+            .await?;
+        let describe_df = ctx.sql("DESCRIBE tt").await?;
+        let planner = BallistaQueryPlanner::<LogicalPlanNode>::new(
+            "http://localhost:50050".to_string(),
+            BallistaConfig::default(),
+        );
+        let plan = planner
+            .create_physical_plan(describe_df.logical_plan(), &ctx.state())
+            .await?;
+
+        assert!(matches!(
+            describe_df.logical_plan(),
+            LogicalPlan::DescribeTable(_)
+        ));
+        assert!(
+            plan.downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
+                .is_none()
+        );
         Ok(())
     }
 

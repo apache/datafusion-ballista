@@ -125,6 +125,30 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     logging::init_logging(tui_mode.clone())?;
 
+    // Exit when asked to terminate, as the signal's default action would. That
+    // action doesn't apply to PID 1, which the CLI is in a container.
+    {
+        #[cfg(all(feature = "tui", not(feature = "web")))]
+        let tui_mode = tui_mode.clone();
+        tokio::spawn(async move {
+            if ballista_core::utils::terminate_signal().await.is_ok() {
+                // Leave the TUI's raw mode and alternate screen, as the TUI does
+                // when it exits.
+                #[cfg(all(feature = "tui", not(feature = "web")))]
+                if tui_mode.load(std::sync::atomic::Ordering::Acquire) {
+                    let _ = crossterm::terminal::disable_raw_mode();
+                    let _ = crossterm::execute!(
+                        std::io::stdout(),
+                        crossterm::terminal::LeaveAlternateScreen
+                    );
+                }
+                // 128 + 15 (SIGTERM), the status shells report for a process
+                // SIGTERM killed.
+                std::process::exit(143);
+            }
+        });
+    }
+
     let args = Args::parse();
 
     #[cfg(feature = "tui")]

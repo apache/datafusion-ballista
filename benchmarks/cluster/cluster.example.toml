@@ -1,0 +1,80 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Settings for run.py that describe your cluster. Copy this file to
+# cluster.toml (which git ignores) and fill it in. Everything about the
+# benchmark itself (executor count and size, iterations, engine settings) is a
+# run.py flag instead.
+
+# kubectl context to use; empty means the current context.
+context = ""
+# Namespace every pod runs in.
+namespace = "ballista-benchmarks"
+# Service account of every pod. It needs read access to the data, for example
+# through IRSA on EKS or Workload Identity on GKE, unless env_secret provides
+# credentials. Spark's driver uses it to create its executor pods, so it also
+# needs the Role in rbac.example.yaml.
+service_account = "benchmark"
+# Optional: a Secret whose keys become environment variables in every pod, such
+# as AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Empty for none.
+env_secret = ""
+# Region of the S3 bucket.
+region = "us-east-1"
+
+# StorageClass for a volume of its own for each executor's shuffle files
+# (Ballista, Spark) and each Trino worker's spill files (--trino-spill),
+# provisioned with the pod and deleted with it. Empty to use an emptyDir on the
+# node's disk, which the node's other pods share.
+storage_class = "gp3"
+shuffle_volume_size = "1000Gi"
+
+# Where pods may run. Give every engine the same nodes.
+node_selector = { "kubernetes.io/arch" = "amd64" }
+# For example [{ key = "dedicated", operator = "Equal", value = "benchmarks", effect = "NoSchedule" }]
+tolerations = []
+# Secrets for pulling the images from a private registry.
+image_pull_secrets = []
+
+[data]
+# Directories with one subdirectory of Parquet files per table, such as
+# s3://my-bucket/tpch/sf1000/lineitem/. See README.md for how to generate them.
+tpch = "s3://my-bucket/tpch/sf1000"
+tpcds = "s3://my-bucket/tpcds/sf1000"
+# Selects the expected TPC-H row counts (tpch_expected_rows.py).
+scale_factor = 1000
+# Whether lineitem, orders, customer and part are Hive-partitioned by
+# l_shipdate, o_orderdate, c_mktsegment and p_brand. Ballista and Spark find
+# partition directories themselves; Trino's table definitions need to know.
+tpch_partitioned = false
+
+[images]
+# Built from docker/ballista.Dockerfile, docker/spark.Dockerfile and
+# docker/comet.Dockerfile and pushed to a registry the cluster can pull from.
+ballista = "registry.example.com/ballista-bench:main"
+spark = "registry.example.com/spark-bench:4.1.3"
+comet = "registry.example.com/comet-bench:4.1.3"
+trino = "trinodb/trino:483"
+# Runs trino/run_queries.py, which needs only the standard library.
+python = "python:3.12-slim"
+
+[trino]
+# A writable directory for Trino's file metastore, where it keeps the table
+# definitions, partitions and statistics between runs.
+metastore_dir = "s3://my-bucket/trino-metastore"
+# The type the Parquet files store the money columns as (tpchgen-cli:
+# decimal(15, 2)).
+money_type = "decimal(15, 2)"

@@ -38,7 +38,7 @@ use crate::serde::protobuf::{NamedPruningMetrics, NamedRatio};
 use crate::serde::scheduler::{
     Action, BallistaFunctionRegistry, ByteRange, ExecutorData, ExecutorMetadata,
     ExecutorOperatingSystemSpecification, ExecutorSpecification, PartitionId,
-    PartitionLocation, PartitionStats, TaskDefinition,
+    PartitionLocation, PartitionStats, PipelinedPartitionLocation, TaskDefinition,
 };
 
 use crate::serde::{BallistaCodec, protobuf};
@@ -84,10 +84,49 @@ impl TryInto<Action> for protobuf::Action {
                         .collect(),
                 })
             }
+            Some(protobuf::action::ActionType::FetchPipelinedPartition(fetch)) => {
+                Ok(Action::FetchPipelinedPartition {
+                    job_id: fetch.job_id.into(),
+                    stage_id: fetch.stage_id as usize,
+                    task_id: fetch.task_id as usize,
+                    partition_id: fetch.partition_id as usize,
+                    host: fetch.host,
+                    port: fetch.port as u16,
+                    registration_timeout_ms: fetch.registration_timeout_ms,
+                })
+            }
             _ => Err(BallistaError::General(
                 "scheduler::from_proto(Action) invalid or missing action".to_owned(),
             )),
         }
+    }
+}
+
+impl TryInto<PipelinedPartitionLocation> for protobuf::PipelinedPartitionLocation {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<PipelinedPartitionLocation, Self::Error> {
+        Ok(PipelinedPartitionLocation {
+            partition_id: self
+                .partition_id
+                .ok_or_else(|| {
+                    BallistaError::General(
+                        "partition_id in PipelinedPartitionLocation is missing"
+                            .to_owned(),
+                    )
+                })?
+                .into(),
+            task_id: self.task_id as usize,
+            executor_meta: self
+                .executor_meta
+                .ok_or_else(|| {
+                    BallistaError::General(
+                        "executor_meta in PipelinedPartitionLocation is missing"
+                            .to_owned(),
+                    )
+                })?
+                .into(),
+        })
     }
 }
 

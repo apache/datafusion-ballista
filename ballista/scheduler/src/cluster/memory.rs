@@ -16,8 +16,12 @@
 // under the License.
 
 use crate::cluster::{
-    BoundTask, ClusterState, ExecutorSlot, JobState, JobStateEvent, JobStateEventStream,
-    JobStatus, TaskDistributionPolicy, bind_task_bias, bind_task_round_robin,
+    BoundTask, CacheState, ClusterState, ExecutorSlot, JobState, JobStateEvent,
+    JobStateEventStream, JobStatus, TaskDistributionPolicy, bind_task_bias,
+    bind_task_round_robin,
+};
+use crate::state::cache_registry::{
+    BeginOutcome, CacheKey, CacheRegistry, CompleteOutcome, MaterializedCache,
 };
 use crate::state::execution_graph::ExecutionGraphBox;
 use ballista_core::error::{BallistaError, Result};
@@ -25,9 +29,11 @@ use ballista_core::serde::protobuf::{
     AvailableVcores, ExecutorHeartbeat, ExecutorStatus, FailedJob, QueuedJob,
     executor_status,
 };
+use ballista_core::serde::scheduler::PartitionLocation;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::{ConfigProducer, JobId, JobStatusSubscriber};
 use dashmap::DashMap;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use tokio::sync::mpsc::error::TrySendError;
 
@@ -97,6 +103,43 @@ impl ClusterState for InMemoryClusterState {
         };
 
         Ok(bound_tasks)
+    }
+
+    async fn available_vcores(
+        &self,
+        executors: Option<&HashSet<String>>,
+    ) -> Result<Vec<AvailableVcores>> {
+        let guard = self.available_vcores.lock().await;
+        Ok(guard
+            .values()
+            .filter(|data| {
+                executors
+                    .map(|executors| executors.contains(&data.executor_id))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn reserve_vcores(&self, reservation: &[ExecutorSlot]) -> Result<bool> {
+        let mut needed: HashMap<&str, u32> = HashMap::new();
+        for (executor_id, vcores) in reservation {
+            *needed.entry(executor_id.as_str()).or_default() += vcores;
+        }
+        let mut guard = self.available_vcores.lock().await;
+        let fits = needed.iter().all(|(executor_id, vcores)| {
+            guard
+                .get(*executor_id)
+                .is_some_and(|data| data.vcores >= *vcores)
+        });
+        if fits {
+            for (executor_id, vcores) in needed {
+                if let Some(data) = guard.get_mut(executor_id) {
+                    data.vcores -= vcores;
+                }
+            }
+        }
+        Ok(fits)
     }
 
     async fn unbind_tasks(&self, executor_slots: Vec<ExecutorSlot>) -> Result<()> {
@@ -196,24 +239,23 @@ impl ClusterState for InMemoryClusterState {
             }
         }
 
-        //
-        // pull based executor sends `save_executor_metadata`
-        // with all requests, not `ExecutorHeartbeat`, to make it consistent
-        // with push based, registering `ExecutorHeartbeat` every time
-        //
-        let heartbeat = ExecutorHeartbeat {
-            executor_id,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("Time went backwards")
-                .as_secs(),
-            metrics: vec![],
-            status: None,
-            peak_proc_physical_memory: 0,
-            peak_proc_virtual_memory: 0,
-        };
-        self.save_executor_heartbeat(heartbeat).await
-        // Ok(())
+        // A poll refreshes the heartbeat timestamp and keeps the last status,
+        // metrics and peaks; see the `ClusterState::save_executor_metadata`
+        // docs. The entry is updated in place so a heartbeat saved
+        // concurrently isn't overwritten.
+        let timestamp = timestamp_secs();
+        self.heartbeats
+            .entry(executor_id.clone())
+            .and_modify(|heartbeat| heartbeat.timestamp = timestamp)
+            .or_insert_with(|| ExecutorHeartbeat {
+                executor_id,
+                timestamp,
+                metrics: vec![],
+                status: None,
+                peak_proc_physical_memory: 0,
+                peak_proc_virtual_memory: 0,
+            });
+        Ok(())
     }
 
     async fn get_executor_metadata(&self, executor_id: &str) -> Result<ExecutorMetadata> {
@@ -274,6 +316,17 @@ impl ClusterState for InMemoryClusterState {
 
     async fn cluster_state_events(&self) -> Result<ClusterStateEventStream> {
         Ok(Box::pin(self.cluster_event_sender.subscribe()))
+    }
+}
+
+#[cfg(test)]
+impl InMemoryClusterState {
+    /// Drop metadata for `executor_id` while leaving its available vcores.
+    ///
+    /// Simulates a transient miss from a non-memory [`ClusterState`] backend
+    /// after tasks have already been bound (see #2686).
+    pub(crate) fn drop_executor_metadata(&self, executor_id: &str) {
+        self.executors.remove(executor_id);
     }
 }
 
@@ -539,15 +592,99 @@ impl JobState for InMemoryJobState {
     }
 }
 
+/// In-memory [`CacheState`] backend — the only implementation today.
+///
+/// A thin async wrapper over the synchronous, unit-tested `CacheRegistry`,
+/// mirroring how [`InMemoryJobState`] wraps its maps. A durable backend would be
+/// a sibling type implementing [`CacheState`] whose `init` loads persisted
+/// entries; no caller changes needed.
+#[derive(Debug, Default)]
+pub struct InMemoryCacheState {
+    registry: CacheRegistry,
+}
+
+#[async_trait::async_trait]
+impl CacheState for InMemoryCacheState {
+    async fn lookup(&self, key: &CacheKey) -> Result<Option<MaterializedCache>> {
+        Ok(self.registry.lookup(key))
+    }
+
+    async fn begin_materialization(
+        &self,
+        key: CacheKey,
+        job_id: JobId,
+    ) -> Result<BeginOutcome> {
+        Ok(self.registry.begin_materialization(key, job_id))
+    }
+
+    async fn complete_materialization(
+        &self,
+        key: CacheKey,
+        job_id: JobId,
+        schema: SchemaRef,
+        locations: Vec<Vec<PartitionLocation>>,
+    ) -> Result<CompleteOutcome> {
+        Ok(self
+            .registry
+            .complete_materialization(key, job_id, schema, locations))
+    }
+
+    async fn pending_job(&self, key: &CacheKey) -> Result<Option<JobId>> {
+        Ok(self.registry.pending_job(key))
+    }
+
+    async fn invalidate_if(
+        &self,
+        key: &CacheKey,
+        materializing_job: &JobId,
+    ) -> Result<Option<MaterializedCache>> {
+        Ok(self.registry.invalidate_if(key, materializing_job))
+    }
+
+    async fn abort_materialization(
+        &self,
+        key: &CacheKey,
+        job_id: &JobId,
+    ) -> Result<bool> {
+        Ok(self.registry.abort_materialization(key, job_id))
+    }
+
+    async fn invalidate(&self, key: &CacheKey) -> Result<Option<MaterializedCache>> {
+        Ok(self.registry.invalidate(key))
+    }
+
+    async fn invalidate_executor(
+        &self,
+        executor_id: &str,
+    ) -> Result<Vec<(CacheKey, MaterializedCache)>> {
+        Ok(self.registry.invalidate_executor(executor_id))
+    }
+
+    async fn remove_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<(CacheKey, MaterializedCache)>> {
+        Ok(self.registry.remove_session(session_id))
+    }
+
+    async fn pinned_stages(&self) -> Result<HashSet<(JobId, usize)>> {
+        Ok(self.registry.pinned_stages())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
 
-    use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
+    use crate::cluster::memory::{
+        InMemoryCacheState, InMemoryClusterState, InMemoryJobState,
+    };
     use crate::cluster::test_util::{test_job_lifecycle, test_job_planning_failure};
     use crate::cluster::{
-        BallistaCluster, ClusterState, ClusterStateEvent, JobState, JobStateEvent,
+        BallistaCluster, CacheState, ClusterState, ClusterStateEvent, JobState,
+        JobStateEvent,
     };
+    use crate::state::cache_registry::{BeginOutcome, CacheKey};
     use crate::test_utils::{
         test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
     };
@@ -560,7 +697,7 @@ mod test {
         ExecutorSpecification,
     };
     use ballista_core::utils::{default_config_producer, default_session_builder};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::dataframe::DataFrameWriteOptions;
     use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
     use futures::StreamExt;
@@ -970,5 +1107,52 @@ mod test {
         }
 
         Ok(())
+    }
+
+    fn schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
+    }
+
+    // The registry logic is covered in state::cache_registry; these just prove
+    // the async backend delegates and that the cluster wires it up.
+
+    #[tokio::test]
+    async fn backend_delegates_miss_hit_invalidate() {
+        let state = InMemoryCacheState::default();
+        let key = CacheKey::new("s1", "c1");
+
+        assert!(state.lookup(&key).await.unwrap().is_none());
+        let claimed = state.begin_materialization(key.clone(), "j".into()).await;
+        assert_eq!(claimed.unwrap(), BeginOutcome::Claimed);
+        assert!(state.lookup(&key).await.unwrap().is_none()); // still pending
+
+        state
+            .complete_materialization(key.clone(), "j".into(), schema(), vec![])
+            .await
+            .unwrap();
+        assert!(state.lookup(&key).await.unwrap().is_some());
+
+        state.invalidate(&key).await.unwrap();
+        assert!(state.lookup(&key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cluster_exposes_cache_state() {
+        let cluster = BallistaCluster::new_memory(
+            "localhost:50050",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        );
+        let key = CacheKey::new("s1", "c1");
+        let cache = cluster.cache_state();
+        cache
+            .begin_materialization(key.clone(), "j".into())
+            .await
+            .unwrap();
+        cache
+            .complete_materialization(key.clone(), "j".into(), schema(), vec![])
+            .await
+            .unwrap();
+        assert!(cache.lookup(&key).await.unwrap().is_some());
     }
 }

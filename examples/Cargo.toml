@@ -44,10 +44,6 @@ path = "examples/mtls-cluster.rs"
 required-features = ["tls"]
 
 [[example]]
-name = "remote-spark-functions"
-required-features = ["ballista-core/spark-compat"]
-
-[[example]]
 name = "standalone-substrait"
 required-features = ["ballista-scheduler/substrait"]
 

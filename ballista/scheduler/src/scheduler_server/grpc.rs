@@ -306,9 +306,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     os_info: metadata.os_info.unwrap().into(),
                 };
 
-                self.do_register_executor(metadata)
-                    .await
-                    .map_err(executor_registration_error)?;
+                // A pull-based executor can heartbeat before its first poll.
+                // Register it the way a poll would, without the vcore
+                // inventory that only push-based scheduling uses.
+                if self.state.config.is_push_staged_scheduling() {
+                    self.do_register_executor(metadata)
+                        .await
+                        .map_err(executor_registration_error)?;
+                } else {
+                    self.state
+                        .executor_manager
+                        .save_executor_metadata(metadata)
+                        .await
+                        .map_err(executor_registration_error)?;
+                }
             } else {
                 return Err(Status::invalid_argument(format!(
                     "The registration spec for executor {executor_id} is not included"
@@ -499,14 +510,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             let job_id = self
                 .submit_plan(&job_name, session_ctx, &plan, Some(subscriber))
                 .await
-                .map_err(|e| {
-                    let msg =
-                        format!("Failed to send JobQueued event for {job_name}: {e:?}");
-
-                    error!("{msg}");
-
-                    Status::internal(msg)
-                })?;
+                .map_err(|e| self.submit_error(&job_name, e))?;
 
             debug!(
                 "execution query (PUSH) job submitted - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}"
@@ -575,13 +579,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             let job_id = self
                 .submit_plan(&job_name, session_ctx, &plan, None)
                 .await
-                .map_err(|e| {
-                    let msg =
-                        format!("Failed to send JobQueued event for {job_name}: {e:?}");
-                    error!("{msg}");
-
-                    Status::internal(msg)
-                })?;
+                .map_err(|e| self.submit_error(&job_name, e))?;
 
             info!(
                 "execution query, job submitted - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}"
@@ -831,6 +829,20 @@ fn extract_connect_info<T>(request: &Request<T>) -> Option<ConnectInfo<SocketAdd
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
+    /// The status for a job that couldn't be submitted. A refusal that already
+    /// is a status, such as `Unavailable` while the scheduler is shutting down,
+    /// keeps its code, so a client knows to submit elsewhere.
+    fn submit_error(&self, job_name: &str, e: BallistaError) -> Status {
+        match e {
+            BallistaError::GrpcError(status) => *status,
+            e => {
+                let msg = format!("Failed to send JobQueued event for {job_name}: {e:?}");
+                error!("{msg}");
+                Status::internal(msg)
+            }
+        }
+    }
+
     async fn create_context(
         &self,
         settings: &[KeyValuePair],
@@ -909,6 +921,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// Where clients should fetch result partitions from over Arrow Flight,
     /// advertised in job-status responses. An explicitly advertised endpoint
     /// wins over the embedded proxy, so a load balancer can front it.
+    #[allow(deprecated)]
     fn flight_proxy_config(&self) -> Option<FlightProxy> {
         let config = &self.state.config;
         match config
@@ -947,9 +960,9 @@ mod test {
     use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::execute_query_params::Query;
     use ballista_core::serde::protobuf::{
-        ExecuteQueryParams, ExecutorRegistration, ExecutorStatus, ExecutorStoppedParams,
-        HeartBeatParams, PollWorkParams, RegisterExecutorParams, execute_query_result,
-        executor_status,
+        ExecuteQueryParams, ExecutorMetric, ExecutorRegistration, ExecutorStatus,
+        ExecutorStoppedParams, HeartBeatParams, PollWorkParams, RegisterExecutorParams,
+        execute_query_result, executor_metric, executor_status,
     };
     use ballista_core::serde::scheduler::{
         ExecutorOperatingSystemSpecification, ExecutorSpecification,
@@ -1223,6 +1236,69 @@ mod test {
         Ok(())
     }
 
+    /// A pull-based executor reports its status and metrics through
+    /// heartbeats while it polls for work; its polls must not erase them.
+    #[tokio::test]
+    async fn test_pull_executor_heartbeats_survive_polls() -> Result<(), BallistaError> {
+        let config = SchedulerConfig::default().with_scheduler_policy(
+            ballista_core::config::TaskSchedulingPolicy::PullStaged,
+        );
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                test_cluster_context(),
+                BallistaCodec::default(),
+                Arc::new(config),
+                default_metrics_collector().unwrap(),
+            );
+        scheduler.init().await?;
+        let exec_meta = exec_meta_with_version(BALLISTA_PROTOCOL_VERSION);
+        let memory = |bytes| ExecutorMetric {
+            metric: Some(executor_metric::Metric::ProcPhysicalMemory(bytes)),
+        };
+
+        let active = executor_status::Status::Active("".to_string());
+        let terminating = executor_status::Status::Terminating("".to_string());
+
+        // The heartbeater can reach the scheduler before the first poll.
+        for (bytes, status) in [(3000, active), (1000, terminating.clone())] {
+            scheduler
+                .heart_beat_from_executor(Request::new(HeartBeatParams {
+                    executor_id: exec_meta.id.clone(),
+                    metrics: vec![memory(bytes)],
+                    status: Some(ExecutorStatus {
+                        status: Some(status),
+                    }),
+                    metadata: Some(exec_meta.clone()),
+                }))
+                .await
+                .expect("Received error response");
+        }
+        scheduler
+            .poll_work(Request::new(PollWorkParams {
+                metadata: Some(exec_meta.clone()),
+                num_free_vcores: 0,
+                task_status: vec![],
+            }))
+            .await
+            .expect("Received error response");
+
+        let heartbeat = scheduler
+            .state
+            .executor_manager
+            .get_executor_hearbeat(&exec_meta.id)
+            .expect("heartbeat");
+        assert_eq!(
+            heartbeat.status,
+            Some(ExecutorStatus {
+                status: Some(terminating)
+            })
+        );
+        assert_eq!(heartbeat.metrics, vec![memory(1000)]);
+        assert_eq!(heartbeat.peak_proc_physical_memory, 3000);
+        Ok(())
+    }
+
     async fn scheduler_for_protocol_test()
     -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>, BallistaError> {
         let cluster = test_cluster_context();
@@ -1433,6 +1509,8 @@ mod test {
     }
 
     #[tokio::test]
+    // Still covers the deprecated embedded-proxy flag until it is removed.
+    #[allow(deprecated)]
     async fn flight_proxy_config_reflects_explicit_flag_and_endpoint() {
         use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
 
@@ -1544,6 +1622,24 @@ mod test {
             .metadata()
             .get("ballista-version")
             .and_then(|v| v.to_str().ok())
+    }
+
+    #[tokio::test]
+    async fn execute_query_is_unavailable_while_the_scheduler_drains()
+    -> Result<(), BallistaError> {
+        let scheduler = test_scheduler().await?;
+        scheduler.start_draining();
+
+        let request = job_submission(select_one().await, BALLISTA_VERSION);
+        let status = scheduler.execute_query(request).await.unwrap_err();
+
+        assert_eq!(status.code(), Code::Unavailable);
+        assert!(
+            status.message().contains("shutting down"),
+            "{}",
+            status.message()
+        );
+        Ok(())
     }
 
     #[tokio::test]

@@ -118,6 +118,38 @@ pub(crate) async fn running_job_id(
     }
 }
 
+/// The ids of every job the scheduler currently lists, in any state, in the
+/// order the jobs started. Retries request errors, as `running_job_id` does.
+pub(crate) async fn job_ids(
+    client: &reqwest::Client,
+    rest_url: &str,
+) -> Result<Vec<String>, String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match get_json(client, format!("{rest_url}/api/jobs")).await {
+            Ok(body) => {
+                let mut jobs: Vec<(u64, String)> = body
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|j| {
+                        let id = j.get("job_id")?.as_str()?.to_string();
+                        let started =
+                            j.get("start_time").and_then(|v| v.as_u64()).unwrap_or(0);
+                        Some((started, id))
+                    })
+                    .collect();
+                jobs.sort();
+                return Ok(jobs.into_iter().map(|(_, id)| id).collect());
+            }
+            Err(e) if Instant::now() > deadline => {
+                return Err(format!("timed out listing jobs; last error: {e}"));
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+}
+
 /// The stage summary for `job_id`.
 pub(crate) async fn stages(
     client: &reqwest::Client,

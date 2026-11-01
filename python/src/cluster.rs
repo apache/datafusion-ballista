@@ -18,17 +18,20 @@
 use std::future::IntoFuture;
 use std::sync::Arc;
 
+use crate::codec::{
+    PyBallistaLogicalExtensionCodec, PyBallistaPhysicalExtensionCodec, ballista_codec,
+};
 use crate::utils::to_pyerr;
 use crate::utils::{spawn_feature, wait_for_future};
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_executor::executor_process::{
-    start_executor_process, ExecutorProcessConfig,
+    ExecutorProcessConfig, start_executor_process,
 };
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::SchedulerConfig;
 use ballista_scheduler::scheduler_process::start_server;
 use pyo3::exceptions::PyException;
-use pyo3::{pyclass, pymethods, PyResult, Python};
+use pyo3::{PyResult, Python, pyclass, pymethods};
 use tokio::task::JoinHandle;
 
 #[pyclass(name = "BallistaScheduler", module = "ballista", subclass)]
@@ -42,7 +45,15 @@ impl PyScheduler {
     #[pyo3(signature = (bind_host=None, bind_port=None))]
     #[new]
     pub fn new(_py: Python, bind_host: Option<String>, bind_port: Option<u16>) -> Self {
-        let mut config = SchedulerConfig::default();
+        let mut config = SchedulerConfig {
+            override_logical_codec: Some(Arc::new(
+                PyBallistaLogicalExtensionCodec::default(),
+            )),
+            override_physical_codec: Some(Arc::new(
+                PyBallistaPhysicalExtensionCodec::default(),
+            )),
+            ..Default::default()
+        };
 
         if let Some(bind_port) = bind_port {
             config.bind_port = bind_port;
@@ -151,7 +162,15 @@ impl PyExecutor {
         scheduler_port: Option<u16>,
         vcores: Option<u16>,
     ) -> PyResult<Self> {
-        let mut config = ExecutorProcessConfig::default();
+        let mut config = ExecutorProcessConfig {
+            override_logical_codec: Some(Arc::new(
+                PyBallistaLogicalExtensionCodec::default(),
+            )),
+            override_physical_codec: Some(Arc::new(
+                PyBallistaPhysicalExtensionCodec::default(),
+            )),
+            ..Default::default()
+        };
         if let Some(port) = bind_port {
             config.port = port;
         }
@@ -169,9 +188,7 @@ impl PyExecutor {
         }
 
         if let Some(vcores) = vcores {
-            // TODO: this is temporary hack until we update to latest version
-            // config.vcores = vcores as usize
-            config.concurrent_tasks = vcores as usize;
+            config.vcores = vcores as usize;
         }
 
         let config = Arc::new(config);
@@ -255,9 +272,7 @@ impl PyExecutor {
             self.config.port,
             self.config.scheduler_host,
             self.config.scheduler_port,
-            // TODO: this is temporary hack until we update to latest version
-            // self.config.vcores,
-            self.config.concurrent_tasks,
+            self.config.vcores,
             self.handle.is_some()
         )
     }
@@ -275,11 +290,14 @@ pub fn setup_test_cluster(py: Python) -> PyResult<(String, u16)> {
 
 async fn _setup_test_cluster() -> (String, u16) {
     let config = <datafusion::prelude::SessionConfig as ballista::prelude::SessionConfigExt>::new_with_ballista();
-    let default_codec = ballista_core::serde::BallistaCodec::default();
 
-    let addr = ballista_scheduler::standalone::new_standalone_scheduler()
-        .await
-        .expect("scheduler to be created");
+    let addr = ballista_scheduler::standalone::new_standalone_scheduler_with_builder(
+        Arc::new(ballista_core::utils::default_session_builder),
+        Arc::new(ballista_core::utils::default_config_producer),
+        ballista_codec(),
+    )
+    .await
+    .expect("scheduler to be created");
 
     let host = "localhost".to_string();
 
@@ -289,7 +307,7 @@ async fn _setup_test_cluster() -> (String, u16) {
     ballista_executor::new_standalone_executor(
         scheduler,
         ballista::prelude::SessionConfigExt::ballista_standalone_parallelism(&config),
-        default_codec,
+        ballista_codec(),
     )
     .await
     .expect("executor to be created");

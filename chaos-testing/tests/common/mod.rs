@@ -19,6 +19,7 @@ use ballista::prelude::{SessionConfigExt, SessionContextExt};
 use ballista_core::config::BALLISTA_ADAPTIVE_PLANNER_ENABLED;
 use chaos_testing::budget::FaultBudget;
 use chaos_testing::cluster::TestCluster;
+use chaos_testing::fetch::ResultFetch;
 use chaos_testing::fixture::Fixture;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::execution::SessionStateBuilder;
@@ -54,8 +55,6 @@ impl ChaosRun {
         executor_timeout_seconds: u64,
         concurrent_tasks: usize,
     ) -> Self {
-        let _ = env_logger::builder().is_test(true).try_init();
-
         let cluster = TestCluster::builder()
             .executors(executors)
             .executor_timeout_seconds(executor_timeout_seconds)
@@ -63,6 +62,29 @@ impl ChaosRun {
             .start()
             .await
             .expect("cluster must start");
+
+        Self::with_cluster(cluster, aqe).await
+    }
+
+    /// Like [`start`](Self::start), with clients fetching results in `mode`.
+    pub async fn start_with_result_fetch(
+        aqe: bool,
+        executors: usize,
+        mode: ResultFetch,
+    ) -> Self {
+        let cluster = TestCluster::builder()
+            .executors(executors)
+            .executor_timeout_seconds(5)
+            .result_fetch(mode)
+            .start()
+            .await
+            .expect("cluster must start");
+
+        Self::with_cluster(cluster, aqe).await
+    }
+
+    async fn with_cluster(cluster: TestCluster, aqe: bool) -> Self {
+        let _ = env_logger::builder().is_test(true).try_init();
 
         let fixture = Fixture::write(cluster.shared_dir())
             .await

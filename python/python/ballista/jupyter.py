@@ -50,9 +50,11 @@ Usage:
     LIMIT 10
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 import warnings
 import time
+
+from datafusion import DataFrame
 
 try:
     from IPython.core.magic import Magics, magics_class, line_magic, line_cell_magic
@@ -108,7 +110,7 @@ except ImportError:
             return decorator
 
 
-from .extension import BallistaSessionContext, DistributedDataFrame
+from .extension import BallistaSessionContext, ExecutionPlanVisualization
 
 
 class BallistaConnectionError(Exception):
@@ -130,7 +132,7 @@ class BallistaMagics(Magics):
         super().__init__(shell)
         self._ctx: Optional[BallistaSessionContext] = None
         self._address: Optional[str] = None
-        self._last_result: Optional[DistributedDataFrame] = None
+        self._last_result: Optional[str] = None
         self._query_history: List[Dict[str, Any]] = []
 
     @property
@@ -222,7 +224,7 @@ class BallistaMagics(Magics):
                 )
 
     @line_cell_magic
-    def sql(self, line: str, cell=None) -> Optional[DistributedDataFrame]:
+    def sql(self, line: str, cell=None) -> Optional[DataFrame]:
         """
         Execute a SQL query (both line and cell magic).
 
@@ -312,7 +314,7 @@ class BallistaMagics(Magics):
         status_lines = [
             "Status: Connected",
             f"Address: {self._address}",
-            f"Session ID: {self._ctx.session_id}",
+            f"Session ID: {self._ctx.session_id()}",
             f"Queries executed: {len(self._query_history)}",
         ]
 
@@ -331,11 +333,27 @@ class BallistaMagics(Magics):
         else:
             print("\n".join(status_lines))
 
+    def _get_tables(self) -> Dict[str, List[str]]:
+        """Get tables and their respective schemas (in terms of database schema)."""
+        try:
+            catalog = self.ctx.catalog()
+            schema_names = list(catalog.schema_names())
+            if schema_names:
+                tables_info = {}
+                for schema_name in schema_names:
+                    tables_info[schema_name] = list(
+                        catalog.schema(name=schema_name).table_names()
+                    )
+                return tables_info
+        except (AttributeError, NotImplementedError) as e:
+            warnings.warn(f"Could not retrieve tables from catalog: {e}")
+        return {}
+
     def _tables(self) -> Optional[str]:
         """List all registered tables."""
         try:
             # Get table names from the catalog and their respective schemas
-            tables = self.ctx.get_tables()
+            tables = self._get_tables()
             if not tables:
                 return "No tables registered.\n\nUse ctx.register_parquet() or ctx.register_csv() to register tables."
             schema_count = len(tables.keys())
@@ -400,7 +418,7 @@ class BallistaMagics(Magics):
     def _execute_sql(
         self,
         query: str,
-    ) -> Optional[DistributedDataFrame]:
+    ) -> Optional[DataFrame]:
         """Execute a SQL query and return the result."""
         start_time = time.time()
 
@@ -512,6 +530,121 @@ Examples:
             display(HTML(f"<pre>{help_info}</pre>"))
         else:
             print(help_info)
+
+
+def explain_visual(df: DataFrame, analyze: bool = False) -> ExecutionPlanVisualization:
+    """
+    Generate a visual representation of the execution plan.
+
+    This method creates an SVG visualization of the query execution plan,
+    which can be displayed directly in Jupyter notebooks.
+
+    Args:
+        df: DataFrame to visualize.
+        analyze: If True, includes runtime statistics from actual execution.
+
+    Returns:
+        ExecutionPlanVisualization: An object that renders as SVG in Jupyter.
+
+    Example:
+        >>> df = ctx.sql("SELECT * FROM orders WHERE amount > 100")
+        >>> explain_visual(df)  # Displays SVG in notebook
+        >>> viz = explain_visual(df, analyze=True)
+        >>> viz.save("plan.svg")  # Save to file
+    """
+    # Get the execution plan as a string representation
+    # Note: explain() prints but doesn't return a string, so we use logical_plan()
+    try:
+        plan = df.logical_plan()
+        plan_str = plan.display_indent()
+    except Exception:
+        # Fallback if logical_plan() fails
+        plan_str = "Unable to retrieve execution plan"
+    return ExecutionPlanVisualization(plan_str, analyze=analyze)
+
+
+def collect_with_progress(
+    df: DataFrame,
+    callback: Optional[Callable] = None,
+    poll_interval: float = 0.5,
+):
+    """
+    Collect results with progress indication.
+
+    For long-running queries, this method provides progress updates
+    through a callback function or displays a progress bar in Jupyter.
+
+    Args:
+        df: DataFrame to collect.
+        callback: Optional function to call with progress updates.
+                 Signature: callback(status: str, progress: float)
+        poll_interval: How often to check progress (seconds).
+
+    Returns:
+        The collected result batches.
+
+    Example:
+        >>> def my_callback(status, progress):
+        ...     print(f"{status}: {progress:.1%}")
+        >>> batches = collect_with_progress(df, callback=my_callback)
+    """
+    import threading
+
+    result = [None]
+    error = [None]
+    done = threading.Event()
+
+    def execute():
+        try:
+            result[0] = df.collect()
+        except Exception as e:
+            error[0] = e
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=execute)
+    thread.start()
+
+    # Check if we're in a Jupyter environment
+    try:
+        from IPython.display import clear_output
+        from IPython.core.getipython import get_ipython
+
+        in_jupyter = get_ipython() is not None
+    except (ImportError, AttributeError):
+        in_jupyter = False
+
+    start_time = time.time()
+
+    if in_jupyter and callback is None:
+        # Display a simple progress indicator
+        try:
+            while not done.wait(timeout=poll_interval):
+                elapsed = time.time() - start_time
+                clear_output(wait=True)
+                print(f"⏳ Query executing... ({elapsed:.1f}s elapsed)")
+
+            clear_output(wait=True)
+            elapsed = time.time() - start_time
+            print(f"✓ Query completed in {elapsed:.1f}s")
+        except Exception:
+            pass  # Ignore display errors
+    elif callback is not None:
+        while not done.wait(timeout=poll_interval):
+            elapsed = time.time() - start_time
+            callback(f"Executing ({elapsed:.1f}s)", -1.0)  # -1 means indeterminate
+
+        elapsed = time.time() - start_time
+        callback(f"Completed in {elapsed:.1f}s", 1.0)
+    else:
+        done.wait()
+
+    thread.join()
+
+    if error[0] is not None:
+        raise error[0]
+
+    return result[0]
 
 
 def load_ipython_extension(ipython):

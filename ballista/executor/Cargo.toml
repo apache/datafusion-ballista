@@ -50,7 +50,6 @@ build-binary = [
     "dep:axum",
 ]
 default = ["arrow-ipc-optimizations", "build-binary"]
-spark-compat = ["ballista-core/spark-compat"]
 
 [dependencies]
 arrow = { workspace = true }
@@ -65,7 +64,7 @@ datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
-lru = "0.18"
+lru = "0.19"
 memory-stats = { version = "1.2.0", features = ["always_use_statm"] }
 mimalloc = { workspace = true, optional = true }
 parking_lot = { workspace = true }

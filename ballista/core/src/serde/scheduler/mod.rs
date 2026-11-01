@@ -62,6 +62,24 @@ pub enum Action {
         /// asks for whatever the identifiers above address.
         byte_ranges: Vec<ByteRange>,
     },
+    /// Stream one output partition of a running pipelined producer task
+    FetchPipelinedPartition {
+        /// The job identifier.
+        job_id: JobId,
+        /// The producer stage.
+        stage_id: usize,
+        /// The producer task within its stage.
+        task_id: usize,
+        /// The global output partition of the producer stage.
+        partition_id: usize,
+        /// Hostname or IP address of the executor running the producer task.
+        host: String,
+        /// Port of that executor's Flight service.
+        port: u16,
+        /// How long the executor waits for the producer task to start, in
+        /// milliseconds. Zero uses the executor's default.
+        registration_timeout_ms: u64,
+    },
 }
 
 impl PartitionLocation {
@@ -159,6 +177,12 @@ pub struct TaskKey {
     pub task_id: usize,
 }
 
+impl std::fmt::Display for TaskKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}/{}", self.job_id, self.stage_id, self.task_id)
+    }
+}
+
 impl PartitionId {
     /// Creates a new partition ID with the given job, stage, and partition identifiers.
     pub fn new(job_id: &JobId, stage_id: usize, partition_id: usize) -> Self {
@@ -199,6 +223,18 @@ impl PartitionLocation {
             self.is_sort_shuffle,
         )
     }
+}
+
+/// Where a producer task of a pipelined stage serves one of its output
+/// partitions while it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelinedPartitionLocation {
+    /// Job, producer stage, and global output partition.
+    pub partition_id: PartitionId,
+    /// The producer task within its stage.
+    pub task_id: usize,
+    /// The executor running the producer task.
+    pub executor_meta: ExecutorMetadata,
 }
 
 /// Meta-data for an executor, used when fetching shuffle partitions from other executors.

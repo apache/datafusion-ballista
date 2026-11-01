@@ -183,6 +183,28 @@ This includes instructions for:
 - Comparing performance with Apache Spark
 - Running load tests
 
+## Merge queue and the TPC suites in CI
+
+Pull requests to `main` are merged through GitHub's merge queue. The queue builds the exact tree that will land
+and only merges it if the required checks pass, so a PR does not need to be rebased and re-tested by hand.
+Use "Merge when ready" (auto-merge) to queue a PR before its checks have finished.
+
+The TPC-H SF10 and TPC-DS SF1 suites are slow, so they run in the queue rather than on every PR:
+
+| Event          | TPC-H / TPC-DS                                                                   |
+| -------------- | -------------------------------------------------------------------------------- |
+| Pull request   | Only if the PR has the `run-tpch` and/or `run-tpcds` label                       |
+| Merge queue    | Both, whenever the change touches code or build files (docs-only changes skip)   |
+| Push to `main` | Not run; the queue already tested that tree. Only the build caches are refreshed |
+| Manual         | `workflow_dispatch` on the `TPC-H SF10` and `TPC-DS SF1` workflows               |
+
+Apply a label to get early feedback on a change that could affect query results or plans, such as planner,
+shuffle or scheduler work. Applying the label runs the suite immediately without blocking anything. The label also
+makes the suite run on every later push, and those runs do block the PR. If a suite fails in the queue the PR is
+removed from it, so a failure there is worth reproducing with the label before re-queueing.
+
+The single required status check is `TPC Required Checks` from `.github/workflows/tpc.yml`.
+
 ## DataFusion dependency
 
 Between releases, `main` depends on a pinned git revision of

@@ -148,6 +148,20 @@ the auto-sized pool uses; it accepts a value in `(0.0, 1.0]` and defaults to
 Because operators spill to disk rather than fail, make sure the executor's
 `--work-dir` has enough scratch space to absorb spills under memory pressure.
 
+DataFusion caps spill files at 100 GB per runtime by default, and a query that
+spills more fails with "The used disk space during the spilling process has
+exceeded the allowable limit". Large sorts and sort-merge joins can exceed this
+at high scale factors. Raise the cap with `--max-temp-directory-size`, which
+takes the same size values as `--memory-pool-size`:
+
+```sh
+ballista-executor --memory-pool-size 48GB --max-temp-directory-size 1TB
+```
+
+The limit applies to each session's runtime on the executor, shared by that
+session's tasks. Setting `datafusion.runtime.max_temp_directory_size` on the
+client has no effect on executors.
+
 ## Join Strategy
 
 How Ballista picks a join depends on whether adaptive query execution is on.
@@ -355,6 +369,34 @@ Set `ballista.planner.adaptive.enabled` to `false` to fall back to the static
 distributed planner if you hit one of these. See
 [issue #1359](https://github.com/apache/datafusion-ballista/issues/1359) for the
 tracking epic and ongoing work.
+
+## Caching DataFrames
+
+`DataFrame::cache()` does nothing by default (`ballista.cache.noop = true`).
+With it turned off, the first action on a cached DataFrame runs the cached part
+as a job of its own and keeps its output on the executors; later actions in the
+same session read that output instead of recomputing it.
+
+```rust
+ctx.sql("SET ballista.cache.noop = false").await?;
+let cached = ctx.table("t").await?.filter(col("x").gt(lit(5)))?.cache().await?;
+cached.clone().count().await?; // builds the cache, then reads it
+cached.collect().await?;       // reads it
+```
+
+- Cached data is shuffle output on the executors. If a query loses part of it
+  (an executor holding it is lost, or a fetch from it fails), the query fails
+  with "lost DataFrame::cache() data; retry the query", and the retry rebuilds
+  the cache.
+- Cached data is not evicted yet: it is kept until it is found lost, so cache
+  only what you reuse.
+- `EXPLAIN` of a cached DataFrame never builds it.
+- An operator can turn caching off for the whole cluster with the scheduler's
+  `--disable-dataframe-cache` flag; cached DataFrames are then computed as part
+  of each query.
+
+See the [DataFrame cache design](../contributors-guide/dataframe-cache.md) for
+how it works.
 
 ## Push-based vs Pull-based Task Scheduling
 

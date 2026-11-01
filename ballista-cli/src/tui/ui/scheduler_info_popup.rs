@@ -33,7 +33,6 @@ pub(crate) fn render_scheduler_info(f: &mut Frame, app: &App) {
         let features = [
             (scheduler_state.prometheus_support, "prometheus-metrics"),
             (scheduler_state.keda_support, "keda-scaler"),
-            (scheduler_state.spark_support, "spark-compat"),
             (scheduler_state.substrait_support, "substrait"),
             (scheduler_state.graphviz_support, "graphviz-support"),
         ];

@@ -484,6 +484,26 @@ mod basic {
                 .collect::<Vec<&str>>()
         );
     }
+    #[tokio::test]
+    async fn test_describe_table() -> Result<()> {
+        let context = create_test_context().await;
+
+        let result = context.sql("DESCRIBE test").await?.collect().await?;
+
+        let output = pretty_format_batches(&result)?.to_string();
+        let header = output.lines().nth(1).expect("header line");
+        for column in ["column_name", "data_type", "is_nullable"] {
+            assert!(header.contains(column), "missing {column} in:\n{output}");
+        }
+        for column in ["id", "bool_col", "timestamp_col"] {
+            assert!(
+                output.contains(&format!("| {column} ")),
+                "missing row for {column} in:\n{output}"
+            );
+        }
+        Ok(())
+    }
+
     async fn create_test_context() -> SessionContext {
         let context = SessionContext::standalone().await.unwrap();
 

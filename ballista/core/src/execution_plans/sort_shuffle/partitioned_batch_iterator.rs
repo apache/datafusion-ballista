@@ -61,10 +61,10 @@ fn compact_view_columns(batch: RecordBatch) -> Result<RecordBatch> {
 ///
 /// Walks a slice of `(batch_idx, row_idx)` pairs in `indices`, and for each
 /// chunk of up to `batch_size` pairs gathers the referenced rows from
-/// `batches` via `interleave_record_batch`, yielding one `RecordBatch` per
+/// `batch_refs` via `interleave_record_batch`, yielding one `RecordBatch` per
 /// chunk.
 pub(crate) struct PartitionedBatchIterator<'a> {
-    batch_refs: Vec<&'a RecordBatch>,
+    batch_refs: &'a [&'a RecordBatch],
     indices: &'a [(u32, u32)],
     batch_size: usize,
     pos: usize,
@@ -76,16 +76,16 @@ pub(crate) struct PartitionedBatchIterator<'a> {
 impl<'a> PartitionedBatchIterator<'a> {
     /// Create a new iterator.
     ///
-    /// * `batches` — the source record batches to pull rows from.
+    /// * `batch_refs` — the source record batches to pull rows from, shared
+    ///   by every partition's iterator.
     /// * `indices` — `(batch_idx, row_idx)` pairs that select which rows to
     ///   emit, in order.
     /// * `batch_size` — maximum number of rows per output `RecordBatch`.
     pub(crate) fn new(
-        batches: &'a [RecordBatch],
+        batch_refs: &'a [&'a RecordBatch],
         indices: &'a [(u32, u32)],
         batch_size: usize,
     ) -> Self {
-        let batch_refs = batches.iter().collect();
         Self {
             batch_refs,
             indices,
@@ -112,7 +112,7 @@ impl<'a> Iterator for PartitionedBatchIterator<'a> {
         );
         self.pos = end;
 
-        match interleave_record_batch(&self.batch_refs, &self.scratch) {
+        match interleave_record_batch(self.batch_refs, &self.scratch) {
             Ok(batch) => Some(compact_view_columns(batch)),
             Err(e) => Some(Err(DataFusionError::ArrowError(
                 Box::new(e),
@@ -142,11 +142,12 @@ mod tests {
     fn yields_chunks_of_at_most_batch_size_rows() {
         use super::PartitionedBatchIterator;
 
-        let batches = vec![batch(&[1, 2, 3, 4]), batch(&[5, 6, 7])];
+        let batches = [batch(&[1, 2, 3, 4]), batch(&[5, 6, 7])];
         let indices: Vec<(u32, u32)> =
             vec![(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)];
 
-        let mut iter = PartitionedBatchIterator::new(&batches, &indices, 4);
+        let refs: Vec<&RecordBatch> = batches.iter().collect();
+        let mut iter = PartitionedBatchIterator::new(&refs, &indices, 4);
 
         let first = iter.next().unwrap().unwrap();
         assert_eq!(first.num_rows(), 4);
@@ -173,9 +174,10 @@ mod tests {
     fn empty_indices_yields_nothing() {
         use super::PartitionedBatchIterator;
 
-        let batches = vec![batch(&[1, 2, 3])];
+        let batches = [batch(&[1, 2, 3])];
         let indices: Vec<(u32, u32)> = vec![];
-        let mut iter = PartitionedBatchIterator::new(&batches, &indices, 4);
+        let refs: Vec<&RecordBatch> = batches.iter().collect();
+        let mut iter = PartitionedBatchIterator::new(&refs, &indices, 4);
         assert!(iter.next().is_none());
     }
 
@@ -183,12 +185,13 @@ mod tests {
     fn interleaves_rows_from_multiple_input_batches() {
         use super::PartitionedBatchIterator;
 
-        let batches = vec![batch(&[10, 20, 30]), batch(&[40, 50, 60])];
+        let batches = [batch(&[10, 20, 30]), batch(&[40, 50, 60])];
         // Pull alternating rows from the two input batches
         let indices: Vec<(u32, u32)> =
             vec![(0, 0), (1, 0), (0, 1), (1, 1), (0, 2), (1, 2)];
 
-        let mut iter = PartitionedBatchIterator::new(&batches, &indices, 8192);
+        let refs: Vec<&RecordBatch> = batches.iter().collect();
+        let mut iter = PartitionedBatchIterator::new(&refs, &indices, 8192);
         let only = iter.next().unwrap().unwrap();
         assert_eq!(only.num_rows(), 6);
         let arr = only

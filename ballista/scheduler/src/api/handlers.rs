@@ -53,7 +53,6 @@ pub struct SchedulerStateResponse {
     pub keda_support: bool,
     pub prometheus_support: bool,
     pub graphviz_support: bool,
-    pub spark_support: bool,
     pub scheduling_policy: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub advertise_flight_endpoint: Option<String>,
@@ -88,6 +87,9 @@ pub enum ExecutorMetricResponse {
     ProcVirtualMemory(u64),
     PeakPhysicalMemory(u64),
     PeakVirtualMemory(u64),
+    MemoryPoolReserved(u64),
+    MemoryPoolSize(u64),
+    AllocatedMemory(u64),
 }
 
 impl ExecutorMetricResponse {
@@ -100,6 +102,9 @@ impl ExecutorMetricResponse {
             Metric::ProcVirtualMemory(v) => Self::ProcVirtualMemory(v),
             Metric::PeakPhysicalMemory(v) => Self::PeakPhysicalMemory(v),
             Metric::PeakVirtualMemory(v) => Self::PeakVirtualMemory(v),
+            Metric::MemoryPoolReserved(v) => Self::MemoryPoolReserved(v),
+            Metric::MemoryPoolSize(v) => Self::MemoryPoolSize(v),
+            Metric::AllocatedMemory(v) => Self::AllocatedMemory(v),
         })
     }
 }
@@ -184,6 +189,7 @@ pub async fn get_scheduler_state<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
 ) -> impl IntoResponse {
+    #[allow(deprecated)]
     let response = SchedulerStateResponse {
         started: data_server.start_time,
         scheduler_id: data_server.scheduler_id.clone(),
@@ -193,7 +199,6 @@ pub async fn get_scheduler_state<
         keda_support: cfg!(feature = "keda-scaler"),
         prometheus_support: cfg!(feature = "prometheus-metrics"),
         graphviz_support: cfg!(feature = "graphviz-support"),
-        spark_support: cfg!(feature = "spark-compat"),
         scheduling_policy: data_server.state.config.scheduling_policy.to_string(),
         advertise_flight_endpoint: data_server
             .state
@@ -688,7 +693,35 @@ pub async fn get_job_config<
 mod tests {
     use super::*;
 
+    /// The executor memory metrics' JSON names are part of the REST contract.
+    #[test]
+    fn executor_memory_metrics_serialize_with_stable_names() {
+        use ballista_core::serde::protobuf::ExecutorMetric;
+
+        let json = |metric| {
+            let response = ExecutorMetricResponse::from_proto(ExecutorMetric {
+                metric: Some(metric),
+            })
+            .unwrap();
+            serde_json::to_value(response).unwrap()
+        };
+        assert_eq!(
+            json(Metric::MemoryPoolReserved(1)),
+            serde_json::json!({"type": "memory_pool_reserved", "value": 1})
+        );
+        assert_eq!(
+            json(Metric::MemoryPoolSize(2)),
+            serde_json::json!({"type": "memory_pool_size", "value": 2})
+        );
+        assert_eq!(
+            json(Metric::AllocatedMemory(3)),
+            serde_json::json!({"type": "allocated_memory", "value": 3})
+        );
+    }
+
     #[tokio::test]
+    // Still covers the deprecated embedded-proxy flag until it is removed.
+    #[allow(deprecated)]
     async fn scheduler_state_reflects_server_configuration() {
         use crate::config::SchedulerConfig;
         use crate::metrics::default_metrics_collector;
