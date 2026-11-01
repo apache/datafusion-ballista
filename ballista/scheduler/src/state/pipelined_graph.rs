@@ -65,17 +65,18 @@ use datafusion::physical_plan::{ExecutionPlan, replace_children_if_necessary};
 use datafusion::prelude::SessionConfig;
 use log::{info, warn};
 
-use crate::cache::CACHE_DATA_LOST;
+use crate::cache::{CACHE_DATA_LOST, is_external_stage_id};
 use crate::cluster::{BoundTask, ExecutorSlot, stage_has_input_collapse};
 use crate::planner::{DistributedPlanner, find_unresolved_shuffles};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ExecutionStageBuilder,
-    RunningTaskInfo, TaskDescription, create_task_info,
+    RunningTaskInfo, TaskDescription, create_task_info, waiting_external_inputs,
 };
 use crate::state::execution_stage::{
-    PendingPartitions, RunningStage, external_fetch_failures, stage_input_partitions,
+    PendingPartitions, RunningStage, external_fetch_failures, external_reader_partitions,
+    fold_external_locations, stage_input_partitions, with_external_locations,
 };
 use crate::state::task_builder::stages_read_whole;
 
@@ -350,11 +351,14 @@ impl PipelinedExecutionGraph {
         matches!(self.status.status, Some(Status::Running(_)))
     }
 
-    /// Whether the job still waits to be placed: running, and not placed yet.
-    /// A job can stop waiting between planning its placement and committing
-    /// it, if it is cancelled or fails meanwhile.
+    /// Whether the job still waits to be placed: running, not placed yet, and
+    /// not waiting for lost `DataFrame::cache()` data to be rebuilt. A job can
+    /// stop waiting between planning its placement and committing it, if it
+    /// is cancelled or fails meanwhile.
     pub fn awaits_placement(&self) -> bool {
-        !self.placed && self.is_running()
+        !self.placed
+            && self.is_running()
+            && waiting_external_inputs(&self.stages).next().is_none()
     }
 
     /// What placing each stage takes, or `None` once the job is placed or no
@@ -403,7 +407,7 @@ impl PipelinedExecutionGraph {
     ) -> Result<Vec<BoundTask>> {
         if !self.awaits_placement() {
             return Err(BallistaError::Internal(format!(
-                "pipelined job {} is already placed or no longer running",
+                "pipelined job {} is already placed, no longer running, or waiting for a cache to be rebuilt",
                 self.job_id
             )));
         }
@@ -882,13 +886,80 @@ impl ExecutionGraph for PipelinedExecutionGraph {
         vec![]
     }
 
-    /// Nothing is rolled back: losing an executor fails the job instead (see
-    /// [`PipelinedExecutionGraph::lost_executor`]).
+    /// Nothing is rolled back: once placed, losing an executor fails the job
+    /// instead (see [`PipelinedExecutionGraph::lost_executor`]). Before then
+    /// no task has run, so a cache read loses only its locations on the
+    /// executor, and the job waits for the cache to be rebuilt.
     fn reset_stages_on_lost_executor(
         &mut self,
-        _executor_id: &str,
+        executor_id: &str,
     ) -> Result<(HashSet<usize>, Vec<RunningTaskInfo>)> {
+        if !self.placed {
+            for stage in self.stages.values_mut() {
+                let inputs = match stage {
+                    ExecutionStage::UnResolved(stage) => &mut stage.inputs,
+                    ExecutionStage::Resolved(stage) => &mut stage.inputs,
+                    _ => continue,
+                };
+                for (_, output) in inputs
+                    .iter_mut()
+                    .filter(|(id, _)| is_external_stage_id(**id))
+                {
+                    for locations in output.partition_locations.values_mut() {
+                        let before = locations.len();
+                        locations.retain(|loc| loc.executor_meta.id != executor_id);
+                        if locations.len() < before {
+                            output.complete = false;
+                        }
+                    }
+                }
+            }
+        }
         Ok((HashSet::new(), vec![]))
+    }
+
+    /// Until it is placed, nothing has read or streamed anything, so the job
+    /// can wait for lost cache data to be rebuilt. Once placed, its tasks
+    /// stream to each other and its results to the client, so it cannot.
+    fn recovers_external_inputs(&self) -> bool {
+        !self.placed && self.is_running()
+    }
+
+    fn resolve_external_input(
+        &mut self,
+        input_id: usize,
+        locations: Vec<Vec<PartitionLocation>>,
+    ) -> Result<Vec<QueryStageSchedulerEvent>> {
+        if !self.recovers_external_inputs() {
+            return Err(BallistaError::General(format!(
+                "pipelined job {} cannot resume after it is placed",
+                self.job_id
+            )));
+        }
+        for (stage_id, stage) in self.stages.iter_mut() {
+            let (inputs, plan) = match stage {
+                ExecutionStage::UnResolved(stage) => (&mut stage.inputs, &mut stage.plan),
+                ExecutionStage::Resolved(stage) => (&mut stage.inputs, &mut stage.plan),
+                _ => continue,
+            };
+            if inputs
+                .get(&input_id)
+                .is_none_or(|input| input.is_complete())
+            {
+                continue;
+            }
+            let partitions = external_reader_partitions(plan.as_ref(), input_id)
+                .ok_or_else(|| {
+                    BallistaError::Internal(format!(
+                        "stage {stage_id} waits on external input {input_id} but does not read it"
+                    ))
+                })?;
+            let output = fold_external_locations(locations.clone(), partitions)?;
+            *plan = with_external_locations(plan.clone(), input_id, &output)?;
+            inputs.insert(input_id, output);
+        }
+        // Placed by the next offer round, which the caller starts.
+        Ok(vec![])
     }
 
     fn resolve_stage(&mut self, _stage_id: usize) -> Result<bool> {
@@ -1028,6 +1099,7 @@ mod tests {
     use ballista_core::extension::SessionConfigExt;
     use ballista_core::serde::protobuf::{FailedTask, MultiTaskDefinition};
 
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::LogicalPlan;
     use datafusion::test_util::scan_empty_with_partitions;
     use std::sync::Mutex;
@@ -1732,5 +1804,93 @@ mod tests {
         };
         assert!(failed.error.contains("push-staged"), "{}", failed.error);
         Ok(())
+    }
+
+    fn cache_location(partition: usize, executor: &str) -> PartitionLocation {
+        PartitionLocation {
+            map_partition_id: partition,
+            partition_id: PartitionId::new(&"cache-job".into(), 1, partition),
+            executor_meta: Arc::new(ExecutorEndpoint {
+                id: executor.to_owned(),
+                host: "localhost".to_owned(),
+                port: 0,
+            }),
+            partition_stats: Default::default(),
+            file_id: Some(0),
+            is_sort_shuffle: false,
+        }
+    }
+
+    /// A pipelined job reading a cache whose executor is lost before the job
+    /// is placed: nothing has run, so rather than fail, it waits until the
+    /// cache is rebuilt and is then placed reading only the rebuild. Once
+    /// placed, it no longer recovers.
+    #[tokio::test]
+    async fn a_cache_lost_before_placement_is_read_again_once_rebuilt() {
+        use crate::cache::EXTERNAL_STAGE_ID_BASE;
+        use ballista_core::execution_plans::ShuffleReaderExec;
+        use datafusion::physical_plan::Partitioning;
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let reader = ShuffleReaderExec::try_new(
+            EXTERNAL_STAGE_ID_BASE,
+            vec![
+                vec![cache_location(0, "exec-cache")],
+                vec![cache_location(1, "exec-cache")],
+            ],
+            schema,
+            Partitioning::UnknownPartitioning(2),
+        )
+        .unwrap();
+        let mut graph = pipelined_graph_from_physical(
+            Arc::new(reader),
+            SessionConfig::new_with_ballista(),
+        );
+        assert!(graph.recovers_external_inputs());
+
+        graph.reset_stages_on_lost_executor("exec-cache").unwrap();
+        assert_eq!(
+            graph.waiting_external_inputs(),
+            vec![EXTERNAL_STAGE_ID_BASE]
+        );
+        assert_eq!(
+            graph.placement_requirements(),
+            None,
+            "not placed onto lost data"
+        );
+
+        let rebuilt = vec![
+            vec![cache_location(0, "exec-new")],
+            vec![cache_location(1, "exec-new")],
+        ];
+        let events = graph
+            .resolve_external_input(EXTERNAL_STAGE_ID_BASE, rebuilt)
+            .unwrap();
+        assert!(events.is_empty());
+        let tasks = place(&mut graph);
+
+        fn cache_reads(plan: &Arc<dyn ExecutionPlan>) -> Vec<PartitionLocation> {
+            let own = plan
+                .downcast_ref::<ShuffleReaderExec>()
+                .filter(|reader| reader.stage_id == EXTERNAL_STAGE_ID_BASE)
+                .map(|reader| reader.partition.iter().flatten().cloned().collect())
+                .unwrap_or_else(Vec::new);
+            plan.children()
+                .into_iter()
+                .flat_map(cache_reads)
+                .chain(own)
+                .collect()
+        }
+        let read: Vec<PartitionLocation> = tasks
+            .iter()
+            .flat_map(|(_, task)| cache_reads(&task.plan))
+            .collect();
+        assert!(!read.is_empty(), "the placed tasks read the cache");
+        assert!(read.iter().all(|loc| loc.executor_meta.id == "exec-new"));
+        assert!(
+            !graph.recovers_external_inputs(),
+            "a placed job fails instead"
+        );
     }
 }

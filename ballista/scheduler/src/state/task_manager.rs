@@ -968,14 +968,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let reason = if !graph.recovers_external_inputs()
                 && graph.reads_external_data_on(executor_id)
             {
-                Some(format!(
+                format!(
                     "Job {job_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
-                ))
-            } else if let Some(reason) = lost_pipelined {
+                )
+            } else if let Some(Some(reason)) = lost_pipelined {
                 reason
             } else {
                 // The reset drops the executor's cache locations like any
-                // other, and rolls back the stages reading them.
+                // other, and rolls back the stages reading them. A pipelined
+                // job the loss leaves intact drops them only until it is
+                // placed, and rolls nothing back.
                 let waiting_before = graph.waiting_external_inputs();
                 let reset = graph.reset_stages_on_lost_executor(executor_id)?;
                 if !reset.0.is_empty() {
@@ -991,15 +993,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 }
                 continue;
             };
-            if let Some(reason) = reason {
-                let queued_at = match &graph.status().status {
-                    Some(job_status::Status::Running(running)) => running.queued_at,
-                    _ => 0,
-                };
-                outcome
-                    .failed_jobs
-                    .push((job_id.clone(), reason, queued_at));
-            }
+            let queued_at = match &graph.status().status {
+                Some(job_status::Status::Running(running)) => running.queued_at,
+                _ => 0,
+            };
+            outcome
+                .failed_jobs
+                .push((job_id.clone(), reason, queued_at));
         }
 
         Ok(outcome)
