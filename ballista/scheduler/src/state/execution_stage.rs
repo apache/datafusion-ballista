@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::common::ColumnStatistics;
 use datafusion::common::stats::Precision;
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::{ColumnStatistics, DataFusionError};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1539,6 +1540,43 @@ pub(crate) fn external_reader_partitions(
     plan.children()
         .into_iter()
         .find_map(|child| external_reader_partitions(child.as_ref(), input_id))
+}
+
+/// `plan` with its reader of external input `input_id` reading `locations`,
+/// for a stage whose plan keeps its readers rather than resolving them from
+/// its inputs.
+pub(crate) fn with_external_locations(
+    plan: Arc<dyn ExecutionPlan>,
+    input_id: usize,
+    locations: &StageOutput,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let rewritten = plan.transform(|node| {
+        let Some(reader) = node.downcast_ref::<ShuffleReaderExec>() else {
+            return Ok(Transformed::no(node));
+        };
+        if reader.stage_id != input_id {
+            return Ok(Transformed::no(node));
+        }
+        // Rebuilt as a plain reader, which is how cache reads are planned. One
+        // with broadcast, coalesced or skew-join reads would silently lose them
+        // here and read the wrong partitions.
+        if reader.broadcast || reader.coalesce.is_some() || reader.skew_join.is_some() {
+            return Err(DataFusionError::Internal(format!(
+                "external input {input_id} is read by a broadcast, coalesced or \
+                 skew-join reader, which cannot be given new locations"
+            )));
+        }
+        let read = ShuffleReaderExec::try_new(
+            input_id,
+            locations
+                .clone()
+                .partition_locations(reader.partition.len()),
+            reader.schema(),
+            reader.properties().partitioning.clone(),
+        )?;
+        Ok(Transformed::yes(Arc::new(read) as Arc<dyn ExecutionPlan>))
+    })?;
+    Ok(rewritten.data)
 }
 
 /// A complete [`StageOutput`] of `locations` for a reader of `partitions`

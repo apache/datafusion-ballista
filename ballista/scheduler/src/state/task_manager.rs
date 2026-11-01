@@ -970,14 +970,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let reason = if !graph.recovers_external_inputs()
                 && graph.reads_external_data_on(executor_id)
             {
-                Some(format!(
+                format!(
                     "Job {job_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
-                ))
-            } else if let Some(reason) = lost_pipelined {
+                )
+            } else if let Some(Some(reason)) = lost_pipelined {
                 reason
             } else {
                 // The reset drops the executor's cache locations like any
-                // other, and rolls back the stages reading them.
+                // other, and rolls back the stages reading them. A pipelined
+                // job the loss leaves intact drops them only until it is
+                // placed, and rolls nothing back.
                 let waiting_before = graph.waiting_external_inputs();
                 match graph.reset_stages_on_lost_executor(executor_id) {
                     Ok(reset) => {
@@ -997,21 +999,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     // A failed rollback leaves the graph half-reset and it can
                     // never make progress again, so fail the job rather than
                     // hang it — and keep recovering the remaining jobs.
-                    Err(e) => Some(format!(
+                    Err(e) => format!(
                         "Job {job_id} failed to roll back after the loss of \
                          executor {executor_id}: {e}"
-                    )),
+                    ),
                 }
             };
-            if let Some(reason) = reason {
-                let queued_at = match &graph.status().status {
-                    Some(job_status::Status::Running(running)) => running.queued_at,
-                    _ => 0,
-                };
-                outcome
-                    .failed_jobs
-                    .push((job_id.clone(), reason, queued_at));
-            }
+            let queued_at = match &graph.status().status {
+                Some(job_status::Status::Running(running)) => running.queued_at,
+                _ => 0,
+            };
+            outcome
+                .failed_jobs
+                .push((job_id.clone(), reason, queued_at));
         }
 
         Ok(outcome)
