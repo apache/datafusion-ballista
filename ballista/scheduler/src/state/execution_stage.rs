@@ -35,8 +35,8 @@ use log::{debug, warn};
 use crate::cache::is_external_stage_id;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
-    RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
-    TaskRuntimeStats, TaskWindowState,
+    PipelinedShuffleWriterExec, RangeShuffleWriterExec, ShuffleReaderExec,
+    ShuffleWriterExec, SortShuffleWriterExec, TaskRuntimeStats, TaskWindowState,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
@@ -111,6 +111,17 @@ impl ExecutionStage {
             ExecutionStage::Running(stage) => stage.plan.as_ref(),
             ExecutionStage::Successful(stage) => stage.plan.as_ref(),
             ExecutionStage::Failed(stage) => stage.plan.as_ref(),
+        }
+    }
+
+    /// The stage's plan, shared.
+    pub fn plan_arc(&self) -> Arc<dyn ExecutionPlan> {
+        match self {
+            ExecutionStage::UnResolved(stage) => stage.plan.clone(),
+            ExecutionStage::Resolved(stage) => stage.plan.clone(),
+            ExecutionStage::Running(stage) => stage.plan.clone(),
+            ExecutionStage::Successful(stage) => stage.plan.clone(),
+            ExecutionStage::Failed(stage) => stage.plan.clone(),
         }
     }
 
@@ -1372,10 +1383,11 @@ impl Debug for FailedStage {
 /// Anything an internal `RepartitionExec` spawns is per-plan-instance
 /// machinery shared across those polls and does not become a separate
 /// scheduling unit.
-fn stage_input_partitions(plan: &Arc<dyn ExecutionPlan>) -> usize {
+pub(crate) fn stage_input_partitions(plan: &Arc<dyn ExecutionPlan>) -> usize {
     if plan.downcast_ref::<ShuffleWriterExec>().is_some()
         || plan.downcast_ref::<RangeShuffleWriterExec>().is_some()
         || plan.downcast_ref::<SortShuffleWriterExec>().is_some()
+        || plan.downcast_ref::<PipelinedShuffleWriterExec>().is_some()
     {
         plan.children()[0]
             .properties()
@@ -1559,6 +1571,7 @@ mod tests {
                 partitions: vec![],
                 runtime_stats: vec![],
                 task_column_stats: vec![],
+                runtime_filters: vec![],
                 window_state: vec![],
             })),
             metrics: vec![],
@@ -1650,6 +1663,7 @@ mod tests {
                     partitions: vec![],
                     runtime_stats: vec![],
                     task_column_stats,
+                    runtime_filters: vec![],
                     window_state: vec![],
                 }),
                 global_input_partition_ids: vec![task_id],
@@ -2095,6 +2109,7 @@ mod tests {
                     partitions: vec![],
                     runtime_stats: vec![],
                     task_column_stats: vec![],
+                    runtime_filters: vec![],
                     window_state: vec![],
                 });
             stage.append_runtime_stats_reports(

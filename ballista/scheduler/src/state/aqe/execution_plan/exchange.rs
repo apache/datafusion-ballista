@@ -16,7 +16,7 @@
 // under the License.
 
 use ballista_core::execution_plans::{
-    CoalescePlan, stats_for_partition, stats_for_partitions,
+    CoalescePlan, SkewJoinPlan, stats_for_partition, stats_for_partitions,
 };
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common::{ColumnStatistics, ScalarValue};
@@ -103,6 +103,7 @@ pub struct ExchangeExec {
     /// alongside the Exchange, keeping rule decisions in sync across
     /// transform-rebuilt parent chains. Same pattern as `shuffle_partitions`.
     coalesce: Arc<Mutex<Option<Arc<CoalescePlan>>>>,
+    skew_join: Arc<Mutex<Option<Arc<SkewJoinPlan>>>>,
 
     /// Range-partition boundaries recovered at runtime from an upstream
     /// range-repartition op (URRE or ORRE). Stored when
@@ -227,6 +228,7 @@ impl ExchangeExec {
             column_statistics,
             partitioning,
             coalesce,
+            skew_join: Arc::new(Mutex::new(None)),
             range_repartition_routing,
             inactive_stage,
             broadcast,
@@ -302,6 +304,16 @@ impl ExchangeExec {
         }
     }
 
+    /// Attach the paired mapper ranges selected for this join input.
+    pub fn set_skew_join(&self, sp: Arc<SkewJoinPlan>) {
+        self.skew_join.lock().replace(sp);
+    }
+
+    /// Returns the attached `SkewJoinPlan`, if `set_skew_join` was called.
+    pub fn skew_join(&self) -> Option<Arc<SkewJoinPlan>> {
+        self.skew_join.lock().clone()
+    }
+
     /// Returns a reference to the input (child) execution plan.
     pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
         &self.input
@@ -370,6 +382,14 @@ impl DisplayAs for ExchangeExec {
                 }
                 if let Some(r) = self.range_repartition_routing.lock().as_ref() {
                     write!(f, ", range_repartition_cuts={}", r.cuts.len())?;
+                }
+                if let Some(sp) = self.skew_join.lock().as_ref() {
+                    write!(
+                        f,
+                        ", skew_join={} of {}",
+                        sp.shards.len(),
+                        sp.upstream_partition_count,
+                    )?;
                 }
                 if self.broadcast {
                     write!(f, ", broadcast=true",)?
@@ -445,7 +465,7 @@ impl ExecutionPlan for ExchangeExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if children.len() == 1 {
-            let new_exec = Self::new_with_details(
+            let mut new_exec = Self::new_with_details(
                 children[0].clone(),
                 self.partitioning.clone(),
                 self.plan_id,
@@ -460,6 +480,7 @@ impl ExecutionPlan for ExchangeExec {
                 self.inactive_stage,
             );
 
+            new_exec.skew_join = self.skew_join.clone();
             Ok(Arc::new(new_exec))
         } else {
             Err(DataFusionError::Plan(
