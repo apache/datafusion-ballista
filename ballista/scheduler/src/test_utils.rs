@@ -556,6 +556,24 @@ impl SchedulerTest {
             .is_some()
     }
 
+    /// Whether `job`'s pipelined graph is placed: its tasks are bound, so it
+    /// no longer waits for executors or for lost cache data.
+    pub async fn is_pipelined_placed(&self, job_id: &JobId) -> bool {
+        match self
+            .scheduler
+            .state
+            .task_manager
+            .get_active_execution_graph(job_id)
+        {
+            Some(graph) => graph
+                .read()
+                .await
+                .as_pipelined()
+                .is_some_and(|pipelined| !pipelined.awaits_placement()),
+            None => false,
+        }
+    }
+
     /// Returns the scheduler's cache registry.
     pub fn cache_state(&self) -> Arc<dyn CacheState> {
         self.scheduler.state.cache_state.clone()

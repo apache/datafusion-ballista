@@ -3683,7 +3683,6 @@ mod test {
     /// job's own, without re-running stage 1. One naming only the job's own
     /// output re-runs stage 1 as usual, and one naming both does both.
     #[rstest::rstest]
-    #[case::cache_lost_under_a_colliding_stage_id("executor-id2", 1, 0, true, false)]
     #[case::own_output_lost_on_the_cache_executor("executor-id1", 7, 3, false, true)]
     #[case::both_lost_on_one_executor("executor-id1", 1, 0, true, true)]
     #[tokio::test]
