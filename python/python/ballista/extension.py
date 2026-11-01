@@ -20,6 +20,7 @@ from datafusion import (
     SessionConfig,
     SessionContext,
 )
+import copy
 from typing import Dict, Optional, Union
 import warnings
 
@@ -400,7 +401,8 @@ class BallistaSessionConfig:
 
     def build(self) -> SessionConfig:
         """Produce a ``SessionConfig`` with ``BallistaConfigExtension`` registered."""
-        config = self._base if self._base is not None else SessionConfig()
+        # SessionConfig setters modify it in place, do not change user's config
+        config = copy.copy(self._base) if self._base is not None else SessionConfig()
         for key, value in self._datafusion_options.items():
             config = config.set(key, value)
 

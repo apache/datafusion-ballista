@@ -393,6 +393,21 @@ def test_build_is_repeatable():
     assert second["ballista.job.name"] == "test_job"
 
 
+def test_build_does_not_change_session_config():
+    config = SessionConfig().with_target_partitions(3)
+    expected = _settings(config)
+
+    built = (
+        BallistaSessionConfig(config)
+        .set("datafusion.execution.batch_size", 1234)
+        .build()
+    )
+
+    assert built is not config
+    assert _settings(built)["datafusion.execution.batch_size"] == "1234"
+    assert _settings(config) == expected
+
+
 _CLIENT_OPTIONS = ("ballista.client.use_tls", "ballista.client.pull")
 
 _USER_CONFIGS = pytest.mark.parametrize(
