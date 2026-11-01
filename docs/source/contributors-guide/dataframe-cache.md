@@ -170,6 +170,20 @@ cache is rebuilt, and the stage resumes:
 - **The adaptive planner** cannot yet re-resolve a stage it rolls back (for any
   job), so under it a job that loses cache data fails cleanly, and the retry
   rebuilds the cache.
+- **A pipelined job** (`ballista.execution.mode = pipelined`) reads a cache
+  built by an ordinary staged job. If the cache is lost **before the job is
+  placed**, nothing has run yet, so the job waits for the rebuild and is placed
+  reading it. **Once placed**, its tasks stream to each other and its results
+  stream to the client, so restarting any of them would deliver rows twice; it
+  fails cleanly instead, and the retry rebuilds the cache.
+
+### When lost cache data is rebuilt
+
+| Found lost by                  | What happens                                                                                                                                                                                                                                                                               |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A new query reaching the cache | Rebuilt before the query runs, whatever the planner or mode.                                                                                                                                                                                                                               |
+| A query held for its caches    | Linked to a new build and held again, up to `stage_max_failures` times.                                                                                                                                                                                                                    |
+| A running query                | Rebuilt and resumed if the job is planned by the static planner (or is pipelined and not yet placed), its lost read shares no cache with another read, the stage has attempts left, and the rebuild succeeds with the same schema. Otherwise the job fails cleanly and the retry rebuilds. |
 
 ## Registry and pinning
 
