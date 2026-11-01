@@ -98,6 +98,28 @@ pub struct PartitionGroup {
     pub upstream_indices: Vec<u32>,
 }
 
+/// Matched mapper ranges for one side of a skewed join. Both sides have the
+/// same number of shards; entries at the same index execute together.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkewJoinPlan {
+    /// Number of hash buckets before splitting.
+    pub upstream_partition_count: u32,
+    /// Location ranges in downstream partition order.
+    pub shards: Vec<SkewJoinShard>,
+}
+
+/// One output partition's slice of an upstream hash bucket's location list.
+/// An unsplit bucket covers the entire list; replication repeats its range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkewJoinShard {
+    /// Original hash bucket containing this shard.
+    pub upstream_idx: u32,
+    /// Inclusive location index.
+    pub start_map_idx: u32,
+    /// Exclusive location index.
+    pub end_map_idx: u32,
+}
+
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
 /// being executed by an executor
 #[derive(Debug, Clone)]
@@ -122,6 +144,9 @@ pub struct ShuffleReaderExec {
     /// is responsible for pre-concatenating the M-shape upstream
     /// `Vec<Vec<PartitionLocation>>` into K-shape before invoking `try_new_coalesced`.
     pub coalesce: Option<CoalescePlan>,
+    /// Skew-join decision for EXPLAIN and scheduler inspection. Execution uses
+    /// the already-sliced `partition` lists, including after task serialization.
+    pub skew_join: Option<SkewJoinPlan>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
@@ -152,6 +177,7 @@ impl ShuffleReaderExec {
             broadcast: false,
             upstream_partition_count,
             coalesce: None,
+            skew_join: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -182,6 +208,7 @@ impl ShuffleReaderExec {
             broadcast: true,
             upstream_partition_count,
             coalesce: None,
+            skew_join: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
@@ -233,11 +260,28 @@ impl ShuffleReaderExec {
             broadcast: false,
             upstream_partition_count,
             coalesce: Some(coalesce),
+            skew_join: None,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
             work_dir: None,    // to be updated at the executor side
             client_pool: None, // to be updated at the executor side
         })
+    }
+
+    /// Create a reader from the mapper ranges selected by the skew-join rule.
+    /// The adapter supplies one location list per shard. Splitting hash buckets
+    /// invalidates hash partitioning, even though the two join inputs stay aligned.
+    pub fn try_new_skew_join(
+        stage_id: usize,
+        partition: Vec<Vec<PartitionLocation>>,
+        skew_join: SkewJoinPlan,
+        schema: SchemaRef,
+    ) -> Result<Self> {
+        let partitioning = Partitioning::UnknownPartitioning(partition.len());
+        let mut reader = Self::try_new(stage_id, partition, schema, partitioning)?;
+        reader.upstream_partition_count = skew_join.upstream_partition_count as usize;
+        reader.skew_join = Some(skew_join);
+        Ok(reader)
     }
 
     /// changes work dir where shuffle files are located
@@ -249,6 +293,7 @@ impl ShuffleReaderExec {
             broadcast: self.broadcast,
             upstream_partition_count: self.upstream_partition_count,
             coalesce: self.coalesce.clone(),
+            skew_join: self.skew_join.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: Some(work_dir),
@@ -264,6 +309,7 @@ impl ShuffleReaderExec {
             broadcast: self.broadcast,
             upstream_partition_count: self.upstream_partition_count,
             coalesce: self.coalesce.clone(),
+            skew_join: self.skew_join.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             work_dir: self.work_dir.clone(),
@@ -298,6 +344,14 @@ impl DisplayAs for ShuffleReaderExec {
                             ", coalesce: {} of {}",
                             c.groups.len(),
                             c.upstream_partition_count,
+                        )?;
+                    }
+                    if let Some(sj) = &self.skew_join {
+                        write!(
+                            f,
+                            ", skew_join: {} of {}",
+                            sj.shards.len(),
+                            sj.upstream_partition_count,
                         )?;
                     }
                     Ok(())
@@ -347,6 +401,7 @@ impl ExecutionPlan for ShuffleReaderExec {
                 broadcast: self.broadcast,
                 upstream_partition_count: self.upstream_partition_count,
                 coalesce: self.coalesce.clone(),
+                skew_join: self.skew_join.clone(),
                 metrics: ExecutionPlanMetricsSet::new(),
                 properties: self.properties.clone(),
                 work_dir: self.work_dir.clone(),

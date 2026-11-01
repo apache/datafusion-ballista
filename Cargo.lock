@@ -1027,6 +1027,7 @@ dependencies = [
  "datafusion",
  "datafusion-proto",
  "env_logger",
+ "futures",
  "log",
  "rstest",
  "tempfile",
