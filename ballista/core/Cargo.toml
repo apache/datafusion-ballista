@@ -35,6 +35,8 @@ exclude = ["*.proto"]
 rustc-args = ["--cfg", "docsrs"]
 
 [features]
+# SDK-free framing and adapter interfaces for independently built Iceberg support.
+contrib-iceberg = []
 arrow-ipc-optimizations = []
 build-binary = ["clap", "lru", "object_store"]
 default = ["arrow-ipc-optimizations"]

@@ -79,6 +79,7 @@ jobs:
           # date with the manifest. When this fails, please make sure to commit
           # the changes to `Cargo.lock` after building with the updated manifest.
           cargo check --profile ci --workspace --all-targets --locked
+          cargo check --profile ci -p ballista-core --no-default-features --features contrib-iceberg --locked
 
   linux-test:
     name: test linux crates

@@ -57,6 +57,7 @@ Table of content
    user-guide/metrics
    user-guide/faq
    user-guide/extending-components
+   user-guide/iceberg-build-gate
    user-guide/extensions-example
 
 .. toctree::
