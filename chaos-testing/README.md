@@ -203,11 +203,11 @@ process harness:
   replacement with a new id, and the cluster must reabsorb it and keep serving
   queries. This proves genuine rescheduling, which the process backend cannot.
 - **M** — the pod holding part of a `DataFrame::cache()` is force-deleted while a
-  query reads it, after some reading tasks finished. Under the static planner
-  the query must rebuild the cache and return the baseline result; under AQE it
-  must fail naming the lost cache data, and a retry must rebuild it. The 5s
-  executor timeout makes this the executor-loss path, where the process
-  harness's cache scenario (L) covers the fetch-failure one.
+  query reads it, after some reading tasks finished. The query must rebuild the
+  cache and return the baseline result. The 5s executor timeout makes this the
+  executor-loss path, where the process harness's cache scenario (L) covers the
+  fetch-failure one. Static planner only: AQE fails such a query cleanly, which
+  Scenario L already covers.
 
 It needs [Docker](https://docs.docker.com/get-docker/),
 [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation), and

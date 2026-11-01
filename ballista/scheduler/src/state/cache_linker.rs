@@ -1390,72 +1390,57 @@ mod tests {
         assert!(running, "job {job} did not start");
     }
 
-    /// An executor holding the cache's data is lost while the read job runs.
-    /// Under the static planner the job rebuilds the cache elsewhere and
-    /// succeeds; the adaptive planner cannot resume, so the job fails naming
-    /// the loss. Either way nothing stays admitted, so shutdown can finish.
-    #[rstest::rstest]
+    /// An executor holding the cache's data is lost while the read job runs
+    /// under the adaptive planner, which cannot resume a rolled-back stage: the
+    /// job fails naming the loss, and nothing stays admitted.
     #[tokio::test]
-    async fn losing_an_executor_mid_read_rebuilds_the_cache(
-        #[values(false, true)] adaptive: bool,
-    ) {
+    async fn losing_an_executor_mid_read_fails_an_adaptive_query() {
         let (mut test, _metrics) = scheduler_test(None).await;
-        test.set_adaptive_planner(adaptive);
+        test.set_adaptive_planner(true);
         let plan = cache_over("c1", aggregation_logical_plan(2));
         let read = test.submit("query", &plan).await.unwrap();
         let entry = build(&mut test, "c1").await;
         wait_until_running(&test, &read).await;
-        let holder = holder_of(&entry);
-        test.lose_executor(&holder).await.unwrap();
+        test.lose_executor(&holder_of(&entry)).await.unwrap();
 
-        let status = finish(&mut test, &read).await;
-        if adaptive {
-            let error = failure(&status);
-            assert!(error.contains(CACHE_DATA_LOST), "{error}");
-        } else {
-            assert!(is_successful(&status), "{status:?}");
-            let rebuilt = test
-                .cache_state()
-                .lookup(&CacheKey::new("session", "c1"))
-                .await
-                .unwrap()
-                .expect("the cache is rebuilt");
-            assert_ne!(rebuilt.materializing_job, entry.materializing_job);
-            assert!(
-                rebuilt
-                    .locations
-                    .iter()
-                    .flatten()
-                    .all(|loc| loc.executor_meta.id != holder)
-            );
-        }
+        let error = failure(&finish(&mut test, &read).await);
+        assert!(error.contains(CACHE_DATA_LOST), "{error}");
         assert_eq!(test.active_job_number(), 0, "nothing stays admitted");
     }
 
-    /// Two running jobs lose the cache they read: one rebuild serves both.
+    /// Two running jobs lose the cache they read, with the executor holding it:
+    /// one rebuild elsewhere serves both, both succeed, and nothing stays
+    /// admitted.
     #[tokio::test]
     async fn two_readers_losing_one_cache_share_the_rebuild() {
         let (mut test, metrics) = scheduler_test(None).await;
         let plan = cache_over("c1", aggregation_logical_plan(2));
         let warm = test.submit("warm", &plan).await.unwrap();
         assert!(is_successful(&finish(&mut test, &warm).await));
-        let entry = test
-            .cache_state()
-            .lookup(&CacheKey::new("session", "c1"))
-            .await
-            .unwrap()
-            .unwrap();
+        let key = CacheKey::new("session", "c1");
+        let entry = test.cache_state().lookup(&key).await.unwrap().unwrap();
 
         let first = test.submit("first", &plan).await.unwrap();
         let second = test.submit("second", &plan).await.unwrap();
         wait_until_running(&test, &first).await;
         wait_until_running(&test, &second).await;
-        test.lose_executor(&holder_of(&entry)).await.unwrap();
+        let holder = holder_of(&entry);
+        test.lose_executor(&holder).await.unwrap();
 
         assert!(is_successful(&finish(&mut test, &first).await));
         assert!(is_successful(&finish(&mut test, &second).await));
         // The first build and read, one rebuild, and the two reads.
         assert_eq!(completed_jobs(&metrics), 5);
+        let rebuilt = test.cache_state().lookup(&key).await.unwrap().unwrap();
+        assert_ne!(rebuilt.materializing_job, entry.materializing_job);
+        assert!(
+            rebuilt
+                .locations
+                .iter()
+                .flatten()
+                .all(|loc| loc.executor_meta.id != holder)
+        );
+        assert_eq!(test.active_job_number(), 0, "nothing stays admitted");
     }
 
     /// A job whose lost cache shares a cache with another of its reads (here the
@@ -1610,6 +1595,16 @@ mod tests {
             .unwrap();
         let read = test.submit("pipelined", &plan).await.unwrap();
         wait_until_running(&test, &read).await;
+        // Placed, so the loss lands once its tasks are bound: before that, the
+        // job would wait for the cache to be rebuilt instead of failing.
+        let placed = crate::test_utils::await_condition(
+            Duration::from_millis(20),
+            100,
+            || async { Ok(test.is_pipelined_placed(&read).await) },
+        )
+        .await
+        .unwrap();
+        assert!(placed, "the pipelined job is placed");
         let holder = holder_of(&entry);
         test.lose_executor(&holder).await.unwrap();
 
