@@ -247,7 +247,8 @@ A merged change can be backported if all of these hold:
   results.
 - It does not carry the `api-change` label.
 - It does not change `BALLISTA_PROTOCOL_VERSION`, and it does not change the wire format in a way that
-  an older scheduler, executor or client would misread.
+  an older scheduler, executor or client would misread. PRs that change the wire format carry the
+  `proto-change` label, so check those against this rule.
 
 Backport a change when it merges, not in a batch before a release. Conflicts are cheapest to resolve
 while the code is fresh, and `main` moves further from the release branch every week. The author of a
@@ -276,3 +277,7 @@ complete for the next release.
 Add the `api-change` label to the PR as well when the change breaks a public API. A change that needs
 an upgrade note cannot be released in a minor or patch release, so this also decides whether it can be
 [backported to a release branch](#backporting-to-a-release-branch).
+
+Add the `proto-change` label when the change alters the wire or serialization format, for example by
+editing a `.proto` file. Such a change can still be backported if older components can safely ignore it,
+such as a new field that they never read.

@@ -117,6 +117,9 @@ release.
    - `BALLISTA_PROTOCOL_VERSION` in `ballista/core/src/lib.rs` must be unchanged.
    - No PR merged to the branch may carry the `api-change` label. This should list nothing:
      `gh pr list --repo apache/datafusion-ballista --base branch-55 --state merged --label api-change`
+   - Check each PR merged to the branch that carries the `proto-change` label against the rules in
+     [Versioning and Compatibility](../../docs/source/user-guide/versioning.md). This lists them:
+     `gh pr list --repo apache/datafusion-ballista --base branch-55 --state merged --label proto-change`
    - `docs/source/upgrading/` has no new entries. A change that needs an upgrade note cannot be released in a
      minor release.
 4. **Bump the version** in a PR against the release branch with `./dev/update_ballista_versions.py 55.1.0`. If there
