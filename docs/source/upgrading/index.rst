@@ -18,6 +18,9 @@
 Upgrade Guides
 ==============
 
+Each major version has an upgrade guide. Minor and patch releases need no upgrade steps, see
+:doc:`../user-guide/versioning`.
+
 .. toctree::
    :maxdepth: 1
 
