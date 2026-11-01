@@ -262,6 +262,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../user-guide/tuning-guide.html">Tuning Guide</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../user-guide/metrics.html">Ballista Scheduler Metrics</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../user-guide/faq.html">Frequently Asked Questions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/versioning.html">Versioning and Compatibility</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../user-guide/extending-components.html">Extending Ballista Scheduler And Executors</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../user-guide/extensions-example.html">Extensions Example</a></li>
 </ul>
@@ -628,6 +629,36 @@ DataFusion, so it is released separately from the Rust crates. See the
 <p>The remaining release steps are described in the
 <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/dev/release/README.md">release process</a>.</p>
 </section>
+<section id="backporting-to-a-release-branch">
+<h2>Backporting to a release branch<a class="headerlink" href="#backporting-to-a-release-branch" title="Link to this heading">#</a></h2>
+<p>Each release branch, such as <code class="docutils literal notranslate"><span class="pre">branch-55</span></code>, also makes minor and patch releases, so a fix or a
+backward-compatible feature that has merged to <code class="docutils literal notranslate"><span class="pre">main</span></code> can reach users before the next major version.
+See <a class="reference internal" href="../user-guide/versioning.html"><span class="std std-doc">Versioning and Compatibility</span></a> for what can be released this way.</p>
+<p>A merged change can be backported if all of these hold:</p>
+<ul class="simple">
+<li><p>It does not need an entry in the <a class="reference internal" href="#upgrade-notes"><span class="xref myst">upgrade guide</span></a>. It does not break a public API,
+rename or remove a configuration key or CLI flag, or change a default that alters query plans or
+results.</p></li>
+<li><p>It does not carry the <code class="docutils literal notranslate"><span class="pre">api-change</span></code> label.</p></li>
+<li><p>It does not change <code class="docutils literal notranslate"><span class="pre">BALLISTA_PROTOCOL_VERSION</span></code>, and it does not change the wire format in a way that
+an older scheduler, executor or client would misread. PRs that change the wire format carry the
+<code class="docutils literal notranslate"><span class="pre">proto-change</span></code> label, so check those against this rule.</p></li>
+</ul>
+<p>Backport a change when it merges, not in a batch before a release. Conflicts are cheapest to resolve
+while the code is fresh, and <code class="docutils literal notranslate"><span class="pre">main</span></code> moves further from the release branch every week. The author of a
+change is best placed to backport it, and a reviewer can ask for a backport.</p>
+<ol class="arabic simple">
+<li><p>Create a branch from the release branch, for example
+<code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">switch</span> <span class="pre">--no-track</span> <span class="pre">-c</span> <span class="pre">backport-2062</span> <span class="pre">apache/branch-55</span></code>.</p></li>
+<li><p>Cherry-pick the commit from <code class="docutils literal notranslate"><span class="pre">main</span></code> with <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">cherry-pick</span> <span class="pre">-x</span> <span class="pre">&lt;commit&gt;</span></code>, which records the original
+commit in the message.</p></li>
+<li><p>Open a PR against the release branch. Title it with the original title, the branch in brackets and
+the original PR number, and copy the labels from the original PR. The <code class="docutils literal notranslate"><span class="pre">54.1.0</span></code> release, for example,
+included
+<code class="docutils literal notranslate"><span class="pre">fix:</span> <span class="pre">[branch-54]</span> <span class="pre">keep</span> <span class="pre">EmptyExec</span> <span class="pre">partition</span> <span class="pre">count</span> <span class="pre">intact</span> <span class="pre">across</span> <span class="pre">stage</span> <span class="pre">serialization</span> <span class="pre">(backport</span> <span class="pre">of</span> <span class="pre">#2062)</span></code>.</p></li>
+</ol>
+<p>A backport goes through the same review and CI as any other PR.</p>
+</section>
 <section id="upgrade-notes">
 <h2>Upgrade notes<a class="headerlink" href="#upgrade-notes" title="Link to this heading">#</a></h2>
 <p>When a change breaks a public API, renames or removes a configuration key or CLI
@@ -636,6 +667,12 @@ wire/serialization format, add an entry describing the change and the required
 action to the current unreleased page under
 <a class="reference internal" href="../upgrading/index.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">docs/source/upgrading/</span></code></span></a>. This keeps the upgrade guide
 complete for the next release.</p>
+<p>Add the <code class="docutils literal notranslate"><span class="pre">api-change</span></code> label to the PR as well when the change breaks a public API. A change that needs
+an upgrade note cannot be released in a minor or patch release, so this also decides whether it can be
+<a class="reference internal" href="#backporting-to-a-release-branch"><span class="xref myst">backported to a release branch</span></a>.</p>
+<p>Add the <code class="docutils literal notranslate"><span class="pre">proto-change</span></code> label when the change alters the wire or serialization format, for example by
+editing a <code class="docutils literal notranslate"><span class="pre">.proto</span></code> file. Such a change can still be backported if older components can safely ignore it,
+such as a new field that they never read.</p>
 </section>
 </section>
 
@@ -703,6 +740,7 @@ complete for the next release.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#merge-queue-and-the-tpc-suites-in-ci">Merge queue and the TPC suites in CI</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#datafusion-dependency">DataFusion dependency</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#backporting-to-a-release-branch">Backporting to a release branch</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrade-notes">Upgrade notes</a></li>
 </ul>
   </nav></div>
