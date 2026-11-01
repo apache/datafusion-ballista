@@ -21,7 +21,9 @@
 
 Ballista version numbers have three parts, `X.Y.Z`. `X` is the major version of
 [DataFusion](https://datafusion.apache.org/) that the release is built on, so Ballista `55.1.0` uses
-DataFusion 55.
+DataFusion 55. Only the major version is shared. `Y` and `Z` count Ballista's own releases, so they do
+not match DataFusion's minor and patch versions. Ballista depends on a DataFusion major version, not a
+specific release: the `Cargo.lock` of Ballista `55.0.0`, for example, pins DataFusion `55.1.0`.
 
 A new DataFusion major version is a breaking change for Ballista too. The Rust client hands you
 DataFusion types such as `SessionContext`, and plans travel between the client, the scheduler and the
