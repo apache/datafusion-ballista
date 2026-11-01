@@ -28,12 +28,12 @@ reference; it is not an apples-to-apples comparison (see
 
 ## Versions under test
 
-| Engine   | Version                                                                                                                                                                                                                                              |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ballista | [`cb49f30f`](https://github.com/apache/datafusion-ballista/commit/cb49f30feb95524befa9e44e3b21bdeeef449ed6) ([#2657](https://github.com/apache/datafusion-ballista/pull/2657), on top of `main` `98d724b3`), Cargo pkg `55.0.0`, DataFusion `55.2.0` |
-| Spark    | `4.1.3` (`apache/spark:4.1.3` image, vanilla, no acceleration plugin)                                                                                                                                                                                |
-| Comet    | [Apache DataFusion Comet](https://github.com/apache/datafusion-comet) `1.1.0-rc2` ([`992c806a`](https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa)) on the same Spark `4.1.3`                               |
-| Trino    | `483` (`trinodb/trino:483` image, Hive connector)                                                                                                                                                                                                    |
+| Engine   | Version                                                                                                                                                                                                                 |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ballista | [`0ef7399e`](https://github.com/apache/datafusion-ballista/commit/0ef7399eeac239b867e46f1c9bcd23d8f071589e) ([#2657](https://github.com/apache/datafusion-ballista/pull/2657)), Cargo pkg `55.0.0`, DataFusion `55.2.0` |
+| Spark    | `4.1.3` (`apache/spark:4.1.3` image, vanilla, no acceleration plugin)                                                                                                                                                   |
+| Comet    | [Apache DataFusion Comet](https://github.com/apache/datafusion-comet) `1.1.0-rc2` ([`992c806a`](https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa)) on the same Spark `4.1.3`  |
+| Trino    | `483` (`trinodb/trino:483` image, Hive connector)                                                                                                                                                                       |
 
 ## Results
 
@@ -44,35 +44,34 @@ iterations after an untimed warm-up run (see
 
 Both Ballista columns come from the same image, cluster and runner, one suite
 run each; they differ only in `ballista.execution.mode` (and the push-staged
-scheduling that pipelined mode requires). The 22 queries return the same
-number of rows in both modes. The Spark, Comet and Trino columns are from
-separate runs.
+scheduling that pipelined mode requires). The Spark, Comet and Trino columns
+are from separate runs.
 
 |     Query | Ballista blocking (s) | Ballista pipelined (s) | Spark 4.1.3 (s) | Spark 4.1.3 + Comet 1.1.0-rc2 (s) | Trino 483 (s) |
 | --------: | --------------------: | ---------------------: | --------------: | --------------------------------: | ------------: |
-|         1 |                 14.82 |                  13.76 |           71.45 |                             10.66 |          5.32 |
-|         2 |                 36.27 |                  13.51 |           37.98 |                             21.66 |         15.34 |
-|         3 |                 17.94 |                   7.26 |           30.61 |                             16.05 |         13.47 |
-|         4 |                 10.92 |                   6.06 |           23.86 |                              8.11 |          8.01 |
-|         5 |                 41.38 |                  13.87 |           57.39 |                             38.32 |         25.98 |
-|         6 |                  1.68 |                   1.36 |            1.73 |                              0.99 |          0.84 |
-|         7 |                 35.09 |                  18.73 |           25.34 |                             16.60 |         16.19 |
-|         8 |                 21.62 |                  14.06 |           58.17 |                             46.04 |         30.93 |
-|         9 |                 35.82 |                  24.25 |           74.90 |                             55.78 |         41.71 |
-|        10 |                 45.09 |                  22.03 |           35.31 |                             21.31 |         20.41 |
-|        11 |                 18.75 |                   4.38 |           31.66 |                             14.79 |          5.73 |
-|        12 |                 10.13 |                   4.40 |           13.24 |                              5.33 |          4.40 |
-|        13 |                 10.76 |                   5.84 |           22.73 |                             11.31 |         10.56 |
-|        14 |                  7.01 |                   1.43 |            7.25 |                              2.50 |          1.66 |
-|        15 |                 10.60 |                   6.93 |           22.45 |                             11.85 |          8.30 |
-|        16 |                 13.25 |                   5.11 |           24.34 |                              8.94 |          6.98 |
-|        17 |                 23.59 |                  15.41 |           81.36 |                             25.14 |         24.76 |
-|        18 |                 55.45 |                  35.36 |          134.11 |                             46.42 |         66.00 |
-|        19 |                 12.09 |                   7.43 |           13.27 |                              9.07 |          5.93 |
-|        20 |                 15.63 |                   6.28 |           16.08 |                              6.57 |          8.57 |
-|        21 |                 68.61 |                  45.91 |           98.04 |                             68.43 |         83.22 |
-|        22 |                 10.54 |                   5.45 |           16.90 |                              9.22 |          7.29 |
-| **Total** |            **517.04** |             **278.84** |      **898.17** |                        **455.09** |    **411.62** |
+|         1 |                 11.43 |                  12.66 |           71.45 |                             10.66 |          5.32 |
+|         2 |                 31.70 |                  12.49 |           37.98 |                             21.66 |         15.34 |
+|         3 |                 17.32 |                   7.14 |           30.61 |                             16.05 |         13.47 |
+|         4 |                 11.07 |                   5.75 |           23.86 |                              8.11 |          8.01 |
+|         5 |                 41.90 |                  14.35 |           57.39 |                             38.32 |         25.98 |
+|         6 |                  1.26 |                   1.32 |            1.73 |                              0.99 |          0.84 |
+|         7 |                 35.09 |                  18.29 |           25.34 |                             16.60 |         16.19 |
+|         8 |                 20.34 |                  16.19 |           58.17 |                             46.04 |         30.93 |
+|         9 |                 32.81 |                  25.20 |           74.90 |                             55.78 |         41.71 |
+|        10 |                 37.13 |                  24.84 |           35.31 |                             21.31 |         20.41 |
+|        11 |                 15.95 |                   4.08 |           31.66 |                             14.79 |          5.73 |
+|        12 |                 10.26 |                   3.80 |           13.24 |                              5.33 |          4.40 |
+|        13 |                 10.67 |                   5.52 |           22.73 |                             11.31 |         10.56 |
+|        14 |                  6.71 |                   1.35 |            7.25 |                              2.50 |          1.66 |
+|        15 |                 10.35 |                   6.04 |           22.45 |                             11.85 |          8.30 |
+|        16 |                 13.52 |                   5.07 |           24.34 |                              8.94 |          6.98 |
+|        17 |                 23.21 |                  14.94 |           81.36 |                             25.14 |         24.76 |
+|        18 |                 56.45 |                  36.92 |          134.11 |                             46.42 |         66.00 |
+|        19 |                 10.88 |                   7.08 |           13.27 |                              9.07 |          5.93 |
+|        20 |                 13.83 |                   5.66 |           16.08 |                              6.57 |          8.57 |
+|        21 |                 62.41 |                  47.01 |           98.04 |                             68.43 |         83.22 |
+|        22 |                  9.63 |                   5.37 |           16.90 |                              9.22 |          7.29 |
+| **Total** |            **483.91** |             **281.06** |      **898.17** |                        **455.09** |    **411.62** |
 
 **Blocking** is the default: stages run one after another and exchange data
 through shuffle files, with adaptive query execution (AQE). **Pipelined**
