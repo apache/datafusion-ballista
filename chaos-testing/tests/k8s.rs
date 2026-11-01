@@ -359,21 +359,19 @@ async fn await_replacement(
 /// reading task has succeeded the others are still running when the pod goes.
 /// The scheduler's 5s executor timeout makes the loss an executor loss (perhaps
 /// after a fetch failure from the dead pod), and the Deployment reschedules a
-/// replacement. Under the static planner the reading stage rolls back, the
-/// cache is rebuilt by a new build job, and the query returns the baseline
-/// result. The adaptive planner cannot resume a rolled-back stage, so there the
-/// query fails naming the lost data and a retry rebuilds the cache.
-#[rstest]
-#[case::aqe_off(false)]
-#[case::aqe_on(true)]
+/// replacement. The reading stage rolls back, the cache is rebuilt by a new
+/// build job, and the query returns the baseline result.
+///
+/// Static planner only: the adaptive planner fails such a query cleanly, which
+/// the process harness (Scenario L) and the scheduler tests already cover.
 #[tokio::test]
-async fn cache_holder_killed_mid_read_is_recovered_on_k8s(#[case] aqe: bool) {
+async fn cache_holder_killed_mid_read_is_recovered_on_k8s() {
     if !kind_backend_selected() {
         return;
     }
 
     let run = K8sRun::start_with_executor_grace(
-        aqe,
+        false,
         2,
         chaos_testing::k8s::ABRUPT_EXECUTOR_GRACE_SECONDS,
         ResultFetch::SchedulerProxy,
@@ -427,12 +425,7 @@ async fn cache_holder_killed_mid_read_is_recovered_on_k8s(#[case] aqe: bool) {
     });
     let read_job = await_new_job(&run.cluster, &known).await;
     // Static planning: stage 1 reads the cache, then partially aggregates.
-    let reading = if aqe {
-        run.cluster.await_any_stage_running(&read_job).await
-    } else {
-        run.cluster.await_stage_task_successful(&read_job, 1).await
-    };
-    if let Err(e) = reading {
+    if let Err(e) = run.cluster.await_stage_task_successful(&read_job, 1).await {
         fail_with_diagnostics(&run.cluster, format!("the read must start: {e}")).await;
     }
     run.cluster
@@ -450,28 +443,12 @@ async fn cache_holder_killed_mid_read_is_recovered_on_k8s(#[case] aqe: bool) {
             .await
         }
     };
-    let batches = if aqe {
-        let err = result.expect_err("the adaptive planner must fail the query");
-        assert!(
-            err.to_string().contains("lost DataFrame::cache() data"),
-            "failure should name the lost cache data, got: {err}"
-        );
-        ctx.sql(sql)
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .expect("the retry must rebuild the cache")
-    } else {
-        let batches =
-            result.expect("the static planner must rebuild the cache and finish");
-        let jobs = run.cluster.job_ids().await.unwrap();
-        assert!(
-            jobs.len() > known.len() + 1,
-            "the cache must have been rebuilt by a job of its own: {jobs:?}"
-        );
-        batches
-    };
+    let batches = result.expect("the query must rebuild the cache and finish");
+    let jobs = run.cluster.job_ids().await.unwrap();
+    assert!(
+        jobs.len() > known.len() + 1,
+        "the cache must have been rebuilt by a job of its own: {jobs:?}"
+    );
     assert_eq!(
         pretty_format_batches(&batches).unwrap().to_string(),
         expected,
