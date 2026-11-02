@@ -48,7 +48,7 @@ some SF1000 physical plans (Q11, Q21, Q22) encode above 16 MiB and hit
 
 ## Pipelined mode
 
-The pipelined column differs from the blocking column in these settings only:
+The pipelined column differs from the staged column in these settings only:
 
 | Flag / config key                                         | Value                                           |
 | --------------------------------------------------------- | ----------------------------------------------- |
