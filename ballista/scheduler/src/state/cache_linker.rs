@@ -586,7 +586,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         };
         let (schema, locations) = {
             let graph = graph.read().await;
-            // Cache builds run blocking (see `SchedulerState::submit_job`); a
+            // Cache builds run staged (see `SchedulerState::submit_job`); a
             // pipelined job streams its output and leaves nothing to record.
             if graph.as_pipelined().is_some() {
                 return Err(
@@ -940,7 +940,7 @@ mod tests {
     }
 
     /// Cold, then warm, under both planners. The read job's id comes back before
-    /// the cache is built (`submit` never ticks, so a blocking submit would hang
+    /// the cache is built (`submit` never ticks, so a staged submit would hang
     /// here), and it runs once the cache is built. A second query then reads the
     /// cache without building it again. The adaptive planner must accept a leaf
     /// `ShuffleReaderExec` whose stage id belongs to another job.
@@ -1158,10 +1158,10 @@ mod tests {
             .clone()
     }
 
-    /// A pipelined session builds its caches as blocking jobs, which leave
+    /// A pipelined session builds its caches as staged jobs, which leave
     /// shuffle files to cache, and reads them as pipelined jobs.
     #[tokio::test]
-    async fn a_pipelined_session_builds_its_cache_blocking() {
+    async fn a_pipelined_session_builds_its_cache_staged() {
         let (mut test, metrics) = scheduler_test(None).await;
         test.set_session_option(BALLISTA_EXECUTION_MODE, "pipelined")
             .unwrap();
@@ -1188,7 +1188,7 @@ mod tests {
     async fn losing_an_executor_with_cache_data_fails_a_pipelined_query() {
         let (mut test, _metrics) = scheduler_test(None).await;
         let plan = cache_over("c1", scan());
-        // Built under the default (blocking) mode, so the build can be
+        // Built under the default (staged) mode, so the build can be
         // stepped while the read job is held.
         let read = test.submit("query", &plan).await.unwrap();
         let entry = build(&mut test, "c1").await;

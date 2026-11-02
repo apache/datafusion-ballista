@@ -397,32 +397,12 @@ fn ballista_extension_planner<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (session_ctx, address, config_overrides=None))]
 pub(crate) fn with_ballista_query_planner(
     py: Python<'_>,
     session_ctx: Bound<'_, PyAny>,
     address: String,
-    config_overrides: Option<HashMap<String, String>>,
 ) -> PyResult<Py<PyAny>> {
-    let mut ballista_overrides = HashMap::new();
-    if let Some(overrides) = config_overrides {
-        for (key, value) in overrides {
-            if key.starts_with("datafusion.") {
-                apply_datafusion_override(&session_ctx, &key, &value)?;
-            } else if key.starts_with("ballista.") {
-                ballista_overrides.insert(key, value);
-            } else {
-                return Err(PyValueError::new_err(format!(
-                    "configuration key must start with 'datafusion.' or 'ballista.': {key}"
-                )));
-            }
-        }
-    }
-
-    let extension = Py::new(
-        py,
-        PyBallistaExtension::new(address, Some(ballista_overrides)),
-    )?;
+    let extension = Py::new(py, PyBallistaExtension::new(address, None))?;
     Ok(session_ctx
         .call_method1("with_extensions", (extension.bind(py),))?
         .unbind())
@@ -440,28 +420,6 @@ fn ballista_physical_ffi_codec(
         Some(tokio_runtime_handle()),
         task_ctx_provider,
     ))
-}
-
-fn apply_datafusion_override(
-    session_ctx: &Bound<'_, PyAny>,
-    key: &str,
-    value: &str,
-) -> PyResult<()> {
-    if !key
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_'))
-    {
-        return Err(PyValueError::new_err(format!(
-            "invalid DataFusion configuration key: {key}"
-        )));
-    }
-
-    // SET mutates the shared session state. The contexts derived below retain
-    // that state, including registered tables and functions.
-    let escaped_value = value.replace('\'', "''");
-    let statement = format!("SET {key} = '{escaped_value}'");
-    session_ctx.call_method1("sql", (statement,))?;
-    Ok(())
 }
 
 fn parse_scheduler_url(address: &str) -> Result<String> {

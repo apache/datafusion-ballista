@@ -605,7 +605,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ),
         ConfigEntry::new(
             BALLISTA_EXECUTION_MODE.to_string(),
-            "How a job's stages exchange data. `blocking` runs stages one after \
+            "How a job's stages exchange data. `staged` runs stages one after \
              another and passes data between them through shuffle files. \
              `pipelined` (experimental) places every task of the job up front \
              and streams record batches between stages over Arrow Flight. It \
@@ -615,7 +615,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
              scheduling."
                 .to_string(),
             DataType::Utf8,
-            Some(ExecutionMode::Blocking.to_string()),
+            Some(ExecutionMode::Staged.to_string()),
         ),
         ConfigEntry::new(
             BALLISTA_PIPELINED_QUEUE_CAPACITY.to_string(),
@@ -1333,7 +1333,7 @@ pub enum ExecutionMode {
     /// Stages run one after another. Each stage writes its output to shuffle
     /// files, and the next stage starts once every input stage has finished.
     #[default]
-    Blocking,
+    Staged,
     /// Every task of the job is placed up front, and stages stream record
     /// batches to each other over Arrow Flight while they run. Requires
     /// push-staged scheduling. A failed task fails the job.
@@ -1343,7 +1343,7 @@ pub enum ExecutionMode {
 impl Display for ExecutionMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExecutionMode::Blocking => f.write_str("blocking"),
+            ExecutionMode::Staged => f.write_str("staged"),
             ExecutionMode::Pipelined => f.write_str("pipelined"),
         }
     }
@@ -1354,11 +1354,11 @@ impl std::str::FromStr for ExecutionMode {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
-            "blocking" => Ok(ExecutionMode::Blocking),
+            "staged" => Ok(ExecutionMode::Staged),
             "pipelined" => Ok(ExecutionMode::Pipelined),
             other => Err(DataFusionError::Configuration(format!(
                 "Got an invalid execution mode {other}: \
-                Valid options are: blocking and pipelined"
+                Valid options are: staged and pipelined"
             ))),
         }
     }
@@ -1497,14 +1497,14 @@ mod tests {
     }
 
     #[test]
-    fn execution_mode_defaults_to_blocking_and_parses_pipelined() {
+    fn execution_mode_defaults_to_staged_and_parses_pipelined() {
         use crate::extension::SessionConfigExt;
         use datafusion::prelude::SessionConfig;
 
         let mut config = SessionConfig::new_with_ballista();
         assert_eq!(
             config.ballista_config().execution_mode().unwrap(),
-            ExecutionMode::Blocking
+            ExecutionMode::Staged
         );
 
         config

@@ -90,7 +90,7 @@ async fn planner(
         ctx.register_table(name, Arc::new(MemTable::try_new(mock_schema(), data)?))?;
     }
     let plan = ctx.sql(sql).await?.into_optimized_plan()?;
-    AdaptivePlanner::try_new(&ctx, &plan, "test_job".into()).await
+    AdaptivePlanner::try_new(&ctx, &plan, "test_job".into(), None).await
 }
 
 async fn join_stage(

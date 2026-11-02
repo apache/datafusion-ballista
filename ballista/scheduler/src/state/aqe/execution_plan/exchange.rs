@@ -169,6 +169,8 @@ impl ExchangeExec {
         )
     }
 
+    /// This exchange as a broadcast, which every partition of the stage that
+    /// reads it reads whole, sharing its stage's state.
     pub fn to_broadcast(&self, plan_id: usize) -> Self {
         Self::new_with_details(
             self.input.clone(),
@@ -315,6 +317,51 @@ impl ExchangeExec {
     }
 
     /// Returns a reference to the input (child) execution plan.
+    /// Whether every partition of the stage that reads this exchange reads it
+    /// whole.
+    pub fn is_broadcast(&self) -> bool {
+        self.broadcast
+    }
+
+    /// Whether the stage this exchange ends is held back from running. See
+    /// [`Self::with_inactive_stage`].
+    pub fn is_inactive_stage(&self) -> bool {
+        self.inactive_stage
+    }
+
+    /// The shuffle partitioning this exchange writes, or `None` for one that
+    /// keeps its input's.
+    pub fn partitioning(&self) -> Option<&Partitioning> {
+        self.partitioning.as_ref()
+    }
+
+    /// The id that identifies this exchange in its job's plan.
+    pub fn plan_id(&self) -> usize {
+        self.plan_id
+    }
+
+    /// This exchange, sharing its stage's state, with its stage held back
+    /// from running (`inactive`) or released. A held stage doesn't run even
+    /// when its inputs are ready, so a rule can decide on it later, after
+    /// other stages finish.
+    pub fn with_inactive_stage(&self, inactive: bool) -> Self {
+        let mut exchange = Self::new_with_details(
+            self.input.clone(),
+            self.partitioning.clone(),
+            self.plan_id,
+            self.stage_id.clone(),
+            self.shuffle_partitions.clone(),
+            self.column_statistics.clone(),
+            self.coalesce.clone(),
+            self.range_repartition_routing.clone(),
+            self.broadcast,
+            inactive,
+        );
+        exchange.skew_join = self.skew_join.clone();
+        exchange
+    }
+
+    /// The plan whose output this exchange shuffles.
     pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
         &self.input
     }
@@ -742,10 +789,11 @@ mod column_statistics_tests {
         assert_eq!(null_count_of(&stats, 0), Precision::Absent);
     }
 
-    // Rules rebuild exchanges with `with_new_children` and turn them into
-    // broadcasts with `to_broadcast`; both must keep the statistics.
+    // Rules rebuild exchanges with `with_new_children`, turn them into
+    // broadcasts with `to_broadcast` and hold their stage back with
+    // `with_inactive_stage`; all of them must keep the statistics.
     #[test]
-    fn rebuilt_and_broadcast_exchanges_keep_the_column_statistics() {
+    fn rebuilt_broadcast_and_inactive_exchanges_keep_the_column_statistics() {
         let exchange = resolved(null_count_statistics(&[3, 0]));
 
         let rebuilt = Arc::clone(&exchange)
@@ -755,8 +803,13 @@ mod column_statistics_tests {
             )
             .unwrap();
         let broadcast = exchange.to_broadcast(1);
+        let inactive = exchange.with_inactive_stage(true);
 
-        for plan in [rebuilt, Arc::new(broadcast) as Arc<dyn ExecutionPlan>] {
+        for plan in [
+            rebuilt,
+            Arc::new(broadcast) as Arc<dyn ExecutionPlan>,
+            Arc::new(inactive),
+        ] {
             let stats = stats_of(plan.as_ref(), None);
             assert_eq!(null_count_of(&stats, 0), Precision::Exact(3));
         }
