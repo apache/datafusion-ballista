@@ -36,7 +36,7 @@ discovery, and cluster management to that system.
 ## Execution models
 
 Ballista started with the execution model of Apache Spark. Each query stage runs to completion and writes its output
-to local storage before the next stage starts (a _blocking_ shuffle). That output outlives the task that wrote it,
+to local storage before the next stage starts (a _staged_ shuffle). That output outlives the task that wrote it,
 which is what lets Ballista recover from a lost executor by re-running only the lost tasks, run a query wider than the
 cluster, and plan the rest of a query from exact statistics. [Shuffle Design](../contributors-guide/shuffle.md)
 explains this model and its costs in detail.
@@ -53,7 +53,7 @@ DataFusion Distributed has one execution model, the pipelined one. Its documenta
 > results, so queries can't checkpoint or resume from where they stopped.
 
 So the choice between them is no longer "batch versus interactive". Once pipelined mode is complete, a Ballista
-cluster will run long ETL jobs with the blocking model and low-latency analytical queries with the pipelined model,
+cluster will run long ETL jobs with the staged model and low-latency analytical queries with the pipelined model,
 side by side on the same scheduler and executors. DataFusion Distributed is designed for the second kind of workload.
 
 [#2657]: https://github.com/apache/datafusion-ballista/pull/2657
@@ -69,7 +69,7 @@ side by side on the same scheduler and executors. DataFusion Distributed is desi
 | Deployment               | Docker images, Docker Compose and Kubernetes guides, optional KEDA autoscaling                                                            | Left to the user, who hosts workers in their own services                                                                        |
 | Cluster state            | Scheduler tracks executors (registration, heartbeats, expiry), jobs, and stages                                                           | None; the node that receives a query coordinates it, and its state lives for that query                                          |
 | Concurrent jobs          | Many jobs share the cluster's vcores, with job status, cancellation, and metrics through gRPC and a REST API                              | Each query is coordinated independently by the node that receives it, with no shared job queue or admission control              |
-| Exchange between stages  | Blocking (Arrow IPC files on executors, read locally or over Arrow Flight); pipelined is experimental and per job                         | Streaming over gRPC, using Arrow Flight encoding                                                                                 |
+| Exchange between stages  | Staged (Arrow IPC files on executors, read locally or over Arrow Flight); pipelined is experimental and per job                           | Streaming over gRPC, using Arrow Flight encoding                                                                                 |
 | Fault tolerance          | Task retry, and re-execution of lost stages when an executor is lost or a shuffle fetch fails                                             | Retries only when a task is first routed to a worker; a worker failure after that fails the query                                |
 | Adaptive query execution | On by default: re-plans after each stage from exact statistics (join selection, broadcast, empty-input elimination, partition coalescing) | Opt-in: sizes the task count of later stages from sampled statistics                                                             |
 | Memory                   | Each executor has a memory pool (70% of the container by default), split per task, with spilling                                          | Whatever the user configures in the worker's `RuntimeEnv`                                                                        |
@@ -84,7 +84,7 @@ else Ballista provides sits above that layer, and DataFusion Distributed deliber
 to remain "a library, not an engine" that is "unopinionated about networking". Rebuilding Ballista on it would
 therefore replace only the part that Ballista needs to own in order to offer both execution models.
 
-**Ballista's blocking model needs a scheduler that sees stages.** Recovery in Ballista works because the scheduler
+**Ballista's staged model needs a scheduler that sees stages.** Recovery in Ballista works because the scheduler
 knows when each stage has completed, where its output lives, and which tasks to re-run when an executor disappears.
 DataFusion Distributed's coordinator is scoped to a single query and is built around all stages running at once. In
 its default mode it sets up every stage's tasks before the query's final stage runs, keeps only the worker addresses
@@ -145,7 +145,7 @@ prune partitions. Kubernetes on AWS, with 32 workers (Ballista executors) of 8 v
 twice with no warm-up, so the first, cold run is included in the mean.
 
 - **Ballista** was built from [#2657] at commit `cb49f30f` (DataFusion 55.2.0). Each executor ran 8 tasks with a
-  memory pool of 70% of its memory, and `target_partitions` was 256. The same image ran the blocking and pipelined
+  memory pool of 70% of its memory, and `target_partitions` was 256. The same image ran the staged and pipelined
   modes.
 - **DataFusion Distributed** was built from `main` at commit `90350275` (DataFusion 55.0.0), using the worker from
   its `benchmarks/remote-worker` crate. Upstream's worker has an unbounded memory pool, so it was patched to give each
@@ -154,31 +154,31 @@ twice with no warm-up, so the first, cold run is included in the mean.
 
 Mean time per query, in seconds:
 
-| Query     | DataFusion Distributed | Ballista (pipelined) | Ballista (blocking) |
-| --------- | ---------------------: | -------------------: | ------------------: |
-| Q1        |                    8.2 |                 13.8 |                14.8 |
-| Q2        |                   19.3 |                 13.5 |                36.3 |
-| Q3        |                    8.3 |                  7.3 |                17.9 |
-| Q4        |                    5.8 |                  6.1 |                10.9 |
-| Q5        |                   16.2 |                 13.9 |                41.4 |
-| Q6        |                    1.7 |                  1.4 |                 1.7 |
-| Q7        |                   18.6 |                 18.7 |                35.1 |
-| Q8        |                   20.9 |                 14.1 |                21.6 |
-| Q9        |                   31.7 |                 24.2 |                35.8 |
-| Q10       |                   25.5 |                 22.0 |                45.1 |
-| Q11       |                    9.4 |                  4.4 |                18.7 |
-| Q12       |                    5.0 |                  4.4 |                10.1 |
-| Q13       |                    6.2 |                  5.8 |                10.8 |
-| Q14       |                    2.9 |                  1.4 |                 7.0 |
-| Q15       |                   11.5 |                  6.9 |                10.6 |
-| Q16       |                   78.2 |                  5.1 |                13.3 |
-| Q17       |                   20.0 |                 15.4 |                23.6 |
-| Q18       |                   30.8 |                 35.4 |                55.4 |
-| Q19       |                    8.1 |                  7.4 |                12.1 |
-| Q20       |                   16.6 |                  6.3 |                15.6 |
-| Q21       |                   34.6 |                 45.9 |                68.6 |
-| Q22       |                    6.9 |                  5.4 |                10.5 |
-| **Total** |              **386.5** |            **278.8** |           **517.0** |
+| Query     | DataFusion Distributed | Ballista (pipelined) | Ballista (staged) |
+| --------- | ---------------------: | -------------------: | ----------------: |
+| Q1        |                    8.2 |                 13.8 |              14.8 |
+| Q2        |                   19.3 |                 13.5 |              36.3 |
+| Q3        |                    8.3 |                  7.3 |              17.9 |
+| Q4        |                    5.8 |                  6.1 |              10.9 |
+| Q5        |                   16.2 |                 13.9 |              41.4 |
+| Q6        |                    1.7 |                  1.4 |               1.7 |
+| Q7        |                   18.6 |                 18.7 |              35.1 |
+| Q8        |                   20.9 |                 14.1 |              21.6 |
+| Q9        |                   31.7 |                 24.2 |              35.8 |
+| Q10       |                   25.5 |                 22.0 |              45.1 |
+| Q11       |                    9.4 |                  4.4 |              18.7 |
+| Q12       |                    5.0 |                  4.4 |              10.1 |
+| Q13       |                    6.2 |                  5.8 |              10.8 |
+| Q14       |                    2.9 |                  1.4 |               7.0 |
+| Q15       |                   11.5 |                  6.9 |              10.6 |
+| Q16       |                   78.2 |                  5.1 |              13.3 |
+| Q17       |                   20.0 |                 15.4 |              23.6 |
+| Q18       |                   30.8 |                 35.4 |              55.4 |
+| Q19       |                    8.1 |                  7.4 |              12.1 |
+| Q20       |                   16.6 |                  6.3 |              15.6 |
+| Q21       |                   34.6 |                 45.9 |              68.6 |
+| Q22       |                    6.9 |                  5.4 |              10.5 |
+| **Total** |              **386.5** |            **278.8** |         **517.0** |
 
 **What the results show.**
 
@@ -189,7 +189,7 @@ Mean time per query, in seconds:
   anti join of Q16 on the coordinator, over 8 partitions. With the coordinator's 22.4 GiB memory pool, that stage
   spilled 7.2 GB, and it was the only stage in the run that spilled. Excluding Q16, the geometric mean favours
   pipelined Ballista by about 1.2x.
-- Blocking Ballista was about 1.85x slower than pipelined Ballista in total, which is the latency cost of writing
+- Staged Ballista was about 1.85x slower than pipelined Ballista in total, which is the latency cost of writing
   every stage's output to disk before the next stage starts.
 
 **Caveats.**

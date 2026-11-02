@@ -19,7 +19,7 @@ mod common;
 
 /// End-to-end tests of `ballista.execution.mode = pipelined`, run against a
 /// standalone cluster, which runs push-staged for a pipelined session. Each
-/// query's results are compared with the same query run in blocking mode.
+/// query's results are compared with the same query run in staged mode.
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod pipelined {
@@ -179,29 +179,29 @@ mod pipelined {
         ),
     ];
 
-    async fn check_matches_blocking(dir: &Path, pipelined: &SessionContext) {
-        let blocking = context(dir, &[]).await;
+    async fn check_matches_staged(dir: &Path, pipelined: &SessionContext) {
+        let staged = context(dir, &[]).await;
         for (sql, sorted) in QUERIES {
-            let expected = rows(&blocking, sql, *sorted).await;
+            let expected = rows(&staged, sql, *sorted).await;
             let actual = rows(pipelined, sql, *sorted).await;
             assert_eq!(actual, expected, "pipelined result differs for: {sql}");
         }
     }
 
     #[tokio::test]
-    async fn pipelined_results_match_blocking() {
+    async fn pipelined_results_match_staged() {
         let dir = TempDir::new().unwrap();
         write_tables(dir.path());
         let pipelined =
             context(dir.path(), &[(BALLISTA_EXECUTION_MODE, "pipelined")]).await;
-        check_matches_blocking(dir.path(), &pipelined).await;
+        check_matches_staged(dir.path(), &pipelined).await;
     }
 
     /// Readers normally take co-located producers straight from the
     /// executor's registry. Forcing remote reads sends every exchange through
     /// Arrow Flight instead.
     #[tokio::test]
-    async fn pipelined_results_match_blocking_over_flight() {
+    async fn pipelined_results_match_staged_over_flight() {
         let dir = TempDir::new().unwrap();
         write_tables(dir.path());
         let pipelined = context(
@@ -212,19 +212,19 @@ mod pipelined {
             ],
         )
         .await;
-        check_matches_blocking(dir.path(), &pipelined).await;
+        check_matches_staged(dir.path(), &pipelined).await;
     }
 
     /// Two executors of two vcores each, so every four-partition stage is
     /// split between them and its exchanges cross executors.
     #[tokio::test]
-    async fn pipelined_results_match_blocking_across_executors() {
+    async fn pipelined_results_match_staged_across_executors() {
         let dir = TempDir::new().unwrap();
         write_tables(dir.path());
         let pipelined =
             cluster_context(dir.path(), &[(BALLISTA_EXECUTION_MODE, "pipelined")], 2, 2)
                 .await;
-        check_matches_blocking(dir.path(), &pipelined).await;
+        check_matches_staged(dir.path(), &pipelined).await;
     }
 
     async fn set(ctx: &SessionContext, key: &str, value: &str) {
@@ -239,21 +239,21 @@ mod pipelined {
     /// One session switches mode with `SET`: each query runs in the mode set
     /// when it is submitted, on the same cluster, with the same results.
     #[tokio::test]
-    async fn one_session_switches_between_blocking_and_pipelined() {
+    async fn one_session_switches_between_staged_and_pipelined() {
         let dir = TempDir::new().unwrap();
         write_tables(dir.path());
         // Started pipelined, so the standalone cluster runs push-staged.
         let ctx = context(dir.path(), &[(BALLISTA_EXECUTION_MODE, "pipelined")]).await;
         for (sql, sorted) in QUERIES {
-            set(&ctx, BALLISTA_EXECUTION_MODE, "blocking").await;
-            let blocking = rows(&ctx, sql, *sorted).await;
+            set(&ctx, BALLISTA_EXECUTION_MODE, "staged").await;
+            let staged = rows(&ctx, sql, *sorted).await;
             set(&ctx, BALLISTA_EXECUTION_MODE, "pipelined").await;
             let pipelined = rows(&ctx, sql, *sorted).await;
-            assert_eq!(pipelined, blocking, "pipelined result differs for: {sql}");
+            assert_eq!(pipelined, staged, "pipelined result differs for: {sql}");
         }
     }
 
-    /// A pipelined session builds a cached frame as a blocking job, which
+    /// A pipelined session builds a cached frame as a staged job, which
     /// leaves shuffle output to cache, and reads it back pipelined.
     #[tokio::test]
     async fn pipelined_session_caches_a_data_frame() {
@@ -344,7 +344,7 @@ mod pipelined {
 
     #[tokio::test]
     async fn pipelined_mode_is_rejected_by_a_pull_staged_cluster() {
-        // A standalone cluster for a blocking session runs pull-staged.
+        // A standalone cluster for a staged session runs pull-staged.
         let ctx = SessionContext::standalone().await.unwrap();
         ctx.sql(&format!("SET {BALLISTA_EXECUTION_MODE} = 'pipelined'"))
             .await
