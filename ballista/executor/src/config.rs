@@ -234,13 +234,15 @@ pub struct Config {
         help = "Max disk space for spill files per session runtime (e.g. \"1TB\"). Unset = DataFusion default (100GB)."
     )]
     pub max_temp_directory_size: Option<u64>,
-    /// Maximum number of sessions whose shared runtime state (object-store
-    /// clients, Parquet footer cache) is retained on the executor (LRU). `0`
-    /// disables caching.
+    /// Maximum number of (session, config fingerprint) entries whose shared
+    /// runtime state (object-store clients, Parquet footer cache) is retained
+    /// on the executor (LRU). A session that changes its extension config
+    /// mid-session uses one entry per distinct fingerprint. `0` disables
+    /// caching.
     #[arg(
         long,
         default_value_t = 16,
-        help = "Max number of sessions whose shared runtime state (object-store clients, Parquet footer cache) is retained on the executor (LRU). 0 disables caching."
+        help = "Max number of (session, config fingerprint) entries whose shared runtime state (object-store clients, Parquet footer cache) is retained on the executor (LRU). A session that changes its extension config mid-session uses one entry per distinct fingerprint. 0 disables caching."
     )]
     pub session_runtime_cache_capacity: usize,
     /// Number of seconds an established client connection is cached while idle

@@ -376,10 +376,12 @@ pub struct ExecutorProcessConfig {
     /// executor produces (including one from `override_runtime_producer`), so
     /// per session runtime. When `None`, DataFusion's default limit applies.
     pub max_temp_directory_size: Option<u64>,
-    /// Maximum number of sessions whose shared base runtime env is retained on
-    /// the executor (LRU). Sharing reuses object-store clients and the Parquet
-    /// footer cache across a session's tasks and queries. `0` disables caching
-    /// and builds a fresh runtime per task.
+    /// Maximum number of (session, config fingerprint) entries whose shared
+    /// base runtime env is retained on the executor (LRU). Sharing reuses
+    /// object-store clients and the Parquet footer cache across a session's
+    /// tasks and queries; a session that changes its extension config
+    /// mid-session uses one entry per distinct fingerprint. `0` disables
+    /// caching and builds a fresh runtime per task.
     pub session_runtime_cache_capacity: usize,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
