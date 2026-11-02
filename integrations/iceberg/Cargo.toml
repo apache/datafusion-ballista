@@ -18,18 +18,23 @@
 [package]
 name = "ballista-iceberg"
 description = "Apache Iceberg support for Ballista"
-license = { workspace = true }
-version = { workspace = true }
-homepage = { workspace = true }
-repository = { workspace = true }
-authors = { workspace = true }
+license = "Apache-2.0"
+version = "55.0.0"
+homepage = "https://datafusion.apache.org/ballista/"
+repository = "https://github.com/apache/datafusion-ballista"
+authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 keywords = ["iceberg", "ballista", "datafusion", "distributed"]
 categories = ["database"]
-edition = { workspace = true }
-# Required by the iceberg crates; the rest of the workspace still builds on 1.94.
+edition = "2024"
+# Required by the iceberg crates; Ballista itself still builds on 1.94.
 rust-version = "1.95"
 # crates.io rejects the git dependencies on iceberg and iceberg-datafusion.
 publish = false
+
+# Its own workspace, outside Ballista's, so a DataFusion upgrade in Ballista
+# that iceberg-rust doesn't support yet doesn't block Ballista's build or
+# release. Built and tested by .github/workflows/iceberg.yml.
+[workspace]
 
 [package.metadata.cargo-machete]
 # Not imported: enables the `serde` feature, to send a scan's Arrow schema.
@@ -37,30 +42,41 @@ ignored = ["arrow-schema"]
 
 [dependencies]
 arrow-schema = { version = "59.2.0", features = ["serde"] }
-async-trait = { workspace = true }
-ballista-core = { workspace = true }
-datafusion = { workspace = true }
-datafusion-proto = { workspace = true }
-futures = { workspace = true }
-iceberg = { workspace = true }
-iceberg-datafusion = { workspace = true }
+async-trait = "0.1"
+ballista-core = { path = "../../ballista/core", version = "55.0.0" }
+ballista-executor = { path = "../../ballista/executor", version = "55.0.0", default-features = false, optional = true }
+ballista-scheduler = { path = "../../ballista/scheduler", version = "55.0.0", default-features = false, optional = true }
+datafusion = "55"
+datafusion-proto = "55"
+futures = "0.3"
+# Not released yet. Keep `iceberg` at the revision iceberg-datafusion's own
+# workspace pins, so cargo resolves a single iceberg crate.
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+iceberg-datafusion = { git = "https://github.com/apache/datafusion-iceberg", rev = "b641e5ebe9e92967499ae7e440ba10d7797712df" }
 # Storage for rebuilt tables: S3 and local files by default.
-iceberg-storage-opendal = { workspace = true }
-serde = { workspace = true, features = ["derive", "rc"] }
-serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [dev-dependencies]
-arrow-flight = { workspace = true }
-ballista = { workspace = true, features = ["standalone"] }
-ballista-executor = { workspace = true }
-ballista-scheduler = { workspace = true, features = ["flight-sql"] }
-iceberg-catalog-rest = { workspace = true }
-tempfile = { workspace = true }
+arrow-flight = { version = "59.2.0", features = ["flight-sql-experimental"] }
+ballista = { path = "../../ballista/client", version = "55.0.0", features = ["standalone"] }
+ballista-scheduler = { path = "../../ballista/scheduler", version = "55.0.0", features = ["flight-sql"] }
+iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+tempfile = "3.27"
 testcontainers = { version = "0.28", features = ["http_wait_plain"] }
-tokio = { workspace = true, features = ["macros"] }
-tonic = { workspace = true }
+tokio = { version = "1", features = ["macros"] }
+tonic = "0.14"
 
 [features]
+# `ExecutorProcessConfigExt`, to ready an executor for Iceberg.
+executor = ["dep:ballista-executor"]
+# `SchedulerConfigExt`, to ready a scheduler for Iceberg.
+scheduler = ["dep:ballista-scheduler"]
 # Tests that need docker.
 testcontainers = []
+
+[[test]]
+name = "flight_sql"
+required-features = ["executor", "scheduler"]

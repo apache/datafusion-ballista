@@ -22,7 +22,9 @@
 //! without a catalog. A catalog-backed table is sent as the version its catalog
 //! served when the query was planned, a static one as the version it holds.
 //! Only the node that plans a query talks to a catalog: the client, or, for
-//! Flight SQL clients, a scheduler built with [`iceberg_session_builder`].
+//! Flight SQL clients, a scheduler readied with `SchedulerConfigExt` (the
+//! `scheduler` feature). Executors are readied with `ExecutorProcessConfigExt`
+//! (the `executor` feature).
 //!
 //! Storage comes from [`iceberg_storage_opendal`]: S3 and local files by
 //! default, other stores with its `opendal-*` features.
@@ -57,24 +59,29 @@
 //! - Storage credentials travel in plain text.
 
 mod catalog;
+#[cfg(feature = "executor")]
+mod executor;
 mod logical_codec;
 mod physical_codec;
+#[cfg(feature = "scheduler")]
+mod scheduler;
 mod wire;
 
 use std::sync::Arc;
 
 use ballista_core::extension::SessionConfigExt;
-use datafusion::catalog::CatalogProvider;
-use datafusion::common::Result;
 use datafusion::execution::{SessionState, SessionStateBuilder};
-use datafusion::prelude::SessionConfig;
 // Linked for the storage it registers; nothing here calls it.
 use iceberg_storage_opendal as _;
 
 use crate::catalog::PinningCatalogList;
 
+#[cfg(feature = "executor")]
+pub use crate::executor::ExecutorProcessConfigExt;
 pub use crate::logical_codec::IcebergLogicalCodec;
 pub use crate::physical_codec::IcebergPhysicalCodec;
+#[cfg(feature = "scheduler")]
+pub use crate::scheduler::SchedulerConfigExt;
 
 /// Readies a client's session for Iceberg: registers the codecs, and pins
 /// each catalog-backed table a query names to the version its catalog serves
@@ -98,32 +105,4 @@ pub fn register_iceberg(mut state: SessionState) -> SessionState {
         .with_session_id(session_id)
         .with_catalog_list(Arc::new(catalogs))
         .build()
-}
-
-/// A scheduler's session builder, the shape `SchedulerConfig` stores.
-type SessionBuilder = Arc<dyn Fn(SessionConfig) -> Result<SessionState> + Send + Sync>;
-
-/// Wraps a scheduler's session builder, `base`, so its sessions have
-/// `catalogs` mounted and are readied with [`register_iceberg`], for queries
-/// the scheduler plans itself: those from Flight SQL clients, which hold no
-/// catalog of their own. Pass `Arc::new(default_session_builder)` as `base` if
-/// the scheduler has no session builder of its own.
-///
-/// Pass the result to `SchedulerConfig::with_override_session_builder`. The
-/// scheduler and executors also need the Iceberg codecs, set as their
-/// `override_logical_codec` and `override_physical_codec`.
-pub fn iceberg_session_builder(
-    base: SessionBuilder,
-    catalogs: impl IntoIterator<Item = (String, Arc<dyn CatalogProvider>)>,
-) -> SessionBuilder {
-    let catalogs: Vec<_> = catalogs.into_iter().collect();
-    Arc::new(move |config| {
-        let state = register_iceberg(base(config)?);
-        for (name, catalog) in &catalogs {
-            state
-                .catalog_list()
-                .register_catalog(name.clone(), catalog.clone());
-        }
-        Ok(state)
-    })
 }

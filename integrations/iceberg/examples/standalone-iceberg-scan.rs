@@ -21,7 +21,7 @@
 //! nothing running:
 //!
 //! ```text
-//! cargo run -p ballista-iceberg --example standalone-iceberg-scan
+//! cargo run --example standalone-iceberg-scan
 //! ```
 
 use std::collections::HashMap;

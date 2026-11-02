@@ -26,7 +26,11 @@ codecs that send Iceberg tables and scans between the client, the scheduler and
 the executors.
 
 The crate is not published yet. It depends on unreleased revisions of
-iceberg-datafusion and iceberg-rust, and needs Rust 1.95.
+iceberg-datafusion and iceberg-rust, and needs Rust 1.95. It is its own
+workspace, with its own `Cargo.lock` and CI, outside Ballista's, so a
+DataFusion upgrade in Ballista that iceberg-rust doesn't support yet doesn't
+block Ballista's build or release. Build and test it from
+`integrations/iceberg`.
 
 ## Usage
 
@@ -61,33 +65,36 @@ The example registers both on a table in a temporary local warehouse, and shows
 a commit reaching the live table but not the static one:
 
 ```shell
-cargo run -p ballista-iceberg --example standalone-iceberg-scan
+cd integrations/iceberg
+cargo run --example standalone-iceberg-scan
 ```
 
 ## SQL clients
 
 Flight SQL clients (JDBC, ADBC, BI tools) send SQL to the scheduler, which plans
 it, so they hold no catalog. To let them query Iceberg tables, mount catalogs
-on the scheduler with `iceberg_session_builder`, which wraps the scheduler's
-session builder (`default_session_builder` here, or your own), and give the
-scheduler and executors the Iceberg codecs:
+on the scheduler with `SchedulerConfigExt::with_iceberg` (the `scheduler`
+feature), which also sets the Iceberg codecs:
 
 ```rust
-use ballista_core::utils::default_session_builder;
-use ballista_iceberg::{IcebergLogicalCodec, IcebergPhysicalCodec, iceberg_session_builder};
+use ballista_iceberg::SchedulerConfigExt;
 
 let rest = IcebergCatalogProvider::try_new(catalog).await?;
-let mut config = SchedulerConfig::default()
+let config = SchedulerConfig::default()
     .with_flight_sql(true)
-    .with_override_session_builder(iceberg_session_builder(
-        Arc::new(default_session_builder),
-        [("rest".to_string(), Arc::new(rest) as _)],
-    ));
-config.override_logical_codec = Some(Arc::new(IcebergLogicalCodec::default()));
-config.override_physical_codec = Some(Arc::new(IcebergPhysicalCodec::default()));
+    .with_iceberg([("rest", Arc::new(rest) as _)]);
 ```
 
-Executors set the same two codecs on their `ExecutorProcessConfig`. A client can
+Executors set the codecs with `ExecutorProcessConfigExt::with_iceberg` (the
+`executor` feature):
+
+```rust
+use ballista_iceberg::ExecutorProcessConfigExt;
+
+let config = ExecutorProcessConfig::default().with_iceberg();
+```
+
+Both wrap any session builder or codecs the config already has. A client can
 then run `SELECT * FROM rest.ns.t`. Tables are pinned the same way as on the
 client, while the scheduler plans the query.
 
@@ -215,10 +222,9 @@ Every node still needs every codec that a query's tables use.
   once: each run reads the version from when it was planned. To read newer
   commits, recreate the view or plan the query again.
 - **A separately deployed scheduler and executors** must link
-  `ballista-iceberg` and set the Iceberg codecs as their
-  `override_logical_codec` and `override_physical_codec` (see
-  [Extending Components](extending-components.md)). The tests cover standalone
-  mode and an in-process scheduler serving Flight SQL.
+  `ballista-iceberg` and be readied with `with_iceberg` (see
+  [SQL clients](#sql-clients)). The tests cover standalone mode and an
+  in-process scheduler serving Flight SQL.
 - **A mounted catalog lists its tables once.** `IcebergCatalogProvider` reads
   the table names when it is built, so a table created afterwards isn't
   visible until the catalog is mounted again.

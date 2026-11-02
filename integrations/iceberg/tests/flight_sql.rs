@@ -29,14 +29,13 @@ mod flight_sql {
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
-    use ballista_core::utils::{default_config_producer, default_session_builder};
-    use ballista_iceberg::{
-        IcebergLogicalCodec, IcebergPhysicalCodec, iceberg_session_builder,
-    };
+    use ballista_executor::executor_process::ExecutorProcessConfig;
+    use ballista_iceberg::{ExecutorProcessConfigExt, SchedulerConfigExt};
     use ballista_scheduler::cluster::BallistaCluster;
     use ballista_scheduler::config::SchedulerConfig;
-    use ballista_scheduler::metrics::default_metrics_collector;
-    use ballista_scheduler::scheduler_process::start_grpc_service_with_listener;
+    use ballista_scheduler::scheduler_process::{
+        create_scheduler, start_grpc_service_with_listener,
+    };
     use ballista_scheduler::scheduler_server::SchedulerServer;
     use datafusion::arrow::array::RecordBatch;
     use datafusion::assert_batches_eq;
@@ -89,39 +88,32 @@ mod flight_sql {
     async fn start_cluster(
         catalogs: Vec<(String, Arc<dyn datafusion::catalog::CatalogProvider>)>,
     ) -> Result<FlightSqlServiceClient<Channel>> {
-        let codec = || {
-            BallistaCodec::new(
-                Arc::new(IcebergLogicalCodec::default()),
-                Arc::new(IcebergPhysicalCodec::default()),
-            )
-        };
-        let cluster = BallistaCluster::new_memory(
-            "localhost:50050",
-            iceberg_session_builder(Arc::new(default_session_builder), catalogs),
-            Arc::new(default_config_producer),
-        );
         let config = SchedulerConfig::default()
             .with_scheduler_policy(TaskSchedulingPolicy::PullStaged)
-            .with_flight_sql(true);
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster,
-                codec(),
-                Arc::new(config),
-                default_metrics_collector()?,
-            );
-        scheduler.init().await?;
+            .with_flight_sql(true)
+            .with_iceberg(catalogs);
+        let cluster = BallistaCluster::new_from_config(&config).await?;
+        let scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            create_scheduler(cluster, Arc::new(config)).await?;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("http://{}", listener.local_addr()?);
         tokio::spawn(start_grpc_service_with_listener(listener, scheduler));
 
         let channel = Channel::from_shared(url)?.connect().await?;
+        let executor = ExecutorProcessConfig::default().with_iceberg();
+        let codec = BallistaCodec::new(
+            executor
+                .override_logical_codec
+                .expect("set by with_iceberg"),
+            executor
+                .override_physical_codec
+                .expect("set by with_iceberg"),
+        );
         ballista_executor::new_standalone_executor(
             SchedulerGrpcClient::new(channel.clone()),
             2,
-            codec(),
+            codec,
         )
         .await?;
         let mut client = FlightSqlServiceClient::new(channel);
