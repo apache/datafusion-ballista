@@ -23,9 +23,14 @@ use crate::codec::{
 };
 use crate::utils::to_pyerr;
 use crate::utils::{spawn_feature, wait_for_future};
+use ballista_core::RuntimeProducer;
+use ballista_core::object_store::{
+    runtime_env_with_s3_support, session_config_with_s3_support,
+    session_state_with_s3_support, state_with_s3_support,
+};
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_executor::executor_process::{
-    ExecutorProcessConfig, start_executor_process,
+    ExecutorProcessConfig, start_executor_process, with_spill_dir,
 };
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::SchedulerConfig;
@@ -53,7 +58,10 @@ impl PyScheduler {
                 PyBallistaPhysicalExtensionCodec::default(),
             )),
             ..Default::default()
-        };
+        }
+        // S3 support, as in the scheduler binary
+        .with_override_config_producer(Arc::new(session_config_with_s3_support))
+        .with_override_session_builder(Arc::new(session_state_with_s3_support));
 
         if let Some(bind_port) = bind_port {
             config.bind_port = bind_port;
@@ -191,6 +199,14 @@ impl PyExecutor {
             config.vcores = vcores as usize;
         }
 
+        // S3 support, as in the executor binary
+        config.override_config_producer = Some(Arc::new(session_config_with_s3_support));
+        let s3_runtime: RuntimeProducer = Arc::new(runtime_env_with_s3_support);
+        config.override_runtime_producer = Some(match config.work_dir.clone() {
+            Some(work_dir) => with_spill_dir(s3_runtime, work_dir),
+            None => s3_runtime,
+        });
+
         let config = Arc::new(config);
         Ok(Self {
             config,
@@ -292,8 +308,8 @@ async fn _setup_test_cluster() -> (String, u16) {
     let config = <datafusion::prelude::SessionConfig as ballista::prelude::SessionConfigExt>::new_with_ballista();
 
     let addr = ballista_scheduler::standalone::new_standalone_scheduler_with_builder(
-        Arc::new(ballista_core::utils::default_session_builder),
-        Arc::new(ballista_core::utils::default_config_producer),
+        Arc::new(session_state_with_s3_support),
+        Arc::new(session_config_with_s3_support),
         ballista_codec(),
     )
     .await
@@ -304,10 +320,15 @@ async fn _setup_test_cluster() -> (String, u16) {
     let scheduler =
         connect_to_scheduler(format!("http://{}:{}", host, addr.port())).await;
 
-    ballista_executor::new_standalone_executor(
+    let function_registry =
+        (&state_with_s3_support().expect("session state to be created")).into();
+    ballista_executor::new_standalone_executor_from_builder(
         scheduler,
         ballista::prelude::SessionConfigExt::ballista_standalone_parallelism(&config),
+        Arc::new(session_config_with_s3_support),
+        Arc::new(runtime_env_with_s3_support),
         ballista_codec(),
+        function_registry,
     )
     .await
     .expect("executor to be created");

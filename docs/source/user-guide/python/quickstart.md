@@ -284,6 +284,3 @@ executor.wait_for_termination()
 
 All arguments are optional. `start` runs the process in the background, `wait_for_termination` blocks until it
 stops, and `close` stops it.
-
-A cluster started from Python does not have the S3 support of the Rust binaries, see
-[Querying S3 Data](cloud-storage.md).

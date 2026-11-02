@@ -22,12 +22,6 @@
 Ballista supports querying data stored in Amazon S3. The default scheduler and executor
 binaries include S3 support out of the box.
 
-> **Note:** S3 support is only available in the Rust `ballista-scheduler` and
-> `ballista-executor` binaries. A cluster started from Python with `BallistaScheduler`,
-> `BallistaExecutor` or `setup_test_cluster` does not register an S3 object store and
-> does not support the `SET s3.*` options below. As Python UDFs require a cluster
-> started from Python, Python UDFs can not be used on S3 data yet.
-
 ## Prerequisites
 
 - A running Ballista cluster (scheduler + executors)

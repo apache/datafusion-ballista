@@ -103,7 +103,6 @@ version as the client, with everything the UDF imports installed.
 Known limitations and inefficiencies of the current approach:
 
 - Anything requiring custom `datafusion_proto::logical_plan::LogicalExtensionCodec`.
-- A cluster started from Python has no S3 support, so Python UDFs can not be used on S3 data.
 - A Ballista connection will be created for each request.
 - The scheduler address is only used when a query runs, so connection errors are raised by the
   first query, not by `BallistaSessionContext`.
