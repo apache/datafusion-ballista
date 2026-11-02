@@ -286,14 +286,14 @@ pub(crate) fn sketched_columns(partitioning: &Partitioning, enabled: bool) -> Ve
 
 impl ColumnStatsCollector {
     /// Clears the totals and sizes them for `num_columns` columns, sketching
-    /// the ones in `sketched`.
-    pub(crate) fn reset(&self, num_columns: usize, sketched: &[usize]) {
+    /// the ones in `sketched` at `precision`.
+    pub(crate) fn reset(&self, num_columns: usize, sketched: &[usize], precision: u8) {
         if let Ok(mut totals) = self.0.lock() {
             *totals = ColumnStatsTotals {
                 null_counts: vec![0; num_columns],
                 sketches: sketched
                     .iter()
-                    .map(|&column| (column, HyperLogLog::new()))
+                    .map(|&column| (column, HyperLogLog::new(precision)))
                     .collect(),
             };
         }
@@ -314,7 +314,7 @@ impl ColumnStatsCollector {
                 totals
                     .sketches
                     .iter()
-                    .map(|(column, _)| (*column, HyperLogLog::new()))
+                    .map(|(column, total)| (*column, HyperLogLog::new(total.precision())))
                     .collect()
             })
             .unwrap_or_default();
@@ -407,7 +407,9 @@ impl Drop for ColumnStatsStream {
             }
             for ((_, slot), (_, sketch)) in total.sketches.iter_mut().zip(&self.sketches)
             {
-                slot.merge(sketch);
+                // Both were made at the precision `reset` chose, so they merge.
+                let merged = slot.merge(sketch);
+                debug_assert!(merged, "stream sketch and total differ in precision");
             }
         }
     }
@@ -768,6 +770,7 @@ impl ShuffleWriterExec {
                     plan.properties().output_partitioning(),
                     config.shuffle_collect_distinct_counts(),
                 ),
+                config.shuffle_collect_distinct_counts_precision(),
             );
 
             // Passthrough shuffle: drain each of the child's output
@@ -1667,10 +1670,12 @@ mod tests {
         Ok(())
     }
 
-    // A passthrough writer over a hash repartition sketches the hash key, and
-    // the sketch counts distinct values across every partition it drained.
-    #[tokio::test]
-    async fn column_stats_sketch_the_child_hash_key() -> Result<()> {
+    /// Drive a passthrough writer over a hash repartition of column "a"
+    /// (100 distinct values over 1000 rows, 4 partitions) and return the
+    /// column stats it reports.
+    async fn child_hash_key_column_stats(
+        task_ctx: Arc<TaskContext>,
+    ) -> Result<Vec<TaskColumnStats>> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::UInt32, false),
             Field::new("b", DataType::UInt32, false),
@@ -1697,18 +1702,49 @@ mod tests {
             input,
             work_dir.path().to_str().unwrap().to_owned(),
         )?);
-        drive_all_partitions(writer.clone(), SessionContext::new().task_ctx()).await?;
+        drive_all_partitions(writer.clone(), task_ctx).await?;
+        Ok(writer.column_stats())
+    }
 
-        let stats = writer.column_stats();
+    // A passthrough writer over a hash repartition sketches the hash key, and
+    // the sketch counts distinct values across every partition it drained.
+    #[tokio::test]
+    async fn column_stats_sketch_the_child_hash_key() -> Result<()> {
+        let stats = child_hash_key_column_stats(SessionContext::new().task_ctx()).await?;
         assert_eq!(stats.len(), 2);
         let [sketch] = stats[0].sketches.as_slice() else {
             panic!("expected one sketch on the hash key, got {:?}", stats[0]);
         };
+        assert_eq!(sketch.data.len(), 1 << crate::hll::DEFAULT_PRECISION);
         let distinct = crate::hll::HyperLogLog::from_bytes(&sketch.data)
             .unwrap()
             .count();
         assert!((95..=105).contains(&distinct), "estimated {distinct}");
         assert!(stats[1].sketches.is_empty());
+        Ok(())
+    }
+
+    // The sketch is made at the precision the session asks for.
+    #[tokio::test]
+    async fn column_stats_sketch_at_the_configured_precision() -> Result<()> {
+        use crate::extension::SessionConfigExt;
+        use datafusion::prelude::SessionConfig;
+
+        let config = SessionConfig::new_with_ballista().set_usize(
+            crate::config::BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION,
+            10,
+        );
+        let task_ctx = SessionContext::new_with_config(config).task_ctx();
+        let stats = child_hash_key_column_stats(task_ctx).await?;
+        let [sketch] = stats[0].sketches.as_slice() else {
+            panic!("expected one sketch on the hash key, got {:?}", stats[0]);
+        };
+        assert_eq!(sketch.data.len(), 1 << 10);
+        let distinct = crate::hll::HyperLogLog::from_bytes(&sketch.data)
+            .unwrap()
+            .count();
+        // Standard error is 3.3% here.
+        assert!((80..=120).contains(&distinct), "estimated {distinct}");
         Ok(())
     }
 

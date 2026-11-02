@@ -210,6 +210,10 @@ pub const BALLISTA_SHUFFLE_COMPRESSION_CODEC: &str = "ballista.shuffle.compressi
 /// counts of their hash-partitioning key columns for the adaptive planner.
 pub const BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS: &str =
     "ballista.shuffle.collect_distinct_counts";
+/// Configuration key for the precision of the HyperLogLog sketches that
+/// [`BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS`] collects.
+pub const BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION: &str =
+    "ballista.shuffle.collect_distinct_counts_precision";
 
 /// Configuration key for the scheduler's per-task partition-slice cap.
 pub const BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK: &str =
@@ -556,10 +560,24 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             "Sketch the approximate distinct count of each hash-partitioning key \
              column with HyperLogLog while writing shuffle output, so the adaptive \
              planner can estimate join cardinalities downstream of the shuffle. \
-             Costs hashing every key value on the write path and 4 KiB per key \
-             column in each task's status update.".to_string(),
+             Costs hashing every key value on the write path and one sketch per \
+             key column in each task's status update (4 KiB with the default \
+             precision).".to_string(),
             DataType::Boolean,
             Some(true.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION.to_string(),
+            "Precision of the HyperLogLog sketches that \
+             `ballista.shuffle.collect_distinct_counts` collects, from 4 to 16 \
+             (values outside that range are clamped). A sketch has \
+             2^precision one-byte registers and a standard error of about \
+             1.04 / 2^(precision / 2): 10 is 1 KiB and 3.3%, 12 is 4 KiB and \
+             1.6%, 14 is 16 KiB and 0.8%. The scheduler keeps one sketch per \
+             key column for every task of a stage, so lower it for stages with \
+             many thousands of tasks.".to_string(),
+            DataType::UInt16,
+            Some(crate::hll::DEFAULT_PRECISION.to_string()),
         ),
         ConfigEntry::new(
             BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK.to_string(),
@@ -957,6 +975,19 @@ impl BallistaConfig {
     /// hash-partitioning key columns.
     pub fn shuffle_collect_distinct_counts(&self) -> bool {
         self.get_bool_setting(BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS)
+    }
+
+    /// Returns the precision of the distinct-count sketches that shuffle
+    /// writers collect. Clamped to the range a sketch supports, since the
+    /// sketch is an optimization and an out-of-range value should not fail a
+    /// shuffle write.
+    pub fn shuffle_collect_distinct_counts_precision(&self) -> u8 {
+        let precision =
+            self.get_usize_setting(BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION);
+        precision.clamp(
+            crate::hll::MIN_PRECISION as usize,
+            crate::hll::MAX_PRECISION as usize,
+        ) as u8
     }
 
     /// Returns the bounded-channel capacity for the shuffle writer I/O bridge.
@@ -1505,6 +1536,34 @@ mod tests {
             .set(BALLISTA_PIPELINED_QUEUE_CAPACITY, "0")
             .unwrap();
         assert_eq!(config.ballista_config().pipelined_queue_capacity(), 1);
+    }
+
+    #[test]
+    fn distinct_count_precision_defaults_to_12_and_is_clamped() {
+        use crate::extension::SessionConfigExt;
+        use datafusion::prelude::SessionConfig;
+
+        let mut config = SessionConfig::new_with_ballista();
+        let precision = |config: &SessionConfig| {
+            config
+                .ballista_config()
+                .shuffle_collect_distinct_counts_precision()
+        };
+        assert_eq!(precision(&config), 12);
+        for (value, expected) in [
+            ("10", 10),
+            ("16", 16),
+            ("0", 4),
+            ("3", 4),
+            ("17", 16),
+            ("4096", 16),
+        ] {
+            config
+                .options_mut()
+                .set(BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION, value)
+                .unwrap();
+            assert_eq!(precision(&config), expected, "set to {value}");
+        }
     }
 
     #[test]

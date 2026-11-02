@@ -277,7 +277,11 @@ impl RangeShuffleWriterExec {
             let compression_type = config.shuffle_compression_codec()?;
             let channel_capacity = config.shuffle_writer_channel_capacity();
             // Range partitioning has no hash keys, so nothing is sketched.
-            column_stats.reset(plan.schema().fields().len(), &[]);
+            column_stats.reset(
+                plan.schema().fields().len(),
+                &[],
+                crate::hll::DEFAULT_PRECISION,
+            );
 
             let num_partitions =
                 plan.properties().output_partitioning().partition_count();

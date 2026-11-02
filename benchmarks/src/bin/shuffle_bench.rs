@@ -35,7 +35,10 @@
 //!   --partitions 200
 //! ```
 
-use ballista_core::config::BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS;
+use ballista_core::config::{
+    BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS,
+    BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION,
+};
 use ballista_core::execution_plans::sort_shuffle::{
     SortShuffleConfig, SortShuffleWriterExec,
 };
@@ -115,6 +118,11 @@ struct Args {
     /// Sketch the distinct counts of the hash key columns while writing.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     collect_distinct_counts: bool,
+
+    /// Precision of the distinct-count sketches: each has 2^precision
+    /// one-byte registers.
+    #[arg(long, default_value_t = ballista_core::hll::DEFAULT_PRECISION)]
+    distinct_count_precision: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -226,6 +234,10 @@ async fn execute_shuffle_write(
         .set_bool(
             BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS,
             args.collect_distinct_counts,
+        )
+        .set_usize(
+            BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION,
+            args.distinct_count_precision as usize,
         );
     let ctx = SessionContext::new_with_config_rt(config, runtime_env);
 

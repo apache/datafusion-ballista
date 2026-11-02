@@ -1078,14 +1078,14 @@ async fn run_coordinator(
         .output_partitioning()
         .partition_count();
 
+    let config = ctx.session_config().ballista_config();
     writer.column_stats.reset(
         writer.plan.schema().fields().len(),
         &sketched_columns(
             &writer.shuffle_output_partitioning,
-            ctx.session_config()
-                .ballista_config()
-                .shuffle_collect_distinct_counts(),
+            config.shuffle_collect_distinct_counts(),
         ),
+        config.shuffle_collect_distinct_counts_precision(),
     );
 
     // Spawn per-input-partition write tasks concurrently — this matches the
@@ -2093,6 +2093,24 @@ mod tests {
         let distinct = HyperLogLog::from_bytes(&sketch.data).unwrap().count();
         assert!((1425..=1575).contains(&distinct), "estimated {distinct}");
         assert!(stats[1].sketches.is_empty());
+        Ok(())
+    }
+
+    // The sketch is made at the precision the session asks for.
+    #[tokio::test]
+    async fn column_stats_sketch_at_the_configured_precision() -> Result<()> {
+        let config = SessionConfig::new_with_ballista().set_usize(
+            crate::config::BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION,
+            10,
+        );
+        let stats = collect_column_stats(config).await?;
+        let [sketch] = stats[0].sketches.as_slice() else {
+            panic!("expected one sketch on the hash key, got {:?}", stats[0]);
+        };
+        assert_eq!(sketch.data.len(), 1 << 10);
+        let distinct = HyperLogLog::from_bytes(&sketch.data).unwrap().count();
+        // 1500 distinct values at a standard error of 3.3%.
+        assert!((1200..=1800).contains(&distinct), "estimated {distinct}");
         Ok(())
     }
 
