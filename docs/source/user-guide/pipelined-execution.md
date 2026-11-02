@@ -39,7 +39,7 @@ Pipelined execution suits short, latency-sensitive queries, where the time
 spent scheduling stages and writing and reading shuffle files is a large part
 of the total. It needs the cluster to have room for the whole job at once.
 
-Stay with blocking execution for:
+Stay with staged execution for:
 
 - long-running jobs, which a single task or executor failure would fail;
 - jobs that need far more vcores than the cluster has free;
@@ -130,24 +130,24 @@ does not work.
   executor share one memory pool, sized by the vcores the job reserved there.
   Every stage of the job holds its state at the same time, such as the hash
   tables of all its joins and the buffers of all its sorts, so a pipelined job
-  can need more memory than the same query run in blocking mode. Sort-heavy
+  can need more memory than the same query run in staged mode. Sort-heavy
   plans need the most. For example, TPC-H query 8 at scale factor 10, planned
-  with sort-merge joins over 16 partitions, runs in blocking mode on a 4-vcore
+  with sort-merge joins over 16 partitions, runs in staged mode on a 4-vcore
   executor with a 2 GB pool, but fails in pipelined mode with that pool. Give
-  executors more memory, use fewer partitions, or run such queries in blocking
+  executors more memory, use fewer partitions, or run such queries in staged
   mode.
 
 ## Settings
 
-| Setting                                           | Default    | Meaning                                                                                                                                               |
-| ------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ballista.execution.mode`                         | `blocking` | `blocking` or `pipelined`.                                                                                                                            |
-| `ballista.pipelined.queue_capacity`               | `2`        | Batches each output partition holds before its producer waits for the consumer. Larger values smooth out uneven consumers at the cost of memory.      |
-| `ballista.pipelined.registration_timeout_seconds` | `60`       | How long a consumer waits for its producer task to start, and a producer whose queue is full waits for its consumer to connect, before the job fails. |
-| `ballista.pipelined.stream_window_bytes`          | `524288`   | HTTP/2 window of each stream to another executor. Bounds what a stalled stream holds; see Connections above.                                          |
+| Setting                                           | Default  | Meaning                                                                                                                                               |
+| ------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ballista.execution.mode`                         | `staged` | `staged` or `pipelined`.                                                                                                                              |
+| `ballista.pipelined.queue_capacity`               | `2`      | Batches each output partition holds before its producer waits for the consumer. Larger values smooth out uneven consumers at the cost of memory.      |
+| `ballista.pipelined.registration_timeout_seconds` | `60`     | How long a consumer waits for its producer task to start, and a producer whose queue is full waits for its consumer to connect, before the job fails. |
+| `ballista.pipelined.stream_window_bytes`          | `524288` | HTTP/2 window of each stream to another executor. Bounds what a stalled stream holds; see Connections above.                                          |
 
 `ballista.scheduler.max_partitions_per_task` caps how many partitions each task
-of a pipelined job processes, as it does in blocking mode. Adaptive query
+of a pipelined job processes, as it does in staged mode. Adaptive query
 execution (`ballista.planner.adaptive.enabled`) does not apply to pipelined
 jobs. `ballista.optimizer.hash_join_max_build_partition_bytes` (64 MiB by
 default; 0 turns the check off) bounds the build side of each partitioned hash
