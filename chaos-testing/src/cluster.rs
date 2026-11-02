@@ -28,23 +28,10 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 
 /// Reserve `N` free TCP ports that are not in `taken`, and add them to `taken`.
 ///
-/// Each candidate is found by binding to :0, and every listener is held until
-/// all `N` ports have been read. Holding them is what makes the ports of one
-/// call distinct from each other. Releasing each before taking the next lets
-/// the kernel hand the same number back, and a caller that asked for two ports
-/// then gives its child one port for two servers: the second bind fails
-/// `AddrInUse` and the child exits during startup.
-///
-/// The same thing happens across calls. The listeners are dropped before this
-/// returns and the child binds the ports some milliseconds later, so a later
-/// call made in that window (the next executor of the same cluster) can be
-/// handed a port the previous child has not bound yet. The cluster therefore
-/// records every port it hands out in `taken`, and a candidate already in it
-/// is skipped (and kept bound, so the kernel does not offer it again while we
-/// look for a replacement).
-///
-/// Still racy against the rest of the machine, which is adequate here: the
-/// child binds within milliseconds and the tests are the only thing running.
+/// All listeners are held until every port has been read, so the ports of one
+/// call are distinct. `taken` keeps them distinct across calls: a child binds
+/// its ports only after this returns, so a later call could otherwise be handed
+/// a port the earlier child has not bound yet.
 fn reserve_ports<const N: usize>(taken: &mut HashSet<u16>) -> [u16; N] {
     let mut held = Vec::new();
     let mut fresh = Vec::with_capacity(N);
