@@ -597,15 +597,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             .ballista_config()
             .execution_mode()?
             == ExecutionMode::Pipelined;
-        // A cache build runs blocking whatever the session's mode: a pipelined
+        // A cache build runs staged whatever the session's mode: a pipelined
         // job streams its output and leaves no shuffle files to cache. Jobs
         // reading the cache keep the session's mode.
         let session_ctx = if pipelined && self.cache_linker.key_of(job_id).is_some() {
             let mut state = session_ctx.state();
-            state.config_mut().options_mut().set(
-                BALLISTA_EXECUTION_MODE,
-                &ExecutionMode::Blocking.to_string(),
-            )?;
+            state
+                .config_mut()
+                .options_mut()
+                .set(BALLISTA_EXECUTION_MODE, &ExecutionMode::Staged.to_string())?;
             Arc::new(SessionContext::new_with_state(state))
         } else if pipelined && !self.config.is_push_staged_scheduling() {
             // A pipelined job must be placed all at once, which the scheduler

@@ -18,7 +18,7 @@
 //! The execution graph of a job run with `ballista.execution.mode =
 //! pipelined`, [`PipelinedExecutionGraph`].
 //!
-//! A blocking job runs stage by stage, each stage becoming runnable once the
+//! A staged job runs stage by stage, each stage becoming runnable once the
 //! stages it reads have written their shuffle files. A pipelined job instead
 //! places every task of every stage at once, and stages stream to each other
 //! while they run (see `ballista_core::execution_plans::pipelined`). So:
