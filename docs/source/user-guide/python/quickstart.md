@@ -24,6 +24,17 @@ from Python. Like PySpark, you build a plan through SQL or a DataFrame API again
 Parquet, CSV, JSON, and other file formats, run it in a distributed environment, and
 collect the results back in Python.
 
+## Installation
+
+```bash
+pip install ballista
+```
+
+`ballista` depends on a matching `datafusion` release, for example `ballista` 55
+requires `datafusion` 55. Queries are planned by DataFusion Python on the client
+and executed by the Ballista cluster, so the cluster should run the same Ballista
+version as the client.
+
 ## Connecting to a Cluster
 
 `BallistaSessionContext` is the entry point for both remote and in-process clusters.
@@ -45,6 +56,14 @@ from ballista import BallistaSessionContext, setup_test_cluster
 host, port = setup_test_cluster()
 ctx = BallistaSessionContext(f"df://{host}:{port}")
 ```
+
+`BallistaSessionContext` returns a regular `datafusion.SessionContext`, so the whole
+[DataFusion Python](https://datafusion.apache.org/python/) API is available. Any
+operation which executes a plan, such as `collect`, `show`, `to_pandas` or
+`write_parquet`, runs on the cluster.
+
+The scheduler address is only used when a query is executed. Creating a context with
+a wrong address succeeds, and the error is raised by the first query.
 
 ## Configuration
 
@@ -85,6 +104,35 @@ session for distributed planning and execution.
 This controls how many parallel tasks the scheduler creates per stage. Setting it too
 low leaves executor capacity idle; setting it too high creates unnecessary scheduling
 overhead.
+
+### Ballista Settings
+
+`BallistaSessionConfig` has typed setters for Ballista settings, and `set` for any
+`datafusion.*` or `ballista.*` option. Unknown `ballista.*` keys raise `ValueError`:
+
+```python
+from ballista import BallistaSessionConfig, BallistaSessionContext
+
+ctx = BallistaSessionContext(
+    "df://localhost:50050",
+    config=BallistaSessionConfig()
+    .with_job_name("daily report")
+    .with_adaptive_query_planner(True)
+    .with_broadcast_join_threshold_bytes(10 * 1024 * 1024)
+    .set("ballista.shuffle.compression.codec", "zstd"),
+)
+```
+
+Ballista settings are registered as a DataFusion config extension, so they can be
+changed with SQL `SET`:
+
+```python
+ctx.sql("SET ballista.job.name = 'nightly'")
+```
+
+Some DataFusion options are restricted by Ballista, for example
+`datafusion.optimizer.prefer_hash_join`, and are always set to the Ballista value.
+See [Configuration](../configs.md) for the available settings.
 
 ## SQL
 
@@ -134,21 +182,13 @@ COUNT(UInt8(1)): int64]
 
 ### Viewing Query Plans
 
-`explain` shows the logical and physical plans for a query:
+`explain` prints the logical, physical and distributed (per stage) plans for a
+query, and `explain(analyze=True)` runs the query on the cluster and prints the
+stages with runtime metrics:
 
 ```python
 df.explain()
-+---------------+-------------------------------------------------------------+
-| plan_type     | plan                                                        |
-+---------------+-------------------------------------------------------------+
-| logical_plan  | Projection: #COUNT(UInt8(1))                                |
-|               |   Aggregate: groupBy=[[]], aggr=[[COUNT(UInt8(1))]]         |
-|               |     TableScan: trips projection=[VendorID]                  |
-| physical_plan | ProjectionExec: expr=[COUNT(UInt8(1))@0 as COUNT(UInt8(1))] |
-|               |   ProjectionExec: expr=[9071244 as COUNT(UInt8(1))]         |
-|               |     EmptyExec: produce_one_row=true                         |
-|               |                                                             |
-+---------------+-------------------------------------------------------------+
+df.explain(analyze=True)
 ```
 
 ## DataFrame API
@@ -182,6 +222,68 @@ assert result.column(1) == pyarrow.array([-3, -3, -3])
 
 ## User Defined Functions
 
-The underlying DataFusion query engine supports Python UDFs but this has not yet been
-implemented in Ballista. It is planned for a future release. See
-[#173](https://github.com/apache/datafusion-ballista/issues/173) for status.
+Python scalar, aggregate and window UDFs are serialized with the plan using
+[cloudpickle](https://github.com/cloudpipe/cloudpickle), so they do not have to be
+registered on the cluster:
+
+```python
+import pyarrow as pa
+from datafusion import col, udf
+
+
+def is_null(array: pa.Array) -> pa.Array:
+    return array.is_null()
+
+
+is_null_udf = udf(is_null, [pa.int64()], pa.bool_(), "stable", name="is_null_udf")
+
+ctx.register_parquet("t", "./testdata/test.parquet")
+
+df = ctx.table("t")
+df.select(col("bigint_col"), is_null_udf(col("bigint_col")).alias("n")).show()
+
+# or with SQL
+ctx.register_udf(is_null_udf)
+ctx.sql("SELECT bigint_col, is_null_udf(bigint_col) AS n FROM t").show()
+```
+
+UDFs are run by Python on the executors, so the cluster has to meet these requirements:
+
+- The scheduler and executors are started from Python, with `BallistaScheduler`,
+  `BallistaExecutor` or `setup_test_cluster`, see below. The Rust
+  `ballista-scheduler` and `ballista-executor` binaries can not run Python UDFs.
+- They run the same Python minor version as the client.
+- Everything the UDF imports is installed on them.
+
+## Running a Cluster from Python
+
+The scheduler and executors can be started from Python. This is needed for Python
+UDFs, and is convenient for development.
+
+```python
+from ballista import BallistaScheduler
+
+scheduler = BallistaScheduler(bind_host="0.0.0.0", bind_port=50050)
+scheduler.start()
+scheduler.wait_for_termination()
+```
+
+```python
+from ballista import BallistaExecutor
+
+executor = BallistaExecutor(
+    bind_host="0.0.0.0",
+    bind_port=50051,
+    scheduler_host="localhost",
+    scheduler_port=50050,
+    vcores=8,
+)
+executor.start()
+executor.wait_for_termination()
+```
+
+All arguments are optional. `start` runs the process in the background, `wait_for_termination` blocks until it
+stops, and `close` stops it.
+
+A cluster started from Python does not have the S3 support of the Rust binaries, see
+[Querying S3 Data](cloud-storage.md).

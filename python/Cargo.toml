@@ -43,24 +43,18 @@ ballista-scheduler = { path = "../ballista/scheduler", version = "55.0.0", defau
 # ballista-executor = { version = "=55.0.0", default-features = false }
 # ballista-scheduler = { version = "=55.0.0", default-features = false }
 
-# Version set to 55.2.0 as  Workaround for missing file-format 
-# support in `datafusion-ffi` 55.2.0.
+# DataFusion crates are pinned to exactly 55.2.0 because of a workaround for
+# missing file-format support in `datafusion-ffi`, see
+# `src/ffi_planner_workaround.rs`. The workaround relies on the private field
+# layouts of `FFI_QueryPlanner` and `FFI_SessionRef`, so it is only valid for
+# the pinned `datafusion-ffi` version.
 #
 # Remove once `datafusion-ffi` delegates file formats to
 # `DefaultLogicalExtensionCodec` in `ForeignLogicalExtensionCodec`.
-#
-# This relies on the private field layouts of `FFI_QueryPlanner` and
-# `FFI_SessionRef`, mirrored below. It is only valid for the pinned
-# `datafusion-ffi = "=55.2.0"`.
-# see `src/ffi_planner_workaround.rs` for more details
 
 datafusion = { version = "=55.2.0", features = ["avro"] }
 datafusion-ffi = { version = "=55.2.0" }
 datafusion-proto = { version = "=55.2.0" }
-# datafusion-python 55.0.0 is not on crates.io yet, so build against its release
-# candidate tag. Switch to `version = "=55.0.0"` once it is published, because
-# the Python release check only accepts crates.io dependencies.
-# datafusion-python = { git = "https://github.com/apache/datafusion-python.git", tag = "55.0.0-rc1", default-features = false }
 datafusion-python = { version = "55.0.0", default-features = false }
 log = { version = "0.4" }
 prost = { version = "0.14" }
