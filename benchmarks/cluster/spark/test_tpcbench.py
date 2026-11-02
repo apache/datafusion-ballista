@@ -42,7 +42,9 @@ sys.modules.setdefault("pyspark.sql", pyspark.sql)
 
 import tpcbench  # noqa: E402
 
-QUERIES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "queries")
+QUERIES_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "queries"
+)
 
 
 class FakeDataFrame:
@@ -82,20 +84,28 @@ class TpcbenchTest(unittest.TestCase):
 
     def run_query(self, spark, statements, expected_rows=None, **kw):
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            record = tpcbench.run_query(spark, bench_args(**kw), 15, statements, expected_rows or {})
+            record = tpcbench.run_query(
+                spark, bench_args(**kw), 15, statements, expected_rows or {}
+            )
         self.assertIn(tpcbench.QUERY_RESULT_PREFIX, out.getvalue())
         return record
 
     def test_q15_view_becomes_a_temp_view_and_all_statements_run(self):
         statements = tpcbench.load_statements(QUERIES_DIR, 15, [])
         self.assertEqual(len(statements), 3)
-        self.assertTrue(statements[0].startswith("CREATE OR REPLACE TEMP VIEW revenue0 (supplier_no, total_revenue)"))
+        self.assertTrue(
+            statements[0].startswith(
+                "CREATE OR REPLACE TEMP VIEW revenue0 (supplier_no, total_revenue)"
+            )
+        )
         self.assertTrue(statements[2].lower().startswith("drop view revenue0"))
         spark = FakeSpark(rows=1)
         record = self.run_query(spark, statements)
         self.assertIsNone(record["error"])
         self.assertEqual(len(spark.statements), 6)  # three statements, two iterations
-        self.assertEqual([it["row_count"] for it in record["iterations"]], [1, 1])  # the SELECT's rows
+        self.assertEqual(
+            [it["row_count"] for it in record["iterations"]], [1, 1]
+        )  # the SELECT's rows
 
     def test_every_tpch_query_has_one_select(self):
         for n in range(1, 23):
@@ -109,32 +119,54 @@ class TpcbenchTest(unittest.TestCase):
         self.assertEqual(record["iterations"], [])
 
     def test_failure_stops_the_query_and_is_recorded(self):
-        record = self.run_query(FakeSpark(fail_marker="lineitem"), ["select * from lineitem"])
+        record = self.run_query(
+            FakeSpark(fail_marker="lineitem"), ["select * from lineitem"]
+        )
         self.assertIn("SparkOutOfMemoryError", record["error"])
         self.assertEqual(record["iterations"], [])
 
     def test_tpcds_renames_apply_only_when_the_data_uses_the_generated_names(self):
-        generated = {"ib_income_band_id", "r_reason_description", "cr_return_amt_inc_tax"}
+        generated = {
+            "ib_income_band_id",
+            "r_reason_description",
+            "cr_return_amt_inc_tax",
+        }
         renames = tpcbench.column_renames("tpcds", generated)
-        self.assertEqual(renames, [("ib_income_band_sk", "ib_income_band_id"),
-                                   ("r_reason_desc", "r_reason_description")])
+        self.assertEqual(
+            renames,
+            [
+                ("ib_income_band_sk", "ib_income_band_id"),
+                ("r_reason_desc", "r_reason_description"),
+            ],
+        )
         self.assertEqual(tpcbench.column_renames("tpch", generated), [])
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "q1.sql"), "w") as f:
-                f.write("select ib_income_band_sk, ib_income_band_sk_x from income_band;")
+                f.write(
+                    "select ib_income_band_sk, ib_income_band_sk_x from income_band;"
+                )
             (statement,) = tpcbench.load_statements(d, 1, renames)
-        self.assertEqual(statement, "select ib_income_band_id, ib_income_band_sk_x from income_band")
+        self.assertEqual(
+            statement, "select ib_income_band_id, ib_income_band_sk_x from income_band"
+        )
 
     def test_errors_keep_the_root_cause(self):
-        e = RuntimeError("An error occurred while calling o272.collectToPython.\n"
-                         "\tat org.apache.spark.Foo.bar(Foo.scala:1)\n" * 50 +
-                         "Caused by: org.apache.spark.SparkException: Job aborted\n"
-                         "Caused by: java.nio.file.AccessDeniedException: s3a://b/f: 403 Forbidden\n"
-                         "\tat software.amazon.Foo(Foo.java:1)")
-        self.assertEqual(tpcbench.describe_error(e),
-                         "RuntimeError: An error occurred while calling o272.collectToPython. ... "
-                         "Caused by: java.nio.file.AccessDeniedException: s3a://b/f: 403 Forbidden")
-        self.assertEqual(tpcbench.describe_error(ValueError("boom")), "ValueError: boom")
+        e = RuntimeError(
+            "An error occurred while calling o272.collectToPython.\n"
+            "\tat org.apache.spark.Foo.bar(Foo.scala:1)\n"
+            * 50
+            + "Caused by: org.apache.spark.SparkException: Job aborted\n"
+            "Caused by: java.nio.file.AccessDeniedException: s3a://b/f: 403 Forbidden\n"
+            "\tat software.amazon.Foo(Foo.java:1)"
+        )
+        self.assertEqual(
+            tpcbench.describe_error(e),
+            "RuntimeError: An error occurred while calling o272.collectToPython. ... "
+            "Caused by: java.nio.file.AccessDeniedException: s3a://b/f: 403 Forbidden",
+        )
+        self.assertEqual(
+            tpcbench.describe_error(ValueError("boom")), "ValueError: boom"
+        )
 
     def test_selected_queries(self):
         self.assertEqual(tpcbench.selected_queries("tpch", None), list(range(1, 23)))

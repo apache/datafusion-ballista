@@ -25,6 +25,7 @@ from ._internal_ballista import (
     setup_test_cluster,
 )
 from .extension import (
+    BallistaSessionConfig,
     BallistaSessionContext,
     ExecutionPlanVisualization,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "setup_test_cluster",
     "BallistaScheduler",
     "BallistaExecutor",
+    "BallistaSessionConfig",
     "BallistaSessionContext",
     "ExecutionPlanVisualization",
 ]

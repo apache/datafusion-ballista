@@ -83,7 +83,8 @@ async fn should_keep_submitted_shuffle_under_extension_operator()
     let plan =
         hand_built_plan(&ctx, |shuffle| Arc::new(OpaqueExec::new(shuffle))).await?;
 
-    let planner = AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into())?;
+    let planner =
+        AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into(), None)?;
 
     assert_plan!(planner.plan.as_ref(), @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -122,7 +123,8 @@ async fn should_keep_submitted_range_shuffle_under_extension_operator()
         Arc::new(RepartitionExec::try_new(scan, Partitioning::Range(range))?);
     let plan: Arc<dyn ExecutionPlan> = Arc::new(OpaqueExec::new(shuffle));
 
-    let planner = AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into())?;
+    let planner =
+        AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into(), None)?;
 
     assert_plan!(planner.plan.as_ref(), @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -145,7 +147,7 @@ async fn should_not_coalesce_shuffle_feeding_extension_operator()
         hand_built_plan(&ctx, |shuffle| Arc::new(OpaqueExec::new(shuffle))).await?;
 
     let mut planner =
-        AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into())?;
+        AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into(), None)?;
 
     let _ = planner.runnable_stages()?.unwrap();
     // 8 partitions of 50 bytes against a 200-byte target packs to K=2, which

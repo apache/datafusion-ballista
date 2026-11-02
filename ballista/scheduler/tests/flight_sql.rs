@@ -26,8 +26,9 @@ use std::time::Duration;
 
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use arrow_flight::sql::{CommandGetTables, SqlInfo};
-use ballista_core::config::TaskSchedulingPolicy;
+use ballista_core::config::{BALLISTA_EXECUTION_MODE, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::utils::{
@@ -40,6 +41,9 @@ use ballista_scheduler::metrics::default_metrics_collector;
 use ballista_scheduler::scheduler_process::start_grpc_service_with_listener;
 use ballista_scheduler::scheduler_server::SchedulerServer;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::util::pretty::pretty_format_batches;
+use datafusion::execution::SessionStateBuilder;
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use futures::TryStreamExt;
 use tonic::transport::Channel;
@@ -87,6 +91,53 @@ async fn start_cluster() -> Result<String> {
         BallistaCodec::default(),
     )
     .await?;
+
+    Ok(url)
+}
+
+/// Boots a scheduler serving Flight SQL whose sessions run pipelined, plus one
+/// executor, and returns the scheduler's URL. Both run push-staged, which
+/// pipelined execution needs.
+async fn start_pipelined_cluster() -> Result<String> {
+    let session_config = SessionConfig::new_with_ballista()
+        .with_target_partitions(4)
+        .set_str(BALLISTA_EXECUTION_MODE, "pipelined");
+    let config = SchedulerConfig::default()
+        .with_scheduler_policy(TaskSchedulingPolicy::PushStaged)
+        .with_flight_sql(true);
+
+    // Bound before the scheduler is built, because push-staged executors
+    // report task status to the address the scheduler gives as its own.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let producer_config = session_config.clone();
+    let cluster = BallistaCluster::new_memory(
+        addr.to_string(),
+        Arc::new(default_session_builder),
+        Arc::new(move || producer_config.clone()),
+    );
+
+    let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+        SchedulerServer::new(
+            addr.to_string(),
+            cluster,
+            BallistaCodec::default(),
+            Arc::new(config),
+            default_metrics_collector()?,
+        );
+    scheduler.init().await?;
+    tokio::spawn(start_grpc_service_with_listener(listener, scheduler));
+
+    let url = format!("http://{addr}");
+
+    // A pipelined job wants a vcore per partition of its widest stage.
+    let state = SessionStateBuilder::new()
+        .with_config(session_config)
+        .with_default_features()
+        .build();
+    let scheduler_client = connect_with_retry(&url).await?;
+    ballista_executor::new_standalone_executor_from_state(scheduler_client, 4, &state)
+        .await?;
 
     Ok(url)
 }
@@ -187,6 +238,43 @@ async fn flight_sql_runs_a_distributed_query() -> Result {
         2,
         "expected bob and carol, got {batches:?}"
     );
+
+    Ok(())
+}
+
+/// A pipelined job cannot finish until its result is read, so the frontend
+/// returns while it runs and serves all its partitions through one endpoint.
+/// One query below ends in four partitions, the other in one.
+#[tokio::test]
+async fn flight_sql_streams_a_pipelined_query() -> Result {
+    let url = start_pipelined_cluster().await?;
+    let (mut client, _csv) = client_with_people(&url).await?;
+
+    for (sql, expected) in [
+        (
+            "SELECT id % 2 AS odd, count(*) AS n FROM people GROUP BY id % 2",
+            vec!["| 0   | 1 |", "| 1   | 2 |"],
+        ),
+        (
+            "SELECT name FROM people WHERE id > 1 ORDER BY name",
+            vec!["| bob   |", "| carol |"],
+        ),
+    ] {
+        let info = client.execute(sql.to_string(), None).await?;
+        assert_eq!(info.endpoint.len(), 1, "{sql}: {:?}", info.endpoint);
+        let advertised = info.clone().try_decode_schema()?;
+        let batches = collect(&mut client, info).await?;
+        if let Some(batch) = batches.first() {
+            assert_eq!(advertised, *batch.schema(), "{sql}");
+        }
+
+        let text = pretty_format_batches(&batches)?.to_string();
+        let mut rows: Vec<&str> = text.lines().filter(|l| l.starts_with("| ")).collect();
+        // The header is the first `| ` line; the data rows follow in any order.
+        rows.remove(0);
+        rows.sort();
+        assert_eq!(rows, expected, "{sql}:\n{text}");
+    }
 
     Ok(())
 }

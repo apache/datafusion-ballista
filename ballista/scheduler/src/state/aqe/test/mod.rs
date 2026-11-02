@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+/// Rules a scheduler embedder adds to adaptive planning
+mod adaptive_rules;
 /// Test if stages can be added or removed
 mod alter_stages;
 /// Broadcast-threshold decisions over declared statistics
@@ -32,6 +34,8 @@ mod plan_to_stages;
 /// Regression tests for range-repartition planning end-to-end
 /// through `AdaptivePlanner` (DER → routing park → filter injection).
 mod range_repartition;
+/// Functional tests for the OptimizeSkewedJoinRule end-to-end through the planner
+mod skew_join_rule;
 /// Multi-pass coverage for staging a join's build side before deciding the join
 mod stage_build_side;
 /// Failed stage transitions leave the stage in the graph

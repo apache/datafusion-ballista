@@ -50,7 +50,7 @@ use crate::serde::scheduler::TaskKey;
 
 /// The root of a stage in a pipelined job.
 ///
-/// Where the blocking writers materialize a stage's output to shuffle files,
+/// Where the staged writers materialize a stage's output to shuffle files,
 /// this one routes it into bounded in-memory queues held by the executor's
 /// [`PipelinedRegistry`], one per output partition. Consumer tasks stream the
 /// queues over Arrow Flight while the stage runs, through
