@@ -41,10 +41,11 @@ use super::registry::PipelinedRegistry;
 use crate::client_pool::{BallistaClientPool, SharedClient};
 use crate::config::{BallistaConfig, HTTP2_MAX_WINDOW_BYTES};
 use crate::error::BallistaError;
-use crate::execution_plans::shuffle_reader::{new_ballista_client, with_retry};
+use crate::execution_plans::shuffle_reader::new_ballista_client;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::scheduler::{PipelinedPartitionLocation, TaskKey};
 use crate::utils::GrpcClientConfig;
+use crate::utils::with_retry;
 
 /// The leaf of a stage in a pipelined job. Each output partition streams the
 /// matching partition of every producer task of the upstream stage, while
@@ -369,7 +370,7 @@ impl ExecutionPlan for PipelinedShuffleReaderExec {
 /// then hold at most one window each, and the connection has room for
 /// `HTTP2_MAX_WINDOW_BYTES / stream window` of them before any starvation.
 ///
-/// Differing from the blocking reader's configuration also keeps these
+/// Differing from the staged reader's configuration also keeps these
 /// connections apart from the ones the pool checks out one stream at a time.
 fn shared_connection_config(ballista_config: &BallistaConfig) -> GrpcClientConfig {
     GrpcClientConfig {
@@ -384,7 +385,7 @@ fn shared_connection_config(ballista_config: &BallistaConfig) -> GrpcClientConfi
 ///
 /// A failure of the connection before the producer's executor has answered
 /// is retried on a new connection, up to `io_retries_times` times with
-/// `io_retry_wait_time_ms` between attempts, as the blocking reader retries
+/// `io_retry_wait_time_ms` between attempts, as the staged reader retries
 /// its fetches. A wide job opens its streams in one burst, and a listen
 /// queue that overflows under it delays some connections and, once the
 /// kernel falls back to SYN cookies, resets others as they start sending. A
