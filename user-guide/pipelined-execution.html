@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Pipelined Execution (experimental) &#8212; Apache DataFusion Ballista  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=75c7c72ae941e8b558d8" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=75c7c72ae941e8b558d8" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=3f0bb95a" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=75c7c72ae941e8b558d8"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=75c7c72ae941e8b558d8" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=75c7c72ae941e8b558d8" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/pipelined-execution';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Ballista Scheduler Metrics" href="metrics.html" />
+    <link rel="prev" title="Tuning Guide" href="tuning-guide.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="color-scheme" content="light dark"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation" aria-expanded="false" aria-controls="pst-primary-sidebar-modal">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/ballista_black.svg" class="logo__image only-light" alt="Apache DataFusion Ballista  documentation - Home"/>
+    <img src="../_static/ballista_white.svg" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Ballista  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page" aria-expanded="false" aria-controls="pst-secondary-sidebar-modal">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal" tabindex="-1"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="introduction.html">Introduction</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cluster Deployment</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="deployment/index.html">Deployment</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="deployment/quick-start.html">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment/cargo-install.html">Cargo Install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment/docker.html">Docker</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment/docker-compose.html">Docker Compose</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment/kubernetes.html">Kubernetes</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="scheduler.html">Scheduler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="history-server.html">History Server</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Clients</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="python/index.html">Python</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="python/quickstart.html">Quick Start</a></li>
+<li class="toctree-l2"><a class="reference internal" href="python/cloud-storage.html">Querying S3 Data</a></li>
+<li class="toctree-l2"><a class="reference internal" href="python/jupyter.html">Jupyter Notebooks</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="rust.html">Rust</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cli.html">SQL CLI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="flightsql.html">Arrow Flight SQL</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="configs.html">Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tuning-guide.html">Tuning Guide</a></li>
+<li class="toctree-l1 current active"><a aria-current="page" class="current reference internal" href="#">Pipelined Execution (experimental)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="metrics.html">Ballista Scheduler Metrics</a></li>
+<li class="toctree-l1"><a class="reference internal" href="faq.html">Frequently Asked Questions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="versioning.html">Versioning and Compatibility</a></li>
+<li class="toctree-l1"><a class="reference internal" href="extending-components.html">Extending Ballista Scheduler And Executors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="extensions-example.html">Extensions Example</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Changelog</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../changelog/index.html">Changelog</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/55.0.0.html">Apache DataFusion Ballista 55.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/54.1.0.html">Apache DataFusion Ballista 54.1.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/54.0.0.html">Apache DataFusion Ballista 54.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/53.0.0.html">Apache DataFusion Ballista 53.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/52.0.0.html">Apache DataFusion Ballista 52.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/51.0.0.html">Apache DataFusion Ballista 51.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/50.0.0.html">Apache DataFusion Ballista 50.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/49.0.0.html">Apache DataFusion Ballista 49.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/48.0.0.html">Apache DataFusion Ballista 48.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/47.0.0.html">Apache DataFusion Ballista 47.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/46.0.0.html">Apache DataFusion Ballista 46.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/45.0.0.html">Apache DataFusion Ballista 45.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/44.0.0.html">Apache DataFusion Ballista 44.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/43.0.0.html">Apache DataFusion Ballista 43.0.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.12.0.html">Apache DataFusion Ballista 0.12.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.11.0.html">Apache DataFusion Ballista 0.11.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.10.0.html">Apache DataFusion Ballista 0.10.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.9.0.html">Apache DataFusion Ballista 0.9.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.8.0.html">Apache DataFusion Ballista 0.8.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.7.0.html">Apache DataFusion Ballista 0.7.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.6.0.html">Apache DataFusion Ballista 0.6.0 Changelog</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../changelog/0.5.0.html">Apache DataFusion Ballista 0.5.0 Changelog</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Upgrade Guides</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../upgrading/index.html">Upgrade Guides</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/56.0.0.html">Ballista 56.0.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/55.0.0.html">Ballista 55.0.0</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../upgrading/54.0.0.html">Ballista 54.0.0</a></li>
+</ul>
+</details></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Contributors Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/architecture.html">Ballista Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/shuffle.html">Shuffle Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/dataframe-cache.html">DataFrame Cache Design (<code class="docutils literal notranslate"><span class="pre">DataFrame::cache()</span></code>)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/code-organization.html">Ballista Code Organization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/user-personas.html">User Personas</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../contributors-guide/development.html">Ballista Development</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../contributors-guide/benchmarking/index.html">Benchmarking</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../contributors-guide/benchmarking/environment.html">Environment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributors-guide/benchmarking/ballista.html">Ballista</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributors-guide/benchmarking/spark.html">Spark</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributors-guide/benchmarking/comet.html">Spark + Comet</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../contributors-guide/benchmarking/trino.html">Trino</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/">Source code</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">About</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../about/datafusion-distributed-comparison.html">Comparison with DataFusion Distributed</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../community/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../community/adopters.html">Who Uses Ballista</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">Issue tracker</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
+</ul>
+
+    
+  </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-house"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Pipelined Execution (experimental)</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="pipelined-execution-experimental">
+<h1>Pipelined Execution (experimental)<a class="headerlink" href="#pipelined-execution-experimental" title="Link to this heading">#</a></h1>
+<p>By default Ballista runs a job one stage at a time. Each stage writes its output
+to shuffle files, and the stages that read it start once it has finished. This
+is the model Apache Spark uses, and it lets a job survive failures: a lost task
+is simply run again from the shuffle files it reads.</p>
+<p>Pipelined execution, enabled with <code class="docutils literal notranslate"><span class="pre">ballista.execution.mode</span> <span class="pre">=</span> <span class="pre">pipelined</span></code>, runs a
+job the way Trino does instead. The scheduler places every task of the job at
+once, and stages stream record batches to each other over Arrow Flight as they
+produce them. No intermediate data is written to disk, and results start
+reaching the client while the job is still running. The cost is that a failed
+task fails the whole job.</p>
+<p>Pipelined execution is experimental. Its behavior and settings may change.</p>
+<section id="when-to-use-it">
+<h2>When to use it<a class="headerlink" href="#when-to-use-it" title="Link to this heading">#</a></h2>
+<p>Pipelined execution suits short, latency-sensitive queries, where the time
+spent scheduling stages and writing and reading shuffle files is a large part
+of the total. It needs the cluster to have room for the whole job at once.</p>
+<p>Stay with staged execution for:</p>
+<ul class="simple">
+<li><p>long-running jobs, which a single task or executor failure would fail;</p></li>
+<li><p>jobs that need far more vcores than the cluster has free;</p></li>
+<li><p>clusters shared by many concurrent jobs, where a pipelined job may wait a
+long time for its vcores to be free together.</p></li>
+</ul>
+</section>
+<section id="enabling-it">
+<h2>Enabling it<a class="headerlink" href="#enabling-it" title="Link to this heading">#</a></h2>
+<p>Pipelined jobs need push-staged scheduling, where the scheduler pushes tasks to
+executors. This is the default for the <code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ballista-executor</span></code> binaries (<code class="docutils literal notranslate"><span class="pre">--scheduler-policy</span> <span class="pre">push-staged</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--task-scheduling-policy</span> <span class="pre">push-staged</span></code>). A pull-staged scheduler rejects
+pipelined jobs.</p>
+<p>Choose the mode per session, from SQL:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">ballista</span><span class="p">.</span><span class="n">execution</span><span class="p">.</span><span class="k">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'pipelined'</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>or when building the session:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">set_str</span><span class="p">(</span><span class="s">"ballista.execution.mode"</span><span class="p">,</span><span class="w"> </span><span class="s">"pipelined"</span><span class="p">);</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionStateBuilder</span><span class="p">::</span><span class="n">new</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_config</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">build</span><span class="p">();</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">"df://localhost:50050"</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>A standalone cluster, from <code class="docutils literal notranslate"><span class="pre">SessionContext::standalone_with_state</span></code>, runs
+push-staged when the session state it is created from asks for pipelined
+execution, whatever <code class="docutils literal notranslate"><span class="pre">ballista.standalone.task_scheduling_policy</span></code> says. One from
+<code class="docutils literal notranslate"><span class="pre">SessionContext::standalone()</span></code> runs pull-staged, so setting the mode on it later
+does not work.</p>
+</section>
+<section id="how-a-pipelined-job-runs">
+<h2>How a pipelined job runs<a class="headerlink" href="#how-a-pipelined-job-runs" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Placement.</strong> The scheduler places all of the job’s tasks at once, or waits
+until it can. On each executor it reserves as many vcores as the job’s widest
+stage uses there, rather than the sum over stages, since stages waiting on
+each other use little CPU. The reservation is held until the job ends.</p></li>
+<li><p><strong>Wide stages.</strong> A stage with more partitions than the cluster has vcores,
+such as a <code class="docutils literal notranslate"><span class="pre">UNION</span> <span class="pre">ALL</span></code> of several scans, waits until every vcore is free, and
+then runs several partitions per vcore.</p></li>
+<li><p><strong>Exchanges.</strong> Each output partition of a stage is a bounded queue of record
+batches, so a slow consumer slows its producer down rather than letting data
+pile up. A consumer on the same executor as its producer reads the queue
+directly; others read it over Arrow Flight. The build side of a broadcast
+join is kept in memory until the job ends, so that every task that reads it
+can.</p></li>
+<li><p><strong>Results.</strong> The client reads every partition of the final stage at once, as
+they are produced. <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code> queries stop the stages feeding them once they
+have enough rows.</p></li>
+<li><p><strong>Joins.</strong> Without adaptive query execution there are no measured sizes to
+choose join strategies from, so the scheduler chooses them from planning-time
+statistics. A join whose build side is estimated to fit under
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.broadcast_join_threshold_bytes</span></code> is a broadcast hash
+join, one whose build side fits
+<code class="docutils literal notranslate"><span class="pre">ballista.optimizer.hash_join_max_build_partition_bytes</span></code> in each partition
+is a partitioned hash join, and any other join, including one whose build
+size is unknown, is a sort-merge join. A hash table cannot spill and every
+hash table of a pipelined job is held at once, so a join is only made a
+hash join when its build side is known to be small.
+<code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.prefer_hash_join</span></code> does not apply, as under adaptive
+query execution.</p></li>
+<li><p><strong>Failures.</strong> A failed task, or a lost executor that ran any of the job’s
+tasks, fails the job. No task is retried. The one thing that is retried is
+opening a stream to another executor whose connection failed before that
+executor answered, <code class="docutils literal notranslate"><span class="pre">ballista.client.io_retries_times</span></code> times with
+<code class="docutils literal notranslate"><span class="pre">ballista.client.io_retry_wait_time_ms</span></code> between attempts; a stream that has
+started cannot be resumed.</p></li>
+<li><p><strong>Connections.</strong> An executor keeps one connection to each other executor,
+and the streams of all its tasks share it, so a cluster of <code class="docutils literal notranslate"><span class="pre">e</span></code> executors
+holds <code class="docutils literal notranslate"><span class="pre">e</span> <span class="pre">-</span> <span class="pre">1</span></code> connections per executor however wide the job. Sharing is safe
+because of the flow-control windows: a stream nobody is reading, such as a
+join’s probe side while its build side loads, holds at most
+<code class="docutils literal notranslate"><span class="pre">ballista.pipelined.stream_window_bytes</span></code> of unread data, and the connection
+window is the largest HTTP/2 allows, so stalled streams cannot starve the
+streams something is waiting on until a connection carries more than
+<code class="docutils literal notranslate"><span class="pre">2147483647</span> <span class="pre">/</span> <span class="pre">stream_window_bytes</span></code> of them, over 4000 at the default. A job
+wider than that should lower the stream window. The executor also listens
+with an accept queue of 4096, capped by <code class="docutils literal notranslate"><span class="pre">net.core.somaxconn</span></code>, for the burst
+of connections the first job after a restart opens.</p></li>
+<li><p><strong>Memory.</strong> With <code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span></code> set, all of a job’s tasks on an
+executor share one memory pool, sized by the vcores the job reserved there.
+Every stage of the job holds its state at the same time, such as the hash
+tables of all its joins and the buffers of all its sorts, so a pipelined job
+can need more memory than the same query run in staged mode. Sort-heavy
+plans need the most. For example, TPC-H query 8 at scale factor 10, planned
+with sort-merge joins over 16 partitions, runs in staged mode on a 4-vcore
+executor with a 2 GB pool, but fails in pipelined mode with that pool. Give
+executors more memory, use fewer partitions, or run such queries in staged
+mode.</p></li>
+</ul>
+</section>
+<section id="settings">
+<h2>Settings<a class="headerlink" href="#settings" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ballista.execution.mode</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">staged</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">staged</span></code> or <code class="docutils literal notranslate"><span class="pre">pipelined</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ballista.pipelined.queue_capacity</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
+<td><p>Batches each output partition holds before its producer waits for the consumer. Larger values smooth out uneven consumers at the cost of memory.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ballista.pipelined.registration_timeout_seconds</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">60</span></code></p></td>
+<td><p>How long a consumer waits for its producer task to start, and a producer whose queue is full waits for its consumer to connect, before the job fails.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ballista.pipelined.stream_window_bytes</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">524288</span></code></p></td>
+<td><p>HTTP/2 window of each stream to another executor. Bounds what a stalled stream holds; see Connections above.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code> caps how many partitions each task
+of a pipelined job processes, as it does in staged mode. Adaptive query
+execution (<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code>) does not apply to pipelined
+jobs. <code class="docutils literal notranslate"><span class="pre">ballista.optimizer.hash_join_max_build_partition_bytes</span></code> (64 MiB by
+default; 0 turns the check off) bounds the build side of each partitioned hash
+join, as described under Joins above.</p>
+<p>See the <a class="reference internal" href="configs.html"><span class="std std-doc">configuration reference</span></a> for every setting.</p>
+</section>
+<section id="arrow-flight-sql">
+<h2>Arrow Flight SQL<a class="headerlink" href="#arrow-flight-sql" title="Link to this heading">#</a></h2>
+<p>The <a class="reference internal" href="flightsql.html"><span class="std std-doc">Flight SQL frontend</span></a> runs pipelined jobs when the session
+asks for them. It answers a pipelined query with a single endpoint, through
+which the scheduler streams every partition of the result.</p>
+</section>
+<section id="limitations">
+<h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Pipelined jobs are not retried, in whole or in part; only a stream open whose
+connection failed is.</p></li>
+<li><p>Pipelined jobs need push-staged scheduling.</p></li>
+<li><p>A pipelined job waiting for its vcores has no priority over other jobs, so a
+steady stream of smaller jobs can keep it waiting.</p></li>
+<li><p>Adaptive query execution does not apply.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="tuning-guide.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Tuning Guide</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="metrics.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Ballista Scheduler Metrics</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal" tabindex="-1"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-to-use-it">When to use it</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#enabling-it">Enabling it</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-a-pipelined-job-runs">How a pipelined job runs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#settings">Settings</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrow-flight-sql">Arrow Flight SQL</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/user-guide/pipelined-execution.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+  <div class="sidebar-secondary-item">
+
+  <div class="tocsection sourcelink">
+    <a href="../_sources/user-guide/pipelined-execution.md.txt">
+      <i class="fa-solid fa-file-lines"></i> Show Source
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=75c7c72ae941e8b558d8"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=75c7c72ae941e8b558d8"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion Ballista, Arrow Ballista, Apache, the Apache feather logo, and the Apache DataFusion Ballista project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>

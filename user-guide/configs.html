@@ -260,6 +260,7 @@
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1 current active"><a aria-current="page" class="current reference internal" href="#">Configuration</a></li>
 <li class="toctree-l1"><a class="reference internal" href="tuning-guide.html">Tuning Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="pipelined-execution.html">Pipelined Execution (experimental)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="metrics.html">Ballista Scheduler Metrics</a></li>
 <li class="toctree-l1"><a class="reference internal" href="faq.html">Frequently Asked Questions</a></li>
 <li class="toctree-l1"><a class="reference internal" href="versioning.html">Versioning and Compatibility</a></li>
@@ -775,6 +776,8 @@ explanation of the sort-based shuffle writer.</p>
 <p>These session-level keys select and tune the experimental pipelined execution
 mode, in which every task of a job is placed up front and stages stream data
 to each other instead of exchanging shuffle files.</p>
+<p>See the <a class="reference internal" href="pipelined-execution.html"><span class="std std-doc">pipelined execution guide</span></a> for when to use
+the mode and how a pipelined job runs.</p>
 <!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.execution.,ballista.pipelined. -->
 <!-- prettier-ignore -->
 <div class="pst-scrollable-table-container"><table class="table">
