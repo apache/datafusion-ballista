@@ -441,10 +441,12 @@ Useful for development, testing, and notebooks:</p>
 <section id="target-partitions">
 <h3>Target Partitions<a class="headerlink" href="#target-partitions" title="Link to this heading">#</a></h3>
 <p>Set <code class="docutils literal notranslate"><span class="pre">datafusion.execution.target_partitions</span></code> to match your cluster capacity
-(<code class="docutils literal notranslate"><span class="pre">executors</span> <span class="pre">×</span> <span class="pre">vcores_per_executor</span></code>) by passing <code class="docutils literal notranslate"><span class="pre">cluster_config</span></code> to the
-constructor. The default inherits from DataFusion and is based on the client’s CPU
-count, which is far too low for distributed execution:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionContext</span>
+(<code class="docutils literal notranslate"><span class="pre">executors</span> <span class="pre">×</span> <span class="pre">vcores_per_executor</span></code>) by passing <code class="docutils literal notranslate"><span class="pre">config</span></code> to the
+constructor. Ballista sets the default to <code class="docutils literal notranslate"><span class="pre">16</span></code>, regardless of the client’s CPU
+count. A value set in a passed DataFusion <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code> is overridden with
+the default, use <code class="docutils literal notranslate"><span class="pre">BallistaSessionConfig.with_target_partitions</span></code> or a dictionary
+instead:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionConfig</span><span class="p">,</span> <span class="n">BallistaSessionContext</span>
 
 <span class="n">executors</span> <span class="o">=</span> <span class="mi">4</span>
 <span class="n">vcores</span> <span class="o">=</span> <span class="mi">8</span>
@@ -452,16 +454,21 @@ count, which is far too low for distributed execution:</p>
 
 <span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span>
     <span class="s2">"df://localhost:50050"</span><span class="p">,</span>
-    <span class="n">cluster_config</span><span class="o">=</span><span class="p">{</span>
-        <span class="s2">"datafusion.execution.target_partitions"</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">target_partitions</span><span class="p">),</span>
-    <span class="p">},</span>
+    <span class="n">config</span><span class="o">=</span><span class="n">BallistaSessionConfig</span><span class="p">()</span><span class="o">.</span><span class="n">with_target_partitions</span><span class="p">(</span><span class="n">target_partitions</span><span class="p">),</span>
+<span class="p">)</span>
+
+<span class="c1"># or</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span>
+    <span class="s2">"df://localhost:50050"</span><span class="p">,</span>
+    <span class="n">config</span><span class="o">=</span><span class="p">{</span><span class="s2">"datafusion.execution.target_partitions"</span><span class="p">:</span> <span class="n">target_partitions</span><span class="p">},</span>
 <span class="p">)</span>
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">cluster_config</span></code> is propagated to the scheduler-side session for distributed planning
-and execution, and is also applied to the local context so settings consulted during
-table registration (e.g. <code class="docutils literal notranslate"><span class="pre">datafusion.execution.listing_table_factory_infer_partitions</span></code>)
-take effect before the plan is shipped.</p>
+<p><code class="docutils literal notranslate"><span class="pre">config</span></code> can also be a dictionary of <code class="docutils literal notranslate"><span class="pre">datafusion.*</span></code> and <code class="docutils literal notranslate"><span class="pre">ballista.*</span></code> options, or a
+DataFusion <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code>. It is applied to the local context, so settings consulted
+during table registration (e.g. <code class="docutils literal notranslate"><span class="pre">datafusion.execution.listing_table_factory_infer_partitions</span></code>)
+take effect before the plan is shipped, and it is propagated to the scheduler-side
+session for distributed planning and execution.</p>
 <p>This controls how many parallel tasks the scheduler creates per stage. Setting it too
 low leaves executor capacity idle; setting it too high creates unnecessary scheduling
 overhead.</p>

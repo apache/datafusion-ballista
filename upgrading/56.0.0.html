@@ -421,6 +421,33 @@ in this section pertains to features and changes that have already been merged
 to the main branch and are awaiting release in this version.</p>
 <section id="deprecations">
 <h3>Deprecations<a class="headerlink" href="#deprecations" title="Link to this heading">#</a></h3>
+<section id="the-cluster-config-argument-of-ballistasessioncontext-is-deprecated">
+<h4>The <code class="docutils literal notranslate"><span class="pre">cluster_config</span></code> argument of <code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> is deprecated<a class="headerlink" href="#the-cluster-config-argument-of-ballistasessioncontext-is-deprecated" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">cluster_config</span></code> is still accepted, raises a <code class="docutils literal notranslate"><span class="pre">DeprecationWarning</span></code>, and will be
+removed in <code class="docutils literal notranslate"><span class="pre">57.0.0</span></code>. Pass the same options with <code class="docutils literal notranslate"><span class="pre">config</span></code> instead:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># before</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span>
+    <span class="s2">"df://localhost:50050"</span><span class="p">,</span>
+    <span class="n">cluster_config</span><span class="o">=</span><span class="p">{</span><span class="s2">"ballista.job.name"</span><span class="p">:</span> <span class="s2">"daily report"</span><span class="p">},</span>
+<span class="p">)</span>
+
+<span class="c1"># after</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span>
+    <span class="s2">"df://localhost:50050"</span><span class="p">,</span>
+    <span class="n">config</span><span class="o">=</span><span class="p">{</span><span class="s2">"ballista.job.name"</span><span class="p">:</span> <span class="s2">"daily report"</span><span class="p">},</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>Its options are merged into <code class="docutils literal notranslate"><span class="pre">config</span></code>, and take precedence if a key is set in
+both. As a result:</p>
+<ul class="simple">
+<li><p>Options restricted by Ballista, for example
+<code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.prefer_hash_join</span></code>, are always set to the Ballista value.
+Previously <code class="docutils literal notranslate"><span class="pre">cluster_config</span></code> overrode them on the local session.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cluster_config</span></code> can not be combined with the new <code class="docutils literal notranslate"><span class="pre">BallistaSessionConfig</span></code>,
+doing so raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>.</p></li>
+</ul>
+</section>
 <section id="the-scheduler-s-embedded-flight-proxy-is-deprecated">
 <h4>The scheduler’s embedded Flight proxy is deprecated<a class="headerlink" href="#the-scheduler-s-embedded-flight-proxy-is-deprecated" title="Link to this heading">#</a></h4>
 <p><code class="docutils literal notranslate"><span class="pre">--enable-embedded-flight-proxy</span></code> (and <code class="docutils literal notranslate"><span class="pre">SchedulerConfig::enable_embedded_flight_proxy</span></code>)
@@ -620,10 +647,22 @@ DataFusion <code class="docutils literal notranslate"><span class="pre">SessionC
 </section>
 <section id="configuration-changes">
 <h4>Configuration changes<a class="headerlink" href="#configuration-changes" title="Link to this heading">#</a></h4>
-<p><code class="docutils literal notranslate"><span class="pre">cluster_config</span></code> values can now be <code class="docutils literal notranslate"><span class="pre">str</span></code>, <code class="docutils literal notranslate"><span class="pre">int</span></code>, <code class="docutils literal notranslate"><span class="pre">float</span></code> or <code class="docutils literal notranslate"><span class="pre">bool</span></code>. Booleans
-are converted to <code class="docutils literal notranslate"><span class="pre">&quot;true&quot;</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;false&quot;</span></code>. Keys must start with <code class="docutils literal notranslate"><span class="pre">datafusion.</span></code> or
-<code class="docutils literal notranslate"><span class="pre">ballista.</span></code>. Any other key raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span>
+<p>All settings are now passed with <code class="docutils literal notranslate"><span class="pre">config</span></code>, which is used by the local session
+and sent to the scheduler-side session with every query. Previously a
+<code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code> passed as <code class="docutils literal notranslate"><span class="pre">config</span></code> was used locally only. The <code class="docutils literal notranslate"><span class="pre">cluster_config</span></code>
+argument is deprecated and will be removed in <code class="docutils literal notranslate"><span class="pre">57.0.0</span></code>, see
+<a class="reference internal" href="#deprecations"><span class="xref myst">Deprecations</span></a>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">config</span></code> accepts:</p>
+<ul class="simple">
+<li><p>a dictionary of <code class="docutils literal notranslate"><span class="pre">datafusion.*</span></code> and <code class="docutils literal notranslate"><span class="pre">ballista.*</span></code> options, with <code class="docutils literal notranslate"><span class="pre">str</span></code>, <code class="docutils literal notranslate"><span class="pre">int</span></code>,
+<code class="docutils literal notranslate"><span class="pre">float</span></code> or <code class="docutils literal notranslate"><span class="pre">bool</span></code> values. Booleans are converted to <code class="docutils literal notranslate"><span class="pre">&quot;true&quot;</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;false&quot;</span></code>.
+Any other key prefix, or an unknown <code class="docutils literal notranslate"><span class="pre">ballista.*</span></code> key, raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>.</p></li>
+<li><p>a <code class="docutils literal notranslate"><span class="pre">datafusion.SessionConfig</span></code>.</p></li>
+<li><p>a <code class="docutils literal notranslate"><span class="pre">ballista.BallistaSessionConfig</span></code>, a new builder with typed <code class="docutils literal notranslate"><span class="pre">with_*</span></code> setters
+for Ballista options and <code class="docutils literal notranslate"><span class="pre">set</span></code> for any <code class="docutils literal notranslate"><span class="pre">datafusion.*</span></code> or <code class="docutils literal notranslate"><span class="pre">ballista.*</span></code> option.</p></li>
+</ul>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># before</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span>
     <span class="s2">"df://localhost:50050"</span><span class="p">,</span>
     <span class="n">cluster_config</span><span class="o">=</span><span class="p">{</span>
         <span class="s2">"datafusion.execution.target_partitions"</span><span class="p">:</span> <span class="mi">16</span><span class="p">,</span>
@@ -631,8 +670,31 @@ are converted to <code class="docutils literal notranslate"><span class="pre">&q
         <span class="s2">"ballista.planner.adaptive.enabled"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
     <span class="p">},</span>
 <span class="p">)</span>
+
+<span class="c1"># after</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span>
+    <span class="s2">"df://localhost:50050"</span><span class="p">,</span>
+    <span class="n">config</span><span class="o">=</span><span class="p">{</span>
+        <span class="s2">"datafusion.execution.target_partitions"</span><span class="p">:</span> <span class="mi">16</span><span class="p">,</span>
+        <span class="s2">"ballista.job.name"</span><span class="p">:</span> <span class="s2">"daily report"</span><span class="p">,</span>
+        <span class="s2">"ballista.planner.adaptive.enabled"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="p">},</span>
+<span class="p">)</span>
+
+<span class="c1"># or</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionConfig</span>
+
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span>
+    <span class="s2">"df://localhost:50050"</span><span class="p">,</span>
+    <span class="n">config</span><span class="o">=</span><span class="n">BallistaSessionConfig</span><span class="p">()</span>
+    <span class="o">.</span><span class="n">with_job_name</span><span class="p">(</span><span class="s2">"daily report"</span><span class="p">)</span>
+    <span class="o">.</span><span class="n">with_adaptive_query_planner</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
+    <span class="o">.</span><span class="n">with_target_partitions</span><span class="p">(</span><span class="mi">16</span><span class="p">),</span>
+<span class="p">)</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">BallistaSessionConfig.build()</span></code> returns a regular <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code>, so it can
+also be used to create a plain DataFusion <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code>.</p>
 <p>Ballista settings are registered on the session as a DataFusion config
 extension, available as <code class="docutils literal notranslate"><span class="pre">ballista.BallistaConfigExtension</span></code>. As a result,
 <code class="docutils literal notranslate"><span class="pre">ballista.*</span></code> keys appear in <code class="docutils literal notranslate"><span class="pre">information_schema.df_settings</span></code> and can be changed
@@ -644,7 +706,9 @@ defaults the scheduler uses. Some DataFusion options are restricted by Ballista
 always set to the Ballista value, even if you set them in <code class="docutils literal notranslate"><span class="pre">config</span></code>. Other
 Ballista defaults, such as
 <code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.hash_join_single_partition_threshold</span></code>, can still be
-overridden when <code class="docutils literal notranslate"><span class="pre">config</span></code> is passed as a dictionary.</p>
+overridden when <code class="docutils literal notranslate"><span class="pre">config</span></code> is passed as a dictionary or set with
+<code class="docutils literal notranslate"><span class="pre">BallistaSessionConfig.set</span></code>. Options inside a passed <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code> can not be
+inspected, so all of them are overridden with Ballista defaults.</p>
 </section>
 </section>
 <section id="jupyter-support-changes">
@@ -724,6 +788,7 @@ unchanged.</p>
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-56-0-0">Ballista 56.0.0</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecations">Deprecations</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-cluster-config-argument-of-ballistasessioncontext-is-deprecated">The <code class="docutils literal notranslate"><span class="pre">cluster_config</span></code> argument of <code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> is deprecated</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-scheduler-s-embedded-flight-proxy-is-deprecated">The scheduler’s embedded Flight proxy is deprecated</a></li>
 </ul>
 </li>
