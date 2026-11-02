@@ -485,6 +485,7 @@ async fn newly_built_adaptive_graph_has_expected_state()
         &ctx,
         &logical_plan,
         7,
+        None,
     )
     .await?;
 
