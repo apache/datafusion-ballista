@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+/// Rules a scheduler embedder adds to adaptive planning
+mod adaptive_rules;
 /// Test if stages can be added or removed
 mod alter_stages;
 /// Broadcast-threshold decisions over declared statistics

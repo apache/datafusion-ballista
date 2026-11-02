@@ -43,6 +43,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub(crate) mod aqe;
+/// Extension points for adaptive query planning: rules of your own, and the
+/// stage boundaries they act on.
+pub mod adaptive {
+    pub use super::aqe::adaptive_rules::{AdaptiveRule, AdaptiveRules};
+    pub use super::aqe::execution_plan::ExchangeExec;
+}
 /// Links the jobs behind a `DataFrame::cache()` query so none of them blocks.
 pub(crate) mod cache_linker;
 /// Cross-job registry of materialized `DataFrame::cache()` results.

@@ -22,6 +22,7 @@ use crate::physical_optimizer::file_group_balance::BalanceAndPruneFileGroups;
 use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::adaptive_rules::AdaptiveRules;
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_graph::{
     ExecutionGraphBox, RunningTaskInfo, StaticExecutionGraph, TaskDescription,
@@ -158,6 +159,8 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     /// Resolver for nodes Ballista does not know. See
     /// [`SchedulerConfig::partition_sliceable_resolver`].
     partition_sliceable_resolver: Option<PartitionSliceableResolver>,
+    /// See [`SchedulerConfig::adaptive_rules`].
+    adaptive_rules: Option<Arc<dyn AdaptiveRules>>,
 }
 
 /// Contains the execution graph and cached data to improve performance
@@ -245,6 +248,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
             partition_sliceable_resolver: config.partition_sliceable_resolver.clone(),
+            adaptive_rules: config.adaptive_rules.clone(),
         }
     }
 
@@ -353,6 +357,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                             &ctx,
                             logical_plan,
                             queued_at,
+                            self.adaptive_rules.as_deref(),
                         )
                         .await?,
                     ) as ExecutionGraphBox
@@ -393,6 +398,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         &ctx,
                         physical_plan.clone(),
                         queued_at,
+                        self.adaptive_rules.as_deref(),
                     )?) as ExecutionGraphBox
                 } else {
                     debug!("Using static query planner for physical-plan job submission");
@@ -1546,9 +1552,16 @@ mod tests {
             .sort(vec![SortExpr::new(col("id"), false, false)])?
             .build()?;
         let job_id: JobId = "retired-task-refund".into();
-        let mut graph =
-            AdaptiveExecutionGraph::try_new("scheduler", &job_id, "", &ctx, &plan, 0)
-                .await?;
+        let mut graph = AdaptiveExecutionGraph::try_new(
+            "scheduler",
+            &job_id,
+            "",
+            &ctx,
+            &plan,
+            0,
+            None,
+        )
+        .await?;
         graph.revive();
         let graph: ExecutionGraphBox = Box::new(graph);
         let state = Arc::new(InMemoryJobState::new(

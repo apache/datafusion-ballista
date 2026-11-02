@@ -83,7 +83,8 @@ async fn should_keep_submitted_shuffle_under_extension_operator()
     let plan =
         hand_built_plan(&ctx, |shuffle| Arc::new(OpaqueExec::new(shuffle))).await?;
 
-    let planner = AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into())?;
+    let planner =
+        AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into(), None)?;
 
     assert_plan!(planner.plan.as_ref(), @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -122,7 +123,8 @@ async fn should_keep_submitted_range_shuffle_under_extension_operator()
         Arc::new(RepartitionExec::try_new(scan, Partitioning::Range(range))?);
     let plan: Arc<dyn ExecutionPlan> = Arc::new(OpaqueExec::new(shuffle));
 
-    let planner = AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into())?;
+    let planner =
+        AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into(), None)?;
 
     assert_plan!(planner.plan.as_ref(), @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -145,7 +147,7 @@ async fn should_not_coalesce_shuffle_feeding_extension_operator()
         hand_built_plan(&ctx, |shuffle| Arc::new(OpaqueExec::new(shuffle))).await?;
 
     let mut planner =
-        AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into())?;
+        AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into(), None)?;
 
     let _ = planner.runnable_stages()?.unwrap();
     // 8 partitions of 50 bytes against a 200-byte target packs to K=2, which
@@ -219,4 +221,109 @@ impl ExecutionPlan for OpaqueExec {
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
         self.input.execute(partition, context)
     }
+}
+
+/// Holds back (or releases) the stage of every exchange, as an embedder's rule
+/// that wants to decide on a stage later would.
+#[derive(Debug)]
+struct HoldStages {
+    inactive: bool,
+}
+
+impl datafusion::physical_optimizer::PhysicalOptimizerRule for HoldStages {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        _config: &datafusion::config::ConfigOptions,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        use crate::state::aqe::execution_plan::ExchangeExec;
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+        Ok(plan
+            .transform_up(|node| {
+                let Some(exchange) = node.downcast_ref::<ExchangeExec>() else {
+                    return Ok(Transformed::no(node));
+                };
+                let held: Arc<dyn ExecutionPlan> =
+                    Arc::new(exchange.with_inactive_stage(self.inactive));
+                Ok(Transformed::yes(held))
+            })?
+            .data)
+    }
+
+    fn name(&self) -> &str {
+        "HoldStages"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
+/// An embedder's rules: hold every stage while preparing the plan, and
+/// optionally release them again when the plan is optimized.
+#[derive(Debug)]
+struct HoldThenRelease {
+    release: bool,
+}
+
+impl crate::state::aqe::adaptive_rules::AdaptiveRules for HoldThenRelease {
+    fn preparation_rules(
+        &self,
+        _plan_ids: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Vec<crate::state::aqe::adaptive_rules::AdaptiveRule> {
+        vec![Arc::new(HoldStages { inactive: true })]
+    }
+
+    fn replan_rules(
+        &self,
+        _plan_ids: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Vec<crate::state::aqe::adaptive_rules::AdaptiveRule> {
+        if self.release {
+            vec![Arc::new(HoldStages { inactive: false })]
+        } else {
+            vec![]
+        }
+    }
+}
+
+/// An embedder's preparation rule runs after the submitted shuffles are
+/// pinned, so it can hold their stages back, and a held stage doesn't run.
+#[tokio::test]
+async fn should_not_run_a_stage_an_embedder_rule_holds() -> datafusion::common::Result<()>
+{
+    let ctx = physical_context(false);
+    let plan =
+        hand_built_plan(&ctx, |shuffle| Arc::new(OpaqueExec::new(shuffle))).await?;
+
+    let mut planner = AdaptivePlanner::try_new_from_physical(
+        &ctx,
+        plan,
+        "test_job".into(),
+        Some(&HoldThenRelease { release: false }),
+    )?;
+
+    let runnable = planner.identify_runnable_stages()?.unwrap_or_default();
+    assert!(runnable.is_empty(), "a held stage must not run");
+    Ok(())
+}
+
+/// An embedder's replan rules run whenever the plan is optimized, after its
+/// preparation rules, so they can release a stage held back earlier.
+#[tokio::test]
+async fn should_run_a_stage_an_embedder_rule_releases() -> datafusion::common::Result<()>
+{
+    let ctx = physical_context(false);
+    let plan =
+        hand_built_plan(&ctx, |shuffle| Arc::new(OpaqueExec::new(shuffle))).await?;
+
+    let mut planner = AdaptivePlanner::try_new_from_physical(
+        &ctx,
+        plan,
+        "test_job".into(),
+        Some(&HoldThenRelease { release: true }),
+    )?;
+
+    let runnable = planner.identify_runnable_stages()?.unwrap_or_default();
+    assert_eq!(runnable.len(), 1, "the released stage must run");
+    Ok(())
 }
