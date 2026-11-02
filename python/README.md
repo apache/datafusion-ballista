@@ -153,7 +153,7 @@ See the `examples/` directory for Jupyter notebooks demonstrating various featur
 ## Scheduler and Executor
 
 Scheduler and executors can be configured and started from python code. They use
-Python aware codecs, so unlike the Rust binaries they can run Python UDFs.
+Python aware codecs, so unlike the Rust binaries and the Docker images they can run Python UDFs.
 
 To start scheduler:
 
@@ -187,6 +187,15 @@ All constructor arguments are optional. `close()` stops a started process.
 
 For tests and notebooks, `setup_test_cluster()` starts a scheduler and an executor in
 the current process and returns the scheduler `(host, port)`.
+
+### Trust Model for Python UDFs
+
+A scheduler or executor started from Python decodes Python UDFs in query plans with `cloudpickle.loads`, which can run arbitrary Python code. Anyone who can reach the scheduler or executor ports can therefore run arbitrary code on the cluster, as the user the processes
+run as. This is the same trust model as PySpark.
+
+Only expose such a cluster to trusted clients, for example by binding to `localhost` or a private network, or restricting access with a firewall.
+
+Python UDFs only work on clusters started from Python. The `ballista-scheduler` and `ballista-executor` Rust binaries and the Docker images can not decode them.
 
 ## Development Process
 

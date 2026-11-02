@@ -251,9 +251,20 @@ UDFs are run by Python on the executors, so the cluster has to meet these requir
 
 - The scheduler and executors are started from Python, with `BallistaScheduler`,
   `BallistaExecutor` or `setup_test_cluster`, see below. The Rust
-  `ballista-scheduler` and `ballista-executor` binaries can not run Python UDFs.
+  `ballista-scheduler` and `ballista-executor` binaries and the Docker images can not
+  run Python UDFs.
 - They run the same Python minor version as the client.
 - Everything the UDF imports is installed on them.
+
+### Trust Model
+
+A cluster started from Python decodes UDFs with `cloudpickle.loads`, which can run
+arbitrary Python code. Anyone who can reach the scheduler or executor ports can therefore
+run arbitrary code on the cluster, as the user the processes run as. This is the same trust
+model as PySpark.
+
+Only expose such a cluster to trusted clients, for example by binding to `localhost` or a
+private network, or restricting access with a firewall.
 
 ## Running a Cluster from Python
 
