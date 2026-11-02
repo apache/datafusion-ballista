@@ -351,6 +351,7 @@ impl ExchangeExec {
             self.plan_id,
             self.stage_id.clone(),
             self.shuffle_partitions.clone(),
+            self.column_statistics.clone(),
             self.coalesce.clone(),
             self.range_repartition_routing.clone(),
             self.broadcast,
@@ -788,10 +789,11 @@ mod column_statistics_tests {
         assert_eq!(null_count_of(&stats, 0), Precision::Absent);
     }
 
-    // Rules rebuild exchanges with `with_new_children` and turn them into
-    // broadcasts with `to_broadcast`; both must keep the statistics.
+    // Rules rebuild exchanges with `with_new_children`, turn them into
+    // broadcasts with `to_broadcast` and hold their stage back with
+    // `with_inactive_stage`; all of them must keep the statistics.
     #[test]
-    fn rebuilt_and_broadcast_exchanges_keep_the_column_statistics() {
+    fn rebuilt_broadcast_and_inactive_exchanges_keep_the_column_statistics() {
         let exchange = resolved(null_count_statistics(&[3, 0]));
 
         let rebuilt = Arc::clone(&exchange)
@@ -801,8 +803,13 @@ mod column_statistics_tests {
             )
             .unwrap();
         let broadcast = exchange.to_broadcast(1);
+        let inactive = exchange.with_inactive_stage(true);
 
-        for plan in [rebuilt, Arc::new(broadcast) as Arc<dyn ExecutionPlan>] {
+        for plan in [
+            rebuilt,
+            Arc::new(broadcast) as Arc<dyn ExecutionPlan>,
+            Arc::new(inactive),
+        ] {
             let stats = stats_of(plan.as_ref(), None);
             assert_eq!(null_count_of(&stats, 0), Precision::Exact(3));
         }

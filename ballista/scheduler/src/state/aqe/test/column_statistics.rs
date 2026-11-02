@@ -75,7 +75,7 @@ async fn completed_stage_column_statistics_reach_its_exchange() {
         .unwrap()
         .into_optimized_plan()
         .unwrap();
-    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into())
+    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into(), None)
         .await
         .unwrap();
     let (stages, _) = planner.actionable_stages().unwrap();
