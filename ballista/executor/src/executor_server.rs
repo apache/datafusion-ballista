@@ -490,6 +490,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     .ok();
                 let runtime_stats = exec.collect_runtime_stats_reports();
                 let column_stats = exec.collect_column_stats();
+                let runtime_filters = exec.collect_runtime_filter_reports();
                 // Collect only when the task otherwise succeeded: a failed task's
                 // partial state is meaningless, and its own error is the useful one.
                 // A collection failure fails the task — these are load-bearing for the
@@ -525,6 +526,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                         runtime_stats,
                         window_state,
                         column_stats,
+                        runtime_filters,
                     },
                 );
 

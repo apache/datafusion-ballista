@@ -24,8 +24,8 @@ use crate::state::aqe::execution_plan::{
 use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
-    DistributedExchangeRule, NormalizeInterleaveRule, ParallelWindowRule,
-    PrefixWindowRule, PropagateEmptyExecRule, SelectJoinRule,
+    DistributedExchangeRule, NormalizeInterleaveRule, OptimizeSkewedJoinRule,
+    ParallelWindowRule, PrefixWindowRule, PropagateEmptyExecRule, SelectJoinRule,
 };
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
@@ -54,6 +54,23 @@ type PhysicalOptimizerRuleRef =
 pub(super) type RunnableStages = Option<Vec<AdaptiveStageInfo>>;
 type CancellableStageIds = HashSet<usize>;
 
+/// Keep the boundary for completion updates and the adapted writer's output width.
+#[derive(Clone)]
+struct CachedStage {
+    boundary: Arc<dyn ExecutionPlan>,
+    output_partition_count: usize,
+}
+
+impl CachedStage {
+    fn new(boundary: Arc<dyn ExecutionPlan>) -> Self {
+        let output_partition_count = boundary.output_partitioning().partition_count();
+        Self {
+            boundary,
+            output_partition_count,
+        }
+    }
+}
+
 /// The `AdaptivePlanner` struct is responsible for managing the execution of distributed
 /// physical plans in an adaptive manner. It handles the optimization, selection, and
 /// cancellation of stages within a distributed query execution plan.
@@ -69,8 +86,9 @@ pub struct AdaptivePlanner {
     physical_planner: Arc<DefaultPhysicalPlanner>,
     /// physical plan representing given job
     pub(crate) plan: Arc<dyn ExecutionPlan>,
-    /// caches current runnable stages
-    runnable_stage_cache: HashMap<usize, Arc<dyn ExecutionPlan>>,
+    /// Stage boundaries and their executable shuffle output widths. AQE may
+    /// change the width without changing the original boundary properties.
+    runnable_stage_cache: HashMap<usize, CachedStage>,
     /// Unique identifier for the job, used to key this job's shuffle output.
     job_id: JobId,
 
@@ -195,16 +213,17 @@ impl AdaptivePlanner {
         stage_id: usize,
         routing: RangeRepartitionRouting,
     ) -> common::Result<()> {
-        let stage = self.runnable_stage_cache.get(&stage_id).ok_or_else(|| {
-            DataFusionError::Internal(format!(
-                "set_repartition_routing: stage {stage_id} not in runnable cache"
-            ))
-        })?;
-        let exchange = stage.downcast_ref::<ExchangeExec>().ok_or_else(|| {
+        let CachedStage { boundary, .. } =
+            self.runnable_stage_cache.get(&stage_id).ok_or_else(|| {
+                DataFusionError::Internal(format!(
+                    "set_repartition_routing: stage {stage_id} not in runnable cache"
+                ))
+            })?;
+        let exchange = boundary.downcast_ref::<ExchangeExec>().ok_or_else(|| {
             DataFusionError::Internal(format!(
                 "set_repartition_routing: stage {stage_id} boundary is {}, \
                  not ExchangeExec — nowhere to park cuts for downstream filter",
-                stage.name()
+                boundary.name()
             ))
         })?;
         exchange.resolve_range_repartition_routing(routing);
@@ -227,8 +246,8 @@ impl AdaptivePlanner {
             .as_ref()
             .map(|stage| {
                 (
-                    stage.downcast_ref::<ExchangeExec>(),
-                    stage.downcast_ref::<AdaptiveDatafusionExec>(),
+                    stage.boundary.downcast_ref::<ExchangeExec>(),
+                    stage.boundary.downcast_ref::<AdaptiveDatafusionExec>(),
                 )
             }) {
             Some((Some(stage), None)) => {
@@ -285,33 +304,28 @@ impl AdaptivePlanner {
         &mut self,
         stage_id: usize,
     ) -> common::Result<Vec<Vec<PartitionLocation>>> {
-        let stage = self.runnable_stage_cache.get(&stage_id).ok_or(
+        let CachedStage {
+            boundary,
+            output_partition_count,
+        } = self.runnable_stage_cache.get(&stage_id).ok_or(
             datafusion::error::DataFusionError::Execution(
                 "Can't find active cache resolve".into(),
             ),
         )?;
-        let is_broadcast = stage
+        let is_broadcast = boundary
             .downcast_ref::<ExchangeExec>()
-            .map(|e| e.broadcast)
-            .unwrap_or(false);
+            .is_some_and(|exchange| exchange.broadcast);
 
-        let output_partition_count = stage.output_partitioning().partition_count();
-        let stage_output = if is_broadcast {
-            self.runnable_stage_output
-                .remove(&stage_id)
-                .ok_or(datafusion::error::DataFusionError::Execution(
-                    "Can't find active stage to resolve".into(),
-                ))?
-                .partition_locations_broadcast()
+        let stage_output = self.runnable_stage_output.remove(&stage_id).ok_or(
+            datafusion::error::DataFusionError::Execution(
+                "Can't find active stage to resolve".into(),
+            ),
+        )?;
+        Ok(if is_broadcast {
+            stage_output.partition_locations_broadcast()
         } else {
-            self.runnable_stage_output
-                .remove(&stage_id)
-                .ok_or(datafusion::error::DataFusionError::Execution(
-                    "Can't find active stage to resolve".into(),
-                ))?
-                .partition_locations(output_partition_count)
-        };
-        Ok(stage_output)
+            stage_output.partition_locations(*output_partition_count)
+        })
     }
 
     /// Save the given partition list on the stage's ExchangeExec and trigger a replan.
@@ -386,10 +400,23 @@ impl AdaptivePlanner {
                         // that would arise if the rule walked the entire residual
                         // plan in `default_optimizers()`.
                         let plan = CoalescePartitionsRule.optimize(plan, config)?;
+                        let plan = OptimizeSkewedJoinRule.optimize(plan, config)?;
                         BallistaAdapter::adapt_to_ballista(plan, &self.job_id, config)
                             .map(|w| (w.plan.stage_id(), w))
                     })
                     .collect::<common::Result<(HashSet<_>, Vec<_>)>>()?;
+
+                for stage in &shuffle_writers {
+                    let output_count = stage
+                        .plan
+                        .shuffle_output_partitioning()
+                        .map(|partitioning| partitioning.partition_count())
+                        .unwrap_or_else(|| stage.plan.input_partition_count());
+                    self.runnable_stage_cache
+                        .get_mut(&stage.plan.stage_id())
+                        .unwrap()
+                        .output_partition_count = output_count;
+                }
 
                 let stages_to_cancel = self
                     .runnable_stage_cache
@@ -422,8 +449,10 @@ impl AdaptivePlanner {
                         exchange.set_stage_id(self.stage_id_generator);
                         // keeping stage in stage cache
                         // so we can process updates
-                        self.runnable_stage_cache
-                            .insert(self.stage_id_generator, exec.clone());
+                        self.runnable_stage_cache.insert(
+                            self.stage_id_generator,
+                            CachedStage::new(exec.clone()),
+                        );
                         // keeping track of stage outputs
                         self.runnable_stage_output
                             .insert(self.stage_id_generator, Default::default());
@@ -455,7 +484,7 @@ impl AdaptivePlanner {
                 // keeping stage in stage cache
                 // so we can process updates
                 self.runnable_stage_cache
-                    .insert(self.stage_id_generator, self.plan.clone());
+                    .insert(self.stage_id_generator, CachedStage::new(self.plan.clone()));
                 // keeping track of stage outputs
                 self.runnable_stage_output
                     .insert(self.stage_id_generator, Default::default());

@@ -203,6 +203,7 @@ async fn test_replan_cancelled_stage_is_retired_and_late_task_discarded() -> Res
                 runtime_stats: vec![],
                 window_state: vec![],
                 task_column_stats: vec![],
+                runtime_filters: vec![],
             })),
         };
         graph.update_task_status(&executor, vec![status], 4, 4)?;
@@ -242,6 +243,7 @@ async fn test_replan_cancelled_stage_is_retired_and_late_task_discarded() -> Res
             runtime_stats: vec![],
             window_state: vec![],
             task_column_stats: vec![],
+            runtime_filters: vec![],
         })),
     };
     graph
