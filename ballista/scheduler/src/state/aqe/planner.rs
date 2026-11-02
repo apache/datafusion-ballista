@@ -18,6 +18,7 @@ use crate::cache::is_external_stage_id;
 use crate::physical_optimizer::file_group_balance::BalanceAndPruneFileGroups;
 use crate::physical_optimizer::filter_pushdown::FilterPushdown;
 use crate::state::aqe::adapter::BallistaAdapter;
+use crate::state::aqe::adaptive_rules::AdaptiveRules;
 use crate::state::aqe::execution_plan::{
     AdaptiveDatafusionExec, ExchangeExec, RangeRepartitionRouting,
 };
@@ -136,13 +137,15 @@ impl AdaptivePlanner {
         })
     }
 
-    /// Creates a new `AdaptivePlanner` with default physical optimizer rules.
+    /// Creates a new `AdaptivePlanner` with default physical optimizer rules,
+    /// and an embedder's `rules` added to them (see [`AdaptiveRules`]).
     ///
     /// # Arguments
     ///
     /// * `ctx` - The session context
     /// * `logical_plan` - The logical plan for the job.
     /// * `job_id` - The unique identifier for the job.
+    /// * `rules` - Rules of the embedder's own, if any.
     ///
     /// # Returns
     /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
@@ -150,6 +153,7 @@ impl AdaptivePlanner {
         ctx: &SessionContext,
         logical_plan: &LogicalPlan,
         job_id: JobId,
+        rules: Option<&dyn AdaptiveRules>,
     ) -> common::Result<Self> {
         // session state with very limited set of optimizers.
         // this optimizer set will be executed only once, before
@@ -157,10 +161,18 @@ impl AdaptivePlanner {
         // after each stage.
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
 
+        let mut preparation_optimizers =
+            Self::plan_preparation_optimizers(plan_id_generator.clone());
+        let mut replan_optimizers = vec![];
+        if let Some(rules) = rules {
+            preparation_optimizers
+                .extend(rules.preparation_rules(plan_id_generator.clone()));
+            replan_optimizers = rules.replan_rules(plan_id_generator.clone());
+        }
         let plan_preparation_state_builder = SessionStateBuilder::from(ctx.state());
         let plan_preparation_state = Self::create_session_state(
             plan_preparation_state_builder,
-            Self::plan_preparation_optimizers(plan_id_generator.clone()),
+            preparation_optimizers,
         );
 
         let plan = plan_preparation_state
@@ -176,7 +188,7 @@ impl AdaptivePlanner {
             state_builder,
             plan,
             job_id,
-            Self::default_optimizers(plan_id_generator),
+            Self::default_optimizers_with(plan_id_generator, replan_optimizers),
         )
     }
     /// Cancels a stage by its ID.
@@ -501,8 +513,17 @@ impl AdaptivePlanner {
     ///
     /// # Returns
     /// A vector of default physical optimizer rules.
+    #[cfg(test)]
     pub(super) fn default_optimizers(
         plan_id_generator: Arc<AtomicUsize>,
+    ) -> Vec<PhysicalOptimizerRuleRef> {
+        Self::default_optimizers_with(plan_id_generator, vec![])
+    }
+
+    /// The default rules, followed by an embedder's `replan_rules`.
+    fn default_optimizers_with(
+        plan_id_generator: Arc<AtomicUsize>,
+        replan_rules: Vec<PhysicalOptimizerRuleRef>,
     ) -> Vec<PhysicalOptimizerRuleRef> {
         let mut physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> =
             vec![];
@@ -543,9 +564,14 @@ impl AdaptivePlanner {
         physical_optimizers
             .push(Arc::new(PrefixWindowRule::new(plan_id_generator.clone())));
 
-        // `DistributedExchangeRule` should be the last plan mutator rule in the chain
+        // `DistributedExchangeRule` should be the last of Ballista's plan mutator rules
         physical_optimizers
             .push(Arc::new(DistributedExchangeRule::new(plan_id_generator)));
+
+        // An embedder's rules for nodes of its own run last, so they see each
+        // stage boundary, including the one placed in this pass for a stage
+        // whose inputs just finished, before that stage can start.
+        physical_optimizers.extend(replan_rules);
 
         physical_optimizers
     }
