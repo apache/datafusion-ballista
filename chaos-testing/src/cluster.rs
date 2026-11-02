@@ -17,6 +17,7 @@
 
 use crate::fetch::ResultFetch;
 use nix::fcntl::{Flock, FlockArg};
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -25,24 +26,37 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-/// Reserve `N` free TCP ports by binding each to :0, releasing them only once
-/// every port has been read.
+/// Reserve `N` free TCP ports that are not in `taken`, and add them to `taken`.
 ///
-/// Holding all `N` listeners is what makes the ports distinct from each other.
-/// Releasing each before taking the next lets the kernel hand the same number
-/// back, and a caller that asked for two ports then gives its child one port
-/// for two servers: the second bind fails `AddrInUse` and the child exits
-/// during startup.
+/// Each candidate is found by binding to :0, and every listener is held until
+/// all `N` ports have been read. Holding them is what makes the ports of one
+/// call distinct from each other. Releasing each before taking the next lets
+/// the kernel hand the same number back, and a caller that asked for two ports
+/// then gives its child one port for two servers: the second bind fails
+/// `AddrInUse` and the child exits during startup.
+///
+/// The same thing happens across calls. The listeners are dropped before this
+/// returns and the child binds the ports some milliseconds later, so a later
+/// call made in that window (the next executor of the same cluster) can be
+/// handed a port the previous child has not bound yet. The cluster therefore
+/// records every port it hands out in `taken`, and a candidate already in it
+/// is skipped (and kept bound, so the kernel does not offer it again while we
+/// look for a replacement).
 ///
 /// Still racy against the rest of the machine, which is adequate here: the
 /// child binds within milliseconds and the tests are the only thing running.
-fn free_ports<const N: usize>() -> [u16; N] {
-    let listeners: [TcpListener; N] = std::array::from_fn(|_| {
-        TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port")
-    });
-    listeners
-        .each_ref()
-        .map(|listener| listener.local_addr().expect("local addr").port())
+fn reserve_ports<const N: usize>(taken: &mut HashSet<u16>) -> [u16; N] {
+    let mut held = Vec::new();
+    let mut fresh = Vec::with_capacity(N);
+    while fresh.len() < N {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        if taken.insert(port) {
+            fresh.push(port);
+        }
+        held.push(listener);
+    }
+    fresh.try_into().expect("exactly N ports")
 }
 
 /// Open a child process log file for append.
@@ -195,14 +209,15 @@ impl TestClusterBuilder {
         eprintln!("chaos cluster fetches results via {result_fetch}");
         let result_service_enabled = result_fetch == ResultFetch::ResultService;
 
-        // Reserve the scheduler port and (when enabled) the result-service port
-        // together so they are distinct — see `free_ports`; separate calls could
-        // hand the same number to both.
+        // Every port handed to a process of this cluster goes through
+        // `assigned_ports`, so the scheduler, the result service and each
+        // executor get distinct ports — see `reserve_ports`.
+        let mut assigned_ports = HashSet::new();
         let (scheduler_port, result_service_port) = if result_service_enabled {
-            let [scheduler_port, rs_port] = free_ports();
+            let [scheduler_port, rs_port] = reserve_ports(&mut assigned_ports);
             (scheduler_port, Some(rs_port))
         } else {
-            let [scheduler_port] = free_ports();
+            let [scheduler_port] = reserve_ports(&mut assigned_ports);
             (scheduler_port, None)
         };
 
@@ -293,6 +308,7 @@ impl TestClusterBuilder {
             result_service_port,
             result_fetch,
             executors: Vec::new(),
+            assigned_ports,
             temp,
             log_dir,
             builder: self,
@@ -334,6 +350,9 @@ pub struct TestCluster {
     result_service_port: Option<u16>,
     result_fetch: ResultFetch,
     pub(crate) executors: Vec<ExecutorHandle>,
+    /// Every port handed to a process of this cluster so far, including those
+    /// of executors that have since died. See [`reserve_ports`].
+    assigned_ports: HashSet<u16>,
     temp: tempfile::TempDir,
     log_dir: PathBuf,
     builder: TestClusterBuilder,
@@ -407,9 +426,11 @@ impl TestCluster {
     }
 
     pub(crate) fn spawn_executor(&mut self, index: usize) -> Result<(), String> {
-        // One call, so the two are guaranteed distinct: the executor binds
-        // its flight server to `port` and its gRPC server to `grpc_port`.
-        let [port, grpc_port] = free_ports();
+        // The executor binds its flight server to `port` and its gRPC server
+        // to `grpc_port`. Both are distinct from each other and from every
+        // port already given to this cluster, including those of an executor
+        // spawned a moment ago that may not have bound its ports yet.
+        let [port, grpc_port] = reserve_ports(&mut self.assigned_ports);
         let work_dir = self.temp.path().join(format!("executor-{index}"));
         std::fs::create_dir_all(&work_dir).map_err(|e| e.to_string())?;
 
@@ -986,11 +1007,33 @@ mod tests {
     /// reserving the ports one at a time, which is what allows a repeat.
     #[test]
     fn ports_reserved_together_are_distinct() {
-        let ports = free_ports::<16>();
+        let ports: [u16; 16] = reserve_ports(&mut HashSet::new());
         let mut seen = std::collections::HashSet::new();
         for port in ports {
             assert!(seen.insert(port), "port {port} handed out twice: {ports:?}");
         }
+    }
+
+    /// Ports already handed out are never handed out again, even after their
+    /// listeners are gone. This is the executor-startup race: executor 0's
+    /// ports are released before its process binds them, and the next
+    /// reservation must not pick one of them up.
+    #[test]
+    fn reserved_ports_skip_ports_already_taken() {
+        let mut taken = HashSet::new();
+        let first: [u16; 8] = reserve_ports(&mut taken);
+        // The listeners behind `first` are closed, so the kernel is free to
+        // hand those numbers out again; only `taken` keeps them away.
+        for _ in 0..64 {
+            let next: [u16; 2] = reserve_ports(&mut taken);
+            for port in next {
+                assert!(
+                    !first.contains(&port),
+                    "port {port} reserved twice: {first:?} then {next:?}"
+                );
+            }
+        }
+        assert_eq!(taken.len(), 8 + 64 * 2);
     }
 
     #[tokio::test]
