@@ -27,7 +27,10 @@
 //!
 //! The physical codec additionally supports [DistributedQueryExec] and
 //! [DistributedExplainAnalyzeExec], which are only serialized when plans
-//! cross the datafusion-python FFI boundary.
+//! cross the datafusion-python FFI boundary. A codec created with a Python
+//! client decodes them as [PythonDistributedQueryExec] and
+//! [PythonDistributedExplainAnalyzeExec] instead, which talk to the cluster
+//! through that client.
 //!
 //! Note: [BallistaPhysicalExtensionCodec] serializes shuffle partitioning
 //! expressions with its internal default codec, so Python UDFs used directly
@@ -35,6 +38,9 @@
 //! projects such keys into columns before repartitioning, so this does not
 //! show up in practice.
 
+use crate::python_query_exec::{
+    PythonClient, PythonDistributedExplainAnalyzeExec, PythonDistributedQueryExec,
+};
 use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::{
     DistributedExplainAnalyzeExec, DistributedQueryExec,
@@ -176,6 +182,8 @@ pub(crate) struct PyBallistaPhysicalExtensionCodec {
     inner: PythonPhysicalCodec,
     /// Codec used for the logical plan embedded in [DistributedQueryExec]
     logical_codec: Arc<dyn LogicalExtensionCodec>,
+    /// Client the decoded distributed plans use, see [PythonDistributedQueryExec]
+    client: Option<Arc<PythonClient>>,
 }
 
 impl Default for PyBallistaPhysicalExtensionCodec {
@@ -191,6 +199,18 @@ impl PyBallistaPhysicalExtensionCodec {
                 BallistaPhysicalExtensionCodec::default(),
             )),
             logical_codec,
+            client: None,
+        }
+    }
+
+    /// Codec which decodes distributed plans as plans using `client`.
+    pub(crate) fn with_python_client(
+        logical_codec: Arc<dyn LogicalExtensionCodec>,
+        client: Arc<PythonClient>,
+    ) -> Self {
+        Self {
+            client: Some(client),
+            ..Self::new(logical_codec)
         }
     }
 
@@ -206,6 +226,14 @@ impl PyBallistaPhysicalExtensionCodec {
                     "failed to decode DistributedQueryExec logical plan: {e:?}"
                 ))
             })?;
+        if let Some(client) = &self.client {
+            return Ok(Arc::new(PythonDistributedQueryExec::new(
+                plan,
+                Arc::clone(&self.logical_codec),
+                node.session_id.clone(),
+                Arc::clone(client),
+            )));
+        }
         let mut config = BallistaConfig::default();
         for kv in &node.settings {
             if let Some(value) = &kv.value {
@@ -235,14 +263,6 @@ impl PyBallistaPhysicalExtensionCodec {
         exec: &DistributedQueryExec<LogicalPlanNode>,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
-        let mut logical_plan = vec![];
-        LogicalPlanNode::try_from_logical_plan(exec.plan(), self.logical_codec.as_ref())
-            .and_then(|p| p.try_encode(&mut logical_plan))
-            .map_err(|e| {
-                DataFusionError::Internal(format!(
-                    "failed to encode DistributedQueryExec logical plan: {e:?}"
-                ))
-            })?;
         let settings = exec
             .config()
             .settings()
@@ -252,13 +272,54 @@ impl PyBallistaPhysicalExtensionCodec {
                 value: Some(value.clone()),
             })
             .collect();
+        self.encode_distributed_query_node(
+            exec.plan(),
+            exec.scheduler_url().to_string(),
+            settings,
+            exec.session_id().to_string(),
+            buf,
+        )
+    }
+
+    /// Encodes a [PythonDistributedQueryExec] as a distributed query without
+    /// scheduler and settings, both are owned by its Python client.
+    fn encode_python_distributed_query(
+        &self,
+        exec: &PythonDistributedQueryExec,
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        self.encode_distributed_query_node(
+            exec.plan(),
+            String::new(),
+            vec![],
+            exec.session_id().to_string(),
+            buf,
+        )
+    }
+
+    fn encode_distributed_query_node(
+        &self,
+        plan: &LogicalPlan,
+        scheduler_url: String,
+        settings: Vec<protobuf::KeyValuePair>,
+        session_id: String,
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        let mut logical_plan = vec![];
+        LogicalPlanNode::try_from_logical_plan(plan, self.logical_codec.as_ref())
+            .and_then(|p| p.try_encode(&mut logical_plan))
+            .map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode DistributedQueryExec logical plan: {e:?}"
+                ))
+            })?;
         let proto = protobuf::BallistaPhysicalPlanNode {
             physical_plan_type: Some(PhysicalPlanType::DistributedQuery(
                 protobuf::DistributedQueryExecNode {
-                    scheduler_url: exec.scheduler_url().to_string(),
+                    scheduler_url,
                     settings,
                     logical_plan,
-                    session_id: exec.session_id().to_string(),
+                    session_id,
                 },
             )),
         };
@@ -280,15 +341,6 @@ impl PyBallistaPhysicalExtensionCodec {
                 inputs.len()
             )));
         };
-        let query_exec = input
-            .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
-            .ok_or_else(|| {
-                DataFusionError::Internal(
-                    "DistributedExplainAnalyzeExec requires a DistributedQueryExec input"
-                        .to_string(),
-                )
-            })?
-            .clone();
         let schema: Schema = node
             .schema
             .as_ref()
@@ -298,6 +350,32 @@ impl PyBallistaPhysicalExtensionCodec {
                 )
             })?
             .try_into()?;
+        if let Some(client) = &self.client {
+            let query_exec = input
+                .downcast_ref::<PythonDistributedQueryExec>()
+                .ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "DistributedExplainAnalyzeExec requires a DistributedQueryExec input"
+                            .to_string(),
+                    )
+                })?
+                .clone();
+            return Ok(Arc::new(PythonDistributedExplainAnalyzeExec::new(
+                Arc::new(query_exec),
+                Arc::clone(client),
+                Arc::new(schema),
+                node.verbose,
+            )));
+        }
+        let query_exec = input
+            .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
+            .ok_or_else(|| {
+                DataFusionError::Internal(
+                    "DistributedExplainAnalyzeExec requires a DistributedQueryExec input"
+                        .to_string(),
+                )
+            })?
+            .clone();
         Ok(Arc::new(
             DistributedExplainAnalyzeExec::<LogicalPlanNode>::new(
                 Arc::new(query_exec),
@@ -310,15 +388,17 @@ impl PyBallistaPhysicalExtensionCodec {
 
     fn encode_distributed_explain_analyze(
         &self,
-        exec: &DistributedExplainAnalyzeExec<LogicalPlanNode>,
+        scheduler_url: String,
+        schema: &Schema,
+        verbose: bool,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
         let proto = protobuf::BallistaPhysicalPlanNode {
             physical_plan_type: Some(PhysicalPlanType::DistributedExplainAnalyze(
                 protobuf::DistributedExplainAnalyzeExecNode {
-                    scheduler_url: exec.scheduler_url().to_string(),
-                    schema: Some(exec.schema().as_ref().try_into()?),
-                    verbose: exec.verbose(),
+                    scheduler_url,
+                    schema: Some(schema.try_into()?),
+                    verbose,
                 },
             )),
         };
@@ -367,7 +447,23 @@ impl PhysicalExtensionCodec for PyBallistaPhysicalExtensionCodec {
         if let Some(exec) =
             node.downcast_ref::<DistributedExplainAnalyzeExec<LogicalPlanNode>>()
         {
-            return self.encode_distributed_explain_analyze(exec, buf);
+            return self.encode_distributed_explain_analyze(
+                exec.scheduler_url().to_string(),
+                exec.schema().as_ref(),
+                exec.verbose(),
+                buf,
+            );
+        }
+        if let Some(exec) = node.downcast_ref::<PythonDistributedQueryExec>() {
+            return self.encode_python_distributed_query(exec, buf);
+        }
+        if let Some(exec) = node.downcast_ref::<PythonDistributedExplainAnalyzeExec>() {
+            return self.encode_distributed_explain_analyze(
+                String::new(),
+                exec.schema().as_ref(),
+                exec.verbose(),
+                buf,
+            );
         }
         self.inner.try_encode(node, buf, proto_converter)
     }

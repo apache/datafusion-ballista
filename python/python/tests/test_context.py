@@ -22,6 +22,7 @@ import warnings
 
 from ballista import (
     BallistaConfigExtension,
+    BallistaPythonSessionContext,
     BallistaSessionConfig,
     BallistaSessionContext,
     setup_test_cluster,
@@ -79,10 +80,16 @@ def cluster():
     return setup_test_cluster()
 
 
-@pytest.fixture
-def ctx(cluster):
+@pytest.fixture(params=["native", "python"])
+def ctx(cluster, request):
+    """Context using the native Rust client or the Python ``BallistaClient``."""
     (address, port) = cluster
-    return BallistaSessionContext(address=f"df://{address}:{port}")
+    session_context = (
+        BallistaSessionContext
+        if request.param == "native"
+        else BallistaPythonSessionContext
+    )
+    return session_context(address=f"df://{address}:{port}")
 
 
 def to_table(df) -> pa.Table:
