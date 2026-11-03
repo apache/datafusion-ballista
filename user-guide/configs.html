@@ -716,6 +716,16 @@ explanation of the sort-based shuffle writer.</p>
 </tr>
 </thead>
 <tbody>
+<tr class="row-even"><td><p>ballista.shuffle.collect_distinct_counts</p></td>
+<td><p>Boolean</p></td>
+<td><p>true</p></td>
+<td><p>Sketch the approximate distinct count of each hash-partitioning key column with HyperLogLog while writing shuffle output, so the adaptive planner can estimate join cardinalities downstream of the shuffle. Costs hashing every key value on the write path and one sketch per key column in each task’s status update (4 KiB with the default precision).</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.shuffle.collect_distinct_counts_precision</p></td>
+<td><p>UInt16</p></td>
+<td><p>12</p></td>
+<td><p>Precision of the HyperLogLog sketches that <code class="docutils literal notranslate"><span class="pre">ballista.shuffle.collect_distinct_counts</span></code> collects, from 4 to 16 (values outside that range are clamped). A sketch has 2^precision one-byte registers and a standard error of about 1.04 / 2^(precision / 2): 10 is 1 KiB and 3.3%, 12 is 4 KiB and 1.6%, 14 is 16 KiB and 0.8%. The scheduler keeps one sketch per key column for every task of a stage, so lower it for stages with many thousands of tasks.</p></td>
+</tr>
 <tr class="row-even"><td><p>ballista.shuffle.compression.codec</p></td>
 <td><p>Utf8</p></td>
 <td><p>lz4</p></td>
