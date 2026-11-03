@@ -35,6 +35,35 @@ Ballista executor can be configured using `ExecutorProcessConfig` which supports
 
 Ballista scheduler can be tuned using `SchedulerConfig` which supports overriding `config producer`, `session builder`, `logical codec`, `physical codec` and setting a `partition sliceable resolver`.
 
+## Combining Codecs
+
+To use several extension codecs at once, such as one per table format, combine
+them with `ComposedLogicalExtensionCodec` from `ballista_core::serde` and
+DataFusion's `ComposedPhysicalExtensionCodec`:
+
+```rust
+let logical = ComposedLogicalExtensionCodec::new(vec![
+    Arc::new(BallistaLogicalExtensionCodec::default()),
+    Arc::new(MyTableFormatLogicalCodec::new()),
+]);
+let physical = ComposedPhysicalExtensionCodec::new(vec![
+    Arc::new(BallistaPhysicalExtensionCodec::default()),
+    Arc::new(MyTableFormatPhysicalCodec::new()),
+]);
+```
+
+When encoding, the codecs are tried in order, and the first one that handles a
+node is used, so each codec should fail on nodes that aren't its own. Each
+payload records that codec's position in the list and is decoded only by the
+codec at that position, so clients, the scheduler and executors must all list
+the same codecs in the same order. Add new codecs at the end.
+
+Both send functions only to the first codec, which by default sends them by
+name, so only the first codec can encode a function. DataFusion's
+`ComposedPhysicalExtensionCodec` also doesn't route custom physical expressions,
+window functions or higher-order functions to its codecs. Table scans, such as
+Iceberg's, need neither.
+
 ## Example: Custom Object Store Integration
 
 Extending basic building blocks will be demonstrated by integrating S3 object store. For this, new `ObjectStoreRegistry` and `S3Options` will be provided. `ObjectStoreRegistry` creates `ObjectStore` instances configured using `S3Options`, and caches them so that scans of the same bucket with the same options share one store.
@@ -110,7 +139,7 @@ A plan with `ExecutionPlan` nodes of your own can run on a Ballista cluster once
 
 When a stage is split between tasks, each task gets a copy of the plan restricted to its own partitions, and operators see only task-local partition indices: a task that runs partitions 4 and 5 executes partitions 0 and 1 of every node. The scheduler restricts the leaves it knows, such as shuffle readers and file and in-memory scans. A node it doesn't know would read its per-partition data, such as one list of files for each partition, from the wrong index, and the stage would return some partitions twice and others not at all. The scheduler fails a job whose split stage holds such a leaf. It cannot tell when an interior node holds per-partition data, so register those too.
 
-To make your node restrictable, implement `PartitionSliceable` for it and have the scheduler find it with a `partition sliceable resolver`:
+To make your node restrictable, give the scheduler a `partition sliceable resolver`. It is called with a node, its children already restricted, and the partitions the task runs, and returns the restricted node, or `None` for a node it doesn't know. A node of your own can implement `PartitionSliceable` to keep the slicing beside its fields:
 
 ```rust
 use ballista_core::execution_plans::plan_algebra::{PartitionSliceable, slice_by_global_partition};
@@ -128,9 +157,9 @@ impl PartitionSliceable for MyScanExec {
     }
 }
 
-let config = SchedulerConfig::default().with_partition_sliceable_resolver(Arc::new(|plan| {
+let config = SchedulerConfig::default().with_partition_sliceable_resolver(Arc::new(|plan, children, partitions| {
     plan.downcast_ref::<MyScanExec>()
-        .map(|node| node as &dyn PartitionSliceable)
+        .map(|node| node.restrict_to_partitions(children, partitions))
 }));
 ```
 
@@ -138,5 +167,6 @@ let config = SchedulerConfig::default().with_partition_sliceable_resolver(Arc::n
 - The restricted node must have exactly `partitions.len()` partitions. The scheduler rejects any other count.
 - `partitions` is empty for a `UnionExec` branch that belongs to other tasks. Return a node without partitions.
 - The restricted node is serialized with the scheduler's `physical codec`, so what it carries per partition has to survive encoding and decoding.
+- The resolver does not need `PartitionSliceable`. It can build the restricted node itself, which is the way to restrict a node you cannot implement the trait on, such as a `DataSourceExec` over a `DataSource` of your own: match it with `downcast_ref`, then build a `DataSourceExec` over the restricted source.
 - The resolver is asked after Ballista's own list. A node that is read whole, such as one below a `CoalescePartitionsExec` or on a join's build side, needs none of this.
 - The standalone scheduler (`SessionContext::standalone`) builds its own `SchedulerConfig`, so it cannot be given a resolver.

@@ -774,7 +774,7 @@ impl Drop for PipelinedResults {
 }
 
 /// How often a pipelined job's status is polled for a failure while its
-/// results stream. Slower than the blocking client's polling: the stream's
+/// results stream. Slower than the staged client's polling: the stream's
 /// end already says the job succeeded, and a failed fetch waits
 /// [`JOB_FAILURE_GRACE`] for the job's error.
 const PIPELINED_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(500);

@@ -210,7 +210,7 @@ Each executor will re-partition the output of the stage it is running so that it
 stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the [ShuffleWriterExec]
 and [ShuffleReaderExec] operators.
 
-The shuffle is _blocking_: a stage materializes its output to local storage, and today a downstream stage waits
+The shuffle is _staged_: a stage materializes its output to local storage, and today a downstream stage waits
 for the whole upstream stage to complete before it starts. Waiting on the whole stage is a property of the current
 scheduler rather than of the design — the output of a finished task is readable as soon as its files are closed,
 so a downstream stage could in principle start on partial input when the cluster has capacity to spare. See

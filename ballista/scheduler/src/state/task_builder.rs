@@ -39,7 +39,10 @@
 use ballista_core::execution_plans::plan_algebra::{
     PartitionSliceableResolver, as_partition_sliceable,
 };
-use ballista_core::execution_plans::{RangeShuffleReaderExec, ShuffleReaderExec};
+use ballista_core::execution_plans::{
+    PipelinedShuffleReaderExec, RangeShuffleReaderExec, ShuffleReaderExec,
+    UnresolvedShuffleExec,
+};
 use datafusion::common::{internal_err, plan_err};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::physical_plan::{
@@ -65,7 +68,7 @@ use std::sync::Arc;
 /// side) — those leaves keep the full upstream so the collapse sees every
 /// partition.
 ///
-/// Nodes Ballista does not list are restricted through `resolver`. A leaf that
+/// Nodes Ballista does not list are restricted by `resolver`. A leaf that
 /// nothing can restrict is an error unless `partitions` is all of its
 /// partitions, in order.
 pub fn restrict_plan_to_partitions(
@@ -74,6 +77,36 @@ pub fn restrict_plan_to_partitions(
     resolver: Option<&PartitionSliceableResolver>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     restrict(plan, partitions, /* under_collect */ false, resolver)
+}
+
+/// The stages whose output a leaf of the stage plan `plan` reads in full,
+/// in every task of the stage, because the leaf sits below a collapse: the
+/// leaves [`restrict_plan_to_partitions`] leaves unrestricted.
+///
+/// A pipelined producer serves each output partition to a single reader, so
+/// one read in full by every task of a stage with several tasks has to keep
+/// its output for each of them.
+pub(crate) fn stages_read_whole(plan: &Arc<dyn ExecutionPlan>) -> Vec<usize> {
+    fn walk(plan: &Arc<dyn ExecutionPlan>, under_collect: bool, found: &mut Vec<usize>) {
+        if let Some(reader) = plan.downcast_ref::<UnresolvedShuffleExec>() {
+            if under_collect {
+                found.push(reader.stage_id);
+            }
+            return;
+        }
+        // The same scopes `restrict` gives each child.
+        let scopes = if !under_collect && plan.is::<UnionExec>() {
+            vec![false; plan.children().len()]
+        } else {
+            child_scopes(plan, under_collect)
+        };
+        for (child, collect) in plan.children().into_iter().zip(scopes) {
+            walk(child, collect, found);
+        }
+    }
+    let mut found = vec![];
+    walk(plan, false, &mut found);
+    found
 }
 
 /// Recursive worker. `under_collect` is the scope inherited from ancestors:
@@ -92,18 +125,6 @@ fn restrict(
         && let Some(rewritten) = select_output_partitions(&plan, partitions)?
     {
         return Ok(rewritten);
-    }
-
-    // Operators carrying data indexed by global partition slice it parallel to
-    // the restriction. Each one implements the slicing beside its own fields;
-    // this walker only supplies the restricted children.
-    if !under_collect
-        && let Some(sliceable) = as_partition_sliceable(&plan)
-            .or_else(|| resolver.and_then(|resolve| resolve(&plan)))
-    {
-        let children = restrict_children(&plan, partitions, false, resolver)?;
-        let restricted = sliceable.restrict_to_partitions(children, partitions)?;
-        return checked_restriction(plan.name(), restricted, partitions);
     }
 
     // UnionExec: parent partition `p` maps to exactly one child's local
@@ -125,18 +146,32 @@ fn restrict(
         return replace_children_if_necessary(plan, new_children);
     }
 
-    // A leaf nothing above could restrict: read whole below a collapse, and
-    // otherwise only right if the task runs all of it.
-    if plan.children().is_empty() {
-        if !under_collect {
-            ensure_leaf_runs_whole(&plan, partitions)?;
-        }
-        return Ok(plan);
+    let children = restrict_children(&plan, partitions, under_collect, resolver)?;
+    if under_collect {
+        return replace_children_if_necessary(plan, children);
     }
 
-    // Interior: compute per-child scope, recurse, rebuild the node.
-    let new_children = restrict_children(&plan, partitions, under_collect, resolver)?;
-    replace_children_if_necessary(plan, new_children)
+    // Operators carrying data indexed by global partition slice it parallel to
+    // the restriction. Each one implements the slicing beside its own fields;
+    // this walker only supplies the restricted children. A node Ballista does
+    // not list may be restricted by the resolver.
+    let restricted = match as_partition_sliceable(&plan) {
+        Some(sliceable) => {
+            Some(sliceable.restrict_to_partitions(children.clone(), partitions))
+        }
+        None => resolver.and_then(|resolve| resolve(&plan, children.clone(), partitions)),
+    };
+    if let Some(restricted) = restricted {
+        return checked_restriction(plan.name(), restricted?, partitions);
+    }
+
+    // A leaf nothing above could restrict is only right if the task runs all
+    // of it.
+    if children.is_empty() {
+        ensure_leaf_runs_whole(&plan, partitions)?;
+        return Ok(plan);
+    }
+    replace_children_if_necessary(plan, children)
 }
 
 /// Restrict each child of `plan`, in the scope `child_scopes` gives it.
@@ -194,8 +229,8 @@ fn ensure_leaf_runs_whole(
         "cannot restrict `{described}` to partitions {partitions:?} of its {count}: \
          the scheduler does not know how to restrict a `{name}`, and left alone it \
          would number its partitions from zero in every task. A node of your own \
-         can implement `PartitionSliceable` and be returned from \
-         `SchedulerConfig::partition_sliceable_resolver`."
+         be restricted by `SchedulerConfig::partition_sliceable_resolver`, for instance \
+         by implementing `PartitionSliceable` and calling it from there."
     )
 }
 
@@ -320,6 +355,15 @@ fn select_output_partitions(
     plan: &Arc<dyn ExecutionPlan>,
     indices: &[usize],
 ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+    // PipelinedShuffleReaderExec: cross-stage inputs of a pipelined job.
+    if let Some(reader) = plan.downcast_ref::<PipelinedShuffleReaderExec>() {
+        // A broadcast reader streams everything into its one partition for
+        // every consumer task; slicing would drop the payload.
+        if reader.broadcast {
+            return Ok(Some(plan.clone()));
+        }
+        return Ok(Some(Arc::new(reader.with_partitions(indices)?)));
+    }
     // ShuffleReaderExec: cross-stage inputs.
     if let Some(reader) = plan.downcast_ref::<ShuffleReaderExec>() {
         // Broadcast readers serve everything from partition[0] for every
@@ -851,6 +895,29 @@ mod tests {
         assert_eq!(partition_count(&restricted), 2);
     }
 
+    /// A node that cannot implement `PartitionSliceable`, such as a
+    /// `DataSourceExec` over a source of your own, is restricted by the
+    /// resolver building a replacement.
+    #[test]
+    fn resolver_restricts_a_node_without_partition_sliceable() {
+        let resolver: PartitionSliceableResolver =
+            Arc::new(|plan, children, partitions| {
+                assert!(children.is_empty());
+                plan.is::<PayloadExec>().then(|| {
+                    Ok(Arc::new(
+                        EmptyExec::new(plan.schema()).with_partitions(partitions.len()),
+                    ) as Arc<dyn ExecutionPlan>)
+                })
+            });
+        let leaf = PayloadExec::leaf(&["p0", "p1", "p2", "p3"]);
+
+        let restricted =
+            restrict_plan_to_partitions(leaf, &[1, 3], Some(&resolver)).unwrap();
+
+        assert!(restricted.is::<EmptyExec>());
+        assert_eq!(partition_count(&restricted), 2);
+    }
+
     #[test]
     fn a_leaf_nobody_can_restrict_is_refused_unless_the_task_runs_all_of_it() {
         let leaf = PayloadExec::leaf(&["p0", "p1"]);
@@ -884,10 +951,11 @@ mod tests {
     fn the_resolver_is_asked_only_after_the_built_in_list() {
         let asked = Arc::new(Mutex::new(vec![]));
         let record = asked.clone();
-        let resolver: PartitionSliceableResolver = Arc::new(move |plan| {
-            record.lock().unwrap().push(plan.name().to_string());
-            None
-        });
+        let resolver: PartitionSliceableResolver =
+            Arc::new(move |plan, _children, _partitions| {
+                record.lock().unwrap().push(plan.name().to_string());
+                None
+            });
         // A `RangeFilterExec` is on the `PartitionSliceable` list, the
         // `ShuffleReaderExec` below it is a leaf the scheduler restricts itself.
         let (plan, _) = range_filter_over_reader();

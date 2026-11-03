@@ -102,6 +102,13 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
         Vec::new()
     }
 
+    /// Complete runtime filters produced by this task; absent for custom engines.
+    fn collect_runtime_filter_reports(
+        &self,
+    ) -> Vec<ballista_core::serde::protobuf::RuntimeFilterPayload> {
+        Vec::new()
+    }
+
     /// Drain finalized window-aggregate state captured during this task,
     /// already stamped with the global partition each capture belongs to.
     /// Called at task completion, like
@@ -423,6 +430,23 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         }
     }
 
+    fn collect_runtime_filter_reports(
+        &self,
+    ) -> Vec<ballista_core::serde::protobuf::RuntimeFilterPayload> {
+        let plan: Arc<dyn ExecutionPlan> = match &self.shuffle_writer {
+            ShuffleWriterVariant::Passthrough(writer) => Arc::new(writer.clone()),
+            ShuffleWriterVariant::Range(writer) => Arc::new(writer.clone()),
+            ShuffleWriterVariant::Sort(writer) => Arc::new(writer.clone()),
+        };
+        match ballista_core::execution_plans::runtime_filter::collect_reports(&plan) {
+            Ok(reports) => reports,
+            Err(error) => {
+                log::warn!("Runtime filter collection failed; bypassing: {error}");
+                Vec::new()
+            }
+        }
+    }
+
     fn collect_window_state_reports(
         &self,
     ) -> Result<Vec<ballista_core::serde::protobuf::WindowStateReport>> {
@@ -446,20 +470,10 @@ impl QueryStageExecutor for DefaultQueryStageExec {
     }
 
     fn collect_column_stats(&self) -> Vec<TaskColumnStats> {
-        // Only the sort writer stashes per-column null counts during its drain
-        // loop; the passthrough/range paths report none for now.
         match &self.shuffle_writer {
-            ShuffleWriterVariant::Sort(writer) => writer
-                .column_null_counts()
-                .into_iter()
-                .enumerate()
-                .map(|(column, null_count)| TaskColumnStats {
-                    column: column as u32,
-                    null_count,
-                    sketches: vec![],
-                })
-                .collect(),
-            _ => vec![],
+            ShuffleWriterVariant::Passthrough(writer) => writer.column_stats(),
+            ShuffleWriterVariant::Range(writer) => writer.column_stats(),
+            ShuffleWriterVariant::Sort(writer) => writer.column_stats(),
         }
     }
 }

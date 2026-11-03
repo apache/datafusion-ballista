@@ -206,6 +206,14 @@ pub const BALLISTA_CHAOS_EXECUTION_SEED: &str = "ballista.testing.chaos_executio
 /// Configuration key for the compression codec used in the shuffle write process
 /// Valid values are: none, lz4, zstd
 pub const BALLISTA_SHUFFLE_COMPRESSION_CODEC: &str = "ballista.shuffle.compression.codec";
+/// Configuration key controlling whether shuffle writers sketch the distinct
+/// counts of their hash-partitioning key columns for the adaptive planner.
+pub const BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS: &str =
+    "ballista.shuffle.collect_distinct_counts";
+/// Configuration key for the precision of the HyperLogLog sketches that
+/// [`BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS`] collects.
+pub const BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION: &str =
+    "ballista.shuffle.collect_distinct_counts_precision";
 
 /// Configuration key for the scheduler's per-task partition-slice cap.
 pub const BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK: &str =
@@ -242,6 +250,31 @@ pub const HTTP2_MAX_WINDOW_BYTES: u32 = (1 << 31) - 1;
 /// The smallest stream window HTTP/2 starts from.
 const HTTP2_DEFAULT_WINDOW_BYTES: u32 = 65_535;
 
+/// Configuration key to enable AQE optimize-skewed-join rule (Spark's
+/// `OptimizeSkewedJoin`). Disabled by default — opt in for workloads where
+/// per-key skew creates straggler tasks on join inputs.
+pub const BALLISTA_SKEW_JOIN_ENABLED: &str = "ballista.planner.skew_join.enabled";
+/// Multiplier over the per-side median below which a partition is not
+/// considered skewed. Mirrors Spark's
+/// `spark.sql.adaptive.skewJoin.skewedPartitionFactor`.
+pub const BALLISTA_SKEW_JOIN_SKEWED_PARTITION_FACTOR: &str =
+    "ballista.planner.skew_join.skewed_partition_factor";
+/// Absolute byte threshold below which a partition is never split, even when
+/// the ratio-to-median qualifies. Mirrors Spark's
+/// `spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes`.
+pub const BALLISTA_SKEW_JOIN_PARTITION_THRESHOLD_BYTES: &str =
+    "ballista.planner.skew_join.partition_threshold_bytes";
+/// Advisory target sub-shard byte size used by the bin-packer when splitting
+/// a skewed partition's per-mapper outputs. Decoupled from the coalesce
+/// target so the two rules can be tuned independently.
+pub const BALLISTA_SKEW_JOIN_ADVISORY_PARTITION_BYTES: &str =
+    "ballista.planner.skew_join.advisory_partition_bytes";
+/// Tail-merge factor: a trailing sub-shard whose size is below
+/// `small_partition_factor * advisory` folds back into its predecessor
+/// (Spark's `splitSizeListByTargetSize` legacy).
+pub const BALLISTA_SKEW_JOIN_SMALL_PARTITION_FACTOR: &str =
+    "ballista.planner.skew_join.small_partition_factor";
+
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -256,7 +289,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string()))
             .with_doc_default("number of available CPU cores"),
         ConfigEntry::new(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY.to_string(),
-                         "Task scheduling policy of a standalone in-process cluster: `pull-staged`, where the executor polls the scheduler for work, or `push-staged`, where the scheduler pushes tasks to the executor.".to_string(),
+                         "Task scheduling policy of a standalone in-process cluster: `pull-staged`, where the executor polls the scheduler for work, or `push-staged`, where the scheduler pushes tasks to the executor. `ballista.execution.mode = pipelined` always uses `push-staged`.".to_string(),
                          DataType::Utf8, Some(TaskSchedulingPolicy::PullStaged.to_string())),
         ConfigEntry::new(BALLISTA_CACHE_NOOP.to_string(),
                          "When true (the default), DataFrame::cache() does nothing. When false, the first action on a cached DataFrame materializes it in the cluster, and later actions read it back instead of recomputing it".to_string(),
@@ -523,6 +556,30 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             Some("lz4".to_string()),
         ),
         ConfigEntry::new(
+            BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS.to_string(),
+            "Sketch the approximate distinct count of each hash-partitioning key \
+             column with HyperLogLog while writing shuffle output, so the adaptive \
+             planner can estimate join cardinalities downstream of the shuffle. \
+             Costs hashing every key value on the write path and one sketch per \
+             key column in each task's status update (4 KiB with the default \
+             precision).".to_string(),
+            DataType::Boolean,
+            Some(true.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION.to_string(),
+            "Precision of the HyperLogLog sketches that \
+             `ballista.shuffle.collect_distinct_counts` collects, from 4 to 16 \
+             (values outside that range are clamped). A sketch has \
+             2^precision one-byte registers and a standard error of about \
+             1.04 / 2^(precision / 2): 10 is 1 KiB and 3.3%, 12 is 4 KiB and \
+             1.6%, 14 is 16 KiB and 0.8%. The scheduler keeps one sketch per \
+             key column for every task of a stage, so lower it for stages with \
+             many thousands of tasks.".to_string(),
+            DataType::UInt16,
+            Some(crate::hll::DEFAULT_PRECISION.to_string()),
+        ),
+        ConfigEntry::new(
             BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK.to_string(),
             "Upper bound on the number of input partitions packed into a single \
              task's `partition_slice`. `0` (default) means unbounded — the \
@@ -548,17 +605,17 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ),
         ConfigEntry::new(
             BALLISTA_EXECUTION_MODE.to_string(),
-            "How a job's stages exchange data. `blocking` runs stages one after \
+            "How a job's stages exchange data. `staged` runs stages one after \
              another and passes data between them through shuffle files. \
              `pipelined` (experimental) places every task of the job up front \
              and streams record batches between stages over Arrow Flight. It \
              has lower latency, but a failed task fails the job instead of \
              being retried, and a job waits until it can reserve the vcores \
              of its widest stage all at once. `pipelined` requires push-staged \
-             scheduling, and the scheduler does not run it yet."
+             scheduling."
                 .to_string(),
             DataType::Utf8,
-            Some(ExecutionMode::Blocking.to_string()),
+            Some(ExecutionMode::Staged.to_string()),
         ),
         ConfigEntry::new(
             BALLISTA_PIPELINED_QUEUE_CAPACITY.to_string(),
@@ -594,6 +651,48 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                 .to_string(),
             DataType::UInt64,
             Some((512 * 1024).to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SKEW_JOIN_ENABLED.to_string(),
+            "Enables the AQE optimize-skewed-join rule (Spark's \
+             OptimizeSkewedJoin). Disabled by default — opt in for workloads \
+             where per-key skew creates straggler tasks on join inputs. Requires \
+             datafusion.optimizer.enable_dynamic_filter_pushdown=false."
+                .to_string(),
+            DataType::Boolean,
+            Some(false.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SKEW_JOIN_SKEWED_PARTITION_FACTOR.to_string(),
+            "Multiplier over per-side median below which a partition is not \
+             considered skewed (Spark's skewedPartitionFactor)."
+                .to_string(),
+            DataType::Float64,
+            Some("5.0".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SKEW_JOIN_PARTITION_THRESHOLD_BYTES.to_string(),
+            "Absolute byte threshold below which a partition is never split \
+             (Spark's skewedPartitionThresholdInBytes)."
+                .to_string(),
+            DataType::UInt64,
+            Some((256 * 1024 * 1024_usize).to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SKEW_JOIN_ADVISORY_PARTITION_BYTES.to_string(),
+            "Advisory target sub-shard byte size used by the bin-packer when \
+             splitting a skewed partition."
+                .to_string(),
+            DataType::UInt64,
+            Some((64 * 1024 * 1024_usize).to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SKEW_JOIN_SMALL_PARTITION_FACTOR.to_string(),
+            "Tail-merge factor for the skew-join sub-shard bin-packer \
+             (Spark legacy)."
+                .to_string(),
+            DataType::Float64,
+            Some("0.2".to_string()),
         ),
     ];
     entries
@@ -755,9 +854,15 @@ impl BallistaConfig {
     }
 
     /// Returns the task scheduling policy of a standalone in-process cluster.
+    ///
+    /// Pipelined execution places all of a job's tasks at once, which only
+    /// push-staged scheduling can do, so it overrides the configured policy.
     pub fn standalone_task_scheduling_policy(
         &self,
     ) -> std::result::Result<TaskSchedulingPolicy, DataFusionError> {
+        if self.execution_mode()? == ExecutionMode::Pipelined {
+            return Ok(TaskSchedulingPolicy::PushStaged);
+        }
         match self
             .get_string_setting(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY)
             .trim()
@@ -864,6 +969,25 @@ impl BallistaConfig {
     /// Returns the target batch size for sort-based shuffle.
     pub fn shuffle_sort_based_batch_size(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
+    }
+
+    /// Returns whether shuffle writers sketch the distinct counts of their
+    /// hash-partitioning key columns.
+    pub fn shuffle_collect_distinct_counts(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS)
+    }
+
+    /// Returns the precision of the distinct-count sketches that shuffle
+    /// writers collect. Clamped to the range a sketch supports, since the
+    /// sketch is an optimization and an out-of-range value should not fail a
+    /// shuffle write.
+    pub fn shuffle_collect_distinct_counts_precision(&self) -> u8 {
+        let precision =
+            self.get_usize_setting(BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION);
+        precision.clamp(
+            crate::hll::MIN_PRECISION as usize,
+            crate::hll::MAX_PRECISION as usize,
+        ) as u8
     }
 
     /// Returns the bounded-channel capacity for the shuffle writer I/O bridge.
@@ -1050,6 +1174,34 @@ impl BallistaConfig {
         if s.is_empty() { None } else { s.parse().ok() }
     }
 
+    /// Returns whether the AQE optimize-skewed-join rule is enabled.
+    pub fn skew_join_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SKEW_JOIN_ENABLED)
+    }
+
+    /// Returns the skewed-partition factor (Spark's
+    /// `skewedPartitionFactor`).
+    pub fn skew_join_skewed_partition_factor(&self) -> f64 {
+        self.get_float_setting(BALLISTA_SKEW_JOIN_SKEWED_PARTITION_FACTOR)
+    }
+
+    /// Returns the absolute skewed-partition byte threshold
+    /// (Spark's `skewedPartitionThresholdInBytes`).
+    pub fn skew_join_partition_threshold_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SKEW_JOIN_PARTITION_THRESHOLD_BYTES)
+    }
+
+    /// Returns the advisory target sub-shard byte size used by the bin-packer
+    /// when splitting a skewed partition.
+    pub fn skew_join_advisory_partition_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SKEW_JOIN_ADVISORY_PARTITION_BYTES)
+    }
+
+    /// Returns the tail-merge factor for the skew-join sub-shard bin-packer.
+    pub fn skew_join_small_partition_factor(&self) -> f64 {
+        self.get_float_setting(BALLISTA_SKEW_JOIN_SMALL_PARTITION_FACTOR)
+    }
+
     /// Should client employ pull or push job tracking strategy
     pub fn client_pull(&self) -> bool {
         self.get_bool_setting(BALLISTA_CLIENT_PULL)
@@ -1181,7 +1333,7 @@ pub enum ExecutionMode {
     /// Stages run one after another. Each stage writes its output to shuffle
     /// files, and the next stage starts once every input stage has finished.
     #[default]
-    Blocking,
+    Staged,
     /// Every task of the job is placed up front, and stages stream record
     /// batches to each other over Arrow Flight while they run. Requires
     /// push-staged scheduling. A failed task fails the job.
@@ -1191,7 +1343,7 @@ pub enum ExecutionMode {
 impl Display for ExecutionMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExecutionMode::Blocking => f.write_str("blocking"),
+            ExecutionMode::Staged => f.write_str("staged"),
             ExecutionMode::Pipelined => f.write_str("pipelined"),
         }
     }
@@ -1202,11 +1354,11 @@ impl std::str::FromStr for ExecutionMode {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
-            "blocking" => Ok(ExecutionMode::Blocking),
+            "staged" => Ok(ExecutionMode::Staged),
             "pipelined" => Ok(ExecutionMode::Pipelined),
             other => Err(DataFusionError::Configuration(format!(
                 "Got an invalid execution mode {other}: \
-                Valid options are: blocking and pipelined"
+                Valid options are: staged and pipelined"
             ))),
         }
     }
@@ -1325,17 +1477,34 @@ mod tests {
             err.to_string()
                 .contains("invalid standalone task scheduling policy eager")
         );
+
+        // Pipelined execution needs push-staged, whatever the policy says.
+        config
+            .options_mut()
+            .set(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY, "pull-staged")
+            .unwrap();
+        config
+            .options_mut()
+            .set(BALLISTA_EXECUTION_MODE, "pipelined")
+            .unwrap();
+        assert!(matches!(
+            config
+                .ballista_config()
+                .standalone_task_scheduling_policy()
+                .unwrap(),
+            TaskSchedulingPolicy::PushStaged
+        ));
     }
 
     #[test]
-    fn execution_mode_defaults_to_blocking_and_parses_pipelined() {
+    fn execution_mode_defaults_to_staged_and_parses_pipelined() {
         use crate::extension::SessionConfigExt;
         use datafusion::prelude::SessionConfig;
 
         let mut config = SessionConfig::new_with_ballista();
         assert_eq!(
             config.ballista_config().execution_mode().unwrap(),
-            ExecutionMode::Blocking
+            ExecutionMode::Staged
         );
 
         config
@@ -1367,6 +1536,34 @@ mod tests {
             .set(BALLISTA_PIPELINED_QUEUE_CAPACITY, "0")
             .unwrap();
         assert_eq!(config.ballista_config().pipelined_queue_capacity(), 1);
+    }
+
+    #[test]
+    fn distinct_count_precision_defaults_to_12_and_is_clamped() {
+        use crate::extension::SessionConfigExt;
+        use datafusion::prelude::SessionConfig;
+
+        let mut config = SessionConfig::new_with_ballista();
+        let precision = |config: &SessionConfig| {
+            config
+                .ballista_config()
+                .shuffle_collect_distinct_counts_precision()
+        };
+        assert_eq!(precision(&config), 12);
+        for (value, expected) in [
+            ("10", 10),
+            ("16", 16),
+            ("0", 4),
+            ("3", 4),
+            ("17", 16),
+            ("4096", 16),
+        ] {
+            config
+                .options_mut()
+                .set(BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION, value)
+                .unwrap();
+            assert_eq!(precision(&config), expected, "set to {value}");
+        }
     }
 
     #[test]

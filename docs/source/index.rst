@@ -54,8 +54,10 @@ Table of content
 
    user-guide/configs
    user-guide/tuning-guide
+   user-guide/pipelined-execution
    user-guide/metrics
    user-guide/faq
+   user-guide/versioning
    user-guide/extending-components
    user-guide/extensions-example
 

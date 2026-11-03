@@ -27,7 +27,7 @@
 
 use std::sync::Arc;
 
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::{Result, plan_err};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -36,7 +36,8 @@ use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 
 use crate::execution_plans::{
     BufferExec, PrefixMergeExec, RangeFilterExec, RangeShuffleWriterExec,
-    RuntimeStatsExec, ShuffleWriterExec, SortShuffleWriterExec,
+    RuntimeFilterApplyExec, RuntimeFilterBuildExec, RuntimeStatsExec, ShuffleWriterExec,
+    SortShuffleWriterExec,
 };
 
 /// Whitelisted ops preserve the routing key's row set, values, and
@@ -44,6 +45,7 @@ use crate::execution_plans::{
 pub fn preserves_distribution(plan: &dyn ExecutionPlan) -> bool {
     // Buffered batches replayed verbatim.
     plan.downcast_ref::<BufferExec>().is_some()
+        || plan.is::<RuntimeFilterBuildExec>()
         // Per-partition sort: rows reorder within a partition, row set
         // and counts unchanged. `preserve_partitioning=false` collapses
         // N→1 (like SortPreservingMergeExec), so gate on the flag.
@@ -68,6 +70,7 @@ pub fn preserves_partitioning(plan: &dyn ExecutionPlan) -> bool {
     preserves_distribution(plan)
         // Drops rows, but per-partition — no rows migrate.
         || plan.downcast_ref::<FilterExec>().is_some()
+        || plan.is::<RuntimeFilterApplyExec>()
         // Rewrites columns; partition boundaries untouched.
         || plan.downcast_ref::<ProjectionExec>().is_some()
         // Stats tap; no data mutation.
@@ -137,16 +140,30 @@ pub fn as_partition_sliceable(
     None
 }
 
-/// Looks up the [`PartitionSliceable`] of a node that [`as_partition_sliceable`]
-/// does not list, so the scheduler can restrict `ExecutionPlan` nodes of your
-/// own. Set it with `SchedulerConfig::with_partition_sliceable_resolver`.
+/// Restricts a node that [`as_partition_sliceable`] does not list to a task's
+/// partitions, so the scheduler can restrict `ExecutionPlan` nodes of your own,
+/// including ones you cannot implement [`PartitionSliceable`] on, such as a
+/// `DataSourceExec` over a `DataSource` of your own. Set it with
+/// `SchedulerConfig::with_partition_sliceable_resolver`.
+///
+/// It receives the node, its children already restricted as
+/// [`PartitionSliceable::restrict_to_partitions`] receives them, and the global
+/// partition indices the task runs. It returns `None` for a node it does not
+/// know, and otherwise the node rebuilt over `children` with exactly
+/// `partitions.len()` output partitions; any other count is an error. For a node
+/// of your own, that is typically a `downcast_ref` to your type followed by a
+/// call to its [`PartitionSliceable::restrict_to_partitions`].
 ///
 /// It is asked after the built-in list, and never about a node that is read
 /// whole: one below a collapse, or declared `SinglePartition` by its parent. It
 /// is called for most nodes of every task's plan as tasks are launched, so keep
-/// it cheap, typically a `downcast_ref` to your own types.
+/// the `None` path cheap.
 pub type PartitionSliceableResolver = Arc<
-    dyn for<'a> Fn(&'a Arc<dyn ExecutionPlan>) -> Option<&'a dyn PartitionSliceable>
+    dyn Fn(
+            &Arc<dyn ExecutionPlan>,
+            Vec<Arc<dyn ExecutionPlan>>,
+            &[usize],
+        ) -> Option<Result<Arc<dyn ExecutionPlan>>>
         + Send
         + Sync,
 >;
@@ -163,13 +180,13 @@ pub fn single_child(
     owner: &str,
     children: Vec<Arc<dyn ExecutionPlan>>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let [child] = <[_; 1]>::try_from(children).map_err(|children| {
-        DataFusionError::Internal(format!(
+    match <[_; 1]>::try_from(children) {
+        Ok([child]) => Ok(child),
+        Err(children) => plan_err!(
             "{owner}: expected 1 child to restrict, got {}",
             children.len()
-        ))
-    })?;
-    Ok(child)
+        ),
+    }
 }
 
 /// Take `values[global]` for each global partition index, in task-local
@@ -190,13 +207,12 @@ pub fn slice_by_global_partition<T: Clone>(
 ) -> Result<Vec<T>> {
     partitions
         .iter()
-        .map(|&global| {
-            values.get(global).cloned().ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "{owner}: partition index {global} out of bounds ({} {what})",
-                    values.len()
-                ))
-            })
+        .map(|&global| match values.get(global) {
+            Some(value) => Ok(value.clone()),
+            None => plan_err!(
+                "{owner}: partition index {global} out of bounds ({} {what})",
+                values.len()
+            ),
         })
         .collect()
 }

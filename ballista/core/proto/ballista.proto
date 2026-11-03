@@ -65,7 +65,30 @@ message BallistaPhysicalPlanNode {
     DistributedExplainAnalyzeExecNode distributed_explain_analyze = 17;
     PipelinedShuffleWriterExecNode pipelined_shuffle_writer = 18;
     PipelinedShuffleReaderExecNode pipelined_shuffle_reader = 19;
+    RuntimeFilterExecNode runtime_filter = 20;
   }
+}
+
+// Build taps and probe filters share the expression/id wire contract. A missing
+// payload on an apply node means pass-through (timeout or unsupported producer).
+message RuntimeFilterExecNode {
+  uint64 filter_id = 1;
+  datafusion.PhysicalExprNode key = 2;
+  bool build = 3;
+  RuntimeFilterPayload payload = 4;
+}
+
+// Version 2 uses DataFusion batch hashing with seed 0, a fixed 8 KiB Bloom
+// filter, an optional IN hash set, and MinMax bounds. Merge is a union.
+message RuntimeFilterPayload {
+  uint64 filter_id = 1;
+  uint32 version = 2;
+  bytes bloom = 3;
+  bool has_null = 4;
+  bool has_in_set = 5;
+  repeated fixed64 in_hashes = 6;
+  datafusion_common.ScalarValue min = 7;
+  datafusion_common.ScalarValue max = 8;
 }
 
 // Root of a stage in a pipelined job. Instead of writing shuffle files, it
@@ -968,6 +991,7 @@ message SuccessfulTask {
   // keeps the completion message fixed-size regardless of aggregate.
   repeated WindowStateReport window_state = 4;
   repeated TaskColumnStats task_column_stats = 5;
+  repeated RuntimeFilterPayload runtime_filters = 6;
 }
 
 // One finalized window-aggregate state from a task's
