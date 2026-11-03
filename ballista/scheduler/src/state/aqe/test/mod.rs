@@ -27,6 +27,8 @@ mod coalesce_rule;
 mod column_statistics;
 /// Job-failure lifecycle tests for the adaptive graph
 mod job_failure;
+/// Job-success lifecycle tests for the adaptive graph
+mod job_success;
 /// covers join selection tests
 mod join_selection;
 /// Tests if plan is going to be split to stages correctly

@@ -1326,6 +1326,28 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         self.output_locations.clone()
     }
 
+    /// The default implementation treats a stage with no `output_links` as
+    /// final. Adaptive stages are created without output links, so it would
+    /// report every stage as final and no intermediate shuffle data would be
+    /// reclaimed when the job succeeds. Here a stage is final when the job's
+    /// `output_locations` point at it. Until those are set, nothing is
+    /// reported, so a final stage is never returned.
+    fn intermediate_stage_ids(&self) -> Vec<u32> {
+        if self.output_locations.is_empty() {
+            return vec![];
+        }
+        let final_stage_ids: HashSet<usize> = self
+            .output_locations
+            .iter()
+            .map(|location| location.partition_id.stage_id)
+            .collect();
+        self.stages
+            .keys()
+            .filter(|stage_id| !final_stage_ids.contains(stage_id))
+            .map(|stage_id| *stage_id as u32)
+            .collect()
+    }
+
     /// Reset running and successful stages on a given executor
     /// This will first check the unresolved/resolved/running stages and reset the running tasks and successful tasks.
     /// Then it will check the successful stage and whether there are running parent stages need to read shuffle from it.
