@@ -58,6 +58,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Write};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::{
@@ -88,13 +89,23 @@ use crate::state::aqe::execution_plan::ExchangeExec;
 #[derive(Debug)]
 pub struct ReuseExchangeRule {
     codec: Arc<dyn PhysicalExtensionCodec>,
+    read_finished_stage: Arc<AtomicBool>,
 }
 
 impl ReuseExchangeRule {
     /// A rule that matches subtrees by their encoding under `codec`, the job's
-    /// physical extension codec.
-    pub fn new(codec: Arc<dyn PhysicalExtensionCodec>) -> Self {
-        Self { codec }
+    /// physical extension codec. It raises `read_finished_stage` whenever it
+    /// points a pending exchange at a stage that has already finished: that
+    /// resolves the exchange after the rules that react to a resolved exchange
+    /// have run, so the caller must run the optimizer chain again.
+    pub fn new(
+        codec: Arc<dyn PhysicalExtensionCodec>,
+        read_finished_stage: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            codec,
+            read_finished_stage,
+        }
     }
 
     /// The key `node` is matched on, or `None` when `node` is not an exchange
@@ -265,6 +276,9 @@ impl PhysicalOptimizerRule for ReuseExchangeRule {
                 exchange.plan_id(),
                 target.plan_id()
             );
+            if progress(target) == Progress::Resolved {
+                self.read_finished_stage.store(true, Ordering::Relaxed);
+            }
             Ok(Transformed::yes(Arc::new(exchange.share_stage_of(target))))
         })?;
         Ok(transformed.data)

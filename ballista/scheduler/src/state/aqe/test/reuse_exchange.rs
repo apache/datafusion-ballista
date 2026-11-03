@@ -33,14 +33,19 @@ use ballista_core::config::BallistaConfig;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::config::ConfigOptions;
+use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{Partitioning, PhysicalExpr, expressions::Column};
+use datafusion::prelude::SessionConfig;
 use datafusion::prelude::SessionContext;
+use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 /// A common table expression read twice by a union.
 const UNION: &str = "with v as (select c, sum(a) as s from t group by c) \
@@ -185,8 +190,10 @@ fn exchange(plan_id: usize) -> Arc<dyn ExecutionPlan> {
 fn reuse(plan: Arc<dyn ExecutionPlan>) -> Vec<Arc<dyn ExecutionPlan>> {
     let mut config = ConfigOptions::default();
     config.extensions.insert(BallistaConfig::default());
-    let rule =
-        ReuseExchangeRule::new(Arc::new(BallistaPhysicalExtensionCodec::default()));
+    let rule = ReuseExchangeRule::new(
+        Arc::new(BallistaPhysicalExtensionCodec::default()),
+        Arc::default(),
+    );
     rule.optimize(plan, &config)
         .unwrap()
         .children()
@@ -240,4 +247,76 @@ fn readers_of_a_pending_stage_that_diverged_are_split() {
     let children = reuse(UnionExec::try_new(vec![hash, broadcast]).unwrap());
 
     assert!(!as_exchange(&children[0]).shares_stage_with(as_exchange(&children[1])));
+}
+
+/// Counts, on each pass of the optimizer chain, the resolved exchanges it sees.
+/// It runs before `ReuseExchangeRule`, as the rules that react to a resolved
+/// exchange, such as join selection, do.
+#[derive(Debug, Default)]
+struct CountResolvedExchanges {
+    passes: Mutex<Vec<usize>>,
+}
+
+impl PhysicalOptimizerRule for CountResolvedExchanges {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        _config: &ConfigOptions,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let mut resolved = 0;
+        plan.apply(|node| {
+            if node
+                .downcast_ref::<ExchangeExec>()
+                .is_some_and(ExchangeExec::shuffle_created)
+            {
+                resolved += 1;
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        self.passes.lock().push(resolved);
+        Ok(plan)
+    }
+
+    fn name(&self) -> &str {
+        "CountResolvedExchanges"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
+// A repeat that reads a finished stage is resolved by the last rule of the
+// chain, after the rules that react to it, such as join selection, which then
+// never saw it resolved. The chain must run again, as for a stage finishing,
+// or a stage can launch with a join still undecided above the repeat
+// (TPC-DS q25, q64 and q74).
+#[test]
+fn a_repeat_resolved_by_reuse_is_seen_by_the_rules_before_it() {
+    let finished = exchange(0);
+    as_exchange(&finished).set_stage_id(3);
+    as_exchange(&finished).resolve_shuffle_partitions(mock_partitions_with_statistics());
+    let plan = UnionExec::try_new(vec![finished, exchange(1)]).unwrap();
+
+    let counter = Arc::new(CountResolvedExchanges::default());
+    let read_finished_stage = Arc::new(AtomicBool::new(false));
+    let rules: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> = vec![
+        counter.clone(),
+        Arc::new(ReuseExchangeRule::new(
+            Arc::new(BallistaPhysicalExtensionCodec::default()),
+            read_finished_stage.clone(),
+        )),
+    ];
+    let state =
+        SessionStateBuilder::new().with_config(SessionConfig::new_with_ballista());
+    AdaptivePlanner::try_new_with_optimizers(
+        state,
+        plan,
+        "job".into(),
+        rules,
+        read_finished_stage,
+    )
+    .unwrap();
+
+    assert_eq!(*counter.passes.lock(), vec![1, 2]);
 }

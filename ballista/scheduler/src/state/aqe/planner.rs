@@ -49,7 +49,7 @@ use log::debug;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::time::Instant;
 
 type PhysicalOptimizerRuleRef =
@@ -97,6 +97,12 @@ pub struct AdaptivePlanner {
     job_id: JobId,
 
     runnable_stage_output: HashMap<usize, StageOutput>,
+
+    /// Raised by [`ReuseExchangeRule`] when it points a pending exchange at a
+    /// stage that has already finished. That resolves the exchange in the
+    /// middle of the optimizer chain, after the rules that react to a resolved
+    /// exchange have run, so the chain has to run again.
+    read_finished_stage: Arc<AtomicBool>,
 }
 
 impl Debug for AdaptivePlanner {
@@ -115,6 +121,8 @@ impl AdaptivePlanner {
     /// * `plan` - The physical execution plan for the job.
     /// * `job_id` - The unique identifier for the job.
     /// * `physical_optimizer_rules` - A list of physical optimizer rules to apply.
+    /// * `read_finished_stage` - The flag the rules' [`ReuseExchangeRule`], if
+    ///   any, raises.
     ///
     /// # Returns
     /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
@@ -123,11 +131,12 @@ impl AdaptivePlanner {
         plan: Arc<dyn ExecutionPlan>,
         job_id: JobId,
         physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
+        read_finished_stage: Arc<AtomicBool>,
     ) -> common::Result<Self> {
         let session_state =
             Self::create_session_state(state_builder, physical_optimizer_rules);
         let planner = DefaultPhysicalPlanner::default();
-        let plan = planner.optimize_physical_plan(plan, &session_state, |_, _| {})?;
+        let plan = Self::optimize(&planner, &session_state, &read_finished_stage, plan)?;
 
         Ok(Self {
             stage_id_generator: 0, // FIXME: compatibility issue with static where stages start from 1
@@ -137,7 +146,29 @@ impl AdaptivePlanner {
             runnable_stage_cache: HashMap::new(),
             job_id,
             runnable_stage_output: HashMap::new(),
+            read_finished_stage,
         })
+    }
+
+    /// Runs the optimizer chain over `plan`, and again for as long as a pass
+    /// resolves an exchange by pointing it at a finished stage, as a stage
+    /// finishing does. Bounded, since each pass can only point exchanges at
+    /// stages already finished.
+    fn optimize(
+        planner: &DefaultPhysicalPlanner,
+        session_state: &SessionState,
+        read_finished_stage: &AtomicBool,
+        mut plan: Arc<dyn ExecutionPlan>,
+    ) -> common::Result<Arc<dyn ExecutionPlan>> {
+        const MAX_PASSES: usize = 8;
+        for _ in 0..MAX_PASSES {
+            read_finished_stage.store(false, Ordering::Relaxed);
+            plan = planner.optimize_physical_plan(plan, session_state, |_, _| {})?;
+            if !read_finished_stage.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+        Ok(plan)
     }
 
     /// Creates a new `AdaptivePlanner` with default physical optimizer rules,
@@ -187,6 +218,7 @@ impl AdaptivePlanner {
             .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
         let state_builder = SessionStateBuilder::from(ctx.state());
+        let read_finished_stage = Arc::new(AtomicBool::new(false));
         Self::try_new_with_optimizers(
             state_builder,
             plan,
@@ -195,7 +227,9 @@ impl AdaptivePlanner {
                 plan_id_generator,
                 replan_optimizers,
                 ctx.state().config().ballista_physical_extension_codec(),
+                read_finished_stage.clone(),
             ),
+            read_finished_stage,
         )
     }
 
@@ -252,6 +286,7 @@ impl AdaptivePlanner {
             |_, _| {},
         )?;
 
+        let read_finished_stage = Arc::new(AtomicBool::new(false));
         Self::try_new_with_optimizers(
             SessionStateBuilder::from(ctx.state()),
             plan,
@@ -260,7 +295,9 @@ impl AdaptivePlanner {
                 plan_id_generator,
                 replan_optimizers,
                 ctx.state().config().ballista_physical_extension_codec(),
+                read_finished_stage.clone(),
             ),
+            read_finished_stage,
         )
     }
     /// Cancels a stage by its ID.
@@ -442,10 +479,11 @@ impl AdaptivePlanner {
             displayable(plan.as_ref()).indent(false)
         );
 
-        plan = self.physical_planner.optimize_physical_plan(
-            plan.clone(),
+        plan = Self::optimize(
+            &self.physical_planner,
             &self.session_state,
-            |_, _| {},
+            &self.read_finished_stage,
+            plan,
         )?;
 
         debug!(
@@ -604,21 +642,24 @@ impl AdaptivePlanner {
     #[cfg(test)]
     pub(super) fn default_optimizers(
         plan_id_generator: Arc<AtomicUsize>,
+        read_finished_stage: Arc<AtomicBool>,
     ) -> Vec<PhysicalOptimizerRuleRef> {
         Self::default_optimizers_with(
             plan_id_generator,
             vec![],
             Arc::new(ballista_core::serde::BallistaPhysicalExtensionCodec::default()),
+            read_finished_stage,
         )
     }
 
     /// The default rules, followed by an embedder's `replan_rules`, then
     /// [`ReuseExchangeRule`], which matches subtrees under `codec`, the job's
-    /// physical extension codec.
+    /// physical extension codec, and raises `read_finished_stage`.
     fn default_optimizers_with(
         plan_id_generator: Arc<AtomicUsize>,
         replan_rules: Vec<PhysicalOptimizerRuleRef>,
         codec: Arc<dyn PhysicalExtensionCodec>,
+        read_finished_stage: Arc<AtomicBool>,
     ) -> Vec<PhysicalOptimizerRuleRef> {
         let mut physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> =
             vec![];
@@ -670,7 +711,8 @@ impl AdaptivePlanner {
 
         // Last, so it matches each stage as it will run, embedder rewrites
         // included, and before any stage of this pass is launched.
-        physical_optimizers.push(Arc::new(ReuseExchangeRule::new(codec)));
+        physical_optimizers
+            .push(Arc::new(ReuseExchangeRule::new(codec, read_finished_stage)));
 
         physical_optimizers
     }
