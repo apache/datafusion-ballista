@@ -37,17 +37,17 @@ Ballista scheduler can be tuned using `SchedulerConfig` which supports overridin
 ## Combining Codecs
 
 To use several extension codecs at once, such as one per table format, combine
-them with `ComposedLogicalExtensionCodec` from `ballista_core::serde` and
-DataFusion's `ComposedPhysicalExtensionCodec`:
+them with `ComposedLogicalExtensionCodec` and `ComposedPhysicalExtensionCodec`
+from `ballista_core::serde`:
 
 ```rust
 let logical = ComposedLogicalExtensionCodec::new(vec![
     Arc::new(BallistaLogicalExtensionCodec::default()),
-    Arc::new(IcebergLogicalCodec::default()),
+    Arc::new(MyTableFormatLogicalCodec::new()),
 ]);
 let physical = ComposedPhysicalExtensionCodec::new(vec![
     Arc::new(BallistaPhysicalExtensionCodec::default()),
-    Arc::new(IcebergPhysicalCodec::default()),
+    Arc::new(MyTableFormatPhysicalCodec::new()),
 ]);
 ```
 
@@ -56,6 +56,10 @@ node is used, so each codec should fail on nodes that aren't its own. Each
 payload records that codec's position in the list and is decoded only by the
 codec at that position, so clients, the scheduler and executors must all list
 the same codecs in the same order. Add new codecs at the end.
+
+Ballista's `ComposedPhysicalExtensionCodec` replaces DataFusion's codec of the
+same name, which doesn't route physical expressions, window functions or
+higher-order functions to its codecs.
 
 ## Example: Custom Object Store Integration
 

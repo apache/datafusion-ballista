@@ -15,7 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! The logical counterpart of DataFusion's `ComposedPhysicalExtensionCodec`.
+//! Codecs that combine several extension codecs, such as one per table
+//! format, by recording which one encoded each payload.
+//!
+//! [`ComposedPhysicalExtensionCodec`] replaces DataFusion's codec of the same
+//! name, and [`ComposedLogicalExtensionCodec`] adds the logical counterpart
+//! DataFusion lacks. Unlike DataFusion's, they cover every codec method, let
+//! a later codec encode a function an earlier one leaves alone, keep a node
+//! encoded as zero bytes with its codec, and report every codec's error.
+//!
+//! TODO: move both to `datafusion-proto`, replacing its
+//! `ComposedPhysicalExtensionCodec`.
 
 use std::sync::Arc;
 
@@ -30,11 +40,19 @@ use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{
     AggregateUDF, Extension, HigherOrderUDF, LogicalPlan, ScalarUDF, WindowUDF,
 };
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr_common::physical_expr::proto_decode::PhysicalExprDecodeCtx;
+use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
+use datafusion_proto::physical_plan::{
+    PhysicalExtensionCodec, PhysicalProtoConverterExtension,
+};
 use prost::Message;
 
 /// The position of the codec that encoded `blob` in the codec list, and the
-/// encoded data. The same message `ComposedPhysicalExtensionCodec` writes.
+/// encoded data, in the same layout as DataFusion's
+/// `ComposedPhysicalExtensionCodec`.
 #[derive(Clone, PartialEq, Message)]
 struct DataEncoderTuple {
     #[prost(uint32, tag = "1")]
@@ -58,21 +76,40 @@ struct DataEncoderTuple {
 /// encode them; if none writes anything, nothing is written, and DataFusion
 /// looks a function up by name.
 #[derive(Debug)]
-pub struct ComposedLogicalExtensionCodec {
-    codecs: Vec<Arc<dyn LogicalExtensionCodec>>,
-}
+pub struct ComposedLogicalExtensionCodec(Composed<dyn LogicalExtensionCodec>);
 
 impl ComposedLogicalExtensionCodec {
     /// Combines `codecs`. Their positions are written into each payload, so
     /// add new codecs at the end.
     pub fn new(codecs: Vec<Arc<dyn LogicalExtensionCodec>>) -> Self {
-        Self { codecs }
+        Self(Composed { codecs })
     }
+}
 
-    fn decode_protobuf<R>(
+/// A [`PhysicalExtensionCodec`] that tries each of several codecs until one
+/// works, the physical counterpart of [`ComposedLogicalExtensionCodec`].
+#[derive(Debug)]
+pub struct ComposedPhysicalExtensionCodec(Composed<dyn PhysicalExtensionCodec>);
+
+impl ComposedPhysicalExtensionCodec {
+    /// Combines `codecs`. Their positions are written into each payload, so
+    /// add new codecs at the end.
+    pub fn new(codecs: Vec<Arc<dyn PhysicalExtensionCodec>>) -> Self {
+        Self(Composed { codecs })
+    }
+}
+
+/// The codecs, logical or physical, and how payloads are routed to them.
+#[derive(Debug)]
+struct Composed<C: ?Sized> {
+    codecs: Vec<Arc<C>>,
+}
+
+impl<C: ?Sized> Composed<C> {
+    fn decode<R>(
         &self,
         buf: &[u8],
-        decode: impl Fn(&dyn LogicalExtensionCodec, &[u8]) -> Result<R>,
+        decode: impl Fn(&C, &[u8]) -> Result<R>,
     ) -> Result<R> {
         // Nothing was written, or codec 0 encoded a node as zero bytes, which
         // protobuf also writes as nothing: offer the empty payload to each
@@ -101,11 +138,11 @@ impl ComposedLogicalExtensionCodec {
         decode(codec.as_ref(), &proto.blob)
     }
 
-    fn encode_protobuf(
+    fn encode(
         &self,
         buf: &mut Vec<u8>,
         empty: Empty,
-        encode: impl Fn(&dyn LogicalExtensionCodec, &mut Vec<u8>) -> Result<()>,
+        encode: impl Fn(&C, &mut Vec<u8>) -> Result<()>,
     ) -> Result<()> {
         let mut wrote_nothing = false;
         let mut errors = Vec::new();
@@ -179,11 +216,12 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         inputs: &[LogicalPlan],
         ctx: &TaskContext,
     ) -> Result<Extension> {
-        self.decode_protobuf(buf, |codec, data| codec.try_decode(data, inputs, ctx))
+        self.0
+            .decode(buf, |codec, data| codec.try_decode(data, inputs, ctx))
     }
 
     fn try_encode(&self, node: &Extension, buf: &mut Vec<u8>) -> Result<()> {
-        self.encode_protobuf(buf, Empty::Claims, |codec, data| {
+        self.0.encode(buf, Empty::Claims, |codec, data| {
             codec.try_encode(node, data)
         })
     }
@@ -195,7 +233,7 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         schema: SchemaRef,
         ctx: &TaskContext,
     ) -> Result<Arc<dyn TableProvider>> {
-        self.decode_protobuf(buf, |codec, data| {
+        self.0.decode(buf, |codec, data| {
             codec.try_decode_table_provider(data, table_ref, Arc::clone(&schema), ctx)
         })
     }
@@ -206,7 +244,7 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         node: Arc<dyn TableProvider>,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
-        self.encode_protobuf(buf, Empty::Claims, |codec, data| {
+        self.0.encode(buf, Empty::Claims, |codec, data| {
             codec.try_encode_table_provider(table_ref, Arc::clone(&node), data)
         })
     }
@@ -216,7 +254,8 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         buf: &[u8],
         ctx: &TaskContext,
     ) -> Result<Arc<dyn FileFormatFactory>> {
-        self.decode_protobuf(buf, |codec, data| codec.try_decode_file_format(data, ctx))
+        self.0
+            .decode(buf, |codec, data| codec.try_decode_file_format(data, ctx))
     }
 
     fn try_encode_file_format(
@@ -224,17 +263,18 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         buf: &mut Vec<u8>,
         node: Arc<dyn FileFormatFactory>,
     ) -> Result<()> {
-        self.encode_protobuf(buf, Empty::Declines, |codec, data| {
+        self.0.encode(buf, Empty::Declines, |codec, data| {
             codec.try_encode_file_format(data, Arc::clone(&node))
         })
     }
 
     fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {
-        self.decode_protobuf(buf, |codec, data| codec.try_decode_udf(name, data))
+        self.0
+            .decode(buf, |codec, data| codec.try_decode_udf(name, data))
     }
 
     fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> Result<()> {
-        self.encode_protobuf(buf, Empty::Declines, |codec, data| {
+        self.0.encode(buf, Empty::Declines, |codec, data| {
             codec.try_encode_udf(node, data)
         })
     }
@@ -244,7 +284,7 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         name: &str,
         buf: &[u8],
     ) -> Result<Arc<HigherOrderUDF>> {
-        self.decode_protobuf(buf, |codec, data| {
+        self.0.decode(buf, |codec, data| {
             codec.try_decode_higher_order_function(name, data)
         })
     }
@@ -254,27 +294,128 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         node: &HigherOrderUDF,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
-        self.encode_protobuf(buf, Empty::Declines, |codec, data| {
+        self.0.encode(buf, Empty::Declines, |codec, data| {
             codec.try_encode_higher_order_function(node, data)
         })
     }
 
     fn try_decode_udaf(&self, name: &str, buf: &[u8]) -> Result<Arc<AggregateUDF>> {
-        self.decode_protobuf(buf, |codec, data| codec.try_decode_udaf(name, data))
+        self.0
+            .decode(buf, |codec, data| codec.try_decode_udaf(name, data))
     }
 
     fn try_encode_udaf(&self, node: &AggregateUDF, buf: &mut Vec<u8>) -> Result<()> {
-        self.encode_protobuf(buf, Empty::Declines, |codec, data| {
+        self.0.encode(buf, Empty::Declines, |codec, data| {
             codec.try_encode_udaf(node, data)
         })
     }
 
     fn try_decode_udwf(&self, name: &str, buf: &[u8]) -> Result<Arc<WindowUDF>> {
-        self.decode_protobuf(buf, |codec, data| codec.try_decode_udwf(name, data))
+        self.0
+            .decode(buf, |codec, data| codec.try_decode_udwf(name, data))
     }
 
     fn try_encode_udwf(&self, node: &WindowUDF, buf: &mut Vec<u8>) -> Result<()> {
-        self.encode_protobuf(buf, Empty::Declines, |codec, data| {
+        self.0.encode(buf, Empty::Declines, |codec, data| {
+            codec.try_encode_udwf(node, data)
+        })
+    }
+}
+
+impl PhysicalExtensionCodec for ComposedPhysicalExtensionCodec {
+    fn try_decode(
+        &self,
+        buf: &[u8],
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.0.decode(buf, |codec, data| {
+            codec.try_decode(data, inputs, ctx, proto_converter)
+        })
+    }
+
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> Result<()> {
+        self.0.encode(buf, Empty::Claims, |codec, data| {
+            codec.try_encode(Arc::clone(&node), data, proto_converter)
+        })
+    }
+
+    fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {
+        self.0
+            .decode(buf, |codec, data| codec.try_decode_udf(name, data))
+    }
+
+    fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> Result<()> {
+        self.0.encode(buf, Empty::Declines, |codec, data| {
+            codec.try_encode_udf(node, data)
+        })
+    }
+
+    fn try_decode_higher_order_function(
+        &self,
+        name: &str,
+        buf: &[u8],
+    ) -> Result<Arc<HigherOrderUDF>> {
+        self.0.decode(buf, |codec, data| {
+            codec.try_decode_higher_order_function(name, data)
+        })
+    }
+
+    fn try_encode_higher_order_function(
+        &self,
+        node: &HigherOrderUDF,
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        self.0.encode(buf, Empty::Declines, |codec, data| {
+            codec.try_encode_higher_order_function(node, data)
+        })
+    }
+
+    fn try_decode_expr(
+        &self,
+        buf: &[u8],
+        inputs: &[Arc<dyn PhysicalExpr>],
+        ctx: &PhysicalExprDecodeCtx<'_>,
+    ) -> Result<Arc<dyn PhysicalExpr>> {
+        self.0
+            .decode(buf, |codec, data| codec.try_decode_expr(data, inputs, ctx))
+    }
+
+    fn try_encode_expr(
+        &self,
+        node: &Arc<dyn PhysicalExpr>,
+        buf: &mut Vec<u8>,
+        ctx: &PhysicalExprEncodeCtx<'_>,
+    ) -> Result<()> {
+        self.0.encode(buf, Empty::Claims, |codec, data| {
+            codec.try_encode_expr(node, data, ctx)
+        })
+    }
+
+    fn try_decode_udaf(&self, name: &str, buf: &[u8]) -> Result<Arc<AggregateUDF>> {
+        self.0
+            .decode(buf, |codec, data| codec.try_decode_udaf(name, data))
+    }
+
+    fn try_encode_udaf(&self, node: &AggregateUDF, buf: &mut Vec<u8>) -> Result<()> {
+        self.0.encode(buf, Empty::Declines, |codec, data| {
+            codec.try_encode_udaf(node, data)
+        })
+    }
+
+    fn try_decode_udwf(&self, name: &str, buf: &[u8]) -> Result<Arc<WindowUDF>> {
+        self.0
+            .decode(buf, |codec, data| codec.try_decode_udwf(name, data))
+    }
+
+    fn try_encode_udwf(&self, node: &WindowUDF, buf: &mut Vec<u8>) -> Result<()> {
+        self.0.encode(buf, Empty::Declines, |codec, data| {
             codec.try_encode_udwf(node, data)
         })
     }
@@ -287,8 +428,8 @@ mod tests {
     use datafusion::common::not_impl_err;
     use datafusion::datasource::empty::EmptyTable;
 
-    /// A codec that owns the table and the function named after it, and
-    /// encodes either as its own name. It decodes any bytes at all into an
+    /// A codec that owns the table, function and window function named after
+    /// it, and encodes any of them as its own name. It decodes any bytes at all into an
     /// empty table with one column of that name, as a codec that just calls
     /// `MyMessage::decode(buf)` might with another codec's bytes.
     #[derive(Debug)]
@@ -345,6 +486,44 @@ mod tests {
         }
 
         fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> Result<()> {
+            if node.name() == self.0 {
+                buf.extend_from_slice(self.0.as_bytes());
+            }
+            Ok(())
+        }
+    }
+
+    impl PhysicalExtensionCodec for Owner {
+        fn try_decode(
+            &self,
+            _buf: &[u8],
+            _inputs: &[Arc<dyn ExecutionPlan>],
+            _ctx: &TaskContext,
+            _proto_converter: &dyn PhysicalProtoConverterExtension,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            not_impl_err!("{} has no plans", self.0)
+        }
+
+        fn try_encode(
+            &self,
+            _node: Arc<dyn ExecutionPlan>,
+            _buf: &mut Vec<u8>,
+            _proto_converter: &dyn PhysicalProtoConverterExtension,
+        ) -> Result<()> {
+            not_impl_err!("{} has no plans", self.0)
+        }
+
+        fn try_decode_udwf(&self, name: &str, _buf: &[u8]) -> Result<Arc<WindowUDF>> {
+            let owned = datafusion::functions_window::all_default_window_functions()
+                .into_iter()
+                .find(|udwf| udwf.name() == name && name == self.0);
+            match owned {
+                Some(udwf) => Ok(udwf),
+                None => not_impl_err!("{} doesn't handle {name}", self.0),
+            }
+        }
+
+        fn try_encode_udwf(&self, node: &WindowUDF, buf: &mut Vec<u8>) -> Result<()> {
             if node.name() == self.0 {
                 buf.extend_from_slice(self.0.as_bytes());
             }
@@ -426,6 +605,36 @@ mod tests {
         .encode_to_vec();
         assert_eq!(buf, expected);
         assert_eq!(decode(&codec, &buf)?, "");
+
+        // At position 0 the whole payload is empty, and still decodes with
+        // the codec that wrote it.
+        let codec = composed(&["", "iceberg"]);
+        let buf = encode(&codec, "")?;
+        assert_eq!(buf, Vec::<u8>::new());
+        assert_eq!(decode(&codec, &buf)?, "");
+        Ok(())
+    }
+
+    #[test]
+    fn should_let_a_later_physical_codec_encode_a_window_function() -> Result<()> {
+        // DataFusion's composed physical codec doesn't route window functions.
+        let codec = ComposedPhysicalExtensionCodec::new(vec![
+            Arc::new(Owner("iceberg")),
+            Arc::new(Owner("row_number")),
+        ]);
+        let row_number = datafusion::functions_window::row_number::row_number_udwf();
+        let mut buf = Vec::new();
+        codec.try_encode_udwf(&row_number, &mut buf)?;
+        let expected = DataEncoderTuple {
+            encoder_position: 1,
+            blob: b"row_number".to_vec(),
+        }
+        .encode_to_vec();
+        assert_eq!(buf, expected);
+        assert_eq!(
+            codec.try_decode_udwf("row_number", &buf)?.name(),
+            "row_number"
+        );
         Ok(())
     }
 
