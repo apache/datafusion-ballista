@@ -70,10 +70,12 @@ use crate::serde::protobuf::{
     ballista_physical_plan_node::PhysicalPlanType,
 };
 use crate::serde::scheduler::PartitionLocation;
+pub use composed_codec::ComposedLogicalExtensionCodec;
 use datafusion::arrow::compute::SortOptions;
 use datafusion::execution::FunctionRegistry;
 pub use generated::ballista as protobuf;
 
+mod composed_codec;
 /// Generated protobuf code from Ballista protocol definitions.
 pub mod generated;
 /// Scheduler-specific serialization types and conversions.

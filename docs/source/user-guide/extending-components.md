@@ -34,6 +34,29 @@ Ballista executor can be configured using `ExecutorProcessConfig` which supports
 
 Ballista scheduler can be tuned using `SchedulerConfig` which supports overriding `config producer`, `session builder`, `logical codec`, `physical codec`
 
+## Combining Codecs
+
+To use several extension codecs at once, such as one per table format, combine
+them with `ComposedLogicalExtensionCodec` from `ballista_core::serde` and
+DataFusion's `ComposedPhysicalExtensionCodec`:
+
+```rust
+let logical = ComposedLogicalExtensionCodec::new(vec![
+    Arc::new(BallistaLogicalExtensionCodec::default()),
+    Arc::new(IcebergLogicalCodec::default()),
+]);
+let physical = ComposedPhysicalExtensionCodec::new(vec![
+    Arc::new(BallistaPhysicalExtensionCodec::default()),
+    Arc::new(IcebergPhysicalCodec::default()),
+]);
+```
+
+When encoding, the codecs are tried in order, and the first one that handles a
+node is used, so each codec should fail on nodes that aren't its own. Each
+payload records that codec's position in the list and is decoded only by the
+codec at that position, so clients, the scheduler and executors must all list
+the same codecs in the same order. Add new codecs at the end.
+
 ## Example: Custom Object Store Integration
 
 Extending basic building blocks will be demonstrated by integrating S3 object store. For this, new `ObjectStoreRegistry` and `S3Options` will be provided. `ObjectStoreRegistry` creates `ObjectStore` instances configured using `S3Options`, and caches them so that scans of the same bucket with the same options share one store.
