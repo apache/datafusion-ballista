@@ -19,6 +19,7 @@
 
 use std::sync::Arc;
 
+use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{Result, not_impl_err};
 use datafusion::datasource::source::DataSourceExec;
@@ -53,10 +54,12 @@ struct ScanWire {
 pub struct IcebergPhysicalCodec;
 
 impl IcebergPhysicalCodec {
-    /// Composes `codec` with this codec after it.
+    /// Composes `codec`, or Ballista's when `None`, with this codec after it.
     pub(crate) fn after(
-        codec: Arc<dyn PhysicalExtensionCodec>,
+        codec: Option<Arc<dyn PhysicalExtensionCodec>>,
     ) -> Arc<dyn PhysicalExtensionCodec> {
+        let codec =
+            codec.unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()));
         Arc::new(ComposedPhysicalExtensionCodec::new(vec![
             codec,
             Arc::new(Self),

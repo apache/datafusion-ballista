@@ -84,18 +84,18 @@ pub use crate::physical_codec::IcebergPhysicalCodec;
 pub use crate::scheduler::SchedulerConfigExt;
 
 /// Readies a client's session for Iceberg: adds the Iceberg codecs after the
-/// session's codecs, and pins
-/// each catalog-backed table a query names to the version its catalog serves
-/// when the query is planned. A session that is already ready is returned
-/// unchanged.
+/// session's codecs, and pins each catalog-backed table a query names to the
+/// version its catalog serves when the query is planned. A session that is
+/// already ready is returned unchanged.
 pub fn register_iceberg(mut state: SessionState) -> SessionState {
     if state.catalog_list().is::<PinningCatalogList>() {
         return state;
     }
     let config = state.config_mut();
-    let logical = IcebergLogicalCodec::after(config.ballista_logical_extension_codec());
+    let logical =
+        IcebergLogicalCodec::after(Some(config.ballista_logical_extension_codec()));
     let physical =
-        IcebergPhysicalCodec::after(config.ballista_physical_extension_codec());
+        IcebergPhysicalCodec::after(Some(config.ballista_physical_extension_codec()));
     *config = config
         .clone()
         .with_ballista_logical_extension_codec(logical)

@@ -19,7 +19,9 @@
 
 use std::sync::Arc;
 
-use ballista_core::serde::ComposedLogicalExtensionCodec;
+use ballista_core::serde::{
+    BallistaLogicalExtensionCodec, ComposedLogicalExtensionCodec,
+};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
 use datafusion::common::{Result, TableReference, exec_err, not_impl_err};
@@ -49,10 +51,12 @@ struct ProviderWire {
 pub struct IcebergLogicalCodec;
 
 impl IcebergLogicalCodec {
-    /// Composes `codec` with this codec after it.
+    /// Composes `codec`, or Ballista's when `None`, with this codec after it.
     pub(crate) fn after(
-        codec: Arc<dyn LogicalExtensionCodec>,
+        codec: Option<Arc<dyn LogicalExtensionCodec>>,
     ) -> Arc<dyn LogicalExtensionCodec> {
+        let codec =
+            codec.unwrap_or_else(|| Arc::new(BallistaLogicalExtensionCodec::default()));
         Arc::new(ComposedLogicalExtensionCodec::new(vec![
             codec,
             Arc::new(Self),

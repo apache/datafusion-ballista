@@ -17,11 +17,6 @@
 
 //! Readies a separately deployed executor for Iceberg.
 
-use std::sync::Arc;
-
-use ballista_core::serde::{
-    BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
-};
 use ballista_executor::executor_process::ExecutorProcessConfig;
 
 use crate::{IcebergLogicalCodec, IcebergPhysicalCodec};
@@ -34,16 +29,10 @@ pub trait ExecutorProcessConfigExt {
 
 impl ExecutorProcessConfigExt for ExecutorProcessConfig {
     fn with_iceberg(mut self) -> Self {
-        let logical = self
-            .override_logical_codec
-            .take()
-            .unwrap_or_else(|| Arc::new(BallistaLogicalExtensionCodec::default()));
-        let physical = self
-            .override_physical_codec
-            .take()
-            .unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()));
-        self.override_logical_codec = Some(IcebergLogicalCodec::after(logical));
-        self.override_physical_codec = Some(IcebergPhysicalCodec::after(physical));
+        let logical = IcebergLogicalCodec::after(self.override_logical_codec.take());
+        let physical = IcebergPhysicalCodec::after(self.override_physical_codec.take());
+        self.override_logical_codec = Some(logical);
+        self.override_physical_codec = Some(physical);
         self
     }
 }

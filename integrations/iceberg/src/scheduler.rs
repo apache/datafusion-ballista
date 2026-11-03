@@ -19,9 +19,6 @@
 
 use std::sync::Arc;
 
-use ballista_core::serde::{
-    BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
-};
 use ballista_core::utils::default_session_builder;
 use ballista_scheduler::config::SchedulerConfig;
 use datafusion::catalog::CatalogProvider;
@@ -45,16 +42,10 @@ impl SchedulerConfigExt for SchedulerConfig {
         mut self,
         catalogs: impl IntoIterator<Item = (N, Arc<dyn CatalogProvider>)>,
     ) -> Self {
-        let logical = self
-            .override_logical_codec
-            .take()
-            .unwrap_or_else(|| Arc::new(BallistaLogicalExtensionCodec::default()));
-        let physical = self
-            .override_physical_codec
-            .take()
-            .unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()));
-        self.override_logical_codec = Some(IcebergLogicalCodec::after(logical));
-        self.override_physical_codec = Some(IcebergPhysicalCodec::after(physical));
+        let logical = IcebergLogicalCodec::after(self.override_logical_codec.take());
+        let physical = IcebergPhysicalCodec::after(self.override_physical_codec.take());
+        self.override_logical_codec = Some(logical);
+        self.override_physical_codec = Some(physical);
         let base = self
             .override_session_builder
             .take()
