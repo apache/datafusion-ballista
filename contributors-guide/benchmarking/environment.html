@@ -417,8 +417,8 @@
 <h1>Benchmark Environment<a class="headerlink" href="#benchmark-environment" title="Link to this heading">#</a></h1>
 <p>How the TPC-H SF1000 results on the <a class="reference internal" href="index.html"><span class="std std-doc">benchmarking page</span></a> were
 collected: cluster, data, and queries. Per-engine settings are on the
-<a class="reference internal" href="ballista.html"><span class="std std-doc">Ballista</span></a>, <a class="reference internal" href="spark.html"><span class="std std-doc">Spark</span></a>, <a class="reference internal" href="comet.html"><span class="std std-doc">Spark + Comet</span></a> and
-<a class="reference internal" href="trino.html"><span class="std std-doc">Trino</span></a> pages.</p>
+<a class="reference internal" href="ballista.html"><span class="std std-doc">Ballista</span></a>, <a class="reference internal" href="spark.html"><span class="std std-doc">Spark</span></a>, <a class="reference internal" href="comet.html"><span class="std std-doc">Spark + Comet</span></a>,
+<a class="reference internal" href="trino.html"><span class="std std-doc">Trino</span></a> and <a class="reference internal" href="datafusion-distributed.html"><span class="std std-doc">DataFusion Distributed</span></a> pages.</p>
 <section id="cluster">
 <h2>Cluster<a class="headerlink" href="#cluster" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -438,6 +438,9 @@ total, compared with 64 GiB for a Ballista executor).</p></li>
 <li><p><strong>Worker pod (Trino):</strong> x86_64, 8 vCPU, 64 GiB memory (the image’s
 default JVM heap of 80 %, about 51 GiB), no spill volume. A separate
 coordinator pod plans and schedules but does not scan data.</p></li>
+<li><p><strong>Worker pod (DataFusion Distributed):</strong> x86_64, 8 vCPU, 64 GiB memory, plus a
+200 GiB <code class="docutils literal notranslate"><span class="pre">gp3</span></code> PVC for spill files. A separate coordinator pod (8 vCPU,
+32 GiB) plans each query and runs its last stage.</p></li>
 <li><p><strong>Driver (Spark and Spark + Comet):</strong> runs the queries through a Spark
 benchmark harness. See <a class="reference internal" href="spark.html"><span class="std std-doc">Spark</span></a>.</p></li>
 <li><p><strong>Client pod (Ballista):</strong> the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> Rust benchmark runner from

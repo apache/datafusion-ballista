@@ -412,12 +412,29 @@
 -->
 <section id="benchmarking">
 <h1>Benchmarking<a class="headerlink" href="#benchmarking" title="Link to this heading">#</a></h1>
-<p>Current TPC-H <strong>SF1000</strong> results for Ballista in its default staged mode and in
-the opt-in pipelined mode, compared against vanilla
-<strong>Spark 4.1.3</strong> and <strong>Spark 4.1.3 with Apache DataFusion Comet 1.1.0-rc2</strong>,
-running on the same cluster shape. A <strong>Trino 483</strong> column is included for
-reference; it is not an apples-to-apples comparison (see
-<a class="reference internal" href="trino.html"><span class="std std-doc">Trino configuration</span></a>).</p>
+<p>TPC-H <strong>SF1000</strong> results on Kubernetes for Ballista in its default staged mode
+and in the opt-in pipelined mode, <strong>DataFusion Distributed</strong>, vanilla
+<strong>Spark 4.1.3</strong>, <strong>Spark 4.1.3 with Apache DataFusion Comet 1.1.0-rc2</strong> and
+<strong>Trino 483</strong>, all on the same cluster shape. The Trino and DataFusion
+Distributed columns are not apples-to-apples comparisons (see
+<a class="reference internal" href="trino.html"><span class="std std-doc">Trino configuration</span></a> and
+<a class="reference internal" href="datafusion-distributed.html"><span class="std std-doc">DataFusion Distributed configuration</span></a>).</p>
+<section id="where-the-numbers-come-from">
+<h2>Where the numbers come from<a class="headerlink" href="#where-the-numbers-come-from" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Ballista and DataFusion Distributed</strong> were run with the scripts in
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster"><code class="docutils literal notranslate"><span class="pre">benchmarks/cluster</span></code></a>
+in this repository, as they are, against the commits below. Anyone with a
+Kubernetes cluster, the same data and the settings on these pages can repeat
+them (see <a class="reference internal" href="#reproducing"><span class="xref myst">Reproducing</span></a>).</p></li>
+<li><p><strong>Spark, Spark + Comet and Trino</strong> were run earlier, with proprietary scripts
+that are not part of this repository. They used the same settings as the
+scripts here, but their own phrasing of the queries (see
+<a class="reference internal" href="environment.html#queries"><span class="std std-ref">Queries</span></a>), so these three columns cannot be
+reproduced exactly from this repository, and differences between them and the
+other columns come from the scripts as well as the engines.</p></li>
+</ul>
+</section>
 <section id="versions-under-test">
 <h2>Versions under test<a class="headerlink" href="#versions-under-test" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -428,15 +445,18 @@ reference; it is not an apples-to-apples comparison (see
 </thead>
 <tbody>
 <tr class="row-even"><td><p>Ballista</p></td>
-<td><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/commit/0ef7399eeac239b867e46f1c9bcd23d8f071589e"><code class="docutils literal notranslate"><span class="pre">0ef7399e</span></code></a> (<a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2657">#2657</a>), Cargo pkg <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code>, DataFusion <code class="docutils literal notranslate"><span class="pre">55.2.0</span></code></p></td>
+<td><p><a class="reference external" href="https://github.com/apache/datafusion-ballista/commit/96b5ba93463955c91baae703373961a876b30896"><code class="docutils literal notranslate"><span class="pre">96b5ba93</span></code></a>, Cargo pkg <code class="docutils literal notranslate"><span class="pre">55.0.0</span></code>, DataFusion <code class="docutils literal notranslate"><span class="pre">55.2.0</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>Spark</p></td>
+<tr class="row-odd"><td><p>DataFusion Distributed</p></td>
+<td><p><a class="reference external" href="https://github.com/datafusion-contrib/datafusion-distributed/commit/903502750b99839515aa8af9982f84f9c8c2ee5f"><code class="docutils literal notranslate"><span class="pre">90350275</span></code></a>, DataFusion <code class="docutils literal notranslate"><span class="pre">55</span></code>, with the memory-limit patch</p></td>
+</tr>
+<tr class="row-even"><td><p>Spark</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">4.1.3</span></code> (<code class="docutils literal notranslate"><span class="pre">apache/spark:4.1.3</span></code> image, vanilla, no acceleration plugin)</p></td>
 </tr>
-<tr class="row-even"><td><p>Comet</p></td>
+<tr class="row-odd"><td><p>Comet</p></td>
 <td><p><a class="reference external" href="https://github.com/apache/datafusion-comet">Apache DataFusion Comet</a> <code class="docutils literal notranslate"><span class="pre">1.1.0-rc2</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa"><code class="docutils literal notranslate"><span class="pre">992c806a</span></code></a>) on the same Spark <code class="docutils literal notranslate"><span class="pre">4.1.3</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>Trino</p></td>
+<tr class="row-even"><td><p>Trino</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">483</span></code> (<code class="docutils literal notranslate"><span class="pre">trinodb/trino:483</span></code> image, Hive connector)</p></td>
 </tr>
 </tbody>
@@ -446,18 +466,22 @@ reference; it is not an apples-to-apples comparison (see
 <section id="results">
 <h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
 <p><strong>Times in seconds; lower is better.</strong> Ballista, Spark, and Spark + Comet:
-mean of 2 iterations, including the cold first iteration. Trino: mean of 3
-iterations after an untimed warm-up run (see
-<a class="reference internal" href="trino.html"><span class="std std-doc">Trino configuration</span></a>).</p>
-<p>Both Ballista columns come from the same image, cluster and runner, one suite
-run each; they differ only in <code class="docutils literal notranslate"><span class="pre">ballista.execution.mode</span></code> (and the push-staged
-scheduling that pipelined mode requires). The Spark, Comet and Trino columns
-are from separate runs.</p>
+mean of 2 iterations, including the cold first iteration. Trino and DataFusion
+Distributed: mean of 3 iterations after an untimed warm-up run (see
+<a class="reference internal" href="trino.html"><span class="std std-doc">Trino configuration</span></a> and
+<a class="reference internal" href="datafusion-distributed.html"><span class="std std-doc">DataFusion Distributed configuration</span></a>). For
+Ballista and DataFusion Distributed every query returned the expected row
+count.</p>
+<p>The two Ballista columns come from the same image, cluster and runner, one
+suite run each; they differ only in <code class="docutils literal notranslate"><span class="pre">ballista.execution.mode</span></code> (and the
+push-staged scheduling that pipelined mode requires). The other columns are
+from separate runs.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head text-right"><p>Query</p></th>
 <th class="head text-right"><p>Ballista staged (s)</p></th>
 <th class="head text-right"><p>Ballista pipelined (s)</p></th>
+<th class="head text-right"><p>DataFusion Distributed (s)</p></th>
 <th class="head text-right"><p>Spark 4.1.3 (s)</p></th>
 <th class="head text-right"><p>Spark 4.1.3 + Comet 1.1.0-rc2 (s)</p></th>
 <th class="head text-right"><p>Trino 483 (s)</p></th>
@@ -465,162 +489,185 @@ are from separate runs.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td class="text-right"><p>1</p></td>
-<td class="text-right"><p>11.43</p></td>
-<td class="text-right"><p>12.66</p></td>
+<td class="text-right"><p>15.49</p></td>
+<td class="text-right"><p>13.59</p></td>
+<td class="text-right"><p>7.85</p></td>
 <td class="text-right"><p>71.45</p></td>
 <td class="text-right"><p>10.66</p></td>
 <td class="text-right"><p>5.32</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>2</p></td>
-<td class="text-right"><p>31.70</p></td>
-<td class="text-right"><p>12.49</p></td>
+<td class="text-right"><p>34.93</p></td>
+<td class="text-right"><p>13.12</p></td>
+<td class="text-right"><p>21.29</p></td>
 <td class="text-right"><p>37.98</p></td>
 <td class="text-right"><p>21.66</p></td>
 <td class="text-right"><p>15.34</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>3</p></td>
-<td class="text-right"><p>17.32</p></td>
-<td class="text-right"><p>7.14</p></td>
+<td class="text-right"><p>19.48</p></td>
+<td class="text-right"><p>8.06</p></td>
+<td class="text-right"><p>8.85</p></td>
 <td class="text-right"><p>30.61</p></td>
 <td class="text-right"><p>16.05</p></td>
 <td class="text-right"><p>13.47</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>4</p></td>
-<td class="text-right"><p>11.07</p></td>
-<td class="text-right"><p>5.75</p></td>
+<td class="text-right"><p>12.32</p></td>
+<td class="text-right"><p>7.16</p></td>
+<td class="text-right"><p>6.10</p></td>
 <td class="text-right"><p>23.86</p></td>
 <td class="text-right"><p>8.11</p></td>
 <td class="text-right"><p>8.01</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>5</p></td>
-<td class="text-right"><p>41.90</p></td>
-<td class="text-right"><p>14.35</p></td>
+<td class="text-right"><p>42.91</p></td>
+<td class="text-right"><p>16.53</p></td>
+<td class="text-right"><p>18.89</p></td>
 <td class="text-right"><p>57.39</p></td>
 <td class="text-right"><p>38.32</p></td>
 <td class="text-right"><p>25.98</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>6</p></td>
-<td class="text-right"><p>1.26</p></td>
-<td class="text-right"><p>1.32</p></td>
+<td class="text-right"><p>2.26</p></td>
+<td class="text-right"><p>1.62</p></td>
+<td class="text-right"><p>1.47</p></td>
 <td class="text-right"><p>1.73</p></td>
 <td class="text-right"><p>0.99</p></td>
 <td class="text-right"><p>0.84</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>7</p></td>
-<td class="text-right"><p>35.09</p></td>
-<td class="text-right"><p>18.29</p></td>
+<td class="text-right"><p>36.06</p></td>
+<td class="text-right"><p>21.25</p></td>
+<td class="text-right"><p>19.31</p></td>
 <td class="text-right"><p>25.34</p></td>
 <td class="text-right"><p>16.60</p></td>
 <td class="text-right"><p>16.19</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>8</p></td>
-<td class="text-right"><p>20.34</p></td>
-<td class="text-right"><p>16.19</p></td>
+<td class="text-right"><p>20.94</p></td>
+<td class="text-right"><p>19.27</p></td>
+<td class="text-right"><p>23.87</p></td>
 <td class="text-right"><p>58.17</p></td>
 <td class="text-right"><p>46.04</p></td>
 <td class="text-right"><p>30.93</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>9</p></td>
-<td class="text-right"><p>32.81</p></td>
-<td class="text-right"><p>25.20</p></td>
+<td class="text-right"><p>34.85</p></td>
+<td class="text-right"><p>30.03</p></td>
+<td class="text-right"><p>35.92</p></td>
 <td class="text-right"><p>74.90</p></td>
 <td class="text-right"><p>55.78</p></td>
 <td class="text-right"><p>41.71</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>10</p></td>
-<td class="text-right"><p>37.13</p></td>
-<td class="text-right"><p>24.84</p></td>
+<td class="text-right"><p>44.66</p></td>
+<td class="text-right"><p>25.15</p></td>
+<td class="text-right"><p>19.93</p></td>
 <td class="text-right"><p>35.31</p></td>
 <td class="text-right"><p>21.31</p></td>
 <td class="text-right"><p>20.41</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>11</p></td>
-<td class="text-right"><p>15.95</p></td>
-<td class="text-right"><p>4.08</p></td>
+<td class="text-right"><p>19.33</p></td>
+<td class="text-right"><p>5.66</p></td>
+<td class="text-right"><p>7.47</p></td>
 <td class="text-right"><p>31.66</p></td>
 <td class="text-right"><p>14.79</p></td>
 <td class="text-right"><p>5.73</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>12</p></td>
-<td class="text-right"><p>10.26</p></td>
-<td class="text-right"><p>3.80</p></td>
+<td class="text-right"><p>10.87</p></td>
+<td class="text-right"><p>4.41</p></td>
+<td class="text-right"><p>4.40</p></td>
 <td class="text-right"><p>13.24</p></td>
 <td class="text-right"><p>5.33</p></td>
 <td class="text-right"><p>4.40</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>13</p></td>
-<td class="text-right"><p>10.67</p></td>
-<td class="text-right"><p>5.52</p></td>
+<td class="text-right"><p>11.17</p></td>
+<td class="text-right"><p>6.66</p></td>
+<td class="text-right"><p>6.38</p></td>
 <td class="text-right"><p>22.73</p></td>
 <td class="text-right"><p>11.31</p></td>
 <td class="text-right"><p>10.56</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>14</p></td>
-<td class="text-right"><p>6.71</p></td>
-<td class="text-right"><p>1.35</p></td>
+<td class="text-right"><p>7.18</p></td>
+<td class="text-right"><p>1.92</p></td>
+<td class="text-right"><p>2.53</p></td>
 <td class="text-right"><p>7.25</p></td>
 <td class="text-right"><p>2.50</p></td>
 <td class="text-right"><p>1.66</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>15</p></td>
-<td class="text-right"><p>10.35</p></td>
-<td class="text-right"><p>6.04</p></td>
+<td class="text-right"><p>11.51</p></td>
+<td class="text-right"><p>8.21</p></td>
+<td class="text-right"><p>7.68</p></td>
 <td class="text-right"><p>22.45</p></td>
 <td class="text-right"><p>11.85</p></td>
 <td class="text-right"><p>8.30</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>16</p></td>
-<td class="text-right"><p>13.52</p></td>
-<td class="text-right"><p>5.07</p></td>
+<td class="text-right"><p>12.17</p></td>
+<td class="text-right"><p>5.69</p></td>
+<td class="text-right"><p>76.41</p></td>
 <td class="text-right"><p>24.34</p></td>
 <td class="text-right"><p>8.94</p></td>
 <td class="text-right"><p>6.98</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>17</p></td>
-<td class="text-right"><p>23.21</p></td>
-<td class="text-right"><p>14.94</p></td>
+<td class="text-right"><p>25.50</p></td>
+<td class="text-right"><p>20.00</p></td>
+<td class="text-right"><p>22.06</p></td>
 <td class="text-right"><p>81.36</p></td>
 <td class="text-right"><p>25.14</p></td>
 <td class="text-right"><p>24.76</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>18</p></td>
-<td class="text-right"><p>56.45</p></td>
-<td class="text-right"><p>36.92</p></td>
+<td class="text-right"><p>61.02</p></td>
+<td class="text-right"><p>38.47</p></td>
+<td class="text-right"><p>34.84</p></td>
 <td class="text-right"><p>134.11</p></td>
 <td class="text-right"><p>46.42</p></td>
 <td class="text-right"><p>66.00</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>19</p></td>
-<td class="text-right"><p>10.88</p></td>
-<td class="text-right"><p>7.08</p></td>
+<td class="text-right"><p>12.20</p></td>
+<td class="text-right"><p>9.45</p></td>
+<td class="text-right"><p>8.26</p></td>
 <td class="text-right"><p>13.27</p></td>
 <td class="text-right"><p>9.07</p></td>
 <td class="text-right"><p>5.93</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>20</p></td>
-<td class="text-right"><p>13.83</p></td>
-<td class="text-right"><p>5.66</p></td>
+<td class="text-right"><p>17.38</p></td>
+<td class="text-right"><p>7.47</p></td>
+<td class="text-right"><p>17.77</p></td>
 <td class="text-right"><p>16.08</p></td>
 <td class="text-right"><p>6.57</p></td>
 <td class="text-right"><p>8.57</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p>21</p></td>
-<td class="text-right"><p>62.41</p></td>
-<td class="text-right"><p>47.01</p></td>
+<td class="text-right"><p>67.92</p></td>
+<td class="text-right"><p>54.62</p></td>
+<td class="text-right"><p>39.06</p></td>
 <td class="text-right"><p>98.04</p></td>
 <td class="text-right"><p>68.43</p></td>
 <td class="text-right"><p>83.22</p></td>
 </tr>
 <tr class="row-odd"><td class="text-right"><p>22</p></td>
-<td class="text-right"><p>9.63</p></td>
-<td class="text-right"><p>5.37</p></td>
+<td class="text-right"><p>10.52</p></td>
+<td class="text-right"><p>7.68</p></td>
+<td class="text-right"><p>5.51</p></td>
 <td class="text-right"><p>16.90</p></td>
 <td class="text-right"><p>9.22</p></td>
 <td class="text-right"><p>7.29</p></td>
 </tr>
 <tr class="row-even"><td class="text-right"><p><strong>Total</strong></p></td>
-<td class="text-right"><p><strong>483.91</strong></p></td>
-<td class="text-right"><p><strong>281.06</strong></p></td>
+<td class="text-right"><p><strong>530.70</strong></p></td>
+<td class="text-right"><p><strong>326.00</strong></p></td>
+<td class="text-right"><p><strong>395.83</strong></p></td>
 <td class="text-right"><p><strong>898.17</strong></p></td>
 <td class="text-right"><p><strong>455.09</strong></p></td>
 <td class="text-right"><p><strong>411.62</strong></p></td>
@@ -637,14 +684,19 @@ over Arrow Flight, with no shuffle files and no AQE. See the
 <section id="reproducing">
 <h2>Reproducing<a class="headerlink" href="#reproducing" title="Link to this heading">#</a></h2>
 <p><a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster"><code class="docutils literal notranslate"><span class="pre">benchmarks/cluster</span></code></a>
-has the scripts to run all four engines on your own Kubernetes cluster with
+has the scripts to run all five engines on your own Kubernetes cluster with
 the settings described on these pages. You provide the cluster, the data in
-S3, and the images, which the directory has Dockerfiles for.</p>
-<p>The Ballista numbers above come from the <code class="docutils literal notranslate"><span class="pre">tpch</span></code> runner in this repository. The
-Spark, Spark + Comet, and Trino numbers were collected before these scripts
-were added, with a harness that used the same settings but its own phrasing of
-the queries (see <a class="reference internal" href="environment.html#queries"><span class="std std-ref">Queries</span></a>). The scripts run the
-queries in this repository on every engine.</p>
+S3, and the images, which the directory has Dockerfiles for. The Ballista and
+DataFusion Distributed columns were produced with:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>benchmarks/cluster
+python3<span class="w"> </span>run.py<span class="w"> </span>--engine<span class="w"> </span>ballista
+python3<span class="w"> </span>run.py<span class="w"> </span>--engine<span class="w"> </span>ballista<span class="w"> </span>--ballista-config<span class="w"> </span>ballista.execution.mode<span class="o">=</span>pipelined
+python3<span class="w"> </span>run.py<span class="w"> </span>--engine<span class="w"> </span>datafusion-distributed
+</pre></div>
+</div>
+<p>The scripts run the queries in this repository on every engine, so the Spark,
+Spark + Comet and Trino columns can be rerun with them too
+(<code class="docutils literal notranslate"><span class="pre">--engine</span> <span class="pre">spark</span></code>, <code class="docutils literal notranslate"><span class="pre">--engine</span> <span class="pre">comet</span></code>, <code class="docutils literal notranslate"><span class="pre">--engine</span> <span class="pre">trino</span></code>).</p>
 </section>
 <section id="details">
 <h2>Details<a class="headerlink" href="#details" title="Link to this heading">#</a></h2>
@@ -724,6 +776,7 @@ open issues found by benchmarking: <a class="reference external" href="https://g
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-the-numbers-come-from">Where the numbers come from</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#versions-under-test">Versions under test</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reproducing">Reproducing</a></li>
