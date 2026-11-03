@@ -34,7 +34,7 @@ use ballista_core::JobId;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
-use datafusion::common::{HashMap, exec_err};
+use datafusion::common::{ColumnStatistics, HashMap, exec_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -242,10 +242,13 @@ impl AdaptivePlanner {
         Ok(())
     }
 
-    pub(super) fn finalise_stage_internal(
+    /// Resolves a finished stage's exchange with its partitions and, when
+    /// given, the per-column statistics of its output, then replans.
+    pub(super) fn finalise_stage(
         &mut self,
         stage_id: usize,
         partitions: Vec<Vec<PartitionLocation>>,
+        column_statistics: Option<Vec<ColumnStatistics>>,
     ) -> common::Result<()> {
         // stage has finished, stage partitions should be resolved,
         // and it has to be removed from active stages cache.
@@ -263,6 +266,9 @@ impl AdaptivePlanner {
                 )
             }) {
             Some((Some(stage), None)) => {
+                if let Some(column_statistics) = column_statistics {
+                    stage.resolve_column_statistics(column_statistics);
+                }
                 stage.resolve_shuffle_partitions(partitions);
                 self.replan_stages()?;
                 Ok(())
@@ -340,13 +346,15 @@ impl AdaptivePlanner {
         })
     }
 
-    /// Save the given partition list on the stage's ExchangeExec and trigger a replan.
+    /// Save the given partition list and the stage's per-column output
+    /// statistics on the stage's ExchangeExec, and trigger a replan.
     pub fn resolve_stage_partitions(
         &mut self,
         stage_id: usize,
         partitions: Vec<Vec<PartitionLocation>>,
+        column_statistics: Vec<ColumnStatistics>,
     ) -> common::Result<()> {
-        self.finalise_stage_internal(stage_id, partitions)
+        self.finalise_stage(stage_id, partitions, Some(column_statistics))
     }
 
     /// Replans the stages by applying physical optimizations.
