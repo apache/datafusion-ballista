@@ -74,7 +74,7 @@ cargo run --example standalone-iceberg-scan
 Flight SQL clients (JDBC, ADBC, BI tools) send SQL to the scheduler, which plans
 it, so they hold no catalog. To let them query Iceberg tables, mount catalogs
 on the scheduler with `SchedulerConfigExt::with_iceberg` (the `scheduler`
-feature), which also sets the Iceberg codecs:
+feature), which also adds the Iceberg codecs:
 
 ```rust
 use ballista_iceberg::SchedulerConfigExt;
@@ -85,7 +85,7 @@ let config = SchedulerConfig::default()
     .with_iceberg([("rest", Arc::new(rest) as _)]);
 ```
 
-Executors set the codecs with `ExecutorProcessConfigExt::with_iceberg` (the
+Executors add the codecs with `ExecutorProcessConfigExt::with_iceberg` (the
 `executor` feature):
 
 ```rust
@@ -94,7 +94,8 @@ use ballista_iceberg::ExecutorProcessConfigExt;
 let config = ExecutorProcessConfig::default().with_iceberg();
 ```
 
-Both keep any session builder or codecs the config already has. A client can
+Both keep any codecs the config already has, and the scheduler keeps its
+session builder, mounting the catalogs on each session it builds. A client can
 then run `SELECT * FROM rest.ns.t`. Tables are pinned the same way as on the
 client, while the scheduler plans the query.
 
@@ -125,9 +126,10 @@ scheduler for SQL clients. Executors never need catalog configuration.
 already set, with `ComposedLogicalExtensionCodec` and DataFusion's
 `ComposedPhysicalExtensionCodec` (see
 [Combining Codecs](extending-components.md#combining-codecs)). To read tables
-of another format too, such as Delta, set its codecs before calling them.
-Clients, the scheduler and executors must all set the same codecs in the same
-order.
+of another format too, such as Delta, set its codecs first: on the session's
+`SessionConfig` before calling `register_iceberg`, and on `SchedulerConfig` and
+`ExecutorProcessConfig` before calling `with_iceberg`. Clients, the scheduler
+and executors must all set the same codecs in the same order.
 
 ## Limitations
 
