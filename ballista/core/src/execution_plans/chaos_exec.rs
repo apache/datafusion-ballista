@@ -35,7 +35,7 @@ use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::StatisticsArgs;
-use datafusion::physical_plan::execution_plan::CardinalityEffect;
+use datafusion::physical_plan::execution_plan::{CardinalityEffect, LimitBehavior};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::statistics::ChildStats;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -237,8 +237,14 @@ impl ExecutionPlan for ChaosExec {
         vec![ChildStats::At(partition)]
     }
 
-    fn supports_limit_pushdown(&self) -> bool {
-        self.input.supports_limit_pushdown()
+    fn limit_behavior(&self) -> LimitBehavior {
+        match self.input.limit_behavior() {
+            LimitBehavior::MoveToInput => LimitBehavior::MoveToInput,
+            LimitBehavior::Merge if self.input.fetch().is_none() => {
+                LimitBehavior::MoveToInput
+            }
+            _ => LimitBehavior::Stops,
+        }
     }
 
     fn fetch(&self) -> Option<usize> {

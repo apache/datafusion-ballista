@@ -39,6 +39,7 @@ use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_optimizer::ensure_requirements::EnsureRequirements;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
 use log::debug;
@@ -594,6 +595,10 @@ impl AdaptivePlanner {
             Arc::new(BalanceAndPruneFileGroups::new()),
             Arc::new(DelayJoinSelectionRule::new(plan_id_generator)),
             Arc::new(ChaosCreatingRule::default()),
+            // DataFusion checks the final plan of every physical pipeline, so
+            // this one must end with the distribution and ordering requirements
+            // satisfied. The full chain runs `EnsureRequirements` again later.
+            Arc::new(EnsureRequirements::default()),
         ]
     }
 
