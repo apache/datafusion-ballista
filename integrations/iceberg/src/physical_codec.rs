@@ -19,18 +19,14 @@
 
 use std::sync::Arc;
 
-use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::Result;
+use datafusion::common::{Result, not_impl_err};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
-use datafusion::logical_expr::{AggregateUDF, HigherOrderUDF, ScalarUDF, WindowUDF};
-use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_expr_common::physical_expr::proto_decode::PhysicalExprDecodeCtx;
-use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::{
-    PhysicalExtensionCodec, PhysicalProtoConverterExtension,
+    ComposedPhysicalExtensionCodec, PhysicalExtensionCodec,
+    PhysicalProtoConverterExtension,
 };
 use iceberg::expr::Predicate;
 use iceberg_datafusion::read::IcebergDataSource;
@@ -48,23 +44,23 @@ struct ScanWire {
     fetch: Option<usize>,
 }
 
-/// A [`PhysicalExtensionCodec`] for scans of an [`IcebergDataSource`] that
-/// delegates everything else to an inner codec.
-#[derive(Debug)]
-pub struct IcebergPhysicalCodec {
-    inner: Arc<dyn PhysicalExtensionCodec>,
-}
+/// A [`PhysicalExtensionCodec`] for scans of an [`IcebergDataSource`]. It
+/// fails on anything else, so compose it after other codecs with
+/// [`ComposedPhysicalExtensionCodec`], as [`register_iceberg`] does.
+///
+/// [`register_iceberg`]: crate::register_iceberg
+#[derive(Debug, Default)]
+pub struct IcebergPhysicalCodec;
 
 impl IcebergPhysicalCodec {
-    /// Creates a codec that delegates everything but Iceberg scans to `inner`.
-    pub fn new(inner: Arc<dyn PhysicalExtensionCodec>) -> Self {
-        Self { inner }
-    }
-}
-
-impl Default for IcebergPhysicalCodec {
-    fn default() -> Self {
-        Self::new(Arc::new(BallistaPhysicalExtensionCodec::default()))
+    /// Composes `codec` with this codec after it.
+    pub(crate) fn after(
+        codec: Arc<dyn PhysicalExtensionCodec>,
+    ) -> Arc<dyn PhysicalExtensionCodec> {
+        Arc::new(ComposedPhysicalExtensionCodec::new(vec![
+            codec,
+            Arc::new(Self),
+        ]))
     }
 }
 
@@ -72,13 +68,11 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
     fn try_decode(
         &self,
         buf: &[u8],
-        inputs: &[Arc<dyn ExecutionPlan>],
-        ctx: &TaskContext,
-        proto_converter: &dyn PhysicalProtoConverterExtension,
+        _inputs: &[Arc<dyn ExecutionPlan>],
+        _ctx: &TaskContext,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let Some(scan) = wire::decode::<ScanWire>(buf)? else {
-            return self.inner.try_decode(buf, inputs, ctx, proto_converter);
-        };
+        let scan: ScanWire = wire::decode(buf)?;
         let source = IcebergDataSource::builder(scan.table.load()?, scan.schema)
             .with_snapshot_id(scan.snapshot_id)
             .with_predicate(scan.predicate)
@@ -91,81 +85,23 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         &self,
         node: Arc<dyn ExecutionPlan>,
         buf: &mut Vec<u8>,
-        proto_converter: &dyn PhysicalProtoConverterExtension,
+        _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<()> {
-        let source = node
+        let Some(source) = node
             .downcast_ref::<DataSourceExec>()
-            .and_then(|exec| exec.data_source().downcast_ref::<IcebergDataSource>());
-        match source {
-            Some(source) => wire::encode(
-                buf,
-                &ScanWire {
-                    table: TableWire::new(source.table())?,
-                    snapshot_id: source.snapshot_id(),
-                    schema: source.schema(),
-                    predicate: source.predicate().cloned(),
-                    fetch: source.fetch(),
-                },
-            ),
-            None => self.inner.try_encode(node, buf, proto_converter),
-        }
-    }
-
-    fn try_decode_expr(
-        &self,
-        buf: &[u8],
-        inputs: &[Arc<dyn PhysicalExpr>],
-        ctx: &PhysicalExprDecodeCtx<'_>,
-    ) -> Result<Arc<dyn PhysicalExpr>> {
-        self.inner.try_decode_expr(buf, inputs, ctx)
-    }
-
-    fn try_encode_expr(
-        &self,
-        node: &Arc<dyn PhysicalExpr>,
-        buf: &mut Vec<u8>,
-        ctx: &PhysicalExprEncodeCtx<'_>,
-    ) -> Result<()> {
-        self.inner.try_encode_expr(node, buf, ctx)
-    }
-
-    fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {
-        self.inner.try_decode_udf(name, buf)
-    }
-
-    fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> Result<()> {
-        self.inner.try_encode_udf(node, buf)
-    }
-
-    fn try_decode_higher_order_function(
-        &self,
-        name: &str,
-        buf: &[u8],
-    ) -> Result<Arc<HigherOrderUDF>> {
-        self.inner.try_decode_higher_order_function(name, buf)
-    }
-
-    fn try_encode_higher_order_function(
-        &self,
-        node: &HigherOrderUDF,
-        buf: &mut Vec<u8>,
-    ) -> Result<()> {
-        self.inner.try_encode_higher_order_function(node, buf)
-    }
-
-    fn try_decode_udaf(&self, name: &str, buf: &[u8]) -> Result<Arc<AggregateUDF>> {
-        self.inner.try_decode_udaf(name, buf)
-    }
-
-    fn try_encode_udaf(&self, node: &AggregateUDF, buf: &mut Vec<u8>) -> Result<()> {
-        self.inner.try_encode_udaf(node, buf)
-    }
-
-    fn try_decode_udwf(&self, name: &str, buf: &[u8]) -> Result<Arc<WindowUDF>> {
-        self.inner.try_decode_udwf(name, buf)
-    }
-
-    fn try_encode_udwf(&self, node: &WindowUDF, buf: &mut Vec<u8>) -> Result<()> {
-        self.inner.try_encode_udwf(node, buf)
+            .and_then(|exec| exec.data_source().downcast_ref::<IcebergDataSource>())
+        else {
+            return not_impl_err!("{} isn't an Iceberg scan", node.name());
+        };
+        wire::encode(
+            buf,
+            &ScanWire {
+                table: TableWire::new(source.table())?,
+                snapshot_id: source.snapshot_id(),
+                schema: source.schema(),
+                predicate: source.predicate().cloned(),
+                fetch: source.fetch(),
+            },
+        )
     }
 }

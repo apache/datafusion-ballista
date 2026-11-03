@@ -83,7 +83,8 @@ pub use crate::physical_codec::IcebergPhysicalCodec;
 #[cfg(feature = "scheduler")]
 pub use crate::scheduler::SchedulerConfigExt;
 
-/// Readies a client's session for Iceberg: registers the codecs, and pins
+/// Readies a client's session for Iceberg: adds the Iceberg codecs after the
+/// session's codecs, and pins
 /// each catalog-backed table a query names to the version its catalog serves
 /// when the query is planned. A session that is already ready is returned
 /// unchanged.
@@ -92,12 +93,13 @@ pub fn register_iceberg(mut state: SessionState) -> SessionState {
         return state;
     }
     let config = state.config_mut();
-    let logical = IcebergLogicalCodec::new(config.ballista_logical_extension_codec());
-    let physical = IcebergPhysicalCodec::new(config.ballista_physical_extension_codec());
+    let logical = IcebergLogicalCodec::after(config.ballista_logical_extension_codec());
+    let physical =
+        IcebergPhysicalCodec::after(config.ballista_physical_extension_codec());
     *config = config
         .clone()
-        .with_ballista_logical_extension_codec(Arc::new(logical))
-        .with_ballista_physical_extension_codec(Arc::new(physical));
+        .with_ballista_logical_extension_codec(logical)
+        .with_ballista_physical_extension_codec(physical);
     let catalogs = PinningCatalogList(state.catalog_list().clone());
     // `new_from_existing` would otherwise give the session a new ID.
     let session_id = state.session_id().to_string();

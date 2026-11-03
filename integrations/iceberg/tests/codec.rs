@@ -24,7 +24,8 @@ mod common;
 mod iceberg_nodes {
     use std::sync::Arc;
 
-    use ballista_iceberg::{IcebergLogicalCodec, IcebergPhysicalCodec, register_iceberg};
+    use ballista_core::extension::SessionConfigExt;
+    use ballista_iceberg::{IcebergLogicalCodec, register_iceberg};
     use datafusion::assert_batches_eq;
     use datafusion::catalog::TableProvider;
     use datafusion::common::{Result, TableReference};
@@ -37,9 +38,7 @@ mod iceberg_nodes {
         logical_plan_to_bytes_with_extension_codec,
     };
     use datafusion_proto::logical_plan::LogicalExtensionCodec;
-    use datafusion_proto::physical_plan::{
-        DefaultPhysicalProtoConverter, PhysicalExtensionCodec,
-    };
+    use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
     use iceberg::inspect::MetadataTableType;
     use iceberg_datafusion::IcebergStaticTableProvider;
     use iceberg_datafusion::metadata::IcebergMetadataTableProvider;
@@ -56,13 +55,15 @@ mod iceberg_nodes {
         let table = insert(&catalog, "(4, 'd')").await;
         let provider =
             IcebergStaticTableProvider::try_new_from_table_snapshot(table, first).await?;
-        let ctx = SessionContext::new();
+        let state = SessionStateBuilder::new().with_default_features().build();
+        let ctx = SessionContext::new_with_state(register_iceberg(state));
         let filters = [col("id").gt(lit(1))];
         let scan = provider
             .scan(&ctx.state(), Some(&vec![1]), &filters, Some(1))
             .await?;
 
-        let codec = IcebergPhysicalCodec::default();
+        // The session's codecs: Ballista's, then Iceberg's.
+        let codec = ctx.state().config().ballista_physical_extension_codec();
         let mut buf = Vec::new();
         codec.try_encode(scan, &mut buf, &DefaultPhysicalProtoConverter {})?;
         let decoded = codec.try_decode(
@@ -95,10 +96,10 @@ mod iceberg_nodes {
         let state = SessionStateBuilder::new().with_default_features().build();
         let ctx = SessionContext::new_with_state(register_iceberg(state));
         ctx.register_table("t", Arc::new(catalog_table(&catalog).await))?;
-        let codec = IcebergLogicalCodec::default();
+        let codec = ctx.state().config().ballista_logical_extension_codec();
         let send = async |sql: &str| {
             let plan = ctx.state().create_logical_plan(sql).await?;
-            logical_plan_to_bytes_with_extension_codec(&plan, &codec)
+            logical_plan_to_bytes_with_extension_codec(&plan, codec.as_ref())
         };
 
         let pinned = insert(&catalog, "(1, 'a')").await;
@@ -112,7 +113,7 @@ mod iceberg_nodes {
             let plan = logical_plan_from_bytes_with_extension_codec(
                 bytes,
                 &ctx.task_ctx(),
-                &codec,
+                codec.as_ref(),
             )?;
             ctx.execute_logical_plan(plan).await?.collect().await
         };
@@ -148,7 +149,7 @@ mod iceberg_nodes {
         let catalog = memory_catalog(dir.path()).await;
         let table = insert(&catalog, "(1, 'a')").await;
         let encode = |provider: Arc<dyn TableProvider>| {
-            IcebergLogicalCodec::default()
+            IcebergLogicalCodec
                 .try_encode_table_provider(
                     &TableReference::bare("t"),
                     provider,
@@ -180,47 +181,24 @@ mod iceberg_nodes {
 mod other_nodes {
     use std::sync::Arc;
 
-    use ballista_iceberg::{IcebergLogicalCodec, IcebergPhysicalCodec};
+    use ballista_core::extension::SessionConfigExt;
+    use ballista_iceberg::{IcebergLogicalCodec, IcebergPhysicalCodec, register_iceberg};
     use datafusion::arrow::datatypes::Schema;
     use datafusion::catalog::TableProvider;
     use datafusion::common::{Result, TableReference};
     use datafusion::datasource::empty::EmptyTable;
-    use datafusion::execution::TaskContext;
+    use datafusion::execution::{SessionStateBuilder, TaskContext};
     use datafusion::logical_expr::{Extension, LogicalPlan};
     use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::physical_plan::{ExecutionPlan, displayable};
+    use datafusion::prelude::SessionConfig;
     use datafusion_proto::logical_plan::LogicalExtensionCodec;
     use datafusion_proto::physical_plan::{
         DefaultPhysicalProtoConverter, PhysicalExtensionCodec,
-        PhysicalProtoConverterExtension,
     };
 
-    /// An inner codec that encodes anything as `inner`, and decodes only that.
+    /// A codec that encodes any table as `inner`, and decodes only that.
     #[derive(Debug)]
     struct Inner;
-
-    impl PhysicalExtensionCodec for Inner {
-        fn try_decode(
-            &self,
-            buf: &[u8],
-            _inputs: &[Arc<dyn ExecutionPlan>],
-            _ctx: &TaskContext,
-            _proto_converter: &dyn PhysicalProtoConverterExtension,
-        ) -> Result<Arc<dyn ExecutionPlan>> {
-            assert_eq!(buf, b"inner");
-            Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
-        }
-
-        fn try_encode(
-            &self,
-            _node: Arc<dyn ExecutionPlan>,
-            buf: &mut Vec<u8>,
-            _proto_converter: &dyn PhysicalProtoConverterExtension,
-        ) -> Result<()> {
-            buf.extend_from_slice(b"inner");
-            Ok(())
-        }
-    }
 
     impl LogicalExtensionCodec for Inner {
         fn try_decode(
@@ -259,30 +237,27 @@ mod other_nodes {
     }
 
     #[test]
-    fn should_delegate_non_iceberg_nodes_to_inner_codec() -> Result<()> {
-        let ctx = TaskContext::default();
+    fn should_keep_the_session_codecs_first() -> Result<()> {
+        let config =
+            SessionConfig::new().with_ballista_logical_extension_codec(Arc::new(Inner));
+        let state = SessionStateBuilder::new().with_config(config).build();
+        let codec = register_iceberg(state)
+            .config()
+            .ballista_logical_extension_codec();
+        let table = TableReference::bare("t");
         let schema = Arc::new(Schema::empty());
 
-        let physical = IcebergPhysicalCodec::new(Arc::new(Inner));
-        let mut buf = Vec::new();
-        let plan = Arc::new(EmptyExec::new(schema.clone()));
-        physical.try_encode(plan, &mut buf, &DefaultPhysicalProtoConverter {})?;
-        assert_eq!(buf, b"inner");
-        let decoded =
-            physical.try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})?;
-        assert_eq!(
-            displayable(decoded.as_ref()).one_line().to_string(),
-            "EmptyExec\n"
-        );
-
-        let logical = IcebergLogicalCodec::new(Arc::new(Inner));
-        let table = TableReference::bare("t");
         let mut buf = Vec::new();
         let provider = Arc::new(EmptyTable::new(schema.clone()));
-        logical.try_encode_table_provider(&table, provider, &mut buf)?;
-        assert_eq!(buf, b"inner");
-        let decoded =
-            logical.try_decode_table_provider(&buf, &table, schema.clone(), &ctx)?;
+        codec.try_encode_table_provider(&table, provider, &mut buf)?;
+        // Position 0, the default, isn't written; then the blob, as field 2.
+        assert_eq!(buf, b"\x12\x05inner");
+        let decoded = codec.try_decode_table_provider(
+            &buf,
+            &table,
+            schema.clone(),
+            &TaskContext::default(),
+        )?;
         assert_eq!(
             format!("{decoded:?}"),
             format!("{:?}", EmptyTable::new(schema))
@@ -292,10 +267,38 @@ mod other_nodes {
     }
 
     #[test]
+    fn should_refuse_other_nodes() {
+        let schema = Arc::new(Schema::empty());
+        let logical = IcebergLogicalCodec
+            .try_encode_table_provider(
+                &TableReference::bare("t"),
+                Arc::new(EmptyTable::new(schema.clone())),
+                &mut Vec::new(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            logical.to_string(),
+            "This feature is not implemented: t isn't an Iceberg table"
+        );
+
+        let physical = IcebergPhysicalCodec
+            .try_encode(
+                Arc::new(EmptyExec::new(schema)),
+                &mut Vec::new(),
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap_err();
+        assert_eq!(
+            physical.to_string(),
+            "This feature is not implemented: EmptyExec isn't an Iceberg scan"
+        );
+    }
+
+    #[test]
     fn should_reject_malformed_payload() {
-        let err = IcebergPhysicalCodec::new(Arc::new(Inner))
+        let err = IcebergPhysicalCodec
             .try_decode(
-                b"iceberginner",
+                b"inner",
                 &[],
                 &TaskContext::default(),
                 &DefaultPhysicalProtoConverter {},

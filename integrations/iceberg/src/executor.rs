@@ -19,27 +19,31 @@
 
 use std::sync::Arc;
 
+use ballista_core::serde::{
+    BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
+};
 use ballista_executor::executor_process::ExecutorProcessConfig;
 
 use crate::{IcebergLogicalCodec, IcebergPhysicalCodec};
 
 /// Readies an [`ExecutorProcessConfig`] for Iceberg.
 pub trait ExecutorProcessConfigExt {
-    /// Sets the Iceberg codecs, wrapping any codecs already set.
+    /// Adds the Iceberg codecs after any codecs already set.
     fn with_iceberg(self) -> Self;
 }
 
 impl ExecutorProcessConfigExt for ExecutorProcessConfig {
     fn with_iceberg(mut self) -> Self {
-        let logical = self.override_logical_codec.take();
-        let physical = self.override_physical_codec.take();
-        self.override_logical_codec = Some(Arc::new(
-            logical.map_or_else(IcebergLogicalCodec::default, IcebergLogicalCodec::new),
-        ));
-        self.override_physical_codec = Some(Arc::new(
-            physical
-                .map_or_else(IcebergPhysicalCodec::default, IcebergPhysicalCodec::new),
-        ));
+        let logical = self
+            .override_logical_codec
+            .take()
+            .unwrap_or_else(|| Arc::new(BallistaLogicalExtensionCodec::default()));
+        let physical = self
+            .override_physical_codec
+            .take()
+            .unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()));
+        self.override_logical_codec = Some(IcebergLogicalCodec::after(logical));
+        self.override_physical_codec = Some(IcebergPhysicalCodec::after(physical));
         self
     }
 }

@@ -19,6 +19,9 @@
 
 use std::sync::Arc;
 
+use ballista_core::serde::{
+    BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
+};
 use ballista_core::utils::default_session_builder;
 use ballista_scheduler::config::SchedulerConfig;
 use datafusion::catalog::CatalogProvider;
@@ -27,7 +30,7 @@ use crate::{IcebergLogicalCodec, IcebergPhysicalCodec, register_iceberg};
 
 /// Readies a [`SchedulerConfig`] for Iceberg.
 pub trait SchedulerConfigExt {
-    /// Sets the Iceberg codecs, wrapping any codecs already set, and mounts
+    /// Adds the Iceberg codecs after any codecs already set, and mounts
     /// `catalogs` in each session, readied with [`register_iceberg`]. The
     /// scheduler plans queries from Flight SQL clients itself, so they can
     /// then query those catalogs.
@@ -42,15 +45,16 @@ impl SchedulerConfigExt for SchedulerConfig {
         mut self,
         catalogs: impl IntoIterator<Item = (N, Arc<dyn CatalogProvider>)>,
     ) -> Self {
-        let logical = self.override_logical_codec.take();
-        let physical = self.override_physical_codec.take();
-        self.override_logical_codec = Some(Arc::new(
-            logical.map_or_else(IcebergLogicalCodec::default, IcebergLogicalCodec::new),
-        ));
-        self.override_physical_codec = Some(Arc::new(
-            physical
-                .map_or_else(IcebergPhysicalCodec::default, IcebergPhysicalCodec::new),
-        ));
+        let logical = self
+            .override_logical_codec
+            .take()
+            .unwrap_or_else(|| Arc::new(BallistaLogicalExtensionCodec::default()));
+        let physical = self
+            .override_physical_codec
+            .take()
+            .unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()));
+        self.override_logical_codec = Some(IcebergLogicalCodec::after(logical));
+        self.override_physical_codec = Some(IcebergPhysicalCodec::after(physical));
         let base = self
             .override_session_builder
             .take()

@@ -19,15 +19,12 @@
 
 use std::sync::Arc;
 
-use ballista_core::serde::BallistaLogicalExtensionCodec;
+use ballista_core::serde::ComposedLogicalExtensionCodec;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
 use datafusion::common::{Result, TableReference, exec_err, not_impl_err};
-use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::execution::TaskContext;
-use datafusion::logical_expr::{
-    AggregateUDF, Extension, HigherOrderUDF, LogicalPlan, ScalarUDF, WindowUDF,
-};
+use datafusion::logical_expr::{Extension, LogicalPlan};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use iceberg_datafusion::metadata::IcebergMetadataTableProvider;
 use iceberg_datafusion::{IcebergCatalogTableProvider, IcebergStaticTableProvider};
@@ -43,54 +40,48 @@ struct ProviderWire {
 }
 
 /// A [`LogicalExtensionCodec`] for [`IcebergStaticTableProvider`] and
-/// catalog-backed tables pinned by [`register_iceberg`] that delegates
-/// everything else to an inner codec.
+/// catalog-backed tables pinned by [`register_iceberg`]. It fails on anything
+/// else, so compose it after other codecs with
+/// [`ComposedLogicalExtensionCodec`], as [`register_iceberg`] does.
 ///
 /// [`register_iceberg`]: crate::register_iceberg
-#[derive(Debug)]
-pub struct IcebergLogicalCodec {
-    inner: Arc<dyn LogicalExtensionCodec>,
-}
+#[derive(Debug, Default)]
+pub struct IcebergLogicalCodec;
 
 impl IcebergLogicalCodec {
-    /// Creates a codec that delegates everything but Iceberg tables to `inner`.
-    pub fn new(inner: Arc<dyn LogicalExtensionCodec>) -> Self {
-        Self { inner }
-    }
-}
-
-impl Default for IcebergLogicalCodec {
-    fn default() -> Self {
-        Self::new(Arc::new(BallistaLogicalExtensionCodec::default()))
+    /// Composes `codec` with this codec after it.
+    pub(crate) fn after(
+        codec: Arc<dyn LogicalExtensionCodec>,
+    ) -> Arc<dyn LogicalExtensionCodec> {
+        Arc::new(ComposedLogicalExtensionCodec::new(vec![
+            codec,
+            Arc::new(Self),
+        ]))
     }
 }
 
 impl LogicalExtensionCodec for IcebergLogicalCodec {
     fn try_decode(
         &self,
-        buf: &[u8],
-        inputs: &[LogicalPlan],
-        ctx: &TaskContext,
+        _buf: &[u8],
+        _inputs: &[LogicalPlan],
+        _ctx: &TaskContext,
     ) -> Result<Extension> {
-        self.inner.try_decode(buf, inputs, ctx)
+        not_impl_err!("ballista-iceberg has no extension nodes")
     }
 
-    fn try_encode(&self, node: &Extension, buf: &mut Vec<u8>) -> Result<()> {
-        self.inner.try_encode(node, buf)
+    fn try_encode(&self, _node: &Extension, _buf: &mut Vec<u8>) -> Result<()> {
+        not_impl_err!("ballista-iceberg has no extension nodes")
     }
 
     fn try_decode_table_provider(
         &self,
         buf: &[u8],
-        table_ref: &TableReference,
+        _table_ref: &TableReference,
         schema: SchemaRef,
-        ctx: &TaskContext,
+        _ctx: &TaskContext,
     ) -> Result<Arc<dyn TableProvider>> {
-        let Some(ProviderWire { table, snapshot_id }) = wire::decode(buf)? else {
-            return self
-                .inner
-                .try_decode_table_provider(buf, table_ref, schema, ctx);
-        };
+        let ProviderWire { table, snapshot_id } = wire::decode(buf)?;
         Ok(Arc::new(PinnedTable {
             table: table.load()?,
             snapshot_id,
@@ -126,64 +117,8 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
                 "Iceberg metadata table {table_ref} isn't supported on Ballista yet"
             );
         } else {
-            return self.inner.try_encode_table_provider(table_ref, node, buf);
+            return not_impl_err!("{table_ref} isn't an Iceberg table");
         };
         wire::encode(buf, &payload)
-    }
-
-    fn try_decode_file_format(
-        &self,
-        buf: &[u8],
-        ctx: &TaskContext,
-    ) -> Result<Arc<dyn FileFormatFactory>> {
-        self.inner.try_decode_file_format(buf, ctx)
-    }
-
-    fn try_encode_file_format(
-        &self,
-        buf: &mut Vec<u8>,
-        node: Arc<dyn FileFormatFactory>,
-    ) -> Result<()> {
-        self.inner.try_encode_file_format(buf, node)
-    }
-
-    fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {
-        self.inner.try_decode_udf(name, buf)
-    }
-
-    fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> Result<()> {
-        self.inner.try_encode_udf(node, buf)
-    }
-
-    fn try_decode_higher_order_function(
-        &self,
-        name: &str,
-        buf: &[u8],
-    ) -> Result<Arc<HigherOrderUDF>> {
-        self.inner.try_decode_higher_order_function(name, buf)
-    }
-
-    fn try_encode_higher_order_function(
-        &self,
-        node: &HigherOrderUDF,
-        buf: &mut Vec<u8>,
-    ) -> Result<()> {
-        self.inner.try_encode_higher_order_function(node, buf)
-    }
-
-    fn try_decode_udaf(&self, name: &str, buf: &[u8]) -> Result<Arc<AggregateUDF>> {
-        self.inner.try_decode_udaf(name, buf)
-    }
-
-    fn try_encode_udaf(&self, node: &AggregateUDF, buf: &mut Vec<u8>) -> Result<()> {
-        self.inner.try_encode_udaf(node, buf)
-    }
-
-    fn try_decode_udwf(&self, name: &str, buf: &[u8]) -> Result<Arc<WindowUDF>> {
-        self.inner.try_decode_udwf(name, buf)
-    }
-
-    fn try_encode_udwf(&self, node: &WindowUDF, buf: &mut Vec<u8>) -> Result<()> {
-        self.inner.try_encode_udwf(node, buf)
     }
 }
