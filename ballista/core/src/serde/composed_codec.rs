@@ -52,10 +52,11 @@ struct DataEncoderTuple {
 /// the same order.
 ///
 /// Each codec should fail on nodes that aren't its own, so the next one can
-/// try. A codec that succeeds without writing anything, as the trait's
-/// defaults do for functions, doesn't claim the node either, so a later codec
-/// can still encode a function; if none writes anything, nothing is written,
-/// and DataFusion looks the function up by name.
+/// try. If none can, the error lists each codec's error. For functions and
+/// file formats, a codec that succeeds without writing anything, as the
+/// trait's defaults do, doesn't claim them either, so a later codec can still
+/// encode them; if none writes anything, nothing is written, and DataFusion
+/// looks a function up by name.
 #[derive(Debug)]
 pub struct ComposedLogicalExtensionCodec {
     codecs: Vec<Arc<dyn LogicalExtensionCodec>>,
@@ -73,17 +74,18 @@ impl ComposedLogicalExtensionCodec {
         buf: &[u8],
         decode: impl Fn(&dyn LogicalExtensionCodec, &[u8]) -> Result<R>,
     ) -> Result<R> {
-        // Nothing was written, so there's no position to read: offer the
-        // empty payload to each codec in turn.
+        // Nothing was written, or codec 0 encoded a node as zero bytes, which
+        // protobuf also writes as nothing: offer the empty payload to each
+        // codec in turn, starting with codec 0.
         if buf.is_empty() {
-            let mut last_err = None;
+            let mut errors = Vec::new();
             for codec in &self.codecs {
                 match decode(codec.as_ref(), buf) {
                     Ok(decoded) => return Ok(decoded),
-                    Err(e) => last_err = Some(e),
+                    Err(e) => errors.push(e),
                 }
             }
-            return Err(last_err.unwrap_or_else(empty_list));
+            return Err(collect("decode", errors));
         }
         let proto = DataEncoderTuple::decode(buf).map_err(|e| {
             exec_datafusion_err!("invalid composed codec payload: {e}{SAME_CODECS}")
@@ -102,14 +104,17 @@ impl ComposedLogicalExtensionCodec {
     fn encode_protobuf(
         &self,
         buf: &mut Vec<u8>,
+        empty: Empty,
         encode: impl Fn(&dyn LogicalExtensionCodec, &mut Vec<u8>) -> Result<()>,
     ) -> Result<()> {
         let mut wrote_nothing = false;
-        let mut last_err = None;
+        let mut errors = Vec::new();
         for (position, codec) in self.codecs.iter().enumerate() {
             let mut blob = Vec::new();
             match encode(codec.as_ref(), &mut blob) {
-                Ok(()) if blob.is_empty() => wrote_nothing = true,
+                Ok(()) if blob.is_empty() && empty == Empty::Declines => {
+                    wrote_nothing = true
+                }
                 Ok(()) => {
                     let proto = DataEncoderTuple {
                         encoder_position: position as u32,
@@ -119,13 +124,44 @@ impl ComposedLogicalExtensionCodec {
                         .encode(buf)
                         .map_err(|e| internal_datafusion_err!("{e}"));
                 }
-                Err(e) => last_err = Some(e),
+                Err(e) => errors.push(e),
             }
         }
         if wrote_nothing {
             return Ok(());
         }
-        Err(last_err.unwrap_or_else(empty_list))
+        Err(collect("encode", errors))
+    }
+}
+
+/// What a codec that succeeds without writing anything means.
+#[derive(Clone, Copy, PartialEq)]
+enum Empty {
+    /// It encoded the node, as zero bytes: an all-default protobuf message
+    /// is empty.
+    Claims,
+    /// It doesn't handle the node, as the trait's defaults do for functions
+    /// and file formats.
+    Declines,
+}
+
+/// Returns one codec's error as is, and several as one listing each, so the
+/// error of the codec that owns a node isn't hidden by the others'.
+fn collect(action: &str, mut errors: Vec<DataFusionError>) -> DataFusionError {
+    match errors.len() {
+        0 => empty_list(),
+        1 => errors.remove(0),
+        _ => {
+            let errors: Vec<_> = errors
+                .iter()
+                .enumerate()
+                .map(|(position, e)| format!("codec {position}: {e}"))
+                .collect();
+            exec_datafusion_err!(
+                "no composed codec could {action} it: {}",
+                errors.join("; ")
+            )
+        }
     }
 }
 
@@ -147,7 +183,9 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
     }
 
     fn try_encode(&self, node: &Extension, buf: &mut Vec<u8>) -> Result<()> {
-        self.encode_protobuf(buf, |codec, data| codec.try_encode(node, data))
+        self.encode_protobuf(buf, Empty::Claims, |codec, data| {
+            codec.try_encode(node, data)
+        })
     }
 
     fn try_decode_table_provider(
@@ -168,7 +206,7 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         node: Arc<dyn TableProvider>,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
-        self.encode_protobuf(buf, |codec, data| {
+        self.encode_protobuf(buf, Empty::Claims, |codec, data| {
             codec.try_encode_table_provider(table_ref, Arc::clone(&node), data)
         })
     }
@@ -186,7 +224,7 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         buf: &mut Vec<u8>,
         node: Arc<dyn FileFormatFactory>,
     ) -> Result<()> {
-        self.encode_protobuf(buf, |codec, data| {
+        self.encode_protobuf(buf, Empty::Declines, |codec, data| {
             codec.try_encode_file_format(data, Arc::clone(&node))
         })
     }
@@ -196,7 +234,9 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
     }
 
     fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> Result<()> {
-        self.encode_protobuf(buf, |codec, data| codec.try_encode_udf(node, data))
+        self.encode_protobuf(buf, Empty::Declines, |codec, data| {
+            codec.try_encode_udf(node, data)
+        })
     }
 
     fn try_decode_higher_order_function(
@@ -214,7 +254,7 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         node: &HigherOrderUDF,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
-        self.encode_protobuf(buf, |codec, data| {
+        self.encode_protobuf(buf, Empty::Declines, |codec, data| {
             codec.try_encode_higher_order_function(node, data)
         })
     }
@@ -224,7 +264,9 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
     }
 
     fn try_encode_udaf(&self, node: &AggregateUDF, buf: &mut Vec<u8>) -> Result<()> {
-        self.encode_protobuf(buf, |codec, data| codec.try_encode_udaf(node, data))
+        self.encode_protobuf(buf, Empty::Declines, |codec, data| {
+            codec.try_encode_udaf(node, data)
+        })
     }
 
     fn try_decode_udwf(&self, name: &str, buf: &[u8]) -> Result<Arc<WindowUDF>> {
@@ -232,7 +274,9 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
     }
 
     fn try_encode_udwf(&self, node: &WindowUDF, buf: &mut Vec<u8>) -> Result<()> {
-        self.encode_protobuf(buf, |codec, data| codec.try_encode_udwf(node, data))
+        self.encode_protobuf(buf, Empty::Declines, |codec, data| {
+            codec.try_encode_udwf(node, data)
+        })
     }
 }
 
@@ -358,13 +402,31 @@ mod tests {
     }
 
     #[test]
-    fn should_return_the_last_error_when_no_codec_handles_a_node() {
+    fn should_report_every_error_when_no_codec_handles_a_node() {
         assert_eq!(
             encode(&composed(&["iceberg", "hudi"]), "delta")
                 .unwrap_err()
                 .to_string(),
-            "This feature is not implemented: hudi doesn't handle delta"
+            "Execution error: no composed codec could encode it: codec 0: This \
+             feature is not implemented: iceberg doesn't handle delta; codec 1: This \
+             feature is not implemented: hudi doesn't handle delta"
         );
+    }
+
+    #[test]
+    fn should_keep_a_node_encoded_as_zero_bytes_with_its_codec() -> Result<()> {
+        // An owner with an empty name encodes its table as zero bytes, as an
+        // all-default protobuf message would be.
+        let codec = composed(&["iceberg", "", "hudi"]);
+        let buf = encode(&codec, "")?;
+        let expected = DataEncoderTuple {
+            encoder_position: 1,
+            blob: Vec::new(),
+        }
+        .encode_to_vec();
+        assert_eq!(buf, expected);
+        assert_eq!(decode(&codec, &buf)?, "");
+        Ok(())
     }
 
     #[test]
