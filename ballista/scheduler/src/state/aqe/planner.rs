@@ -27,12 +27,13 @@ use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
     DistributedExchangeRule, NormalizeInterleaveRule, OptimizeSkewedJoinRule,
     ParallelWindowRule, PinSubmittedShufflesRule, PrefixWindowRule,
-    PropagateEmptyExecRule, SelectJoinRule,
+    PropagateEmptyExecRule, ReuseExchangeRule, SelectJoinRule,
 };
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
 use ballista_core::JobId;
 use ballista_core::execution_plans::ShuffleWriter;
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
 use datafusion::common::{ColumnStatistics, HashMap, exec_err};
@@ -43,6 +44,7 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use log::debug;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
@@ -189,7 +191,11 @@ impl AdaptivePlanner {
             state_builder,
             plan,
             job_id,
-            Self::default_optimizers_with(plan_id_generator, replan_optimizers),
+            Self::default_optimizers_with(
+                plan_id_generator,
+                replan_optimizers,
+                ctx.state().config().ballista_physical_extension_codec(),
+            ),
         )
     }
 
@@ -250,7 +256,11 @@ impl AdaptivePlanner {
             SessionStateBuilder::from(ctx.state()),
             plan,
             job_id,
-            Self::default_optimizers_with(plan_id_generator, replan_optimizers),
+            Self::default_optimizers_with(
+                plan_id_generator,
+                replan_optimizers,
+                ctx.state().config().ballista_physical_extension_codec(),
+            ),
         )
     }
     /// Cancels a stage by its ID.
@@ -523,9 +533,19 @@ impl AdaptivePlanner {
         Self::find_runnable_exchanges(&self.plan, &mut runnable_stages);
         if !runnable_stages.is_empty() {
             let mut runnable = Vec::new();
+            // Exchanges that read one shared stage (see `ReuseExchangeRule`)
+            // are all found; the stage runs once.
+            let mut seen_stages = HashSet::new();
             for exec in runnable_stages.into_iter() {
                 match exec.downcast_ref::<ExchangeExec>() {
                     Some(exchange) if exchange.inactive_stage => continue,
+                    Some(exchange)
+                        if exchange
+                            .stage_id()
+                            .is_some_and(|stage_id| !seen_stages.insert(stage_id)) =>
+                    {
+                        continue;
+                    }
                     Some(exchange) if exchange.stage_id().is_none() => {
                         debug_assert!(!is_external_stage_id(self.stage_id_generator));
                         exchange.set_stage_id(self.stage_id_generator);
@@ -538,6 +558,7 @@ impl AdaptivePlanner {
                         // keeping track of stage outputs
                         self.runnable_stage_output
                             .insert(self.stage_id_generator, Default::default());
+                        seen_stages.insert(self.stage_id_generator);
                         // incrementing stage id
                         self.stage_id_generator += 1;
                         runnable.push(exec);
@@ -587,13 +608,20 @@ impl AdaptivePlanner {
     pub(super) fn default_optimizers(
         plan_id_generator: Arc<AtomicUsize>,
     ) -> Vec<PhysicalOptimizerRuleRef> {
-        Self::default_optimizers_with(plan_id_generator, vec![])
+        Self::default_optimizers_with(
+            plan_id_generator,
+            vec![],
+            Arc::new(ballista_core::serde::BallistaPhysicalExtensionCodec::default()),
+        )
     }
 
-    /// The default rules, followed by an embedder's `replan_rules`.
+    /// The default rules, followed by an embedder's `replan_rules`, then
+    /// [`ReuseExchangeRule`], which matches subtrees under `codec`, the job's
+    /// physical extension codec.
     fn default_optimizers_with(
         plan_id_generator: Arc<AtomicUsize>,
         replan_rules: Vec<PhysicalOptimizerRuleRef>,
+        codec: Arc<dyn PhysicalExtensionCodec>,
     ) -> Vec<PhysicalOptimizerRuleRef> {
         let mut physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> =
             vec![];
@@ -642,6 +670,10 @@ impl AdaptivePlanner {
         // stage boundary, including the one placed in this pass for a stage
         // whose inputs just finished, before that stage can start.
         physical_optimizers.extend(replan_rules);
+
+        // Last, so it matches each stage as it will run, embedder rewrites
+        // included, and before any stage of this pass is launched.
+        physical_optimizers.push(Arc::new(ReuseExchangeRule::new(codec)));
 
         physical_optimizers
     }

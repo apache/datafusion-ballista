@@ -16,11 +16,11 @@
 // under the License.
 
 use crate::config::{
-    BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES,
-    BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
-    BALLISTA_CLIENT_USE_TLS, BALLISTA_COALESCE_ENABLED,
-    BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, BALLISTA_COALESCE_SMALL_PARTITION_FACTOR,
-    BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
+    BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_ADAPTIVE_REUSE_EXCHANGE,
+    BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES, BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS,
+    BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE, BALLISTA_CLIENT_USE_TLS,
+    BALLISTA_COALESCE_ENABLED, BALLISTA_COALESCE_MERGED_PARTITION_FACTOR,
+    BALLISTA_COALESCE_SMALL_PARTITION_FACTOR, BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
     BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
     BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
@@ -228,6 +228,13 @@ pub trait SessionConfigExt {
 
     /// Enables or disables adaptive query planning (enabled by default).
     fn with_ballista_adaptive_query_planner(self, enabled: bool) -> Self;
+
+    /// Whether the adaptive planner runs a repeated subplan's stage once
+    fn ballista_adaptive_reuse_exchange_enabled(&self) -> bool;
+
+    /// Enables or disables running a repeated subplan's stage once under
+    /// adaptive query planning (enabled by default).
+    fn with_ballista_adaptive_reuse_exchange_enabled(self, enabled: bool) -> Self;
 
     /// Set user defined metadata keys in Ballista gRPC requests
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self;
@@ -628,6 +635,12 @@ impl SessionConfigExt for SessionConfig {
         bool,
         adaptive_query_planner_enabled as with_ballista_adaptive_query_planner,
         BALLISTA_ADAPTIVE_PLANNER_ENABLED
+    );
+
+    ballista_config_option!(
+        bool,
+        adaptive_reuse_exchange_enabled,
+        BALLISTA_ADAPTIVE_REUSE_EXCHANGE
     );
 
     ballista_config_option!(bool, use_tls, BALLISTA_CLIENT_USE_TLS);

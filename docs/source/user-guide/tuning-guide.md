@@ -355,6 +355,12 @@ currently implemented:
   distributed range shuffle so `BoundedWindowAggExec` is not a serial
   bottleneck. Disabled by default; enable with
   `ballista.planner.parallel_window.enabled`.
+- **Exchange reuse.** When a query reads the same subplan more than once, such
+  as a common table expression joined to itself or TPC-H q15's revenue view,
+  the subplan's shuffle stage runs once and every reader reads its output.
+  Subplans with a volatile expression such as `random()`, and range-shuffled
+  subplans, are never shared. Enabled by default; set
+  `ballista.planner.adaptive.reuse_exchange` to `false` to run each copy.
 
 ### Current limitations
 

@@ -361,6 +361,62 @@ impl ExchangeExec {
         exchange
     }
 
+    /// This exchange as another reader of `canonical`'s stage, for a subplan
+    /// that appears more than once in the job's plan. The stage runs once
+    /// and both read the same shuffle output.
+    ///
+    /// What the stage writes is taken from `canonical`: its input, its
+    /// partitioning, and the shared stage id, shuffle partitions, column
+    /// statistics and range routing. How each consumer reads that output is
+    /// its own: this exchange keeps its `plan_id` and inactive flag, and gets
+    /// fresh coalesce and skew-join slots, since each consuming stage decides
+    /// those for its own alignment group.
+    pub(crate) fn share_stage_of(&self, canonical: &ExchangeExec) -> Self {
+        Self::new_with_details(
+            canonical.input.clone(),
+            canonical.partitioning.clone(),
+            self.plan_id,
+            canonical.stage_id.clone(),
+            canonical.shuffle_partitions.clone(),
+            canonical.column_statistics.clone(),
+            Arc::new(Mutex::new(None)),
+            canonical.range_repartition_routing.clone(),
+            canonical.broadcast,
+            self.inactive_stage,
+        )
+    }
+
+    /// Whether this exchange and `other` are readers of one stage, so that
+    /// resolving either resolves both.
+    pub(crate) fn shares_stage_with(&self, other: &ExchangeExec) -> bool {
+        Arc::ptr_eq(&self.stage_id, &other.stage_id)
+    }
+
+    /// Identifies the stage state this exchange shares with its other
+    /// readers, for grouping exchanges by stage.
+    pub(crate) fn stage_handle(&self) -> *const () {
+        Arc::as_ptr(&self.stage_id) as *const ()
+    }
+
+    /// This exchange with stage state of its own, unshared with any other
+    /// exchange, and no stage assigned yet.
+    pub(crate) fn with_own_stage(&self) -> Self {
+        let mut exchange = Self::new_with_details(
+            self.input.clone(),
+            self.partitioning.clone(),
+            self.plan_id,
+            Arc::new(AtomicI64::new(-1)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            self.broadcast,
+            self.inactive_stage,
+        );
+        exchange.skew_join = self.skew_join.clone();
+        exchange
+    }
+
     /// The plan whose output this exchange shuffles.
     pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
         &self.input
@@ -813,5 +869,65 @@ mod column_statistics_tests {
             let stats = stats_of(plan.as_ref(), None);
             assert_eq!(null_count_of(&stats, 0), Precision::Exact(3));
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_stage_tests {
+    //! Two readers of one stage, as exchange reuse makes them.
+    use super::*;
+    use crate::state::aqe::test::mock_partitions_with_statistics;
+    use ballista_core::execution_plans::PartitionGroup;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_plan::empty::EmptyExec;
+
+    fn exchange(plan_id: usize) -> ExchangeExec {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        ExchangeExec::new(
+            Arc::new(EmptyExec::new(schema)),
+            Some(Partitioning::UnknownPartitioning(2)),
+            plan_id,
+        )
+    }
+
+    #[test]
+    fn a_reader_of_a_shared_stage_sees_the_stage_resolve() {
+        let canonical = exchange(1);
+        let reader = exchange(2).share_stage_of(&canonical);
+
+        canonical.set_stage_id(7);
+        canonical.resolve_shuffle_partitions(mock_partitions_with_statistics());
+
+        assert!(reader.shares_stage_with(&canonical));
+        assert_eq!(reader.stage_id(), Some(7));
+        assert!(reader.shuffle_created());
+        assert_eq!(reader.plan_id(), 2);
+    }
+
+    #[test]
+    fn each_reader_of_a_shared_stage_coalesces_on_its_own() {
+        let canonical = exchange(1);
+        let reader = exchange(2).share_stage_of(&canonical);
+
+        canonical.set_coalesce(Arc::new(CoalescePlan {
+            upstream_partition_count: 2,
+            groups: vec![PartitionGroup {
+                upstream_indices: vec![0, 1],
+            }],
+        }));
+
+        assert!(reader.coalesce().is_none());
+    }
+
+    #[test]
+    fn an_exchange_with_its_own_stage_shares_nothing() {
+        let canonical = exchange(1);
+        let reader = exchange(2).share_stage_of(&canonical);
+        let own = reader.with_own_stage();
+
+        canonical.set_stage_id(7);
+
+        assert!(!own.shares_stage_with(&canonical));
+        assert_eq!(own.stage_id(), None);
     }
 }
