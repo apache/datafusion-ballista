@@ -661,6 +661,14 @@ currently runnable. Because decisions are deferred, stages come back already res
 </ul>
 <p>Keeping the two graphs side by side lets the adaptive implementation mature without destabilizing the static
 path.</p>
+<p>The same selection applies to a job submitted as an already-built physical plan. The adaptive planner then
+skips logical planning and <code class="docutils literal notranslate"><span class="pre">EXPLAIN</span></code> handling, pins the plan’s hash repartitions as stage boundaries
+(<code class="docutils literal notranslate"><span class="pre">PinSubmittedShufflesRule</span></code>, since the submitter placed them deliberately and DataFusion would otherwise
+re-derive them from operator requirements), and runs the same optimizer rules. The rules match DataFusion
+and Ballista operators by type and leave any other operator in place. An extension operator must declare
+what it needs from its input through <code class="docutils literal notranslate"><span class="pre">required_input_distribution</span></code>, as DataFusion re-derives
+<code class="docutils literal notranslate"><span class="pre">CoalescePartitionsExec</span></code> from that, and partition coalescing is skipped for a stage whose shuffles feed an
+operator the rule does not know.</p>
 </section>
 <section id="how-re-optimization-works">
 <h3>How re-optimization works<a class="headerlink" href="#how-re-optimization-works" title="Link to this heading">#</a></h3>
