@@ -243,14 +243,14 @@ mod tests {
     use datafusion::common::not_impl_err;
     use datafusion::datasource::empty::EmptyTable;
 
-    /// A table format's codec: handles only the table named after it,
-    /// encoding it as its own name, and decodes any bytes at all into an
+    /// A codec that owns the table and the function named after it, and
+    /// encodes either as its own name. It decodes any bytes at all into an
     /// empty table with one column of that name, as a codec that just calls
     /// `MyMessage::decode(buf)` might with another codec's bytes.
     #[derive(Debug)]
-    struct Format(&'static str);
+    struct Owner(&'static str);
 
-    impl LogicalExtensionCodec for Format {
+    impl LogicalExtensionCodec for Owner {
         fn try_decode(
             &self,
             _buf: &[u8],
@@ -289,13 +289,30 @@ mod tests {
             buf.extend_from_slice(self.0.as_bytes());
             Ok(())
         }
+
+        fn try_decode_udf(&self, name: &str, _buf: &[u8]) -> Result<Arc<ScalarUDF>> {
+            let owned = datafusion::functions::all_default_functions()
+                .into_iter()
+                .find(|udf| udf.name() == name && name == self.0);
+            match owned {
+                Some(udf) => Ok(udf),
+                None => not_impl_err!("{} doesn't handle {name}", self.0),
+            }
+        }
+
+        fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> Result<()> {
+            if node.name() == self.0 {
+                buf.extend_from_slice(self.0.as_bytes());
+            }
+            Ok(())
+        }
     }
 
-    fn composed(formats: &[&'static str]) -> ComposedLogicalExtensionCodec {
+    fn composed(owners: &[&'static str]) -> ComposedLogicalExtensionCodec {
         ComposedLogicalExtensionCodec::new(
-            formats
+            owners
                 .iter()
-                .map(|f| Arc::new(Format(f)) as Arc<dyn LogicalExtensionCodec>)
+                .map(|o| Arc::new(Owner(o)) as Arc<dyn LogicalExtensionCodec>)
                 .collect(),
         )
     }
@@ -334,8 +351,8 @@ mod tests {
     fn should_decode_only_with_the_codec_that_encoded() -> Result<()> {
         // Every codec here would decode any bytes it was offered.
         let codec = composed(&["ballista", "iceberg", "hudi"]);
-        for format in ["ballista", "iceberg", "hudi"] {
-            assert_eq!(decode(&codec, &encode(&codec, format)?)?, format);
+        for owner in ["ballista", "iceberg", "hudi"] {
+            assert_eq!(decode(&codec, &encode(&codec, owner)?)?, owner);
         }
         Ok(())
     }
@@ -364,11 +381,30 @@ mod tests {
     }
 
     #[test]
-    fn should_send_functions_by_name_when_no_codec_writes_them() -> Result<()> {
-        let codec = composed(&["iceberg", "hudi"]);
+    fn should_let_a_later_codec_encode_a_function() -> Result<()> {
+        // `iceberg` succeeds without writing anything, as the trait's default
+        // does, which mustn't claim the function.
+        let codec = composed(&["iceberg", "upper"]);
         let mut buf = Vec::new();
         codec.try_encode_udf(&datafusion::functions::string::upper(), &mut buf)?;
+        let expected = DataEncoderTuple {
+            encoder_position: 1,
+            blob: b"upper".to_vec(),
+        }
+        .encode_to_vec();
+        assert_eq!(buf, expected);
+        assert_eq!(codec.try_decode_udf("upper", &buf)?.name(), "upper");
+        Ok(())
+    }
+
+    #[test]
+    fn should_send_functions_by_name_when_no_codec_writes_them() -> Result<()> {
+        let codec = composed(&["iceberg", "upper"]);
+        let mut buf = Vec::new();
+        codec.try_encode_udf(&datafusion::functions::string::lower(), &mut buf)?;
         assert_eq!(buf, Vec::<u8>::new());
+        // A function sent by name is offered to each codec in turn.
+        assert_eq!(codec.try_decode_udf("upper", &[])?.name(), "upper");
         Ok(())
     }
 }
