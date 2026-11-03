@@ -25,8 +25,8 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
 use datafusion::common::{
-    DataFusionError, Result, TableReference, exec_datafusion_err, exec_err,
-    internal_datafusion_err,
+    DataFusionError, Result, TableReference, config_datafusion_err, config_err,
+    exec_datafusion_err, internal_datafusion_err,
 };
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::execution::TaskContext;
@@ -36,9 +36,8 @@ use datafusion::logical_expr::{
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use prost::Message;
 
-/// The position of the codec that encoded `blob` in the codec list, and the
-/// encoded data, in the same layout as DataFusion's
-/// `ComposedPhysicalExtensionCodec`.
+/// The position of the codec that encoded `blob`, and the encoded data, in the
+/// same layout as DataFusion's `ComposedPhysicalExtensionCodec`.
 #[derive(Clone, PartialEq, Message)]
 struct DataEncoderTuple {
     #[prost(uint32, tag = "1")]
@@ -47,28 +46,21 @@ struct DataEncoderTuple {
     blob: Vec<u8>,
 }
 
-/// A [`LogicalExtensionCodec`] that tries each of several codecs until one
-/// works, such as one per table format.
+/// A [`LogicalExtensionCodec`] that combines several codecs, such as one per
+/// table format.
 ///
-/// Each payload records the position of the codec that encoded it, and is
-/// decoded only by the codec at that position, so a codec is never offered
-/// another codec's bytes. Every node must therefore list the same codecs in
-/// the same order.
-///
-/// Each codec should fail on nodes that aren't its own, so the next one can
-/// try. If none can, the error lists each codec's error. For functions and
-/// file formats, a codec that succeeds without writing anything, as the
-/// trait's defaults do, doesn't claim them either, so a later codec can still
-/// encode them; if none writes anything, nothing is written, and DataFusion
-/// looks a function up by name.
+/// Encoding uses the first codec that succeeds and records its position, and
+/// decoding uses only the codec at that position, so every node must list the
+/// same codecs in the same order. A function or file format that no codec
+/// writes is sent by name.
 #[derive(Debug)]
 pub struct ComposedLogicalExtensionCodec {
     codecs: Vec<Arc<dyn LogicalExtensionCodec>>,
 }
 
 impl ComposedLogicalExtensionCodec {
-    /// Combines `codecs`. Their positions are written into each payload, so
-    /// add new codecs at the end.
+    /// Combines `codecs`. Add new codecs at the end, since payloads record
+    /// positions.
     pub fn new(codecs: Vec<Arc<dyn LogicalExtensionCodec>>) -> Self {
         Self { codecs }
     }
@@ -76,12 +68,11 @@ impl ComposedLogicalExtensionCodec {
     fn decode_protobuf<R>(
         &self,
         buf: &[u8],
+        empty: Empty,
         decode: impl Fn(&dyn LogicalExtensionCodec, &[u8]) -> Result<R>,
     ) -> Result<R> {
-        // Nothing was written, or codec 0 encoded a node as zero bytes, which
-        // protobuf also writes as nothing: offer the empty payload to each
-        // codec in turn, starting with codec 0.
-        if buf.is_empty() {
+        if buf.is_empty() && empty == Empty::Declines {
+            // Sent by name: any codec may own it.
             let mut errors = Vec::new();
             for codec in &self.codecs {
                 match decode(codec.as_ref(), buf) {
@@ -91,13 +82,17 @@ impl ComposedLogicalExtensionCodec {
             }
             return Err(collect("decode", errors));
         }
+        // An empty payload decodes as position 0 with an empty blob.
         let proto = DataEncoderTuple::decode(buf).map_err(|e| {
-            exec_datafusion_err!("invalid composed codec payload: {e}{SAME_CODECS}")
+            config_datafusion_err!(
+                "invalid composed codec payload: {e}: every node must compose the \
+                 same codecs in the same order"
+            )
         })?;
         let Some(codec) = self.codecs.get(proto.encoder_position as usize) else {
-            return exec_err!(
+            return config_err!(
                 "the plan was encoded by codec {} of a composed codec, but this node \
-                 has {}{SAME_CODECS}",
+                 has {}: every node must compose the same codecs in the same order",
                 proto.encoder_position,
                 self.codecs.len()
             );
@@ -121,7 +116,8 @@ impl ComposedLogicalExtensionCodec {
                 }
                 Ok(()) => {
                     let proto = DataEncoderTuple {
-                        encoder_position: position as u32,
+                        encoder_position: u32::try_from(position)
+                            .map_err(|e| internal_datafusion_err!("{e}"))?,
                         blob,
                     };
                     return proto
@@ -138,22 +134,21 @@ impl ComposedLogicalExtensionCodec {
     }
 }
 
-/// What a codec that succeeds without writing anything means.
+/// What an empty payload means for a kind of node.
 #[derive(Clone, Copy, PartialEq)]
 enum Empty {
-    /// It encoded the node, as zero bytes: an all-default protobuf message
-    /// is empty.
+    /// The codec at position 0 encoded the node as zero bytes, as an
+    /// all-default protobuf message is.
     Claims,
-    /// It doesn't handle the node, as the trait's defaults do for functions
-    /// and file formats.
+    /// No codec wrote the node, so it was sent by name. The trait's defaults
+    /// write nothing for functions and file formats.
     Declines,
 }
 
-/// Returns one codec's error as is, and several as one listing each, so the
-/// error of the codec that owns a node isn't hidden by the others'.
+/// Combines the codecs' errors, so the owning codec's error isn't hidden.
 fn collect(action: &str, mut errors: Vec<DataFusionError>) -> DataFusionError {
     match errors.len() {
-        0 => empty_list(),
+        0 => DataFusionError::NotImplemented("Empty list of composed codecs".to_owned()),
         1 => errors.remove(0),
         _ => {
             let errors: Vec<_> = errors
@@ -169,13 +164,6 @@ fn collect(action: &str, mut errors: Vec<DataFusionError>) -> DataFusionError {
     }
 }
 
-/// Ends an error caused by nodes composing different codecs.
-const SAME_CODECS: &str = ": every node must compose the same codecs in the same order";
-
-fn empty_list() -> DataFusionError {
-    DataFusionError::NotImplemented("Empty list of composed codecs".to_owned())
-}
-
 impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
     fn try_decode(
         &self,
@@ -183,7 +171,9 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         inputs: &[LogicalPlan],
         ctx: &TaskContext,
     ) -> Result<Extension> {
-        self.decode_protobuf(buf, |codec, data| codec.try_decode(data, inputs, ctx))
+        self.decode_protobuf(buf, Empty::Claims, |codec, data| {
+            codec.try_decode(data, inputs, ctx)
+        })
     }
 
     fn try_encode(&self, node: &Extension, buf: &mut Vec<u8>) -> Result<()> {
@@ -199,7 +189,7 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         schema: SchemaRef,
         ctx: &TaskContext,
     ) -> Result<Arc<dyn TableProvider>> {
-        self.decode_protobuf(buf, |codec, data| {
+        self.decode_protobuf(buf, Empty::Claims, |codec, data| {
             codec.try_decode_table_provider(data, table_ref, Arc::clone(&schema), ctx)
         })
     }
@@ -220,7 +210,9 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         buf: &[u8],
         ctx: &TaskContext,
     ) -> Result<Arc<dyn FileFormatFactory>> {
-        self.decode_protobuf(buf, |codec, data| codec.try_decode_file_format(data, ctx))
+        self.decode_protobuf(buf, Empty::Declines, |codec, data| {
+            codec.try_decode_file_format(data, ctx)
+        })
     }
 
     fn try_encode_file_format(
@@ -234,7 +226,9 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
     }
 
     fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {
-        self.decode_protobuf(buf, |codec, data| codec.try_decode_udf(name, data))
+        self.decode_protobuf(buf, Empty::Declines, |codec, data| {
+            codec.try_decode_udf(name, data)
+        })
     }
 
     fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> Result<()> {
@@ -248,7 +242,7 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
         name: &str,
         buf: &[u8],
     ) -> Result<Arc<HigherOrderUDF>> {
-        self.decode_protobuf(buf, |codec, data| {
+        self.decode_protobuf(buf, Empty::Declines, |codec, data| {
             codec.try_decode_higher_order_function(name, data)
         })
     }
@@ -264,7 +258,9 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
     }
 
     fn try_decode_udaf(&self, name: &str, buf: &[u8]) -> Result<Arc<AggregateUDF>> {
-        self.decode_protobuf(buf, |codec, data| codec.try_decode_udaf(name, data))
+        self.decode_protobuf(buf, Empty::Declines, |codec, data| {
+            codec.try_decode_udaf(name, data)
+        })
     }
 
     fn try_encode_udaf(&self, node: &AggregateUDF, buf: &mut Vec<u8>) -> Result<()> {
@@ -274,7 +270,9 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
     }
 
     fn try_decode_udwf(&self, name: &str, buf: &[u8]) -> Result<Arc<WindowUDF>> {
-        self.decode_protobuf(buf, |codec, data| codec.try_decode_udwf(name, data))
+        self.decode_protobuf(buf, Empty::Declines, |codec, data| {
+            codec.try_decode_udwf(name, data)
+        })
     }
 
     fn try_encode_udwf(&self, node: &WindowUDF, buf: &mut Vec<u8>) -> Result<()> {
@@ -287,9 +285,15 @@ impl LogicalExtensionCodec for ComposedLogicalExtensionCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::serde::BallistaLogicalExtensionCodec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::not_impl_err;
     use datafusion::datasource::empty::EmptyTable;
+    use datafusion::prelude::SessionContext;
+    use datafusion_proto::bytes::{
+        logical_plan_from_bytes_with_extension_codec,
+        logical_plan_to_bytes_with_extension_codec,
+    };
 
     /// A codec that owns the table and the function named after it, and
     /// encodes either as its own name. It decodes any bytes at all into an
@@ -441,13 +445,58 @@ mod tests {
     }
 
     #[test]
+    fn should_decode_an_empty_payload_only_with_the_first_codec() {
+        // Ballista's codec has no table providers, and `hudi` would decode
+        // anything it was offered.
+        let codec = ComposedLogicalExtensionCodec::new(vec![
+            Arc::new(BallistaLogicalExtensionCodec::default()),
+            Arc::new(Owner("hudi")),
+        ]);
+        assert_eq!(
+            decode(&codec, &[]).unwrap_err().to_string(),
+            "This feature is not implemented: LogicalExtensionCodec is not provided"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_round_trip_a_plan_with_ballista_codec() -> Result<()> {
+        // Ballista's codec encodes the CSV format, and `iceberg` the table.
+        let ctx = SessionContext::new();
+        let field = Field::new("iceberg", DataType::Null, true);
+        let table = EmptyTable::new(Arc::new(Schema::new(vec![field])));
+        ctx.register_table("iceberg", Arc::new(table))?;
+        let plan = ctx
+            .state()
+            .create_logical_plan("COPY (SELECT * FROM iceberg) TO 'out' STORED AS CSV")
+            .await?;
+        let codec = ComposedLogicalExtensionCodec::new(vec![
+            Arc::new(BallistaLogicalExtensionCodec::default()),
+            Arc::new(Owner("iceberg")),
+        ]);
+        let bytes = logical_plan_to_bytes_with_extension_codec(&plan, &codec)?;
+        let decoded = logical_plan_from_bytes_with_extension_codec(
+            &bytes,
+            &ctx.task_ctx(),
+            &codec,
+        )?;
+        assert_eq!(
+            decoded.display_indent().to_string(),
+            "CopyTo: format=csv output_url=out options: ()\n  \
+             Projection: iceberg.iceberg\n    \
+             TableScan: iceberg"
+        );
+        assert_eq!(decoded, plan);
+        Ok(())
+    }
+
+    #[test]
     fn should_reject_a_position_beyond_the_list() -> Result<()> {
         let buf = encode(&composed(&["ballista", "iceberg", "hudi"]), "hudi")?;
         assert_eq!(
             decode(&composed(&["ballista", "iceberg"]), &buf)
                 .unwrap_err()
                 .to_string(),
-            "Execution error: the plan was encoded by codec 2 of a composed codec, but \
+            "Invalid or Unsupported Configuration: the plan was encoded by codec 2 of a composed codec, but \
              this node has 2: every node must compose the same codecs in the same order"
         );
         Ok(())
