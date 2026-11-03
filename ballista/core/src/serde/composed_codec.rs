@@ -22,7 +22,8 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
 use datafusion::common::{
-    DataFusionError, Result, TableReference, internal_datafusion_err,
+    DataFusionError, Result, TableReference, exec_datafusion_err, exec_err,
+    internal_datafusion_err,
 };
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::execution::TaskContext;
@@ -84,18 +85,17 @@ impl ComposedLogicalExtensionCodec {
             }
             return Err(last_err.unwrap_or_else(empty_list));
         }
-        let proto =
-            DataEncoderTuple::decode(buf).map_err(|e| internal_datafusion_err!("{e}"))?;
-        let codec = self
-            .codecs
-            .get(proto.encoder_position as usize)
-            .ok_or_else(|| {
-                internal_datafusion_err!(
-                    "Can't find codec {} in a list of {}",
-                    proto.encoder_position,
-                    self.codecs.len()
-                )
-            })?;
+        let proto = DataEncoderTuple::decode(buf).map_err(|e| {
+            exec_datafusion_err!("invalid composed codec payload: {e}{SAME_CODECS}")
+        })?;
+        let Some(codec) = self.codecs.get(proto.encoder_position as usize) else {
+            return exec_err!(
+                "the plan was encoded by codec {} of a composed codec, but this node \
+                 has {}{SAME_CODECS}",
+                proto.encoder_position,
+                self.codecs.len()
+            );
+        };
         decode(codec.as_ref(), &proto.blob)
     }
 
@@ -122,13 +122,15 @@ impl ComposedLogicalExtensionCodec {
                 Err(e) => last_err = Some(e),
             }
         }
-        match last_err {
-            Some(e) if !wrote_nothing => Err(e),
-            None if !wrote_nothing => Err(empty_list()),
-            _ => Ok(()),
+        if wrote_nothing {
+            return Ok(());
         }
+        Err(last_err.unwrap_or_else(empty_list))
     }
 }
+
+/// Ends an error caused by nodes composing different codecs.
+const SAME_CODECS: &str = ": every node must compose the same codecs in the same order";
 
 fn empty_list() -> DataFusionError {
     DataFusionError::NotImplemented("Empty list of composed codecs".to_owned())
@@ -355,10 +357,8 @@ mod tests {
             decode(&composed(&["ballista", "iceberg"]), &buf)
                 .unwrap_err()
                 .to_string(),
-            "Internal error: Can't find codec 2 in a list of 2.\nThis issue was likely \
-             caused by a bug in DataFusion's code. Please help us to resolve this by \
-             filing a bug report in our issue tracker: \
-             https://github.com/apache/datafusion/issues"
+            "Execution error: the plan was encoded by codec 2 of a composed codec, but \
+             this node has 2: every node must compose the same codecs in the same order"
         );
         Ok(())
     }
