@@ -38,10 +38,8 @@ mod standalone {
         assert_standalone_scans(memory_catalog(dir.path()).await).await
     }
 
-    // A known limitation: a view stores its planned query, and tables are
-    // pinned when a query is planned.
     #[tokio::test]
-    async fn should_keep_a_views_version() -> Result<()> {
+    async fn should_read_a_views_latest_version() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let catalog = memory_catalog(dir.path()).await;
         let state = SessionStateBuilder::new()
@@ -53,15 +51,32 @@ mod standalone {
 
         insert(&catalog, "(1, 'a')").await;
         ctx.sql("CREATE VIEW v AS SELECT * FROM t").await?;
+        // A view over a view, reading `t` again in a subquery.
+        ctx.sql("CREATE VIEW w AS SELECT name FROM v WHERE id IN (SELECT id FROM t)")
+            .await?;
         insert(&catalog, "(2, 'b')").await;
 
-        let result = ctx.sql("SELECT * FROM v").await?.collect().await?;
+        let result = ctx
+            .sql("SELECT * FROM v ORDER BY id")
+            .await?
+            .collect()
+            .await?;
         let expected = [
             "+----+------+",
             "| id | name |",
             "+----+------+",
             "| 1  | a    |",
+            "| 2  | b    |",
             "+----+------+",
+        ];
+        assert_batches_eq!(expected, &result);
+        let result = ctx
+            .sql("SELECT * FROM w ORDER BY name")
+            .await?
+            .collect()
+            .await?;
+        let expected = [
+            "+------+", "| name |", "+------+", "| a    |", "| b    |", "+------+",
         ];
         assert_batches_eq!(expected, &result);
 
