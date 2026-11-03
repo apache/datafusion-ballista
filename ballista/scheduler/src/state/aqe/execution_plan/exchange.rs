@@ -389,7 +389,7 @@ impl ExchangeExec {
     /// Whether this exchange and `other` are readers of one stage, so that
     /// resolving either resolves both.
     pub(crate) fn shares_stage_with(&self, other: &ExchangeExec) -> bool {
-        Arc::ptr_eq(&self.stage_id, &other.stage_id)
+        self.stage_handle() == other.stage_handle()
     }
 
     /// Identifies the stage state this exchange shares with its other
@@ -401,18 +401,14 @@ impl ExchangeExec {
     /// This exchange with stage state of its own, unshared with any other
     /// exchange, and no stage assigned yet.
     pub(crate) fn with_own_stage(&self) -> Self {
-        let mut exchange = Self::new_with_details(
-            self.input.clone(),
-            self.partitioning.clone(),
-            self.plan_id,
-            Arc::new(AtomicI64::new(-1)),
-            Arc::new(Mutex::new(None)),
-            Arc::new(Mutex::new(None)),
-            Arc::new(Mutex::new(None)),
-            Arc::new(Mutex::new(None)),
-            self.broadcast,
-            self.inactive_stage,
-        );
+        let input = self.input.clone();
+        let partitioning = self.partitioning.clone();
+        let exchange = if self.broadcast {
+            Self::new_broadcast(input, partitioning, self.plan_id)
+        } else {
+            Self::new(input, partitioning, self.plan_id)
+        };
+        let mut exchange = exchange.with_inactive_stage(self.inactive_stage);
         exchange.skew_join = self.skew_join.clone();
         exchange
     }

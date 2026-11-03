@@ -531,21 +531,19 @@ impl AdaptivePlanner {
         let mut runnable_stages = Vec::new();
 
         Self::find_runnable_exchanges(&self.plan, &mut runnable_stages);
+        // Every reader of a shared stage (see `ReuseExchangeRule`) is found,
+        // and the stage runs once. A held-back reader doesn't claim it.
+        let mut stages = HashSet::new();
+        runnable_stages.retain(|exec| {
+            exec.downcast_ref::<ExchangeExec>().is_none_or(|exchange| {
+                exchange.inactive_stage || stages.insert(exchange.stage_handle())
+            })
+        });
         if !runnable_stages.is_empty() {
             let mut runnable = Vec::new();
-            // Exchanges that read one shared stage (see `ReuseExchangeRule`)
-            // are all found; the stage runs once.
-            let mut seen_stages = HashSet::new();
             for exec in runnable_stages.into_iter() {
                 match exec.downcast_ref::<ExchangeExec>() {
                     Some(exchange) if exchange.inactive_stage => continue,
-                    Some(exchange)
-                        if exchange
-                            .stage_id()
-                            .is_some_and(|stage_id| !seen_stages.insert(stage_id)) =>
-                    {
-                        continue;
-                    }
                     Some(exchange) if exchange.stage_id().is_none() => {
                         debug_assert!(!is_external_stage_id(self.stage_id_generator));
                         exchange.set_stage_id(self.stage_id_generator);
@@ -558,7 +556,6 @@ impl AdaptivePlanner {
                         // keeping track of stage outputs
                         self.runnable_stage_output
                             .insert(self.stage_id_generator, Default::default());
-                        seen_stages.insert(self.stage_id_generator);
                         // incrementing stage id
                         self.stage_id_generator += 1;
                         runnable.push(exec);

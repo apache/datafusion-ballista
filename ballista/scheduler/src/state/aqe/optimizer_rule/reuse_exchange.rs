@@ -54,11 +54,16 @@
 //! The rule runs last in the replan chain, after an embedder's rules, so keys
 //! cover each stage as it will run.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fmt::{self, Write};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use ballista_core::config::BallistaConfig;
+use ballista_core::execution_plans::{
+    OrderedRangeRepartitionExec, PartitionedBoundedWindowAggExec, PerPartitionFilterExec,
+    PrefixMergeExec, RangeFilterExec, RuntimeStatsExec, UnorderedRangeRepartitionExec,
+};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::config::ConfigOptions;
 use datafusion::error::Result;
@@ -77,18 +82,6 @@ use log::debug;
 use prost::Message;
 
 use crate::state::aqe::execution_plan::ExchangeExec;
-
-/// Operators whose stage the scheduler finishes by reading state off the
-/// stage's single consumer. See the module docs.
-const SINGLE_CONSUMER_OPERATORS: &[&str] = &[
-    "OrderedRangeRepartitionExec",
-    "UnorderedRangeRepartitionExec",
-    "RangeFilterExec",
-    "PerPartitionFilterExec",
-    "PrefixMergeExec",
-    "PartitionedBoundedWindowAggExec",
-    "RuntimeStatsExec",
-];
 
 /// Makes every exchange in a set of identical exchanges a reader of one
 /// stage. See the module docs.
@@ -109,7 +102,7 @@ impl ReuseExchangeRule {
     fn key(&self, node: &Arc<dyn ExecutionPlan>) -> Option<Vec<u8>> {
         let exchange = node.downcast_ref::<ExchangeExec>()?;
         if matches!(exchange.partitioning(), Some(Partitioning::Range(_)))
-            || !mergeable(node)
+            || !mergeable(node).ok()?
         {
             return None;
         }
@@ -141,6 +134,12 @@ fn progress(exchange: &ExchangeExec) -> Progress {
     }
 }
 
+/// The exchanges of one key: how many there are, and the one furthest along.
+struct Group {
+    exchanges: usize,
+    furthest: Arc<dyn ExecutionPlan>,
+}
+
 impl PhysicalOptimizerRule for ReuseExchangeRule {
     fn optimize(
         &self,
@@ -150,9 +149,10 @@ impl PhysicalOptimizerRule for ReuseExchangeRule {
         let enabled = config
             .extensions
             .get::<BallistaConfig>()
-            .cloned()
-            .unwrap_or_default()
-            .adaptive_reuse_exchange_enabled();
+            .map(BallistaConfig::adaptive_reuse_exchange_enabled)
+            .unwrap_or_else(|| {
+                BallistaConfig::default().adaptive_reuse_exchange_enabled()
+            });
         if !enabled {
             return Ok(plan);
         }
@@ -160,122 +160,112 @@ impl PhysicalOptimizerRule for ReuseExchangeRule {
         // Encoding a subtree is costly, and most plans repeat nothing. Only
         // exchanges a cheap fingerprint can't tell apart, or that already
         // share a stage handle, are keyed.
+        let mut exchanges = Vec::new();
+        fingerprints(&plan, &mut exchanges);
         let mut fingerprint_counts: HashMap<u64, usize> = HashMap::new();
         let mut handle_counts: HashMap<*const (), usize> = HashMap::new();
-        plan.apply(|node| {
-            if let Some(exchange) = node.downcast_ref::<ExchangeExec>() {
-                *fingerprint_counts.entry(fingerprint(node)).or_default() += 1;
-                *handle_counts.entry(exchange.stage_handle()).or_default() += 1;
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
-        let is_candidate = |node: &Arc<dyn ExecutionPlan>, exchange: &ExchangeExec| {
-            handle_counts
-                .get(&exchange.stage_handle())
-                .is_some_and(|count| *count > 1)
-                || fingerprint_counts
-                    .get(&fingerprint(node))
-                    .is_some_and(|count| *count > 1)
-        };
-        let key_of = |node: &Arc<dyn ExecutionPlan>| {
-            let exchange = node.downcast_ref::<ExchangeExec>()?;
-            if is_candidate(node, exchange) {
-                self.key(node)
-            } else {
-                None
-            }
-        };
+        for (node, fingerprint) in &exchanges {
+            *fingerprint_counts.entry(*fingerprint).or_default() += 1;
+            *handle_counts
+                .entry(as_exchange(node).stage_handle())
+                .or_default() += 1;
+        }
+        let candidates = exchanges.iter().filter(|(node, fingerprint)| {
+            fingerprint_counts[fingerprint] > 1
+                || handle_counts[&as_exchange(node).stage_handle()] > 1
+        });
 
-        // First pass: key every candidate, and find for each key the exchange
-        // furthest along, which the others will read from.
-        let mut counts: HashMap<Vec<u8>, usize> = HashMap::new();
-        let mut furthest: HashMap<Vec<u8>, Arc<dyn ExecutionPlan>> = HashMap::new();
-        // Keys of the exchanges behind each stage handle, to find a pending
-        // handle that exchanges of different subtrees ended up sharing.
-        let mut handle_keys: HashMap<*const (), Vec<Vec<u8>>> = HashMap::new();
-        plan.apply(|node| {
-            if let Some(key) = key_of(node) {
-                let exchange = as_exchange(node);
-                let seen = handle_keys.entry(exchange.stage_handle()).or_default();
-                if !seen.contains(&key) {
-                    seen.push(key.clone());
-                }
-                *counts.entry(key.clone()).or_default() += 1;
-                let best = furthest.entry(key).or_insert_with(|| Arc::clone(node));
-                if progress(exchange) > progress(as_exchange(best)) {
-                    *best = Arc::clone(node);
-                }
+        // Key each candidate, and find for each key the exchange furthest
+        // along, which the others will read from. Keys are interned so the
+        // second pass looks them up by exchange instead of encoding again;
+        // an exchange's plan id and stage handle survive the rewrites below.
+        let mut key_ids: HashMap<Vec<u8>, usize> = HashMap::new();
+        let mut groups: Vec<Group> = Vec::new();
+        let mut exchange_keys: HashMap<(usize, *const ()), usize> = HashMap::new();
+        let mut handle_key: HashMap<*const (), usize> = HashMap::new();
+        // Pending stage handles that exchanges of different subtrees share,
+        // as `to_broadcast` or an embedder's rewrite of one reader can leave
+        // behind. Neither may write for the other.
+        let mut conflicted: HashSet<*const ()> = HashSet::new();
+        for (node, _) in candidates {
+            let Some(key) = self.key(node) else {
+                continue;
+            };
+            let exchange = as_exchange(node);
+            let next_id = groups.len();
+            let id = *key_ids.entry(key).or_insert(next_id);
+            if id == next_id {
+                groups.push(Group {
+                    exchanges: 0,
+                    furthest: Arc::clone(node),
+                });
             }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
-
-        let has_conflict = handle_keys.values().any(|keys| keys.len() > 1);
-        if !has_conflict && counts.values().all(|count| *count < 2) {
+            let group = &mut groups[id];
+            group.exchanges += 1;
+            if progress(exchange) > progress(as_exchange(&group.furthest)) {
+                group.furthest = Arc::clone(node);
+            }
+            let handle = exchange.stage_handle();
+            exchange_keys.insert((exchange.plan_id(), handle), id);
+            if handle_key
+                .insert(handle, id)
+                .is_some_and(|other| other != id)
+                && progress(exchange) == Progress::Pending
+            {
+                conflicted.insert(handle);
+            }
+        }
+        if conflicted.is_empty() && groups.iter().all(|group| group.exchanges < 2) {
             return Ok(plan);
         }
 
-        // Second pass, bottom-up so a nested repeat is merged before the
-        // subtrees above it. Keys and fingerprints are taken again rather
-        // than looked up: a rewritten child reads from a subtree that encodes
-        // the same, and neither depends on stage ids, so both are as in the
-        // first pass.
-        let mut canonical: HashMap<Vec<u8>, Arc<dyn ExecutionPlan>> = HashMap::new();
+        // Bottom-up, so a nested repeat is merged before the subtrees above.
+        let mut canonical: HashMap<usize, Arc<dyn ExecutionPlan>> = HashMap::new();
         let transformed = plan.transform_up(|node| {
-            let Some(key) = key_of(&node) else {
+            let Some(exchange) = node.downcast_ref::<ExchangeExec>() else {
                 return Ok(Transformed::no(node));
             };
-            let exchange = as_exchange(&node);
+            let handle = exchange.stage_handle();
+            let Some(&id) = exchange_keys.get(&(exchange.plan_id(), handle)) else {
+                return Ok(Transformed::no(node));
+            };
 
-            // A pending stage handle shared by exchanges of different
-            // subtrees, as `to_broadcast` can leave behind. Neither may write
-            // for the other, so this one starts again with a stage of its own.
-            let conflicted = progress(exchange) == Progress::Pending
-                && handle_keys
-                    .get(&exchange.stage_handle())
-                    .is_some_and(|keys| keys.len() > 1);
-            let node: Arc<dyn ExecutionPlan> = if conflicted {
+            let split = conflicted.contains(&handle);
+            let node: Arc<dyn ExecutionPlan> = if split {
                 Arc::new(exchange.with_own_stage())
             } else {
                 node
             };
             let exchange = as_exchange(&node);
 
-            let target = match canonical.get(&key) {
-                Some(target) => Arc::clone(target),
-                None => {
-                    let best = &furthest[&key];
-                    if progress(as_exchange(best)) == Progress::Pending
-                        || exchange.shares_stage_with(as_exchange(best))
-                    {
-                        // Nothing has run for this subtree yet, or this is a
-                        // reader of the stage that has: it is the one the
-                        // rest read from.
-                        canonical.insert(key, Arc::clone(&node));
-                        return Ok(Transformed::new_transformed(node, conflicted));
-                    }
-                    // The exchange furthest along comes later in the walk.
-                    // Read from it as it is: its stage has started, so its
-                    // subtree no longer changes what it writes.
-                    Arc::clone(best)
+            // The exchange furthest along is read from, even when the walk
+            // meets it later: its stage has started, so its subtree no longer
+            // changes what it writes. If nothing has run yet, the first met is.
+            let target = Arc::clone(canonical.entry(id).or_insert_with(|| {
+                let furthest = &groups[id].furthest;
+                if progress(as_exchange(furthest)) == Progress::Pending
+                    || exchange.shares_stage_with(as_exchange(furthest))
+                {
+                    Arc::clone(&node)
+                } else {
+                    Arc::clone(furthest)
                 }
-            };
+            }));
+            let target = as_exchange(&target);
 
-            let target_exchange = as_exchange(&target);
-            if exchange.shares_stage_with(target_exchange)
+            // Already a reader of that stage, or running a stage of its own,
+            // which is never re-pointed.
+            if exchange.shares_stage_with(target)
                 || progress(exchange) != Progress::Pending
             {
-                // Already a reader of that stage, or running a stage of its
-                // own, which is never re-pointed.
-                return Ok(Transformed::new_transformed(node, conflicted));
+                return Ok(Transformed::new_transformed(node, split));
             }
             debug!(
                 "exchange reuse: exchange {} reads the stage of exchange {}",
                 exchange.plan_id(),
-                target_exchange.plan_id()
+                target.plan_id()
             );
-            Ok(Transformed::yes(Arc::new(
-                exchange.share_stage_of(target_exchange),
-            )))
+            Ok(Transformed::yes(Arc::new(exchange.share_stage_of(target))))
         })?;
         Ok(transformed.data)
     }
@@ -289,11 +279,48 @@ impl PhysicalOptimizerRule for ReuseExchangeRule {
     }
 }
 
-/// A hash of `plan` that two subtrees with one key always share, though
-/// different subtrees may share it too. Each node contributes its one-line
-/// display, except that an exchange contributes only what it writes, so stage
-/// ids never reach it.
-fn fingerprint(plan: &Arc<dyn ExecutionPlan>) -> u64 {
+/// Whether nothing in `plan` rules out sharing its stage: no volatile
+/// expression and no single-consumer operator.
+fn mergeable(plan: &Arc<dyn ExecutionPlan>) -> Result<bool> {
+    let excluded = plan.exists(|node| {
+        if requires_single_consumer(node.as_ref()) {
+            return Ok(true);
+        }
+        let mut volatile = false;
+        node.apply_expressions(&mut |expr| {
+            volatile = is_volatile(expr);
+            Ok(if volatile {
+                TreeNodeRecursion::Stop
+            } else {
+                TreeNodeRecursion::Continue
+            })
+        })?;
+        Ok(volatile)
+    })?;
+    Ok(!excluded)
+}
+
+/// Operators whose stage the scheduler finishes by reading state off the
+/// stage's single consumer. See the module docs.
+fn requires_single_consumer(plan: &dyn ExecutionPlan) -> bool {
+    plan.is::<OrderedRangeRepartitionExec>()
+        || plan.is::<UnorderedRangeRepartitionExec>()
+        || plan.is::<RangeFilterExec>()
+        || plan.is::<PerPartitionFilterExec>()
+        || plan.is::<PrefixMergeExec>()
+        || plan.is::<PartitionedBoundedWindowAggExec>()
+        || plan.is::<RuntimeStatsExec>()
+}
+
+/// Pushes every exchange in `plan` onto `exchanges`, children first, with a
+/// hash of its subtree that two subtrees with one key always share, though
+/// different subtrees may share it too. Returns the hash of `plan`. Each node
+/// contributes its one-line display, except that an exchange contributes only
+/// what it writes, so stage ids never reach the hash.
+fn fingerprints(
+    plan: &Arc<dyn ExecutionPlan>,
+    exchanges: &mut Vec<(Arc<dyn ExecutionPlan>, u64)>,
+) -> u64 {
     let mut hasher = DefaultHasher::new();
     match plan.downcast_ref::<ExchangeExec>() {
         Some(exchange) => {
@@ -304,41 +331,37 @@ fn fingerprint(plan: &Arc<dyn ExecutionPlan>) -> u64 {
                 .map(|partitioning| partitioning.to_string())
                 .hash(&mut hasher);
         }
-        None => displayable(plan.as_ref())
-            .one_line()
-            .to_string()
-            .hash(&mut hasher),
+        None => {
+            let _ = write!(
+                HashWriter(&mut hasher),
+                "{}",
+                displayable(plan.as_ref()).one_line()
+            );
+        }
     }
     for child in plan.children() {
-        fingerprint(child).hash(&mut hasher);
+        fingerprints(child, exchanges).hash(&mut hasher);
     }
-    hasher.finish()
+    let fingerprint = hasher.finish();
+    if plan.is::<ExchangeExec>() {
+        exchanges.push((Arc::clone(plan), fingerprint));
+    }
+    fingerprint
+}
+
+/// Feeds formatted text straight into a hasher.
+struct HashWriter<'a>(&'a mut DefaultHasher);
+
+impl fmt::Write for HashWriter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0.write(s.as_bytes());
+        Ok(())
+    }
 }
 
 fn as_exchange(plan: &Arc<dyn ExecutionPlan>) -> &ExchangeExec {
     plan.downcast_ref::<ExchangeExec>()
         .expect("only exchanges are keyed")
-}
-
-/// Whether nothing in `plan` rules out sharing its stage: no volatile
-/// expression and no single-consumer operator.
-fn mergeable(plan: &Arc<dyn ExecutionPlan>) -> bool {
-    let mut mergeable = true;
-    let _ = plan.apply(|node| {
-        if SINGLE_CONSUMER_OPERATORS.contains(&node.name()) {
-            mergeable = false;
-            return Ok(TreeNodeRecursion::Stop);
-        }
-        node.apply_expressions(&mut |expr| {
-            if is_volatile(expr) {
-                mergeable = false;
-                Ok(TreeNodeRecursion::Stop)
-            } else {
-                Ok(TreeNodeRecursion::Continue)
-            }
-        })
-    });
-    mergeable
 }
 
 /// Encodes a subtree for matching only, never for decoding. An
