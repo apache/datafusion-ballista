@@ -72,8 +72,12 @@ use crate::serde::protobuf::{
 use crate::serde::scheduler::PartitionLocation;
 use datafusion::arrow::compute::SortOptions;
 use datafusion::execution::FunctionRegistry;
+
+pub use composed_codec::ComposedLogicalExtensionCodec;
 pub use generated::ballista as protobuf;
 
+/// Combining several logical extension codecs into one.
+mod composed_codec;
 /// Generated protobuf code from Ballista protocol definitions.
 pub mod generated;
 /// Scheduler-specific serialization types and conversions.

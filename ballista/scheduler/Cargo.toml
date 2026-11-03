@@ -58,7 +58,9 @@ flight-sql = ["dep:ballista-flight-sql"]
 graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
+# The REST handlers and the event-log history log through `tracing`.
 rest-api = [
+    "tracing",
     "ballista-api-types?/utoipa",
     "ballista-core/utoipa",
     "dep:ballista-api-types",
