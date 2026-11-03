@@ -55,6 +55,7 @@
 //! cover each stage as it will run.
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use ballista_core::config::BallistaConfig;
@@ -67,7 +68,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::physical_expr::is_volatile;
 use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion::physical_plan::{ExecutionPlan, Partitioning, displayable};
 use datafusion_proto::bytes::physical_plan_to_bytes_with_extension_codec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalProtoConverterExtension;
@@ -156,7 +157,36 @@ impl PhysicalOptimizerRule for ReuseExchangeRule {
             return Ok(plan);
         }
 
-        // First pass: key every exchange, and find for each key the exchange
+        // Encoding a subtree is costly, and most plans repeat nothing. Only
+        // exchanges a cheap fingerprint can't tell apart, or that already
+        // share a stage handle, are keyed.
+        let mut fingerprint_counts: HashMap<u64, usize> = HashMap::new();
+        let mut handle_counts: HashMap<*const (), usize> = HashMap::new();
+        plan.apply(|node| {
+            if let Some(exchange) = node.downcast_ref::<ExchangeExec>() {
+                *fingerprint_counts.entry(fingerprint(node)).or_default() += 1;
+                *handle_counts.entry(exchange.stage_handle()).or_default() += 1;
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        let is_candidate = |node: &Arc<dyn ExecutionPlan>, exchange: &ExchangeExec| {
+            handle_counts
+                .get(&exchange.stage_handle())
+                .is_some_and(|count| *count > 1)
+                || fingerprint_counts
+                    .get(&fingerprint(node))
+                    .is_some_and(|count| *count > 1)
+        };
+        let key_of = |node: &Arc<dyn ExecutionPlan>| {
+            let exchange = node.downcast_ref::<ExchangeExec>()?;
+            if is_candidate(node, exchange) {
+                self.key(node)
+            } else {
+                None
+            }
+        };
+
+        // First pass: key every candidate, and find for each key the exchange
         // furthest along, which the others will read from.
         let mut counts: HashMap<Vec<u8>, usize> = HashMap::new();
         let mut furthest: HashMap<Vec<u8>, Arc<dyn ExecutionPlan>> = HashMap::new();
@@ -164,9 +194,8 @@ impl PhysicalOptimizerRule for ReuseExchangeRule {
         // handle that exchanges of different subtrees ended up sharing.
         let mut handle_keys: HashMap<*const (), Vec<Vec<u8>>> = HashMap::new();
         plan.apply(|node| {
-            if let Some(exchange) = node.downcast_ref::<ExchangeExec>()
-                && let Some(key) = self.key(node)
-            {
+            if let Some(key) = key_of(node) {
+                let exchange = as_exchange(node);
                 let seen = handle_keys.entry(exchange.stage_handle()).or_default();
                 if !seen.contains(&key) {
                     seen.push(key.clone());
@@ -186,12 +215,13 @@ impl PhysicalOptimizerRule for ReuseExchangeRule {
         }
 
         // Second pass, bottom-up so a nested repeat is merged before the
-        // subtrees above it. Keys are taken again rather than looked up: a
-        // rewritten child reads from a subtree that encodes the same, so a
-        // node's key is the same as in the first pass.
+        // subtrees above it. Keys and fingerprints are taken again rather
+        // than looked up: a rewritten child reads from a subtree that encodes
+        // the same, and neither depends on stage ids, so both are as in the
+        // first pass.
         let mut canonical: HashMap<Vec<u8>, Arc<dyn ExecutionPlan>> = HashMap::new();
         let transformed = plan.transform_up(|node| {
-            let Some(key) = self.key(&node) else {
+            let Some(key) = key_of(&node) else {
                 return Ok(Transformed::no(node));
             };
             let exchange = as_exchange(&node);
@@ -257,6 +287,32 @@ impl PhysicalOptimizerRule for ReuseExchangeRule {
     fn schema_check(&self) -> bool {
         true
     }
+}
+
+/// A hash of `plan` that two subtrees with one key always share, though
+/// different subtrees may share it too. Each node contributes its one-line
+/// display, except that an exchange contributes only what it writes, so stage
+/// ids never reach it.
+fn fingerprint(plan: &Arc<dyn ExecutionPlan>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    match plan.downcast_ref::<ExchangeExec>() {
+        Some(exchange) => {
+            "ExchangeExec".hash(&mut hasher);
+            exchange.is_broadcast().hash(&mut hasher);
+            exchange
+                .partitioning()
+                .map(|partitioning| partitioning.to_string())
+                .hash(&mut hasher);
+        }
+        None => displayable(plan.as_ref())
+            .one_line()
+            .to_string()
+            .hash(&mut hasher),
+    }
+    for child in plan.children() {
+        fingerprint(child).hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn as_exchange(plan: &Arc<dyn ExecutionPlan>) -> &ExchangeExec {
