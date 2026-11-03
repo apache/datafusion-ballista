@@ -57,10 +57,11 @@ payload records that codec's position in the list and is decoded only by the
 codec at that position, so clients, the scheduler and executors must all list
 the same codecs in the same order. Add new codecs at the end.
 
-DataFusion's `ComposedPhysicalExtensionCodec` routes execution plans, such as
-table scans, and functions, but only its first codec can encode a function, and
-it doesn't route custom physical expressions, window functions or higher-order
-functions to its codecs.
+Both send functions only to the first codec, which by default sends them by
+name, so only the first codec can encode a function. DataFusion's
+`ComposedPhysicalExtensionCodec` also doesn't route custom physical expressions,
+window functions or higher-order functions to its codecs. Table scans, such as
+Iceberg's, need neither.
 
 ## Example: Custom Object Store Integration
 
