@@ -66,7 +66,7 @@ fn wide_schema() -> Arc<Schema> {
 /// Resolves the join and reports whether any side ended up broadcast.
 async fn plan_broadcasts(ctx: &SessionContext, sql: &str) -> (bool, String) {
     let lp = ctx.sql(sql).await.unwrap().into_optimized_plan().unwrap();
-    let planner = AdaptivePlanner::try_new(ctx, &lp, "test_job".into())
+    let planner = AdaptivePlanner::try_new(ctx, &lp, "test_job".into(), None)
         .await
         .unwrap();
     let plan = displayable(planner.current_plan()).indent(true).to_string();

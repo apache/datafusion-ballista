@@ -19,6 +19,7 @@ use crate::cache::CACHE_DATA_LOST;
 use crate::display::print_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
+use crate::state::aqe::adaptive_rules::AdaptiveRules;
 use crate::state::aqe::execution_plan::{ExchangeExec, RangeRepartitionRouting};
 use crate::state::aqe::planner::{AdaptivePlanner, AdaptiveStageInfo};
 use crate::state::execution_graph::{
@@ -64,6 +65,7 @@ use std::vec;
 // an AQE optimizer rule in a follow-up PR.
 
 mod adapter;
+pub mod adaptive_rules;
 pub(crate) mod coalesce;
 pub(crate) mod execution_plan;
 pub mod optimizer_rule;
@@ -154,11 +156,12 @@ impl AdaptiveExecutionGraph {
         ctx: &SessionContext,
         logical_plan: &LogicalPlan,
         queued_at: u64,
+        rules: Option<&dyn AdaptiveRules>,
     ) -> ballista_core::error::Result<Self> {
         let session_id = ctx.session_id();
 
         let mut planner =
-            AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone()).await?;
+            AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone(), rules).await?;
 
         let logical_plan = Some(logical_plan.display_indent().to_string());
 
@@ -457,8 +460,13 @@ impl AdaptiveExecutionGraph {
             self.resolve_prefix_merge_state(stage_id)?;
             let partitions = self.planner.take_stage_output_partitions(stage_id)?;
 
-            // Range-repartition stages need overlap-based remap of their partitions
             let maybe_stage = self.stages.get(&stage_id);
+            let column_statistics = match maybe_stage {
+                Some(ExecutionStage::Running(stage)) => stage.output_column_stats(),
+                _ => Vec::new(),
+            };
+
+            // Range-repartition stages need overlap-based remap of their partitions
             let partitions = if let Some(ExecutionStage::Running(stage)) = maybe_stage
                 && let Some(routing_expr) = repartition_routing_expr(stage.plan.as_ref())?
                 && let Some(routing) = Self::repartition_routing(stage, routing_expr)?
@@ -496,8 +504,11 @@ impl AdaptiveExecutionGraph {
             } else {
                 partitions
             };
-            self.planner
-                .resolve_stage_partitions(stage_id, partitions.clone())?;
+            self.planner.resolve_stage_partitions(
+                stage_id,
+                partitions.clone(),
+                column_statistics,
+            )?;
 
             let (runnable, stages_to_cancel) = self.planner.actionable_stages()?;
 

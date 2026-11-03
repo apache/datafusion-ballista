@@ -23,7 +23,6 @@
 //! concurrently and then emits one file holding every bucket, laid out
 //! partition-major so each output partition stays one contiguous range.
 
-use datafusion::arrow::array::Array;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
@@ -33,7 +32,9 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
-use super::super::shuffle_writer::{handoff_stream, take_handoff};
+use super::super::shuffle_writer::{
+    ColumnStatsCollector, handoff_stream, sketched_columns, take_handoff,
+};
 use super::super::shuffle_writer_trait::ShuffleWriter;
 use super::buffer::BufferedBatches;
 use super::config::SortShuffleConfig;
@@ -45,7 +46,7 @@ use super::partition_id::{
 use super::spill::SpillManager;
 use crate::JobId;
 use crate::extension::SessionConfigExt;
-use crate::serde::protobuf::ShuffleWritePartition;
+use crate::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
 
 use crate::utils::create_write_options;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -95,8 +96,6 @@ struct InputPartitionOutput {
     /// Kept alive so the pool keeps accounting for this input until the
     /// consolidated write has consumed its buffers.
     _reservation: MemoryReservation,
-    // collect null counts for better planning
-    null_counts: Vec<u64>,
 }
 
 /// What one output partition's encoded rows amount to.
@@ -158,7 +157,6 @@ fn encode_buffered_partitions(
 struct WriterState {
     initialized: bool,
     handoffs: Vec<Option<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>>>,
-    column_null_counts: Vec<u64>,
 }
 
 impl Debug for WriterState {
@@ -376,6 +374,8 @@ pub struct SortShuffleWriterExec {
     /// it spawns per-input-partition write tasks) participates in the
     /// same coordinator.
     state: Arc<Mutex<WriterState>>,
+    /// Statistics of the rows this task wrote, shared with clones.
+    column_stats: ColumnStatsCollector,
 }
 
 impl Clone for SortShuffleWriterExec {
@@ -392,6 +392,7 @@ impl Clone for SortShuffleWriterExec {
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             state: self.state.clone(),
+            column_stats: self.column_stats.clone(),
         }
     }
 }
@@ -581,8 +582,8 @@ impl SortShuffleWriterExec {
             state: Arc::new(Mutex::new(WriterState {
                 initialized: false,
                 handoffs: (0..output_partition_count).map(|_| None).collect(),
-                column_null_counts: Vec::new(),
             })),
+            column_stats: ColumnStatsCollector::default(),
         })
     }
 
@@ -594,13 +595,17 @@ impl SortShuffleWriterExec {
         self
     }
 
-    /// Compute null counts for each column. This will be enhanced in future to add further
-    /// col stats for better query planning
+    /// Per-column null counts over all rows this task wrote, one per column
+    /// of the output schema. Empty until the task has written.
     pub fn column_null_counts(&self) -> Vec<u64> {
-        self.state
-            .lock()
-            .map(|s| s.column_null_counts.clone())
-            .unwrap_or_default()
+        self.column_stats.null_counts()
+    }
+
+    /// Per-column statistics over all rows this task wrote, as reported to
+    /// the scheduler: a null count for every column and an HLL sketch for
+    /// each hash-partitioning key column. Empty until the task has written.
+    pub fn column_stats(&self) -> Vec<TaskColumnStats> {
+        self.column_stats.task_column_stats()
     }
 
     /// Bind this writer to the directory it writes under. Called by the
@@ -701,9 +706,19 @@ impl SortShuffleWriterExec {
         let stage_id = self.stage_id;
         let routing = self.routing.clone();
         let task_id = self.task_id;
+        let column_stats = self.column_stats.clone();
 
         async move {
-            let mut stream = plan.execute(input_partition, context.clone())?;
+            // The id column of a partition-id shuffle is routed on but never
+            // written, so it is left out of the statistics too.
+            let ignored_column = match &routing {
+                ShuffleRouting::Hash { .. } => None,
+                ShuffleRouting::PartitionId { column, .. } => Some(*column),
+            };
+            let mut stream = column_stats.count(
+                plan.execute(input_partition, context.clone())?,
+                ignored_column,
+            );
             let schema = routing.output_schema(&stream.schema())?;
             let ballista_config = Arc::new(context.session_config().ballista_config());
             let compression_type = ballista_config.shuffle_compression_codec()?;
@@ -743,7 +758,6 @@ impl SortShuffleWriterExec {
             // `MemoryPool`; 0 disables it.
             let memory_limit = config.memory_limit_per_task_bytes;
             let per_task_budget_enabled = memory_limit > 0;
-            let mut null_counts = vec![0u64; schema.fields().len()];
 
             while let Some(result) = stream.next().await {
                 let input_batch = result?;
@@ -773,11 +787,6 @@ impl SortShuffleWriterExec {
                     }
                 };
                 timer.done();
-
-                // Counted on what is written, so they line up with a reader's columns.
-                for (i, col) in input_batch.columns().iter().enumerate() {
-                    null_counts[i] += col.logical_null_count() as u64;
-                }
 
                 buffered.push_batch(input_batch, &per_partition_rows);
                 let buffered_bytes = buffered.memory_size();
@@ -884,7 +893,6 @@ impl SortShuffleWriterExec {
                 spill_manager,
                 schema,
                 _reservation: reservation,
-                null_counts,
             })
         }
     }
@@ -1158,9 +1166,19 @@ impl ExecutionPlan for SortShuffleWriterExec {
             ShuffleRouting::Hash { .. } => {}
             // The id column is not part of the output, so its statistics aren't.
             ShuffleRouting::PartitionId { column, .. } => {
-                let columns = &mut Arc::make_mut(&mut stats).column_statistics;
-                if *column < columns.len() {
-                    columns.remove(*column);
+                let input_schema = self.plan.schema();
+                let stats = Arc::make_mut(&mut stats);
+                if *column < stats.column_statistics.len() {
+                    let removed = stats.column_statistics.remove(*column);
+                    // The total counted the id column's bytes too. Take them
+                    // off when the column reports its size, otherwise let
+                    // DataFusion re-derive the total from the written schema.
+                    if removed.byte_size.get_value().is_some() {
+                        stats.total_byte_size =
+                            stats.total_byte_size.sub(&removed.byte_size);
+                    } else if let Ok(schema) = self.routing.output_schema(&input_schema) {
+                        stats.calculate_total_byte_size(&schema);
+                    }
                 }
             }
         }
@@ -1219,6 +1237,21 @@ async fn run_coordinator(
         .output_partitioning()
         .partition_count();
 
+    let config = ctx.session_config().ballista_config();
+    // Statistics describe what is written, so they line up with a reader's columns.
+    let written_columns = writer
+        .routing
+        .output_schema(&writer.plan.schema())
+        .map_or(0, |schema| schema.fields().len());
+    writer.column_stats.reset(
+        written_columns,
+        &sketched_columns(
+            &writer.routing.output_partitioning(),
+            config.shuffle_collect_distinct_counts(),
+        ),
+        config.shuffle_collect_distinct_counts_precision(),
+    );
+
     // Spawn per-input-partition write tasks concurrently — this matches the
     // parallelism main's design achieved by having DataFusion drive
     // `execute(0..M)` concurrently.
@@ -1249,21 +1282,6 @@ async fn run_coordinator(
         }
     }
     writes.abort_all();
-
-    // Fold each input partition's per-column null counts into the task-level
-    // total and publish it on the shared state for `execute_query_stage`.
-    let mut column_null_counts: Vec<u64> = Vec::new();
-    for output in outputs.iter() {
-        if column_null_counts.len() < output.null_counts.len() {
-            column_null_counts.resize(output.null_counts.len(), 0);
-        }
-        for (slot, n) in column_null_counts.iter_mut().zip(&output.null_counts) {
-            *slot += n;
-        }
-    }
-    if let Ok(mut state) = writer.state.lock() {
-        state.column_null_counts = column_null_counts;
-    }
 
     // Every input partition has finished bucketing; emit the task's single
     // data file from all of them, then describe each output partition once.
@@ -1487,6 +1505,8 @@ mod tests {
     use super::*;
     use crate::error::BallistaError;
     use crate::execution_plans::ChaosExec;
+    use crate::hll::HyperLogLog;
+    use crate::serde::protobuf::SketchType;
     use datafusion::arrow::array::{NullArray, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
@@ -1494,7 +1514,7 @@ mod tests {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::expressions::Column;
-    use datafusion::prelude::SessionContext;
+    use datafusion::prelude::{SessionConfig, SessionContext};
     use futures::TryStreamExt;
     use tempfile::TempDir;
 
@@ -2186,6 +2206,91 @@ mod tests {
             r.expect("partition drive should succeed");
         }
         Ok(writer.column_null_counts())
+    }
+
+    /// Drive a sort-shuffle writer hash-partitioned on "a" over two input
+    /// partitions whose "a" values overlap (0..1000 and 500..1500), and return
+    /// the column stats it reports.
+    async fn collect_column_stats(config: SessionConfig) -> Result<Vec<TaskColumnStats>> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, false),
+            Field::new("b", DataType::UInt32, false),
+        ]));
+        let batch = |range: std::ops::Range<u32>| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(UInt32Array::from_iter_values(range.clone())),
+                    Arc::new(UInt32Array::from_iter_values(range)),
+                ],
+            )
+        };
+        let partitions = vec![vec![batch(0..1000)?], vec![batch(500..1500)?]];
+        let source = Arc::new(MemorySourceConfig::try_new(
+            &partitions,
+            schema.clone(),
+            None,
+        )?);
+        let work_dir = TempDir::new()?;
+        let writer = Arc::new(SortShuffleWriterExec::try_new(
+            "distinct_count_job".into(),
+            1,
+            Arc::new(DataSourceExec::new(source)),
+            work_dir.path().to_str().unwrap().to_string(),
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
+            SortShuffleConfig::default(),
+        )?);
+        let task_ctx = SessionContext::new_with_config(config).task_ctx();
+        for r in drive_partition_results(writer.clone(), task_ctx).await {
+            r.expect("partition drive should succeed");
+        }
+        Ok(writer.column_stats())
+    }
+
+    // Only the hash key is sketched, and the sketch covers every input
+    // partition the task drained.
+    #[tokio::test]
+    async fn column_stats_sketch_the_hash_key_across_inputs() -> Result<()> {
+        let stats = collect_column_stats(SessionConfig::new_with_ballista()).await?;
+        assert_eq!(stats.len(), 2);
+        let [sketch] = stats[0].sketches.as_slice() else {
+            panic!("expected one sketch on the hash key, got {:?}", stats[0]);
+        };
+        assert_eq!(sketch.r#type, SketchType::Hll as i32);
+        let distinct = HyperLogLog::from_bytes(&sketch.data).unwrap().count();
+        assert!((1425..=1575).contains(&distinct), "estimated {distinct}");
+        assert!(stats[1].sketches.is_empty());
+        Ok(())
+    }
+
+    // The sketch is made at the precision the session asks for.
+    #[tokio::test]
+    async fn column_stats_sketch_at_the_configured_precision() -> Result<()> {
+        let config = SessionConfig::new_with_ballista().set_usize(
+            crate::config::BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION,
+            10,
+        );
+        let stats = collect_column_stats(config).await?;
+        let [sketch] = stats[0].sketches.as_slice() else {
+            panic!("expected one sketch on the hash key, got {:?}", stats[0]);
+        };
+        assert_eq!(sketch.data.len(), 1 << 10);
+        let distinct = HyperLogLog::from_bytes(&sketch.data).unwrap().count();
+        // 1500 distinct values at a standard error of 3.3%.
+        assert!((1200..=1800).contains(&distinct), "estimated {distinct}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn column_stats_skip_sketches_when_disabled() -> Result<()> {
+        let config = SessionConfig::new_with_ballista().set_bool(
+            crate::config::BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS,
+            false,
+        );
+        let stats = collect_column_stats(config).await?;
+        assert_eq!(stats.len(), 2);
+        assert!(stats.iter().all(|s| s.sketches.is_empty()));
+        Ok(())
     }
 
     #[tokio::test]
@@ -2890,11 +2995,13 @@ mod tests {
             null_count: Precision::Exact(nulls),
             ..ColumnStatistics::new_unknown()
         };
+        let mut pid = column(2);
+        pid.byte_size = Precision::Exact(40);
         let input = Arc::new(StatisticsExec::new(
             Statistics {
                 num_rows: Precision::Exact(10),
-                total_byte_size: Precision::Absent,
-                column_statistics: vec![column(1), column(2), column(3)],
+                total_byte_size: Precision::Exact(500),
+                column_statistics: vec![column(1), pid, column(3)],
             },
             schema,
         ));
@@ -2912,6 +3019,53 @@ mod tests {
             .collect();
         assert_eq!(nulls, [Precision::Exact(1), Precision::Exact(3)]);
         assert_eq!(stats.num_rows, Precision::Exact(10));
+        // The 40 bytes of `pid` are not written either.
+        assert_eq!(stats.total_byte_size, Precision::Exact(460));
+        Ok(())
+    }
+
+    /// Without a size for the id column, the total is re-derived from the
+    /// written schema when that can be done, and is otherwise only an estimate.
+    #[test]
+    fn partition_id_writer_total_byte_size_excludes_the_id_column() -> Result<()> {
+        use datafusion::common::ColumnStatistics;
+        use datafusion::common::stats::Precision;
+        use datafusion::physical_plan::statistics::StatisticsContext;
+        use datafusion::physical_plan::test::exec::StatisticsExec;
+
+        let stats_of = |schema: Schema| -> Result<Statistics> {
+            let columns = schema.fields().len();
+            let input = Arc::new(StatisticsExec::new(
+                Statistics {
+                    num_rows: Precision::Exact(10),
+                    total_byte_size: Precision::Exact(500),
+                    column_statistics: vec![ColumnStatistics::new_unknown(); columns],
+                },
+                schema,
+            ));
+            let work_dir = TempDir::new()?;
+            let writer =
+                partition_id_writer(input, &work_dir, SortShuffleConfig::default(), 4)?;
+            Ok(Arc::unwrap_or_clone(
+                StatisticsContext::new().compute(&writer, &StatisticsArgs::new())?,
+            ))
+        };
+
+        // Every written column has a fixed width: 10 rows of Int64 and Int16.
+        let fixed = stats_of(Schema::new(vec![
+            Field::new("v", DataType::Int64, false),
+            Field::new("pid", DataType::Int32, false),
+            Field::new("w", DataType::Int16, false),
+        ]))?;
+        assert_eq!(fixed.total_byte_size, Precision::Exact(10 * (8 + 2)));
+
+        // A string column has no fixed width, so the old total is kept as an
+        // estimate.
+        let variable = stats_of(Schema::new(vec![
+            Field::new("v", DataType::Utf8, false),
+            Field::new("pid", DataType::Int32, false),
+        ]))?;
+        assert_eq!(variable.total_byte_size, Precision::Inexact(500));
         Ok(())
     }
 

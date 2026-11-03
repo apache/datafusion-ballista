@@ -319,7 +319,8 @@ Some things to keep in mind:
   planner rejects it, because it may coalesce or re-plan an exchange's
   partitions, which would break the placement. Set
   `ballista.planner.adaptive.enabled` to `false` if a plan containing the node
-  would otherwise be planned adaptively.
+  would otherwise be planned adaptively. Pipelined execution only shuffles by
+  hash, so it rejects the node too.
 - The shuffle's output is reported as unknown partitioning, whatever function
   produced the ids, so operators that require hash-partitioned input won't see
   their requirement met. Put the node under operators that declare no
