@@ -104,6 +104,7 @@ Ballista <ballista>
 Spark <spark>
 Spark + Comet <comet>
 Trino <trino>
+DataFusion Distributed <datafusion-distributed>
 ```
 
 ## Recording a new result set
