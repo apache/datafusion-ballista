@@ -22,15 +22,19 @@
 //! must keep those shuffles as stage boundaries and must not make decisions
 //! that assume it knows what an extension operator does with its input.
 
+use crate::state::aqe::adaptive_rules::{AdaptiveRule, AdaptiveRules};
+use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::coalesce_rule::partitions_with_byte_sizes;
 use crate::state::aqe::test::mock_batch;
 use ballista_core::assert_plan;
 use ballista_core::extension::SessionConfigExt;
-use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::config::ConfigOptions;
 use datafusion::execution::{SessionStateBuilder, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -39,6 +43,7 @@ use datafusion::physical_plan::{
 use datafusion::prelude::{SessionConfig, SessionContext};
 use std::fmt::Formatter;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// A session with Ballista's config extension installed, partition
 /// coalescing switched on or off, and a small coalesce target so the
@@ -165,6 +170,123 @@ async fn should_not_coalesce_shuffle_feeding_extension_operator()
     Ok(())
 }
 
+/// A scheduler embedder's rules apply to a submitted physical plan as they do
+/// to a planned logical one: its preparation rules run once, on the plan as
+/// submitted, before the submitted shuffles are pinned as stage boundaries,
+/// and its replan rules run when the job is planned and after each stage.
+#[tokio::test]
+async fn should_run_an_embedders_rules_on_a_submitted_plan()
+-> datafusion::common::Result<()> {
+    let seen = Arc::new(Seen::default());
+    let embedder = Embedder {
+        seen: Arc::clone(&seen),
+    };
+    let ctx = physical_context(false);
+    let plan =
+        hand_built_plan(&ctx, |shuffle| Arc::new(OpaqueExec::new(shuffle))).await?;
+
+    let mut planner = AdaptivePlanner::try_new_from_physical(
+        &ctx,
+        plan,
+        "test_job".into(),
+        Some(&embedder),
+    )?;
+
+    assert_eq!(seen.preparation_runs.load(Ordering::Relaxed), 1);
+    assert!(
+        seen.prepared_submitted_shuffle.load(Ordering::Relaxed),
+        "a preparation rule should be given the plan as submitted"
+    );
+    assert!(
+        !seen.prepared_stage_boundary.load(Ordering::Relaxed),
+        "no stage boundary is placed before the preparation rules have run"
+    );
+    assert_eq!(seen.replan_runs.load(Ordering::Relaxed), 1);
+
+    let _ = planner.runnable_stages()?.unwrap();
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[50; 8]))?;
+
+    assert_eq!(seen.preparation_runs.load(Ordering::Relaxed), 1);
+    assert_eq!(seen.replan_runs.load(Ordering::Relaxed), 2);
+
+    Ok(())
+}
+
+/// What an embedder's rules saw.
+#[derive(Debug, Default)]
+struct Seen {
+    preparation_runs: AtomicUsize,
+    replan_runs: AtomicUsize,
+    /// A preparation rule was given a `RepartitionExec`.
+    prepared_submitted_shuffle: AtomicBool,
+    /// A preparation rule was given an `ExchangeExec`.
+    prepared_stage_boundary: AtomicBool,
+}
+
+/// Records what it is given and changes nothing.
+#[derive(Debug)]
+struct Recording {
+    seen: Arc<Seen>,
+    replan: bool,
+}
+
+impl PhysicalOptimizerRule for Recording {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        _config: &ConfigOptions,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        if self.replan {
+            self.seen.replan_runs.fetch_add(1, Ordering::Relaxed);
+            return Ok(plan);
+        }
+        self.seen.preparation_runs.fetch_add(1, Ordering::Relaxed);
+        plan.apply(|node| {
+            if node.is::<RepartitionExec>() {
+                self.seen
+                    .prepared_submitted_shuffle
+                    .store(true, Ordering::Relaxed);
+            }
+            if node.is::<ExchangeExec>() {
+                self.seen
+                    .prepared_stage_boundary
+                    .store(true, Ordering::Relaxed);
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        Ok(plan)
+    }
+
+    fn name(&self) -> &str {
+        "Recording"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug)]
+struct Embedder {
+    seen: Arc<Seen>,
+}
+
+impl AdaptiveRules for Embedder {
+    fn preparation_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
+        vec![Arc::new(Recording {
+            seen: Arc::clone(&self.seen),
+            replan: false,
+        })]
+    }
+
+    fn replan_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
+        vec![Arc::new(Recording {
+            seen: Arc::clone(&self.seen),
+            replan: true,
+        })]
+    }
+}
+
 /// A stand-in for a client's extension operator: passes its input through
 /// and declares nothing about what it needs from it, like an opaque fragment
 /// the planner cannot see into.
@@ -221,109 +343,4 @@ impl ExecutionPlan for OpaqueExec {
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
         self.input.execute(partition, context)
     }
-}
-
-/// Holds back (or releases) the stage of every exchange, as an embedder's rule
-/// that wants to decide on a stage later would.
-#[derive(Debug)]
-struct HoldStages {
-    inactive: bool,
-}
-
-impl datafusion::physical_optimizer::PhysicalOptimizerRule for HoldStages {
-    fn optimize(
-        &self,
-        plan: Arc<dyn ExecutionPlan>,
-        _config: &datafusion::config::ConfigOptions,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        use crate::state::aqe::execution_plan::ExchangeExec;
-        use datafusion::common::tree_node::{Transformed, TreeNode};
-        Ok(plan
-            .transform_up(|node| {
-                let Some(exchange) = node.downcast_ref::<ExchangeExec>() else {
-                    return Ok(Transformed::no(node));
-                };
-                let held: Arc<dyn ExecutionPlan> =
-                    Arc::new(exchange.with_inactive_stage(self.inactive));
-                Ok(Transformed::yes(held))
-            })?
-            .data)
-    }
-
-    fn name(&self) -> &str {
-        "HoldStages"
-    }
-
-    fn schema_check(&self) -> bool {
-        true
-    }
-}
-
-/// An embedder's rules: hold every stage while preparing the plan, and
-/// optionally release them again when the plan is optimized.
-#[derive(Debug)]
-struct HoldThenRelease {
-    release: bool,
-}
-
-impl crate::state::aqe::adaptive_rules::AdaptiveRules for HoldThenRelease {
-    fn preparation_rules(
-        &self,
-        _plan_ids: Arc<std::sync::atomic::AtomicUsize>,
-    ) -> Vec<crate::state::aqe::adaptive_rules::AdaptiveRule> {
-        vec![Arc::new(HoldStages { inactive: true })]
-    }
-
-    fn replan_rules(
-        &self,
-        _plan_ids: Arc<std::sync::atomic::AtomicUsize>,
-    ) -> Vec<crate::state::aqe::adaptive_rules::AdaptiveRule> {
-        if self.release {
-            vec![Arc::new(HoldStages { inactive: false })]
-        } else {
-            vec![]
-        }
-    }
-}
-
-/// An embedder's preparation rule runs after the submitted shuffles are
-/// pinned, so it can hold their stages back, and a held stage doesn't run.
-#[tokio::test]
-async fn should_not_run_a_stage_an_embedder_rule_holds() -> datafusion::common::Result<()>
-{
-    let ctx = physical_context(false);
-    let plan =
-        hand_built_plan(&ctx, |shuffle| Arc::new(OpaqueExec::new(shuffle))).await?;
-
-    let mut planner = AdaptivePlanner::try_new_from_physical(
-        &ctx,
-        plan,
-        "test_job".into(),
-        Some(&HoldThenRelease { release: false }),
-    )?;
-
-    let runnable = planner.identify_runnable_stages()?.unwrap_or_default();
-    assert!(runnable.is_empty(), "a held stage must not run");
-    Ok(())
-}
-
-/// An embedder's replan rules run whenever the plan is optimized, after its
-/// preparation rules, so they can release a stage held back earlier.
-#[tokio::test]
-async fn should_run_a_stage_an_embedder_rule_releases() -> datafusion::common::Result<()>
-{
-    let ctx = physical_context(false);
-    let plan =
-        hand_built_plan(&ctx, |shuffle| Arc::new(OpaqueExec::new(shuffle))).await?;
-
-    let mut planner = AdaptivePlanner::try_new_from_physical(
-        &ctx,
-        plan,
-        "test_job".into(),
-        Some(&HoldThenRelease { release: true }),
-    )?;
-
-    let runnable = planner.identify_runnable_stages()?.unwrap_or_default();
-    assert_eq!(runnable.len(), 1, "the released stage must run");
-    Ok(())
 }

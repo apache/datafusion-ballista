@@ -35,7 +35,7 @@ use ballista_core::JobId;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
-use datafusion::common::{HashMap, exec_err};
+use datafusion::common::{ColumnStatistics, HashMap, exec_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -194,7 +194,8 @@ impl AdaptivePlanner {
     }
 
     /// Creates a new `AdaptivePlanner` over an already-built physical plan,
-    /// with the default physical optimizer rules.
+    /// with the default physical optimizer rules, and an embedder's `rules`
+    /// added to them (see [`AdaptiveRules`]).
     ///
     /// This is the physical-plan counterpart of [`Self::try_new`]: the
     /// plan-preparation rules that `try_new` runs while planning the logical
@@ -203,17 +204,17 @@ impl AdaptivePlanner {
     /// handled on this path.
     ///
     /// The submitter placed the plan's hash repartitions deliberately, so they
-    /// are pinned as stage boundaries first ([`PinSubmittedShufflesRule`]);
-    /// otherwise DataFusion's `EnforceDistribution` would drop any that no
-    /// operator requirement asks for, such as one feeding an extension node.
+    /// are pinned as stage boundaries ([`PinSubmittedShufflesRule`]) as the
+    /// last preparation rule, before the adaptive chain runs; otherwise
+    /// DataFusion's `EnforceDistribution` would drop any that no operator
+    /// requirement asks for, such as one feeding an extension node.
     ///
     /// # Arguments
     ///
     /// * `ctx` - The session context
     /// * `plan` - The physical plan for the job.
     /// * `job_id` - The unique identifier for the job.
-    /// * `rules` - Rules of the embedder's own, if any. Its preparation rules
-    ///   run after the submitted shuffles are pinned.
+    /// * `rules` - Rules of the embedder's own, if any.
     pub fn try_new_from_physical(
         ctx: &SessionContext,
         plan: Arc<dyn ExecutionPlan>,
@@ -224,17 +225,17 @@ impl AdaptivePlanner {
 
         let mut preparation_optimizers =
             Self::plan_preparation_optimizers(plan_id_generator.clone());
-        preparation_optimizers.push(Arc::new(PinSubmittedShufflesRule::new(
-            plan_id_generator.clone(),
-        )));
-        // After the pinning, so an embedder's rule can hold back a stage the
-        // submitter placed.
         let mut replan_optimizers = vec![];
         if let Some(rules) = rules {
             preparation_optimizers
                 .extend(rules.preparation_rules(plan_id_generator.clone()));
             replan_optimizers = rules.replan_rules(plan_id_generator.clone());
         }
+        // After the embedder's preparation rules, which run before the job's
+        // stage boundaries are placed (see `AdaptiveRules::preparation_rules`).
+        preparation_optimizers.push(Arc::new(PinSubmittedShufflesRule::new(
+            plan_id_generator.clone(),
+        )));
         let plan_preparation_state = Self::create_session_state(
             SessionStateBuilder::from(ctx.state()),
             preparation_optimizers,
@@ -303,10 +304,13 @@ impl AdaptivePlanner {
         Ok(())
     }
 
-    pub(super) fn finalise_stage_internal(
+    /// Resolves a finished stage's exchange with its partitions and, when
+    /// given, the per-column statistics of its output, then replans.
+    pub(super) fn finalise_stage(
         &mut self,
         stage_id: usize,
         partitions: Vec<Vec<PartitionLocation>>,
+        column_statistics: Option<Vec<ColumnStatistics>>,
     ) -> common::Result<()> {
         // stage has finished, stage partitions should be resolved,
         // and it has to be removed from active stages cache.
@@ -324,6 +328,9 @@ impl AdaptivePlanner {
                 )
             }) {
             Some((Some(stage), None)) => {
+                if let Some(column_statistics) = column_statistics {
+                    stage.resolve_column_statistics(column_statistics);
+                }
                 stage.resolve_shuffle_partitions(partitions);
                 self.replan_stages()?;
                 Ok(())
@@ -401,13 +408,15 @@ impl AdaptivePlanner {
         })
     }
 
-    /// Save the given partition list on the stage's ExchangeExec and trigger a replan.
+    /// Save the given partition list and the stage's per-column output
+    /// statistics on the stage's ExchangeExec, and trigger a replan.
     pub fn resolve_stage_partitions(
         &mut self,
         stage_id: usize,
         partitions: Vec<Vec<PartitionLocation>>,
+        column_statistics: Vec<ColumnStatistics>,
     ) -> common::Result<()> {
-        self.finalise_stage_internal(stage_id, partitions)
+        self.finalise_stage(stage_id, partitions, Some(column_statistics))
     }
 
     /// Replans the stages by applying physical optimizations.
