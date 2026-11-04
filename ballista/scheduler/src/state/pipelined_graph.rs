@@ -49,7 +49,8 @@ use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
     PipelinedShuffleReaderExec, PipelinedShuffleWriterExec, ShuffleWriter,
-    UnresolvedShuffleExec, compute_global_output_partition_ids,
+    SortShuffleWriterExec, UnresolvedShuffleExec, compute_global_output_partition_ids,
+    sort_shuffle::ShuffleRouting,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
@@ -290,6 +291,16 @@ impl PipelinedExecutionGraph {
         let pipelined_stages = shuffle_stages
             .into_iter()
             .map(|stage| {
+                let stage_plan: Arc<dyn ExecutionPlan> = stage.clone();
+                if let Some(writer) = stage_plan.downcast_ref::<SortShuffleWriterExec>()
+                    && matches!(writer.routing(), ShuffleRouting::PartitionId { .. })
+                {
+                    return Err(BallistaError::General(
+                        "PartitionIdRepartitionExec is not supported in pipelined \
+                         execution, which only shuffles by hash"
+                            .to_owned(),
+                    ));
+                }
                 let input = stage.children()[0].clone();
                 let writer = PipelinedShuffleWriterExec::try_new(
                     job_id.clone(),
@@ -1174,6 +1185,38 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_partition_id_shuffle_is_refused_in_pipelined_mode() {
+        use ballista_core::execution_plans::PartitionIdRepartitionExec;
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Int64, false),
+            Field::new("pid", DataType::Int32, false),
+        ]));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(
+            PartitionIdRepartitionExec::try_new(Arc::new(EmptyExec::new(schema)), 1, 4)
+                .unwrap(),
+        );
+
+        let Err(err) = PipelinedExecutionGraph::new(
+            "localhost:50050",
+            &"job".into(),
+            "",
+            "session",
+            plan,
+            0,
+            Arc::new(SessionConfig::new_with_ballista()),
+            &mut DefaultDistributedPlanner::new(),
+            None,
+        ) else {
+            panic!("the marker has no pipelined form");
+        };
+
+        let err = err.to_string();
+        assert!(err.contains("PartitionIdRepartitionExec"), "{err}");
     }
 
     fn executors(ids: &[&str]) -> HashMap<String, ExecutorMetadata> {

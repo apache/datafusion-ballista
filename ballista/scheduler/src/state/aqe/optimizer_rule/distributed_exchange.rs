@@ -18,8 +18,8 @@
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::{
-    OrderedRangeRepartitionExec, RangeFilterExec, UnorderedRangeRepartitionExec,
-    preserves_partitioning,
+    OrderedRangeRepartitionExec, PartitionIdRepartitionExec, RangeFilterExec,
+    UnorderedRangeRepartitionExec, preserves_partitioning,
 };
 use datafusion::common::plan_err;
 use datafusion::common::stats::Precision;
@@ -59,6 +59,15 @@ impl DistributedExchangeRule {
         execution_plan: Arc<dyn ExecutionPlan>,
         config: &datafusion::config::ConfigOptions,
     ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        if execution_plan.is::<PartitionIdRepartitionExec>() {
+            return plan_err!(
+                "PartitionIdRepartitionExec is not supported by the adaptive query \
+                 planner, which can coalesce or re-plan the partitions it fills; plan \
+                 with the static planner instead (set \
+                 ballista.planner.adaptive.enabled=false)"
+            );
+        }
+
         // DataFusion's null-aware hash join coordinates visited rows and
         // probe-side NULL state with in-process atomics. A CollectLeft join
         // running once per probe partition therefore produces duplicate or
@@ -1278,6 +1287,27 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(err.contains("ProjectionExec"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn partition_id_repartition_is_refused() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Int32, true),
+            Field::new("pid", DataType::Int32, false),
+        ]));
+        let source = MemorySourceConfig::try_new_exec(&[vec![]], schema, None).unwrap();
+        let plan: Arc<dyn ExecutionPlan> =
+            Arc::new(PartitionIdRepartitionExec::try_new(source, 1, 4).unwrap());
+
+        let err = DistributedExchangeRule::default()
+            .optimize(plan, &config())
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("not supported by the adaptive query planner"),
+            "unexpected error: {err}"
+        );
     }
 }
 
