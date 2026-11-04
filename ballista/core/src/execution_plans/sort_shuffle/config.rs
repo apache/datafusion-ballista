@@ -22,8 +22,8 @@
 pub struct SortShuffleConfig {
     /// Whether sort-based shuffle is enabled (default: false).
     pub enabled: bool,
-    /// Target batch size in rows when materializing buffered indices via
-    /// `interleave_record_batch` (default: 8192).
+    /// Target size in rows of the batches the writer buffers and writes for
+    /// each output partition (default: 8192).
     pub batch_size: usize,
     /// Per-task buffered-bytes budget at which the writer spills its in-memory
     /// batches to disk. Counted independently of the runtime `MemoryPool`, so

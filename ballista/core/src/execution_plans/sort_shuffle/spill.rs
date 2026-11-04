@@ -23,6 +23,7 @@
 //! At finalization, the spill bytes are concatenated verbatim into the
 //! consolidated output file alongside the in-memory remainder.
 
+use super::buffer::batch_used_bytes;
 use crate::JobId;
 use crate::error::{BallistaError, Result};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -109,8 +110,8 @@ impl SpillManager {
     /// Spills a single `batch` for `partition_id` to disk. The first call for
     /// a given `partition_id` creates the spill file; subsequent calls append.
     ///
-    /// Returns the number of bytes written (estimated from the batch's array
-    /// memory size).
+    /// Returns the bytes the batch's values take in memory
+    /// (`batch_used_bytes`), not the bytes written to disk.
     pub fn spill(&mut self, partition_id: usize, batch: &RecordBatch) -> Result<u64> {
         if batch.num_rows() == 0 {
             return Ok(0);
@@ -136,7 +137,7 @@ impl SpillManager {
         }
 
         let writer = self.active_writers.get_mut(&partition_id).unwrap();
-        let bytes_written = batch.get_array_memory_size() as u64;
+        let bytes_written = batch_used_bytes(batch) as u64;
         writer.write(batch)?;
 
         let entry = self
@@ -212,9 +213,9 @@ impl SpillManager {
     /// Returns `(batches, rows, bytes)` spilled for the given partition, or
     /// `(0, 0, 0)` if the partition never spilled.
     ///
-    /// The `bytes` value is the Arrow in-memory buffer size of each batch
-    /// at the time of the spill call (`RecordBatch::get_array_memory_size`).
-    /// It is **not** the compressed on-disk size.
+    /// The `bytes` value is the bytes each batch's values take in memory
+    /// (`batch_used_bytes`), not counting unused capacity. It is **not** the
+    /// compressed on-disk size.
     pub fn partition_stats(&self, partition_id: usize) -> (u64, u64, u64) {
         self.partition_counters
             .get(&partition_id)
