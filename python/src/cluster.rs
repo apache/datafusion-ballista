@@ -160,7 +160,7 @@ pub struct PyExecutor {
 //        which forked it. This will be investigated further
 #[pymethods]
 impl PyExecutor {
-    #[pyo3(signature = (bind_port=None, bind_host =None, scheduler_host = None, scheduler_port = None, vcores = None))]
+    #[pyo3(signature = (bind_port=None, bind_host =None, scheduler_host = None, scheduler_port = None, vcores = None, work_dir = None))]
     #[new]
     pub fn new(
         _py: Python,
@@ -169,6 +169,7 @@ impl PyExecutor {
         scheduler_host: Option<String>,
         scheduler_port: Option<u16>,
         vcores: Option<u16>,
+        work_dir: Option<String>,
     ) -> PyResult<Self> {
         let mut config = ExecutorProcessConfig {
             override_logical_codec: Some(Arc::new(
@@ -199,7 +200,11 @@ impl PyExecutor {
             config.vcores = vcores as usize;
         }
 
-        // S3 support, as in the executor binary
+        // Shuffle and spill files go under work_dir; when unset, the
+        // executor picks a temp work dir and spills to the OS temp dir.
+        config.work_dir = work_dir;
+
+        // S3 support, and spilling under work_dir, as in the executor binary
         config.override_config_producer = Some(Arc::new(session_config_with_s3_support));
         let s3_runtime: RuntimeProducer = Arc::new(runtime_env_with_s3_support);
         config.override_runtime_producer = Some(match config.work_dir.clone() {

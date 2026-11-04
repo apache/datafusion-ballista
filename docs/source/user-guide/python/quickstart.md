@@ -304,10 +304,12 @@ executor = BallistaExecutor(
     scheduler_host="localhost",
     scheduler_port=50050,
     vcores=8,
+    work_dir="/tmp/ballista-executor",
 )
 executor.start()
 executor.wait_for_termination()
 ```
 
 All arguments are optional. `start` runs the process in the background, `wait_for_termination` blocks until it
-stops, and `close` stops it.
+stops, and `close` stops it. `work_dir` holds the executor's shuffle and spill files; when omitted, the executor
+uses a temporary directory.

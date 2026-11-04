@@ -177,6 +177,7 @@ executor = BallistaExecutor(
     scheduler_host="localhost",
     scheduler_port=50050,
     vcores=8,
+    work_dir="/tmp/ballista-executor",
 )
 
 executor.start()
@@ -184,6 +185,8 @@ executor.wait_for_termination()
 ```
 
 All constructor arguments are optional. `close()` stops a started process.
+`work_dir` holds the executor's shuffle and spill files; when omitted, the executor
+uses a temporary directory.
 
 For tests and notebooks, `setup_test_cluster()` starts a scheduler and an executor in
 the current process and returns the scheduler `(host, port)`.
