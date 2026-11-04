@@ -171,6 +171,14 @@ impl AdaptivePlanner {
                 .extend(rules.preparation_rules(plan_id_generator.clone()));
             replan_optimizers = rules.replan_rules(plan_id_generator.clone());
         }
+        // DataFusion checks the final plan of every physical pipeline, and a
+        // plan straight from the logical planner has no repartitions or sorts
+        // yet. Enforce them last, so the rules above still see the loose plan.
+        // The full chain runs `EnsureRequirements` again later. A submitted
+        // physical plan skips this: the client placed its repartitions on
+        // purpose, and `EnsureRequirements` would drop the ones it finds
+        // unnecessary.
+        preparation_optimizers.push(Arc::new(EnsureRequirements::default()));
         let plan_preparation_state_builder = SessionStateBuilder::from(ctx.state());
         let plan_preparation_state = Self::create_session_state(
             plan_preparation_state_builder,
@@ -691,10 +699,6 @@ impl AdaptivePlanner {
             Arc::new(BalanceAndPruneFileGroups::new()),
             Arc::new(DelayJoinSelectionRule::new(plan_id_generator)),
             Arc::new(ChaosCreatingRule::default()),
-            // DataFusion checks the final plan of every physical pipeline, so
-            // this one must end with the distribution and ordering requirements
-            // satisfied. The full chain runs `EnsureRequirements` again later.
-            Arc::new(EnsureRequirements::default()),
         ]
     }
 
