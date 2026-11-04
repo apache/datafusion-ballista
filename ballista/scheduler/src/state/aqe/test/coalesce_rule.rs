@@ -88,7 +88,7 @@ fn register_partitioned_table(
 /// where each upstream partition reports the given byte size. The rule sums
 /// `partition_stats.num_bytes` across leaves before bin-packing — that's the
 /// only field these tests need to vary.
-fn partitions_with_byte_sizes(
+pub(super) fn partitions_with_byte_sizes(
     per_partition_bytes: &[u64],
 ) -> Vec<Vec<PartitionLocation>> {
     per_partition_bytes

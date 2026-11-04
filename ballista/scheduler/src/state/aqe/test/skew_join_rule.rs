@@ -90,7 +90,7 @@ async fn planner(
         ctx.register_table(name, Arc::new(MemTable::try_new(mock_schema(), data)?))?;
     }
     let plan = ctx.sql(sql).await?.into_optimized_plan()?;
-    AdaptivePlanner::try_new(&ctx, &plan, "test_job".into()).await
+    AdaptivePlanner::try_new(&ctx, &plan, "test_job".into(), None).await
 }
 
 async fn join_stage(
@@ -236,7 +236,7 @@ async fn skew_join_preserves_shards_through_stage_completion()
         let output = planner.take_stage_output_partitions(stage_id)?;
         assert_eq!(output.len(), 7);
         assert_eq!(output.iter().map(Vec::len).sum::<usize>(), 7);
-        planner.resolve_stage_partitions(stage_id, output)?;
+        planner.resolve_stage_partitions(stage_id, output, Vec::new())?;
         assert!(planner.runnable_stages()?.is_none());
     }
     Ok(())
@@ -431,7 +431,7 @@ async fn skew_join_repartitions_partial_aggregates_for_the_next_stage()
     )?;
     let output = planner.take_stage_output_partitions(stage_id)?;
     assert_eq!(output.len(), 4);
-    planner.resolve_stage_partitions(stage_id, output)?;
+    planner.resolve_stage_partitions(stage_id, output, Vec::new())?;
     let final_stage = planner.runnable_stages()?.unwrap().remove(0);
     let inputs = readers(final_stage.plan);
     assert_eq!(inputs.len(), 1);

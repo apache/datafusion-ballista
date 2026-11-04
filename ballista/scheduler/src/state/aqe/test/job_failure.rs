@@ -70,6 +70,7 @@ async fn test_join_plan(partition: usize) -> AdaptiveExecutionGraph {
         &ctx,
         &logical_plan,
         0,
+        None,
     )
     .await
     .unwrap()

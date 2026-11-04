@@ -113,6 +113,12 @@ between the executor(s) and the scheduler for fetching tasks and reporting task 
 
 See the [architecture guide](docs/source/contributors-guide/architecture.md) for more details.
 
+## Execution Modes
+
+Ballista supports two execution modes, selected with `ballista.execution.mode`. Staged execution, the default, runs a job one stage at a time, the way [Apache Spark](https://spark.apache.org) does: each stage writes its output to shuffle files, and a failed task is simply re-run from them, which suits long-running jobs and busy shared clusters.
+
+Pipelined execution (experimental) runs a job the way [Trino](https://trino.io) does: every task is scheduled at once and stages stream record batches to each other over Arrow Flight, with no intermediate data written to disk, so results reach the client sooner, at the cost of a failed task failing the whole job. It suits short, latency-sensitive queries on clusters with room for the whole job. See the [Pipelined Execution Guide](docs/source/user-guide/pipelined-execution.md) for details.
+
 ## Getting Started
 
 The easiest way to get started is to run one of the standalone or distributed [examples](./examples/README.md). After

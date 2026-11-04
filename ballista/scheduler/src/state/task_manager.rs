@@ -22,6 +22,7 @@ use crate::physical_optimizer::file_group_balance::BalanceAndPruneFileGroups;
 use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::adaptive_rules::AdaptiveRules;
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_graph::{
     ExecutionGraphBox, RunningTaskInfo, StaticExecutionGraph, TaskDescription,
@@ -154,6 +155,8 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     task_max_failures: usize,
     /// Maximum number of failure attempts for stage-level retry before the stage is considered failed.
     stage_max_failures: usize,
+    /// See [`SchedulerConfig::adaptive_rules`].
+    adaptive_rules: Option<Arc<dyn AdaptiveRules>>,
 }
 
 /// Contains the execution graph and cached data to improve performance
@@ -223,6 +226,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             launcher: Arc::new(DefaultTaskLauncher::new(scheduler_endpoint)),
             task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
+            adaptive_rules: config.adaptive_rules.clone(),
         }
     }
 
@@ -243,6 +247,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             launcher,
             task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
+            adaptive_rules: config.adaptive_rules.clone(),
         }
     }
 
@@ -351,6 +356,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                             &ctx,
                             logical_plan,
                             queued_at,
+                            self.adaptive_rules.as_deref(),
                         )
                         .await?,
                     ) as ExecutionGraphBox
@@ -380,23 +386,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 }
             }
             SubmitPlan::Physical(physical_plan) => {
-                // AQE plans from the logical plan, so an already-built
-                // physical plan always uses the static planner, including when
-                // AQE is on (the default).
-                debug!("Using static query planner for physical-plan job submission");
-                let session_config = Arc::new(ctx.copied_config());
+                if session_config.ballista_adaptive_query_planner_enabled() {
+                    debug!(
+                        "Using adaptive query planner (AQE) for physical-plan job submission"
+                    );
+                    Box::new(AdaptiveExecutionGraph::try_new_from_physical(
+                        &self.scheduler_id,
+                        job_id,
+                        job_name,
+                        &ctx,
+                        physical_plan.clone(),
+                        queued_at,
+                        self.adaptive_rules.as_deref(),
+                    )?) as ExecutionGraphBox
+                } else {
+                    debug!("Using static query planner for physical-plan job submission");
+                    let session_config = Arc::new(ctx.copied_config());
 
-                Box::new(StaticExecutionGraph::new(
-                    &self.scheduler_id,
-                    job_id,
-                    job_name,
-                    &ctx.session_id(),
-                    physical_plan.clone(),
-                    queued_at,
-                    session_config,
-                    &mut planner,
-                    None,
-                )?) as ExecutionGraphBox
+                    Box::new(StaticExecutionGraph::new(
+                        &self.scheduler_id,
+                        job_id,
+                        job_name,
+                        &ctx.session_id(),
+                        physical_plan.clone(),
+                        queued_at,
+                        session_config,
+                        &mut planner,
+                        None,
+                    )?) as ExecutionGraphBox
+                }
             }
         };
         let string_plan =
@@ -438,9 +456,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         .await
     }
 
-    /// Submit an already-built physical plan for distributed execution. The physical
-    /// plan is planned with the static distributed planner; adaptive query planning
-    /// (AQE) is not available for this path.
+    /// Submit an already-built physical plan for distributed execution. The plan
+    /// goes through adaptive query planning (AQE) when
+    /// `ballista.planner.adaptive.enabled` is set, and through the static
+    /// distributed planner otherwise, like a logical submission.
     #[allow(clippy::too_many_arguments)]
     pub async fn submit_physical_plan(
         &self,
@@ -1528,9 +1547,16 @@ mod tests {
             .sort(vec![SortExpr::new(col("id"), false, false)])?
             .build()?;
         let job_id: JobId = "retired-task-refund".into();
-        let mut graph =
-            AdaptiveExecutionGraph::try_new("scheduler", &job_id, "", &ctx, &plan, 0)
-                .await?;
+        let mut graph = AdaptiveExecutionGraph::try_new(
+            "scheduler",
+            &job_id,
+            "",
+            &ctx,
+            &plan,
+            0,
+            None,
+        )
+        .await?;
         graph.revive();
         let graph: ExecutionGraphBox = Box::new(graph);
         let state = Arc::new(InMemoryJobState::new(

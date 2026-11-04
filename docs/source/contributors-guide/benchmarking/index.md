@@ -19,66 +19,103 @@
 
 # Benchmarking
 
-Current TPC-H **SF1000** results for Ballista, compared against vanilla
-**Spark 4.1.3** and **Spark 4.1.3 with Apache DataFusion Comet 1.1.0-rc2**,
-running on the same cluster shape. A **Trino 483** column is included for
-reference; it is not an apples-to-apples comparison (see
-[Trino configuration](trino.md)).
+TPC-H **SF1000** results on Kubernetes for Ballista in its default staged mode
+and in the opt-in pipelined mode, **DataFusion Distributed**, vanilla
+**Spark 4.1.3**, **Spark 4.1.3 with Apache DataFusion Comet 1.1.0-rc2** and
+**Trino 483**, all on the same cluster shape. The Trino and DataFusion
+Distributed columns are not apples-to-apples comparisons (see
+[Trino configuration](trino.md) and
+[DataFusion Distributed configuration](datafusion-distributed.md)).
+
+## Where the numbers come from
+
+- **Ballista and DataFusion Distributed** were run with the scripts in
+  [`benchmarks/cluster`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster)
+  in this repository, as they are, against the commits below. Anyone with a
+  Kubernetes cluster, the same data and the settings on these pages can repeat
+  them (see [Reproducing](#reproducing)).
+- **Spark, Spark + Comet and Trino** were run earlier, with proprietary scripts
+  that are not part of this repository. They used the same settings as the
+  scripts here, but their own phrasing of the queries (see
+  [Queries](environment.md#queries)), so these three columns cannot be
+  reproduced exactly from this repository, and differences between them and the
+  other columns come from the scripts as well as the engines.
 
 ## Versions under test
 
-| Engine   | Version                                                                                                                                                                                                                |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ballista | [`c76278cd`](https://github.com/apache/datafusion-ballista/commit/c76278cd48583504821ac4d71ea74b44e54ed4ea) (`main`, 2026-10-07), Cargo pkg `55.0.0`, DataFusion `55.1.0`                                              |
-| Spark    | `4.1.3` (`apache/spark:4.1.3` image, vanilla, no acceleration plugin)                                                                                                                                                  |
-| Comet    | [Apache DataFusion Comet](https://github.com/apache/datafusion-comet) `1.1.0-rc2` ([`992c806a`](https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa)) on the same Spark `4.1.3` |
-| Trino    | `483` (`trinodb/trino:483` image, Hive connector)                                                                                                                                                                      |
+| Engine                 | Version                                                                                                                                                                                                                |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ballista               | [`96b5ba93`](https://github.com/apache/datafusion-ballista/commit/96b5ba93463955c91baae703373961a876b30896), Cargo pkg `55.0.0`, DataFusion `55.2.0`                                                                   |
+| DataFusion Distributed | [`90350275`](https://github.com/datafusion-contrib/datafusion-distributed/commit/903502750b99839515aa8af9982f84f9c8c2ee5f), DataFusion `55`, with the memory-limit patch                                               |
+| Spark                  | `4.1.3` (`apache/spark:4.1.3` image, vanilla, no acceleration plugin)                                                                                                                                                  |
+| Comet                  | [Apache DataFusion Comet](https://github.com/apache/datafusion-comet) `1.1.0-rc2` ([`992c806a`](https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa)) on the same Spark `4.1.3` |
+| Trino                  | `483` (`trinodb/trino:483` image, Hive connector)                                                                                                                                                                      |
 
 ## Results
 
 **Times in seconds; lower is better.** Ballista, Spark, and Spark + Comet:
-mean of 2 iterations, including the cold first iteration. Trino: mean of 3
-iterations after an untimed warm-up run (see
-[Trino configuration](trino.md)).
+mean of 2 iterations, including the cold first iteration. Trino and DataFusion
+Distributed: mean of 3 iterations after an untimed warm-up run (see
+[Trino configuration](trino.md) and
+[DataFusion Distributed configuration](datafusion-distributed.md)). For
+Ballista and DataFusion Distributed every query returned the expected row
+count.
 
-|     Query | Ballista (s) | Spark 4.1.3 (s) | Spark 4.1.3 + Comet 1.1.0-rc2 (s) | Trino 483 (s) |
-| --------: | -----------: | --------------: | --------------------------------: | ------------: |
-|         1 |        14.07 |           71.45 |                             10.66 |          5.32 |
-|         2 |        25.81 |           37.98 |                             21.66 |         15.34 |
-|         3 |        17.22 |           30.61 |                             16.05 |         13.47 |
-|         4 |        15.31 |           23.86 |                              8.11 |          8.01 |
-|         5 |        46.88 |           57.39 |                             38.32 |         25.98 |
-|         6 |         1.59 |            1.73 |                              0.99 |          0.84 |
-|         7 |        37.26 |           25.34 |                             16.60 |         16.19 |
-|         8 |        20.13 |           58.17 |                             46.04 |         30.93 |
-|         9 |        35.94 |           74.90 |                             55.78 |         41.71 |
-|        10 |        43.36 |           35.31 |                             21.31 |         20.41 |
-|        11 |        15.01 |           31.66 |                             14.79 |          5.73 |
-|        12 |        10.49 |           13.24 |                              5.33 |          4.40 |
-|        13 |        11.05 |           22.73 |                             11.31 |         10.56 |
-|        14 |         5.54 |            7.25 |                              2.50 |          1.66 |
-|        15 |        10.58 |           22.45 |                             11.85 |          8.30 |
-|        16 |        12.78 |           24.34 |                              8.94 |          6.98 |
-|        17 |        20.74 |           81.36 |                             25.14 |         24.76 |
-|        18 |        45.63 |          134.11 |                             46.42 |         66.00 |
-|        19 |        14.59 |           13.27 |                              9.07 |          5.93 |
-|        20 |        14.46 |           16.08 |                              6.57 |          8.57 |
-|        21 |        75.74 |           98.04 |                             68.43 |         83.22 |
-|        22 |         8.25 |           16.90 |                              9.22 |          7.29 |
-| **Total** |   **502.43** |      **898.17** |                        **455.09** |    **411.62** |
+The two Ballista columns come from the same image, cluster and runner, one
+suite run each; they differ only in `ballista.execution.mode` (and the
+push-staged scheduling that pipelined mode requires). The other columns are
+from separate runs.
+
+|     Query | Ballista staged (s) | Ballista pipelined (s) | DataFusion Distributed (s) | Spark 4.1.3 (s) | Spark 4.1.3 + Comet 1.1.0-rc2 (s) | Trino 483 (s) |
+| --------: | ------------------: | ---------------------: | -------------------------: | --------------: | --------------------------------: | ------------: |
+|         1 |               15.49 |                  13.59 |                       7.85 |           71.45 |                             10.66 |          5.32 |
+|         2 |               34.93 |                  13.12 |                      21.29 |           37.98 |                             21.66 |         15.34 |
+|         3 |               19.48 |                   8.06 |                       8.85 |           30.61 |                             16.05 |         13.47 |
+|         4 |               12.32 |                   7.16 |                       6.10 |           23.86 |                              8.11 |          8.01 |
+|         5 |               42.91 |                  16.53 |                      18.89 |           57.39 |                             38.32 |         25.98 |
+|         6 |                2.26 |                   1.62 |                       1.47 |            1.73 |                              0.99 |          0.84 |
+|         7 |               36.06 |                  21.25 |                      19.31 |           25.34 |                             16.60 |         16.19 |
+|         8 |               20.94 |                  19.27 |                      23.87 |           58.17 |                             46.04 |         30.93 |
+|         9 |               34.85 |                  30.03 |                      35.92 |           74.90 |                             55.78 |         41.71 |
+|        10 |               44.66 |                  25.15 |                      19.93 |           35.31 |                             21.31 |         20.41 |
+|        11 |               19.33 |                   5.66 |                       7.47 |           31.66 |                             14.79 |          5.73 |
+|        12 |               10.87 |                   4.41 |                       4.40 |           13.24 |                              5.33 |          4.40 |
+|        13 |               11.17 |                   6.66 |                       6.38 |           22.73 |                             11.31 |         10.56 |
+|        14 |                7.18 |                   1.92 |                       2.53 |            7.25 |                              2.50 |          1.66 |
+|        15 |               11.51 |                   8.21 |                       7.68 |           22.45 |                             11.85 |          8.30 |
+|        16 |               12.17 |                   5.69 |                      76.41 |           24.34 |                              8.94 |          6.98 |
+|        17 |               25.50 |                  20.00 |                      22.06 |           81.36 |                             25.14 |         24.76 |
+|        18 |               61.02 |                  38.47 |                      34.84 |          134.11 |                             46.42 |         66.00 |
+|        19 |               12.20 |                   9.45 |                       8.26 |           13.27 |                              9.07 |          5.93 |
+|        20 |               17.38 |                   7.47 |                      17.77 |           16.08 |                              6.57 |          8.57 |
+|        21 |               67.92 |                  54.62 |                      39.06 |           98.04 |                             68.43 |         83.22 |
+|        22 |               10.52 |                   7.68 |                       5.51 |           16.90 |                              9.22 |          7.29 |
+| **Total** |          **530.70** |             **326.00** |                 **395.83** |      **898.17** |                        **455.09** |    **411.62** |
+
+**Staged** is the default: stages run one after another and exchange data
+through shuffle files, with adaptive query execution (AQE). **Pipelined**
+places every task of a job up front and streams record batches between stages
+over Arrow Flight, with no shuffle files and no AQE. See the
+[Ballista configuration](ballista.md) for the settings.
 
 ## Reproducing
 
 [`benchmarks/cluster`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster)
-has the scripts to run all four engines on your own Kubernetes cluster with
+has the scripts to run all five engines on your own Kubernetes cluster with
 the settings described on these pages. You provide the cluster, the data in
-S3, and the images, which the directory has Dockerfiles for.
+S3, and the images, which the directory has Dockerfiles for. The Ballista and
+DataFusion Distributed columns were produced with:
 
-The Ballista numbers above come from the `tpch` runner in this repository. The
-Spark, Spark + Comet, and Trino numbers were collected before these scripts
-were added, with a harness that used the same settings but its own phrasing of
-the queries (see [Queries](environment.md#queries)). The scripts run the
-queries in this repository on every engine.
+```sh
+cd benchmarks/cluster
+python3 run.py --engine ballista
+python3 run.py --engine ballista --ballista-config ballista.execution.mode=pipelined
+python3 run.py --engine datafusion-distributed
+```
+
+The scripts run the queries in this repository on every engine, so the Spark,
+Spark + Comet and Trino columns can be rerun with them too
+(`--engine spark`, `--engine comet`, `--engine trino`).
 
 ## Details
 
@@ -92,6 +129,7 @@ Ballista <ballista>
 Spark <spark>
 Spark + Comet <comet>
 Trino <trino>
+DataFusion Distributed <datafusion-distributed>
 ```
 
 ## Recording a new result set

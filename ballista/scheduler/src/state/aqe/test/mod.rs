@@ -15,16 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
+/// Rules a scheduler embedder adds to adaptive planning
+mod adaptive_rules;
 /// Test if stages can be added or removed
 mod alter_stages;
 /// Broadcast-threshold decisions over declared statistics
 mod broadcast_thresholds;
 /// Functional tests for the CoalescePartitionsRule end-to-end through the planner
 mod coalesce_rule;
+/// Stage column statistics carried onto the stage's exchange
+mod column_statistics;
 /// Job-failure lifecycle tests for the adaptive graph
 mod job_failure;
 /// covers join selection tests
 mod join_selection;
+/// Adaptive planning of a submitted physical plan
+mod physical_submission;
 /// Tests if plan is going to be split to stages correctly
 mod plan_to_stages;
 /// Regression tests for range-repartition planning end-to-end
@@ -50,7 +56,8 @@ use ballista_core::serde::scheduler::{
 use datafusion::arrow::array::{Int32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::TableProvider;
-use datafusion::common::Statistics;
+use datafusion::common::stats::Precision;
+use datafusion::common::{ColumnStatistics, Statistics};
 use datafusion::datasource::MemTable;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
@@ -109,6 +116,16 @@ impl AdaptivePlanner {
     /// The current physical plan.
     pub(super) fn current_plan(&self) -> &dyn ExecutionPlan {
         self.plan.as_ref()
+    }
+
+    /// Resolves a finished stage with its partitions alone, for tests that
+    /// don't exercise column statistics.
+    pub(super) fn finalise_stage_internal(
+        &mut self,
+        stage_id: usize,
+        partitions: Vec<Vec<PartitionLocation>>,
+    ) -> datafusion::common::Result<()> {
+        self.finalise_stage(stage_id, partitions, None)
     }
 }
 
@@ -179,6 +196,14 @@ pub(crate) fn mock_partitions_with_size(
         is_sort_shuffle: false,
     };
     vec![vec![location]]
+}
+
+/// Column statistics carrying only the given exact null counts.
+pub(crate) fn null_count_statistics(null_counts: &[usize]) -> Vec<ColumnStatistics> {
+    null_counts
+        .iter()
+        .map(|&n| ColumnStatistics::new_unknown().with_null_count(Precision::Exact(n)))
+        .collect()
 }
 
 pub(crate) fn mock_partitions_with_statistics_no_data() -> Vec<Vec<PartitionLocation>> {

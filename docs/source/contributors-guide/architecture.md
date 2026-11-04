@@ -210,7 +210,7 @@ Each executor will re-partition the output of the stage it is running so that it
 stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the [ShuffleWriterExec]
 and [ShuffleReaderExec] operators.
 
-The shuffle is _blocking_: a stage materializes its output to local storage, and today a downstream stage waits
+The shuffle is _staged_: a stage materializes its output to local storage, and today a downstream stage waits
 for the whole upstream stage to complete before it starts. Waiting on the whole stage is a property of the current
 scheduler rather than of the design — the output of a finished task is readable as soon as its files are closed,
 so a downstream stage could in principle start on partial input when the cluster has capacity to spare. See
@@ -267,6 +267,15 @@ There are two implementations, selected by configuration when a job is submitted
 
 Keeping the two graphs side by side lets the adaptive implementation mature without destabilizing the static
 path.
+
+The same selection applies to a job submitted as an already-built physical plan. The adaptive planner then
+skips logical planning and `EXPLAIN` handling, pins the plan's hash repartitions as stage boundaries
+(`PinSubmittedShufflesRule`, since the submitter placed them deliberately and DataFusion would otherwise
+re-derive them from operator requirements), and runs the same optimizer rules. The rules match DataFusion
+and Ballista operators by type and leave any other operator in place. An extension operator must declare
+what it needs from its input through `required_input_distribution`, as DataFusion re-derives
+`CoalescePartitionsExec` from that, and partition coalescing is skipped for a stage whose shuffles feed an
+operator the rule does not know.
 
 ### How re-optimization works
 
