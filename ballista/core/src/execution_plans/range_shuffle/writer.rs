@@ -99,6 +99,8 @@ pub struct RangeShuffleWriterExec {
     ordering: LexOrdering,
     /// Path to write output streams to
     work_dir: String,
+    /// Private-root lease acquired during construction, shared by clones.
+    _work_dir_owner_lease: Option<Arc<crate::work_dir_lifetime::WorkDirLease>>,
     /// Task id used as `file_id` in shuffle paths so files from different
     /// tasks (including retries) don't collide. Stamped by the executor's
     /// `create_query_stage_exec`.
@@ -121,6 +123,7 @@ impl Clone for RangeShuffleWriterExec {
             plan: self.plan.clone(),
             ordering: self.ordering.clone(),
             work_dir: self.work_dir.clone(),
+            _work_dir_owner_lease: self._work_dir_owner_lease.clone(),
             task_id: self.task_id,
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
@@ -174,12 +177,19 @@ impl RangeShuffleWriterExec {
             datafusion::physical_plan::execution_plan::EmissionType::Incremental,
             datafusion::physical_plan::execution_plan::Boundedness::Bounded,
         ));
+        let work_dir_owner_lease =
+            crate::work_dir_lifetime::lease_for_writer(std::path::Path::new(&work_dir))
+                .map_err(|_| {
+                    DataFusionError::Execution("executor workdir is sealed".into())
+                })?
+                .map(Arc::new);
         Ok(Self {
             job_id,
             stage_id,
             plan,
             ordering,
             work_dir,
+            _work_dir_owner_lease: work_dir_owner_lease,
             task_id: 0,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
@@ -460,6 +470,10 @@ impl ExecutionPlan for RangeShuffleWriterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        let coordinator_lease = crate::work_dir_lifetime::lease_for_writer(
+            std::path::Path::new(&self.work_dir),
+        )
+        .map_err(|_| DataFusionError::Execution("executor workdir is sealed".into()))?;
         let mut guard = self.state.lock().map_err(|_| {
             DataFusionError::Internal(
                 "RangeShuffleWriterExec state mutex poisoned".to_owned(),
@@ -474,6 +488,7 @@ impl ExecutionPlan for RangeShuffleWriterExec {
             |senders| {
                 let writer = self.clone();
                 tokio::spawn(async move {
+                    let _coordinator_lease = coordinator_lease;
                     run_coordinator(writer.execute_shuffle_write(context), senders).await;
                 });
             },

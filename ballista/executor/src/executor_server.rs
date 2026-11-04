@@ -766,7 +766,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     debug!("Received task {:?}", task_identity);
 
                     let server = executor_server.clone();
+                    let queued_work = match server.executor.begin_queued_work() {
+                        Ok(lease) => lease,
+                        Err(_) => {
+                            warn!(
+                                "Rejecting a late task after executor workdir shutdown"
+                            );
+                            continue;
+                        }
+                    };
                     dedicated_executor.spawn(async move {
+                        let _queued_work = queued_work;
                         server.run_task(task_identity.clone(), curator_task).await;
                     });
                 } else {

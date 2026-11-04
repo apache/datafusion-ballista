@@ -423,7 +423,9 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         &executor.work_dir,
         task_context.session_config(),
     )?;
+    let queued_work = executor.begin_queued_work()?;
     dedicated_executor.spawn(async move {
+        let _queued_work = queued_work;
         use std::panic::AssertUnwindSafe;
         let key = TaskKey {
             job_id: job_id.clone(),

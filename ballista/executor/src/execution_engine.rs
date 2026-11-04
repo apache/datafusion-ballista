@@ -300,12 +300,28 @@ pub enum ShuffleWriterVariant {
 pub struct DefaultQueryStageExec {
     /// The underlying shuffle writer execution plan.
     shuffle_writer: ShuffleWriterVariant,
+    /// Registration obtained while the real stage is still reachable.
+    plan_lifetime_lease: Result<
+        Option<ballista_core::work_dir_lifetime::WorkDirLease>,
+        ballista_core::work_dir_lifetime::WorkDirLeaseError,
+    >,
 }
 
 impl DefaultQueryStageExec {
     /// Creates a new DefaultQueryStageExec wrapping the given shuffle writer.
     pub fn new(shuffle_writer: ShuffleWriterVariant) -> Self {
-        Self { shuffle_writer }
+        let work_dir = match &shuffle_writer {
+            ShuffleWriterVariant::Passthrough(w) => w.work_dir(),
+            ShuffleWriterVariant::Range(w) => w.work_dir(),
+            ShuffleWriterVariant::Sort(w) => w.work_dir(),
+        };
+        let plan_lifetime_lease = ballista_core::work_dir_lifetime::lease_for_writer(
+            std::path::Path::new(work_dir),
+        );
+        Self {
+            shuffle_writer,
+            plan_lifetime_lease,
+        }
     }
 }
 
@@ -365,6 +381,11 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         task_id: usize,
         context: Arc<TaskContext>,
     ) -> Result<Vec<ShuffleWritePartition>> {
+        if self.plan_lifetime_lease.is_err() {
+            return Err(DataFusionError::Execution(
+                "executor workdir is sealed".into(),
+            ));
+        }
         let (plan_arc, is_sort_shuffle): (Arc<dyn ExecutionPlan>, bool) =
             match &self.shuffle_writer {
                 ShuffleWriterVariant::Passthrough(writer) => {

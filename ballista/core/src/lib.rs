@@ -112,6 +112,8 @@ pub mod test_utils;
 pub mod utils;
 /// Version checks between Ballista clients and schedulers.
 pub mod version;
+/// Lifetime accounting for executor-owned shuffle work directories.
+pub mod work_dir_lifetime;
 
 ///
 /// [RuntimeProducer] is a factory which creates runtime [RuntimeEnv]
