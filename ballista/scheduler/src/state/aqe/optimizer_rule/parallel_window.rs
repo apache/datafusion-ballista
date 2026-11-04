@@ -67,6 +67,12 @@
 //! requirement is dropped: the wrapper flips that declaration to
 //! `UnspecifiedDistribution`, and `EnforceDistribution` doesn't re-add one.
 //!
+//! The rewrite leaves K partitions where BWAG left one, so a parent that
+//! required `SinglePartition` or a key partitioning of BWAG's output would no
+//! longer be satisfied, and DataFusion rejects the final plan for it. The rule
+//! repairs those parents itself: a merge for `SinglePartition` (preserving the
+//! window order when the parent depends on it), a hash repartition otherwise.
+//!
 //! Both `RangeFilterExec` operators are planted with `cuts=None`. The
 //! scheduler-side `resolve_range_filter_cuts` walker fills them in once
 //! stage-0's `RuntimeStatsExec` reports have been merged into cuts.
@@ -85,12 +91,16 @@ use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::logical_expr::{WindowFrameBound, WindowFrameUnits};
 use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+use datafusion::physical_expr::{Distribution, LexOrdering, PhysicalSortExpr};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::windows::BoundedWindowAggExec;
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions,
+};
 use datafusion::scalar::ScalarValue;
 use log::debug;
 
@@ -124,7 +134,7 @@ impl PhysicalOptimizerRule for ParallelWindowRule {
         let output_partitions = config.execution.target_partitions.max(2);
         plan.transform_up(|node| match maybe_rewrite_bwag(&node, output_partitions)? {
             Some(rewritten) => Ok(Transformed::yes(rewritten)),
-            None => Ok(Transformed::no(node)),
+            None => repair_parent_distribution(node, output_partitions),
         })
         .map(|t| t.data)
     }
@@ -135,6 +145,98 @@ impl PhysicalOptimizerRule for ParallelWindowRule {
 
     fn schema_check(&self) -> bool {
         true
+    }
+}
+
+/// Restores the distribution `node` requires of a child that carries the
+/// output of a window [`maybe_rewrite_bwag`] just rewrote.
+///
+/// The rewrite turns BWAG's single output partition into `partitions` of them.
+/// Whatever sits above was planned against the single partition, so it may now
+/// require a distribution its child no longer has.
+fn repair_parent_distribution(
+    node: Arc<dyn ExecutionPlan>,
+    partitions: usize,
+) -> datafusion::common::Result<Transformed<Arc<dyn ExecutionPlan>>> {
+    let required = node.input_distribution_requirements();
+    let orderings = node.required_input_ordering();
+    let mut changed = false;
+    let mut children = Vec::new();
+    for (idx, child) in node.children().into_iter().enumerate() {
+        let child = Arc::clone(child);
+        let Some(distribution) = required.child_distribution(idx) else {
+            children.push(child);
+            continue;
+        };
+        if !carries_rewrite_output(&child)
+            || child
+                .properties()
+                .output_partitioning()
+                .satisfaction(
+                    distribution,
+                    child.properties().equivalence_properties(),
+                    false,
+                )
+                .is_satisfied()
+        {
+            children.push(child);
+            continue;
+        }
+        changed = true;
+        children.push(match distribution {
+            Distribution::SinglePartition => {
+                // The partitions are range-disjoint and each is sorted, so a
+                // merge on the child's own ordering yields the global order a
+                // parent may rely on. A parent that does not need ordering
+                // gets the cheaper coalesce.
+                let ordering = child
+                    .properties()
+                    .output_ordering()
+                    .cloned()
+                    .filter(|_| orderings[idx].is_some());
+                match ordering {
+                    Some(ordering) => {
+                        Arc::new(SortPreservingMergeExec::new(ordering, child))
+                            as Arc<dyn ExecutionPlan>
+                    }
+                    None => Arc::new(CoalescePartitionsExec::new(child)),
+                }
+            }
+            other => Arc::new(RepartitionExec::try_new(
+                child,
+                other.clone().create_partitioning(partitions),
+            )?),
+        });
+    }
+    if !changed {
+        return Ok(Transformed::no(node));
+    }
+    Ok(Transformed::yes(node.replace_children(
+        children,
+        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+    )?))
+}
+
+/// True when `plan` is the output of [`maybe_rewrite_bwag`], or a chain of
+/// single-input operators over it that keep its partitioning.
+fn carries_rewrite_output(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    let mut node = Arc::clone(plan);
+    loop {
+        let children = node.children();
+        let [input] = children.as_slice() else {
+            return false;
+        };
+        if node.is::<RangeFilterExec>() && input.is::<PartitionedBoundedWindowAggExec>() {
+            return true;
+        }
+        if input.properties().output_partitioning().partition_count()
+            != node.properties().output_partitioning().partition_count()
+        {
+            return false;
+        }
+        let input = Arc::clone(input);
+        drop(children);
+        node = input;
     }
 }
 
@@ -335,10 +437,31 @@ fn maybe_rewrite_bwag(
     // per-partition execute() runs each of the K sub-ranges independently.
     // See execution_plans::partitioned_bounded_window_agg for what makes
     // this safe (range-repartition upstream + halo).
+    //
+    // The sketch has no NULL slot, so the key arrived `NULLS LAST` whatever
+    // the window asks for. A `NULLS FIRST` window gets a local sort to its own
+    // placement: BWAG's range search reads the input in the order it declares,
+    // and DataFusion rejects a plan whose declared order the input lacks.
+    let window_input: Arc<dyn ExecutionPlan> = if order.options.nulls_first {
+        let window_order = LexOrdering::new(vec![PhysicalSortExpr {
+            expr: order.expr.clone(),
+            options: order.options,
+        }])
+        .ok_or_else(|| {
+            datafusion::common::DataFusionError::Internal(
+                "ParallelWindowRule: could not build LexOrdering from ORDER BY".into(),
+            )
+        })?;
+        Arc::new(
+            SortExec::new(window_order, wide_filter).with_preserve_partitioning(true),
+        )
+    } else {
+        wide_filter
+    };
     let partitioned_bwag: Arc<dyn ExecutionPlan> =
         Arc::new(PartitionedBoundedWindowAggExec::try_new(
             window.window_expr().to_vec(),
-            wide_filter,
+            window_input,
         )?);
     // Narrow filter above BWAG drops the halo rows the wide filter let in
     // for BWAG's frame-context. `halo_lo == halo_hi == 0.0` collapses the
@@ -349,7 +472,15 @@ fn maybe_rewrite_bwag(
             sort_expr.expr.clone(),
             ScalarValue::Float64(Some(0.0)),
             ScalarValue::Float64(Some(0.0)),
-            Some(InputOrder::Ordered(sort_expr.options)),
+            // The NULL run sits in the last partition, where the wide filter
+            // left it, even when the window's own order puts it first. An
+            // `Ordered` input ties the NULL run to the end its order names, so
+            // a `NULLS FIRST` window declares an unordered one instead.
+            Some(if order.options.nulls_first {
+                InputOrder::Unordered { nulls_first: false }
+            } else {
+                InputOrder::Ordered(sort_expr.options)
+            }),
         )?);
 
     debug!(
@@ -562,7 +693,7 @@ mod tests {
     async fn no_rewrite_on_a_key_without_an_encoding() -> datafusion::common::Result<()> {
         let plan = plan(
             "SELECT sum(v2) OVER (ORDER BY name \
-                RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) \
+                RANGE BETWEEN CURRENT ROW AND CURRENT ROW) \
              FROM large",
         )
         .await?;

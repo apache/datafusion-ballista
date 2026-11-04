@@ -91,7 +91,7 @@ impl TableProvider for StatsTable {
     async fn scan(
         &self,
         _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
+        projection: Option<&[usize]>,
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -116,7 +116,7 @@ impl StatsExec {
         schema: SchemaRef,
         statistics: Statistics,
         partitions: usize,
-        projection: Option<&Vec<usize>>,
+        projection: Option<&[usize]>,
     ) -> Result<Self> {
         let schema = project_schema(&schema, projection)?;
 

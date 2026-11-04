@@ -448,6 +448,7 @@ mod tests {
 
     use ballista_core::assert_plan;
     use ballista_core::config::BallistaConfig;
+    use datafusion::physical_optimizer::ensure_requirements::EnsureRequirements;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::{
         arrow::{
@@ -597,7 +598,7 @@ mod tests {
             SessionConfig::new().set_bool("datafusion.optimizer.prefer_hash_join", false);
         let state = SessionStateBuilder::new()
             .with_config(config)
-            .with_physical_optimizer_rules(vec![])
+            .with_physical_optimizer_rules(vec![Arc::new(EnsureRequirements::default())])
             .build();
 
         let lp = ctx
@@ -611,22 +612,26 @@ mod tests {
             .await
             .unwrap();
 
-        assert_plan!(plan.as_ref(), @ r"
+        assert_plan!(plan.as_ref(), @ "
         ProjectionExec: expr=[id@0 as id, val@2 as val]
           SortMergeJoinExec: join_type=Inner, on=[(id@0, id@0)]
-            DataSourceExec: partitions=1, partition_sizes=[1]
-            DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
         ");
 
         let optimized = DelayJoinSelectionRule::default()
             .optimize(plan, &ConfigOptions::default())
             .unwrap();
 
-        assert_plan!(optimized.as_ref(), @ r"
+        assert_plan!(optimized.as_ref(), @ "
         ProjectionExec: expr=[id@0 as id, val@2 as val]
           DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
-            DataSourceExec: partitions=1, partition_sizes=[1]
-            DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
         ");
     }
 
@@ -637,7 +642,7 @@ mod tests {
             SessionConfig::new().set_bool("datafusion.optimizer.prefer_hash_join", false);
         let state = SessionStateBuilder::new()
             .with_config(config.clone())
-            .with_physical_optimizer_rules(vec![])
+            .with_physical_optimizer_rules(vec![Arc::new(EnsureRequirements::default())])
             .build();
         let lp = ctx
             .sql("SELECT t1.id, t2.val FROM t1 JOIN t2 ON t1.id = t2.id")
@@ -654,22 +659,26 @@ mod tests {
             .optimize(plan, config.options())
             .unwrap();
 
-        assert_plan!(dynamic_plan.as_ref(), @ r"
+        assert_plan!(dynamic_plan.as_ref(), @ "
         ProjectionExec: expr=[id@0 as id, val@2 as val]
           DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
-            DataSourceExec: partitions=1, partition_sizes=[1]
-            DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
         ");
 
         let resolved = SelectJoinRule::default()
             .optimize(dynamic_plan, config.options())
             .unwrap();
 
-        assert_plan!(resolved.as_ref(), @ r"
+        assert_plan!(resolved.as_ref(), @ "
         ProjectionExec: expr=[id@0 as id, val@2 as val]
           HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)]
-            DataSourceExec: partitions=1, partition_sizes=[1]
-            DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
         ");
     }
 
@@ -678,9 +687,7 @@ mod tests {
         let ctx = make_ctx_3tables();
         // Pinned: the staged exchange is hash-partitioned to `target_partitions`,
         // whose default follows the machine's core count.
-        let config = SessionConfig::new()
-            .with_target_partitions(4)
-            .set_bool("datafusion.optimizer.prefer_hash_join", false);
+        let config = SessionConfig::new().with_target_partitions(4);
 
         let state = SessionStateBuilder::new()
             .with_physical_optimizer_rules(vec![])

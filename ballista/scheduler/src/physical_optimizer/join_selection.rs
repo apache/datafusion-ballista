@@ -781,7 +781,7 @@ mod test {
     }
 
     #[test]
-    fn partitioned_null_aware_anti_join_is_not_swapped() {
+    fn null_aware_anti_join_is_not_swapped() {
         use datafusion::{
             common::NullEquality,
             physical_optimizer::PhysicalOptimizerRule,
@@ -793,7 +793,8 @@ mod test {
         // The large left and small right sides would normally be swapped by
         // statistical join selection. Keep this rule aligned with upstream
         // DataFusion: a null-aware anti join retains both its orientation and
-        // its existing partition mode. Distributed lowering happens later.
+        // its existing partition mode. DataFusion only accepts null-aware
+        // joins in `CollectLeft` mode.
         let (big, small) = create_big_and_small();
         let join = Arc::new(
             HashJoinExec::try_new(
@@ -806,7 +807,7 @@ mod test {
                 None,
                 &JoinType::LeftAnti,
                 None,
-                PartitionMode::Partitioned,
+                PartitionMode::CollectLeft,
                 NullEquality::NullEqualsNothing,
                 true,
             )
@@ -821,7 +822,7 @@ mod test {
             .expect("null-aware join should remain a HashJoinExec");
 
         assert_eq!(*hash_join.join_type(), JoinType::LeftAnti);
-        assert_eq!(*hash_join.partition_mode(), PartitionMode::Partitioned);
+        assert_eq!(*hash_join.partition_mode(), PartitionMode::CollectLeft);
         assert!(hash_join.null_aware);
     }
 
@@ -881,7 +882,7 @@ mod test {
                 None,
                 &JoinType::LeftAnti,
                 None,
-                PartitionMode::Partitioned,
+                PartitionMode::CollectLeft,
                 NullEquality::NullEqualsNothing,
                 true,
             )

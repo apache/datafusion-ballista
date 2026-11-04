@@ -1532,16 +1532,15 @@ order by
 
         // Stage 0 holds the join, still a SortMergeJoinExec over sorted inputs
         // (no HashJoinExec, no broadcast UnresolvedShuffleExec).
-        assert_plan!(stages[0].as_ref(), @r"
+        assert_plan!(stages[0].as_ref(), @"
         ShuffleWriterExec: partitioning: RoundRobinBatch(2)
           AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
             RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
-              ProjectionExec: expr=[]
-                SortMergeJoinExec: join_type=Inner, on=[(k@0, k@0)]
-                  SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
-                    DataSourceExec: partitions=1, partition_sizes=[1]
-                  SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
-                    DataSourceExec: partitions=1, partition_sizes=[1]
+              SortMergeJoinExec: join_type=Inner, on=[(k@0, k@0)], projection=[]
+                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
+                  DataSourceExec: partitions=1, partition_sizes=[1]
+                SortExec: expr=[k@0 ASC], preserve_partitioning=[false]
+                  DataSourceExec: partitions=1, partition_sizes=[1]
         ");
 
         Ok(())

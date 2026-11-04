@@ -629,7 +629,7 @@ impl arrow_flight::flight_service_server::FlightService for TestFlightService {
     ) -> Result<Response<Self::DoGetStream>, Status> {
         match &self.response {
             Ok(batches) => {
-                let data = batches_to_flight_data(&schema(), batches.clone())
+                let data = batches_to_flight_data(&schema(), batches)
                     .map_err(|e| Status::internal(e.to_string()))?;
                 Ok(Response::new(Box::pin(futures::stream::iter(
                     data.into_iter().map(Ok),

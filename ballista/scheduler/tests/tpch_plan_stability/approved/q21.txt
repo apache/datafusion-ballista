@@ -9,12 +9,11 @@ SortShuffleWriterExec: partitioning=Hash([l_suppkey@1], 16)
 
 === Stage 3 ===
 SortShuffleWriterExec: partitioning=Hash([l_orderkey@2], 16)
-  ProjectionExec: expr=[s_name@1 as s_name, s_nationkey@2 as s_nationkey, l_orderkey@3 as l_orderkey, l_suppkey@4 as l_suppkey]
-    SortMergeJoinExec: join_type=Inner, on=[(s_suppkey@0, l_suppkey@1)]
-      SortExec: expr=[s_suppkey@0 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=1, partitioning: Hash([s_suppkey@0], 16)
-      SortExec: expr=[l_suppkey@1 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=2, partitioning: Hash([l_suppkey@1], 16)
+  SortMergeJoinExec: join_type=Inner, on=[(s_suppkey@0, l_suppkey@1)], projection=[s_name@1, s_nationkey@2, l_orderkey@3, l_suppkey@4]
+    SortExec: expr=[s_suppkey@0 ASC], preserve_partitioning=[true]
+      UnresolvedShuffleExec: stage=1, partitioning: Hash([s_suppkey@0], 16)
+    SortExec: expr=[l_suppkey@1 ASC], preserve_partitioning=[true]
+      UnresolvedShuffleExec: stage=2, partitioning: Hash([l_suppkey@1], 16)
 
 === Stage 4 ===
 SortShuffleWriterExec: partitioning=Hash([o_orderkey@0], 16)
@@ -23,12 +22,11 @@ SortShuffleWriterExec: partitioning=Hash([o_orderkey@0], 16)
 
 === Stage 5 ===
 SortShuffleWriterExec: partitioning=Hash([s_nationkey@1], 16)
-  ProjectionExec: expr=[s_name@0 as s_name, s_nationkey@1 as s_nationkey, l_orderkey@2 as l_orderkey, l_suppkey@3 as l_suppkey]
-    SortMergeJoinExec: join_type=Inner, on=[(l_orderkey@2, o_orderkey@0)]
-      SortExec: expr=[l_orderkey@2 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=3, partitioning: Hash([l_orderkey@2], 16)
-      SortExec: expr=[o_orderkey@0 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=4, partitioning: Hash([o_orderkey@0], 16)
+  SortMergeJoinExec: join_type=Inner, on=[(l_orderkey@2, o_orderkey@0)], projection=[s_name@0, s_nationkey@1, l_orderkey@2, l_suppkey@3]
+    SortExec: expr=[l_orderkey@2 ASC], preserve_partitioning=[true]
+      UnresolvedShuffleExec: stage=3, partitioning: Hash([l_orderkey@2], 16)
+    SortExec: expr=[o_orderkey@0 ASC], preserve_partitioning=[true]
+      UnresolvedShuffleExec: stage=4, partitioning: Hash([o_orderkey@0], 16)
 
 === Stage 6 ===
 SortShuffleWriterExec: partitioning=Hash([n_nationkey@0], 16)
@@ -37,12 +35,11 @@ SortShuffleWriterExec: partitioning=Hash([n_nationkey@0], 16)
 
 === Stage 7 ===
 SortShuffleWriterExec: partitioning=Hash([l_orderkey@1], 16)
-  ProjectionExec: expr=[s_name@0 as s_name, l_orderkey@2 as l_orderkey, l_suppkey@3 as l_suppkey]
-    SortMergeJoinExec: join_type=Inner, on=[(s_nationkey@1, n_nationkey@0)]
-      SortExec: expr=[s_nationkey@1 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=5, partitioning: Hash([s_nationkey@1], 16)
-      SortExec: expr=[n_nationkey@0 ASC], preserve_partitioning=[true]
-        UnresolvedShuffleExec: stage=6, partitioning: Hash([n_nationkey@0], 16)
+  SortMergeJoinExec: join_type=Inner, on=[(s_nationkey@1, n_nationkey@0)], projection=[s_name@0, l_orderkey@2, l_suppkey@3]
+    SortExec: expr=[s_nationkey@1 ASC], preserve_partitioning=[true]
+      UnresolvedShuffleExec: stage=5, partitioning: Hash([s_nationkey@1], 16)
+    SortExec: expr=[n_nationkey@0 ASC], preserve_partitioning=[true]
+      UnresolvedShuffleExec: stage=6, partitioning: Hash([n_nationkey@0], 16)
 
 === Stage 8 ===
 SortShuffleWriterExec: partitioning=Hash([l_orderkey@0], 16)
@@ -56,15 +53,14 @@ SortShuffleWriterExec: partitioning=Hash([l_orderkey@0], 16)
 === Stage 10 ===
 SortShuffleWriterExec: partitioning=Hash([s_name@0], 16)
   AggregateExec: mode=Partial, gby=[s_name@0 as s_name], aggr=[count(Int64(1))]
-    ProjectionExec: expr=[s_name@0 as s_name]
-      SortMergeJoinExec: join_type=LeftAnti, on=[(l_orderkey@1, l_orderkey@0)], filter=l_suppkey@1 != l_suppkey@0
-        SortMergeJoinExec: join_type=LeftSemi, on=[(l_orderkey@1, l_orderkey@0)], filter=l_suppkey@1 != l_suppkey@0
-          SortExec: expr=[l_orderkey@1 ASC], preserve_partitioning=[true]
-            UnresolvedShuffleExec: stage=7, partitioning: Hash([l_orderkey@1], 16)
-          SortExec: expr=[l_orderkey@0 ASC], preserve_partitioning=[true]
-            UnresolvedShuffleExec: stage=8, partitioning: Hash([l_orderkey@0], 16)
+    SortMergeJoinExec: join_type=LeftAnti, on=[(l_orderkey@1, l_orderkey@0)], filter=l_suppkey@1 != l_suppkey@0, projection=[s_name@0]
+      SortMergeJoinExec: join_type=LeftSemi, on=[(l_orderkey@1, l_orderkey@0)], filter=l_suppkey@1 != l_suppkey@0
+        SortExec: expr=[l_orderkey@1 ASC], preserve_partitioning=[true]
+          UnresolvedShuffleExec: stage=7, partitioning: Hash([l_orderkey@1], 16)
         SortExec: expr=[l_orderkey@0 ASC], preserve_partitioning=[true]
-          UnresolvedShuffleExec: stage=9, partitioning: Hash([l_orderkey@0], 16)
+          UnresolvedShuffleExec: stage=8, partitioning: Hash([l_orderkey@0], 16)
+      SortExec: expr=[l_orderkey@0 ASC], preserve_partitioning=[true]
+        UnresolvedShuffleExec: stage=9, partitioning: Hash([l_orderkey@0], 16)
 
 === Stage 11 ===
 ShuffleWriterExec: partitioning: Hash([s_name@0], 16)

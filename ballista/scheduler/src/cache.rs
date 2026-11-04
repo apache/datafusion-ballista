@@ -282,7 +282,7 @@ impl TableProvider for CacheReadTable {
     async fn scan(
         &self,
         _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
+        projection: Option<&[usize]>,
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
@@ -293,7 +293,7 @@ impl TableProvider for CacheReadTable {
             Partitioning::UnknownPartitioning(self.locations.len()),
         )?;
         let columns = projection
-            .cloned()
+            .map(<[usize]>::to_vec)
             .unwrap_or_else(|| (0..self.schema.fields().len()).collect());
         let renamed = columns.into_iter().map(|i| ProjectionExpr {
             expr: Arc::new(PhysicalColumn::new(self.written.field(i).name(), i)),
