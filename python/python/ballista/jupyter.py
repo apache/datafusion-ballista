@@ -541,9 +541,10 @@ def explain_visual(df: DataFrame, analyze: bool = False) -> ExecutionPlanVisuali
 
     Args:
         df: DataFrame to visualize.
-        analyze: Only labels the visualization, it does not run the query or
-            add runtime statistics. Use ``df.explain(analyze=True)`` for
-            runtime statistics.
+        analyze: Deprecated. It only labels the visualization; it does not
+            run the query or add runtime statistics, and passing ``True``
+            emits a ``DeprecationWarning``. Use ``df.explain(analyze=True)``
+            for runtime statistics.
 
     Returns:
         ExecutionPlanVisualization: An object that renders as SVG in Jupyter.
@@ -551,9 +552,17 @@ def explain_visual(df: DataFrame, analyze: bool = False) -> ExecutionPlanVisuali
     Example:
         >>> df = ctx.sql("SELECT * FROM orders WHERE amount > 100")
         >>> explain_visual(df)  # Displays SVG in notebook
-        >>> viz = explain_visual(df, analyze=True)
+        >>> viz = explain_visual(df)
         >>> viz.save("plan.svg")  # Save to file
     """
+    if analyze:
+        warnings.warn(
+            "explain_visual(analyze=True) is deprecated: it does not run the "
+            "query or show runtime statistics. Use df.explain(analyze=True) "
+            "for runtime statistics.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     # Get the execution plan as a string representation
     # Note: explain() prints but doesn't return a string, so we use logical_plan()
     try:
