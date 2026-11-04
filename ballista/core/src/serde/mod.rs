@@ -55,19 +55,20 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{convert::TryInto, io::Cursor};
 
-use crate::execution_plans::sort_shuffle::SortShuffleConfig;
+use crate::execution_plans::sort_shuffle::{ShuffleRouting, SortShuffleConfig};
 use crate::execution_plans::{
     BufferExec, BufferMode, ChaosExec, CoalescePlan, FinalizedPartitionState, InputOrder,
-    OrderedRangeRepartitionExec, PartitionGroup, PartitionedBoundedWindowAggExec,
-    PerPartitionFilterExec, PipelinedShuffleReaderExec, PipelinedShuffleWriterExec,
-    PrefixMergeExec, RangeFilterExec, RangeShuffleReaderExec, RangeShuffleWriterExec,
-    RuntimeFilterApplyExec, RuntimeFilterBuildExec, RuntimeStatsExec, ScalarOp,
-    ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
-    UnorderedRangeRepartitionExec, UnresolvedShuffleExec, WindowApply,
+    OrderedRangeRepartitionExec, PartitionGroup, PartitionIdRepartitionExec,
+    PartitionedBoundedWindowAggExec, PerPartitionFilterExec, PipelinedShuffleReaderExec,
+    PipelinedShuffleWriterExec, PrefixMergeExec, RangeFilterExec, RangeShuffleReaderExec,
+    RangeShuffleWriterExec, RuntimeFilterApplyExec, RuntimeFilterBuildExec,
+    RuntimeStatsExec, ScalarOp, ShuffleReaderExec, ShuffleWriterExec,
+    SortShuffleWriterExec, UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
+    WindowApply,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
-    ballista_physical_plan_node::PhysicalPlanType,
+    ballista_physical_plan_node::PhysicalPlanType, sort_shuffle_writer_exec_node,
 };
 use crate::serde::scheduler::PartitionLocation;
 use datafusion::arrow::compute::SortOptions;
@@ -662,18 +663,59 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             PhysicalPlanType::SortShuffleWriter(sort_shuffle_writer) => {
                 let input = inputs[0].clone();
 
-                let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
-                    sort_shuffle_writer.output_partitioning.as_ref(),
-                    &decode_ctx,
-                    input.schema().as_ref(),
-                    &converter,
-                )?;
-
-                let partitioning = shuffle_output_partitioning.ok_or_else(|| {
-                    DataFusionError::Internal(
-                        "SortShuffleWriterExec requires hash partitioning".to_string(),
-                    )
-                })?;
+                let routing = match &sort_shuffle_writer.routing {
+                    Some(sort_shuffle_writer_exec_node::Routing::OutputPartitioning(
+                        hash,
+                    )) => {
+                        let Some(Partitioning::Hash(exprs, partition_count)) =
+                            parse_protobuf_hash_partitioning(
+                                Some(hash),
+                                &decode_ctx,
+                                input.schema().as_ref(),
+                                &converter,
+                            )?
+                        else {
+                            return Err(DataFusionError::Internal(
+                                "SortShuffleWriterExec requires hash partitioning"
+                                    .to_string(),
+                            ));
+                        };
+                        ShuffleRouting::Hash {
+                            exprs,
+                            partition_count,
+                        }
+                    }
+                    // A range scheme travels in the general `partitioning`
+                    // field; hash stays in `output_partitioning`.
+                    Some(sort_shuffle_writer_exec_node::Routing::Partitioning(
+                        partitioning,
+                    )) => {
+                        let partitioning = parse_protobuf_partitioning(
+                            Some(partitioning),
+                            &decode_ctx,
+                            input.schema().as_ref(),
+                            &converter,
+                        )?
+                        .ok_or_else(|| {
+                            DataFusionError::Internal(
+                                "SortShuffleWriterExec requires hash or range partitioning"
+                                    .to_string(),
+                            )
+                        })?;
+                        ShuffleRouting::try_from(partitioning)?
+                    }
+                    Some(sort_shuffle_writer_exec_node::Routing::PartitionIdRouting(
+                        routing,
+                    )) => ShuffleRouting::PartitionId {
+                        column: routing.column as usize,
+                        partition_count: routing.partition_count as usize,
+                    },
+                    None => {
+                        return Err(DataFusionError::Internal(
+                            "SortShuffleWriterExec has no routing".to_string(),
+                        ));
+                    }
+                };
 
                 let batch_size = if sort_shuffle_writer.batch_size > 0 {
                     sort_shuffle_writer.batch_size as usize
@@ -689,12 +731,12 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     config = config.with_memory_limit_per_task_bytes(bytes as usize);
                 }
 
-                Ok(Arc::new(SortShuffleWriterExec::try_new(
+                Ok(Arc::new(SortShuffleWriterExec::try_new_with_routing(
                     sort_shuffle_writer.job_id.clone().into(),
                     sort_shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // executor will fill this in
-                    partitioning,
+                    routing,
                     config,
                 )?))
             }
@@ -1038,6 +1080,19 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     node.output_partitions as usize,
                 )?))
             }
+            PhysicalPlanType::PartitionIdRepartition(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "PartitionIdRepartitionExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                Ok(Arc::new(PartitionIdRepartitionExec::try_new(
+                    input.clone(),
+                    node.partition_id_column as usize,
+                    node.partition_count as usize,
+                )?))
+            }
             PhysicalPlanType::PerPartitionFilter(node) => {
                 let [input] = inputs else {
                     return Err(DataFusionError::Internal(format!(
@@ -1226,19 +1281,38 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             Ok(())
         } else if let Some(exec) = node.downcast_ref::<SortShuffleWriterExec>() {
-            let output_partitioning = match exec.shuffle_output_partitioning() {
-                Partitioning::Hash(exprs, partition_count) => {
-                    Some(serialize_hash_partitioning(
+            // Hash keeps its own field so a hash plan reads the same as before
+            // range support; a range scheme goes in the general one.
+            let routing = match exec.routing() {
+                ShuffleRouting::Hash {
+                    exprs,
+                    partition_count,
+                } => sort_shuffle_writer_exec_node::Routing::OutputPartitioning(
+                    serialize_hash_partitioning(
                         exprs,
                         *partition_count,
                         self.default_codec.as_ref(),
-                    )?)
+                    )?,
+                ),
+                ShuffleRouting::Range(range) => {
+                    let converter = DefaultPhysicalProtoConverter {};
+                    sort_shuffle_writer_exec_node::Routing::Partitioning(
+                        serialize_partitioning(
+                            &Partitioning::Range(range.clone()),
+                            self.default_codec.as_ref(),
+                            &converter,
+                        )?,
+                    )
                 }
-                other => {
-                    return Err(DataFusionError::Internal(format!(
-                        "SortShuffleWriterExec requires Hash partitioning, got: {other:?}"
-                    )));
-                }
+                ShuffleRouting::PartitionId {
+                    column,
+                    partition_count,
+                } => sort_shuffle_writer_exec_node::Routing::PartitionIdRouting(
+                    protobuf::PartitionIdRouting {
+                        column: *column as u32,
+                        partition_count: *partition_count as u32,
+                    },
+                ),
             };
 
             let config = exec.config();
@@ -1248,7 +1322,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         job_id: exec.job_id().to_string(),
                         stage_id: exec.stage_id() as u32,
                         input: None,
-                        output_partitioning,
+                        routing: Some(routing),
                         batch_size: config.batch_size as u64,
                         memory_limit_per_task_bytes: Some(
                             config.memory_limit_per_task_bytes as u64,
@@ -1569,6 +1643,21 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode OrderedRangeRepartitionExec: {e:?}"
+                ))
+            })?;
+            Ok(())
+        } else if let Some(exec) = node.downcast_ref::<PartitionIdRepartitionExec>() {
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::PartitionIdRepartition(
+                    protobuf::PartitionIdRepartitionExecNode {
+                        partition_id_column: exec.partition_id_column() as u32,
+                        partition_count: exec.partition_count() as u32,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode PartitionIdRepartitionExec: {e:?}"
                 ))
             })?;
             Ok(())
@@ -2263,7 +2352,191 @@ mod test {
                 "memory_limit_per_task_bytes must survive the wire, including 0"
             );
             assert_eq!(decoded_exec.config().batch_size, 4096);
+            assert_eq!(decoded_exec.shuffle_output_partitioning(), &partitioning);
         }
+    }
+
+    /// A compound range partitioning with mixed sort directions, as a stage
+    /// boundary would carry it.
+    fn test_range_partitioning(schema: &SchemaRef) -> Partitioning {
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_expr::{
+            LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
+        };
+
+        let ordering = LexOrdering::new(vec![
+            PhysicalSortExpr::new(
+                col("id", schema.as_ref()).unwrap(),
+                SortOptions {
+                    descending: true,
+                    nulls_first: true,
+                },
+            ),
+            PhysicalSortExpr::new(
+                col("name", schema.as_ref()).unwrap(),
+                SortOptions {
+                    descending: false,
+                    nulls_first: false,
+                },
+            ),
+        ])
+        .unwrap();
+        // `id` descends, so the split points descend with it.
+        let split_points = vec![
+            SplitPoint::new(vec![
+                ScalarValue::Int32(Some(90)),
+                ScalarValue::Utf8(Some("m".to_string())),
+            ]),
+            SplitPoint::new(vec![
+                ScalarValue::Int32(Some(40)),
+                ScalarValue::Utf8(Some("a".to_string())),
+            ]),
+        ];
+        Partitioning::Range(RangePartitioning::try_new(ordering, split_points).unwrap())
+    }
+
+    /// A range partitioning has no place in the writer's hash field, so it
+    /// travels in its own. The ordering (sort options included) and every split
+    /// point must come back intact: together they decide which rows reach which
+    /// consumer, so a drift here is a silently wrong shuffle.
+    #[tokio::test]
+    async fn test_sort_shuffle_writer_exec_roundtrip_range_partitioning() {
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = create_test_schema();
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+        let partitioning = test_range_partitioning(&schema);
+
+        let original_exec = SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            input.clone(),
+            String::new(),
+            partitioning.clone(),
+            SortShuffleConfig::new(true, 4096),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(
+                Arc::new(original_exec),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
+
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec
+            .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
+        let decoded_exec = decoded_plan
+            .downcast_ref::<SortShuffleWriterExec>()
+            .expect("Expected SortShuffleWriterExec");
+
+        assert_eq!(decoded_exec.shuffle_output_partitioning(), &partitioning);
+        assert_eq!(
+            decoded_exec
+                .properties()
+                .output_partitioning()
+                .partition_count(),
+            3
+        );
+    }
+
+    /// Hash stages keep writing the field they always did, so a plan written
+    /// for one reads the same as before range support existed. Only the new
+    /// range field is allowed to be absent from it.
+    #[tokio::test]
+    async fn test_hash_sort_shuffle_writer_keeps_the_hash_partitioning_field() {
+        use datafusion::physical_plan::empty::EmptyExec;
+        use prost::Message;
+
+        let schema = create_test_schema();
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
+        let exec = SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            input,
+            String::new(),
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 4),
+            SortShuffleConfig::new(true, 4096),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(Arc::new(exec), &mut buf, &DefaultPhysicalProtoConverter {})
+            .unwrap();
+
+        let node = protobuf::BallistaPhysicalPlanNode::decode(buf.as_slice()).unwrap();
+        let Some(PhysicalPlanType::SortShuffleWriter(writer)) = node.physical_plan_type
+        else {
+            panic!("expected a SortShuffleWriter node");
+        };
+        let Some(protobuf::sort_shuffle_writer_exec_node::Routing::OutputPartitioning(
+            hash,
+        )) = writer.routing
+        else {
+            panic!("expected hash routing in `output_partitioning`");
+        };
+        assert_eq!(hash.partition_count, 4);
+    }
+
+    /// The consumer's side of a range shuffle: the unresolved placeholder the
+    /// scheduler keeps, and the resolved reader it ships to executors, must both
+    /// still report the range partitioning after a round trip.
+    #[tokio::test]
+    async fn test_range_partitioned_shuffle_readers_roundtrip() {
+        let schema = create_test_schema();
+        let partitioning = test_range_partitioning(&schema);
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let ctx = SessionContext::new().task_ctx();
+
+        let unresolved =
+            UnresolvedShuffleExec::new(1, schema.clone(), partitioning.clone());
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(
+                Arc::new(unresolved),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
+        let decoded = codec
+            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
+        let decoded = decoded
+            .downcast_ref::<UnresolvedShuffleExec>()
+            .expect("Expected UnresolvedShuffleExec");
+        assert_eq!(&decoded.properties().partitioning, &partitioning);
+        assert_eq!(decoded.output_partition_count, 3);
+
+        let reader = ShuffleReaderExec::try_new(
+            1,
+            vec![vec![], vec![], vec![]],
+            schema.clone(),
+            partitioning.clone(),
+        )
+        .unwrap();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(
+                Arc::new(reader),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
+        let decoded = codec
+            .try_decode(&buf, &[], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap();
+        let decoded = decoded
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("Expected ShuffleReaderExec");
+        assert_eq!(&decoded.properties().partitioning, &partitioning);
     }
 
     #[tokio::test]
@@ -2362,6 +2635,91 @@ mod test {
             "memory limit override must survive serialization to the executor"
         );
         assert_eq!(decoded.config().batch_size, 4096);
+    }
+
+    #[tokio::test]
+    async fn partition_id_sort_shuffle_writer_roundtrips() {
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(create_test_schema()));
+        // Column 0 is `id: Int32`, so `name` is all that gets written.
+        let routing = ShuffleRouting::PartitionId {
+            column: 0,
+            partition_count: 7,
+        };
+        let original = SortShuffleWriterExec::try_new_with_routing(
+            "job-1".into(),
+            3,
+            input,
+            String::new(),
+            routing.clone(),
+            SortShuffleConfig::new(true, 4096),
+        )
+        .unwrap();
+
+        let decoded = roundtrip_plan(Arc::new(original));
+
+        let decoded = decoded
+            .downcast_ref::<SortShuffleWriterExec>()
+            .expect("Expected SortShuffleWriterExec");
+        assert_eq!(decoded.routing(), &routing);
+        let names: Vec<_> = decoded
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["name"]);
+    }
+
+    /// A node with no routing, as a writer that predates partition-id routing
+    /// would see one, is rejected rather than hashed.
+    #[tokio::test]
+    async fn sort_shuffle_writer_without_a_routing_is_rejected() {
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let node = protobuf::BallistaPhysicalPlanNode {
+            physical_plan_type: Some(PhysicalPlanType::SortShuffleWriter(
+                protobuf::SortShuffleWriterExecNode {
+                    job_id: "job-1".to_string(),
+                    stage_id: 1,
+                    input: None,
+                    routing: None,
+                    batch_size: 4096,
+                    memory_limit_per_task_bytes: None,
+                },
+            )),
+        };
+        let mut buf: Vec<u8> = vec![];
+        node.encode(&mut buf).unwrap();
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(create_test_schema()));
+        let ctx = SessionContext::new().task_ctx();
+
+        let err = BallistaPhysicalExtensionCodec::default()
+            .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("has no routing"), "actual: {err}");
+    }
+
+    #[tokio::test]
+    async fn partition_id_repartition_exec_roundtrips() {
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(create_test_schema()));
+        let original = PartitionIdRepartitionExec::try_new(input, 0, 12).unwrap();
+
+        let decoded = roundtrip_plan(Arc::new(original));
+
+        let decoded = decoded
+            .downcast_ref::<PartitionIdRepartitionExec>()
+            .expect("Expected PartitionIdRepartitionExec");
+        assert_eq!(decoded.partition_id_column(), 0);
+        assert_eq!(decoded.partition_count(), 12);
     }
 
     #[tokio::test]

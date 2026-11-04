@@ -29,6 +29,7 @@ use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
 use crate::scheduler_server::JobIdGenerator;
 use crate::state::adaptive::AdaptiveRules;
+use ballista_core::execution_plans::plan_algebra::PartitionSliceableResolver;
 use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::{
     ConfigProducer, JobId, config::TaskSchedulingPolicy, ids::new_instance_id,
@@ -440,6 +441,13 @@ pub struct SchedulerConfig {
     pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
     /// Override function for customizing gRPC client endpoints before they are used
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
+    /// Finds the [`PartitionSliceable`](ballista_core::execution_plans::plan_algebra::PartitionSliceable)
+    /// of `ExecutionPlan` nodes of your own that hold data per partition, so
+    /// the scheduler can restrict them to a task's partitions. Without it, a
+    /// stage split between tasks that holds such a leaf fails the job. Unlike
+    /// the `override_*` fields it adds to Ballista's own list rather than
+    /// replacing it. See [`PartitionSliceableResolver`].
+    pub partition_sliceable_resolver: Option<PartitionSliceableResolver>,
     /// Rules of your own that adaptive query planning runs, for plans with
     /// `ExecutionPlan` nodes of your own. Unlike the `override_*` fields it
     /// adds to Ballista's rules rather than replacing them. Only the adaptive
@@ -530,6 +538,7 @@ impl Default for SchedulerConfig {
             override_logical_codec: None,
             override_physical_codec: None,
             override_create_grpc_client_endpoint: None,
+            partition_sliceable_resolver: None,
             adaptive_rules: None,
             use_tls: false,
             min_ready_executors: 1,
@@ -843,6 +852,15 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets [`Self::partition_sliceable_resolver`].
+    pub fn with_partition_sliceable_resolver(
+        mut self,
+        resolver: PartitionSliceableResolver,
+    ) -> Self {
+        self.partition_sliceable_resolver = Some(resolver);
+        self
+    }
+
     /// Sets [`Self::adaptive_rules`].
     pub fn with_adaptive_rules(mut self, rules: Arc<dyn AdaptiveRules>) -> Self {
         self.adaptive_rules = Some(rules);
@@ -994,6 +1012,7 @@ impl TryFrom<Config> for SchedulerConfig {
             override_physical_codec: None,
             override_session_builder: None,
             override_create_grpc_client_endpoint: None,
+            partition_sliceable_resolver: None,
             adaptive_rules: None,
             use_tls: false,
             min_ready_executors: opt.min_ready_executors,
