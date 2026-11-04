@@ -1,0 +1,1633 @@
+diff --git a/ballista/core/src/execution_plans/range_shuffle/ipc_file.rs b/ballista/core/src/execution_plans/range_shuffle/ipc_file.rs
+index 02b3f38..d4f9781 100644
+--- a/ballista/core/src/execution_plans/range_shuffle/ipc_file.rs
++++ b/ballista/core/src/execution_plans/range_shuffle/ipc_file.rs
+@@ -218,8 +218,11 @@ where
+ 
+     let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(channel_capacity);
+ 
++    let work_dir_writer_lease = crate::work_dir_lifetime::lease_for_writer(path)
++        .map_err(|_| BallistaError::Cancelled)?;
+     let handle =
+         tokio::task::spawn_blocking(move || -> Result<(u64, usize, FileLayout)> {
++            let _work_dir_writer_lease = work_dir_writer_lease;
+             let file = File::create(&path_owned).map_err(|e| {
+                 error!("Failed to create partition file at {:?}: {e:?}", path_owned);
+                 BallistaError::IoError(e)
+diff --git a/ballista/core/src/execution_plans/range_shuffle/writer.rs b/ballista/core/src/execution_plans/range_shuffle/writer.rs
+index 7990e51..ee5b145 100644
+--- a/ballista/core/src/execution_plans/range_shuffle/writer.rs
++++ b/ballista/core/src/execution_plans/range_shuffle/writer.rs
+@@ -99,6 +99,8 @@ pub struct RangeShuffleWriterExec {
+     ordering: LexOrdering,
+     /// Path to write output streams to
+     work_dir: String,
++    /// Private-root lease acquired during construction, shared by clones.
++    _work_dir_owner_lease: Option<Arc<crate::work_dir_lifetime::WorkDirLease>>,
+     /// Task id used as `file_id` in shuffle paths so files from different
+     /// tasks (including retries) don't collide. Stamped by the executor's
+     /// `create_query_stage_exec`.
+@@ -121,6 +123,7 @@ impl Clone for RangeShuffleWriterExec {
+             plan: self.plan.clone(),
+             ordering: self.ordering.clone(),
+             work_dir: self.work_dir.clone(),
++            _work_dir_owner_lease: self._work_dir_owner_lease.clone(),
+             task_id: self.task_id,
+             metrics: self.metrics.clone(),
+             properties: self.properties.clone(),
+@@ -174,12 +177,19 @@ impl RangeShuffleWriterExec {
+             datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+             datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+         ));
++        let work_dir_owner_lease =
++            crate::work_dir_lifetime::lease_for_writer(std::path::Path::new(&work_dir))
++                .map_err(|_| {
++                    DataFusionError::Execution("executor workdir is sealed".into())
++                })?
++                .map(Arc::new);
+         Ok(Self {
+             job_id,
+             stage_id,
+             plan,
+             ordering,
+             work_dir,
++            _work_dir_owner_lease: work_dir_owner_lease,
+             task_id: 0,
+             metrics: ExecutionPlanMetricsSet::new(),
+             properties,
+@@ -460,6 +470,10 @@ impl ExecutionPlan for RangeShuffleWriterExec {
+         partition: usize,
+         context: Arc<TaskContext>,
+     ) -> Result<SendableRecordBatchStream> {
++        let coordinator_lease = crate::work_dir_lifetime::lease_for_writer(
++            std::path::Path::new(&self.work_dir),
++        )
++        .map_err(|_| DataFusionError::Execution("executor workdir is sealed".into()))?;
+         let mut guard = self.state.lock().map_err(|_| {
+             DataFusionError::Internal(
+                 "RangeShuffleWriterExec state mutex poisoned".to_owned(),
+@@ -474,6 +488,7 @@ impl ExecutionPlan for RangeShuffleWriterExec {
+             |senders| {
+                 let writer = self.clone();
+                 tokio::spawn(async move {
++                    let _coordinator_lease = coordinator_lease;
+                     run_coordinator(writer.execute_shuffle_write(context), senders).await;
+                 });
+             },
+diff --git a/ballista/core/src/execution_plans/shuffle_writer.rs b/ballista/core/src/execution_plans/shuffle_writer.rs
+index 57ab3aa..30ce1c6 100644
+--- a/ballista/core/src/execution_plans/shuffle_writer.rs
++++ b/ballista/core/src/execution_plans/shuffle_writer.rs
+@@ -524,6 +524,8 @@ pub struct ShuffleWriterExec {
+     plan: Arc<dyn ExecutionPlan>,
+     /// Path to write output streams to
+     work_dir: String,
++    /// Private-root lease acquired during construction, shared by clones.
++    _work_dir_owner_lease: Option<Arc<crate::work_dir_lifetime::WorkDirLease>>,
+     /// Task id (the task's append-order slot in `RunningStage.task_infos`)
+     /// used as `file_id` in shuffle paths so files from different tasks
+     /// (including retries) don't collide. Seeded by the executor's
+@@ -559,6 +561,7 @@ impl Clone for ShuffleWriterExec {
+             stage_id: self.stage_id,
+             plan: self.plan.clone(),
+             work_dir: self.work_dir.clone(),
++            _work_dir_owner_lease: self._work_dir_owner_lease.clone(),
+             task_id: self.task_id,
+             global_output_partition_ids: self.global_output_partition_ids.clone(),
+             metrics: self.metrics.clone(),
+@@ -641,11 +644,18 @@ impl ShuffleWriterExec {
+         // calls `with_global_output_partition_ids`, drop the default and fold it into
+         // `try_new`'s signature.
+         let default_partition_slice: Vec<usize> = (0..output_partition_count).collect();
++        let work_dir_owner_lease =
++            crate::work_dir_lifetime::lease_for_writer(std::path::Path::new(&work_dir))
++                .map_err(|_| {
++                    DataFusionError::Execution("executor workdir is sealed".into())
++                })?
++                .map(Arc::new);
+         Ok(Self {
+             job_id,
+             stage_id,
+             plan,
+             work_dir,
++            _work_dir_owner_lease: work_dir_owner_lease,
+             task_id: 0,
+             global_output_partition_ids: default_partition_slice,
+             metrics: ExecutionPlanMetricsSet::new(),
+@@ -953,6 +963,10 @@ impl ExecutionPlan for ShuffleWriterExec {
+         partition: usize,
+         context: Arc<TaskContext>,
+     ) -> Result<SendableRecordBatchStream> {
++        let coordinator_lease = crate::work_dir_lifetime::lease_for_writer(
++            std::path::Path::new(&self.work_dir),
++        )
++        .map_err(|_| DataFusionError::Execution("executor workdir is sealed".into()))?;
+         let mut guard = self.state.lock().map_err(|_| {
+             DataFusionError::Internal("ShuffleWriterExec state mutex poisoned".to_owned())
+         })?;
+@@ -965,6 +979,7 @@ impl ExecutionPlan for ShuffleWriterExec {
+             |senders| {
+                 let writer = self.clone();
+                 tokio::spawn(async move {
++                    let _coordinator_lease = coordinator_lease;
+                     run_coordinator(writer.execute_shuffle_write(context), senders).await;
+                 });
+             },
+diff --git a/ballista/core/src/execution_plans/sort_shuffle/writer.rs b/ballista/core/src/execution_plans/sort_shuffle/writer.rs
+index c6e797d..54182f9 100644
+--- a/ballista/core/src/execution_plans/sort_shuffle/writer.rs
++++ b/ballista/core/src/execution_plans/sort_shuffle/writer.rs
+@@ -263,6 +263,8 @@ pub struct SortShuffleWriterExec {
+     plan: Arc<dyn ExecutionPlan>,
+     /// Path to write output streams to
+     work_dir: String,
++    /// Private-root lease acquired during construction, shared by clones.
++    _work_dir_owner_lease: Option<Arc<crate::work_dir_lifetime::WorkDirLease>>,
+     /// Shuffle output partitioning (must be Hash partitioning)
+     shuffle_output_partitioning: Partitioning,
+     /// Sort shuffle configuration
+@@ -299,6 +301,7 @@ impl Clone for SortShuffleWriterExec {
+             stage_id: self.stage_id,
+             plan: self.plan.clone(),
+             work_dir: self.work_dir.clone(),
++            _work_dir_owner_lease: self._work_dir_owner_lease.clone(),
+             shuffle_output_partitioning: self.shuffle_output_partitioning.clone(),
+             config: self.config.clone(),
+             task_id: self.task_id,
+@@ -426,6 +429,10 @@ impl SortShuffleWriteMetrics {
+ }
+ 
+ impl SortShuffleWriterExec {
++    /// Work root for executor-owned lifetime accounting.
++    pub fn work_dir(&self) -> &str {
++        &self.work_dir
++    }
+     /// Create a new sort-based shuffle writer.
+     pub fn try_new(
+         job_id: JobId,
+@@ -468,11 +475,18 @@ impl SortShuffleWriterExec {
+         let default_partition_slice: Vec<usize> = (0..child_partition_count).collect();
+         let output_partition_count = properties.output_partitioning().partition_count();
+ 
++        let work_dir_owner_lease =
++            crate::work_dir_lifetime::lease_for_writer(std::path::Path::new(&work_dir))
++                .map_err(|_| {
++                    DataFusionError::Execution("executor workdir is sealed".into())
++                })?
++                .map(Arc::new);
+         Ok(Self {
+             job_id,
+             stage_id,
+             plan,
+             work_dir,
++            _work_dir_owner_lease: work_dir_owner_lease,
+             shuffle_output_partitioning,
+             config,
+             task_id: 0,
+@@ -985,6 +999,10 @@ impl ExecutionPlan for SortShuffleWriterExec {
+         partition: usize,
+         context: Arc<TaskContext>,
+     ) -> Result<SendableRecordBatchStream> {
++        let coordinator_lease = crate::work_dir_lifetime::lease_for_writer(
++            std::path::Path::new(&self.work_dir),
++        )
++        .map_err(|_| DataFusionError::Execution("executor workdir is sealed".into()))?;
+         let mut guard = self.state.lock().map_err(|_| {
+             DataFusionError::Internal(
+                 "SortShuffleWriterExec state mutex poisoned".to_owned(),
+@@ -999,6 +1017,7 @@ impl ExecutionPlan for SortShuffleWriterExec {
+             |senders| {
+                 let writer = self.clone();
+                 tokio::spawn(async move {
++                    let _coordinator_lease = coordinator_lease;
+                     run_coordinator(writer, context, senders).await;
+                 });
+             },
+diff --git a/ballista/core/src/lib.rs b/ballista/core/src/lib.rs
+index 96cbfe8..208a00a 100644
+--- a/ballista/core/src/lib.rs
++++ b/ballista/core/src/lib.rs
+@@ -112,6 +112,8 @@ pub mod test_utils;
+ pub mod utils;
+ /// Version checks between Ballista clients and schedulers.
+ pub mod version;
++/// Lifetime accounting for executor-owned shuffle work directories.
++pub mod work_dir_lifetime;
+ 
+ ///
+ /// [RuntimeProducer] is a factory which creates runtime [RuntimeEnv]
+diff --git a/ballista/core/src/utils.rs b/ballista/core/src/utils.rs
+index 7377e8b..a4d4d83 100644
+--- a/ballista/core/src/utils.rs
++++ b/ballista/core/src/utils.rs
+@@ -305,7 +305,10 @@ pub async fn write_stream_to_disk(
+ 
+     let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(channel_capacity);
+ 
++    let work_dir_writer_lease = crate::work_dir_lifetime::lease_for_writer(path)
++        .map_err(|_| BallistaError::Cancelled)?;
+     let handle = tokio::task::spawn_blocking(move || -> Result<u64> {
++        let _work_dir_writer_lease = work_dir_writer_lease;
+         let file = BufWriter::new(File::create(&path_owned).map_err(|e| {
+             error!("Failed to create partition file at {:?}: {e:?}", path_owned);
+             BallistaError::IoError(e)
+diff --git a/ballista/core/src/work_dir_lifetime.rs b/ballista/core/src/work_dir_lifetime.rs
+new file mode 100644
+index 0000000..b0e7b32
+--- /dev/null
++++ b/ballista/core/src/work_dir_lifetime.rs
+@@ -0,0 +1,169 @@
++// Licensed to the Apache Software Foundation (ASF) under one
++// or more contributor license agreements.  See the NOTICE file
++// distributed with this work for additional information
++// regarding copyright ownership.  The ASF licenses this file
++// to you under the Apache License, Version 2.0 (the
++// "License"); you may not use this file except in compliance
++// with the License.  You may obtain a copy of the License at
++//
++//   http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing,
++// software distributed under the License is distributed on an
++// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++// KIND, either express or implied.  See the License for the
++// specific language governing permissions and limitations
++// under the License.
++
++//! Executor-owned work-directory activity: queued stages and blocking IPC writes
++//! must release their leases before a default temporary directory can be deleted.
++
++use futures::task::AtomicWaker;
++use parking_lot::Mutex;
++use std::path::{Path, PathBuf};
++use std::sync::{Arc, OnceLock, Weak};
++use std::task::Waker;
++
++struct State {
++    active: usize,
++    sealed: bool,
++}
++
++/// Tracks tasks queued before registration and synchronous IPC workers that
++/// may continue after their awaiting async stage has been cancelled.
++pub struct WorkDirActivity {
++    state: Mutex<State>,
++    drained_waker: AtomicWaker,
++}
++
++/// Explicit denial for new work against an executor-private directory.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum WorkDirLeaseError {
++    /// The directory has been sealed for safe shutdown.
++    Sealed,
++    /// The active lease counter cannot safely accept more work.
++    CountOverflow,
++}
++
++/// A lease retained by the actual job, not by its abortable async waiter.
++pub struct WorkDirLease(Arc<WorkDirActivity>);
++
++impl std::fmt::Debug for WorkDirLease {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("WorkDirLease(..)")
++    }
++}
++
++type Registry = Mutex<Vec<(PathBuf, Weak<WorkDirActivity>)>>;
++static REGISTRY: OnceLock<Registry> = OnceLock::new();
++
++fn registry() -> &'static Registry {
++    REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
++}
++
++impl WorkDirActivity {
++    /// Register a newly created, executor-owned private work directory.
++    pub fn register(root: PathBuf) -> Arc<Self> {
++        let activity = Arc::new(Self {
++            state: Mutex::new(State {
++                active: 0,
++                sealed: false,
++            }),
++            drained_waker: AtomicWaker::new(),
++        });
++        let mut entries = registry().lock();
++        entries.retain(|(_, weak)| weak.strong_count() > 0);
++        entries.push((root, Arc::downgrade(&activity)));
++        activity
++    }
++
++    /// Acquire ownership before queueing work or before scheduling a blocking
++    /// writer. Once sealed, a late worker must not create files in a deleted path.
++    pub fn lease(self: &Arc<Self>) -> Result<WorkDirLease, WorkDirLeaseError> {
++        let mut state = self.state.lock();
++        if state.sealed {
++            return Err(WorkDirLeaseError::Sealed);
++        }
++        state.active = state
++            .active
++            .checked_add(1)
++            .ok_or(WorkDirLeaseError::CountOverflow)?;
++        Ok(WorkDirLease(self.clone()))
++    }
++
++    /// Register before checking whether the activity counter is empty.
++    pub fn register_waker(&self, waker: &Waker) {
++        self.drained_waker.register(waker);
++    }
++
++    /// Quiescence snapshot, including writers detached from cancelled stages.
++    pub fn is_idle(&self) -> bool {
++        self.state.lock().active == 0
++    }
++
++    /// Count leases held by queued tasks, coordinator futures and disk I/O.
++    pub fn active_count(&self) -> usize {
++        self.state.lock().active
++    }
++
++    /// Atomically reject all new leases if and only if no lease remains.
++    /// Call only after all executor service handlers have stopped accepting work.
++    pub fn seal_if_idle(&self) -> bool {
++        let mut state = self.state.lock();
++        if state.active != 0 {
++            return false;
++        }
++        state.sealed = true;
++        true
++    }
++}
++
++impl Drop for WorkDirLease {
++    fn drop(&mut self) {
++        let mut state = self.0.state.lock();
++        debug_assert!(state.active > 0);
++        state.active -= 1;
++        if state.active == 0 {
++            self.0.drained_waker.wake();
++        }
++    }
++}
++
++/// Match the nearest executor-owned directory (never configured/caller-owned
++/// paths). Acquire before spawning the blocking worker: queued workers count.
++pub fn lease_for_writer(path: &Path) -> Result<Option<WorkDirLease>, WorkDirLeaseError> {
++    let owner = {
++        let mut entries = registry().lock();
++        entries.retain(|(_, weak)| weak.strong_count() > 0);
++        entries
++            .iter()
++            .filter(|(root, _)| path.starts_with(root))
++            .max_by_key(|(root, _)| root.components().count())
++            .and_then(|(_, weak)| weak.upgrade())
++    };
++    owner
++        .map(|activity| activity.lease().map(Some))
++        .unwrap_or(Ok(None))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn queued_and_blocking_leases_prevent_sealing_until_both_finish() {
++        let tmp = tempfile::TempDir::new().unwrap();
++        let active = WorkDirActivity::register(tmp.path().to_path_buf());
++        let queued = active.lease().unwrap();
++        let blocking = lease_for_writer(&tmp.path().join("job/stage/data.arrow"))
++            .unwrap()
++            .unwrap();
++        assert!(!active.seal_if_idle());
++        drop(queued);
++        assert!(!active.seal_if_idle());
++        drop(blocking);
++        assert!(active.seal_if_idle());
++        assert!(active.lease().is_err());
++        assert!(lease_for_writer(&tmp.path().join("late.arrow")).is_err());
++    }
++}
+diff --git a/ballista/executor/src/execution_engine.rs b/ballista/executor/src/execution_engine.rs
+index f7a8e0c..f2236dc 100644
+--- a/ballista/executor/src/execution_engine.rs
++++ b/ballista/executor/src/execution_engine.rs
+@@ -300,12 +300,28 @@ pub enum ShuffleWriterVariant {
+ pub struct DefaultQueryStageExec {
+     /// The underlying shuffle writer execution plan.
+     shuffle_writer: ShuffleWriterVariant,
++    /// Registration obtained while the real stage is still reachable.
++    plan_lifetime_lease: Result<
++        Option<ballista_core::work_dir_lifetime::WorkDirLease>,
++        ballista_core::work_dir_lifetime::WorkDirLeaseError,
++    >,
+ }
+ 
+ impl DefaultQueryStageExec {
+     /// Creates a new DefaultQueryStageExec wrapping the given shuffle writer.
+     pub fn new(shuffle_writer: ShuffleWriterVariant) -> Self {
+-        Self { shuffle_writer }
++        let work_dir = match &shuffle_writer {
++            ShuffleWriterVariant::Passthrough(w) => w.work_dir(),
++            ShuffleWriterVariant::Range(w) => w.work_dir(),
++            ShuffleWriterVariant::Sort(w) => w.work_dir(),
++        };
++        let plan_lifetime_lease = ballista_core::work_dir_lifetime::lease_for_writer(
++            std::path::Path::new(work_dir),
++        );
++        Self {
++            shuffle_writer,
++            plan_lifetime_lease,
++        }
+     }
+ }
+ 
+@@ -365,6 +381,11 @@ impl QueryStageExecutor for DefaultQueryStageExec {
+         task_id: usize,
+         context: Arc<TaskContext>,
+     ) -> Result<Vec<ShuffleWritePartition>> {
++        if self.plan_lifetime_lease.is_err() {
++            return Err(DataFusionError::Execution(
++                "executor workdir is sealed".into(),
++            ));
++        }
+         let (plan_arc, is_sort_shuffle): (Arc<dyn ExecutionPlan>, bool) =
+             match &self.shuffle_writer {
+                 ShuffleWriterVariant::Passthrough(writer) => {
+diff --git a/ballista/executor/src/execution_loop.rs b/ballista/executor/src/execution_loop.rs
+index bbcc879..dcb0686 100644
+--- a/ballista/executor/src/execution_loop.rs
++++ b/ballista/executor/src/execution_loop.rs
+@@ -423,7 +423,9 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
+         &executor.work_dir,
+         task_context.session_config(),
+     )?;
++    let queued_work = executor.begin_queued_work()?;
+     dedicated_executor.spawn(async move {
++        let _queued_work = queued_work;
+         use std::panic::AssertUnwindSafe;
+         let key = TaskKey {
+             job_id: job_id.clone(),
+diff --git a/ballista/executor/src/executor.rs b/ballista/executor/src/executor.rs
+index ad39581..1a250d0 100644
+--- a/ballista/executor/src/executor.rs
++++ b/ballista/executor/src/executor.rs
+@@ -32,6 +32,7 @@ use ballista_core::execution_plans::PipelinedRegistry;
+ use ballista_core::registry::BallistaFunctionRegistry;
+ use ballista_core::serde::protobuf::{ExecutorRegistration, ShuffleWritePartition};
+ use ballista_core::serde::scheduler::TaskKey;
++use ballista_core::work_dir_lifetime::{WorkDirActivity, WorkDirLease};
+ use dashmap::DashMap;
+ use datafusion::execution::context::TaskContext;
+ use datafusion::execution::runtime_env::RuntimeEnv;
+@@ -61,7 +62,16 @@ impl Future for TasksDrainedFuture {
+ 
+     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+         self.0.tasks_drained_waker.register(cx.waker());
+-        if !self.0.abort_handles.is_empty() {
++        if let Some(activity) = &self.0.work_dir_activity {
++            activity.register_waker(cx.waker());
++        }
++        if !self.0.abort_handles.is_empty()
++            || self
++                .0
++                .work_dir_activity
++                .as_ref()
++                .is_some_and(|a| !a.is_idle())
++        {
+             Poll::Pending
+         } else {
+             Poll::Ready(())
+@@ -100,6 +110,9 @@ pub struct Executor {
+ 
+     tasks_drained_waker: Arc<AtomicWaker>,
+ 
++    /// Includes queued launch requests and detached blocking shuffle writers.
++    work_dir_activity: Option<Arc<WorkDirActivity>>,
++
+     /// Execution engine that the executor will delegate to
+     /// for executing query stages
+     pub(crate) execution_engine: Arc<dyn ExecutionEngine>,
+@@ -168,6 +181,7 @@ impl Executor {
+             vcores,
+             abort_handles: Default::default(),
+             tasks_drained_waker: Default::default(),
++            work_dir_activity: None,
+             execution_engine,
+             session_runtime_cache: None,
+             memory_metrics: None,
+@@ -206,6 +220,25 @@ impl Executor {
+         }
+     }
+ 
++    /// Installs tracking only for automatically created executor directories.
++    pub(crate) fn with_work_dir_activity(
++        mut self,
++        activity: Option<Arc<WorkDirActivity>>,
++    ) -> Self {
++        self.work_dir_activity = activity;
++        self
++    }
++
++    /// Reserve a lease before sending work to DedicatedExecutor's queue.
++    pub(crate) fn begin_queued_work(
++        &self,
++    ) -> Result<Option<WorkDirLease>, BallistaError> {
++        self.work_dir_activity
++            .as_ref()
++            .map(|a| a.lease().map_err(|_| BallistaError::Cancelled))
++            .transpose()
++    }
++
+     /// Creates a [`RuntimeEnv`] using the configured runtime producer.
+     pub fn produce_runtime(
+         &self,
+@@ -298,6 +331,8 @@ impl Executor {
+         query_stage_exec: Arc<dyn QueryStageExecutor>,
+         task_ctx: Arc<TaskContext>,
+     ) -> Result<Vec<ShuffleWritePartition>, BallistaError> {
++        // The registration race itself is an activity that can create shuffle paths.
++        let _stage_work = self.begin_queued_work()?;
+         let (task, abort_handle) = futures::future::abortable(
+             query_stage_exec.execute_query_stage(key.task_id, task_ctx),
+         );
+@@ -816,4 +851,716 @@ mod test {
+             .unwrap();
+         assert_eq!(*sized.lock().unwrap(), vec![3, 1, 3]);
+     }
++
++    /// R11: the actual Executor and IPC writer must own completion independently
++    /// of an abortable stage future. Test a queued blocking worker against
++    /// normal, timeout and cancelled-owner directory lifetime decisions.
++    #[cfg(unix)]
++    async fn r11_actual_shuffle_writer_lifecycle(
++        scenario: &str,
++    ) -> Option<(
++        String,
++        Arc<ballista_core::work_dir_lifetime::WorkDirActivity>,
++    )> {
++        use std::fs;
++        use std::os::unix::fs::PermissionsExt;
++        use std::path::Path;
++
++        fn arrow_file_exists(dir: &Path) -> bool {
++            let Ok(entries) = fs::read_dir(dir) else {
++                return false;
++            };
++            for entry in entries.flatten() {
++                let path = entry.path();
++                if path.is_dir() && arrow_file_exists(&path) {
++                    return true;
++                }
++                if path.extension().and_then(|s| s.to_str()) == Some("arrow") {
++                    return true;
++                }
++            }
++            false
++        }
++
++        let (work_dir, mut directory_guard) =
++            crate::executor_process::resolve_executor_work_dir(None).unwrap();
++        directory_guard.as_mut().unwrap().arm();
++        let activity = directory_guard.as_ref().unwrap().activity();
++        let root = Path::new(&work_dir);
++        assert_eq!(
++            fs::metadata(root).unwrap().permissions().mode() & 0o777,
++            0o700
++        );
++        let (raw_executor, ctx) = never_ending_executor(&work_dir);
++        let executor = Arc::new(
++            Arc::try_unwrap(raw_executor)
++                .ok()
++                .unwrap()
++                .with_work_dir_activity(Some(activity.clone())),
++        );
++
++        let (blocker_started_tx, blocker_started_rx) = tokio::sync::oneshot::channel();
++        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
++        let blocker = tokio::task::spawn_blocking(move || {
++            let _ = blocker_started_tx.send(());
++            let _ = release_rx.recv_timeout(Duration::from_secs(8));
++        });
++        blocker_started_rx.await.unwrap();
++
++        let key = TaskKey {
++            job_id: "job-id".into(),
++            stage_id: 1,
++            task_id: 0,
++        };
++        // Normal case is a finite real physical plan. Abnormal cases keep
++        // the existing never-ending R10 stream and prove retention, not false
++        // completion, after their async parent has been cancelled.
++        let mut receiver = if scenario == "normal" {
++            let finite = ShuffleWriterExec::try_new(
++                key.job_id.clone(),
++                key.stage_id,
++                Arc::new(datafusion::physical_plan::empty::EmptyExec::new(Arc::new(
++                    Schema::empty(),
++                ))),
++                work_dir.clone(),
++            )
++            .unwrap();
++            let stage =
++                DefaultQueryStageExec::new(ShuffleWriterVariant::Passthrough(finite));
++            let exec = executor.clone();
++            let task_ctx = ctx.task_ctx();
++            let (tx, rx) = tokio::sync::oneshot::channel();
++            let key = key.clone();
++            tokio::spawn(async move {
++                let result = exec
++                    .execute_query_stage(key, Arc::new(stage), task_ctx)
++                    .await;
++                let _ = tx.send(result);
++            });
++            rx
++        } else {
++            spawn_never_ending_task(&executor, &ctx, &work_dir, key.clone())
++        };
++        let mut registered = false;
++        let mut prepared = false;
++        let mut writer_admitted = false;
++        for _ in 0..150 {
++            registered |= executor.active_task_count() == 1;
++            prepared |= root.join("job-id").exists();
++            // The test holds the sole blocking thread. These three leases
++            // prove stage + detached coordinator + queued real IPC worker.
++            writer_admitted |= activity.active_count() >= 3;
++            if registered && prepared && writer_admitted {
++                break;
++            }
++            tokio::time::sleep(Duration::from_millis(20)).await;
++        }
++        let cancelled = if scenario == "normal" {
++            false
++        } else {
++            executor
++                .cancel_task(key.job_id.clone(), key.stage_id, key.task_id)
++                .await
++                .unwrap_or(false)
++        };
++        let cancelled_result = if scenario == "normal" {
++            None
++        } else {
++            Some(tokio::time::timeout(Duration::from_secs(3), &mut receiver).await)
++        };
++        let premature_drain = tokio::time::timeout(
++            Duration::from_millis(300),
++            TasksDrainedFuture(executor.clone()),
++        )
++        .await
++        .is_ok();
++        let arrow_while_blocked = arrow_file_exists(root);
++        let finish_while_blocked = directory_guard.as_mut().unwrap().finish();
++
++        if scenario == "timeout" {
++            let timed_out = tokio::time::timeout(
++                Duration::from_millis(20),
++                std::future::pending::<()>(),
++            )
++            .await;
++            assert!(timed_out.is_err());
++            drop(directory_guard.take());
++        } else if scenario == "cancelled_owner" {
++            let guard = directory_guard.take().unwrap();
++            let owner = tokio::spawn(async move {
++                let _guard = guard;
++                std::future::pending::<()>().await;
++            });
++            owner.abort();
++            assert!(owner.await.unwrap_err().is_cancelled());
++        }
++
++        // All assertions deferred until the blocking worker has been released,
++        // preventing an assertion failure from leaving a blocked worker behind.
++        let _ = release_tx.send(());
++        let _ = tokio::time::timeout(Duration::from_secs(3), blocker).await;
++        let mut wrote_arrow = arrow_file_exists(root);
++        for _ in 0..100 {
++            if wrote_arrow {
++                break;
++            }
++            tokio::time::sleep(Duration::from_millis(20)).await;
++            wrote_arrow = arrow_file_exists(root);
++        }
++        let normal_result = if scenario == "normal" {
++            Some(tokio::time::timeout(Duration::from_secs(3), &mut receiver).await)
++        } else {
++            None
++        };
++        let fully_drained = tokio::time::timeout(
++            Duration::from_millis(if scenario == "normal" { 3000 } else { 100 }),
++            TasksDrainedFuture(executor.clone()),
++        )
++        .await
++        .is_ok();
++        let private_after_worker = fs::metadata(root)
++            .map(|m| m.permissions().mode() & 0o777 == 0o700)
++            .unwrap_or(false);
++
++        // Normal cleanup is conditioned on the real writer lease releasing.
++        let normal_cleanup = if scenario == "normal" {
++            let finished = directory_guard.as_mut().unwrap().finish();
++            drop(directory_guard.take());
++            finished && !root.exists()
++        } else {
++            false
++        };
++        if scenario != "normal" {
++            // Never delete a private directory while its coordinator continues.
++            // The fixture is cleaned only after dropping the Tokio runtime.
++            assert!(root.is_dir(), "abnormal shutdown removed active workdir");
++        }
++
++        assert!(registered, "stage never registered");
++        assert!(prepared, "real ShuffleWriterExec never prepared a path");
++        assert!(
++            writer_admitted,
++            "no proved live coordinator and queued real IPC writer"
++        );
++        if scenario == "normal" {
++            assert!(
++                matches!(normal_result, Some(Ok(Ok(Ok(_))))),
++                "normal finite real stage did not complete"
++            );
++            assert!(
++                fully_drained,
++                "finite stage did not reach full real writer quiescence"
++            );
++            assert!(
++                normal_cleanup,
++                "normal shutdown failed to remove drained workdir"
++            );
++        } else {
++            assert!(cancelled, "stage cancellation was not accepted");
++            assert!(
++                matches!(cancelled_result, Some(Ok(Ok(Err(_))))),
++                "cancelled stage did not unwind"
++            );
++            assert!(
++                !fully_drained,
++                "infinite detached writer falsely reported completed after cancelled owner"
++            );
++        }
++        assert!(
++            !premature_drain,
++            "F1 regression: false quiescence under blocked IPC"
++        );
++        assert!(
++            !finish_while_blocked,
++            "F1 regression: guard finished while writer active"
++        );
++        assert!(!arrow_while_blocked, "blocking worker started prematurely");
++        assert!(wrote_arrow, "real IPC worker did not create an Arrow file");
++        assert!(private_after_worker, "workdir lost 0700 protection");
++        if scenario == "normal" {
++            None
++        } else {
++            Some((work_dir, activity))
++        }
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn test_r11_real_shuffle_normal_quiescence_and_cleanup() {
++        let rt = tokio::runtime::Builder::new_multi_thread()
++            .worker_threads(2)
++            .max_blocking_threads(1)
++            .enable_all()
++            .build()
++            .unwrap();
++        assert!(
++            rt.block_on(r11_actual_shuffle_writer_lifecycle("normal"))
++                .is_none()
++        );
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn test_r11_real_shuffle_timeout_retains_private_directory() {
++        let rt = tokio::runtime::Builder::new_multi_thread()
++            .worker_threads(2)
++            .max_blocking_threads(1)
++            .enable_all()
++            .build()
++            .unwrap();
++        let retained = rt
++            .block_on(r11_actual_shuffle_writer_lifecycle("timeout"))
++            .expect("abnormal shutdown must retain private workdir");
++        drop(rt);
++        // The executor/runtime is now shut down; the detached coordinator
++        // has been cancelled and the blocking writer's channel is closed.
++        assert!(
++            retained.1.is_idle(),
++            "writer still active after runtime shutdown"
++        );
++        std::fs::remove_dir_all(&retained.0).unwrap();
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn test_r11_real_shuffle_cancelled_owner_retains_private_directory() {
++        let rt = tokio::runtime::Builder::new_multi_thread()
++            .worker_threads(2)
++            .max_blocking_threads(1)
++            .enable_all()
++            .build()
++            .unwrap();
++        let retained = rt
++            .block_on(r11_actual_shuffle_writer_lifecycle("cancelled_owner"))
++            .expect("abnormal shutdown must retain private workdir");
++        drop(rt);
++        // The executor/runtime is now shut down; the detached coordinator
++        // has been cancelled and the blocking writer's channel is closed.
++        assert!(
++            retained.1.is_idle(),
++            "writer still active after runtime shutdown"
++        );
++        std::fs::remove_dir_all(&retained.0).unwrap();
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn test_r11_queued_dedicated_task_blocks_directory_seal() {
++        let tmp = tempfile::TempDir::new().unwrap();
++        let activity = ballista_core::work_dir_lifetime::WorkDirActivity::register(
++            tmp.path().to_path_buf(),
++        );
++        let (raw_executor, _ctx) = never_ending_executor(tmp.path().to_str().unwrap());
++        let executor = Arc::new(
++            Arc::try_unwrap(raw_executor)
++                .ok()
++                .unwrap()
++                .with_work_dir_activity(Some(activity.clone())),
++        );
++        let queued_work = executor.begin_queued_work().unwrap();
++        let dedicated = crate::cpu_bound_executor::DedicatedExecutor::new("r11-queue", 1);
++        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
++        let task = dedicated.spawn(async move {
++            let _queued_work = queued_work;
++            let _ = release_rx.await;
++        });
++        let premature = tokio::time::timeout(
++            Duration::from_millis(100),
++            TasksDrainedFuture(executor.clone()),
++        )
++        .await
++        .is_ok();
++        let premature_seal = activity.seal_if_idle();
++        let _ = release_tx.send(());
++        let _ = tokio::time::timeout(Duration::from_secs(3), task)
++            .await
++            .unwrap()
++            .unwrap();
++        let drained =
++            tokio::time::timeout(Duration::from_secs(3), TasksDrainedFuture(executor))
++                .await
++                .is_ok();
++        dedicated.join();
++        assert!(!premature, "queued task incorrectly considered drained");
++        assert!(
++            !premature_seal,
++            "queued task failed to keep directory active"
++        );
++        assert!(drained, "queued task failed to release lease");
++        assert!(
++            activity.seal_if_idle(),
++            "directory failed to seal after queue drained"
++        );
++    }
++
++    #[cfg(unix)]
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn test_r11_m1_reachable_late_shuffle_after_last_owner() {
++        use crate::execution_engine::QueryStageExecutor;
++        use std::os::unix::fs::PermissionsExt;
++        use std::path::Path;
++        let (root, mut guard) =
++            crate::executor_process::resolve_executor_work_dir(None).unwrap();
++        guard.as_mut().unwrap().arm();
++        let activity = guard.as_ref().unwrap().activity();
++        let weak = Arc::downgrade(&activity);
++        let (_, ctx) = never_ending_executor(&root);
++        // This is an actually executable real ShuffleWriter stage. It is
++        // created before the owner can be sealed, then retained across guard drop.
++        let stage = DefaultQueryStageExec::new(ShuffleWriterVariant::Passthrough(
++            ShuffleWriterExec::try_new(
++                "m1-real-job".into(),
++                1,
++                Arc::new(datafusion::physical_plan::empty::EmptyExec::new(Arc::new(
++                    Schema::empty(),
++                ))),
++                root.clone(),
++            )
++            .unwrap(),
++        ));
++        assert!(
++            !guard.as_mut().unwrap().finish(),
++            "reachable real stage must stop private cleanup"
++        );
++        drop(guard);
++        drop(activity);
++        assert!(
++            weak.upgrade().is_some(),
++            "the real stage must retain the owner until it finishes"
++        );
++        assert!(Path::new(&root).exists(), "unsafe private root removal");
++        assert_eq!(
++            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
++            0o700
++        );
++        let result =
++            QueryStageExecutor::execute_query_stage(&stage, 0, ctx.task_ctx()).await;
++        assert!(result.is_ok(), "real stage must execute: {result:?}");
++        assert!(
++            Path::new(&root).exists(),
++            "real stage must not race with cleanup"
++        );
++        assert_eq!(
++            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
++            0o700
++        );
++        drop(stage);
++        assert!(
++            weak.upgrade().is_none(),
++            "last strong Arc must disappear after real producer release"
++        );
++        // No reachable producer now: an unrelated stale pathname is not proof
++        // of executor admission and must not keep an unbounded tombstone.
++        assert!(
++            ballista_core::work_dir_lifetime::lease_for_writer(
++                &Path::new(&root).join("m1-real-job/1/result.arrow"),
++            )
++            .unwrap()
++            .is_none()
++        );
++        std::fs::remove_dir_all(&root).unwrap();
++        assert!(
++            !Path::new(&root).exists(),
++            "explicit private residual cleanup failed"
++        );
++
++        // Configured caller-owned paths remain usable without private registry.
++        let caller = tempfile::TempDir::new().unwrap();
++        let (caller_root, owner) = crate::executor_process::resolve_executor_work_dir(
++            Some(caller.path().to_str().unwrap().to_owned()),
++        )
++        .unwrap();
++        assert!(owner.is_none());
++        assert!(
++            ballista_core::work_dir_lifetime::lease_for_writer(
++                &Path::new(&caller_root).join("caller.arrow"),
++            )
++            .unwrap()
++            .is_none()
++        );
++        std::fs::write(Path::new(&caller_root).join("caller.arrow"), b"caller").unwrap();
++    }
++
++    #[cfg(unix)]
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn test_r11_m2_admission_between_drain_and_real_cleanup() {
++        let (root, mut guard) =
++            crate::executor_process::resolve_executor_work_dir(None).unwrap();
++        guard.as_mut().unwrap().arm();
++        let activity = guard.as_ref().unwrap().activity();
++        let (raw, ctx) = never_ending_executor(&root);
++        let executor = Arc::new(
++            Arc::try_unwrap(raw)
++                .ok()
++                .unwrap()
++                .with_work_dir_activity(Some(activity.clone())),
++        );
++        let drained_snapshot =
++            futures::FutureExt::now_or_never(TasksDrainedFuture(executor.clone()))
++                .is_some();
++        assert!(
++            drained_snapshot,
++            "pre-admission drain snapshot must be ready"
++        );
++        let queued = executor.begin_queued_work().unwrap().unwrap();
++        let key = TaskKey {
++            job_id: "m2-real-job".into(),
++            stage_id: 1,
++            task_id: 0,
++        };
++        let stage = DefaultQueryStageExec::new(ShuffleWriterVariant::Passthrough(
++            ShuffleWriterExec::try_new(
++                key.job_id.clone(),
++                key.stage_id,
++                Arc::new(datafusion::physical_plan::empty::EmptyExec::new(Arc::new(
++                    Schema::empty(),
++                ))),
++                root.clone(),
++            )
++            .unwrap(),
++        ));
++        let (release, admitted) = tokio::sync::oneshot::channel::<()>();
++        let task_executor = executor.clone();
++        let task_ctx = ctx.task_ctx();
++        let real = tokio::spawn(async move {
++            let _queued = queued;
++            admitted.await.expect("release queued real task");
++            task_executor
++                .execute_query_stage(key, Arc::new(stage), task_ctx)
++                .await
++        });
++        let sentinel = std::path::Path::new(&root).join("m2-real-job/1/existing.arrow");
++        std::fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
++        std::fs::write(&sentinel, b"written-before-cleanup").unwrap();
++        assert!(
++            activity.active_count() >= 2,
++            "real queued task and stage must both own leases"
++        );
++        let cleaned_during_admission =
++            crate::executor_process::r11_m2_real_cleanup_test_only(
++                &root, &executor, &mut guard,
++            )
++            .await
++            .unwrap();
++        assert!(
++            !cleaned_during_admission,
++            "active admission must reject cleanup"
++        );
++        let lost_during_active_admission = !sentinel.exists();
++        let _ = release.send(());
++        let completed = tokio::time::timeout(Duration::from_secs(5), real)
++            .await
++            .expect("stage completion")
++            .expect("join");
++        let stage_ok = completed.is_ok();
++        assert!(stage_ok, "a real ShuffleWriter stage must complete");
++        assert!(
++            !lost_during_active_admission,
++            "active real admission must protect existing shuffle data"
++        );
++        assert!(
++            crate::executor_process::r11_m2_real_cleanup_test_only(
++                &root, &executor, &mut guard,
++            )
++            .await
++            .unwrap(),
++            "cleaner must run after the final lease releases"
++        );
++        assert!(
++            executor.begin_queued_work().is_err(),
++            "no further real task admission is allowed after final seal"
++        );
++        drop(guard);
++        assert!(
++            !std::path::Path::new(&root).exists(),
++            "sealed private root must be removed"
++        );
++    }
++
++    // Exact counterexample RED #41819433053, now asserted safe on Core itself.
++    #[cfg(unix)]
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn test_r11_m1_direct_core_writer_retains_private_owner_and_clones() {
++        use futures::TryStreamExt;
++        use std::os::unix::fs::PermissionsExt;
++        use std::path::Path;
++
++        let (root, mut guard) =
++            crate::executor_process::resolve_executor_work_dir(None).unwrap();
++        guard.as_mut().unwrap().arm();
++        let activity = guard.as_ref().unwrap().activity();
++        let weak = Arc::downgrade(&activity);
++        let (_, ctx) = never_ending_executor(&root);
++        // Construct the public Core plan WITHOUT DefaultQueryStageExec.
++        let writer = ShuffleWriterExec::try_new(
++            "m1-direct-core".into(),
++            1,
++            Arc::new(datafusion::physical_plan::empty::EmptyExec::new(Arc::new(
++                Schema::empty(),
++            ))),
++            root.clone(),
++        )
++        .unwrap();
++        let retained = writer.clone();
++        drop(writer);
++        assert!(
++            !guard.as_mut().unwrap().finish(),
++            "unwrapped retained core writer must block private deletion"
++        );
++        drop(guard);
++        drop(activity);
++        assert!(
++            weak.upgrade().is_some(),
++            "retained public core writer must retain its final owner"
++        );
++        assert!(Path::new(&root).exists(), "private root disappeared");
++        assert_eq!(
++            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
++            0o700
++        );
++
++        let mut stream = retained
++            .execute(0, ctx.task_ctx())
++            .expect("public ExecutionPlan execute");
++        tokio::time::timeout(Duration::from_secs(5), async {
++            while let Some(_) = stream.try_next().await.expect("direct writer stream") {}
++        })
++        .await
++        .expect("bounded direct-core writer completion");
++        drop(stream);
++        assert!(
++            Path::new(&root).exists(),
++            "core writer removed private root"
++        );
++        assert_eq!(
++            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
++            0o700
++        );
++        drop(retained);
++        assert!(
++            weak.upgrade().is_none(),
++            "final owner must expire after final public plan clone releases"
++        );
++        std::fs::remove_dir_all(&root).unwrap();
++        assert!(
++            !Path::new(&root).exists(),
++            "explicit residual cleanup failed"
++        );
++
++        // Caller-supplied work directories remain unregistered and usable.
++        let caller = tempfile::TempDir::new().unwrap();
++        let (caller_root, owner) = crate::executor_process::resolve_executor_work_dir(
++            Some(caller.path().to_str().unwrap().to_string()),
++        )
++        .unwrap();
++        assert!(owner.is_none());
++        let caller_writer = ShuffleWriterExec::try_new(
++            "m1-caller-owned".into(),
++            1,
++            Arc::new(datafusion::physical_plan::empty::EmptyExec::new(Arc::new(
++                Schema::empty(),
++            ))),
++            caller_root.clone(),
++        )
++        .unwrap();
++        let mut caller_stream = caller_writer
++            .execute(0, ctx.task_ctx())
++            .expect("caller-owned writer execute");
++        tokio::time::timeout(Duration::from_secs(5), async {
++            while let Some(_) =
++                caller_stream.try_next().await.expect("caller-owned stream")
++            {}
++        })
++        .await
++        .expect("bounded caller-owned execution");
++        assert!(
++            Path::new(&caller_root).exists(),
++            "caller-owned root deleted"
++        );
++    }
++
++    // M1: both other public Core writer variants must retain private roots
++    // across manual Clone and loss of the executor guard.
++    #[cfg(unix)]
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn test_r11_m1_range_sort_direct_core_clones_retain_owner() {
++        use ballista_core::execution_plans::sort_shuffle::SortShuffleConfig;
++        use ballista_core::execution_plans::{
++            RangeShuffleWriterExec, SortShuffleWriterExec,
++        };
++        use datafusion::arrow::datatypes::{DataType, Field};
++        use datafusion::physical_expr::expressions::Column;
++        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
++        use datafusion::physical_plan::sorts::sort::SortExec;
++        use datafusion::physical_plan::{ExecutionPlan, Partitioning};
++        use std::os::unix::fs::PermissionsExt;
++
++        let (root, mut guard) =
++            crate::executor_process::resolve_executor_work_dir(None).unwrap();
++        guard.as_mut().unwrap().arm();
++        let activity = guard.as_ref().unwrap().activity();
++        let weak = Arc::downgrade(&activity);
++
++        let schema =
++            Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
++        let input: Arc<dyn ExecutionPlan> =
++            Arc::new(datafusion::physical_plan::empty::EmptyExec::new(schema));
++        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(
++            Column::new("key", 0),
++        ))])
++        .unwrap();
++        let ordered: Arc<dyn ExecutionPlan> =
++            Arc::new(SortExec::new(ordering, input.clone()));
++
++        let range = RangeShuffleWriterExec::try_new(
++            "m1-range-core".into(),
++            1,
++            ordered,
++            root.clone(),
++        )
++        .unwrap();
++        let sort = SortShuffleWriterExec::try_new(
++            "m1-sort-core".into(),
++            1,
++            input,
++            root.clone(),
++            Partitioning::Hash(vec![Arc::new(Column::new("key", 0))], 1),
++            SortShuffleConfig::default(),
++        )
++        .unwrap();
++
++        let retained_range = range.clone();
++        let retained_sort = sort.clone();
++        drop(range);
++        drop(sort);
++        assert_eq!(
++            activity.active_count(),
++            2,
++            "Range and Sort must each acquire one lifetime lease at construction"
++        );
++        assert!(
++            !guard.as_mut().unwrap().finish(),
++            "two retained core variants must prevent root cleanup"
++        );
++        drop(guard);
++        drop(activity);
++        assert!(
++            weak.upgrade().is_some(),
++            "cloned Range and Sort must survive loss of last external owner"
++        );
++        assert_eq!(
++            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
++            0o700
++        );
++        drop(retained_range);
++        assert!(
++            weak.upgrade().is_some(),
++            "Sort clone must still retain private-root registration"
++        );
++        drop(retained_sort);
++        assert!(
++            weak.upgrade().is_none(),
++            "no unbounded retained ownership after both final clones release"
++        );
++        std::fs::remove_dir_all(&root).unwrap();
++    }
+ }
+diff --git a/ballista/executor/src/executor_process.rs b/ballista/executor/src/executor_process.rs
+index d5c76c9..7fe964d 100644
+--- a/ballista/executor/src/executor_process.rs
++++ b/ballista/executor/src/executor_process.rs
+@@ -507,6 +507,94 @@ pub async fn start_executor_process_with_memory_metrics(
+     start_executor_process_inner(opt, Some(memory_metrics)).await
+ }
+ 
++/// Guard for a default executor work directory.
++///
++/// Once the executor has started workers, an unverified shutdown must not
++/// remove this directory: a writer with a retained pathname could otherwise
++/// recreate it with ambient (possibly public) permissions. We intentionally
++/// preserve it on abnormal termination; operators may remove private residuals.
++pub(crate) struct ExecutorWorkDirGuard {
++    activity: Arc<ballista_core::work_dir_lifetime::WorkDirActivity>,
++    temp_dir: Option<TempDir>,
++    may_have_active_writers: bool,
++}
++
++impl ExecutorWorkDirGuard {
++    fn new(temp_dir: TempDir) -> Self {
++        Self {
++            activity: ballista_core::work_dir_lifetime::WorkDirActivity::register(
++                temp_dir.path().to_path_buf(),
++            ),
++            temp_dir: Some(temp_dir),
++            may_have_active_writers: false,
++        }
++    }
++
++    pub(crate) fn arm(&mut self) {
++        self.may_have_active_writers = true;
++    }
++
++    pub(crate) fn activity(
++        &self,
++    ) -> Arc<ballista_core::work_dir_lifetime::WorkDirActivity> {
++        self.activity.clone()
++    }
++
++    pub(crate) fn finish(&mut self) -> bool {
++        if !self.activity.seal_if_idle() {
++            return false;
++        }
++        self.may_have_active_writers = false;
++        true
++    }
++}
++
++impl Drop for ExecutorWorkDirGuard {
++    fn drop(&mut self) {
++        if let Some(temp_dir) = self
++            .temp_dir
++            .take()
++            .filter(|_| self.may_have_active_writers)
++        {
++            let path = temp_dir.keep();
++            warn!(
++                "Retaining private executor work directory {} after unverified shutdown",
++                path.display()
++            );
++        }
++    }
++}
++
++/// Resolve the work directory and retain ownership of an automatically-created one.
++/// The returned guard is explicitly released only after all tracked work has drained.
++pub(crate) fn resolve_executor_work_dir(
++    configured_work_dir: Option<String>,
++) -> ballista_core::error::Result<(String, Option<ExecutorWorkDirGuard>)> {
++    if let Some(work_dir) = configured_work_dir {
++        return Ok((work_dir, None));
++    }
++
++    let temp_dir = TempDir::new()?;
++    // Do not rely on tempfile's platform-dependent default permissions.
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::PermissionsExt;
++        std::fs::set_permissions(
++            temp_dir.path(),
++            std::fs::Permissions::from_mode(0o700),
++        )?;
++    }
++
++    let work_dir = temp_dir
++        .path()
++        .to_str()
++        .map(ToOwned::to_owned)
++        .ok_or_else(|| {
++            BallistaError::Configuration("Unable to bind work dir".to_string())
++        })?;
++    Ok((work_dir, Some(ExecutorWorkDirGuard::new(temp_dir))))
++}
++
+ async fn start_executor_process_inner(
+     opt: Arc<ExecutorProcessConfig>,
+     memory_metrics: Option<ExecutorMemoryMetrics>,
+@@ -522,16 +610,8 @@ async fn start_executor_process_inner(
+     let scheduler_port = opt.scheduler_port;
+     let scheduler_url = format!("http://{scheduler_host}:{scheduler_port}");
+ 
+-    let work_dir = if let Some(work_dir) = opt.work_dir.clone() {
+-        work_dir
+-    } else if let Some(temp_dir) = TempDir::new()?.path().to_str().map(ToOwned::to_owned)
+-    {
+-        temp_dir
+-    } else {
+-        return Err(BallistaError::Configuration(
+-            "Unable to bind work dir".to_string(),
+-        ));
+-    };
++    let (work_dir, mut work_dir_guard) = resolve_executor_work_dir(opt.work_dir.clone())?;
++    let work_dir_activity = work_dir_guard.as_ref().map(|guard| guard.activity());
+ 
+     let vcores = if opt.vcores == 0 {
+         // use all available cores if no concurrency level is specified
+@@ -686,7 +766,8 @@ async fn start_executor_process_inner(
+             }),
+         )
+         .with_session_runtime_cache(Some(session_runtime_cache))
+-        .with_memory_metrics(memory_metrics),
++        .with_memory_metrics(memory_metrics)
++        .with_work_dir_activity(work_dir_activity),
+     );
+ 
+     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
+@@ -775,6 +856,12 @@ async fn start_executor_process_inner(
+     let scheduler_policy = opt.task_scheduling_policy;
+     let job_data_ttl_seconds = opt.job_data_ttl_seconds;
+ 
++    // Before any service or cleaner can use the work directory, arm its
++    // fail-closed lifetime policy. An abnormal return leaves it private.
++    if let Some(guard) = work_dir_guard.as_mut() {
++        guard.arm();
++    }
++
+     // Graceful shutdown notification
+     let shutdown_notification = ShutdownNotifier::new();
+     let flight_work_dir = work_dir.clone();
+@@ -965,10 +1052,14 @@ async fn start_executor_process_inner(
+             }
+         }
+         if clean_job_data_on_shutdown {
+-            if let Err(e) = clean_all_shuffle_data(&work_dir).await {
+-                error!("Ballista executor fail to clean_shuffle_data {e:?}")
+-            } else {
+-                info!("Shuffle data cleaned.");
++            match try_clean_private_shutdown(&work_dir, &executor, &mut work_dir_guard)
++                .await
++            {
++                Ok(true) => info!("Shuffle data cleaned after private workdir seal."),
++                Ok(false) => warn!(
++                    "Deferring private shuffle cleanup: late admission or active writer"
++                ),
++                Err(e) => error!("Ballista executor fail to clean_shuffle_data {e:?}"),
+             }
+         }
+     };
+@@ -983,6 +1074,21 @@ async fn start_executor_process_inner(
+         }
+         return Err(timed_out.into());
+     }
++    // Releasing the directory is safe only after services have stopped
++    // and the executor reports that no tracked work remains. On timeout,
++    // cancellation or an incomplete stop the guard instead retains 0700.
++    if let Some(guard) = work_dir_guard.as_mut() {
++        if futures::FutureExt::now_or_never(TasksDrainedFuture(executor.clone()))
++            .is_some()
++            && guard.finish()
++        {
++            // The final seal makes any late writer registration fail.
++        } else {
++            warn!(
++                "Retaining private executor directory: active tasks remain at shutdown"
++            );
++        }
++    }
+     info!("Executor stopped.");
+     Ok(())
+ }
+@@ -1125,6 +1231,29 @@ async fn clean_shuffle_data_loop(
+ }
+ 
+ /// This function will clean up all shuffle data on this executor
++/// Only after service handlers have stopped: atomically reject new private
++/// writer leases before deleting shuffle data. Caller-owned roots keep
++/// their existing cleanup semantics (no private registration).
++pub(crate) async fn try_clean_private_shutdown(
++    work_dir: &str,
++    executor: &Arc<Executor>,
++    guard: &mut Option<ExecutorWorkDirGuard>,
++) -> ballista_core::error::Result<bool> {
++    let can_clean = match guard.as_mut() {
++        Some(guard) => {
++            futures::FutureExt::now_or_never(TasksDrainedFuture(executor.clone()))
++                .is_some()
++                && guard.finish()
++        }
++        None => true,
++    };
++    if !can_clean {
++        return Ok(false);
++    }
++    clean_all_shuffle_data(work_dir).await?;
++    Ok(true)
++}
++
+ async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<()> {
+     let mut dir = fs::read_dir(work_dir).await?;
+     let mut to_deleted = Vec::new();
+@@ -1934,3 +2063,130 @@ mod spill_limit_tests {
+         ));
+     }
+ }
++
++#[cfg(test)]
++mod executor_work_dir_tests {
++    use super::*;
++
++    #[test]
++    fn default_work_dir_is_private_and_removed_when_guard_drops() {
++        let (path, guard) = resolve_executor_work_dir(None).unwrap();
++        let guard = guard.expect("default directory must be owned by executor");
++        assert!(Path::new(&path).is_dir());
++
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::PermissionsExt;
++            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
++            assert_eq!(mode, 0o700);
++        }
++
++        drop(guard);
++        assert!(!Path::new(&path).exists());
++    }
++
++    #[test]
++    fn explicitly_configured_work_dir_remains_caller_owned() {
++        let configured = TempDir::new().unwrap();
++        let configured_path = configured.path().to_string_lossy().into_owned();
++        let (path, guard) =
++            resolve_executor_work_dir(Some(configured_path.clone())).unwrap();
++        assert_eq!(path, configured_path);
++        assert!(guard.is_none());
++        assert!(Path::new(&path).is_dir());
++    }
++}
++
++#[cfg(all(test, unix))]
++mod executor_shutdown_r9_green {
++    use super::*;
++    use std::fs;
++    use std::os::unix::fs::PermissionsExt;
++    use tokio::sync::oneshot;
++    use tokio::time::{Duration, timeout};
++
++    fn mode(path: &str) -> u32 {
++        fs::metadata(path).unwrap().permissions().mode() & 0o777
++    }
++
++    async fn late_writer(path: String, go: oneshot::Receiver<()>) -> u32 {
++        go.await.expect("release late writer");
++        tokio::fs::create_dir_all(format!("{path}/job/stage"))
++            .await
++            .unwrap();
++        tokio::fs::write(format!("{path}/job/stage/data-0.arrow"), b"synthetic")
++            .await
++            .unwrap();
++        mode(&path)
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn normal_shutdown_waits_for_writer_before_directory_cleanup() {
++        let (path, mut guard) = resolve_executor_work_dir(None).unwrap();
++        guard.as_mut().unwrap().arm();
++        let (release, wake) = oneshot::channel();
++        let task = tokio::spawn(late_writer(path.clone(), wake));
++        release.send(()).unwrap();
++        assert_eq!(task.await.unwrap(), 0o700);
++        guard.as_mut().unwrap().finish();
++        drop(guard);
++        assert!(
++            !Path::new(&path).exists(),
++            "normal shutdown left shuffle data"
++        );
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn forced_timeout_retains_private_directory_for_late_writer() {
++        let (path, mut guard) = resolve_executor_work_dir(None).unwrap();
++        guard.as_mut().unwrap().arm();
++        let (release, wake) = oneshot::channel();
++        let task = tokio::spawn(late_writer(path.clone(), wake));
++        assert_eq!(mode(&path), 0o700);
++        let result =
++            timeout(Duration::from_millis(20), std::future::pending::<()>()).await;
++        assert!(result.is_err(), "expected forced shutdown timeout");
++        drop(guard);
++        release.send(()).unwrap();
++        let observed = task.await.unwrap();
++        let _ = fs::remove_dir_all(&path);
++        assert_eq!(
++            observed, 0o700,
++            "SECURITY_RED: late writer recreated a nonprivate directory after timeout"
++        );
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn caller_cancellation_retains_private_directory_for_late_writer() {
++        let (ready, receive) = oneshot::channel();
++        let owner = tokio::spawn(async move {
++            let (path, mut guard) = resolve_executor_work_dir(None).unwrap();
++            guard.as_mut().unwrap().arm();
++            ready.send(path).unwrap();
++            std::future::pending::<()>().await;
++            drop(guard);
++        });
++        let path = receive.await.unwrap();
++        let (release, wake) = oneshot::channel();
++        let task = tokio::spawn(late_writer(path.clone(), wake));
++        owner.abort();
++        assert!(owner.await.unwrap_err().is_cancelled());
++        release.send(()).unwrap();
++        let observed = task.await.unwrap();
++        let _ = fs::remove_dir_all(&path);
++        assert_eq!(
++            observed, 0o700,
++            "SECURITY_RED: cancelled owner let late writer recreate a nonprivate directory"
++        );
++    }
++}
++
++#[cfg(all(test, unix))]
++pub(crate) async fn r11_m2_real_cleanup_test_only(
++    work_dir: &str,
++    executor: &Arc<Executor>,
++    guard: &mut Option<ExecutorWorkDirGuard>,
++) -> ballista_core::error::Result<bool> {
++    // The actual production admission/cleanup gate, not a reimplementation.
++    try_clean_private_shutdown(work_dir, executor, guard).await
++}
+diff --git a/ballista/executor/src/executor_server.rs b/ballista/executor/src/executor_server.rs
+index d9880ac..552dd32 100644
+--- a/ballista/executor/src/executor_server.rs
++++ b/ballista/executor/src/executor_server.rs
+@@ -766,7 +766,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
+                     debug!("Received task {:?}", task_identity);
+ 
+                     let server = executor_server.clone();
++                    let queued_work = match server.executor.begin_queued_work() {
++                        Ok(lease) => lease,
++                        Err(_) => {
++                            warn!(
++                                "Rejecting a late task after executor workdir shutdown"
++                            );
++                            continue;
++                        }
++                    };
+                     dedicated_executor.spawn(async move {
++                        let _queued_work = queued_work;
+                         server.run_task(task_identity.clone(), curator_task).await;
+                     });
+                 } else {
