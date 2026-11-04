@@ -149,6 +149,22 @@ ctx.register_parquet("trips", "/mnt/bigdata/trips")
 ctx.sql("CREATE EXTERNAL TABLE trips STORED AS PARQUET LOCATION '/mnt/bigdata/trips'")
 ```
 
+Data in S3 needs credentials in two places. The client reads table schemas, so register an S3 object store on the context. The scheduler and executors read the data, so pass them the same settings with `SET s3.*`:
+
+```python
+from datafusion.object_store import AmazonS3
+
+ctx.register_object_store("s3://", AmazonS3(bucket_name="my-bucket", region="us-west-2"))
+
+ctx.sql("SET s3.region = 'us-west-2'")
+ctx.sql("SET s3.access_key_id = '...'")
+ctx.sql("SET s3.secret_access_key = '...'")
+
+ctx.sql("CREATE EXTERNAL TABLE trips STORED AS PARQUET LOCATION 's3://my-bucket/trips/'")
+```
+
+The cluster processes can instead use the standard AWS environment variables. See [Querying S3 Data](cloud-storage.md) for all options.
+
 ### Executing Queries
 
 The `sql` method returns a `DataFrame`. The query runs when you call an action like

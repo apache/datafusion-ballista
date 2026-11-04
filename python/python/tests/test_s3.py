@@ -22,6 +22,8 @@ RustFS replaces MinIO, which withdrew its images, same as the Rust
 integration tests in `examples/tests/common/mod.rs`.
 """
 
+from pathlib import Path
+
 from ballista import BallistaSessionContext, setup_test_cluster
 from datafusion import col, udf
 from datafusion.object_store import AmazonS3
@@ -33,7 +35,7 @@ pytest.importorskip("testcontainers")
 from testcontainers.core.container import DockerContainer  # noqa: E402
 from testcontainers.core.wait_strategies import HttpWaitStrategy  # noqa: E402
 
-TEST_PARQUET = "testdata/test.parquet"
+TEST_PARQUET = str(Path(__file__).resolve().parents[2] / "testdata" / "test.parquet")
 
 RUSTFS_IMAGE = "rustfs/rustfs:1.0.0"
 S3_PORT = 9000
@@ -119,7 +121,9 @@ def test_read_s3(ctx):
 
     result = ctx.sql("SELECT * FROM t ORDER BY id").to_arrow_table()
 
-    assert result == expected
+    # compare values, not arrow types, so string vs string_view differences
+    # between the local and S3 read paths don't fail the test
+    assert result.to_pylist() == expected.to_pylist()
 
 
 def test_python_udf_on_s3_data(ctx):
