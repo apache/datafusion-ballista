@@ -47,6 +47,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_expr::PhysicalExpr;
@@ -71,7 +72,7 @@ use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use log::debug;
-use std::sync::Mutex;
+use std::sync::{Mutex, Weak};
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
@@ -234,7 +235,7 @@ pub const DEFAULT_SHUFFLE_CHANNEL_CAPACITY: usize = 8;
 /// Shared state for the coordinator+handoff pattern (see range_repartition.rs
 /// upstream for the reference design). The first `execute(N)` call spawns a
 /// single coordinator task that owns all K writes; every `execute(N)` call
-/// takes its own `oneshot::Receiver` and awaits the summaries for partition N.
+/// takes its own [`Handoff`] and awaits the summaries for partition N.
 ///
 /// The receiver payload is a `Vec` so writers that produce multiple files per
 /// output partition (e.g. `SortShuffleWriterExec` under a multi-partition
@@ -242,12 +243,107 @@ pub const DEFAULT_SHUFFLE_CHANNEL_CAPACITY: usize = 8;
 /// partitions) can hand the full set to a single `execute(N)` stream.
 /// Passthrough / hash-repart writers produce at most one summary per slot.
 pub(crate) struct WriterState {
-    pub(crate) initialized: bool,
+    /// The coordinator spawned by the first `execute(N)` call, or `None`
+    /// before that call. The state holds it weakly, so only the handoffs
+    /// keep it running (see [`Handoff`]).
+    coordinator: Option<Weak<SpawnedTask<()>>>,
     /// One receiver per output partition. `execute(N)` takes `handoffs[N]`;
     /// the coordinator holds the matching sender and pushes the summaries
     /// once partition N's files are closed.
-    pub(crate) handoffs:
-        Vec<Option<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>>>,
+    handoffs: Vec<Option<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>>>,
+}
+
+impl WriterState {
+    /// Creates the state of a writer with `output_partition_count` output
+    /// partitions, before its first `execute(N)` call.
+    pub(crate) fn new(output_partition_count: usize) -> Self {
+        Self {
+            coordinator: None,
+            handoffs: (0..output_partition_count).map(|_| None).collect(),
+        }
+    }
+
+    /// Takes the handoff for `partition`, spawning the coordinator on the
+    /// first call.
+    ///
+    /// The first call creates one oneshot per output partition and passes the
+    /// senders to `spawn_coordinator`, which spawns the coordinator and returns
+    /// its task. Fails when `partition` is out of range or the handoff of
+    /// `partition` was already taken. The range check runs before the
+    /// coordinator is spawned. `name`, the calling exec's name, starts the
+    /// error message.
+    pub(crate) fn take_handoff(
+        &mut self,
+        name: &str,
+        partition: usize,
+        spawn_coordinator: impl FnOnce(
+            Vec<oneshot::Sender<Result<Vec<ShuffleWritePartition>>>>,
+        ) -> SpawnedTask<()>,
+    ) -> Result<Handoff> {
+        let k = self.handoffs.len();
+        let taken_or_out_of_range = || {
+            DataFusionError::Internal(format!(
+                "{name}: execute({partition}) called twice or out of range (have {k} partitions)"
+            ))
+        };
+        if partition >= k {
+            return Err(taken_or_out_of_range());
+        }
+
+        let coordinator = match &self.coordinator {
+            Some(coordinator) => coordinator.upgrade(),
+            None => {
+                let mut senders = Vec::with_capacity(k);
+                for slot in &mut self.handoffs {
+                    let (tx, rx) = oneshot::channel();
+                    senders.push(tx);
+                    *slot = Some(rx);
+                }
+                let coordinator = Arc::new(spawn_coordinator(senders));
+                self.coordinator = Some(Arc::downgrade(&coordinator));
+                Some(coordinator)
+            }
+        };
+
+        let summaries = self.handoffs[partition]
+            .take()
+            .ok_or_else(taken_or_out_of_range)?;
+        Ok(Handoff {
+            summaries,
+            _coordinator: coordinator,
+        })
+    }
+}
+
+/// The receiver for one output partition's summaries, together with a share
+/// of the coordinator task that sends them.
+///
+/// The coordinator runs while any handoff, or any stream built from one by
+/// [`handoff_stream`], is alive. Dropping the last one aborts the
+/// coordinator and the write tasks it owns, so a cancelled task stops reading
+/// its input once it drops its `execute(N)` streams.
+///
+/// [`WriterState`] holds the coordinator weakly. A strong reference there
+/// would keep the coordinator running after a cancel. Both the plan, which
+/// the executor keeps to collect metrics, and the coordinator's own copy of
+/// the writer hold the state.
+pub(crate) struct Handoff {
+    summaries: oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>,
+    /// `None` when the coordinator had already stopped before this handoff
+    /// was taken. `summaries` then holds what it sent, or reports it gone.
+    _coordinator: Option<Arc<SpawnedTask<()>>>,
+}
+
+impl Handoff {
+    /// Waits for the summaries. The coordinator keeps running at least until
+    /// this future completes or is dropped.
+    async fn recv(self, name: &str) -> Result<Vec<ShuffleWritePartition>> {
+        self.summaries.await.map_err(|_| {
+            DataFusionError::Internal(format!(
+                "{name} coordinator dropped without sending"
+            ))
+        })?
+    }
 }
 
 /// Per-column statistics over everything a writer wrote: a logical null count
@@ -418,7 +514,7 @@ impl Drop for ColumnStatsStream {
 impl Debug for WriterState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WriterState")
-            .field("initialized", &self.initialized)
+            .field("coordinator", &self.coordinator)
             .field("handoffs", &self.handoffs.len())
             .finish()
     }
@@ -650,10 +746,7 @@ impl ShuffleWriterExec {
             global_output_partition_ids: default_partition_slice,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
-            state: Arc::new(Mutex::new(WriterState {
-                initialized: false,
-                handoffs: (0..output_partition_count).map(|_| None).collect(),
-            })),
+            state: Arc::new(Mutex::new(WriterState::new(output_partition_count))),
             column_stats: ColumnStatsCollector::default(),
         })
     }
@@ -943,7 +1036,9 @@ impl ExecutionPlan for ShuffleWriterExec {
     /// channels, and spawns a single coordinator task that drives the
     /// write work for all K output partitions and sends each summary to
     /// its matching partition's oneshot sender. Subsequent calls take
-    /// their receiver and return a stream that awaits it.
+    /// their receiver and return a stream that awaits it. If every stream
+    /// returned so far is dropped before its summaries arrive, the
+    /// coordinator stops, and the streams of later calls fail.
     ///
     /// Caller (typically `DefaultQueryStageExec::execute_query_stage`)
     /// should spawn all K `execute(N, ctx)` calls concurrently so the
@@ -953,27 +1048,24 @@ impl ExecutionPlan for ShuffleWriterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let mut guard = self.state.lock().map_err(|_| {
-            DataFusionError::Internal("ShuffleWriterExec state mutex poisoned".to_owned())
-        })?;
-        let state = &mut *guard;
-        let rx = take_handoff(
-            "ShuffleWriterExec",
-            &mut state.initialized,
-            &mut state.handoffs,
-            partition,
-            |senders| {
+        let handoff = self
+            .state
+            .lock()
+            .map_err(|_| {
+                DataFusionError::Internal(
+                    "ShuffleWriterExec state mutex poisoned".to_owned(),
+                )
+            })?
+            .take_handoff("ShuffleWriterExec", partition, |senders| {
                 let writer = self.clone();
-                tokio::spawn(async move {
+                SpawnedTask::spawn(async move {
                     run_coordinator(writer.execute_shuffle_write(context), senders).await;
-                });
-            },
-        )?;
-        drop(guard);
+                })
+            })?;
 
         Ok(handoff_stream(
             "ShuffleWriterExec",
-            rx,
+            handoff,
             self.work_dir.clone(),
             self.job_id.clone(),
             self.stage_id,
@@ -1092,45 +1184,12 @@ pub(crate) async fn run_coordinator<F>(
     }
 }
 
-/// Takes the handoff receiver for `partition`. The first call creates one
-/// oneshot per output partition and passes the senders to
-/// `spawn_coordinator`. `name` is the calling exec, used in the error for a
-/// repeated or out-of-range partition.
-pub(crate) fn take_handoff(
-    name: &str,
-    initialized: &mut bool,
-    handoffs: &mut [Option<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>>],
-    partition: usize,
-    spawn_coordinator: impl FnOnce(Vec<oneshot::Sender<Result<Vec<ShuffleWritePartition>>>>),
-) -> Result<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>> {
-    if !*initialized {
-        *initialized = true;
-        let mut senders: Vec<oneshot::Sender<Result<Vec<ShuffleWritePartition>>>> =
-            Vec::with_capacity(handoffs.len());
-        for slot in handoffs.iter_mut() {
-            let (tx, rx) = oneshot::channel();
-            senders.push(tx);
-            *slot = Some(rx);
-        }
-        spawn_coordinator(senders);
-    }
-
-    let k = handoffs.len();
-    handoffs
-        .get_mut(partition)
-        .and_then(Option::take)
-        .ok_or_else(|| {
-            DataFusionError::Internal(format!(
-                "{name}: execute({partition}) called twice or out of range (have {k} partitions)"
-            ))
-        })
-}
-
-/// Wraps a receiver from [`take_handoff`] in the metadata stream returned by
-/// `execute(N)`.
+/// Wraps a handoff from [`WriterState::take_handoff`] in the metadata stream returned by
+/// `execute(N)`. The stream keeps the coordinator running until the
+/// summaries arrive or the stream is dropped.
 pub(crate) fn handoff_stream(
     name: &'static str,
-    rx: oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>,
+    handoff: Handoff,
     work_dir: String,
     job_id: JobId,
     stage_id: usize,
@@ -1141,11 +1200,7 @@ pub(crate) fn handoff_stream(
     Box::pin(RecordBatchStreamAdapter::new(
         schema,
         futures::stream::once(async move {
-            let summaries = rx.await.map_err(|_| {
-                DataFusionError::Internal(format!(
-                    "{name} coordinator dropped without sending"
-                ))
-            })??;
+            let summaries = handoff.recv(name).await?;
             summaries_to_batch(summaries, schema_captured, &work_dir, &job_id, stage_id)
         })
         .try_flatten(),
@@ -1277,16 +1332,22 @@ mod tests {
     use super::*;
     use crate::error::BallistaError;
     use crate::execution_plans::ChaosExec;
+    use crate::execution_plans::sort_shuffle::SortShuffleConfig;
+    use crate::execution_plans::{RangeShuffleWriterExec, SortShuffleWriterExec};
     use datafusion::arrow::array::{
         AsArray, StringArray, StringViewArray, StructArray, UInt32Array, UInt64Array,
     };
     use datafusion::arrow::ipc::reader::StreamReader;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::display::DefaultDisplay;
     use datafusion::physical_plan::expressions::Column;
+    use datafusion::physical_plan::sorts::sort::SortExec;
+    use datafusion::physical_plan::test::exec::BlockingExec;
     use datafusion::prelude::SessionContext;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     /// Spawn K parallel `plan.execute(N, ctx)` calls, collect each stream's
@@ -1586,6 +1647,28 @@ mod tests {
         Ok(())
     }
 
+    /// An out-of-range first call must error before the coordinator is
+    /// spawned. Otherwise it would spawn the coordinator and drop its only
+    /// share, and every later valid call would fail.
+    #[tokio::test]
+    async fn later_calls_succeed_after_an_out_of_range_first_call() -> Result<()> {
+        let task_ctx = SessionContext::new().task_ctx();
+        let work_dir = TempDir::new()?;
+        let query_stage = Arc::new(ShuffleWriterExec::try_new(
+            JobId::new("jobOutOfRange"),
+            1,
+            create_input_plan()?,
+            work_dir.path().to_str().unwrap().to_owned(),
+        )?);
+        let Err(_) = query_stage.execute(2, task_ctx.clone()) else {
+            panic!("execute(2) must error");
+        };
+
+        let batches = drive_all_partitions(query_stage, task_ctx).await?;
+        assert_eq!(2, batches.len());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_create_dir_failure_propagates() -> Result<()> {
         let session_ctx = SessionContext::new();
@@ -1746,6 +1829,107 @@ mod tests {
         // Standard error is 3.3% here.
         assert!((80..=120).contains(&distinct), "estimated {distinct}");
         Ok(())
+    }
+
+    /// A cancelled task dropped its `execute(N)` streams, but the coordinator
+    /// kept draining the input until the input ended.
+    #[tokio::test]
+    async fn dropping_every_output_stream_stops_the_write() -> Result<()> {
+        let (input, input_refs) = blocking_input();
+        let work_dir = TempDir::new()?;
+        let writer = ShuffleWriterExec::try_new(
+            JobId::new("jobOne"),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_owned(),
+        )?;
+        assert_dropping_output_streams_stops_input(&writer, &input_refs).await
+    }
+
+    /// The sort writer runs its own coordinator, which also kept draining the
+    /// input after its `execute(N)` streams were dropped.
+    #[tokio::test]
+    async fn dropping_every_sort_shuffle_output_stream_stops_the_write() -> Result<()> {
+        let (input, input_refs) = blocking_input();
+        let work_dir = TempDir::new()?;
+        let writer = SortShuffleWriterExec::try_new(
+            JobId::new("jobOne"),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_owned(),
+            Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2),
+            SortShuffleConfig::default(),
+        )?;
+        assert_dropping_output_streams_stops_input(&writer, &input_refs).await
+    }
+
+    /// The range writer's coordinator also kept draining the input after its
+    /// `execute(N)` streams were dropped.
+    #[tokio::test]
+    async fn dropping_every_range_shuffle_output_stream_stops_the_write() -> Result<()> {
+        let (input, input_refs) = blocking_input();
+        // The range writer requires an ordered input. `SortExec` keeps each
+        // input stream open while it waits for the input to end.
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(
+            Column::new("a", 0),
+        ))])
+        .expect("one sort expression is a valid ordering");
+        let input =
+            Arc::new(SortExec::new(ordering, input).with_preserve_partitioning(true));
+        let work_dir = TempDir::new()?;
+        let writer = RangeShuffleWriterExec::try_new(
+            JobId::new("jobOne"),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_owned(),
+        )?;
+        assert_dropping_output_streams_stops_input(&writer, &input_refs).await
+    }
+
+    /// A two-partition `BlockingExec`, whose streams never end, and a count of
+    /// the input plan and every stream opened from it.
+    fn blocking_input() -> (Arc<dyn ExecutionPlan>, Weak<()>) {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, true)]));
+        let input = Arc::new(BlockingExec::new(schema, 2));
+        let input_refs = input.refs();
+        (input, input_refs)
+    }
+
+    /// Opens every output stream of `writer`, waits until the writer has opened
+    /// both input streams, drops the output streams, and waits until the input
+    /// streams are dropped too. The caller keeps `writer` alive. The executor
+    /// also keeps the plan after a cancel, to collect its metrics.
+    async fn assert_dropping_output_streams_stops_input(
+        writer: &dyn ExecutionPlan,
+        input_refs: &Weak<()>,
+    ) -> Result<()> {
+        let k = writer.properties().output_partitioning().partition_count();
+        let task_ctx = SessionContext::new().task_ctx();
+        {
+            let _streams = (0..k)
+                .map(|n| writer.execute(n, task_ctx.clone()))
+                .collect::<Result<Vec<_>>>()?;
+            // The input plan and one stream per input partition.
+            assert_strong_count_reaches(input_refs, 3).await;
+        }
+        assert_strong_count_reaches(input_refs, 1).await;
+        Ok(())
+    }
+
+    /// Waits until `refs` has `expected` strong references, and fails after
+    /// 10 seconds.
+    async fn assert_strong_count_reaches<T>(refs: &Weak<T>, expected: usize) {
+        let reached = tokio::time::timeout(Duration::from_secs(10), async {
+            while refs.strong_count() != expected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            reached.is_ok(),
+            "expected {expected} strong references, got {}",
+            refs.strong_count()
+        );
     }
 
     fn create_input_plan() -> Result<Arc<dyn ExecutionPlan>> {
