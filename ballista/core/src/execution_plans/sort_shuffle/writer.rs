@@ -623,6 +623,7 @@ impl SortShuffleWriterExec {
                 schema.clone(),
                 config.batch_size,
                 split_on_arrival_budget(
+                    config.split_on_arrival_max_bytes,
                     config.memory_limit_per_task_bytes,
                     free_pool_memory(context.runtime_env().memory_pool.as_ref()),
                     input_partitions,
@@ -783,7 +784,8 @@ impl SortShuffleWriterExec {
 /// - a quarter of an even share of the pool's free memory between the task's
 ///   `input_partitions`, when bounded, so the pool does not refuse the first
 ///   batch;
-/// - 64 MiB, so the default 256 MiB budget and a disabled one agree.
+/// - `split_on_arrival_max_bytes`, by default 64 MiB, so the default 256 MiB
+///   budget and a disabled one agree.
 ///
 /// The quarters leave room for completed batches, so spills write full ones,
 /// and for the switch to split, which holds the buffered rows twice until
@@ -793,12 +795,12 @@ impl SortShuffleWriterExec {
 /// starts, not what they take later. An input left short then spills mostly
 /// partly filled batches, so it goes back to deferred after the first spill.
 fn split_on_arrival_budget(
+    split_on_arrival_max_bytes: usize,
     memory_limit_per_task_bytes: usize,
     pool_free: MemoryLimit,
     input_partitions: usize,
 ) -> usize {
-    const MAX_SPLIT_BUDGET_BYTES: usize = 64 * 1024 * 1024;
-    let mut budget = MAX_SPLIT_BUDGET_BYTES;
+    let mut budget = split_on_arrival_max_bytes;
     if memory_limit_per_task_bytes > 0 {
         budget = budget.min(memory_limit_per_task_bytes / 4);
     }
@@ -2395,6 +2397,23 @@ mod tests {
         memory_limit_per_task_bytes: usize,
         pool_bytes: Option<usize>,
     ) -> Result<LayoutRun> {
+        write_and_read_partitions_with(
+            batches,
+            num_partitions,
+            SortShuffleConfig::default()
+                .with_memory_limit_per_task_bytes(memory_limit_per_task_bytes),
+            pool_bytes,
+        )
+        .await
+    }
+
+    /// [`write_and_read_partitions`] with the whole writer `config`.
+    async fn write_and_read_partitions_with(
+        batches: Vec<RecordBatch>,
+        num_partitions: usize,
+        config: SortShuffleConfig,
+        pool_bytes: Option<usize>,
+    ) -> Result<LayoutRun> {
         use super::super::reader::stream_sort_shuffle_partition;
         use datafusion::arrow::array::{AsArray, StructArray};
         use datafusion::arrow::datatypes::UInt64Type;
@@ -2412,8 +2431,7 @@ mod tests {
             input,
             work_dir.path().to_str().unwrap().to_string(),
             Partitioning::Hash(vec![Arc::new(Column::new("k", 0))], num_partitions),
-            SortShuffleConfig::default()
-                .with_memory_limit_per_task_bytes(memory_limit_per_task_bytes),
+            config,
         )?;
         let mut runtime = RuntimeEnvBuilder::new();
         if let Some(pool_bytes) = pool_bytes {
@@ -2517,6 +2535,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn split_on_arrival_max_bytes_of_zero_never_splits() -> Result<()> {
+        // The same input splits under the default config.
+        let batches = key_and_string_batches(3, 22000);
+        let config = SortShuffleConfig::default().with_split_on_arrival_max_bytes(0);
+        let run =
+            write_and_read_partitions_with(batches.clone(), 8, config, None).await?;
+
+        assert_eq!((run.split_inputs, run.spill_count), (0, 0));
+        assert_eq!(run.sorted_rows(), sorted_by_key(&batches));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn reported_num_bytes_exclude_spare_capacity() -> Result<()> {
         // 66000 rows split over 8 partitions, each ending in a partly filled
         // batch with room for 8192 rows, which must not be reported.
@@ -2543,22 +2574,29 @@ mod tests {
     #[tokio::test]
     async fn small_memory_pool_keeps_the_deferred_layout() -> Result<()> {
         // A 4 MiB pool: a quarter of it is far less than 64 partly filled
-        // 8192-row batches, so the writer stays deferred, and each spill
-        // writes at most one small batch per partition.
+        // 8192-row batches, so the writer stays deferred and writes exactly
+        // what a writer that never splits does, spills included.
         let batches = key_and_string_batches(20, 8192);
         let run =
             write_and_read_partitions(batches.clone(), 64, 256 << 20, Some(4 << 20))
                 .await?;
+        let never_splits = write_and_read_partitions_with(
+            batches.clone(),
+            64,
+            SortShuffleConfig::default()
+                .with_memory_limit_per_task_bytes(256 << 20)
+                .with_split_on_arrival_max_bytes(0),
+            Some(4 << 20),
+        )
+        .await?;
 
         assert_eq!(run.split_inputs, 0);
-        assert!(run.spill_count > 0, "expected the pool to force spills");
-        assert_eq!(run.sorted_rows(), sorted_by_key(&batches));
-        let written: usize = run.partitions.iter().map(Vec::len).sum();
-        assert!(
-            written <= batches.len() + 64 * (run.spill_count + 1),
-            "{written} batches for {} spills",
-            run.spill_count
+        assert_eq!(
+            (run.spill_count, &run.partitions),
+            (never_splits.spill_count, &never_splits.partitions)
         );
+        assert_ne!(run.spill_count, 0, "expected the pool to force spills");
+        assert_eq!(run.sorted_rows(), sorted_by_key(&batches));
         Ok(())
     }
 
@@ -2567,9 +2605,10 @@ mod tests {
         use datafusion::execution::memory_pool::{GreedyMemoryPool, UnboundedMemoryPool};
 
         const MIB: usize = 1 << 20;
-        // One input and no per-task budget: only the pool term and the cap.
-        let budget =
-            |pool: &dyn MemoryPool| split_on_arrival_budget(0, free_pool_memory(pool), 1);
+        // One input, the 64 MiB cap, no per-task budget: only the pool term.
+        let budget = |pool: &dyn MemoryPool| {
+            split_on_arrival_budget(64 * MIB, 0, free_pool_memory(pool), 1)
+        };
         let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(200 * MIB));
         assert_eq!(budget(pool.as_ref()), 50 * MIB);
 
@@ -2586,20 +2625,37 @@ mod tests {
     #[test]
     fn split_on_arrival_budget_takes_the_tightest_term() {
         const MIB: usize = 1 << 20;
-        for (task_budget, pool, inputs, expected) in [
+        for (max, task_budget, pool, inputs, expected) in [
             // The 64 MiB cap: the default budget, and a disabled one.
-            (256 * MIB, MemoryLimit::Infinite, 12, 64 * MIB),
-            (0, MemoryLimit::Unknown, 12, 64 * MIB),
+            (64 * MIB, 256 * MIB, MemoryLimit::Infinite, 12, 64 * MIB),
+            (64 * MIB, 0, MemoryLimit::Unknown, 12, 64 * MIB),
+            // A raised cap, still held to a quarter of the per-task budget.
+            (512 * MIB, 1024 * MIB, MemoryLimit::Infinite, 12, 256 * MIB),
+            (512 * MIB, 0, MemoryLimit::Infinite, 12, 512 * MIB),
+            // A cap of 0 never splits.
+            (0, 256 * MIB, MemoryLimit::Infinite, 12, 0),
             // A quarter of a smaller per-input budget.
-            (8 * MIB, MemoryLimit::Infinite, 1, 2 * MIB),
+            (64 * MIB, 8 * MIB, MemoryLimit::Infinite, 1, 2 * MIB),
             // A quarter of an even share of the pool.
-            (256 * MIB, MemoryLimit::Finite(1200 * MIB), 12, 25 * MIB),
-            (256 * MIB, MemoryLimit::Finite(64 * MIB), 0, 16 * MIB),
+            (
+                64 * MIB,
+                256 * MIB,
+                MemoryLimit::Finite(1200 * MIB),
+                12,
+                25 * MIB,
+            ),
+            (
+                64 * MIB,
+                256 * MIB,
+                MemoryLimit::Finite(64 * MIB),
+                0,
+                16 * MIB,
+            ),
         ] {
             assert_eq!(
-                split_on_arrival_budget(task_budget, pool, inputs),
+                split_on_arrival_budget(max, task_budget, pool, inputs),
                 expected,
-                "task budget {task_budget}, {inputs} inputs"
+                "max {max}, task budget {task_budget}, {inputs} inputs"
             );
         }
     }

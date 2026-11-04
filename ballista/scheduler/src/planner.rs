@@ -902,6 +902,9 @@ pub(crate) fn create_shuffle_writer_with_config(
             )
             .with_memory_limit_per_task_bytes(
                 ballista_config.shuffle_sort_based_memory_limit_per_task_bytes(),
+            )
+            .with_split_on_arrival_max_bytes(
+                ballista_config.shuffle_sort_based_split_on_arrival_max_bytes(),
             );
 
             Ok(Arc::new(SortShuffleWriterExec::try_new(

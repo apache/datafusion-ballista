@@ -31,6 +31,11 @@ pub struct SortShuffleConfig {
     /// the per-task budget, leaving the runtime `MemoryPool` as the sole spill
     /// trigger.
     pub memory_limit_per_task_bytes: usize,
+    /// Most memory an input's partly filled batches may take for the writer
+    /// to split rows by partition on arrival (default: 64 MiB). The budget is
+    /// also held to a quarter of `memory_limit_per_task_bytes` and of the
+    /// input's share of the pool's free memory. A value of 0 never splits.
+    pub split_on_arrival_max_bytes: usize,
 }
 
 impl Default for SortShuffleConfig {
@@ -39,6 +44,7 @@ impl Default for SortShuffleConfig {
             enabled: false,
             batch_size: 8192,
             memory_limit_per_task_bytes: 256 * 1024 * 1024,
+            split_on_arrival_max_bytes: 64 * 1024 * 1024,
         }
     }
 }
@@ -50,12 +56,20 @@ impl SortShuffleConfig {
             enabled,
             batch_size,
             memory_limit_per_task_bytes: Self::default().memory_limit_per_task_bytes,
+            split_on_arrival_max_bytes: Self::default().split_on_arrival_max_bytes,
         }
     }
 
     /// Sets the per-task buffered-bytes budget.
     pub fn with_memory_limit_per_task_bytes(mut self, bytes: usize) -> Self {
         self.memory_limit_per_task_bytes = bytes;
+        self
+    }
+
+    /// Sets the most memory partly filled batches may take for the writer to
+    /// split rows on arrival.
+    pub fn with_split_on_arrival_max_bytes(mut self, bytes: usize) -> Self {
+        self.split_on_arrival_max_bytes = bytes;
         self
     }
 }
@@ -70,6 +84,7 @@ mod tests {
         assert!(!config.enabled);
         assert_eq!(config.batch_size, 8192);
         assert_eq!(config.memory_limit_per_task_bytes, 256 * 1024 * 1024);
+        assert_eq!(config.split_on_arrival_max_bytes, 64 * 1024 * 1024);
     }
 
     #[test]
@@ -78,11 +93,18 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.batch_size, 4096);
         assert_eq!(config.memory_limit_per_task_bytes, 256 * 1024 * 1024);
+        assert_eq!(config.split_on_arrival_max_bytes, 64 * 1024 * 1024);
     }
 
     #[test]
     fn test_with_memory_limit_per_task_bytes() {
         let config = SortShuffleConfig::default().with_memory_limit_per_task_bytes(1024);
         assert_eq!(config.memory_limit_per_task_bytes, 1024);
+    }
+
+    #[test]
+    fn test_with_split_on_arrival_max_bytes() {
+        let config = SortShuffleConfig::default().with_split_on_arrival_max_bytes(0);
+        assert_eq!(config.split_on_arrival_max_bytes, 0);
     }
 }
