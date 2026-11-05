@@ -139,6 +139,10 @@ struct Inner {
 /// intervals (minimum 15 s). The task exits automatically when the pool `Arc`
 /// is dropped.
 ///
+/// Shared connections also expire after `idle_timeout` (the executor's
+/// `client_ttl`) without a new handout, so a later caller reconnects after
+/// a quiet period. Streams already opened on a retired connection continue.
+///
 /// The `DefaultBallistaClientPool` uses the (host, port, config) to identify a connection.
 /// Therefore changing connection config might leave pooled connections
 /// with older config unused until they expire.
@@ -228,8 +232,9 @@ fn evict(inner: &Inner) {
 /// Eviction can drop the slot while its `shared` caller was still
 /// connecting; without this the fresh connection would be invisible to the
 /// next caller, which would open another one. When a different slot has
-/// already reconnected, defer to its connection and let `ours` close on
-/// drop instead.
+/// already reconnected, defer to its connection. Callers that already hold
+/// the detached slot may still use `ours`; it closes once those callers and
+/// their in-flight streams finish.
 fn reattach_shared_slot(
     inner: &Inner,
     key: &PoolKey,
@@ -640,6 +645,159 @@ mod tests {
             &active,
             &pool.shared("127.0.0.1", port, &config, None).await.unwrap()
         ));
+    }
+
+    /// An open pipelined stream outlives the pool's last Channel handle,
+    /// including batches the producer sends only after the slot is evicted.
+    #[tokio::test]
+    async fn evict_idle_keeps_open_pipelined_stream_readable() {
+        use ballista_core::execution_plans::{
+            PipelinedRegistry, PipelinedShuffleWriterExec,
+        };
+        use ballista_core::serde::scheduler::{
+            ExecutorMetadata, ExecutorOperatingSystemSpecification,
+            ExecutorSpecification, PartitionId, PipelinedPartitionLocation,
+        };
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::execution::TaskContext;
+        use datafusion::physical_plan::SendableRecordBatchStream;
+        use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+        use datafusion::physical_plan::streaming::{PartitionStream, StreamingTableExec};
+        use datafusion::prelude::{SessionConfig, SessionContext};
+        use futures::{FutureExt, StreamExt, TryStreamExt};
+        use tokio::sync::mpsc;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        #[derive(Debug)]
+        struct Input {
+            schema: SchemaRef,
+            receiver:
+                Mutex<Option<mpsc::Receiver<datafusion::error::Result<RecordBatch>>>>,
+        }
+
+        impl PartitionStream for Input {
+            fn schema(&self) -> &SchemaRef {
+                &self.schema
+            }
+
+            fn execute(&self, _ctx: Arc<TaskContext>) -> SendableRecordBatchStream {
+                Box::pin(RecordBatchStreamAdapter::new(
+                    self.schema.clone(),
+                    ReceiverStream::new(self.receiver.lock().unwrap().take().unwrap()),
+                ))
+            }
+        }
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let schema =
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+            let first = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap();
+            let last = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![4, 5, 6]))],
+            )
+            .unwrap();
+            let (tx, rx) = mpsc::channel(1);
+            let input = Arc::new(
+                StreamingTableExec::try_new(
+                    schema.clone(),
+                    vec![Arc::new(Input {
+                        schema,
+                        receiver: Mutex::new(Some(rx)),
+                    })],
+                    None,
+                    vec![],
+                    false,
+                    None,
+                )
+                .unwrap(),
+            );
+            let registry = Arc::new(PipelinedRegistry::new("executor"));
+            let writer =
+                PipelinedShuffleWriterExec::try_new("job".into(), 1, input, None, false)
+                    .unwrap();
+            let ctx = SessionContext::new_with_config(
+                SessionConfig::new().with_extension(registry.clone()),
+            )
+            .task_ctx();
+            let producer =
+                tokio::spawn(async move { writer.execute_pipelined(ctx).await });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let work_dir = tempfile::tempdir().unwrap();
+            let service = crate::flight_service::BallistaFlightService::new(
+                work_dir.path().to_string_lossy().into_owned(),
+            )
+            .with_pipelined_registry(registry);
+            let server = tokio::spawn(
+                ballista_core::utils::create_grpc_server(&Default::default())
+                    .add_service(
+                        arrow_flight::flight_service_server::FlightServiceServer::new(
+                            service,
+                        ),
+                    )
+                    .serve_with_incoming(tonic::transport::server::TcpIncoming::from(
+                        listener,
+                    )),
+            );
+            let location = PipelinedPartitionLocation {
+                partition_id: PartitionId::new(&"job".into(), 1, 0),
+                task_id: 0,
+                executor_meta: ExecutorMetadata {
+                    id: "executor".to_owned(),
+                    host: "127.0.0.1".to_owned(),
+                    port,
+                    grpc_port: 0,
+                    specification: ExecutorSpecification::default(),
+                    os_info: ExecutorOperatingSystemSpecification::default(),
+                },
+            };
+            let idle_timeout = Duration::from_secs(60);
+            let pool = make_pool(idle_timeout);
+            let config = GrpcClientConfig::default();
+            let key = ("127.0.0.1".to_owned(), port, config.clone());
+            let connection = pool.shared("127.0.0.1", port, &config, None).await.unwrap();
+            let weak = Arc::downgrade(&connection);
+            tx.send(Ok(first.clone())).await.unwrap();
+            let mut stream = connection
+                .client()
+                .fetch_pipelined_partition(&location, Duration::from_secs(5))
+                .await
+                .unwrap();
+            assert_eq!(stream.next().await.unwrap().unwrap(), first);
+
+            // Match open_remote_once: only the stream, not a client clone or
+            // Arc<SharedClient>, survives after opening the response.
+            drop(connection);
+            {
+                let slot = pool.inner.shared.get(&key).unwrap();
+                slot.state.lock().unwrap().last_handout =
+                    Some(Instant::now() - idle_timeout - Duration::from_secs(1));
+            }
+            pool.evict_idle().await;
+            assert!(pool.inner.shared.is_empty());
+            assert!(weak.upgrade().is_none());
+            // Let the transport react to losing its last Channel handle
+            // before allowing the producer to send anything else.
+            tokio::task::yield_now().await;
+            assert!(stream.next().now_or_never().is_none());
+
+            // Nothing after the first batch could have been buffered before
+            // eviction: the producer receives the final batch only now.
+            tx.send(Ok(last.clone())).await.unwrap();
+            drop(tx);
+            assert_eq!(stream.try_collect::<Vec<_>>().await.unwrap(), vec![last]);
+            producer.await.unwrap().unwrap();
+            server.abort();
+        })
+        .await
+        .expect("pipelined stream should finish after shared connection eviction");
     }
 
     /// A slot left empty by a failed connect is collected by eviction.

@@ -55,8 +55,8 @@ pub trait BallistaClientPool: Send + Sync + Debug {
     ///
     /// Unlike [`acquire`](Self::acquire), nothing is checked out: any number
     /// of callers hold the connection at once and multiplex their streams
-    /// over it, and it stays open until one of them
-    /// [discards](SharedClient::discard) it. This is what the pipelined
+    /// over it. A pool may retire it after an idle timeout or when one of
+    /// them [discards](SharedClient::discard) it. This is what the pipelined
     /// reader uses, so that an executor keeps one connection to each other
     /// executor instead of one per stream.
     ///
@@ -88,14 +88,14 @@ pub trait BallistaClientPool: Send + Sync + Debug {
 ///
 /// Returned by [`BallistaClientPool::shared`]. Clients taken from it share
 /// the connection, so dropping them does not close it; the pool keeps it
-/// until it is [discarded](Self::discard).
+/// until it is [discarded](Self::discard) or the pool retires it.
 pub struct SharedClient {
     client: BallistaClient,
     discarded: AtomicBool,
     /// Runs once, on the first [discard](Self::discard). A pool uses it to
     /// drop the connection's slot eagerly instead of waiting for the next
     /// eviction pass.
-    on_discard: Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>,
+    on_discard: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl SharedClient {
@@ -115,7 +115,10 @@ impl SharedClient {
 
     /// Installs the hook the first [discard](Self::discard) runs. Discards
     /// after the first do not run it again.
-    pub fn set_discard_hook(&self, hook: Box<dyn FnOnce() + Send + Sync>) {
+    ///
+    /// Intended for the pool that created this connection. Replaces any
+    /// existing hook, so callers borrowing the connection should not use it.
+    pub fn set_discard_hook(&self, hook: Box<dyn FnOnce() + Send>) {
         *self.on_discard.lock().unwrap() = Some(hook);
     }
 
@@ -123,10 +126,11 @@ impl SharedClient {
     /// that the pool opens a new one for the next caller. Callers already on
     /// it keep it until they are done.
     pub fn discard(&self) {
-        if !self.discarded.swap(true, Ordering::AcqRel)
-            && let Some(hook) = self.on_discard.lock().unwrap().take()
-        {
-            hook();
+        if !self.discarded.swap(true, Ordering::AcqRel) {
+            let hook = self.on_discard.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
         }
     }
 
@@ -286,6 +290,30 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))])
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn discard_runs_send_only_hook_once_without_holding_its_lock() {
+        let client = Arc::new(SharedClient::new(BallistaClient::new_for_test(
+            "executor_1",
+            7070,
+        )));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let weak = Arc::downgrade(&client);
+        let hook_calls = calls.clone();
+        // Cell is Send but not Sync: the hook's mutex supplies synchronization.
+        let value = std::cell::Cell::new(Some(42));
+        client.set_discard_hook(Box::new(move || {
+            assert_eq!(value.take(), Some(42));
+            let client = weak.upgrade().unwrap();
+            assert!(client.on_discard.try_lock().is_ok());
+            hook_calls.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        client.discard();
+        client.discard();
+        assert!(client.is_discarded());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
