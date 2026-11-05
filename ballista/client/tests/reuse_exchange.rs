@@ -17,16 +17,18 @@
 
 mod common;
 
-/// End-to-end tests of `ballista.planner.adaptive.reuse_exchange`. Queries
+/// End-to-end tests of `ballista.planner.reuse_exchange.enabled`. Queries
 /// that read one subplan more than once run under adaptive query planning
-/// with exchange reuse on and off, and must return the same rows as a run of
-/// the static planner.
+/// with exchange reuse on and off, and with the reader-side rules (coalesce
+/// and skew join) on and off, and must return the same rows as a run of the
+/// static planner.
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod reuse_exchange {
     use ballista::prelude::SessionContextExt;
     use ballista_core::config::{
-        BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_ADAPTIVE_REUSE_EXCHANGE,
+        BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_COALESCE_ENABLED,
+        BALLISTA_REUSE_EXCHANGE_ENABLED, BALLISTA_SKEW_JOIN_ENABLED,
         BALLISTA_STANDALONE_PARALLELISM,
     };
     use ballista_core::extension::SessionConfigExt;
@@ -118,7 +120,7 @@ mod reuse_exchange {
          SELECT o_cust, total FROM t \
          UNION ALL SELECT o_cust, total FROM t \
          ORDER BY o_cust, total",
-        // An aggregate compared with its own average, as TPC-H q15 does.
+        // An aggregate compared with its own maximum, as TPC-H q15 does.
         "WITH t AS (SELECT o_cust, sum(o_amount) AS total \
                     FROM orders GROUP BY o_cust) \
          SELECT o_cust, total FROM t \
@@ -134,7 +136,12 @@ mod reuse_exchange {
 
     #[rstest]
     #[tokio::test]
-    async fn repeated_subplans_return_the_same_rows(#[values(false, true)] reuse: bool) {
+    async fn repeated_subplans_return_the_same_rows(
+        #[values(false, true)] reuse: bool,
+        // Each reader of a shared stage decides its own coalesce and skew
+        // join, which only run with these rules on.
+        #[values(false, true)] reader_rules: bool,
+    ) {
         let dir = TempDir::new().unwrap();
         write_tables(dir.path());
 
@@ -145,7 +152,9 @@ mod reuse_exchange {
             dir.path(),
             &[
                 (BALLISTA_ADAPTIVE_PLANNER_ENABLED, "true"),
-                (BALLISTA_ADAPTIVE_REUSE_EXCHANGE, &reuse.to_string()),
+                (BALLISTA_REUSE_EXCHANGE_ENABLED, &reuse.to_string()),
+                (BALLISTA_COALESCE_ENABLED, &reader_rules.to_string()),
+                (BALLISTA_SKEW_JOIN_ENABLED, &reader_rules.to_string()),
             ],
         )
         .await;
@@ -153,7 +162,10 @@ mod reuse_exchange {
         for sql in QUERIES {
             let expected = rows(&reference, sql).await;
             let actual = rows(&ctx, sql).await;
-            assert_eq!(actual, expected, "reuse={reuse} differs for: {sql}");
+            assert_eq!(
+                actual, expected,
+                "reuse={reuse} reader_rules={reader_rules} differs for: {sql}"
+            );
         }
     }
 }

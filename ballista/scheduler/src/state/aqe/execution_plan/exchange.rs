@@ -22,6 +22,7 @@ use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common::{ColumnStatistics, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::Statistics;
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::{
     common::tree_node::TreeNodeRecursion,
     error::{DataFusionError, Result},
@@ -386,31 +387,28 @@ impl ExchangeExec {
         )
     }
 
-    /// Whether this exchange and `other` are readers of one stage, so that
-    /// resolving either resolves both.
-    pub(crate) fn shares_stage_with(&self, other: &ExchangeExec) -> bool {
-        self.stage_handle() == other.stage_handle()
+    /// This exchange over an empty input of the same schema, sharing its
+    /// stage. Exchange reuse keys a stage with each exchange it reads
+    /// replaced by this, so the stages below are not encoded again.
+    pub(crate) fn as_key_leaf(&self) -> Self {
+        Self::new_with_details(
+            Arc::new(EmptyExec::new(self.input.schema())),
+            self.partitioning.clone(),
+            self.plan_id,
+            self.stage_id.clone(),
+            self.shuffle_partitions.clone(),
+            self.column_statistics.clone(),
+            self.coalesce.clone(),
+            self.range_repartition_routing.clone(),
+            self.broadcast,
+            self.inactive_stage,
+        )
     }
 
     /// Identifies the stage state this exchange shares with its other
     /// readers, for grouping exchanges by stage.
     pub(crate) fn stage_handle(&self) -> *const () {
         Arc::as_ptr(&self.stage_id) as *const ()
-    }
-
-    /// This exchange with stage state of its own, unshared with any other
-    /// exchange, and no stage assigned yet.
-    pub(crate) fn with_own_stage(&self) -> Self {
-        let input = self.input.clone();
-        let partitioning = self.partitioning.clone();
-        let exchange = if self.broadcast {
-            Self::new_broadcast(input, partitioning, self.plan_id)
-        } else {
-            Self::new(input, partitioning, self.plan_id)
-        };
-        let mut exchange = exchange.with_inactive_stage(self.inactive_stage);
-        exchange.skew_join = self.skew_join.clone();
-        exchange
     }
 
     /// The plan whose output this exchange shuffles.
@@ -872,7 +870,6 @@ mod column_statistics_tests {
 mod shared_stage_tests {
     //! Two readers of one stage, as exchange reuse makes them.
     use super::*;
-    use crate::state::aqe::test::mock_partitions_with_statistics;
     use ballista_core::execution_plans::PartitionGroup;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::empty::EmptyExec;
@@ -884,20 +881,6 @@ mod shared_stage_tests {
             Some(Partitioning::UnknownPartitioning(2)),
             plan_id,
         )
-    }
-
-    #[test]
-    fn a_reader_of_a_shared_stage_sees_the_stage_resolve() {
-        let canonical = exchange(1);
-        let reader = exchange(2).share_stage_of(&canonical);
-
-        canonical.set_stage_id(7);
-        canonical.resolve_shuffle_partitions(mock_partitions_with_statistics());
-
-        assert!(reader.shares_stage_with(&canonical));
-        assert_eq!(reader.stage_id(), Some(7));
-        assert!(reader.shuffle_created());
-        assert_eq!(reader.plan_id(), 2);
     }
 
     #[test]
@@ -913,17 +896,5 @@ mod shared_stage_tests {
         }));
 
         assert!(reader.coalesce().is_none());
-    }
-
-    #[test]
-    fn an_exchange_with_its_own_stage_shares_nothing() {
-        let canonical = exchange(1);
-        let reader = exchange(2).share_stage_of(&canonical);
-        let own = reader.with_own_stage();
-
-        canonical.set_stage_id(7);
-
-        assert!(!own.shares_stage_with(&canonical));
-        assert_eq!(own.stage_id(), None);
     }
 }

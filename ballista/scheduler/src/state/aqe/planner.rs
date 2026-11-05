@@ -27,16 +27,19 @@ use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
     DistributedExchangeRule, NormalizeInterleaveRule, OptimizeSkewedJoinRule,
     ParallelWindowRule, PinSubmittedShufflesRule, PrefixWindowRule,
-    PropagateEmptyExecRule, ReuseExchangeRule, SelectJoinRule,
+    PropagateEmptyExecRule, SelectJoinRule,
 };
+use crate::state::aqe::reuse_exchange::reuse_key;
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
 use ballista_core::JobId;
+use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
-use datafusion::common::{ColumnStatistics, HashMap, exec_err};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
+use datafusion::common::{ColumnStatistics, HashMap, exec_err, internal_err};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -44,12 +47,11 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
-use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use log::debug;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use tokio::time::Instant;
 
 type PhysicalOptimizerRuleRef =
@@ -98,11 +100,10 @@ pub struct AdaptivePlanner {
 
     runnable_stage_output: HashMap<usize, StageOutput>,
 
-    /// Raised by [`ReuseExchangeRule`] when it points a pending exchange at a
-    /// stage that has already finished. That resolves the exchange in the
-    /// middle of the optimizer chain, after the rules that react to a resolved
-    /// exchange have run, so the chain has to run again.
-    read_finished_stage: Arc<AtomicBool>,
+    /// The exchange that launched each stage a later exchange may read
+    /// instead of running a stage of its own, by its key (see
+    /// [`crate::state::aqe::reuse_exchange`]). Spark's AQE `stageCache`.
+    reusable_stages: HashMap<Vec<u8>, Arc<dyn ExecutionPlan>>,
 }
 
 impl Debug for AdaptivePlanner {
@@ -121,8 +122,6 @@ impl AdaptivePlanner {
     /// * `plan` - The physical execution plan for the job.
     /// * `job_id` - The unique identifier for the job.
     /// * `physical_optimizer_rules` - A list of physical optimizer rules to apply.
-    /// * `read_finished_stage` - The flag the rules' [`ReuseExchangeRule`], if
-    ///   any, raises.
     ///
     /// # Returns
     /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
@@ -131,12 +130,11 @@ impl AdaptivePlanner {
         plan: Arc<dyn ExecutionPlan>,
         job_id: JobId,
         physical_optimizer_rules: Vec<PhysicalOptimizerRuleRef>,
-        read_finished_stage: Arc<AtomicBool>,
     ) -> common::Result<Self> {
         let session_state =
             Self::create_session_state(state_builder, physical_optimizer_rules);
         let planner = DefaultPhysicalPlanner::default();
-        let plan = Self::optimize(&planner, &session_state, &read_finished_stage, plan)?;
+        let plan = planner.optimize_physical_plan(plan, &session_state, |_, _| {})?;
 
         Ok(Self {
             stage_id_generator: 0, // FIXME: compatibility issue with static where stages start from 1
@@ -146,29 +144,8 @@ impl AdaptivePlanner {
             runnable_stage_cache: HashMap::new(),
             job_id,
             runnable_stage_output: HashMap::new(),
-            read_finished_stage,
+            reusable_stages: HashMap::new(),
         })
-    }
-
-    /// Runs the optimizer chain over `plan`, and again for as long as a pass
-    /// resolves an exchange by pointing it at a finished stage, as a stage
-    /// finishing does. Bounded, since each pass can only point exchanges at
-    /// stages already finished.
-    fn optimize(
-        planner: &DefaultPhysicalPlanner,
-        session_state: &SessionState,
-        read_finished_stage: &AtomicBool,
-        mut plan: Arc<dyn ExecutionPlan>,
-    ) -> common::Result<Arc<dyn ExecutionPlan>> {
-        const MAX_PASSES: usize = 8;
-        for _ in 0..MAX_PASSES {
-            read_finished_stage.store(false, Ordering::Relaxed);
-            plan = planner.optimize_physical_plan(plan, session_state, |_, _| {})?;
-            if !read_finished_stage.load(Ordering::Relaxed) {
-                break;
-            }
-        }
-        Ok(plan)
     }
 
     /// Creates a new `AdaptivePlanner` with default physical optimizer rules,
@@ -218,18 +195,11 @@ impl AdaptivePlanner {
             .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
         let state_builder = SessionStateBuilder::from(ctx.state());
-        let read_finished_stage = Arc::new(AtomicBool::new(false));
         Self::try_new_with_optimizers(
             state_builder,
             plan,
             job_id,
-            Self::default_optimizers_with(
-                plan_id_generator,
-                replan_optimizers,
-                ctx.state().config().ballista_physical_extension_codec(),
-                read_finished_stage.clone(),
-            ),
-            read_finished_stage,
+            Self::default_optimizers_with(plan_id_generator, replan_optimizers),
         )
     }
 
@@ -286,18 +256,11 @@ impl AdaptivePlanner {
             |_, _| {},
         )?;
 
-        let read_finished_stage = Arc::new(AtomicBool::new(false));
         Self::try_new_with_optimizers(
             SessionStateBuilder::from(ctx.state()),
             plan,
             job_id,
-            Self::default_optimizers_with(
-                plan_id_generator,
-                replan_optimizers,
-                ctx.state().config().ballista_physical_extension_codec(),
-                read_finished_stage.clone(),
-            ),
-            read_finished_stage,
+            Self::default_optimizers_with(plan_id_generator, replan_optimizers),
         )
     }
     /// Cancels a stage by its ID.
@@ -479,11 +442,10 @@ impl AdaptivePlanner {
             displayable(plan.as_ref()).indent(false)
         );
 
-        plan = Self::optimize(
-            &self.physical_planner,
+        plan = self.physical_planner.optimize_physical_plan(
+            plan.clone(),
             &self.session_state,
-            &self.read_finished_stage,
-            plan,
+            |_, _| {},
         )?;
 
         debug!(
@@ -559,6 +521,147 @@ impl AdaptivePlanner {
             }
         }
     }
+    /// The runnable exchanges of the plan, once every exchange about to launch
+    /// a stage that repeats an earlier one has become a reader of that stage
+    /// (see [`crate::state::aqe::reuse_exchange`]).
+    ///
+    /// A repeat of a stage that already finished is resolved by sharing it,
+    /// which the rules reacting to a resolved exchange, such as join
+    /// selection, have to see, so the plan is replanned and searched again,
+    /// as when a stage finishes. Each pass resolves at least one exchange.
+    fn find_runnable_exchanges_reusing_stages(
+        &mut self,
+    ) -> common::Result<Vec<Arc<dyn ExecutionPlan>>> {
+        let config = self.session_state.config();
+        let enabled = config
+            .options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(BallistaConfig::reuse_exchange_enabled)
+            .unwrap_or_else(|| BallistaConfig::default().reuse_exchange_enabled());
+        let codec = config.ballista_physical_extension_codec();
+
+        // A pass that doesn't resolve an exchange ends the loop, and each
+        // pass that does resolves a pending one, so the plan's exchanges
+        // bound it. Running past them means a rule undid a resolution.
+        let mut exchanges = 0;
+        self.plan.apply(|node| {
+            exchanges += usize::from(node.is::<ExchangeExec>());
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        let mut passes = 0;
+        loop {
+            let mut runnable = Vec::new();
+            Self::find_runnable_exchanges(&self.plan, &mut runnable);
+            if !enabled {
+                return Ok(runnable);
+            }
+
+            let mut readers = HashMap::new();
+            let mut fresh = Vec::new();
+            let mut reads_finished_stage = false;
+            for exec in &runnable {
+                let Some(exchange) = exec.downcast_ref::<ExchangeExec>() else {
+                    continue;
+                };
+                if exchange.inactive_stage || exchange.stage_id().is_some() {
+                    continue;
+                }
+                let Some(key) = reuse_key(exec, &codec) else {
+                    continue;
+                };
+                match self.reusable_stages.get(&key) {
+                    Some(earlier) if self.stage_is_readable(earlier) => {
+                        reads_finished_stage |= as_exchange(earlier).shuffle_created();
+                        readers.insert(
+                            (exchange.plan_id(), exchange.stage_handle()),
+                            Arc::clone(earlier),
+                        );
+                    }
+                    _ => fresh.push((key, Arc::clone(exec))),
+                }
+            }
+
+            if reads_finished_stage {
+                passes += 1;
+                if passes > exchanges {
+                    return internal_err!(
+                        "exchange reuse kept resolving exchanges after {passes} replans"
+                    );
+                }
+                self.share_stages(&readers)?;
+                self.replan_stages()?;
+                continue;
+            }
+
+            // Repeats among the exchanges launching now read the first one's
+            // stage, which launches below.
+            for (key, exec) in fresh {
+                match self.reusable_stages.get(&key) {
+                    Some(first) if as_exchange(first).stage_id().is_none() => {
+                        readers.insert(
+                            (
+                                as_exchange(&exec).plan_id(),
+                                as_exchange(&exec).stage_handle(),
+                            ),
+                            Arc::clone(first),
+                        );
+                    }
+                    _ => {
+                        self.reusable_stages.insert(key, exec);
+                    }
+                }
+            }
+            if readers.is_empty() {
+                return Ok(runnable);
+            }
+            self.share_stages(&readers)?;
+            let mut runnable = Vec::new();
+            Self::find_runnable_exchanges(&self.plan, &mut runnable);
+            return Ok(runnable);
+        }
+    }
+
+    /// Whether `exchange`, recorded in `reusable_stages`, launched a stage
+    /// that is still running or has finished, rather than one a replan
+    /// dropped. A recorded exchange without a stage launches in this call.
+    fn stage_is_readable(&self, exchange: &Arc<dyn ExecutionPlan>) -> bool {
+        let exchange = as_exchange(exchange);
+        exchange.shuffle_created()
+            || exchange
+                .stage_id()
+                .is_some_and(|id| self.runnable_stage_cache.contains_key(&id))
+    }
+
+    /// Makes each exchange of `readers`, keyed by plan id and stage handle, a
+    /// reader of the stage of the exchange it maps to.
+    fn share_stages(
+        &mut self,
+        readers: &HashMap<(usize, *const ()), Arc<dyn ExecutionPlan>>,
+    ) -> common::Result<()> {
+        self.plan = Arc::clone(&self.plan)
+            .transform_up(|node| {
+                let Some(exchange) = node.downcast_ref::<ExchangeExec>() else {
+                    return Ok(Transformed::no(node));
+                };
+                let Some(earlier) =
+                    readers.get(&(exchange.plan_id(), exchange.stage_handle()))
+                else {
+                    return Ok(Transformed::no(node));
+                };
+                debug!(
+                    "exchange reuse: exchange {} reads the stage of exchange {}",
+                    exchange.plan_id(),
+                    as_exchange(earlier).plan_id()
+                );
+                let reader: Arc<dyn ExecutionPlan> =
+                    Arc::new(exchange.share_stage_of(as_exchange(earlier)));
+                Ok(Transformed::yes(reader))
+            })?
+            .data;
+        Ok(())
+    }
+
     /// Finds and returns the runnable stages from the current plan.
     ///
     /// # Returns
@@ -566,22 +669,17 @@ impl AdaptivePlanner {
     pub(crate) fn identify_runnable_stages(
         &mut self,
     ) -> common::Result<Option<Vec<Arc<dyn ExecutionPlan>>>> {
-        let mut runnable_stages = Vec::new();
-
-        Self::find_runnable_exchanges(&self.plan, &mut runnable_stages);
-        // Every reader of a shared stage (see `ReuseExchangeRule`) is found,
-        // and the stage runs once. A held-back reader doesn't claim it.
-        let mut stages = HashSet::new();
-        runnable_stages.retain(|exec| {
-            exec.downcast_ref::<ExchangeExec>().is_none_or(|exchange| {
-                exchange.inactive_stage || stages.insert(exchange.stage_handle())
-            })
-        });
+        let runnable_stages = self.find_runnable_exchanges_reusing_stages()?;
         if !runnable_stages.is_empty() {
             let mut runnable = Vec::new();
+            // Every reader of a shared stage is found, and the stage runs once.
+            let mut claimed = HashSet::with_capacity(runnable_stages.len());
             for exec in runnable_stages.into_iter() {
                 match exec.downcast_ref::<ExchangeExec>() {
                     Some(exchange) if exchange.inactive_stage => continue,
+                    Some(exchange) if !claimed.insert(exchange.stage_handle()) => {
+                        continue;
+                    }
                     Some(exchange) if exchange.stage_id().is_none() => {
                         debug_assert!(!is_external_stage_id(self.stage_id_generator));
                         exchange.set_stage_id(self.stage_id_generator);
@@ -642,24 +740,14 @@ impl AdaptivePlanner {
     #[cfg(test)]
     pub(super) fn default_optimizers(
         plan_id_generator: Arc<AtomicUsize>,
-        read_finished_stage: Arc<AtomicBool>,
     ) -> Vec<PhysicalOptimizerRuleRef> {
-        Self::default_optimizers_with(
-            plan_id_generator,
-            vec![],
-            Arc::new(ballista_core::serde::BallistaPhysicalExtensionCodec::default()),
-            read_finished_stage,
-        )
+        Self::default_optimizers_with(plan_id_generator, vec![])
     }
 
-    /// The default rules, followed by an embedder's `replan_rules`, then
-    /// [`ReuseExchangeRule`], which matches subtrees under `codec`, the job's
-    /// physical extension codec, and raises `read_finished_stage`.
+    /// The default rules, followed by an embedder's `replan_rules`.
     fn default_optimizers_with(
         plan_id_generator: Arc<AtomicUsize>,
         replan_rules: Vec<PhysicalOptimizerRuleRef>,
-        codec: Arc<dyn PhysicalExtensionCodec>,
-        read_finished_stage: Arc<AtomicBool>,
     ) -> Vec<PhysicalOptimizerRuleRef> {
         let mut physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> =
             vec![];
@@ -708,11 +796,6 @@ impl AdaptivePlanner {
         // stage boundary, including the one placed in this pass for a stage
         // whose inputs just finished, before that stage can start.
         physical_optimizers.extend(replan_rules);
-
-        // Last, so it matches each stage as it will run, embedder rewrites
-        // included, and before any stage of this pass is launched.
-        physical_optimizers
-            .push(Arc::new(ReuseExchangeRule::new(codec, read_finished_stage)));
 
         physical_optimizers
     }
@@ -836,4 +919,9 @@ impl AdaptivePlanner {
 pub(crate) struct AdaptiveStageInfo {
     pub(crate) plan: Arc<dyn ShuffleWriter>,
     pub(crate) inputs: std::collections::HashMap<usize, StageOutput>,
+}
+
+fn as_exchange(plan: &Arc<dyn ExecutionPlan>) -> &ExchangeExec {
+    plan.downcast_ref::<ExchangeExec>()
+        .expect("only exchanges are reused")
 }

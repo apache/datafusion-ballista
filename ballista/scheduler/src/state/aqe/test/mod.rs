@@ -68,7 +68,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use stats_table::StatsTable;
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::AtomicUsize;
 
 impl AdaptivePlanner {
     /// Creates an `AdaptivePlanner` over an already-built physical `plan`, with
@@ -81,13 +81,11 @@ impl AdaptivePlanner {
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
         let state_builder = SessionStateBuilder::new_with_default_features()
             .with_config(session_config.clone());
-        let read_finished_stage = Arc::new(AtomicBool::new(false));
         Self::try_new_with_optimizers(
             state_builder,
             plan,
             job_id,
-            Self::default_optimizers(plan_id_generator, read_finished_stage.clone()),
-            read_finished_stage,
+            Self::default_optimizers(plan_id_generator),
         )
     }
 

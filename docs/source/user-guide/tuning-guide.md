@@ -360,7 +360,7 @@ currently implemented:
   the subplan's shuffle stage runs once and every reader reads its output.
   Subplans with a volatile expression such as `random()`, and range-shuffled
   subplans, are never shared. Enabled by default; set
-  `ballista.planner.adaptive.reuse_exchange` to `false` to run each copy.
+  `ballista.planner.reuse_exchange.enabled` to `false` to run each copy.
 
 ### Current limitations
 

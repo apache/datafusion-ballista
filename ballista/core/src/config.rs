@@ -89,8 +89,8 @@ pub const BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS: &str =
 pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
 /// Lets the adaptive planner run a repeated subplan's stage once and have
 /// every consumer read the same shuffle output (Spark's `ReuseExchange`).
-pub const BALLISTA_ADAPTIVE_REUSE_EXCHANGE: &str =
-    "ballista.planner.adaptive.reuse_exchange";
+pub const BALLISTA_REUSE_EXCHANGE_ENABLED: &str =
+    "ballista.planner.reuse_exchange.enabled";
 /// Configuration key for sort shuffle target batch size in rows.
 pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
@@ -357,7 +357,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          estimates. Set to false to use the static distributed planner.".to_string(),
                          DataType::Boolean,
                          Some(true.to_string())),
-        ConfigEntry::new(BALLISTA_ADAPTIVE_REUSE_EXCHANGE.to_string(),
+        ConfigEntry::new(BALLISTA_REUSE_EXCHANGE_ENABLED.to_string(),
                          "With adaptive query planning, runs the stage of a subplan that \
                          appears more than once in a query, such as a common table \
                          expression read twice, only once. Every reader of the subplan \
@@ -978,8 +978,8 @@ impl BallistaConfig {
     }
 
     /// Whether the adaptive planner runs a repeated subplan's stage once.
-    pub fn adaptive_reuse_exchange_enabled(&self) -> bool {
-        self.get_bool_setting(BALLISTA_ADAPTIVE_REUSE_EXCHANGE)
+    pub fn reuse_exchange_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_REUSE_EXCHANGE_ENABLED)
     }
 
     /// Returns the target batch size for sort-based shuffle.
@@ -1655,7 +1655,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_reuse_exchange_defaults_true() {
-        assert!(BallistaConfig::default().adaptive_reuse_exchange_enabled());
+    fn reuse_exchange_defaults_true() {
+        assert!(BallistaConfig::default().reuse_exchange_enabled());
     }
 }

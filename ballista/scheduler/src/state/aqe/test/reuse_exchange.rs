@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A subplan read more than once runs its stage once (`ReuseExchangeRule`).
+//! A subplan read more than once runs its stage once (see
+//! `crate::state::aqe::reuse_exchange`).
 
 use crate::state::aqe::AdaptiveExecutionGraph;
-use crate::state::aqe::execution_plan::ExchangeExec;
-use crate::state::aqe::optimizer_rule::ReuseExchangeRule;
+use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{
     mock_batch, mock_context, mock_partitions_with_statistics,
@@ -29,11 +29,9 @@ use crate::state::execution_stage::ExecutionStage;
 use crate::test_utils::{
     mock_executor, revive_graph_and_complete_next_stage_with_executor,
 };
-use ballista_core::config::BallistaConfig;
 use ballista_core::extension::SessionConfigExt;
-use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::config::ConfigOptions;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
@@ -44,8 +42,8 @@ use datafusion::physical_plan::{Partitioning, PhysicalExpr, expressions::Column}
 use datafusion::prelude::SessionConfig;
 use datafusion::prelude::SessionContext;
 use parking_lot::Mutex;
+use rstest::rstest;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 /// A common table expression read twice by a union.
 const UNION: &str = "with v as (select c, sum(a) as s from t group by c) \
@@ -60,7 +58,7 @@ const Q15_SHAPE: &str = "with v as (select c, sum(a) as s from t group by c) \
 fn context(reuse: bool) -> SessionContext {
     let config = mock_context()
         .copied_config()
-        .with_ballista_adaptive_reuse_exchange_enabled(reuse);
+        .with_ballista_reuse_exchange_enabled(reuse);
     let ctx = SessionContext::new_with_config(config);
     ctx.register_batch("t", mock_batch().unwrap()).unwrap();
     ctx
@@ -95,22 +93,25 @@ fn run_to_completion(graph: &mut AdaptiveExecutionGraph, executor: &str) -> usiz
     stages
 }
 
+#[rstest]
 #[tokio::test]
-async fn a_repeated_aggregate_runs_once() {
-    for sql in [UNION, SELF_JOIN, Q15_SHAPE] {
-        let mut planner = planner(&context(true), sql).await;
+async fn a_repeated_aggregate_runs_once(
+    #[values(UNION, SELF_JOIN, Q15_SHAPE)] sql: &str,
+    #[values(true, false)] reuse: bool,
+) {
+    let mut planner = planner(&context(reuse), sql).await;
 
-        let stages = planner.identify_runnable_stages().unwrap().unwrap();
-        assert_eq!(stages.len(), 1, "{sql}");
-        planner
-            .finalise_stage_internal(0, mock_partitions_with_statistics())
-            .unwrap();
+    let stages = planner.identify_runnable_stages().unwrap().unwrap();
+    assert_eq!(stages.len(), if reuse { 1 } else { 2 });
+    planner
+        .finalise_stage_internal(0, mock_partitions_with_statistics())
+        .unwrap();
 
-        // Both readers are resolved by the one stage. What runs next reads
-        // the aggregate, as the final stage or a broadcast of its output.
-        let stages = planner.identify_runnable_stages().unwrap().unwrap();
-        assert!(!stages.iter().any(aggregates_the_table), "{sql}");
-    }
+    // With reuse, both readers are resolved by the one stage, and what runs
+    // next reads the aggregate, as the final stage or a broadcast of its
+    // output. Without, the second copy of the aggregate is still running.
+    let stages = planner.identify_runnable_stages().unwrap().unwrap();
+    assert_eq!(stages.iter().any(aggregates_the_table), !reuse);
 }
 
 /// Whether `stage` is a stage of the `v` aggregate, rather than one reading it.
@@ -121,16 +122,6 @@ fn aggregates_the_table(stage: &Arc<dyn ExecutionPlan>) -> bool {
             !exchange.input().children().is_empty()
                 && exchange.input().children()[0].name() == "DataSourceExec"
         })
-}
-
-#[tokio::test]
-async fn reuse_can_be_switched_off() {
-    for sql in [UNION, SELF_JOIN, Q15_SHAPE] {
-        let mut planner = planner(&context(false), sql).await;
-
-        let stages = planner.identify_runnable_stages().unwrap().unwrap();
-        assert_eq!(stages.len(), 2, "{sql}");
-    }
 }
 
 #[tokio::test]
@@ -145,14 +136,15 @@ async fn a_volatile_subplan_runs_for_each_reader() {
     assert_eq!(stages.len(), 2);
 }
 
+#[rstest]
 #[tokio::test]
-async fn a_job_reading_an_aggregate_twice_runs_one_stage_fewer() {
-    for sql in [UNION, SELF_JOIN, Q15_SHAPE] {
-        let without = run_to_completion(&mut graph(&context(false), sql).await, "e");
-        let with = run_to_completion(&mut graph(&context(true), sql).await, "e");
+async fn a_job_reading_an_aggregate_twice_runs_one_stage_fewer(
+    #[values(UNION, SELF_JOIN, Q15_SHAPE)] sql: &str,
+) {
+    let without = run_to_completion(&mut graph(&context(false), sql).await, "e");
+    let with = run_to_completion(&mut graph(&context(true), sql).await, "e");
 
-        assert_eq!(with, without - 1, "{sql}");
-    }
+    assert_eq!(with, without - 1);
 }
 
 // AQE does not yet rerun a finished stage whose output was lost (#1986,
@@ -177,81 +169,19 @@ async fn losing_a_shared_stage_output_rolls_back_the_stage_once() {
     assert!(matches!(graph.stages[&1], ExecutionStage::UnResolved(_)));
 }
 
-fn exchange(plan_id: usize) -> Arc<dyn ExecutionPlan> {
+fn exchange(plan_id: usize) -> ExchangeExec {
     let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
     let key: Arc<dyn PhysicalExpr> = Arc::new(Column::new("k", 0));
-    Arc::new(ExchangeExec::new(
+    ExchangeExec::new(
         Arc::new(EmptyExec::new(schema)),
         Some(Partitioning::Hash(vec![key], 2)),
         plan_id,
-    ))
+    )
 }
 
-fn reuse(plan: Arc<dyn ExecutionPlan>) -> Vec<Arc<dyn ExecutionPlan>> {
-    let mut config = ConfigOptions::default();
-    config.extensions.insert(BallistaConfig::default());
-    let rule = ReuseExchangeRule::new(
-        Arc::new(BallistaPhysicalExtensionCodec::default()),
-        Arc::default(),
-    );
-    rule.optimize(plan, &config)
-        .unwrap()
-        .children()
-        .into_iter()
-        .cloned()
-        .collect()
-}
-
-fn as_exchange(plan: &Arc<dyn ExecutionPlan>) -> &ExchangeExec {
-    plan.downcast_ref::<ExchangeExec>().unwrap()
-}
-
-#[test]
-fn a_repeat_found_after_the_stage_finished_reads_its_output() {
-    let finished = exchange(0);
-    as_exchange(&finished).set_stage_id(3);
-    as_exchange(&finished).resolve_shuffle_partitions(mock_partitions_with_statistics());
-
-    // The finished exchange comes second in the walk, but is the one read.
-    let children = reuse(UnionExec::try_new(vec![exchange(1), finished]).unwrap());
-
-    let repeat = as_exchange(&children[0]);
-    assert!(repeat.shuffle_created());
-    assert_eq!(repeat.stage_id(), Some(3));
-    assert_eq!(repeat.plan_id(), 1);
-}
-
-#[test]
-fn exchanges_already_running_stages_of_their_own_are_left_alone() {
-    let first = exchange(0);
-    let second = exchange(1);
-    as_exchange(&first).set_stage_id(3);
-    as_exchange(&second).set_stage_id(4);
-
-    let children = reuse(UnionExec::try_new(vec![first, second]).unwrap());
-
-    assert_eq!(as_exchange(&children[0]).stage_id(), Some(3));
-    assert_eq!(as_exchange(&children[1]).stage_id(), Some(4));
-}
-
-#[test]
-fn readers_of_a_pending_stage_that_diverged_are_split() {
-    // Turning one reader of a pending shared stage into a broadcast leaves
-    // two subtrees behind one stage. Each must write its own output.
-    let hash = exchange(0);
-    let shared: Arc<dyn ExecutionPlan> =
-        Arc::new(as_exchange(&exchange(1)).share_stage_of(as_exchange(&hash)));
-    let broadcast: Arc<dyn ExecutionPlan> =
-        Arc::new(as_exchange(&shared).to_broadcast(2));
-
-    let children = reuse(UnionExec::try_new(vec![hash, broadcast]).unwrap());
-
-    assert!(!as_exchange(&children[0]).shares_stage_with(as_exchange(&children[1])));
-}
-
-/// Counts, on each pass of the optimizer chain, the resolved exchanges it sees.
-/// It runs before `ReuseExchangeRule`, as the rules that react to a resolved
-/// exchange, such as join selection, do.
+/// Counts, on each pass of the optimizer chain, the resolved exchanges it
+/// sees, as the rules that react to a resolved exchange, such as join
+/// selection, see them.
 #[derive(Debug, Default)]
 struct CountResolvedExchanges {
     passes: Mutex<Vec<usize>>,
@@ -286,37 +216,97 @@ impl PhysicalOptimizerRule for CountResolvedExchanges {
     }
 }
 
-// A repeat that reads a finished stage is resolved by the last rule of the
-// chain, after the rules that react to it, such as join selection, which then
-// never saw it resolved. The chain must run again, as for a stage finishing,
-// or a stage can launch with a join still undecided above the repeat
-// (TPC-DS q25, q64 and q74).
-#[test]
-fn a_repeat_resolved_by_reuse_is_seen_by_the_rules_before_it() {
-    let finished = exchange(0);
-    as_exchange(&finished).set_stage_id(3);
-    as_exchange(&finished).resolve_shuffle_partitions(mock_partitions_with_statistics());
-    let plan = UnionExec::try_new(vec![finished, exchange(1)]).unwrap();
-
-    let counter = Arc::new(CountResolvedExchanges::default());
-    let read_finished_stage = Arc::new(AtomicBool::new(false));
-    let rules: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> = vec![
-        counter.clone(),
-        Arc::new(ReuseExchangeRule::new(
-            Arc::new(BallistaPhysicalExtensionCodec::default()),
-            read_finished_stage.clone(),
-        )),
-    ];
+/// A planner over two identical exchanges, the second held back, so the
+/// first launches on its own and the second becomes runnable later, as a
+/// rule releasing a held-back stage does. Its only rule is `counter`.
+fn planner_with_a_late_repeat(counter: Arc<CountResolvedExchanges>) -> AdaptivePlanner {
+    let union = UnionExec::try_new(vec![
+        Arc::new(exchange(0)),
+        Arc::new(exchange(1).with_inactive_stage(true)),
+    ])
+    .unwrap();
+    let plan = Arc::new(AdaptiveDatafusionExec::new(2, union));
     let state =
         SessionStateBuilder::new().with_config(SessionConfig::new_with_ballista());
-    AdaptivePlanner::try_new_with_optimizers(
-        state,
-        plan,
-        "job".into(),
-        rules,
-        read_finished_stage,
-    )
-    .unwrap();
+    AdaptivePlanner::try_new_with_optimizers(state, plan, "job".into(), vec![counter])
+        .unwrap()
+}
 
-    assert_eq!(*counter.passes.lock(), vec![1, 2]);
+/// Releases every held-back exchange of `planner`'s plan.
+fn release_held_back_exchanges(planner: &mut AdaptivePlanner) {
+    planner.plan = Arc::clone(&planner.plan)
+        .transform_up(|node| match node.downcast_ref::<ExchangeExec>() {
+            Some(exchange) if exchange.is_inactive_stage() => Ok(Transformed::yes(
+                Arc::new(exchange.with_inactive_stage(false)) as Arc<dyn ExecutionPlan>,
+            )),
+            _ => Ok(Transformed::no(node)),
+        })
+        .unwrap()
+        .data;
+}
+
+fn stage_ids(stages: &[Arc<dyn ExecutionPlan>]) -> Vec<Option<usize>> {
+    stages
+        .iter()
+        .map(|stage| match stage.downcast_ref::<ExchangeExec>() {
+            Some(exchange) => exchange.stage_id(),
+            None => stage
+                .downcast_ref::<AdaptiveDatafusionExec>()
+                .and_then(AdaptiveDatafusionExec::stage_id),
+        })
+        .collect()
+}
+
+#[test]
+fn a_repeat_launched_while_the_stage_runs_reads_it() {
+    let mut planner = planner_with_a_late_repeat(Arc::default());
+    let stages = planner.identify_runnable_stages().unwrap().unwrap();
+    assert_eq!(stage_ids(&stages), vec![Some(0)]);
+
+    release_held_back_exchanges(&mut planner);
+    let stages = planner.identify_runnable_stages().unwrap().unwrap();
+
+    // Stage 0 is reported once, for both readers, and no stage 1 launches.
+    assert_eq!(stage_ids(&stages), vec![Some(0)]);
+}
+
+// A repeat that reads a finished stage is resolved when it would launch,
+// after the rules that react to a resolved exchange, such as join selection,
+// have run. The plan must be replanned, as for a stage finishing, or a stage
+// can launch with a join still undecided above the repeat (TPC-DS q25, q64
+// and q74).
+#[test]
+fn a_repeat_launched_after_the_stage_finished_reads_its_output() {
+    let counter = Arc::new(CountResolvedExchanges::default());
+    let mut planner = planner_with_a_late_repeat(counter.clone());
+    planner.identify_runnable_stages().unwrap().unwrap();
+    planner
+        .finalise_stage_internal(0, mock_partitions_with_statistics())
+        .unwrap();
+
+    release_held_back_exchanges(&mut planner);
+    let stages = planner.identify_runnable_stages().unwrap().unwrap();
+
+    // Both readers are resolved, so the final stage runs next, and the rules
+    // saw both resolved before it did.
+    assert!(stages[0].is::<AdaptiveDatafusionExec>());
+    assert_eq!(stage_ids(&stages), vec![Some(1)]);
+    assert_eq!(counter.passes.lock().last(), Some(&2));
+}
+
+#[test]
+fn a_repeat_of_a_dropped_stage_runs_its_own() {
+    let mut planner = planner_with_a_late_repeat(Arc::default());
+    planner.identify_runnable_stages().unwrap().unwrap();
+    // A replan dropped stage 0 before it finished.
+    planner.cancel_stage(0).unwrap();
+    planner.plan = Arc::new(AdaptiveDatafusionExec::new(
+        2,
+        Arc::new(exchange(1).with_inactive_stage(true)),
+    ));
+
+    release_held_back_exchanges(&mut planner);
+    let stages = planner.identify_runnable_stages().unwrap().unwrap();
+
+    assert_eq!(stage_ids(&stages), vec![Some(1)]);
 }
