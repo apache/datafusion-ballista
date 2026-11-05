@@ -85,6 +85,24 @@ def test_job_tracking_follows_client_pull(address, pull):
     assert (client.jobs[0]._statuses is None) == pull
 
 
+@pytest.mark.parametrize("pull", [True, False])
+def test_set_ballista_config_reaches_scheduler(address, pull):
+    # The plan crosses the datafusion-ffi boundary without its settings and
+    # reads them from the TaskContext at execution, which datafusion-ffi
+    # rebuilds from strings, dropping the native BallistaConfig extension.
+    client = RecordingClient(
+        address, config={"ballista.client.pull": str(pull).lower()}
+    )
+    ctx = BallistaPythonSessionContext(client=client)
+    ctx.register_csv("t", TEST_CSV)
+    ctx.sql("SET ballista.job.name = 'set_reaches_scheduler'").collect()
+
+    assert ctx.sql("SELECT count(*) AS c FROM t").to_pydict() == {"c": [5]}
+
+    status = client.job_status(client.jobs[-1].job_id).status
+    assert status.job_name == "set_reaches_scheduler"
+
+
 def test_session_config_configures_default_client(address):
     ctx = BallistaPythonSessionContext(address, config={"ballista.client.pull": False})
     ctx.register_csv("t", TEST_CSV)
