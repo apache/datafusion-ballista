@@ -404,7 +404,12 @@ impl AdaptivePlanner {
         Ok(if is_broadcast {
             stage_output.partition_locations_broadcast()
         } else {
-            stage_output.partition_locations(*output_partition_count)
+            // A passthrough stage whose input was coalesced writes fewer
+            // partitions than its boundary declares, and the next stage reads
+            // it with a reader planned for the declared count, so keep every
+            // declared partition, empty or not.
+            let declared = boundary.output_partitioning().partition_count();
+            stage_output.partition_locations((*output_partition_count).max(declared))
         })
     }
 

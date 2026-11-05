@@ -76,11 +76,23 @@
 //!   4. Bin-pack the summed sizes into `K` buckets near
 //!      `target_partition_bytes` (Spark's `advisoryPartitionSizeInBytes`,
 //!      64 MB by default) using `split_size_list_by_target_size`.
-//!   5. If `K >= M` or `K <= 1`, the rewrite is degenerate and is skipped.
+//!   5. If `K >= M`, nothing merges and the rewrite is skipped. `K = 1` is
+//!      kept: the whole shuffle fits in one target-sized partition, so the
+//!      stage runs as a single task, as Spark's `CoalesceShufflePartitions`
+//!      does.
 //!   6. Otherwise, attach a shared [`CoalescePlan`] (with `K` partition
 //!      groups) to every leaf `ExchangeExec` via `set_coalesce(..)`. The
 //!      adapter consumes that decision when it builds the downstream
 //!      `ShuffleReaderExec`s.
+//!
+//! # Sorted inputs
+//!
+//! The adapter reads an exchange whose input declares an ordering with a
+//! k-way merge per partition (`RangeShuffleReaderExec`), which is what keeps a
+//! `SortPreservingMergeExec` above it correct. A coalesced reader concatenates
+//! a group's files in arrival order instead, so the rule leaves the stage alone
+//! when any leaf is sorted. Such a stage is usually the final merge of an
+//! `ORDER BY`, which runs as one task whatever its input partition count.
 //!
 //! # Carrier semantics
 //!
@@ -104,7 +116,7 @@
 //! # Behavior preservation
 //!
 //! When `ballista.planner.coalesce.enabled=false`, when the subtree has no
-//! leaf Exchanges, or when the bin-pack returns a degenerate `K`, the rule
+//! leaf Exchanges, or when the bin-pack merges nothing (`K >= M`), the rule
 //! is a no-op and returns the input `Arc` verbatim (preserving
 //! `Arc::ptr_eq`).
 
@@ -117,7 +129,6 @@ use ballista_core::execution_plans::{
 };
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::aggregates::AggregateExec;
 #[allow(deprecated)]
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
@@ -133,6 +144,7 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::union::{InterleaveExec, UnionExec};
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use log::debug;
 
 use crate::state::aqe::coalesce::{
@@ -256,6 +268,16 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             return Ok(plan);
         }
 
+        // A sorted leaf is read with one k-way merge per partition, and the
+        // coalesced reader can't merge (see module docs).
+        if leaves
+            .iter()
+            .any(|arc| as_exchange(arc).input().output_ordering().is_some())
+        {
+            debug!("[coalesce-rule] sorted leaf present; bail entire group");
+            return Ok(plan);
+        }
+
         // The alignment-group invariant assumes a shared `M`. In every plan
         // shape we currently produce, all leaves of one stage subtree are
         // hash-partitioned by the same target_partitions setting upstream,
@@ -308,10 +330,9 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             split_size_list_by_target_size(&summed, target as u64, small, merged);
         let k = starts.len();
         debug!("[coalesce-rule] bin-pack result: K={k} M={m}");
-        if k >= m || k <= 1 {
-            debug!(
-                "[coalesce-rule] K degenerate (K>=M or K<=1); bail without setting coalesce"
-            );
+        // `K = 1` is kept: the stage then runs as a single task.
+        if k >= m {
+            debug!("[coalesce-rule] K>=M merges nothing; bail without setting coalesce");
             return Ok(plan);
         }
 

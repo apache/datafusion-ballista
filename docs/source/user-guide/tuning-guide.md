@@ -347,7 +347,9 @@ currently implemented:
   downstream exchange is replaced with an empty execution node, and emptiness
   is propagated up the plan so downstream stages are skipped entirely.
 - **Shuffle-partition coalescing.** Adjacent small output partitions of a
-  completed stage are merged so the next stage runs fewer, larger tasks.
+  completed stage are merged so the next stage runs fewer, larger tasks, down
+  to a single task when the whole shuffle fits in
+  `ballista.planner.coalesce.target_partition_bytes`.
   Disabled by default; enable with `ballista.planner.coalesce.enabled` and tune
   with the `ballista.planner.coalesce.*` keys documented in
   [Configuration](configs.md).
