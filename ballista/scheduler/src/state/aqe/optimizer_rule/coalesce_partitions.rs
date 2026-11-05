@@ -82,6 +82,15 @@
 //!      adapter consumes that decision when it builds the downstream
 //!      `ShuffleReaderExec`s.
 //!
+//! # Sorted inputs
+//!
+//! The adapter reads an exchange whose input declares an ordering with a
+//! k-way merge per partition (`RangeShuffleReaderExec`), which is what keeps a
+//! `SortPreservingMergeExec` above it correct. A coalesced reader concatenates
+//! a group's files in arrival order instead, so the rule leaves the stage alone
+//! when any leaf is sorted. Such a stage is usually the final merge of an
+//! `ORDER BY`, which runs as one task whatever its input partition count.
+//!
 //! # Carrier semantics
 //!
 //! The `CoalescePlan` lives on the upstream `ExchangeExec`; the rule does
@@ -117,7 +126,6 @@ use ballista_core::execution_plans::{
 };
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::aggregates::AggregateExec;
 #[allow(deprecated)]
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
@@ -133,6 +141,7 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::union::{InterleaveExec, UnionExec};
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use log::debug;
 
 use crate::state::aqe::coalesce::{
@@ -253,6 +262,16 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             .any(|arc| as_exchange(arc).range_repartition_routing().is_some())
         {
             debug!("[coalesce-rule] range-repartitioned leaf present; bail entire group");
+            return Ok(plan);
+        }
+
+        // A sorted leaf is read with one k-way merge per partition, and the
+        // coalesced reader can't merge (see module docs).
+        if leaves
+            .iter()
+            .any(|arc| as_exchange(arc).input().output_ordering().is_some())
+        {
+            debug!("[coalesce-rule] sorted leaf present; bail entire group");
             return Ok(plan);
         }
 
