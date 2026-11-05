@@ -76,7 +76,10 @@
 //!   4. Bin-pack the summed sizes into `K` buckets near
 //!      `target_partition_bytes` (Spark's `advisoryPartitionSizeInBytes`,
 //!      64 MB by default) using `split_size_list_by_target_size`.
-//!   5. If `K >= M` or `K <= 1`, the rewrite is degenerate and is skipped.
+//!   5. If `K >= M`, nothing merges and the rewrite is skipped. `K = 1` is
+//!      kept: the whole shuffle fits in one target-sized partition, so the
+//!      stage runs as a single task, as Spark's `CoalesceShufflePartitions`
+//!      does.
 //!   6. Otherwise, attach a shared [`CoalescePlan`] (with `K` partition
 //!      groups) to every leaf `ExchangeExec` via `set_coalesce(..)`. The
 //!      adapter consumes that decision when it builds the downstream
@@ -113,7 +116,7 @@
 //! # Behavior preservation
 //!
 //! When `ballista.planner.coalesce.enabled=false`, when the subtree has no
-//! leaf Exchanges, or when the bin-pack returns a degenerate `K`, the rule
+//! leaf Exchanges, or when the bin-pack merges nothing (`K >= M`), the rule
 //! is a no-op and returns the input `Arc` verbatim (preserving
 //! `Arc::ptr_eq`).
 
@@ -327,10 +330,9 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             split_size_list_by_target_size(&summed, target as u64, small, merged);
         let k = starts.len();
         debug!("[coalesce-rule] bin-pack result: K={k} M={m}");
-        if k >= m || k <= 1 {
-            debug!(
-                "[coalesce-rule] K degenerate (K>=M or K<=1); bail without setting coalesce"
-            );
+        // `K = 1` is kept: the stage then runs as a single task.
+        if k >= m {
+            debug!("[coalesce-rule] K>=M merges nothing; bail without setting coalesce");
             return Ok(plan);
         }
 
