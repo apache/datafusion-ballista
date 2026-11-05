@@ -808,8 +808,9 @@ impl SessionConfigHelperExt for SessionConfig {
             // boundaries that run as independent tasks, so when the producing
             // operator and the consuming scan land in different stages the
             // filter is never populated across the boundary and the scan blocks
-            // forever. Disable dynamic filter pushdown until Ballista can carry
-            // dynamic filters across stage boundaries.
+            // forever. Keep these local dynamic expressions disabled. Ballista's
+            // opt-in runtime-filter hub transports independent completed join
+            // summaries; it does not populate DataFusion's dynamic expressions.
             //
             // See https://github.com/apache/datafusion-ballista/issues/1375
             .set_bool("datafusion.optimizer.enable_dynamic_filter_pushdown", false)
