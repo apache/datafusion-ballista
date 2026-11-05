@@ -27,7 +27,8 @@ use crate::state::aqe::test::{
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::execution_stage::ExecutionStage;
 use crate::test_utils::{
-    mock_executor, revive_graph_and_complete_next_stage_with_executor,
+    mock_executor, revive_graph_and_complete_next_stage,
+    revive_graph_and_complete_next_stage_with_executor,
 };
 use ballista_core::extension::SessionConfigExt;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -82,12 +83,11 @@ async fn graph(ctx: &SessionContext, sql: &str) -> AdaptiveExecutionGraph {
         .unwrap()
 }
 
-/// Runs every stage of `graph` on `executor` and returns how many stages ran.
-fn run_to_completion(graph: &mut AdaptiveExecutionGraph, executor: &str) -> usize {
-    let executor = mock_executor(executor.to_owned());
+/// Runs every stage of `graph` and returns how many stages ran.
+fn run_to_completion(graph: &mut AdaptiveExecutionGraph) -> usize {
     let mut stages = 0;
     while !graph.is_successful() {
-        revive_graph_and_complete_next_stage_with_executor(graph, &executor).unwrap();
+        revive_graph_and_complete_next_stage(graph).unwrap();
         stages += 1;
     }
     stages
@@ -141,8 +141,8 @@ async fn a_volatile_subplan_runs_for_each_reader() {
 async fn a_job_reading_an_aggregate_twice_runs_one_stage_fewer(
     #[values(UNION, SELF_JOIN, Q15_SHAPE)] sql: &str,
 ) {
-    let without = run_to_completion(&mut graph(&context(false), sql).await, "e");
-    let with = run_to_completion(&mut graph(&context(true), sql).await, "e");
+    let without = run_to_completion(&mut graph(&context(false), sql).await);
+    let with = run_to_completion(&mut graph(&context(true), sql).await);
 
     assert_eq!(with, without - 1);
 }

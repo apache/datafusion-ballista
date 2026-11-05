@@ -22,7 +22,6 @@ use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common::{ColumnStatistics, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::Statistics;
-use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::{
     common::tree_node::TreeNodeRecursion,
     error::{DataFusionError, Result},
@@ -383,24 +382,6 @@ impl ExchangeExec {
             Arc::new(Mutex::new(None)),
             canonical.range_repartition_routing.clone(),
             canonical.broadcast,
-            self.inactive_stage,
-        )
-    }
-
-    /// This exchange over an empty input of the same schema, sharing its
-    /// stage. Exchange reuse keys a stage with each exchange it reads
-    /// replaced by this, so the stages below are not encoded again.
-    pub(crate) fn as_key_leaf(&self) -> Self {
-        Self::new_with_details(
-            Arc::new(EmptyExec::new(self.input.schema())),
-            self.partitioning.clone(),
-            self.plan_id,
-            self.stage_id.clone(),
-            self.shuffle_partitions.clone(),
-            self.column_statistics.clone(),
-            self.coalesce.clone(),
-            self.range_repartition_routing.clone(),
-            self.broadcast,
             self.inactive_stage,
         )
     }

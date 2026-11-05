@@ -29,15 +29,15 @@ use crate::state::aqe::optimizer_rule::{
     ParallelWindowRule, PinSubmittedShufflesRule, PrefixWindowRule,
     PropagateEmptyExecRule, SelectJoinRule,
 };
-use crate::state::aqe::reuse_exchange::reuse_key;
+use crate::state::aqe::reuse_exchange::{ReuseKey, reuse_key};
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
 use ballista_core::JobId;
-use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::ShuffleWriter;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common;
+use datafusion::common::hash_map::Entry;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{ColumnStatistics, HashMap, exec_err, internal_err};
 use datafusion::error::DataFusionError;
@@ -103,7 +103,7 @@ pub struct AdaptivePlanner {
     /// The exchange that launched each stage a later exchange may read
     /// instead of running a stage of its own, by its key (see
     /// [`crate::state::aqe::reuse_exchange`]). Spark's AQE `stageCache`.
-    reusable_stages: HashMap<Vec<u8>, Arc<dyn ExecutionPlan>>,
+    reusable_stages: HashMap<ReuseKey, Arc<dyn ExecutionPlan>>,
 }
 
 impl Debug for AdaptivePlanner {
@@ -533,32 +533,22 @@ impl AdaptivePlanner {
         &mut self,
     ) -> common::Result<Vec<Arc<dyn ExecutionPlan>>> {
         let config = self.session_state.config();
-        let enabled = config
-            .options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(BallistaConfig::reuse_exchange_enabled)
-            .unwrap_or_else(|| BallistaConfig::default().reuse_exchange_enabled());
+        if !config.ballista_reuse_exchange_enabled() {
+            return Ok(self.runnable_exchanges());
+        }
         let codec = config.ballista_physical_extension_codec();
 
         // A pass that doesn't resolve an exchange ends the loop, and each
         // pass that does resolves a pending one, so the plan's exchanges
         // bound it. Running past them means a rule undid a resolution.
-        let mut exchanges = 0;
-        self.plan.apply(|node| {
-            exchanges += usize::from(node.is::<ExchangeExec>());
-            Ok(TreeNodeRecursion::Continue)
-        })?;
         let mut passes = 0;
+        let mut max_passes = None;
         loop {
-            let mut runnable = Vec::new();
-            Self::find_runnable_exchanges(&self.plan, &mut runnable);
-            if !enabled {
-                return Ok(runnable);
-            }
-
+            let runnable = self.runnable_exchanges();
             let mut readers = HashMap::new();
-            let mut fresh = Vec::new();
+            // The first exchange of each key launching now. Repeats among
+            // them read its stage, which launches below.
+            let mut launching: HashMap<ReuseKey, Arc<dyn ExecutionPlan>> = HashMap::new();
             let mut reads_finished_stage = false;
             for exec in &runnable {
                 let Some(exchange) = exec.downcast_ref::<ExchangeExec>() else {
@@ -570,21 +560,26 @@ impl AdaptivePlanner {
                 let Some(key) = reuse_key(exec, &codec) else {
                     continue;
                 };
-                match self.reusable_stages.get(&key) {
+                let earlier = match self.reusable_stages.get(&key) {
                     Some(earlier) if self.stage_is_readable(earlier) => {
                         reads_finished_stage |= as_exchange(earlier).shuffle_created();
-                        readers.insert(
-                            (exchange.plan_id(), exchange.stage_handle()),
-                            Arc::clone(earlier),
-                        );
+                        earlier
                     }
-                    _ => fresh.push((key, Arc::clone(exec))),
-                }
+                    _ => match launching.entry(key) {
+                        Entry::Vacant(entry) => {
+                            entry.insert(Arc::clone(exec));
+                            continue;
+                        }
+                        Entry::Occupied(entry) => &*entry.into_mut(),
+                    },
+                };
+                readers.insert(reader_key(exchange), Arc::clone(earlier));
             }
 
             if reads_finished_stage {
                 passes += 1;
-                if passes > exchanges {
+                let max = *max_passes.get_or_insert_with(|| count_exchanges(&self.plan));
+                if passes > max {
                     return internal_err!(
                         "exchange reuse kept resolving exchanges after {passes} replans"
                     );
@@ -594,32 +589,20 @@ impl AdaptivePlanner {
                 continue;
             }
 
-            // Repeats among the exchanges launching now read the first one's
-            // stage, which launches below.
-            for (key, exec) in fresh {
-                match self.reusable_stages.get(&key) {
-                    Some(first) if as_exchange(first).stage_id().is_none() => {
-                        readers.insert(
-                            (
-                                as_exchange(&exec).plan_id(),
-                                as_exchange(&exec).stage_handle(),
-                            ),
-                            Arc::clone(first),
-                        );
-                    }
-                    _ => {
-                        self.reusable_stages.insert(key, exec);
-                    }
-                }
-            }
+            self.reusable_stages.extend(launching);
             if readers.is_empty() {
                 return Ok(runnable);
             }
             self.share_stages(&readers)?;
-            let mut runnable = Vec::new();
-            Self::find_runnable_exchanges(&self.plan, &mut runnable);
-            return Ok(runnable);
+            return Ok(self.runnable_exchanges());
         }
+    }
+
+    /// The exchanges of the plan that can run, by [`Self::find_runnable_exchanges`].
+    fn runnable_exchanges(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+        let mut runnable = Vec::new();
+        Self::find_runnable_exchanges(&self.plan, &mut runnable);
+        runnable
     }
 
     /// Whether `exchange`, recorded in `reusable_stages`, launched a stage
@@ -644,9 +627,7 @@ impl AdaptivePlanner {
                 let Some(exchange) = node.downcast_ref::<ExchangeExec>() else {
                     return Ok(Transformed::no(node));
                 };
-                let Some(earlier) =
-                    readers.get(&(exchange.plan_id(), exchange.stage_handle()))
-                else {
+                let Some(earlier) = readers.get(&reader_key(exchange)) else {
                     return Ok(Transformed::no(node));
                 };
                 debug!(
@@ -919,6 +900,21 @@ impl AdaptivePlanner {
 pub(crate) struct AdaptiveStageInfo {
     pub(crate) plan: Arc<dyn ShuffleWriter>,
     pub(crate) inputs: std::collections::HashMap<usize, StageOutput>,
+}
+
+/// Identifies a reader of a stage in the plan: its plan id and stage handle.
+fn reader_key(exchange: &ExchangeExec) -> (usize, *const ()) {
+    (exchange.plan_id(), exchange.stage_handle())
+}
+
+/// How many exchanges `plan` has.
+fn count_exchanges(plan: &Arc<dyn ExecutionPlan>) -> usize {
+    let mut exchanges = 0;
+    let _ = plan.apply(|node| {
+        exchanges += usize::from(node.is::<ExchangeExec>());
+        Ok(TreeNodeRecursion::Continue)
+    });
+    exchanges
 }
 
 fn as_exchange(plan: &Arc<dyn ExecutionPlan>) -> &ExchangeExec {

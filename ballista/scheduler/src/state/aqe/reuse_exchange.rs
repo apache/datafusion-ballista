@@ -32,8 +32,8 @@
 //!
 //! # Matching
 //!
-//! An exchange's key is the protobuf encoding of its subtree under the job's
-//! physical extension codec, the encoding that ships stages to executors, so
+//! An exchange's key is a digest of the protobuf encoding of its subtree
+//! under the job's physical extension codec, the encoding that ships stages to executors, so
 //! two subtrees match only when an executor could not tell them apart. An
 //! exchange being launched reads only finished stages, and a nested exchange
 //! is encoded by the stage it reads, so two subtrees match only when they read
@@ -62,6 +62,7 @@ use datafusion::logical_expr::{AggregateUDF, HigherOrderUDF, ScalarUDF, WindowUD
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::physical_expr::is_volatile;
 use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::{
     ExecutionPlan, Partitioning, replace_children_if_necessary,
 };
@@ -73,67 +74,67 @@ use prost::Message;
 
 use crate::state::aqe::execution_plan::ExchangeExec;
 
+/// What a stage is matched on: a digest of its encoding. See the module docs.
+pub(crate) type ReuseKey = [u8; 32];
+
 /// The key `node`, an exchange about to launch its stage, is matched on, or
 /// `None` when its stage may not be shared. See the module docs.
 pub(crate) fn reuse_key(
     node: &Arc<dyn ExecutionPlan>,
     codec: &Arc<dyn PhysicalExtensionCodec>,
-) -> Option<Vec<u8>> {
+) -> Option<ReuseKey> {
     let exchange = node.downcast_ref::<ExchangeExec>()?;
-    if matches!(exchange.partitioning(), Some(Partitioning::Range(_)))
-        || !mergeable(exchange.input()).ok()?
-    {
+    if matches!(exchange.partitioning(), Some(Partitioning::Range(_))) {
         return None;
     }
-    // The stages this one reads are encoded by their stage ids alone, not
-    // by their subtrees, which were keyed when they launched.
+    // One walk over the stage rules out what may not be shared, and swaps
+    // each exchange it reads for one over an empty input, so the stages below
+    // are encoded by their stage ids alone instead of being encoded again.
+    let mut mergeable = true;
     let input = Arc::clone(exchange.input())
-        .transform_down(|node| match node.downcast_ref::<ExchangeExec>() {
-            Some(read) => Ok(Transformed::new(
-                Arc::new(read.as_key_leaf()) as Arc<dyn ExecutionPlan>,
-                true,
-                TreeNodeRecursion::Jump,
-            )),
-            None => Ok(Transformed::no(node)),
+        .transform_down(|node| {
+            if let Some(read) = node.downcast_ref::<ExchangeExec>() {
+                let empty: Arc<dyn ExecutionPlan> =
+                    Arc::new(EmptyExec::new(read.input().schema()));
+                let leaf = replace_children_if_necessary(Arc::clone(&node), vec![empty])?;
+                return Ok(Transformed::new(leaf, true, TreeNodeRecursion::Jump));
+            }
+            if requires_single_consumer(node.as_ref())
+                || has_volatile_expr(node.as_ref())?
+            {
+                mergeable = false;
+                return Ok(Transformed::new(node, false, TreeNodeRecursion::Stop));
+            }
+            Ok(Transformed::no(node))
         })
         .ok()?
         .data;
+    if !mergeable {
+        return None;
+    }
     let node = replace_children_if_necessary(Arc::clone(node), vec![input]).ok()?;
     let codec = KeyCodec {
         inner: Arc::clone(codec),
     };
-    physical_plan_to_bytes_with_extension_codec(node, &codec)
-        .ok()
-        .map(Vec::from)
+    // Encodings run to the size of the stage plan, file lists included, and
+    // a key is kept for every stage of the job, so only a 256-bit digest of
+    // it is kept.
+    let bytes = physical_plan_to_bytes_with_extension_codec(node, &codec).ok()?;
+    Some(*blake3::hash(&bytes).as_bytes())
 }
 
-/// Whether nothing in the stage that runs `plan` rules out sharing it: no
-/// volatile expression and no single-consumer operator. The walk stops at
-/// nested exchanges, which are stages of their own that have already run.
-fn mergeable(plan: &Arc<dyn ExecutionPlan>) -> Result<bool> {
-    let mut excluded = false;
-    plan.apply(|node| {
-        if node.is::<ExchangeExec>() {
-            return Ok(TreeNodeRecursion::Jump);
-        }
-        excluded = requires_single_consumer(node.as_ref());
-        if !excluded {
-            node.apply_expressions(&mut |expr| {
-                excluded = is_volatile(expr);
-                Ok(if excluded {
-                    TreeNodeRecursion::Stop
-                } else {
-                    TreeNodeRecursion::Continue
-                })
-            })?;
-        }
-        Ok(if excluded {
+/// Whether `node` has a volatile expression such as `random()`.
+fn has_volatile_expr(node: &dyn ExecutionPlan) -> Result<bool> {
+    let mut volatile = false;
+    node.apply_expressions(&mut |expr| {
+        volatile = is_volatile(expr);
+        Ok(if volatile {
             TreeNodeRecursion::Stop
         } else {
             TreeNodeRecursion::Continue
         })
     })?;
-    Ok(!excluded)
+    Ok(volatile)
 }
 
 /// Operators whose stage the scheduler finishes by reading state off the
