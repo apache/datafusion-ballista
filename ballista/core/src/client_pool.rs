@@ -28,8 +28,8 @@ use futures::{Stream, StreamExt};
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 // ---------------------------------------------------------------------------
@@ -92,6 +92,10 @@ pub trait BallistaClientPool: Send + Sync + Debug {
 pub struct SharedClient {
     client: BallistaClient,
     discarded: AtomicBool,
+    /// Runs once, on the first [discard](Self::discard). A pool uses it to
+    /// drop the connection's slot eagerly instead of waiting for the next
+    /// eviction pass.
+    on_discard: Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>,
 }
 
 impl SharedClient {
@@ -100,6 +104,7 @@ impl SharedClient {
         Self {
             client,
             discarded: AtomicBool::new(false),
+            on_discard: Mutex::new(None),
         }
     }
 
@@ -108,11 +113,21 @@ impl SharedClient {
         self.client.clone()
     }
 
+    /// Installs the hook the first [discard](Self::discard) runs. Discards
+    /// after the first do not run it again.
+    pub fn set_discard_hook(&self, hook: Box<dyn FnOnce() + Send + Sync>) {
+        *self.on_discard.lock().unwrap() = Some(hook);
+    }
+
     /// Marks the connection as gone, after a failure that suggests it is, so
     /// that the pool opens a new one for the next caller. Callers already on
     /// it keep it until they are done.
     pub fn discard(&self) {
-        self.discarded.store(true, Ordering::Release);
+        if !self.discarded.swap(true, Ordering::AcqRel)
+            && let Some(hook) = self.on_discard.lock().unwrap().take()
+        {
+            hook();
+        }
     }
 
     /// Whether a caller has [discarded](Self::discard) the connection.

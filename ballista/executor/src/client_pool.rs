@@ -32,8 +32,9 @@
 //! Besides the checked-out clients, the pool keeps one shared connection per
 //! `(host, port, config)` for `BallistaClientPool::shared`. Any number of
 //! callers multiplex over it, and it lives until a caller discards it after
-//! a failure, or the pool is dropped. Eviction also drops the slots of
-//! discarded connections, so keys for executors that have gone away do not
+//! a failure, it goes unrequested for `idle_timeout`, or the pool is
+//! dropped. Discarding removes the slot eagerly; eviction drops the slots
+//! that remain, so keys for executors that have gone away do not
 //! accumulate.
 
 use ballista_core::client::BallistaClient;
@@ -42,6 +43,7 @@ use ballista_core::error::Result;
 use ballista_core::extension::BallistaConfigGrpcEndpoint;
 use ballista_core::utils::GrpcClientConfig;
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex, Weak};
@@ -66,24 +68,59 @@ type IdleMap = DashMap<PoolKey, VecDeque<IdleEntry>>;
 #[derive(Default)]
 struct SharedSlot {
     connecting: tokio::sync::Mutex<()>,
-    connection: Mutex<Option<Arc<SharedClient>>>,
+    state: Mutex<SharedSlotState>,
+}
+
+#[derive(Default)]
+struct SharedSlotState {
+    connection: Option<Arc<SharedClient>>,
+    /// When the connection was last handed out by `shared`; eviction uses it
+    /// to tell a connection nobody asks for any more from an active one.
+    last_handout: Option<Instant>,
 }
 
 impl SharedSlot {
-    /// The open connection, unless there is none or it was discarded.
-    fn live(&self) -> Option<Arc<SharedClient>> {
-        self.connection
-            .lock()
-            .unwrap()
+    /// The open connection for a new caller, unless there is none or it was
+    /// discarded, stamped as requested just now.
+    fn handout(&self) -> Option<Arc<SharedClient>> {
+        let mut state = self.state.lock().unwrap();
+        let client = state
+            .connection
             .as_ref()
             .filter(|client| !client.is_discarded())
-            .cloned()
+            .cloned()?;
+        state.last_handout = Some(Instant::now());
+        Some(client)
     }
 
-    /// Whether eviction can drop the slot: it holds no live connection and
-    /// none is being opened.
-    fn is_dead(&self) -> bool {
-        self.live().is_none() && self.connecting.try_lock().is_ok()
+    /// Whether `client` is the connection this slot currently holds. A
+    /// discard from a connection the slot has since replaced must not drop
+    /// the slot.
+    fn holds(&self, client: &Arc<SharedClient>) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .connection
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, client))
+    }
+
+    /// Whether the slot survives an eviction pass: without a live
+    /// connection, only while a connect is in flight on it; with one, until
+    /// it has gone unrequested for `idle_timeout`.
+    fn survives_eviction(&self, now: Instant, idle_timeout: Duration) -> bool {
+        let state = self.state.lock().unwrap();
+        let live = state
+            .connection
+            .as_ref()
+            .is_some_and(|client| !client.is_discarded());
+        if !live {
+            return self.connecting.try_lock().is_err();
+        }
+        match state.last_handout {
+            Some(last) => now.duration_since(last) < idle_timeout,
+            None => true,
+        }
     }
 }
 
@@ -170,9 +207,8 @@ impl DefaultBallistaClientPool {
 }
 
 fn evict(inner: &Inner) {
-    let deadline = Instant::now()
-        .checked_sub(inner.idle_timeout)
-        .unwrap_or_else(Instant::now);
+    let now = Instant::now();
+    let deadline = now.checked_sub(inner.idle_timeout).unwrap_or(now);
 
     // Drain expired entries from the front of each deque (oldest = front).
     // This way pool can shrink in case of low utilization.
@@ -183,7 +219,40 @@ fn evict(inner: &Inner) {
         }
         !deque.is_empty()
     });
-    inner.shared.retain(|_, slot| !slot.is_dead());
+    inner
+        .shared
+        .retain(|_, slot| slot.survives_eviction(now, inner.idle_timeout));
+}
+
+/// Re-attach `slot`, carrying the connection `ours` just opened, to the map.
+/// Eviction can drop the slot while its `shared` caller was still
+/// connecting; without this the fresh connection would be invisible to the
+/// next caller, which would open another one. When a different slot has
+/// already reconnected, defer to its connection and let `ours` close on
+/// drop instead.
+fn reattach_shared_slot(
+    inner: &Inner,
+    key: &PoolKey,
+    slot: Arc<SharedSlot>,
+    ours: Arc<SharedClient>,
+) -> Arc<SharedClient> {
+    match inner.shared.entry(key.clone()) {
+        Entry::Occupied(mut e) => {
+            if Arc::ptr_eq(e.get(), &slot) {
+                ours
+            } else if let Some(other) = e.get().handout() {
+                other
+            } else {
+                // The slot in the map is dead; swap in the live one.
+                e.insert(slot);
+                ours
+            }
+        }
+        Entry::Vacant(v) => {
+            v.insert(slot);
+            ours
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -259,9 +328,9 @@ impl BallistaClientPool for DefaultBallistaClientPool {
         customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     ) -> Result<Arc<SharedClient>> {
         let key = (host.to_string(), port, config.clone());
-        let slot = self.inner.shared.entry(key).or_default().clone();
+        let slot = self.inner.shared.entry(key.clone()).or_default().clone();
 
-        if let Some(client) = slot.live() {
+        if let Some(client) = slot.handout() {
             return Ok(client);
         }
         // Held while connecting, so a burst of callers waits for the one
@@ -269,7 +338,7 @@ impl BallistaClientPool for DefaultBallistaClientPool {
         // it: the burst's first caller has connected by the time the rest
         // get here.
         let _connecting = slot.connecting.lock().await;
-        if let Some(client) = slot.live() {
+        if let Some(client) = slot.handout() {
             return Ok(client);
         }
 
@@ -290,8 +359,32 @@ impl BallistaClientPool for DefaultBallistaClientPool {
         .await?;
 
         let shared = Arc::new(SharedClient::new(client));
-        *slot.connection.lock().unwrap() = Some(shared.clone());
-        Ok(shared)
+        {
+            let inner = Arc::downgrade(&self.inner);
+            let slot_ref = Arc::downgrade(&slot);
+            let me = Arc::downgrade(&shared);
+            let hook_key = key.clone();
+            shared.set_discard_hook(Box::new(move || {
+                let (Some(inner), Some(slot), Some(me)) =
+                    (inner.upgrade(), slot_ref.upgrade(), me.upgrade())
+                else {
+                    return;
+                };
+                // Drop the slot right away rather than on the next eviction
+                // pass, but only when the discard came from the connection
+                // the slot still holds, not from one it has replaced.
+                inner.shared.remove_if(&hook_key, |_, current| {
+                    Arc::ptr_eq(current, &slot) && current.holds(&me)
+                });
+            }));
+        }
+        {
+            let mut state = slot.state.lock().unwrap();
+            state.connection = Some(shared.clone());
+            state.last_handout = Some(Instant::now());
+        }
+        drop(_connecting);
+        Ok(reattach_shared_slot(&self.inner, &key, slot, shared))
     }
 
     async fn evict_idle(&self) {
@@ -447,8 +540,8 @@ mod tests {
         ));
     }
 
-    /// Eviction drops the slot of a discarded shared connection, so slots for
-    /// executors that have gone away do not pile up, and keeps a live one.
+    /// Discarding a shared connection drops its slot right away; eviction
+    /// keeps the other, live one.
     #[tokio::test]
     async fn evict_idle_drops_discarded_shared_connections() {
         let port = serve_flight().await;
@@ -475,6 +568,148 @@ mod tests {
                 .await
                 .unwrap()
         ));
+    }
+
+    /// A discarded connection's slot leaves the map at once, without waiting
+    /// for an eviction pass, and the next caller reconnects.
+    #[tokio::test]
+    async fn discard_removes_shared_slot_eagerly() {
+        let port = serve_flight().await;
+        let pool = make_pool(Duration::from_secs(60));
+        let config = GrpcClientConfig::default();
+
+        let conn = pool.shared("127.0.0.1", port, &config, None).await.unwrap();
+        assert_eq!(pool.inner.shared.len(), 1);
+
+        conn.discard();
+        assert_eq!(pool.inner.shared.len(), 0);
+
+        let next = pool.shared("127.0.0.1", port, &config, None).await.unwrap();
+        assert!(!next.is_discarded());
+    }
+
+    /// A discard that loses the race against a reconnect onto the same slot
+    /// must not drop the slot's fresh connection.
+    #[tokio::test]
+    async fn discard_does_not_drop_slot_that_reconnected_first() {
+        let port = serve_flight().await;
+        let pool = make_pool(Duration::from_secs(60));
+        let config = GrpcClientConfig::default();
+        let key = ("127.0.0.1".to_string(), port, config.clone());
+
+        let old = pool.shared("127.0.0.1", port, &config, None).await.unwrap();
+        let slot = pool.inner.shared.get(&key).unwrap().clone();
+
+        // The reconnect lands first: when the hook runs, the slot already
+        // holds the replacement connection.
+        let replacement = Arc::new(SharedClient::new(BallistaClient::new_for_test(
+            "127.0.0.1",
+            port,
+        )));
+        slot.state.lock().unwrap().connection = Some(replacement.clone());
+
+        old.discard();
+        assert_eq!(pool.inner.shared.len(), 1);
+        assert!(slot.holds(&replacement));
+    }
+
+    /// A shared connection nobody requests any more is dropped by eviction
+    /// once it has sat unrequested for `idle_timeout`; one with a recent
+    /// handout survives.
+    #[tokio::test]
+    async fn evict_idle_drops_stale_shared_connection() {
+        let port = serve_flight().await;
+        let timeout = Duration::from_millis(100);
+        let pool = make_pool(timeout);
+        let config = GrpcClientConfig::default();
+        let key = ("127.0.0.1".to_string(), port, config.clone());
+
+        let _stale = pool.shared("127.0.0.1", port, &config, None).await.unwrap();
+        // Age the handout past the idle timeout.
+        let slot = pool.inner.shared.get(&key).unwrap().clone();
+        slot.state.lock().unwrap().last_handout =
+            Some(Instant::now() - timeout - Duration::from_millis(50));
+        pool.evict_idle().await;
+        assert_eq!(pool.inner.shared.len(), 0);
+
+        // A fresh connection is handed out now, so eviction keeps it.
+        let active = pool.shared("127.0.0.1", port, &config, None).await.unwrap();
+        pool.evict_idle().await;
+        assert_eq!(pool.inner.shared.len(), 1);
+        assert!(Arc::ptr_eq(
+            &active,
+            &pool.shared("127.0.0.1", port, &config, None).await.unwrap()
+        ));
+    }
+
+    /// A slot left empty by a failed connect is collected by eviction.
+    #[tokio::test]
+    async fn evict_idle_drops_slot_left_by_failed_connect() {
+        // Bind and drop to get a port nothing listens on.
+        let port = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let pool = make_pool(Duration::from_secs(60));
+        let config = GrpcClientConfig::default();
+
+        let result = pool.shared("127.0.0.1", port, &config, None).await;
+        assert!(result.is_err());
+        assert_eq!(pool.inner.shared.len(), 1);
+
+        pool.evict_idle().await;
+        assert_eq!(pool.inner.shared.len(), 0);
+    }
+
+    /// Re-attaching a slot that eviction dropped mid-connect lets the next
+    /// caller reuse its connection instead of opening another one.
+    #[tokio::test]
+    async fn reattach_recovers_slot_evicted_mid_connect() {
+        let port = serve_flight().await;
+        let pool = make_pool(Duration::from_secs(60));
+        let config = GrpcClientConfig::default();
+        let key = ("127.0.0.1".to_string(), port, config.clone());
+
+        let conn = pool.shared("127.0.0.1", port, &config, None).await.unwrap();
+        let slot = pool.inner.shared.get(&key).unwrap().clone();
+
+        // Eviction wins the race: the slot leaves the map while a caller is
+        // still connecting on it.
+        pool.inner.shared.remove(&key);
+        assert_eq!(pool.inner.shared.len(), 0);
+
+        let returned = reattach_shared_slot(&pool.inner, &key, slot, conn.clone());
+        assert!(Arc::ptr_eq(&returned, &conn));
+        assert!(Arc::ptr_eq(
+            &conn,
+            &pool.shared("127.0.0.1", port, &config, None).await.unwrap()
+        ));
+    }
+
+    /// When a different slot has already reconnected, re-attaching defers to
+    /// its connection instead of replacing it.
+    #[tokio::test]
+    async fn reattach_defers_to_live_slot_in_map() {
+        let port = serve_flight().await;
+        let pool = make_pool(Duration::from_secs(60));
+        let config = GrpcClientConfig::default();
+        let key = ("127.0.0.1".to_string(), port, config.clone());
+
+        let current = pool.shared("127.0.0.1", port, &config, None).await.unwrap();
+
+        // A detached slot carrying a separately opened connection.
+        let detached = Arc::new(SharedSlot::default());
+        let other = Arc::new(SharedClient::new(BallistaClient::new_for_test(
+            "127.0.0.1",
+            port,
+        )));
+        detached.state.lock().unwrap().connection = Some(other.clone());
+
+        let returned = reattach_shared_slot(&pool.inner, &key, detached, other);
+        assert!(Arc::ptr_eq(&returned, &current));
+        assert_eq!(pool.inner.shared.len(), 1);
     }
 
     /// Calling `discard()` must close the connection instead of returning it.
