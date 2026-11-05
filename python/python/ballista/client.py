@@ -394,6 +394,8 @@ class BallistaJob:
         self._finished = False
         self._closed = False
         self._flight_clients: Dict[Tuple[str, int], flight.FlightClient] = {}
+        # reader threads of _pipelined share the client cache
+        self._flight_clients_lock = threading.Lock()
 
     def __iter__(self) -> Iterator[pa.RecordBatch]:
         try:
@@ -427,9 +429,11 @@ class BallistaJob:
             self.client.cancel_job(self.job_id)
         if self._statuses is not None:
             self._statuses.cancel()
-        for flight_client in self._flight_clients.values():
+        with self._flight_clients_lock:
+            flight_clients = list(self._flight_clients.values())
+            self._flight_clients.clear()
+        for flight_client in flight_clients:
             flight_client.close()
-        self._flight_clients.clear()
 
     # status tracking
 
@@ -515,11 +519,17 @@ class BallistaJob:
     ) -> flight.FlightClient:
         host, port = proxy if proxy is not None else (executor.host, executor.port)
         key = (host, port)
-        if key not in self._flight_clients:
-            self._flight_clients[key] = self.client.create_flight_client(
-                host, port, self._settings
-            )
-        return self._flight_clients[key]
+        with self._flight_clients_lock:
+            if self._closed:
+                # a reader thread outliving close() would leak a new client
+                raise RuntimeError(f"Result stream of job {self.job_id} is closed")
+            flight_client = self._flight_clients.get(key)
+            if flight_client is None:
+                flight_client = self.client.create_flight_client(
+                    host, port, self._settings
+                )
+                self._flight_clients[key] = flight_client
+            return flight_client
 
     def _do_get(self, flight_client, action: ballista_pb2.Action, retry: bool):
         ticket = flight.Ticket(action.SerializeToString())
