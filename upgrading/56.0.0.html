@@ -449,6 +449,21 @@ Previously <code class="docutils literal notranslate"><span class="pre">cluster_
 doing so raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>.</p></li>
 </ul>
 </section>
+<section id="the-analyze-argument-of-explain-visual-is-deprecated">
+<h4>The <code class="docutils literal notranslate"><span class="pre">analyze</span></code> argument of <code class="docutils literal notranslate"><span class="pre">explain_visual</span></code> is deprecated<a class="headerlink" href="#the-analyze-argument-of-explain-visual-is-deprecated" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">explain_visual(df,</span> <span class="pre">analyze=True)</span></code> in <code class="docutils literal notranslate"><span class="pre">ballista.jupyter</span></code> still works, but
+raises a <code class="docutils literal notranslate"><span class="pre">DeprecationWarning</span></code>. The argument only labelled the visualization: it
+never ran the query or added runtime statistics. For runtime statistics, use
+DataFusion’s <code class="docutils literal notranslate"><span class="pre">explain</span></code> instead:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># before</span>
+<span class="n">explain_visual</span><span class="p">(</span><span class="n">df</span><span class="p">,</span> <span class="n">analyze</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+<span class="c1"># after</span>
+<span class="n">explain_visual</span><span class="p">(</span><span class="n">df</span><span class="p">)</span>            <span class="c1"># the plan, without running the query</span>
+<span class="n">df</span><span class="o">.</span><span class="n">explain</span><span class="p">(</span><span class="n">analyze</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>      <span class="c1"># runs the query and prints runtime statistics</span>
+</pre></div>
+</div>
+</section>
 <section id="the-scheduler-s-embedded-flight-proxy-is-deprecated">
 <h4>The scheduler’s embedded Flight proxy is deprecated<a class="headerlink" href="#the-scheduler-s-embedded-flight-proxy-is-deprecated" title="Link to this heading">#</a></h4>
 <p><code class="docutils literal notranslate"><span class="pre">--enable-embedded-flight-proxy</span></code> (and <code class="docutils literal notranslate"><span class="pre">SchedulerConfig::enable_embedded_flight_proxy</span></code>)
@@ -698,8 +713,8 @@ for Ballista options and <code class="docutils literal notranslate"><span class=
 also be used to create a plain DataFusion <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code>.</p>
 <p>Ballista settings are registered on the session as a DataFusion config
 extension, available as <code class="docutils literal notranslate"><span class="pre">ballista.BallistaConfigExtension</span></code>. As a result,
-<code class="docutils literal notranslate"><span class="pre">ballista.*</span></code> keys appear in <code class="docutils literal notranslate"><span class="pre">information_schema.df_settings</span></code> and can be changed
-with SQL <code class="docutils literal notranslate"><span class="pre">SET</span></code>, for example <code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">ballista.job.name</span> <span class="pre">=</span> <span class="pre">'nightly'</span></code>.</p>
+<code class="docutils literal notranslate"><span class="pre">ballista.*</span></code> keys can be changed with SQL <code class="docutils literal notranslate"><span class="pre">SET</span></code>, for example
+<code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">ballista.job.name</span> <span class="pre">=</span> <span class="pre">'nightly'</span></code>.</p>
 <p>The local session now starts from Ballista’s DataFusion defaults, the same
 defaults the scheduler uses. Some DataFusion options are restricted by Ballista
 (for example <code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.prefer_hash_join</span></code> and
@@ -723,14 +738,15 @@ functions in <code class="docutils literal notranslate"><span class="pre">ballis
 
 <span class="c1"># before: df.explain_visual()</span>
 <span class="n">explain_visual</span><span class="p">(</span><span class="n">df</span><span class="p">)</span>
-<span class="n">explain_visual</span><span class="p">(</span><span class="n">df</span><span class="p">,</span> <span class="n">analyze</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">"plan.svg"</span><span class="p">)</span>
+<span class="n">explain_visual</span><span class="p">(</span><span class="n">df</span><span class="p">)</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">"plan.svg"</span><span class="p">)</span>
 
 <span class="c1"># before: df.collect_with_progress()</span>
 <span class="n">batches</span> <span class="o">=</span> <span class="n">collect_with_progress</span><span class="p">(</span><span class="n">df</span><span class="p">)</span>
 <span class="n">batches</span> <span class="o">=</span> <span class="n">collect_with_progress</span><span class="p">(</span><span class="n">df</span><span class="p">,</span> <span class="n">callback</span><span class="o">=</span><span class="k">lambda</span> <span class="n">status</span><span class="p">,</span> <span class="n">progress</span><span class="p">:</span> <span class="nb">print</span><span class="p">(</span><span class="n">status</span><span class="p">))</span>
 </pre></div>
 </div>
-<p>The parameters and return values are unchanged.</p>
+<p>The parameters and return values are unchanged, except that <code class="docutils literal notranslate"><span class="pre">analyze=True</span></code> is
+now deprecated, see <a class="reference internal" href="#deprecations"><span class="xref myst">Deprecations</span></a>.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">%sql</span></code> magic returns a <code class="docutils literal notranslate"><span class="pre">datafusion.DataFrame</span></code> instead of a
 <code class="docutils literal notranslate"><span class="pre">DistributedDataFrame</span></code>. <code class="docutils literal notranslate"><span class="pre">%ballista</span> <span class="pre">tables</span></code> uses the DataFusion catalog
 directly, since <code class="docutils literal notranslate"><span class="pre">ctx.get_tables()</span></code> is removed. <code class="docutils literal notranslate"><span class="pre">%ballista</span> <span class="pre">status</span></code> shows the
@@ -790,6 +806,7 @@ unchanged.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-56-0-0">Ballista 56.0.0</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecations">Deprecations</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-cluster-config-argument-of-ballistasessioncontext-is-deprecated">The <code class="docutils literal notranslate"><span class="pre">cluster_config</span></code> argument of <code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> is deprecated</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-analyze-argument-of-explain-visual-is-deprecated">The <code class="docutils literal notranslate"><span class="pre">analyze</span></code> argument of <code class="docutils literal notranslate"><span class="pre">explain_visual</span></code> is deprecated</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-scheduler-s-embedded-flight-proxy-is-deprecated">The scheduler’s embedded Flight proxy is deprecated</a></li>
 </ul>
 </li>

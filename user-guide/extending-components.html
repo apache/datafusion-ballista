@@ -499,7 +499,8 @@ from the source file at build time, so they cannot drift from it.</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="sd">/// Custom [SessionState] with S3 support enabled</span>
 <span class="sd">///</span>
 <span class="sd">/// It will configure [SessionState] with provided [SessionConfig],</span>
-<span class="sd">/// and [RuntimeEnv].</span>
+<span class="sd">/// and [RuntimeEnv], plus Ballista's functions and optimizer rules, as</span>
+<span class="sd">/// [crate::utils::default_session_builder] does.</span>
 <span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">session_state_with_s3_support</span><span class="p">(</span>
 <span class="w">    </span><span class="n">session_config</span><span class="p">:</span><span class="w"> </span><span class="nc">SessionConfig</span><span class="p">,</span>
 <span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">datafusion</span><span class="p">::</span><span class="n">common</span><span class="p">::</span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">SessionState</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
@@ -514,6 +515,7 @@ from the source file at build time, so they cannot drift from it.</p>
 <span class="w">        </span><span class="p">.</span><span class="n">with_runtime_env</span><span class="p">(</span><span class="n">runtime_env</span><span class="p">)</span>
 <span class="w">        </span><span class="p">.</span><span class="n">with_config</span><span class="p">(</span><span class="n">session_config</span><span class="p">)</span>
 <span class="w">        </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="n">with_optimizer_rules</span><span class="p">(</span><span class="k">crate</span><span class="p">::</span><span class="n">optimizer</span><span class="p">::</span><span class="n">ballista_default_optimizer_rules</span><span class="p">())</span>
 <span class="w">        </span><span class="p">.</span><span class="n">with_scalar_functions</span><span class="p">(</span><span class="n">ballista_scalar_functions</span><span class="p">())</span>
 <span class="w">        </span><span class="p">.</span><span class="n">with_aggregate_functions</span><span class="p">(</span><span class="n">ballista_aggregate_functions</span><span class="p">())</span>
 <span class="w">        </span><span class="p">.</span><span class="n">with_window_functions</span><span class="p">(</span><span class="n">ballista_window_functions</span><span class="p">())</span>

@@ -419,6 +419,16 @@
 from Python. Like PySpark, you build a plan through SQL or a DataFrame API against
 Parquet, CSV, JSON, and other file formats, run it in a distributed environment, and
 collect the results back in Python.</p>
+<section id="installation">
+<h2>Installation<a class="headerlink" href="#installation" title="Link to this heading">#</a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>ballista
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ballista</span></code> depends on a matching <code class="docutils literal notranslate"><span class="pre">datafusion</span></code> release, for example <code class="docutils literal notranslate"><span class="pre">ballista</span></code> 55
+requires <code class="docutils literal notranslate"><span class="pre">datafusion</span></code> 55. Queries are planned by DataFusion Python on the client
+and executed by the Ballista cluster, so the cluster should run the same Ballista
+version as the client.</p>
+</section>
 <section id="connecting-to-a-cluster">
 <h2>Connecting to a Cluster<a class="headerlink" href="#connecting-to-a-cluster" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> is the entry point for both remote and in-process clusters.</p>
@@ -436,6 +446,12 @@ Useful for development, testing, and notebooks:</p>
 <span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="sa">f</span><span class="s2">"df://</span><span class="si">{</span><span class="n">host</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">port</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> returns a regular <code class="docutils literal notranslate"><span class="pre">datafusion.SessionContext</span></code>, so the whole
+<a class="reference external" href="https://datafusion.apache.org/python/">DataFusion Python</a> API is available. Any
+operation which executes a plan, such as <code class="docutils literal notranslate"><span class="pre">collect</span></code>, <code class="docutils literal notranslate"><span class="pre">show</span></code>, <code class="docutils literal notranslate"><span class="pre">to_pandas</span></code> or
+<code class="docutils literal notranslate"><span class="pre">write_parquet</span></code>, runs on the cluster.</p>
+<p>The scheduler address is only used when a query is executed. Creating a context with
+a wrong address succeeds, and the error is raised by the first query.</p>
 </section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
@@ -474,6 +490,31 @@ session for distributed planning and execution.</p>
 low leaves executor capacity idle; setting it too high creates unnecessary scheduling
 overhead.</p>
 </section>
+<section id="ballista-settings">
+<h3>Ballista Settings<a class="headerlink" href="#ballista-settings" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">BallistaSessionConfig</span></code> has typed setters for Ballista settings, and <code class="docutils literal notranslate"><span class="pre">set</span></code> for any
+<code class="docutils literal notranslate"><span class="pre">datafusion.*</span></code> or <code class="docutils literal notranslate"><span class="pre">ballista.*</span></code> option. Unknown <code class="docutils literal notranslate"><span class="pre">ballista.*</span></code> keys raise <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionConfig</span><span class="p">,</span> <span class="n">BallistaSessionContext</span>
+
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span>
+    <span class="s2">"df://localhost:50050"</span><span class="p">,</span>
+    <span class="n">config</span><span class="o">=</span><span class="n">BallistaSessionConfig</span><span class="p">()</span>
+    <span class="o">.</span><span class="n">with_job_name</span><span class="p">(</span><span class="s2">"daily report"</span><span class="p">)</span>
+    <span class="o">.</span><span class="n">with_adaptive_query_planner</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
+    <span class="o">.</span><span class="n">with_broadcast_join_threshold_bytes</span><span class="p">(</span><span class="mi">10</span> <span class="o">*</span> <span class="mi">1024</span> <span class="o">*</span> <span class="mi">1024</span><span class="p">)</span>
+    <span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="s2">"ballista.shuffle.compression.codec"</span><span class="p">,</span> <span class="s2">"zstd"</span><span class="p">),</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>Ballista settings are registered as a DataFusion config extension, so they can be
+changed with SQL <code class="docutils literal notranslate"><span class="pre">SET</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"SET ballista.job.name = 'nightly'"</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Some DataFusion options are restricted by Ballista, for example
+<code class="docutils literal notranslate"><span class="pre">datafusion.optimizer.prefer_hash_join</span></code>, and are always set to the Ballista value.
+See <a class="reference internal" href="../configs.html"><span class="std std-doc">Configuration</span></a> for the available settings.</p>
+</section>
 </section>
 <section id="sql">
 <h2>SQL<a class="headerlink" href="#sql" title="Link to this heading">#</a></h2>
@@ -487,6 +528,19 @@ method or a <code class="docutils literal notranslate"><span class="pre">CREATE<
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"CREATE EXTERNAL TABLE trips STORED AS PARQUET LOCATION '/mnt/bigdata/trips'"</span><span class="p">)</span>
 </pre></div>
 </div>
+<p>Data in S3 needs credentials in two places. The client reads table schemas, so register an S3 object store on the context. The scheduler and executors read the data, so pass them the same settings with <code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">s3.*</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">datafusion.object_store</span><span class="w"> </span><span class="kn">import</span> <span class="n">AmazonS3</span>
+
+<span class="n">ctx</span><span class="o">.</span><span class="n">register_object_store</span><span class="p">(</span><span class="s2">"s3://"</span><span class="p">,</span> <span class="n">AmazonS3</span><span class="p">(</span><span class="n">bucket_name</span><span class="o">=</span><span class="s2">"my-bucket"</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="s2">"us-west-2"</span><span class="p">))</span>
+
+<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"SET s3.region = 'us-west-2'"</span><span class="p">)</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"SET s3.access_key_id = '...'"</span><span class="p">)</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"SET s3.secret_access_key = '...'"</span><span class="p">)</span>
+
+<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"CREATE EXTERNAL TABLE trips STORED AS PARQUET LOCATION 's3://my-bucket/trips/'"</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The cluster processes can instead use the standard AWS environment variables. See <a class="reference internal" href="cloud-storage.html"><span class="std std-doc">Querying S3 Data</span></a> for all options.</p>
 </section>
 <section id="executing-queries">
 <h3>Executing Queries<a class="headerlink" href="#executing-queries" title="Link to this heading">#</a></h3>
@@ -519,19 +573,11 @@ method or a <code class="docutils literal notranslate"><span class="pre">CREATE<
 </section>
 <section id="viewing-query-plans">
 <h3>Viewing Query Plans<a class="headerlink" href="#viewing-query-plans" title="Link to this heading">#</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">explain</span></code> shows the logical and physical plans for a query:</p>
+<p><code class="docutils literal notranslate"><span class="pre">explain</span></code> prints the logical, physical and distributed (per stage) plans for a
+query, and <code class="docutils literal notranslate"><span class="pre">explain(analyze=True)</span></code> runs the query on the cluster and prints the
+stages with runtime metrics:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">df</span><span class="o">.</span><span class="n">explain</span><span class="p">()</span>
-<span class="o">+---------------+-------------------------------------------------------------+</span>
-<span class="o">|</span> <span class="n">plan_type</span>     <span class="o">|</span> <span class="n">plan</span>                                                        <span class="o">|</span>
-<span class="o">+---------------+-------------------------------------------------------------+</span>
-<span class="o">|</span> <span class="n">logical_plan</span>  <span class="o">|</span> <span class="n">Projection</span><span class="p">:</span> <span class="c1">#COUNT(UInt8(1))                                |</span>
-<span class="o">|</span>               <span class="o">|</span>   <span class="n">Aggregate</span><span class="p">:</span> <span class="n">groupBy</span><span class="o">=</span><span class="p">[[]],</span> <span class="n">aggr</span><span class="o">=</span><span class="p">[[</span><span class="n">COUNT</span><span class="p">(</span><span class="n">UInt8</span><span class="p">(</span><span class="mi">1</span><span class="p">))]]</span>         <span class="o">|</span>
-<span class="o">|</span>               <span class="o">|</span>     <span class="n">TableScan</span><span class="p">:</span> <span class="n">trips</span> <span class="n">projection</span><span class="o">=</span><span class="p">[</span><span class="n">VendorID</span><span class="p">]</span>                  <span class="o">|</span>
-<span class="o">|</span> <span class="n">physical_plan</span> <span class="o">|</span> <span class="n">ProjectionExec</span><span class="p">:</span> <span class="n">expr</span><span class="o">=</span><span class="p">[</span><span class="n">COUNT</span><span class="p">(</span><span class="n">UInt8</span><span class="p">(</span><span class="mi">1</span><span class="p">))</span><span class="o">@</span><span class="mi">0</span> <span class="k">as</span> <span class="n">COUNT</span><span class="p">(</span><span class="n">UInt8</span><span class="p">(</span><span class="mi">1</span><span class="p">))]</span> <span class="o">|</span>
-<span class="o">|</span>               <span class="o">|</span>   <span class="n">ProjectionExec</span><span class="p">:</span> <span class="n">expr</span><span class="o">=</span><span class="p">[</span><span class="mi">9071244</span> <span class="k">as</span> <span class="n">COUNT</span><span class="p">(</span><span class="n">UInt8</span><span class="p">(</span><span class="mi">1</span><span class="p">))]</span>         <span class="o">|</span>
-<span class="o">|</span>               <span class="o">|</span>     <span class="n">EmptyExec</span><span class="p">:</span> <span class="n">produce_one_row</span><span class="o">=</span><span class="n">true</span>                         <span class="o">|</span>
-<span class="o">|</span>               <span class="o">|</span>                                                             <span class="o">|</span>
-<span class="o">+---------------+-------------------------------------------------------------+</span>
+<span class="n">df</span><span class="o">.</span><span class="n">explain</span><span class="p">(</span><span class="n">analyze</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -566,9 +612,76 @@ method or a <code class="docutils literal notranslate"><span class="pre">CREATE<
 </section>
 <section id="user-defined-functions">
 <h2>User Defined Functions<a class="headerlink" href="#user-defined-functions" title="Link to this heading">#</a></h2>
-<p>The underlying DataFusion query engine supports Python UDFs but this has not yet been
-implemented in Ballista. It is planned for a future release. See
-<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/173">#173</a> for status.</p>
+<p>Python scalar, aggregate and window UDFs are serialized with the plan using
+<a class="reference external" href="https://github.com/cloudpipe/cloudpickle">cloudpickle</a>, so they do not have to be
+registered on the cluster:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">pyarrow</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pa</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">datafusion</span><span class="w"> </span><span class="kn">import</span> <span class="n">col</span><span class="p">,</span> <span class="n">udf</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">is_null</span><span class="p">(</span><span class="n">array</span><span class="p">:</span> <span class="n">pa</span><span class="o">.</span><span class="n">Array</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">pa</span><span class="o">.</span><span class="n">Array</span><span class="p">:</span>
+    <span class="k">return</span> <span class="n">array</span><span class="o">.</span><span class="n">is_null</span><span class="p">()</span>
+
+
+<span class="n">is_null_udf</span> <span class="o">=</span> <span class="n">udf</span><span class="p">(</span><span class="n">is_null</span><span class="p">,</span> <span class="p">[</span><span class="n">pa</span><span class="o">.</span><span class="n">int64</span><span class="p">()],</span> <span class="n">pa</span><span class="o">.</span><span class="n">bool_</span><span class="p">(),</span> <span class="s2">"stable"</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">"is_null_udf"</span><span class="p">)</span>
+
+<span class="n">ctx</span><span class="o">.</span><span class="n">register_parquet</span><span class="p">(</span><span class="s2">"t"</span><span class="p">,</span> <span class="s2">"./testdata/test.parquet"</span><span class="p">)</span>
+
+<span class="n">df</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">table</span><span class="p">(</span><span class="s2">"t"</span><span class="p">)</span>
+<span class="n">df</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="n">col</span><span class="p">(</span><span class="s2">"bigint_col"</span><span class="p">),</span> <span class="n">is_null_udf</span><span class="p">(</span><span class="n">col</span><span class="p">(</span><span class="s2">"bigint_col"</span><span class="p">))</span><span class="o">.</span><span class="n">alias</span><span class="p">(</span><span class="s2">"n"</span><span class="p">))</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+
+<span class="c1"># or with SQL</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">register_udf</span><span class="p">(</span><span class="n">is_null_udf</span><span class="p">)</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"SELECT bigint_col, is_null_udf(bigint_col) AS n FROM t"</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>UDFs are run by Python on the executors, so the cluster has to meet these requirements:</p>
+<ul class="simple">
+<li><p>The scheduler and executors are started from Python, with <code class="docutils literal notranslate"><span class="pre">BallistaScheduler</span></code>,
+<code class="docutils literal notranslate"><span class="pre">BallistaExecutor</span></code> or <code class="docutils literal notranslate"><span class="pre">setup_test_cluster</span></code>, see below. The Rust
+<code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code> and <code class="docutils literal notranslate"><span class="pre">ballista-executor</span></code> binaries and the Docker images can not
+run Python UDFs.</p></li>
+<li><p>They run the same Python minor version as the client.</p></li>
+<li><p>Everything the UDF imports is installed on them.</p></li>
+</ul>
+<section id="trust-model">
+<h3>Trust Model<a class="headerlink" href="#trust-model" title="Link to this heading">#</a></h3>
+<p>A cluster started from Python decodes UDFs with <code class="docutils literal notranslate"><span class="pre">cloudpickle.loads</span></code>, which can run
+arbitrary Python code. Anyone who can reach the scheduler or executor ports can therefore
+run arbitrary code on the cluster, as the user the processes run as. This is the same trust
+model as PySpark.</p>
+<p>Only expose such a cluster to trusted clients, for example by binding to <code class="docutils literal notranslate"><span class="pre">localhost</span></code> or a
+private network, or restricting access with a firewall.</p>
+</section>
+</section>
+<section id="running-a-cluster-from-python">
+<h2>Running a Cluster from Python<a class="headerlink" href="#running-a-cluster-from-python" title="Link to this heading">#</a></h2>
+<p>The scheduler and executors can be started from Python. This is needed for Python
+UDFs, and is convenient for development.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaScheduler</span>
+
+<span class="n">scheduler</span> <span class="o">=</span> <span class="n">BallistaScheduler</span><span class="p">(</span><span class="n">bind_host</span><span class="o">=</span><span class="s2">"127.0.0.1"</span><span class="p">,</span> <span class="n">bind_port</span><span class="o">=</span><span class="mi">50050</span><span class="p">)</span>
+<span class="n">scheduler</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+<span class="n">scheduler</span><span class="o">.</span><span class="n">wait_for_termination</span><span class="p">()</span>
+</pre></div>
+</div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaExecutor</span>
+
+<span class="n">executor</span> <span class="o">=</span> <span class="n">BallistaExecutor</span><span class="p">(</span>
+    <span class="n">bind_host</span><span class="o">=</span><span class="s2">"127.0.0.1"</span><span class="p">,</span>
+    <span class="n">bind_port</span><span class="o">=</span><span class="mi">50051</span><span class="p">,</span>
+    <span class="n">scheduler_host</span><span class="o">=</span><span class="s2">"localhost"</span><span class="p">,</span>
+    <span class="n">scheduler_port</span><span class="o">=</span><span class="mi">50050</span><span class="p">,</span>
+    <span class="n">vcores</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
+    <span class="n">work_dir</span><span class="o">=</span><span class="s2">"/tmp/ballista-executor"</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">executor</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+<span class="n">executor</span><span class="o">.</span><span class="n">wait_for_termination</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>All arguments are optional. <code class="docutils literal notranslate"><span class="pre">start</span></code> runs the process in the background, <code class="docutils literal notranslate"><span class="pre">wait_for_termination</span></code> blocks until it
+stops, and <code class="docutils literal notranslate"><span class="pre">close</span></code> stops it. <code class="docutils literal notranslate"><span class="pre">work_dir</span></code> holds the executor’s shuffle and spill files; when omitted, the executor
+uses a temporary directory.</p>
 </section>
 </section>
 
@@ -619,9 +732,11 @@ implemented in Ballista. It is planned for a future release. See
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connecting-to-a-cluster">Connecting to a Cluster</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#target-partitions">Target Partitions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-settings">Ballista Settings</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sql">SQL</a><ul class="nav section-nav flex-column">
@@ -633,7 +748,11 @@ implemented in Ballista. It is planned for a future release. See
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dataframe-api">DataFrame API</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#user-defined-functions">User Defined Functions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#user-defined-functions">User Defined Functions</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#trust-model">Trust Model</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-a-cluster-from-python">Running a Cluster from Python</a></li>
 </ul>
   </nav></div>
 

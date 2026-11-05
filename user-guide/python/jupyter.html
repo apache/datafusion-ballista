@@ -416,7 +416,12 @@
 <section id="jupyter-notebooks">
 <h1>Jupyter Notebooks<a class="headerlink" href="#jupyter-notebooks" title="Link to this heading">#</a></h1>
 <p>Ballista works well in Jupyter notebooks. DataFrames automatically render as formatted
-HTML tables when displayed in a notebook cell.</p>
+HTML tables when displayed in a notebook cell, and the <code class="docutils literal notranslate"><span class="pre">ballista.jupyter</span></code> extension
+adds SQL magic commands, plan visualization and progress reporting.</p>
+<p>Install the Jupyter extras with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"ballista[jupyter]"</span>
+</pre></div>
+</div>
 <section id="basic-usage">
 <h2>Basic Usage<a class="headerlink" href="#basic-usage" title="Link to this heading">#</a></h2>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionContext</span>
@@ -480,6 +485,114 @@ expandable cells for long text, and scrollable display for wide tables.</p>
 </pre></div>
 </div>
 </section>
+<section id="sql-magic-commands">
+<h2>SQL Magic Commands<a class="headerlink" href="#sql-magic-commands" title="Link to this heading">#</a></h2>
+<p>Load the extension and connect to a cluster:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="o">%</span><span class="n">load_ext</span> <span class="n">ballista</span><span class="o">.</span><span class="n">jupyter</span>
+
+<span class="o">%</span><span class="n">ballista</span> <span class="n">connect</span> <span class="n">df</span><span class="p">:</span><span class="o">//</span><span class="n">localhost</span><span class="p">:</span><span class="mi">50050</span>
+</pre></div>
+</div>
+<p>The magic commands use their own <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code>, created by <code class="docutils literal notranslate"><span class="pre">%ballista</span> <span class="pre">connect</span></code>.
+Tables registered on a context created with <code class="docutils literal notranslate"><span class="pre">BallistaSessionContext</span></code> are not visible to
+them, register tables with <code class="docutils literal notranslate"><span class="pre">%register</span></code> instead. The scheduler is only contacted when a
+query runs, so <code class="docutils literal notranslate"><span class="pre">%ballista</span> <span class="pre">connect</span></code> does not check that the cluster is reachable.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Command</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">%ballista</span> <span class="pre">connect</span> <span class="pre">&lt;url&gt;</span></code></p></td>
+<td><p>Connect to a cluster, <code class="docutils literal notranslate"><span class="pre">df://</span></code> is added if missing</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">%ballista</span> <span class="pre">disconnect</span></code></p></td>
+<td><p>Drop the connection</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">%ballista</span> <span class="pre">status</span></code></p></td>
+<td><p>Show the address, session id and query count</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">%ballista</span> <span class="pre">tables</span></code></p></td>
+<td><p>List registered tables by schema</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">%ballista</span> <span class="pre">schema</span> <span class="pre">&lt;table&gt;</span></code></p></td>
+<td><p>Show the columns of a table</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">%ballista</span> <span class="pre">history</span></code></p></td>
+<td><p>Show the last 10 queries with their planning time</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">%register</span> <span class="pre">&lt;format&gt;</span> <span class="pre">&lt;table&gt;</span> <span class="pre">&lt;path&gt;</span></code></p></td>
+<td><p>Register a <code class="docutils literal notranslate"><span class="pre">parquet</span></code>, <code class="docutils literal notranslate"><span class="pre">csv</span></code>, <code class="docutils literal notranslate"><span class="pre">json</span></code> or <code class="docutils literal notranslate"><span class="pre">avro</span></code> file</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">%sql</span> <span class="pre">&lt;query&gt;</span></code></p></td>
+<td><p>Run a single-line query</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">%%sql</span> <span class="pre">[var]</span></code></p></td>
+<td><p>Run the cell as a query, store the result in <code class="docutils literal notranslate"><span class="pre">var</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="o">%</span><span class="n">register</span> <span class="n">parquet</span> <span class="n">orders</span> <span class="o">/</span><span class="n">data</span><span class="o">/</span><span class="n">orders</span><span class="o">.</span><span class="n">parquet</span>
+
+<span class="o">%</span><span class="n">sql</span> <span class="n">SELECT</span> <span class="n">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span> <span class="n">FROM</span> <span class="n">orders</span>
+</pre></div>
+</div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="o">%%</span><span class="n">sql</span> <span class="n">top_customers</span>
+<span class="n">SELECT</span> <span class="n">customer_id</span><span class="p">,</span> <span class="n">SUM</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span> <span class="n">AS</span> <span class="n">total</span>
+<span class="n">FROM</span> <span class="n">orders</span>
+<span class="n">GROUP</span> <span class="n">BY</span> <span class="n">customer_id</span>
+<span class="n">ORDER</span> <span class="n">BY</span> <span class="n">total</span> <span class="n">DESC</span>
+<span class="n">LIMIT</span> <span class="mi">10</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">%sql</span></code> and <code class="docutils literal notranslate"><span class="pre">%%sql</span></code> return a <code class="docutils literal notranslate"><span class="pre">datafusion.DataFrame</span></code>, which renders as a table. The most
+recent result is also available as <code class="docutils literal notranslate"><span class="pre">_last_result</span></code>.</p>
+</section>
+<section id="visualizing-query-plans">
+<h2>Visualizing Query Plans<a class="headerlink" href="#visualizing-query-plans" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">explain_visual</span></code> renders the logical plan of a DataFrame as a graph, without running
+the query:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista.jupyter</span><span class="w"> </span><span class="kn">import</span> <span class="n">explain_visual</span>
+
+<span class="n">df</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">"SELECT * FROM orders WHERE amount &gt; 100"</span><span class="p">)</span>
+<span class="n">explain_visual</span><span class="p">(</span><span class="n">df</span><span class="p">)</span>
+
+<span class="c1"># save as SVG, or as Graphviz DOT</span>
+<span class="n">explain_visual</span><span class="p">(</span><span class="n">df</span><span class="p">)</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">"plan.svg"</span><span class="p">)</span>
+<span class="n">explain_visual</span><span class="p">(</span><span class="n">df</span><span class="p">)</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">"plan.dot"</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The SVG is rendered with the Graphviz <code class="docutils literal notranslate"><span class="pre">dot</span></code> command, for example installed with
+<code class="docutils literal notranslate"><span class="pre">brew</span> <span class="pre">install</span> <span class="pre">graphviz</span></code> or <code class="docutils literal notranslate"><span class="pre">apt</span> <span class="pre">install</span> <span class="pre">graphviz</span></code>. Without it, the plan is shown as
+text. For runtime metrics use <code class="docutils literal notranslate"><span class="pre">df.explain(analyze=True)</span></code>, which runs the query on the
+cluster.</p>
+</section>
+<section id="progress-reporting">
+<h2>Progress Reporting<a class="headerlink" href="#progress-reporting" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">collect_with_progress</span></code> collects a DataFrame and shows the elapsed time while the query
+runs:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista.jupyter</span><span class="w"> </span><span class="kn">import</span> <span class="n">collect_with_progress</span>
+
+<span class="n">batches</span> <span class="o">=</span> <span class="n">collect_with_progress</span><span class="p">(</span><span class="n">df</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Outside Jupyter, or to handle progress yourself, pass a callback. <code class="docutils literal notranslate"><span class="pre">progress</span></code> is <code class="docutils literal notranslate"><span class="pre">-1.0</span></code>
+while the query runs and <code class="docutils literal notranslate"><span class="pre">1.0</span></code> when it completes:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">on_progress</span><span class="p">(</span><span class="n">status</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">progress</span><span class="p">:</span> <span class="nb">float</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">status</span><span class="p">)</span>
+
+<span class="n">batches</span> <span class="o">=</span> <span class="n">collect_with_progress</span><span class="p">(</span><span class="n">df</span><span class="p">,</span> <span class="n">callback</span><span class="o">=</span><span class="n">on_progress</span><span class="p">,</span> <span class="n">poll_interval</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="example-notebooks">
+<h2>Example Notebooks<a class="headerlink" href="#example-notebooks" title="Link to this heading">#</a></h2>
+<p>The <a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/python/examples"><code class="docutils literal notranslate"><span class="pre">python/examples</span></code></a>
+directory contains notebooks for getting started, the DataFrame API and distributed
+queries.</p>
+</section>
 <section id="running-a-local-cluster-in-a-notebook">
 <h2>Running a Local Cluster in a Notebook<a class="headerlink" href="#running-a-local-cluster-in-a-notebook" title="Link to this heading">#</a></h2>
 <p>For development and testing, you can start a local cluster directly from a notebook:</p>
@@ -542,6 +655,10 @@ expandable cells for long text, and scrollable display for wide tables.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#basic-usage">Basic Usage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#converting-results">Converting Results</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#example-workflow">Example Workflow</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sql-magic-commands">SQL Magic Commands</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#visualizing-query-plans">Visualizing Query Plans</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#progress-reporting">Progress Reporting</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#example-notebooks">Example Notebooks</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-a-local-cluster-in-a-notebook">Running a Local Cluster in a Notebook</a></li>
 </ul>
   </nav></div>

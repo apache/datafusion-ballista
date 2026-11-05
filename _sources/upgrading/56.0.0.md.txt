@@ -55,6 +55,22 @@ both. As a result:
 - `cluster_config` can not be combined with the new `BallistaSessionConfig`,
   doing so raises `ValueError`.
 
+#### The `analyze` argument of `explain_visual` is deprecated
+
+`explain_visual(df, analyze=True)` in `ballista.jupyter` still works, but
+raises a `DeprecationWarning`. The argument only labelled the visualization: it
+never ran the query or added runtime statistics. For runtime statistics, use
+DataFusion's `explain` instead:
+
+```python
+# before
+explain_visual(df, analyze=True)
+
+# after
+explain_visual(df)            # the plan, without running the query
+df.explain(analyze=True)      # runs the query and prints runtime statistics
+```
+
 #### The scheduler's embedded Flight proxy is deprecated
 
 `--enable-embedded-flight-proxy` (and `SchedulerConfig::enable_embedded_flight_proxy`)
@@ -311,8 +327,8 @@ also be used to create a plain DataFusion `SessionContext`.
 
 Ballista settings are registered on the session as a DataFusion config
 extension, available as `ballista.BallistaConfigExtension`. As a result,
-`ballista.*` keys appear in `information_schema.df_settings` and can be changed
-with SQL `SET`, for example `SET ballista.job.name = 'nightly'`.
+`ballista.*` keys can be changed with SQL `SET`, for example
+`SET ballista.job.name = 'nightly'`.
 
 The local session now starts from Ballista's DataFusion defaults, the same
 defaults the scheduler uses. Some DataFusion options are restricted by Ballista
@@ -338,14 +354,15 @@ df = ctx.sql("SELECT * FROM orders WHERE amount > 100")
 
 # before: df.explain_visual()
 explain_visual(df)
-explain_visual(df, analyze=True).save("plan.svg")
+explain_visual(df).save("plan.svg")
 
 # before: df.collect_with_progress()
 batches = collect_with_progress(df)
 batches = collect_with_progress(df, callback=lambda status, progress: print(status))
 ```
 
-The parameters and return values are unchanged.
+The parameters and return values are unchanged, except that `analyze=True` is
+now deprecated, see [Deprecations](#deprecations).
 
 The `%sql` magic returns a `datafusion.DataFrame` instead of a
 `DistributedDataFrame`. `%ballista tables` uses the DataFusion catalog
