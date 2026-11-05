@@ -3235,6 +3235,7 @@ dependencies = [
  "datafusion-ffi",
  "datafusion-proto",
  "datafusion-python",
+ "futures",
  "log",
  "prost",
  "pyo3",

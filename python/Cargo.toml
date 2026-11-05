@@ -56,6 +56,7 @@ datafusion = { version = "=55.2.0", features = ["avro"] }
 datafusion-ffi = { version = "=55.2.0" }
 datafusion-proto = { version = "=55.2.0" }
 datafusion-python = { version = "55.0.0", default-features = false }
+futures = { version = "0.3" }
 log = { version = "0.4" }
 prost = { version = "0.14" }
 pyo3 = { version = "0.29", features = ["extension-module", "abi3", "abi3-py310"] }

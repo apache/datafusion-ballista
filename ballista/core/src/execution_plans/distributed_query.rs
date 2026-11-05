@@ -294,41 +294,12 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     ) -> Result<SendableRecordBatchStream> {
         assert_eq!(0, partition);
 
-        let mut buf: Vec<u8> = vec![];
-        let plan_message = T::try_from_logical_plan(
+        let query = execute_query_params::<T>(
             &self.plan,
             self.extension_codec.as_ref(),
-        )
-        .map_err(|e| {
-            DataFusionError::Internal(format!("failed to serialize logical plan: {e:?}"))
-        })?;
-        plan_message.try_encode(&mut buf).map_err(|e| {
-            DataFusionError::Execution(format!("failed to encode logical plan: {e:?}"))
-        })?;
-
-        let settings = context
-            .session_config()
-            .options()
-            .entries()
-            .iter()
-            .map(
-                |datafusion::config::ConfigEntry { key, value, .. }| KeyValuePair {
-                    key: key.to_owned(),
-                    value: value.clone(),
-                },
-            )
-            .collect();
-        let operation_id = uuid::Uuid::now_v7().to_string();
-        debug!(
-            "Distributed query with session_id: {}, execution operation_id: {}",
-            self.session_id, operation_id
-        );
-        let query = ExecuteQueryParams {
-            query: Some(Query::LogicalPlan(buf)),
-            settings,
-            session_id: self.session_id.clone(),
-            operation_id,
-        };
+            context.session_config(),
+            self.session_id.clone(),
+        )?;
 
         let metric_row_count = MetricBuilder::new(&self.metrics).output_rows(partition);
         let metric_total_bytes =
@@ -411,6 +382,45 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
     }
+}
+
+/// Builds the job submission request for a logical plan, carrying all
+/// options of `session_config` as settings and a new operation id.
+pub fn execute_query_params<T: 'static + AsLogicalPlan>(
+    plan: &LogicalPlan,
+    extension_codec: &dyn LogicalExtensionCodec,
+    session_config: &SessionConfig,
+    session_id: String,
+) -> Result<ExecuteQueryParams> {
+    let mut buf: Vec<u8> = vec![];
+    let plan_message = T::try_from_logical_plan(plan, extension_codec).map_err(|e| {
+        DataFusionError::Internal(format!("failed to serialize logical plan: {e:?}"))
+    })?;
+    plan_message.try_encode(&mut buf).map_err(|e| {
+        DataFusionError::Execution(format!("failed to encode logical plan: {e:?}"))
+    })?;
+
+    let settings = session_config
+        .options()
+        .entries()
+        .iter()
+        .map(
+            |datafusion::config::ConfigEntry { key, value, .. }| KeyValuePair {
+                key: key.to_owned(),
+                value: value.clone(),
+            },
+        )
+        .collect();
+    let operation_id = uuid::Uuid::now_v7().to_string();
+    debug!(
+        "Distributed query with session_id: {session_id}, execution operation_id: {operation_id}"
+    );
+    Ok(ExecuteQueryParams {
+        query: Some(Query::LogicalPlan(buf)),
+        settings,
+        session_id,
+        operation_id,
+    })
 }
 
 /// Submits an already-built physical plan directly to a Ballista scheduler for
