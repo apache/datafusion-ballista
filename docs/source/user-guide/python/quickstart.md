@@ -290,7 +290,7 @@ UDFs, and is convenient for development.
 ```python
 from ballista import BallistaScheduler
 
-scheduler = BallistaScheduler(bind_host="0.0.0.0", bind_port=50050)
+scheduler = BallistaScheduler(bind_host="127.0.0.1", bind_port=50050)
 scheduler.start()
 scheduler.wait_for_termination()
 ```
@@ -299,7 +299,7 @@ scheduler.wait_for_termination()
 from ballista import BallistaExecutor
 
 executor = BallistaExecutor(
-    bind_host="0.0.0.0",
+    bind_host="127.0.0.1",
     bind_port=50051,
     scheduler_host="localhost",
     scheduler_port=50050,
