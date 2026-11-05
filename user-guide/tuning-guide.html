@@ -753,7 +753,9 @@ shuffle both sides at once.</p></li>
 downstream exchange is replaced with an empty execution node, and emptiness
 is propagated up the plan so downstream stages are skipped entirely.</p></li>
 <li><p><strong>Shuffle-partition coalescing.</strong> Adjacent small output partitions of a
-completed stage are merged so the next stage runs fewer, larger tasks.
+completed stage are merged so the next stage runs fewer, larger tasks, down
+to a single task when the whole shuffle fits in
+<code class="docutils literal notranslate"><span class="pre">ballista.planner.coalesce.target_partition_bytes</span></code>.
 Disabled by default; enable with <code class="docutils literal notranslate"><span class="pre">ballista.planner.coalesce.enabled</span></code> and tune
 with the <code class="docutils literal notranslate"><span class="pre">ballista.planner.coalesce.*</span></code> keys documented in
 <a class="reference internal" href="configs.html"><span class="std std-doc">Configuration</span></a>.</p></li>
