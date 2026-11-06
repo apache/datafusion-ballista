@@ -135,11 +135,12 @@ async fn two_stage_planner(
 ) -> datafusion::common::Result<AdaptivePlanner> {
     let ctx = mock_context();
     ctx.register_batch("t", mock_batch()?)?;
-    let lp = ctx
-        .sql("select c, count(*) from (select a, c from t group by a, c) group by c")
-        .await?
-        .into_optimized_plan()?;
-    AdaptivePlanner::try_new(&ctx, &lp, "test_job".into(), Some(embedder)).await
+    AdaptivePlanner::from_logical_sql(
+        &ctx,
+        "select c, count(*) from (select a, c from t group by a, c) group by c",
+        Some(embedder),
+    )
+    .await
 }
 
 /// An embedder's preparation rules run once, and its replan rules run when

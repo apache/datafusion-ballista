@@ -25,13 +25,11 @@
 use crate::state::aqe::adaptive_rules::{AdaptiveRule, AdaptiveRules};
 use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::AdaptivePlanner;
-use crate::state::aqe::test::coalesce_rule::partitions_with_byte_sizes;
-use crate::state::aqe::test::mock_batch;
+use crate::state::aqe::test::{coalesce_context, mock_batch, partitions_with_byte_sizes};
 use ballista_core::assert_plan;
-use ballista_core::extension::SessionConfigExt;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::config::ConfigOptions;
-use datafusion::execution::{SessionStateBuilder, TaskContext};
+use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
@@ -40,25 +38,15 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream,
 };
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::prelude::SessionContext;
 use std::fmt::Formatter;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// A session with Ballista's config extension installed, partition
-/// coalescing switched on or off, and a small coalesce target so the
-/// bin-pack is hand-traceable.
+/// A coalesce-tuned session with partition coalescing switched on or off and
+/// the table `t` registered.
 fn physical_context(coalesce_enabled: bool) -> SessionContext {
-    let config = SessionConfig::new_with_ballista()
-        .with_target_partitions(8)
-        .with_round_robin_repartition(false)
-        .with_ballista_coalesce_enabled(coalesce_enabled)
-        .with_ballista_coalesce_target_partition_bytes(200);
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .build();
-    let ctx = SessionContext::new_with_state(state);
+    let ctx = coalesce_context(8, coalesce_enabled);
     ctx.register_batch("t", mock_batch().unwrap()).unwrap();
     ctx
 }

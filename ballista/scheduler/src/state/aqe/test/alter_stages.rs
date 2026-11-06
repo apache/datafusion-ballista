@@ -28,7 +28,6 @@ use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{ColumnStatistics, DataFusionError, JoinType, Statistics};
 use datafusion::config::ConfigOptions;
-use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
@@ -51,11 +50,7 @@ async fn should_not_propagate_empty_stage_when_disabled() -> datafusion::error::
         .with_round_robin_repartition(false)
         .set_bool("ballista.planner.propagate_empty.enabled", false);
 
-    let ctx = SessionContext::new_with_state(
-        SessionStateBuilder::new_with_default_features()
-            .with_config(config)
-            .build(),
-    );
+    let ctx = SessionContext::new_with_config(config);
     ctx.register_batch("t", mock_batch()?)?;
 
     let plan = ctx
@@ -111,9 +106,7 @@ async fn should_propagate_empty_stage() -> datafusion::error::Result<()> {
             select min(a) as c0, max(b) as c1, c as c2 from t group by c
         "#;
 
-    let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(&ctx, q).await?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
@@ -171,9 +164,7 @@ async fn should_propagate_empty_stage_and_remove() -> datafusion::error::Result<
             select c0, count(*) from (select min(a) as c0, max(b) as c1, c as c2 from t where a = 42 group by c) group by c0
         "#;
 
-    let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(&ctx, q).await?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -429,14 +420,11 @@ async fn should_cancel_the_stage() -> datafusion::error::Result<()> {
         .show()
         .await?;
 
-    let join = ctx
-        .sql("select t1.* from t1 join t2 on t1.a = t2.a where t2.b = 42")
-        .await?
-        .create_physical_plan()
-        .await?;
-
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), join, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select t1.* from t1 join t2 on t1.a = t2.a where t2.b = 42",
+    )
+    .await?;
 
     let (stages, cancellable) = planner.actionable_stages()?;
     assert_eq!(2, stages.unwrap().len());

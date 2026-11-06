@@ -47,6 +47,7 @@ mod stage_transitions;
 /// A table whose statistics are declared rather than measured
 mod stats_table;
 
+use crate::state::aqe::adaptive_rules::AdaptiveRules;
 use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::{AdaptivePlanner, RunnableStages};
 use ballista_core::JobId;
@@ -87,6 +88,27 @@ impl AdaptivePlanner {
             job_id,
             Self::default_optimizers(plan_id_generator),
         )
+    }
+
+    /// Plans `sql` in `ctx` to a physical plan and wraps it in an
+    /// `AdaptivePlanner`, bypassing the preparation rules.
+    pub(super) async fn from_physical_sql(
+        ctx: &SessionContext,
+        sql: &str,
+    ) -> datafusion::common::Result<Self> {
+        let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+        Self::try_from_plan(ctx.state().config(), plan, "test_job".into())
+    }
+
+    /// Plans `sql` in `ctx` to an optimized logical plan and hands it to
+    /// [`AdaptivePlanner::try_new`], which runs the preparation rules.
+    pub(super) async fn from_logical_sql(
+        ctx: &SessionContext,
+        sql: &str,
+        rules: Option<&dyn AdaptiveRules>,
+    ) -> datafusion::common::Result<Self> {
+        let plan = ctx.sql(sql).await?.into_optimized_plan()?;
+        Self::try_new(ctx, &plan, "test_job".into(), rules).await
     }
 
     /// The stages that can run now, or `None` if no more stages can run.
@@ -148,10 +170,7 @@ pub(crate) fn ballista_ctx() -> SessionContext {
     let config = SessionConfig::new_with_ballista()
         .with_target_partitions(4)
         .with_round_robin_repartition(false);
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_config(config)
-        .build();
-    SessionContext::new_with_state(state)
+    SessionContext::new_with_config(config)
 }
 
 /// Registers a [`StatsTable`] declaring `stats` over `schema`.
@@ -257,10 +276,63 @@ pub(crate) fn mock_context() -> SessionContext {
         // here so join-input swaps during AQE re-optimization are legal.
         .set_bool("datafusion.optimizer.enable_dynamic_filter_pushdown", false);
 
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .build();
+    SessionContext::new_with_config(config)
+}
 
-    SessionContext::new_with_state(state)
+/// A session context with the Ballista config extension installed and the
+/// coalesce-relevant knobs forced to specific values. The rule packs toward
+/// `target_partition_bytes` (200, for test scale), so a scenario traces from its
+/// inputs alone. Joins plan as sort-merge joins over hash-partitioned inputs.
+pub(crate) fn coalesce_context(
+    target_partitions: usize,
+    enabled: bool,
+) -> SessionContext {
+    let config = SessionConfig::new_with_ballista()
+        .with_target_partitions(target_partitions)
+        .with_round_robin_repartition(false)
+        .with_ballista_coalesce_enabled(enabled)
+        .with_ballista_coalesce_target_partition_bytes(200)
+        .set_bool("datafusion.optimizer.prefer_hash_join", false)
+        .set_u64(
+            "datafusion.optimizer.hash_join_single_partition_threshold",
+            0,
+        )
+        .set_u64(
+            "datafusion.optimizer.hash_join_single_partition_threshold_rows",
+            0,
+        );
+
+    SessionContext::new_with_config(config)
+}
+
+/// Registers a MemTable with `n_partitions` partitions, each holding one copy
+/// of `mock_batch`. Multi-partition sources force DataFusion's
+/// `EnforceDistribution` to insert a hash repartition before partitioned
+/// joins; without that, two 1-partition inputs satisfy `Partitioned` on a
+/// single partition and no `ExchangeExec` shows up in the final plan.
+pub(crate) fn register_partitioned_table(
+    ctx: &SessionContext,
+    name: &str,
+    n_partitions: usize,
+) -> datafusion::error::Result<()> {
+    let data = (0..n_partitions)
+        .map(|_| Ok(vec![mock_batch()?]))
+        .collect::<datafusion::error::Result<Vec<_>>>()?;
+    let table = MemTable::try_new(mock_schema(), data)?;
+    ctx.register_table(name, Arc::new(table))?;
+    Ok(())
+}
+
+/// A `Vec<Vec<PartitionLocation>>` of length `per_partition_bytes.len()` where
+/// each upstream partition reports the given byte size. The coalesce rule sums
+/// `partition_stats.num_bytes` across leaves before bin-packing, which is the
+/// only field these tests need to vary.
+pub(crate) fn partitions_with_byte_sizes(
+    per_partition_bytes: &[u64],
+) -> Vec<Vec<PartitionLocation>> {
+    per_partition_bytes
+        .iter()
+        .enumerate()
+        .map(|(idx, &bytes)| vec![mock_partition_location(idx, 1, bytes)])
+        .collect()
 }
