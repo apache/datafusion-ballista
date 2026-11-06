@@ -34,8 +34,8 @@ use crate::state::task_manager::TaskLauncher;
 
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    FailedTask, JobStatus, MultiTaskDefinition, ShuffleWritePartition, SuccessfulTask,
-    TaskId, TaskStatus, task_status,
+    ExecutionError, FailedTask, FetchPartitionError, JobStatus, MultiTaskDefinition,
+    ShuffleWritePartition, SuccessfulTask, TaskId, TaskStatus, failed_task, task_status,
 };
 use ballista_core::serde::scheduler::{
     ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
@@ -75,9 +75,15 @@ const TEST_SCHEDULER_ENDPOINT: &str = "localhost:50050";
 
 /// Sometimes we need to construct logical plans that will produce errors
 /// when we try and create physical plan. A scan using `ExplodingTableProvider`
-/// will do the trick
+/// will do the trick: it returns an error or, for planning that fails by
+/// panicking rather than by returning an error, panics.
 #[derive(Debug)]
-pub struct ExplodingTableProvider;
+pub enum ExplodingTableProvider {
+    /// The scan returns an error.
+    Error,
+    /// The scan panics.
+    Panic,
+}
 
 #[async_trait::async_trait]
 impl TableProvider for ExplodingTableProvider {
@@ -96,35 +102,12 @@ impl TableProvider for ExplodingTableProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        Err(DataFusionError::Plan(
-            "ExplodingTableProvider just throws an error!".to_owned(),
-        ))
-    }
-}
-
-/// A table whose scan panics, for planning that fails by panicking rather than
-/// by returning an error.
-#[derive(Debug)]
-pub struct PanickingTableProvider;
-
-#[async_trait::async_trait]
-impl TableProvider for PanickingTableProvider {
-    fn schema(&self) -> SchemaRef {
-        Arc::new(Schema::empty())
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::Base
-    }
-
-    async fn scan(
-        &self,
-        _ctx: &dyn Session,
-        _projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
-        _limit: Option<usize>,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        panic!("PanickingTableProvider just panics!")
+        match self {
+            Self::Error => Err(DataFusionError::Plan(
+                "ExplodingTableProvider just throws an error!".to_owned(),
+            )),
+            Self::Panic => panic!("PanickingTableProvider just panics!"),
+        }
     }
 }
 
@@ -243,44 +226,133 @@ where
 /// Returns a default task runner that marks all tasks as successful.
 pub fn default_task_runner() -> impl TaskRunner {
     TaskRunnerFn::new(|executor_id: String, task: MultiTaskDefinition| {
-        let mut statuses = vec![];
-
-        let partitions = 1;
-        let partitions: Vec<ShuffleWritePartition> = (0..partitions)
-            .map(|i| ShuffleWritePartition {
-                partition_id: i as u64,
-                num_batches: 1,
-                num_rows: 1,
-                num_bytes: 1,
-                file_id: None,
-                is_sort_shuffle: false,
+        task.task_ids
+            .iter()
+            .map(|TaskId { task_id, .. }| {
+                successful_task_status(
+                    &task.job_id,
+                    task.stage_id,
+                    task.stage_attempt_num,
+                    *task_id,
+                    &executor_id,
+                    1,
+                    timestamp_millis(),
+                )
             })
-            .collect();
-
-        for TaskId { task_id, .. } in task.task_ids {
-            let timestamp = timestamp_millis();
-            statuses.push(TaskStatus {
-                task_id,
-                job_id: task.job_id.clone(),
-                stage_id: task.stage_id,
-                stage_attempt_num: task.stage_attempt_num,
-                launch_time: timestamp,
-                start_exec_time: timestamp,
-                end_exec_time: timestamp,
-                metrics: vec![],
-                status: Some(task_status::Status::Successful(SuccessfulTask {
-                    executor_id: executor_id.clone(),
-                    partitions: partitions.clone(),
-                    runtime_stats: vec![],
-                    task_column_stats: vec![],
-                    runtime_filters: vec![],
-                    window_state: vec![],
-                })),
-            });
-        }
-
-        statuses
+            .collect()
     })
+}
+
+/// A task runner that fails every task with the failure `failure` makes from
+/// the id of the executor that runs it.
+pub fn failing_task_runner(
+    failure: impl Fn(&str) -> FailedTask + Send + Sync + 'static,
+) -> Arc<dyn TaskRunner> {
+    Arc::new(TaskRunnerFn::new(
+        move |executor_id: String, task: MultiTaskDefinition| {
+            failed_statuses(task, failure(&executor_id))
+        },
+    ))
+}
+
+/// The output partitions `0..n` of a task, each with one batch of one row.
+pub fn shuffle_write_partitions(n: usize) -> Vec<ShuffleWritePartition> {
+    (0..n)
+        .map(|partition_id| ShuffleWritePartition {
+            partition_id: partition_id as u64,
+            num_batches: 1,
+            num_rows: 1,
+            num_bytes: 1,
+            file_id: None,
+            is_sort_shuffle: false,
+        })
+        .collect()
+}
+
+/// The status of a task that succeeded on `executor_id` after writing
+/// `partitions` output partitions, with `timestamp` as its launch, start and
+/// end time.
+pub fn successful_task_status(
+    job_id: &str,
+    stage_id: u32,
+    stage_attempt_num: u32,
+    task_id: u32,
+    executor_id: &str,
+    partitions: usize,
+    timestamp: u64,
+) -> TaskStatus {
+    TaskStatus {
+        task_id,
+        job_id: job_id.to_owned(),
+        stage_id,
+        stage_attempt_num,
+        launch_time: timestamp,
+        start_exec_time: timestamp,
+        end_exec_time: timestamp,
+        metrics: vec![],
+        status: Some(task_status::Status::Successful(SuccessfulTask {
+            executor_id: executor_id.to_owned(),
+            partitions: shuffle_write_partitions(partitions),
+            runtime_stats: vec![],
+            task_column_stats: vec![],
+            runtime_filters: vec![],
+            window_state: vec![],
+        })),
+    }
+}
+
+/// A failure of the task's own execution that is neither retried nor counted
+/// towards the failure limit.
+pub fn execution_failure(error: &str) -> FailedTask {
+    FailedTask {
+        error: error.to_owned(),
+        retryable: false,
+        count_to_failures: false,
+        failed_reason: Some(failed_task::FailedReason::ExecutionError(ExecutionError {})),
+    }
+}
+
+/// A failure to fetch partition `map_partition_id` of stage `map_stage_id`
+/// from `executor_id`, which makes the scheduler rerun that map stage.
+pub fn fetch_partition_failure(
+    executor_id: &str,
+    map_stage_id: u32,
+    map_partition_id: u32,
+) -> FailedTask {
+    FailedTask {
+        error: "FetchPartitionError".to_owned(),
+        retryable: false,
+        count_to_failures: false,
+        failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+            FetchPartitionError {
+                executor_id: executor_id.to_owned(),
+                map_stage_id,
+                map_partition_id,
+            },
+        )),
+    }
+}
+
+/// One failed status carrying `failure` for each task of `task`.
+pub fn failed_statuses(
+    task: MultiTaskDefinition,
+    failure: FailedTask,
+) -> Vec<TaskStatus> {
+    let timestamp = timestamp_millis();
+    task.task_ids
+        .iter()
+        .map(|TaskId { task_id, .. }| TaskStatus {
+            task_id: *task_id,
+            job_id: task.job_id.clone(),
+            stage_id: task.stage_id,
+            stage_attempt_num: task.stage_attempt_num,
+            launch_time: timestamp,
+            start_exec_time: timestamp,
+            end_exec_time: timestamp,
+            metrics: vec![],
+            status: Some(task_status::Status::Failed(failure.clone())),
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -865,54 +937,120 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
     }
 }
 
-/// Asserts that a submitted event was recorded for the job.
-pub fn assert_submitted_event(job_id: &JobId, collector: &TestMetricsCollector) {
-    let found = collector
-        .job_events(job_id)
-        .iter()
-        .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
-
-    assert!(found, "Expected submitted event for job {job_id}");
+/// The kind of a [`MetricEvent`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetricEventKind {
+    /// A job was submitted.
+    Submitted,
+    /// A job completed.
+    Completed,
+    /// A job was cancelled.
+    Cancelled,
+    /// A job failed.
+    Failed,
 }
 
-/// Asserts that no submitted event was recorded for the job.
-pub fn assert_no_submitted_event(job_id: &JobId, collector: &TestMetricsCollector) {
-    let found = collector
-        .job_events(job_id)
-        .iter()
-        .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
-
-    assert!(!found, "Expected no submitted event for job {job_id}");
+impl MetricEvent {
+    /// Returns the kind of this event.
+    pub fn kind(&self) -> MetricEventKind {
+        match self {
+            MetricEvent::Submitted(..) => MetricEventKind::Submitted,
+            MetricEvent::Completed(..) => MetricEventKind::Completed,
+            MetricEvent::Cancelled(..) => MetricEventKind::Cancelled,
+            MetricEvent::Failed(..) => MetricEventKind::Failed,
+        }
+    }
 }
 
-/// Asserts that a completed event was recorded for the job.
-pub fn assert_completed_event(job_id: &JobId, collector: &TestMetricsCollector) {
+/// Asserts that an event of `kind` was recorded for the job. `case` names the
+/// scenario in the failure message.
+pub fn assert_event(
+    case: &str,
+    job_id: &JobId,
+    collector: &TestMetricsCollector,
+    kind: MetricEventKind,
+) {
     let found = collector
         .job_events(job_id)
         .iter()
-        .any(|ev| matches!(ev, MetricEvent::Completed(_, _, _)));
+        .any(|ev| ev.kind() == kind);
 
-    assert!(found, "{}", "Expected completed event for job {job_id}");
+    assert!(found, "{case}: expected a {kind:?} event for job {job_id}");
 }
 
-/// Asserts that a cancelled event was recorded for the job.
-pub fn assert_cancelled_event(job_id: &JobId, collector: &TestMetricsCollector) {
+/// Asserts that no event of `kind` was recorded for the job. `case` names the
+/// scenario in the failure message.
+pub fn assert_no_event(
+    case: &str,
+    job_id: &JobId,
+    collector: &TestMetricsCollector,
+    kind: MetricEventKind,
+) {
     let found = collector
         .job_events(job_id)
         .iter()
-        .any(|ev| matches!(ev, MetricEvent::Cancelled(_)));
+        .any(|ev| ev.kind() == kind);
 
-    assert!(found, "{}", "Expected cancelled event for job {job_id}");
+    assert!(
+        !found,
+        "{case}: expected no {kind:?} event for job {job_id}"
+    );
 }
 
-/// Asserts that a failed event was recorded for the job.
-pub fn assert_failed_event(job_id: &JobId, collector: &TestMetricsCollector) {
-    let found = collector
-        .job_events(job_id)
-        .iter()
-        .any(|ev| matches!(ev, MetricEvent::Failed(_, _, _)));
+/// Asserts that the job failed. `case` names the scenario in the failure
+/// message.
+pub fn assert_job_failed(case: &str, status: &JobStatus) {
+    assert!(
+        matches!(status.status, Some(Status::Failed(_))),
+        "{case}: expected job status to be failed but it was {status:?}"
+    );
+}
 
-    assert!(found, "Expected failed event for job {job_id}");
+/// Asserts that the job succeeded and returns its result. `case` names the
+/// scenario in the failure message.
+pub fn assert_job_successful<'a>(
+    case: &str,
+    status: &'a JobStatus,
+) -> &'a protobuf::SuccessfulJob {
+    match &status.status {
+        Some(Status::Successful(successful)) => successful,
+        other => panic!("{case}: expected success status but found {other:?}"),
+    }
+}
+
+/// Drains the statuses delivered to a job subscriber and asserts that they
+/// include the job's terminal status and none of the opposite outcome: a
+/// successful job when `success` is true, a failed one otherwise. `case` names
+/// the scenario in the failure message.
+pub async fn assert_subscriber_saw(
+    case: &str,
+    subscriber: &mut Receiver<JobStatus>,
+    success: bool,
+) {
+    let mut buffer = vec![];
+    subscriber.recv_many(&mut buffer, 16).await;
+    assert!(!buffer.is_empty(), "{case}: the subscriber saw no status");
+
+    let saw = |wanted_success: bool| {
+        buffer.iter().any(|s| match s.status {
+            Some(Status::Successful(_)) => wanted_success,
+            Some(Status::Failed(_)) => !wanted_success,
+            _ => false,
+        })
+    };
+    let (expected, other) = if success {
+        ("successful", "failed")
+    } else {
+        ("failed", "successful")
+    };
+    assert!(
+        saw(success),
+        "{case}: the subscriber saw no {expected} status in {buffer:?}"
+    );
+    assert!(
+        !saw(!success),
+        "{case}: the subscriber saw a {other} status in {buffer:?}"
+    );
 }
 
 /// Revives the execution graph and completes all tasks in the next stage.
@@ -1186,40 +1324,15 @@ pub fn mock_executor(executor_id: String) -> ExecutorMetadata {
 
 /// Creates a mock successful task status for the given task.
 pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStatus {
-    let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
-
-    let num_partitions = task.get_output_partition_number();
-
-    for partition_id in 0..num_partitions {
-        partitions.push(protobuf::ShuffleWritePartition {
-            partition_id: partition_id as u64,
-            num_batches: 1,
-            num_rows: 1,
-            num_bytes: 1,
-            file_id: None,
-            is_sort_shuffle: false,
-        })
-    }
-
-    // Complete the task
-    protobuf::TaskStatus {
-        task_id: task.key.task_id as u32,
-        job_id: task.key.job_id.clone().into(),
-        stage_id: task.key.stage_id as u32,
-        stage_attempt_num: task.stage_attempt_num as u32,
-        launch_time: 0,
-        start_exec_time: 0,
-        end_exec_time: 0,
-        metrics: vec![],
-        status: Some(task_status::Status::Successful(protobuf::SuccessfulTask {
-            executor_id: executor_id.to_owned(),
-            partitions,
-            runtime_stats: vec![],
-            task_column_stats: vec![],
-            runtime_filters: vec![],
-            window_state: vec![],
-        })),
-    }
+    successful_task_status(
+        task.key.job_id.as_str(),
+        task.key.stage_id as u32,
+        task.stage_attempt_num as u32,
+        task.key.task_id as u32,
+        executor_id,
+        task.get_output_partition_number(),
+        0,
+    )
 }
 
 /// Creates a mock failed task status for the given task.
