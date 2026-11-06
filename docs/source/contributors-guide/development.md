@@ -71,6 +71,7 @@ repository. Data that has to be checked in lives in the `testdata` directory of 
 The shared fixtures are:
 
 - Integration tests of `ballista` (`ballista/client/tests`): `tests/common/mod.rs` has the cluster setup, the session state builders (`ballista_state`, `state_with_config`), the orders and customers tables (`orders_customers_context`, `ORDERS_QUERIES`), `register_alltypes` with the expected `alltypes_plain` results, and the `collect_text`, `collect_lines`, `set_option` and `assert_result_eq` helpers.
+- Scheduler unit tests: `ballista/scheduler/src/test_utils.rs` has the plans (`aggregation_logical_plan`, `join_aggregate_sort_logical_plan`), the graph, task and executor builders, `SchedulerTest` and `test_scheduler_server`, and `ballista/scheduler/src/state/aqe/test/mod.rs` has the adaptive planner helpers. The TPC-H table names and schemas shared with the benchmarks are in `ballista_core::test_utils::tpch`.
 
 ### TPC-H plan-stability golden files
 
