@@ -90,7 +90,6 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
             table: table.load()?,
             snapshot_id,
             schema,
-            origin: None,
         }))
     }
 

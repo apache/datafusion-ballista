@@ -54,8 +54,8 @@
 //! - Reads only.
 //! - Each scan runs as a single task.
 //! - No metadata tables such as `t$snapshots`.
-//! - A `DataFrame` or prepared statement reused across runs reads the version
-//!   from when it was planned.
+//! - A view, or a `DataFrame` or prepared statement reused across runs, reads
+//!   the version from when it was planned.
 //! - Storage credentials travel in plain text.
 
 mod catalog;

@@ -17,38 +17,29 @@
 
 //! Pins catalog-backed tables to one version while a query is planned.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::catalog::view::ViewTable;
 use datafusion::catalog::{
     CatalogProvider, CatalogProviderList, SchemaProvider, Session, TableProvider,
 };
-use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, Result, not_impl_err};
+use datafusion::common::{Result, not_impl_err};
+use datafusion::datasource::TableType;
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::datasource::{DefaultTableSource, TableType, provider_as_source};
 use datafusion::logical_expr::dml::InsertOp;
-use datafusion::logical_expr::{
-    Expr, LogicalPlan, TableProviderFilterPushDown, TableScan,
-};
+use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
-use futures::future::try_join_all;
-use iceberg::TableIdent;
 use iceberg::table::Table;
 use iceberg_datafusion::read::IcebergDataSource;
 use iceberg_datafusion::{IcebergCatalogTableProvider, to_datafusion_error};
 
 /// A session's catalogs, serving each catalog-backed Iceberg table as a
-/// [`PinnedTable`], and each view with its Iceberg tables pinned again.
+/// [`PinnedTable`].
 ///
 /// DataFusion looks up each table a query names once, while planning it, so
 /// every scan of a table in the query reads the same version, and encoding the
-/// plan needs no I/O. A view stores the plan it was created with, so its tables
-/// are pinned again each time a query names it, and it reads the latest
-/// versions, as it would in DataFusion.
+/// plan needs no I/O.
 #[derive(Debug)]
 pub(crate) struct PinningCatalogList(pub(crate) Arc<dyn CatalogProviderList>);
 
@@ -118,16 +109,19 @@ impl SchemaProvider for PinningSchema {
         let Some(table) = self.0.table(name).await? else {
             return Ok(None);
         };
-        if let Some(provider) = table.downcast_ref::<IcebergCatalogTableProvider>() {
-            let table = load(provider).await?;
-            return Ok(Some(Arc::new(PinnedTable::pin(provider, table))));
-        }
-        if let Some(view) = table.downcast_ref::<ViewTable>()
-            && let Some(repinned) = repin(view).await?
-        {
-            return Ok(Some(Arc::new(repinned)));
-        }
-        Ok(Some(table))
+        let Some(provider) = table.downcast_ref::<IcebergCatalogTableProvider>() else {
+            return Ok(Some(table));
+        };
+        let pinned = provider
+            .catalog()
+            .load_table(provider.table_ident())
+            .await
+            .map_err(to_datafusion_error)?;
+        Ok(Some(Arc::new(PinnedTable {
+            table: pinned,
+            snapshot_id: None,
+            schema: provider.schema(),
+        })))
     }
 
     async fn table_type(&self, name: &str) -> Result<Option<TableType>> {
@@ -151,70 +145,6 @@ impl SchemaProvider for PinningSchema {
     }
 }
 
-/// A catalog-backed table: its catalog, by address, and its identifier.
-type TableKey = (usize, TableIdent);
-
-fn key(provider: &IcebergCatalogTableProvider) -> TableKey {
-    let catalog = Arc::as_ptr(provider.catalog()).cast::<()>() as usize;
-    (catalog, provider.table_ident().clone())
-}
-
-async fn load(provider: &IcebergCatalogTableProvider) -> Result<Table> {
-    provider
-        .catalog()
-        .load_table(provider.table_ident())
-        .await
-        .map_err(to_datafusion_error)
-}
-
-/// The catalog-backed table a scan's pinned table was pinned from, if any.
-fn origin(scan: &TableScan) -> Option<&IcebergCatalogTableProvider> {
-    let source = scan.source.downcast_ref::<DefaultTableSource>()?;
-    let pinned = source.table_provider.downcast_ref::<PinnedTable>()?;
-    pinned.origin.as_ref()
-}
-
-/// Returns `view` with each catalog-backed Iceberg table it reads pinned to
-/// the version its catalog serves now, loading each table once, or `None` if
-/// it reads none. DataFusion inlines a view into any plan built over it, so a
-/// view's plan holds tables, never other views.
-async fn repin(view: &ViewTable) -> Result<Option<ViewTable>> {
-    let mut providers = HashMap::new();
-    view.logical_plan().apply_with_subqueries(|node| {
-        if let LogicalPlan::TableScan(scan) = node
-            && let Some(origin) = origin(scan)
-        {
-            providers
-                .entry(key(origin))
-                .or_insert_with(|| origin.clone());
-        }
-        Ok(TreeNodeRecursion::Continue)
-    })?;
-    if providers.is_empty() {
-        return Ok(None);
-    }
-    let loads = providers.into_iter().map(|(key, provider)| async move {
-        Ok::<_, DataFusionError>((key, load(&provider).await?))
-    });
-    let tables: HashMap<_, _> = try_join_all(loads).await?.into_iter().collect();
-    let plan = view
-        .logical_plan()
-        .clone()
-        .transform_up_with_subqueries(|node| {
-            let LogicalPlan::TableScan(mut scan) = node else {
-                return Ok(Transformed::no(node));
-            };
-            let Some(origin) = origin(&scan) else {
-                return Ok(Transformed::no(LogicalPlan::TableScan(scan)));
-            };
-            let table = tables[&key(origin)].clone();
-            scan.source = provider_as_source(Arc::new(PinnedTable::pin(origin, table)));
-            Ok(Transformed::yes(LogicalPlan::TableScan(scan)))
-        })?
-        .data;
-    Ok(Some(ViewTable::new(plan, view.definition().cloned())))
-}
-
 /// One version of an Iceberg table, read with the schema the client planned
 /// against.
 ///
@@ -228,22 +158,6 @@ pub(crate) struct PinnedTable {
     pub(crate) table: Table,
     pub(crate) snapshot_id: Option<i64>,
     pub(crate) schema: SchemaRef,
-    /// The catalog-backed table it was pinned from, to pin it again. Not sent
-    /// between nodes.
-    pub(crate) origin: Option<IcebergCatalogTableProvider>,
-}
-
-impl PinnedTable {
-    /// `table`, a version of `provider` loaded from its catalog, read with the
-    /// provider's schema, which it caches when it is created.
-    fn pin(provider: &IcebergCatalogTableProvider, table: Table) -> Self {
-        Self {
-            table,
-            snapshot_id: None,
-            schema: provider.schema(),
-            origin: Some(provider.clone()),
-        }
-    }
 }
 
 #[async_trait]
