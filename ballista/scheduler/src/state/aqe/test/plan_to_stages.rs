@@ -20,6 +20,7 @@ use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{
     mock_batch, mock_context, mock_memory_table, mock_partitions_with_statistics,
+    unknown_statistics_exec,
 };
 use crate::state::execution_graph::ExecutionGraph;
 use ballista_core::JobId;
@@ -27,10 +28,7 @@ use ballista_core::assert_plan;
 use ballista_core::execution_plans::SortShuffleWriterExec;
 use ballista_core::serde::protobuf::job_status::Status;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::common::ColumnStatistics;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::Statistics;
-use datafusion::physical_plan::test::exec::StatisticsExec;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -387,12 +385,7 @@ async fn should_split_stages_resolve_both() -> datafusion::error::Result<()> {
 #[tokio::test]
 async fn should_ignore_inactive_stages() -> datafusion::error::Result<()> {
     let schema = Schema::new(vec![Field::new("a", DataType::Int32, true)]);
-    let statistics = Statistics {
-        num_rows: Default::default(),
-        total_byte_size: Default::default(),
-        column_statistics: vec![ColumnStatistics::new_unknown()],
-    };
-    let empty_exec = Arc::new(StatisticsExec::new(statistics, schema.clone()));
+    let empty_exec = unknown_statistics_exec(&schema);
 
     let mut exchange_exec = ExchangeExec::new(empty_exec, None, 0);
     // we're testing that making stage inactive

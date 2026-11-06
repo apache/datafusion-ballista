@@ -45,7 +45,7 @@ mod stage_build_side;
 /// Failed stage transitions leave the stage in the graph
 mod stage_transitions;
 /// A table whose statistics are declared rather than measured
-mod stats_table;
+pub(super) mod stats_table;
 
 use crate::state::aqe::adaptive_rules::{AdaptiveRule, AdaptiveRules};
 use crate::state::aqe::execution_plan::ExchangeExec;
@@ -69,6 +69,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::statistics::StatisticsContext;
+use datafusion::physical_plan::test::exec::StatisticsExec;
 use datafusion::physical_plan::{ExecutionPlan, StatisticsArgs};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use stats_table::StatsTable;
@@ -282,6 +283,19 @@ pub(crate) fn mock_context() -> SessionContext {
         .set_bool("datafusion.optimizer.enable_dynamic_filter_pushdown", false);
 
     SessionContext::new_with_config(config)
+}
+
+/// A leaf over `schema` that reports `statistics` and yields no rows.
+pub(crate) fn statistics_exec(
+    statistics: Statistics,
+    schema: &Schema,
+) -> Arc<dyn ExecutionPlan> {
+    Arc::new(StatisticsExec::new(statistics, schema.clone()))
+}
+
+/// A leaf over `schema` whose statistics are all unknown.
+pub(crate) fn unknown_statistics_exec(schema: &Schema) -> Arc<dyn ExecutionPlan> {
+    statistics_exec(Statistics::new_unknown(schema), schema)
 }
 
 /// A session context with the Ballista config extension installed and the
