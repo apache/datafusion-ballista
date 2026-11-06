@@ -34,8 +34,9 @@ use crate::state::task_manager::TaskLauncher;
 
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    ExecutionError, FailedTask, FetchPartitionError, JobStatus, MultiTaskDefinition,
-    ShuffleWritePartition, SuccessfulTask, TaskId, TaskStatus, failed_task, task_status,
+    ExecutionError, ExecutorRegistration, FailedTask, FetchPartitionError, JobStatus,
+    MultiTaskDefinition, ShuffleWritePartition, SuccessfulTask, TaskId, TaskStatus,
+    failed_task, task_status,
 };
 use ballista_core::serde::scheduler::{
     ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
@@ -150,29 +151,39 @@ pub async fn test_scheduler_server(
     cluster: BallistaCluster,
     config: SchedulerConfig,
 ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
-    test_scheduler_server_with_metrics(
-        cluster,
-        config,
-        crate::metrics::default_metrics_collector()?,
-    )
-    .await
+    let mut scheduler = test_scheduler_server_uninit(cluster, config);
+    scheduler.init().await?;
+    Ok(scheduler)
 }
 
-/// Same as [`test_scheduler_server`], reporting to `metrics`.
-pub async fn test_scheduler_server_with_metrics(
+/// Creates a scheduler server on `cluster`, reporting to the default metrics
+/// collector, without initialising it.
+pub fn test_scheduler_server_uninit(
     cluster: BallistaCluster,
     config: SchedulerConfig,
-    metrics: Arc<dyn SchedulerMetricsCollector>,
-) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
-    let mut scheduler = SchedulerServer::new(
+) -> SchedulerServer<LogicalPlanNode, PhysicalPlanNode> {
+    SchedulerServer::new(
         TEST_SCHEDULER_ENDPOINT.to_owned(),
         cluster,
         BallistaCodec::default(),
         Arc::new(config),
-        metrics,
-    );
-    scheduler.init().await?;
-    Ok(scheduler)
+        crate::metrics::default_metrics_collector()
+            .expect("the default metrics collector"),
+    )
+}
+
+/// The registration of a two-vcore executor called `id` at
+/// `http://localhost:8080` with no ports, whose protocol version is `version`.
+pub fn executor_registration(id: &str, version: u32) -> ExecutorRegistration {
+    ExecutorRegistration {
+        id: id.to_owned(),
+        host: Some("http://localhost:8080".to_owned()),
+        port: 0,
+        grpc_port: 0,
+        specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
+        os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
+        ballista_protocol_version: version,
+    }
 }
 
 /// Creates a DataFusion session context with TPC-H tables registered from the given path.

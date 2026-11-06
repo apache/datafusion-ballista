@@ -938,7 +938,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
     use std::time::Duration;
 
     use datafusion::prelude::SessionContext;
@@ -955,23 +954,20 @@ mod test {
     };
 
     use crate::config::SchedulerConfig;
-    use crate::metrics::default_metrics_collector;
     use ballista_core::error::BallistaError;
     use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::execute_query_params::Query;
     use ballista_core::serde::protobuf::{
-        ExecuteQueryParams, ExecutorMetric, ExecutorRegistration, ExecutorStatus,
-        ExecutorStoppedParams, HeartBeatParams, PollWorkParams, RegisterExecutorParams,
-        execute_query_result, executor_metric, executor_status,
-    };
-    use ballista_core::serde::scheduler::{
-        ExecutorOperatingSystemSpecification, ExecutorSpecification,
+        ExecuteQueryParams, ExecutorMetric, ExecutorStatus, ExecutorStoppedParams,
+        HeartBeatParams, PollWorkParams, RegisterExecutorParams, execute_query_result,
+        executor_metric, executor_status,
     };
     use ballista_core::{BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION};
 
     use crate::state::SchedulerState;
     use crate::test_utils::{
-        await_condition, test_cluster_context, test_scheduler_server,
+        await_condition, executor_registration, test_cluster_context,
+        test_scheduler_server, test_scheduler_server_uninit,
     };
 
     use super::{SchedulerGrpc, SchedulerServer, executor_registration_error};
@@ -993,15 +989,7 @@ mod test {
             ballista_core::config::TaskSchedulingPolicy::PullStaged,
         );
         let scheduler = test_scheduler_server(cluster.clone(), config).await?;
-        let exec_meta = ExecutorRegistration {
-            id: "abc".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
-        };
+        let exec_meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION);
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
             num_free_vcores: 0,
@@ -1022,16 +1010,7 @@ mod test {
         state.init().await?;
 
         // executor should be registered
-        let stored_executor = state
-            .executor_manager
-            .get_executor_metadata("abc")
-            .await
-            .expect("getting executor");
-
-        assert_eq!(stored_executor.grpc_port, 0);
-        assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.vcores, 2);
-        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+        assert_registered(&state).await;
 
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
@@ -1054,16 +1033,7 @@ mod test {
         state.init().await?;
 
         // executor should be registered
-        let stored_executor = state
-            .executor_manager
-            .get_executor_metadata("abc")
-            .await
-            .expect("getting executor");
-
-        assert_eq!(stored_executor.grpc_port, 0);
-        assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.vcores, 2);
-        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+        assert_registered(&state).await;
 
         let mut conflicting_exec_meta = exec_meta.clone();
         conflicting_exec_meta.host = Some("http://localhost:8081".to_owned());
@@ -1095,15 +1065,7 @@ mod test {
         let config = SchedulerConfig::default().with_remove_executor_wait_secs(0);
         let scheduler = test_scheduler_server(cluster.clone(), config).await?;
 
-        let exec_meta = ExecutorRegistration {
-            id: "abc".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
-        };
+        let exec_meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION);
 
         let request: Request<RegisterExecutorParams> =
             Request::new(RegisterExecutorParams {
@@ -1120,16 +1082,7 @@ mod test {
 
         let state = scheduler.state.clone();
         // executor should be registered
-        let stored_executor = state
-            .executor_manager
-            .get_executor_metadata("abc")
-            .await
-            .expect("getting executor");
-
-        assert_eq!(stored_executor.grpc_port, 0);
-        assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.vcores, 2);
-        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+        assert_registered(&state).await;
 
         let request: Request<ExecutorStoppedParams> =
             Request::new(ExecutorStoppedParams {
@@ -1174,15 +1127,7 @@ mod test {
         let config = SchedulerConfig::default();
         let scheduler = test_scheduler_server(cluster, config).await?;
 
-        let exec_meta = ExecutorRegistration {
-            id: "abc".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
-        };
+        let exec_meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION);
 
         let request: Request<HeartBeatParams> = Request::new(HeartBeatParams {
             executor_id: exec_meta.id.clone(),
@@ -1199,16 +1144,7 @@ mod test {
 
         let state = scheduler.state.clone();
         // executor should be registered
-        let stored_executor = state
-            .executor_manager
-            .get_executor_metadata("abc")
-            .await
-            .expect("getting executor");
-
-        assert_eq!(stored_executor.grpc_port, 0);
-        assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.vcores, 2);
-        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+        assert_registered(&state).await;
 
         Ok(())
     }
@@ -1221,7 +1157,7 @@ mod test {
             ballista_core::config::TaskSchedulingPolicy::PullStaged,
         );
         let scheduler = test_scheduler_server(test_cluster_context(), config).await?;
-        let exec_meta = exec_meta_with_version(BALLISTA_PROTOCOL_VERSION);
+        let exec_meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION);
         let memory = |bytes| ExecutorMetric {
             metric: Some(executor_metric::Metric::ProcPhysicalMemory(bytes)),
         };
@@ -1268,33 +1204,29 @@ mod test {
         Ok(())
     }
 
-    async fn scheduler_for_protocol_test()
-    -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>, BallistaError> {
-        let cluster = test_cluster_context();
-        let config = SchedulerConfig::default();
-        let scheduler = test_scheduler_server(cluster, config).await?;
-        Ok(scheduler)
-    }
+    /// Asserts that the executor "abc" of `executor_registration` is registered.
+    async fn assert_registered(
+        state: &SchedulerState<LogicalPlanNode, PhysicalPlanNode>,
+    ) {
+        let stored_executor = state
+            .executor_manager
+            .get_executor_metadata("abc")
+            .await
+            .expect("getting executor");
 
-    fn exec_meta_with_version(version: u32) -> ExecutorRegistration {
-        ExecutorRegistration {
-            id: "abc".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: version,
-        }
+        assert_eq!(stored_executor.grpc_port, 0);
+        assert_eq!(stored_executor.port, 0);
+        assert_eq!(stored_executor.specification.vcores, 2);
+        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
     }
 
     #[tokio::test]
     async fn register_rejects_protocol_mismatch() -> Result<(), BallistaError> {
-        let scheduler = scheduler_for_protocol_test().await?;
+        let scheduler = test_scheduler().await?;
         // Version 0 is what an old executor without the field defaults to;
         // the scheduler must reject it.
         let request = Request::new(RegisterExecutorParams {
-            metadata: Some(exec_meta_with_version(0)),
+            metadata: Some(executor_registration("abc", 0)),
         });
 
         let status = scheduler
@@ -1312,8 +1244,8 @@ mod test {
 
     #[tokio::test]
     async fn heartbeat_rejects_protocol_mismatch() -> Result<(), BallistaError> {
-        let scheduler = scheduler_for_protocol_test().await?;
-        let meta = exec_meta_with_version(BALLISTA_PROTOCOL_VERSION + 1);
+        let scheduler = test_scheduler().await?;
+        let meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION + 1);
         let request = Request::new(HeartBeatParams {
             executor_id: meta.id.clone(),
             metrics: vec![],
@@ -1333,7 +1265,7 @@ mod test {
 
     #[tokio::test]
     async fn heartbeat_rejects_missing_metadata() -> Result<(), BallistaError> {
-        let scheduler = scheduler_for_protocol_test().await?;
+        let scheduler = test_scheduler().await?;
         let request = Request::new(HeartBeatParams {
             executor_id: "abc".to_owned(),
             metrics: vec![],
@@ -1360,7 +1292,7 @@ mod test {
         let scheduler = test_scheduler_server(test_cluster_context(), config).await?;
 
         let request = Request::new(PollWorkParams {
-            metadata: Some(exec_meta_with_version(0)),
+            metadata: Some(executor_registration("abc", 0)),
             num_free_vcores: 0,
             task_status: vec![],
         });
@@ -1380,15 +1312,7 @@ mod test {
         let config = SchedulerConfig::default();
         let scheduler = test_scheduler_server(cluster.clone(), config).await?;
 
-        let exec_meta = ExecutorRegistration {
-            id: "abc".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
-        };
+        let exec_meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION);
 
         let request: Request<RegisterExecutorParams> =
             Request::new(RegisterExecutorParams {
@@ -1405,16 +1329,7 @@ mod test {
 
         let state = scheduler.state.clone();
         // executor should be registered
-        let stored_executor = state
-            .executor_manager
-            .get_executor_metadata("abc")
-            .await
-            .expect("getting executor");
-
-        assert_eq!(stored_executor.grpc_port, 0);
-        assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.vcores, 2);
-        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+        assert_registered(&state).await;
 
         // heartbeat from the executor
         let request: Request<HeartBeatParams> = Request::new(HeartBeatParams {
@@ -1460,13 +1375,7 @@ mod test {
         use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
 
         let server = |config: SchedulerConfig| {
-            SchedulerServer::<LogicalPlanNode, PhysicalPlanNode>::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            )
+            test_scheduler_server_uninit(test_cluster_context(), config)
         };
 
         // Neither set: nothing advertised.
@@ -1670,15 +1579,7 @@ mod test {
         let config = SchedulerConfig::default();
         let scheduler = test_scheduler_server(cluster.clone(), config).await?;
 
-        let exec_meta = ExecutorRegistration {
-            id: "abc".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
-        };
+        let exec_meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION);
 
         let request: Request<RegisterExecutorParams> =
             Request::new(RegisterExecutorParams {
@@ -1695,16 +1596,7 @@ mod test {
 
         let state = scheduler.state.clone();
         // executor should be registered
-        let stored_executor = state
-            .executor_manager
-            .get_executor_metadata("abc")
-            .await
-            .expect("getting executor");
-
-        assert_eq!(stored_executor.grpc_port, 0);
-        assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.vcores, 2);
-        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+        assert_registered(&state).await;
 
         // Context strictly used for values-based query serialization to avoid
         // needing to register tables and keep them in sync with the scheduler instance.

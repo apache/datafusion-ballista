@@ -912,29 +912,18 @@ fn notify_planning_failed(
 mod tests {
     use crate::cluster::JobStateEvent;
     use crate::config::{SchedulerConfig, WorkAvailableReason};
-    use crate::scheduler_server::SchedulerServer;
     use crate::test_utils::{
         SchedulerTest, TestMetricsCollector, aggregation_logical_plan, await_condition,
-        test_cluster_context,
+        executor_registration, static_session_config, successful_task_status,
+        test_cluster_context, test_scheduler_server,
     };
     use ballista_core::BALLISTA_PROTOCOL_VERSION;
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
-    use ballista_core::extension::SessionConfigExt;
-    use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::job_status;
     use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
-    use ballista_core::serde::protobuf::{
-        ExecutorRegistration, PollWorkParams, ShuffleWritePartition, SuccessfulTask,
-        TaskStatus, task_status,
-    };
-    use ballista_core::serde::scheduler::{
-        ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    };
+    use ballista_core::serde::protobuf::{ExecutorRegistration, PollWorkParams};
 
-    use datafusion::prelude::SessionConfig;
-
-    use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
     use futures::StreamExt;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -1041,36 +1030,22 @@ mod tests {
         let reasons: Arc<Mutex<Vec<WorkAvailableReason>>> = Arc::default();
         let captured = reasons.clone();
 
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(
-                    SchedulerConfig {
-                        scheduling_policy: TaskSchedulingPolicy::PullStaged,
-                        ..Default::default()
-                    }
-                    .with_on_work_available(Arc::new(
-                        move |reason| {
-                            captured.lock().unwrap().push(reason);
-                        },
-                    )),
-                ),
-                Arc::new(TestMetricsCollector::default()),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(
+            test_cluster_context(),
+            SchedulerConfig {
+                scheduling_policy: TaskSchedulingPolicy::PullStaged,
+                ..Default::default()
+            }
+            .with_on_work_available(Arc::new(move |reason| {
+                captured.lock().unwrap().push(reason);
+            })),
+        )
+        .await?;
 
         let ctx = scheduler
             .state
             .session_manager
-            .create_or_update_session(
-                "session",
-                &SessionConfig::new_with_ballista()
-                    .with_target_partitions(2)
-                    // Asserts the static planner's stage/partition layout.
-                    .with_ballista_adaptive_query_planner(false),
-            )
+            .create_or_update_session("session", &static_session_config(2))
             .await?;
         let job_id = scheduler
             .submit_job("", ctx, &aggregation_logical_plan(2), None)
@@ -1092,13 +1067,10 @@ mod tests {
         // Pull the shuffle stage's tasks; the callback promised they are
         // visible by the time it fired.
         let exec_meta = ExecutorRegistration {
-            id: "executor-1".to_owned(),
             host: Some("localhost".to_owned()),
             port: 50051,
             grpc_port: 50052,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
+            ..executor_registration("executor-1", BALLISTA_PROTOCOL_VERSION)
         };
         let polled = scheduler
             .poll_work(Request::new(PollWorkParams {
@@ -1119,32 +1091,16 @@ mod tests {
         let task_status = polled
             .tasks
             .iter()
-            .map(|task| TaskStatus {
-                task_id: task.task_id,
-                job_id: task.job_id.clone(),
-                stage_id: task.stage_id,
-                stage_attempt_num: task.stage_attempt_num,
-                launch_time: 0,
-                start_exec_time: 0,
-                end_exec_time: 0,
-                metrics: vec![],
-                status: Some(task_status::Status::Successful(SuccessfulTask {
-                    executor_id: exec_meta.id.clone(),
-                    partitions: (0..2)
-                        .map(|partition_id| ShuffleWritePartition {
-                            partition_id,
-                            num_batches: 1,
-                            num_rows: 1,
-                            num_bytes: 1,
-                            file_id: None,
-                            is_sort_shuffle: false,
-                        })
-                        .collect(),
-                    runtime_stats: vec![],
-                    task_column_stats: vec![],
-                    runtime_filters: vec![],
-                    window_state: vec![],
-                })),
+            .map(|task| {
+                successful_task_status(
+                    &task.job_id,
+                    task.stage_id,
+                    task.stage_attempt_num,
+                    task.task_id,
+                    &exec_meta.id,
+                    2,
+                    0,
+                )
             })
             .collect();
         scheduler
@@ -1197,16 +1153,11 @@ mod tests {
 
         // Wait until the job is actually running with tasks in flight. We
         // deliberately never `tick()`, so its tasks never complete.
-        let job_id_ref = &job_id;
-        let test_ref = &test;
-        let running = await_condition(Duration::from_millis(50), 40, || async move {
-            let status = test_ref.job_status(job_id_ref).await?;
-            Ok(matches!(
-                status.and_then(|s| s.status),
-                Some(job_status::Status::Running(_))
-            ))
-        })
-        .await?;
+        let running = test
+            .await_job_status(&job_id, |status| {
+                matches!(status, job_status::Status::Running(_))
+            })
+            .await?;
         assert!(running, "job should reach the running state");
 
         // The only executor is lost. With no executors left, the reset tasks can
@@ -1214,14 +1165,11 @@ mod tests {
         // (#2029).
         test.lose_executor("virtual-executor-0").await?;
 
-        let failed = await_condition(Duration::from_millis(100), 50, || async move {
-            let status = test_ref.job_status(job_id_ref).await?;
-            Ok(matches!(
-                status.and_then(|s| s.status),
-                Some(job_status::Status::Failed(_))
-            ))
-        })
-        .await?;
+        let failed = test
+            .await_job_status(&job_id, |status| {
+                matches!(status, job_status::Status::Failed(_))
+            })
+            .await?;
         assert!(
             failed,
             "job should be failed after all executors were lost, but status was {:?}",
@@ -1262,16 +1210,11 @@ mod tests {
 
         let job_id = test.submit("", &plan).await?;
 
-        let job_id_ref = &job_id;
-        let test_ref = &test;
-        let failed = await_condition(Duration::from_millis(100), 50, || async move {
-            let status = test_ref.job_status(job_id_ref).await?;
-            Ok(matches!(
-                status.and_then(|s| s.status),
-                Some(job_status::Status::Failed(_))
-            ))
-        })
-        .await?;
+        let failed = test
+            .await_job_status(&job_id, |status| {
+                matches!(status, job_status::Status::Failed(_))
+            })
+            .await?;
         assert!(
             failed,
             "job should be failed after a launch failure lost the last executor, but status was {:?}",
@@ -1300,16 +1243,11 @@ mod tests {
 
         let job_id = test.submit("", &plan).await?;
 
-        let job_id_ref = &job_id;
-        let test_ref = &test;
-        let running = await_condition(Duration::from_millis(50), 40, || async move {
-            let status = test_ref.job_status(job_id_ref).await?;
-            Ok(matches!(
-                status.and_then(|s| s.status),
-                Some(job_status::Status::Running(_))
-            ))
-        })
-        .await?;
+        let running = test
+            .await_job_status(&job_id, |status| {
+                matches!(status, job_status::Status::Running(_))
+            })
+            .await?;
         assert!(running, "job should reach the running state");
 
         // Lose only one of two executors. One remains alive, so the job must not
