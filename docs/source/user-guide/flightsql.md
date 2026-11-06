@@ -213,7 +213,8 @@ front of the scheduler and leave the frontend as-is.
 - Embedders can pre-populate the catalog for every session through the
   scheduler's `SessionBuilder`, so users do not have to re-run
   `CREATE EXTERNAL TABLE` on each connection. See
-  [Extending Ballista components](extending-components.md).
+  [Extending Ballista components](extending-components.md), and
+  [Apache Iceberg](iceberg.md#sql-clients) for mounting Iceberg catalogs.
 
 ## Limitations
 

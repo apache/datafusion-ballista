@@ -1,0 +1,89 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[package]
+name = "ballista-iceberg"
+description = "Apache Iceberg support for Ballista"
+license = "Apache-2.0"
+version = "55.0.0"
+homepage = "https://datafusion.apache.org/ballista/"
+repository = "https://github.com/apache/datafusion-ballista"
+authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
+keywords = ["iceberg", "ballista", "datafusion", "distributed"]
+categories = ["database"]
+edition = "2024"
+# Required by the iceberg crates; Ballista itself still builds on 1.94.
+rust-version = "1.95"
+# crates.io rejects the git dependencies on iceberg and iceberg-datafusion.
+publish = false
+
+# Its own workspace, outside Ballista's, so a DataFusion upgrade in Ballista
+# that iceberg-rust doesn't support yet doesn't block Ballista's build or
+# release. Built and tested by .github/workflows/iceberg.yml.
+[workspace]
+
+[package.metadata.cargo-machete]
+# Not imported: enables the `serde` feature, to send a scan's Arrow schema.
+ignored = ["arrow-schema"]
+
+[dependencies]
+arrow-schema = { version = "59.2.0", features = ["serde"] }
+async-trait = "0.1"
+# A commit on main with ComposedLogicalExtensionCodec (#2752), not the crates
+# in this repo, so a change to Ballista doesn't break this build. Move to
+# crates.io once a release includes #2752.
+ballista-core = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0" }
+ballista-executor = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0", default-features = false, optional = true }
+ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0", default-features = false, optional = true }
+datafusion = "55"
+datafusion-proto = "55"
+futures = "0.3"
+# Not released yet. Keep `iceberg` at the revision iceberg-datafusion's own
+# workspace pins, so cargo resolves a single iceberg crate.
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+iceberg-datafusion = { git = "https://github.com/apache/datafusion-iceberg", rev = "b641e5ebe9e92967499ae7e440ba10d7797712df" }
+# Storage for rebuilt tables: S3 and local files by default.
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+arrow-flight = { version = "59.2.0", features = ["flight-sql-experimental"] }
+ballista = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0", features = [
+    "standalone",
+] }
+ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0", features = [
+    "flight-sql",
+] }
+iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+tempfile = "3.27"
+testcontainers = { version = "0.28", features = ["http_wait_plain"] }
+tokio = { version = "1", features = ["macros"] }
+tonic = "0.14"
+
+[features]
+# `ExecutorProcessConfigExt`, to ready an executor for Iceberg.
+executor = ["dep:ballista-executor"]
+# `SchedulerConfigExt`, to ready a scheduler for Iceberg.
+scheduler = ["dep:ballista-scheduler"]
+# Tests that need docker.
+testcontainers = []
+
+[[test]]
+name = "flight_sql"
+required-features = ["executor", "scheduler"]
