@@ -33,6 +33,8 @@
 use crate::event::HistoryEvent;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
@@ -148,10 +150,37 @@ impl EventLogWriter {
 /// [`EventLogWriter`] only logs a warning when it cannot write, so a caller
 /// that needs the logs should check the directory before starting the writer.
 pub async fn check_log_dir(log_dir: &Path) -> std::io::Result<()> {
+    static PROBES: AtomicU64 = AtomicU64::new(0);
+
     tokio::fs::create_dir_all(log_dir).await?;
-    let probe = log_dir.join(format!(".write-check-{}", std::process::id()));
-    tokio::fs::File::create(&probe).await?;
-    tokio::fs::remove_file(&probe).await
+    // Several schedulers can share the directory, and in containers they all
+    // run as pid 1, so the pid alone does not make the name unique. The time
+    // and a counter do, and `create_new` makes sure each check only ever
+    // removes the file it created itself.
+    loop {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let probe = log_dir.join(format!(
+            ".write-check-{}-{nanos}-{}",
+            std::process::id(),
+            PROBES.fetch_add(1, Ordering::Relaxed)
+        ));
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+            .await
+        {
+            Ok(file) => {
+                drop(file);
+                return tokio::fs::remove_file(&probe).await;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 async fn run(log_dir: PathBuf, mut rx: mpsc::Receiver<WriterMsg>) {
@@ -485,6 +514,26 @@ mod tests {
         check_log_dir(&log_dir).await.unwrap();
 
         assert!(log_dir.is_dir());
+        assert_eq!(std::fs::read_dir(&log_dir).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn check_log_dir_runs_concurrently_on_one_dir() {
+        // Like several schedulers with the same pid starting against one
+        // shared directory: no check may remove another one's probe.
+        let dir = tempfile::tempdir().unwrap();
+        let log_dir = dir.path().join("logs");
+
+        let checks: Vec<_> = (0..16)
+            .map(|_| {
+                let log_dir = log_dir.clone();
+                tokio::spawn(async move { check_log_dir(&log_dir).await })
+            })
+            .collect();
+        for check in checks {
+            check.await.unwrap().unwrap();
+        }
+
         assert_eq!(std::fs::read_dir(&log_dir).unwrap().count(), 0);
     }
 
