@@ -818,6 +818,7 @@ impl RecordBatchStream for RangeFilterStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_plans::range_repartition_common::test_util::v_schema;
     use datafusion::arrow::array::Float64Array;
     use datafusion::arrow::compute::SortOptions;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -829,10 +830,6 @@ mod tests {
     use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::{ExecutionPlan, Partitioning};
     use datafusion::prelude::SessionContext;
-
-    fn v_schema() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]))
-    }
 
     fn v_source(partitions: usize) -> Arc<dyn ExecutionPlan> {
         let schema = v_schema();

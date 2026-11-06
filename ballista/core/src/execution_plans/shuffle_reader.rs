@@ -1471,6 +1471,7 @@ impl RecordBatchStream for CoalescedShuffleReaderStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_plans::test_util::test_executor;
     use crate::execution_plans::{ShuffleWriterExec, create_shuffle_path};
     use crate::serde::scheduler::{
         ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
@@ -1515,14 +1516,7 @@ mod tests {
                         stage_id,
                         partition_id: i,
                     },
-                    executor_meta: ExecutorMetadata {
-                        id: "executor_1".to_string(),
-                        host: "executor_1".to_string(),
-                        port: 7070,
-                        grpc_port: 8080,
-                        specification: ExecutorSpecification::default().with_vcores(1),
-                        os_info: ExecutorOperatingSystemSpecification::default(),
-                    },
+                    executor_meta: test_executor(),
                     partition_stats: PartitionStats {
                         num_rows: Some(rows),
                         num_batches: None,
@@ -1633,14 +1627,7 @@ mod tests {
                     stage_id: input_stage_id,
                     partition_id,
                 },
-                executor_meta: ExecutorMetadata {
-                    id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
-                    port: 7070,
-                    grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_vcores(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
+                executor_meta: test_executor(),
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
                     num_batches: None,
@@ -1685,14 +1672,7 @@ mod tests {
                     stage_id: input_stage_id,
                     partition_id,
                 },
-                executor_meta: ExecutorMetadata {
-                    id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
-                    port: 7070,
-                    grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_vcores(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
+                executor_meta: test_executor(),
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
                     num_batches: None,
@@ -1740,14 +1720,7 @@ mod tests {
                     stage_id: input_stage_id,
                     partition_id,
                 },
-                executor_meta: ExecutorMetadata {
-                    id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
-                    port: 7070,
-                    grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_vcores(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
+                executor_meta: test_executor(),
                 partition_stats: PartitionStats {
                     num_rows: Some(1),
                     num_batches: None,
@@ -1795,14 +1768,7 @@ mod tests {
                     stage_id: input_stage_id,
                     partition_id,
                 },
-                executor_meta: ExecutorMetadata {
-                    id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
-                    port: 7070,
-                    grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_vcores(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
+                executor_meta: test_executor(),
                 partition_stats: Default::default(),
                 file_id: None,
                 is_sort_shuffle: false,
@@ -1869,14 +1835,7 @@ mod tests {
                 stage_id: input_stage_id,
                 partition_id: 0,
             },
-            executor_meta: ExecutorMetadata {
-                id: "executor_1".to_string(),
-                host: "executor_1".to_string(),
-                port: 7070,
-                grpc_port: 8080,
-                specification: ExecutorSpecification::default().with_vcores(1),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
+            executor_meta: test_executor(),
             partition_stats: Default::default(),
             file_id: None,
             is_sort_shuffle: false,
@@ -2520,10 +2479,8 @@ mod tests {
 #[cfg(test)]
 mod governor_tests {
     use super::*;
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId,
-    };
+    use crate::execution_plans::test_util::test_executor;
+    use crate::serde::scheduler::PartitionId;
     use crate::utils;
     use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -2579,14 +2536,7 @@ mod governor_tests {
                 stage_id: 3,
                 partition_id: 5,
             },
-            executor_meta: ExecutorMetadata {
-                id: "executor_1".to_string(),
-                host: "executor_1".to_string(),
-                port: 7070,
-                grpc_port: 8080,
-                specification: ExecutorSpecification::default().with_vcores(1),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
+            executor_meta: test_executor(),
             partition_stats: Default::default(),
             file_id: None,
             is_sort_shuffle: false,

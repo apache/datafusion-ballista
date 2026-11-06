@@ -951,32 +951,13 @@ mod tests {
     }
 
     use super::*;
+    use crate::execution_plans::test_util::partitioned_source;
     use datafusion::arrow::array::{Int64Array, RecordBatch};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::prelude::SessionContext;
     use futures::TryStreamExt;
-
-    fn one_col_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]))
-    }
-
-    /// Two-partition memory source; partition `k` carries the single batch
-    /// `[k * rows_per .. (k + 1) * rows_per)`.
-    fn partitioned_source(partitions: usize, rows_per: usize) -> Arc<dyn ExecutionPlan> {
-        let schema = one_col_schema();
-        let mut per_partition: Vec<Vec<RecordBatch>> = Vec::with_capacity(partitions);
-        for k in 0..partitions {
-            let start = (k * rows_per) as i64;
-            let arr = Int64Array::from_iter_values(start..start + rows_per as i64);
-            per_partition.push(vec![
-                RecordBatch::try_new(schema.clone(), vec![Arc::new(arr)]).unwrap(),
-            ]);
-        }
-        let source = MemorySourceConfig::try_new(&per_partition, schema, None).unwrap();
-        Arc::new(DataSourceExec::new(Arc::new(source)))
-    }
 
     fn empty_state(partitions: usize) -> Vec<FinalizedPartitionState> {
         (0..partitions)

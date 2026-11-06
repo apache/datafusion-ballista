@@ -311,9 +311,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::{
-        AsArray, DictionaryArray, Int32Array, StringArray, StringViewArray,
-    };
+    use crate::execution_plans::test_util::key_payload_batch;
+    use datafusion::arrow::array::{AsArray, DictionaryArray, StringViewArray};
     use datafusion::arrow::datatypes::{DataType, Field, Int32Type, Schema};
     use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::arrow::ipc::{Message, root_as_message};
@@ -321,22 +320,6 @@ mod tests {
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use std::sync::Arc;
     use tempfile::tempdir;
-
-    fn batch(values: &[i32]) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int32, false),
-            Field::new("payload", DataType::Utf8, false),
-        ]));
-        let payload: Vec<String> = values.iter().map(|v| format!("row-{v}")).collect();
-        RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Int32Array::from(values.to_vec())),
-                Arc::new(StringArray::from(payload)),
-            ],
-        )
-        .unwrap()
-    }
 
     /// Decode the IPC message occupying `[start, end)`, the way a reader
     /// issuing a range request over just those bytes would have to.
@@ -377,7 +360,11 @@ mod tests {
     async fn record_offsets_address_decodable_batches() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("data-0.arrow");
-        let batches = vec![batch(&[1, 2, 3]), batch(&[4, 5]), batch(&[6, 7, 8, 9])];
+        let batches = vec![
+            key_payload_batch(&[1, 2, 3]),
+            key_payload_batch(&[4, 5]),
+            key_payload_batch(&[6, 7, 8, 9]),
+        ];
 
         let (_, layout) = write_batches(&path, batches.clone()).await;
 
@@ -458,7 +445,11 @@ mod tests {
     async fn layout_matches_what_the_reader_sees() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("data-0.arrow");
-        let batches = vec![batch(&[1, 2]), batch(&[3]), batch(&[4, 5, 6])];
+        let batches = vec![
+            key_payload_batch(&[1, 2]),
+            key_payload_batch(&[3]),
+            key_payload_batch(&[4, 5, 6]),
+        ];
 
         let (_, layout) = write_batches(&path, batches.clone()).await;
 
@@ -508,7 +499,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let as_file = dir.path().join("file.arrow");
         let as_stream = dir.path().join("stream.arrow");
-        let batches = vec![batch(&[1, 2, 3])];
+        let batches = vec![key_payload_batch(&[1, 2, 3])];
 
         tokio::runtime::Runtime::new()
             .unwrap()

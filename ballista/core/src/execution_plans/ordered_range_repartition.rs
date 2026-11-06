@@ -615,47 +615,17 @@ async fn scatter_input_partition(
 mod tests {
     use super::*;
     use crate::execution_plans::RuntimeStatsExec;
+    use crate::execution_plans::range_repartition_common::test_util::{
+        asc, batch, empty_input, schema_v2_id, session,
+    };
     use datafusion::arrow::array::{Float64Array, Int64Array};
     use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::datatypes::{Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::execution::SessionStateBuilder;
-    use datafusion::physical_expr::expressions::col;
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
     use datafusion::prelude::SessionContext;
     use std::sync::Arc;
-
-    fn schema_v2_id() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![
-            Field::new("v2", DataType::Float64, false),
-            Field::new("id", DataType::Int64, false),
-        ]))
-    }
-
-    fn batch(schema: &Arc<Schema>, keys: Vec<f64>, ids: Vec<i64>) -> RecordBatch {
-        RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Float64Array::from(keys)),
-                Arc::new(Int64Array::from(ids)),
-            ],
-        )
-        .unwrap()
-    }
-
-    fn asc(schema: &Schema, name: &str) -> PhysicalSortExpr {
-        PhysicalSortExpr {
-            expr: col(name, schema).unwrap(),
-            options: Default::default(),
-        }
-    }
-
-    fn session() -> Arc<SessionContext> {
-        Arc::new(SessionContext::new_with_state(
-            SessionStateBuilder::new().with_default_features().build(),
-        ))
-    }
 
     /// Feed pre-sorted per-partition test data through a `SortExec`
     /// (preserve-partitioning) so the DRR's input carries the ordering
@@ -735,10 +705,6 @@ mod tests {
     }
 
     // ---------- Constructor validation ----------------------------------
-
-    fn empty_input(schema: &Arc<Schema>) -> Arc<dyn ExecutionPlan> {
-        MemorySourceConfig::try_new_exec(&[vec![]], schema.clone(), None).unwrap()
-    }
 
     #[test]
     fn try_new_rejects_empty_order_by() {

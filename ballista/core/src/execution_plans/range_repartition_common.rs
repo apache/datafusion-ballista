@@ -265,7 +265,8 @@ pub(super) async fn guarded_scatter<F>(
     }
 }
 
-/// Shared test-only utilities for the two range-repartition operators.
+/// Shared test-only utilities for the range-repartition operators and the
+/// plans that read their statistics.
 /// The ordered variant will exercise the same `guarded_scatter` panic-path,
 /// so the panic-source lives here rather than being duplicated per operator.
 #[cfg(test)]
@@ -273,11 +274,14 @@ pub(super) mod test_util {
     use std::fmt::{self, Formatter};
     use std::sync::Arc;
 
-    use datafusion::arrow::array::RecordBatch;
-    use datafusion::arrow::datatypes::{Schema, SchemaRef};
+    use datafusion::arrow::array::{Float64Array, Int64Array, RecordBatch};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::common::Result;
+    use datafusion::common::ScalarValue;
     use datafusion::common::tree_node::TreeNodeRecursion;
-    use datafusion::execution::TaskContext;
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::execution::{SessionStateBuilder, TaskContext};
+    use datafusion::physical_expr::expressions::col;
     use datafusion::physical_expr::{
         EquivalenceProperties, LexOrdering, Partitioning, PhysicalExpr, PhysicalSortExpr,
     };
@@ -287,6 +291,7 @@ pub(super) mod test_util {
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
         SendableRecordBatchStream,
     };
+    use datafusion::prelude::SessionContext;
 
     /// Message the synthetic panic will surface. Exposed so tests can
     /// assert-round-trip: after `guarded_scatter`'s payload downcast, this
@@ -394,23 +399,72 @@ pub(super) mod test_util {
             )))
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use datafusion::arrow::array::{Float64Array, Int64Array};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::physical_expr::expressions::col;
-    use std::sync::Arc;
+    /// `(v2 Float64, id Int64)`, both non-nullable.
+    pub(crate) fn schema_v2_id() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("v2", DataType::Float64, false),
+            Field::new("id", DataType::Int64, false),
+        ]))
+    }
+
+    /// A batch over [`schema_v2_id`].
+    pub(crate) fn batch(
+        schema: &Arc<Schema>,
+        keys: Vec<f64>,
+        ids: Vec<i64>,
+    ) -> RecordBatch {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Float64Array::from(keys)),
+                Arc::new(Int64Array::from(ids)),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Ascending sort expression on the column `name`.
+    pub(crate) fn asc(schema: &Schema, name: &str) -> PhysicalSortExpr {
+        PhysicalSortExpr {
+            expr: col(name, schema).unwrap(),
+            options: Default::default(),
+        }
+    }
+
+    /// A one-partition memory source with no batches.
+    pub(crate) fn empty_input(schema: &Arc<Schema>) -> Arc<dyn ExecutionPlan> {
+        MemorySourceConfig::try_new_exec(&[vec![]], schema.clone(), None).unwrap()
+    }
+
+    pub(crate) fn session() -> Arc<SessionContext> {
+        Arc::new(SessionContext::new_with_state(
+            SessionStateBuilder::new().with_default_features().build(),
+        ))
+    }
+
+    /// A single non-nullable `v Float64` column.
+    pub(crate) fn v_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]))
+    }
 
     /// Boundaries as `Float64` scalars, which is what discovery produces.
-    fn cuts<const N: usize>(values: [f64; N]) -> Vec<ScalarValue> {
+    pub(crate) fn cuts<const N: usize>(values: [f64; N]) -> Vec<ScalarValue> {
         values
             .into_iter()
             .map(|v| ScalarValue::Float64(Some(v)))
             .collect()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_util::cuts;
+    use super::*;
+    use datafusion::arrow::array::{Float64Array, Int64Array};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_expr::expressions::col;
+    use std::sync::Arc;
 
     fn asc(nulls_first: bool) -> SortOptions {
         SortOptions {
