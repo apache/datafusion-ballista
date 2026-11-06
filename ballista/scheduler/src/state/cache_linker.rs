@@ -767,19 +767,16 @@ mod tests {
     use super::*;
     use crate::cache::CACHE_DATA_LOST;
     use crate::config::SchedulerConfig;
-    use crate::scheduler_server::timestamp_millis;
     use crate::state::cache_registry::MaterializedCache;
     use crate::test_utils::{
         MetricEvent, SchedulerTest, TaskRunnerFn, TestMetricsCollector,
-        aggregation_logical_plan,
+        aggregation_logical_plan, execution_failure, failed_statuses,
+        failing_task_runner, fetch_partition_failure,
     };
     use ballista_core::config::{BALLISTA_EXECUTION_MODE, TaskSchedulingPolicy};
     use ballista_core::extension::BallistaCacheNode;
+    use ballista_core::serde::protobuf::MultiTaskDefinition;
     use ballista_core::serde::protobuf::job_status::Status;
-    use ballista_core::serde::protobuf::{
-        ExecutionError, FailedTask, FetchPartitionError, MultiTaskDefinition, TaskId,
-        TaskStatus, failed_task, task_status,
-    };
 
     use datafusion::logical_expr::{Extension, LogicalPlanBuilder};
 
@@ -976,36 +973,7 @@ mod tests {
     }
 
     fn failing_runner() -> Arc<dyn crate::test_utils::TaskRunner> {
-        Arc::new(TaskRunnerFn::new(
-            |_executor: String, task: MultiTaskDefinition| {
-                task.task_ids
-                    .into_iter()
-                    .map(|TaskId { task_id, .. }| {
-                        let now = timestamp_millis();
-                        TaskStatus {
-                            task_id,
-                            job_id: task.job_id.clone(),
-                            stage_id: task.stage_id,
-                            stage_attempt_num: task.stage_attempt_num,
-                            launch_time: now,
-                            start_exec_time: now,
-                            end_exec_time: now,
-                            metrics: vec![],
-                            status: Some(task_status::Status::Failed(FailedTask {
-                                error: "boom".to_owned(),
-                                retryable: false,
-                                count_to_failures: false,
-                                failed_reason: Some(
-                                    failed_task::FailedReason::ExecutionError(
-                                        ExecutionError {},
-                                    ),
-                                ),
-                            })),
-                        }
-                    })
-                    .collect()
-            },
-        ))
+        failing_task_runner(|_| execution_failure("boom"))
     }
 
     /// If a cache cannot be built, the cache built on it and the read job fail
@@ -1218,38 +1186,14 @@ mod tests {
                 let Some(location) = lost.lock().unwrap().clone() else {
                     return succeed.run(executor, task);
                 };
-                let now = timestamp_millis();
-                task.task_ids
-                    .into_iter()
-                    .map(|TaskId { task_id, .. }| TaskStatus {
-                        task_id,
-                        job_id: task.job_id.clone(),
-                        stage_id: task.stage_id,
-                        stage_attempt_num: task.stage_attempt_num,
-                        launch_time: now,
-                        start_exec_time: now,
-                        end_exec_time: now,
-                        metrics: vec![],
-                        status: Some(task_status::Status::Failed(FailedTask {
-                            error: "fetch failed".to_owned(),
-                            retryable: false,
-                            count_to_failures: false,
-                            failed_reason: Some(
-                                failed_task::FailedReason::FetchPartitionError(
-                                    FetchPartitionError {
-                                        executor_id: location.executor_meta.id.clone(),
-                                        map_stage_id: location.partition_id.stage_id
-                                            as u32,
-                                        map_partition_id: location
-                                            .partition_id
-                                            .partition_id
-                                            as u32,
-                                    },
-                                ),
-                            ),
-                        })),
-                    })
-                    .collect()
+                failed_statuses(
+                    task,
+                    fetch_partition_failure(
+                        &location.executor_meta.id,
+                        location.partition_id.stage_id as u32,
+                        location.partition_id.partition_id as u32,
+                    ),
+                )
             })
         };
         let (mut test, _metrics) = scheduler_test(Some(Arc::new(runner))).await;
