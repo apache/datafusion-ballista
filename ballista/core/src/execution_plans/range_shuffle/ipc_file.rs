@@ -311,10 +311,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution_plans::test_util::key_payload_batch;
+    use crate::execution_plans::test_util::{key_payload_batch, write_ipc_stream};
     use datafusion::arrow::array::{AsArray, DictionaryArray, StringViewArray};
     use datafusion::arrow::datatypes::{DataType, Field, Int32Type, Schema};
-    use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::arrow::ipc::{Message, root_as_message};
     use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -505,10 +504,7 @@ mod tests {
             .unwrap()
             .block_on(write_batches(&as_file, batches.clone()));
 
-        let out = File::create(&as_stream).unwrap();
-        let mut writer = StreamWriter::try_new(out, &batches[0].schema()).unwrap();
-        writer.write(&batches[0]).unwrap();
-        writer.finish().unwrap();
+        write_ipc_stream(&as_stream, &batches);
 
         assert!(is_ipc_file(&as_file), "IPC file must be detected");
         assert!(!is_ipc_file(&as_stream), "IPC stream must not be");

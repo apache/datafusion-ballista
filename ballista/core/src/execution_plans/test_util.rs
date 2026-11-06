@@ -17,12 +17,14 @@
 
 //! Fixtures shared by the unit tests of several execution plans.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use datafusion::arrow::array::{
     Int32Array, Int64Array, RecordBatch, StringArray, UInt32Array,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::error::Result;
 use datafusion::execution::TaskContext;
@@ -142,4 +144,22 @@ pub(crate) fn test_executor() -> ExecutorMetadata {
         specification: ExecutorSpecification::default().with_vcores(1),
         os_info: ExecutorOperatingSystemSpecification::default(),
     }
+}
+
+/// An Arrow IPC stream holding `batches`, which must not be empty.
+pub(crate) fn ipc_stream_bytes(batches: &[RecordBatch]) -> Vec<u8> {
+    let mut bytes = vec![];
+    let mut writer = StreamWriter::try_new(&mut bytes, &batches[0].schema()).unwrap();
+    for batch in batches {
+        writer.write(batch).unwrap();
+    }
+    writer.finish().unwrap();
+    bytes
+}
+
+/// Writes an Arrow IPC stream holding `batches` to `path`, creating its parent
+/// directory.
+pub(crate) fn write_ipc_stream(path: &Path, batches: &[RecordBatch]) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, ipc_stream_bytes(batches)).unwrap();
 }

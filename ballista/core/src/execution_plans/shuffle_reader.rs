@@ -1471,7 +1471,7 @@ impl RecordBatchStream for CoalescedShuffleReaderStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution_plans::test_util::test_executor;
+    use crate::execution_plans::test_util::{test_executor, write_ipc_stream};
     use crate::execution_plans::{ShuffleWriterExec, create_shuffle_path};
     use crate::serde::scheduler::{
         ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
@@ -1480,7 +1480,6 @@ mod tests {
     use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
     use datafusion::datasource::memory::MemorySourceConfig;
@@ -2079,11 +2078,7 @@ mod tests {
         for p in 0..n {
             let path =
                 create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let mut writer =
-                StreamWriter::try_new(File::create(&path).unwrap(), &schema).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
+            write_ipc_stream(&path, std::slice::from_ref(&batch));
         }
         schema
     }

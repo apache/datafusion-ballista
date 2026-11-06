@@ -478,30 +478,18 @@ impl ExecutionPlan for RangeShuffleReaderExec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_plans::test_util::write_ipc_stream;
     use crate::serde::scheduler::{
         ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
         PartitionId, PartitionStats,
     };
     use datafusion::arrow::array::{ArrayRef, Float64Array, RecordBatch};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
     use datafusion::prelude::SessionContext;
-    use std::fs::{File, create_dir_all};
     use tempfile::tempdir;
-
-    /// Write an Arrow IPC stream containing `batches` at `path`.
-    fn write_ipc_stream(path: &std::path::Path, batches: &[RecordBatch]) {
-        create_dir_all(path.parent().unwrap()).unwrap();
-        let file = File::create(path).unwrap();
-        let mut writer = StreamWriter::try_new(file, &batches[0].schema()).unwrap();
-        for b in batches {
-            writer.write(b).unwrap();
-        }
-        writer.finish().unwrap();
-    }
 
     fn sorted_batch(schema: SchemaRef, values: &[f64]) -> RecordBatch {
         let col: ArrayRef = Arc::new(Float64Array::from(values.to_vec()));
