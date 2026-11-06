@@ -20,6 +20,7 @@ use crate::state::aqe::test::{
     mock_batch, mock_context, mock_partitions_with_statistics_no_data,
 };
 use ballista_core::assert_plan;
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
     PartitionId, PartitionLocation, PartitionStats,
@@ -29,6 +30,7 @@ use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{ColumnStatistics, DataFusionError, JoinType, Statistics};
 use datafusion::config::ConfigOptions;
+use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
@@ -38,9 +40,67 @@ use datafusion::physical_plan::test::exec::StatisticsExec;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PhysicalExpr, PlanProperties,
 };
+use datafusion::prelude::{SessionConfig, SessionContext};
 use std::collections::HashSet;
 use std::fmt::Formatter;
 use std::sync::Arc;
+
+#[tokio::test]
+async fn should_not_propagate_empty_stage_when_disabled() -> datafusion::error::Result<()>
+{
+    let config = SessionConfig::new_with_ballista()
+        .with_target_partitions(2)
+        .with_round_robin_repartition(false)
+        .set_bool("ballista.planner.propagate_empty.enabled", false);
+
+    let ctx = SessionContext::new_with_state(
+        SessionStateBuilder::new_with_default_features()
+            .with_config(config)
+            .build(),
+    );
+    ctx.register_batch("t", mock_batch()?)?;
+
+    let plan = ctx
+        .sql("select min(a) as c0, max(b) as c1, c as c2 from t group by c")
+        .await?
+        .create_physical_plan()
+        .await?;
+    let mut planner = AdaptivePlanner::try_from_plan(
+        ctx.state().config(),
+        plan.clone(),
+        "test_job".into(),
+    )?;
+
+    planner.runnable_stages()?.unwrap();
+    planner.finalise_stage_internal(0, mock_partitions_with_statistics_no_data())?;
+    let stages = planner.runnable_stages()?.unwrap();
+
+    assert_plan!(stages[0].plan.as_ref(), @ r"
+    ShuffleWriterExec: partitioning: Hash([c2@2], 2)
+      ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
+        AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
+          ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@0], 2)
+    ");
+
+    ctx.sql("SET ballista.planner.propagate_empty.enabled = true")
+        .await?
+        .collect()
+        .await?;
+
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+
+    planner.runnable_stages()?.unwrap();
+    planner.finalise_stage_internal(0, mock_partitions_with_statistics_no_data())?;
+    let stages = planner.runnable_stages()?.unwrap();
+
+    assert_plan!(stages[0].plan.as_ref(), @ r"
+    ShuffleWriterExec: partitioning: UnknownPartitioning(2)
+      EmptyExec
+    ");
+
+    Ok(())
+}
 
 #[tokio::test]
 async fn should_propagate_empty_stage() -> datafusion::error::Result<()> {
@@ -72,9 +132,8 @@ async fn should_propagate_empty_stage() -> datafusion::error::Result<()> {
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().plan.as_ref(),  @ r"
-    ShuffleWriterExec: partitioning: RoundRobinBatch(2)
-      RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
-        EmptyExec
+    ShuffleWriterExec: partitioning: UnknownPartitioning(2)
+      EmptyExec
     ");
     planner.finalise_stage_internal(1, mock_partitions_with_statistics_no_data())?;
 
@@ -147,9 +206,8 @@ async fn should_propagate_empty_stage_and_remove() -> datafusion::error::Result<
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());
     assert_plan!(stages.first().unwrap().plan.as_ref(),  @ r"
-    ShuffleWriterExec: partitioning: RoundRobinBatch(2)
-      RepartitionExec: partitioning=RoundRobinBatch(2), input_partitions=1
-        EmptyExec
+    ShuffleWriterExec: partitioning: UnknownPartitioning(2)
+      EmptyExec
     ");
     planner.finalise_stage_internal(1, mock_partitions_with_statistics_no_data())?;
 

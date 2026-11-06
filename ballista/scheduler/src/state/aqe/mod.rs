@@ -158,13 +158,63 @@ impl AdaptiveExecutionGraph {
         queued_at: u64,
         rules: Option<&dyn AdaptiveRules>,
     ) -> ballista_core::error::Result<Self> {
-        let session_id = ctx.session_id();
-
-        let mut planner =
+        let planner =
             AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone(), rules).await?;
-
         let logical_plan = Some(logical_plan.display_indent().to_string());
 
+        Self::try_new_with_planner(
+            scheduler_id,
+            job_id,
+            job_name,
+            ctx,
+            planner,
+            logical_plan,
+            queued_at,
+        )
+    }
+
+    /// Creates a new `ExecutionGraph` from an already-built physical plan.
+    ///
+    /// The plan is prepared and staged by [`AdaptivePlanner::try_new_from_physical`];
+    /// the graph has no logical plan to display.
+    pub fn try_new_from_physical(
+        scheduler_id: &str,
+        job_id: &JobId,
+        job_name: &str,
+        ctx: &SessionContext,
+        physical_plan: Arc<dyn ExecutionPlan>,
+        queued_at: u64,
+        rules: Option<&dyn AdaptiveRules>,
+    ) -> ballista_core::error::Result<Self> {
+        let planner = AdaptivePlanner::try_new_from_physical(
+            ctx,
+            physical_plan,
+            job_id.clone(),
+            rules,
+        )?;
+
+        Self::try_new_with_planner(
+            scheduler_id,
+            job_id,
+            job_name,
+            ctx,
+            planner,
+            None,
+            queued_at,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_new_with_planner(
+        scheduler_id: &str,
+        job_id: &JobId,
+        job_name: &str,
+        ctx: &SessionContext,
+        mut planner: AdaptivePlanner,
+        logical_plan: Option<String>,
+        queued_at: u64,
+    ) -> ballista_core::error::Result<Self> {
+        let session_id = ctx.session_id();
         let session_config = Arc::new(ctx.copied_config());
         let started_at = timestamp_millis();
 

@@ -22,6 +22,7 @@ import warnings
 
 from ballista import (
     BallistaConfigExtension,
+    BallistaPythonSessionContext,
     BallistaSessionConfig,
     BallistaSessionContext,
     setup_test_cluster,
@@ -79,10 +80,16 @@ def cluster():
     return setup_test_cluster()
 
 
-@pytest.fixture
-def ctx(cluster):
+@pytest.fixture(params=["native", "python"])
+def ctx(cluster, request):
+    """Context using the native Rust client or the Python ``BallistaClient``."""
     (address, port) = cluster
-    return BallistaSessionContext(address=f"df://{address}:{port}")
+    session_context = (
+        BallistaSessionContext
+        if request.param == "native"
+        else BallistaPythonSessionContext
+    )
+    return session_context(address=f"df://{address}:{port}")
 
 
 def to_table(df) -> pa.Table:
@@ -300,6 +307,37 @@ def test_sql_explain_analyze(ctx):
     assert result.column_names == ["plan_type", "plan"]
     plan = "\n".join(result.column("plan").to_pylist())
     assert "output_rows" in plan
+
+
+NOT_IN_QUERY = "SELECT a FROM t WHERE a NOT IN (SELECT b FROM s)"
+
+
+def register_not_in_tables(ctx, tmp_path):
+    pq.write_table(pa.table({"a": [1, 2, 3, 4, None]}), tmp_path / "t.parquet")
+    pq.write_table(pa.table({"b": [2, 4]}), tmp_path / "s.parquet")
+    ctx.register_parquet("t", str(tmp_path / "t.parquet"))
+    ctx.register_parquet("s", str(tmp_path / "s.parquet"))
+    ctx.sql("SET datafusion.optimizer.prefer_hash_join = true").collect()
+
+
+def test_not_in_subquery(ctx, tmp_path):
+    register_not_in_tables(ctx, tmp_path)
+    result = to_table(ctx.sql(NOT_IN_QUERY))
+    assert sorted(result.column("a").to_pylist()) == [1, 3]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="The Python client optimizes plans with datafusion-python, which "
+    "can not install Ballista's NOT IN rewrite (a logical optimizer rule), so "
+    "NOT IN reaches the scheduler as a null-aware anti join and runs as a "
+    "single task.",
+)
+def test_not_in_subquery_avoids_null_aware_join(ctx, tmp_path):
+    register_not_in_tables(ctx, tmp_path)
+    result = to_table(ctx.sql(f"EXPLAIN ANALYZE {NOT_IN_QUERY}"))
+    plan = "\n".join(result.column("plan").to_pylist())
+    assert "null_aware" not in plan, plan
 
 
 def test_dataframe_explain_analyze(ctx, capsys):

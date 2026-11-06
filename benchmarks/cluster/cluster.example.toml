@@ -36,7 +36,8 @@ env_secret = ""
 region = "us-east-1"
 
 # StorageClass for a volume of its own for each executor's shuffle files
-# (Ballista, Spark) and each Trino worker's spill files (--trino-spill),
+# (Ballista, Spark), each Trino worker's spill files (--trino-spill) and each
+# DataFusion Distributed worker's spill files,
 # provisioned with the pod and deleted with it. Empty to use an emptyDir on the
 # node's disk, which the node's other pods share.
 storage_class = "gp3"
@@ -62,13 +63,16 @@ scale_factor = 1000
 tpch_partitioned = false
 
 [images]
-# Built from docker/ballista.Dockerfile, docker/spark.Dockerfile and
-# docker/comet.Dockerfile and pushed to a registry the cluster can pull from.
+# Built from docker/ballista.Dockerfile, docker/spark.Dockerfile,
+# docker/comet.Dockerfile and docker/datafusion-distributed.Dockerfile and pushed
+# to a registry the cluster can pull from.
 ballista = "registry.example.com/ballista-bench:main"
 spark = "registry.example.com/spark-bench:4.1.3"
 comet = "registry.example.com/comet-bench:4.1.3"
+datafusion_distributed = "registry.example.com/datafusion-distributed-bench:main"
 trino = "trinodb/trino:483"
-# Runs trino/run_queries.py, which needs only the standard library.
+# Runs trino/run_queries.py and datafusion-distributed/run_queries.py, which need
+# only the standard library.
 python = "python:3.12-slim"
 
 [trino]

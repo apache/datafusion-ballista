@@ -2,4 +2,7 @@ datafusion==55.0.0
 pyarrow>=16.0.0;python_version<'3.14'
 pyarrow>=22.0.0;python_version>='3.14'
 pytest
+testcontainers>=4.15.0
 maturin>=1.8.0,<2.0.0
+grpcio>=1.85.1
+protobuf>=7.35.1,<8

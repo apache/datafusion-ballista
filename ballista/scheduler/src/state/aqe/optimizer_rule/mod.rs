@@ -23,6 +23,7 @@ pub mod join_selection;
 pub mod normalize_interleave;
 pub mod optimize_skewed_join;
 pub mod parallel_window;
+pub mod pin_submitted_shuffles;
 pub mod prefix_window;
 pub mod propagate_empty;
 
@@ -33,5 +34,6 @@ pub use join_selection::*;
 pub use normalize_interleave::*;
 pub use optimize_skewed_join::*;
 pub use parallel_window::*;
+pub use pin_submitted_shuffles::*;
 pub use prefix_window::*;
 pub use propagate_empty::*;

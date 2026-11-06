@@ -26,7 +26,8 @@ use crate::state::aqe::optimizer_rule::chaos_exec::ChaosCreatingRule;
 use crate::state::aqe::optimizer_rule::{
     CoalescePartitionsRule, DelayJoinSelectionRule, DemoteUnsafeBroadcastJoinRule,
     DistributedExchangeRule, NormalizeInterleaveRule, OptimizeSkewedJoinRule,
-    ParallelWindowRule, PrefixWindowRule, PropagateEmptyExecRule, SelectJoinRule,
+    ParallelWindowRule, PinSubmittedShufflesRule, PrefixWindowRule,
+    PropagateEmptyExecRule, SelectJoinRule,
 };
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
@@ -191,6 +192,67 @@ impl AdaptivePlanner {
             Self::default_optimizers_with(plan_id_generator, replan_optimizers),
         )
     }
+
+    /// Creates a new `AdaptivePlanner` over an already-built physical plan,
+    /// with the default physical optimizer rules, and an embedder's `rules`
+    /// added to them (see [`AdaptiveRules`]).
+    ///
+    /// This is the physical-plan counterpart of [`Self::try_new`]: the
+    /// plan-preparation rules that `try_new` runs while planning the logical
+    /// plan are applied to `plan` once here, then the plan is handed to the
+    /// adaptive optimizer chain. There is no logical plan, so `EXPLAIN` is not
+    /// handled on this path.
+    ///
+    /// The submitter placed the plan's hash repartitions deliberately, so they
+    /// are pinned as stage boundaries ([`PinSubmittedShufflesRule`]) as the
+    /// last preparation rule, before the adaptive chain runs; otherwise
+    /// DataFusion's `EnforceDistribution` would drop any that no operator
+    /// requirement asks for, such as one feeding an extension node.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - The session context
+    /// * `plan` - The physical plan for the job.
+    /// * `job_id` - The unique identifier for the job.
+    /// * `rules` - Rules of the embedder's own, if any.
+    pub fn try_new_from_physical(
+        ctx: &SessionContext,
+        plan: Arc<dyn ExecutionPlan>,
+        job_id: JobId,
+        rules: Option<&dyn AdaptiveRules>,
+    ) -> common::Result<Self> {
+        let plan_id_generator = Arc::new(AtomicUsize::new(0));
+
+        let mut preparation_optimizers =
+            Self::plan_preparation_optimizers(plan_id_generator.clone());
+        let mut replan_optimizers = vec![];
+        if let Some(rules) = rules {
+            preparation_optimizers
+                .extend(rules.preparation_rules(plan_id_generator.clone()));
+            replan_optimizers = rules.replan_rules(plan_id_generator.clone());
+        }
+        // After the embedder's preparation rules, which run before the job's
+        // stage boundaries are placed (see `AdaptiveRules::preparation_rules`).
+        preparation_optimizers.push(Arc::new(PinSubmittedShufflesRule::new(
+            plan_id_generator.clone(),
+        )));
+        let plan_preparation_state = Self::create_session_state(
+            SessionStateBuilder::from(ctx.state()),
+            preparation_optimizers,
+        );
+        let plan = DefaultPhysicalPlanner::default().optimize_physical_plan(
+            plan,
+            &plan_preparation_state,
+            |_, _| {},
+        )?;
+
+        Self::try_new_with_optimizers(
+            SessionStateBuilder::from(ctx.state()),
+            plan,
+            job_id,
+            Self::default_optimizers_with(plan_id_generator, replan_optimizers),
+        )
+    }
     /// Cancels a stage by its ID.
     ///
     /// # Arguments
@@ -342,7 +404,12 @@ impl AdaptivePlanner {
         Ok(if is_broadcast {
             stage_output.partition_locations_broadcast()
         } else {
-            stage_output.partition_locations(*output_partition_count)
+            // A passthrough stage whose input was coalesced writes fewer
+            // partitions than its boundary declares, and the next stage reads
+            // it with a reader planned for the declared count, so keep every
+            // declared partition, empty or not.
+            let declared = boundary.output_partitioning().partition_count();
+            stage_output.partition_locations((*output_partition_count).max(declared))
         })
     }
 
