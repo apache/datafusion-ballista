@@ -970,8 +970,9 @@ mod test {
     use ballista_core::{BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION};
 
     use crate::state::SchedulerState;
-    use crate::test_utils::await_condition;
-    use crate::test_utils::test_cluster_context;
+    use crate::test_utils::{
+        await_condition, test_cluster_context, test_scheduler_server,
+    };
 
     use super::{SchedulerGrpc, SchedulerServer, executor_registration_error};
 
@@ -991,15 +992,7 @@ mod test {
         let config = SchedulerConfig::default().with_scheduler_policy(
             ballista_core::config::TaskSchedulingPolicy::PullStaged,
         );
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster.clone(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(cluster.clone(), config).await?;
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
             host: Some("http://localhost:8080".to_owned()),
@@ -1100,15 +1093,7 @@ mod test {
         let cluster = test_cluster_context();
 
         let config = SchedulerConfig::default().with_remove_executor_wait_secs(0);
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster.clone(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(cluster.clone(), config).await?;
 
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
@@ -1187,15 +1172,7 @@ mod test {
         let cluster = test_cluster_context();
 
         let config = SchedulerConfig::default();
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster,
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(cluster, config).await?;
 
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
@@ -1243,15 +1220,7 @@ mod test {
         let config = SchedulerConfig::default().with_scheduler_policy(
             ballista_core::config::TaskSchedulingPolicy::PullStaged,
         );
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(test_cluster_context(), config).await?;
         let exec_meta = exec_meta_with_version(BALLISTA_PROTOCOL_VERSION);
         let memory = |bytes| ExecutorMetric {
             metric: Some(executor_metric::Metric::ProcPhysicalMemory(bytes)),
@@ -1303,15 +1272,7 @@ mod test {
     -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>, BallistaError> {
         let cluster = test_cluster_context();
         let config = SchedulerConfig::default();
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster,
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(cluster, config).await?;
         Ok(scheduler)
     }
 
@@ -1396,15 +1357,7 @@ mod test {
             scheduling_policy: ballista_core::config::TaskSchedulingPolicy::PullStaged,
             ..Default::default()
         };
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(test_cluster_context(), config).await?;
 
         let request = Request::new(PollWorkParams {
             metadata: Some(exec_meta_with_version(0)),
@@ -1425,15 +1378,7 @@ mod test {
         let cluster = test_cluster_context();
 
         let config = SchedulerConfig::default();
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster.clone(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(cluster.clone(), config).await?;
 
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
@@ -1573,15 +1518,9 @@ mod test {
 
     async fn test_scheduler()
     -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>, BallistaError> {
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(SchedulerConfig::default()),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler =
+            test_scheduler_server(test_cluster_context(), SchedulerConfig::default())
+                .await?;
         Ok(scheduler)
     }
 
@@ -1729,15 +1668,7 @@ mod test {
         let cluster = test_cluster_context();
 
         let config = SchedulerConfig::default();
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster.clone(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(cluster.clone(), config).await?;
 
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),

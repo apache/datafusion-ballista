@@ -160,6 +160,37 @@ pub fn test_cluster_context() -> BallistaCluster {
     )
 }
 
+/// Creates and initialises a scheduler server on `cluster`, reporting to the
+/// default metrics collector.
+pub async fn test_scheduler_server(
+    cluster: BallistaCluster,
+    config: SchedulerConfig,
+) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
+    test_scheduler_server_with_metrics(
+        cluster,
+        config,
+        crate::metrics::default_metrics_collector()?,
+    )
+    .await
+}
+
+/// Same as [`test_scheduler_server`], reporting to `metrics`.
+pub async fn test_scheduler_server_with_metrics(
+    cluster: BallistaCluster,
+    config: SchedulerConfig,
+    metrics: Arc<dyn SchedulerMetricsCollector>,
+) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
+    let mut scheduler = SchedulerServer::new(
+        TEST_SCHEDULER_ENDPOINT.to_owned(),
+        cluster,
+        BallistaCodec::default(),
+        Arc::new(config),
+        metrics,
+    );
+    scheduler.init().await?;
+    Ok(scheduler)
+}
+
 /// Creates a DataFusion session context with TPC-H tables registered from the given path.
 pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
     let default_shuffle_partitions = 2;
@@ -1203,22 +1234,6 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
 
 /// Creates a mock failed task status for the given task.
 pub fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskStatus {
-    let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
-
-    let num_partitions = task.get_output_partition_number();
-
-    for partition_id in 0..num_partitions {
-        partitions.push(protobuf::ShuffleWritePartition {
-            partition_id: partition_id as u64,
-            num_batches: 1,
-            num_rows: 1,
-            num_bytes: 1,
-            file_id: None,
-            is_sort_shuffle: false,
-        })
-    }
-
-    // Fail the task
     protobuf::TaskStatus {
         task_id: task.key.task_id as u32,
         job_id: task.key.job_id.clone().into(),

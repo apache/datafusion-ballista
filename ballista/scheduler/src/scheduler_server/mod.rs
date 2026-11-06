@@ -681,7 +681,6 @@ mod test {
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
 
-    use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::{
         ExecutionError, FailedTask, JobStatus, MultiTaskDefinition,
         ShuffleWritePartition, SuccessfulJob, SuccessfulTask, TaskId, TaskStatus,
@@ -698,7 +697,7 @@ mod test {
         ExplodingTableProvider, PanickingTableProvider, RejectingTaskLauncher,
         SchedulerTest, TaskRunnerFn, TestMetricsCollector, aggregation_logical_plan,
         assert_completed_event, assert_failed_event, assert_no_submitted_event,
-        assert_submitted_event, test_cluster_context,
+        assert_submitted_event, test_cluster_context, test_scheduler_server_with_metrics,
     };
 
     #[tokio::test]
@@ -1250,18 +1249,15 @@ mod test {
     // Here we simulate a planning failure using ExplodingTableProvider to test this.
     #[tokio::test]
     async fn a_draining_scheduler_refuses_new_jobs_and_is_not_ready() -> Result<()> {
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(SchedulerConfig {
-                    min_ready_executors: 0,
-                    ..Default::default()
-                }),
-                Arc::new(TestMetricsCollector::default()),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server_with_metrics(
+            test_cluster_context(),
+            SchedulerConfig {
+                min_ready_executors: 0,
+                ..Default::default()
+            },
+            Arc::new(TestMetricsCollector::default()),
+        )
+        .await?;
         assert!(scheduler.is_ready());
         assert_eq!(scheduler.active_job_number(), 0);
 
@@ -1289,18 +1285,15 @@ mod test {
 
     async fn scheduler_that_is_ready_without_executors()
     -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(SchedulerConfig {
-                    min_ready_executors: 0,
-                    ..Default::default()
-                }),
-                Arc::new(TestMetricsCollector::default()),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server_with_metrics(
+            test_cluster_context(),
+            SchedulerConfig {
+                min_ready_executors: 0,
+                ..Default::default()
+            },
+            Arc::new(TestMetricsCollector::default()),
+        )
+        .await?;
         Ok(scheduler)
     }
 
@@ -1556,15 +1549,12 @@ mod test {
         let cluster = test_cluster_context();
 
         let config = SchedulerConfig::default().with_scheduler_policy(scheduling_policy);
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster,
-                BallistaCodec::default(),
-                Arc::new(config),
-                Arc::new(TestMetricsCollector::default()),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server_with_metrics(
+            cluster,
+            config,
+            Arc::new(TestMetricsCollector::default()),
+        )
+        .await?;
 
         Ok(scheduler)
     }
