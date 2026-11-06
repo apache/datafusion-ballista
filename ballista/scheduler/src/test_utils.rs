@@ -65,6 +65,7 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionStage, StaticExecutionGraph, TaskDescription,
 };
+use crate::state::pipelined_graph::PipelinedExecutionGraph;
 use ballista_core::test_utils::tpch::{TPCH_TABLES, tpch_schema};
 use ballista_core::utils::{default_config_producer, default_session_builder};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
@@ -670,6 +671,32 @@ impl SchedulerTest {
         Ok(available.iter().map(|a| a.vcores).sum())
     }
 
+    /// Waits for up to five seconds until the free vcores satisfy `pred`, and
+    /// returns whether they did.
+    pub async fn await_free_vcores(&self, pred: impl Fn(u32) -> bool) -> Result<bool> {
+        await_condition(Duration::from_millis(20), 250, || async {
+            Ok(pred(self.free_vcores().await?))
+        })
+        .await
+    }
+
+    /// Waits for up to five seconds until the status of `job_id` satisfies
+    /// `pred`, and returns whether it did.
+    pub async fn await_job_status(
+        &self,
+        job_id: &JobId,
+        pred: impl Fn(&Status) -> bool,
+    ) -> Result<bool> {
+        await_condition(Duration::from_millis(20), 250, || async {
+            Ok(self
+                .job_status(job_id)
+                .await?
+                .and_then(|job| job.status)
+                .is_some_and(|status| pred(&status)))
+        })
+        .await
+    }
+
     /// Returns the number of running jobs.
     pub fn running_job_number(&self) -> usize {
         self.scheduler.running_job_number()
@@ -1094,6 +1121,27 @@ pub fn revive_graph_and_complete_next_stage_with_executor(
     Ok(num_available_tasks)
 }
 
+/// Completes every task the graph hands out, one executor "executor-id1"
+/// reporting them all, until no task is available.
+pub fn drain_tasks(graph: &mut dyn ExecutionGraph) -> Result<()> {
+    let executor = mock_executor("executor-id1".to_string());
+    drain_tasks_with_executor(graph, &executor)
+}
+
+/// Completes every task the graph hands out to `executor` until no task is
+/// available.
+pub fn drain_tasks_with_executor(
+    graph: &mut dyn ExecutionGraph,
+    executor: &ExecutorMetadata,
+) -> Result<()> {
+    while let Some(task) = graph.pop_next_task(&executor.id)? {
+        let task_status = mock_completed_task(task, &executor.id);
+        graph.update_task_status(executor, vec![task_status], 1, 1)?;
+    }
+
+    Ok(())
+}
+
 /// The logical plan of `SELECT id, sum(gmv) FROM t GROUP BY id`, over a scan
 /// of `partitions` partitions of `(id Utf8, gmv UInt64)`.
 ///
@@ -1108,7 +1156,7 @@ pub fn aggregation_logical_plan(partitions: usize) -> LogicalPlan {
         .unwrap()
 }
 
-fn id_gmv_schema() -> Schema {
+pub(crate) fn id_gmv_schema() -> Schema {
     Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
         Field::new("gmv", DataType::UInt64, false),
@@ -1120,6 +1168,52 @@ fn test_session(partition: usize) -> SessionContext {
     SessionContext::new_with_config(
         SessionConfig::new().with_target_partitions(partition),
     )
+}
+
+/// Builds a static execution graph of the physical `plan` for the job "job".
+pub fn graph_from_physical(
+    plan: Arc<dyn ExecutionPlan>,
+    session_config: impl Into<Arc<SessionConfig>>,
+) -> StaticExecutionGraph {
+    static_graph(plan, &"job".into(), session_config.into())
+}
+
+/// Builds a pipelined execution graph of the physical `plan` for the job "job".
+pub fn pipelined_graph_from_physical(
+    plan: Arc<dyn ExecutionPlan>,
+    session_config: impl Into<Arc<SessionConfig>>,
+) -> PipelinedExecutionGraph {
+    PipelinedExecutionGraph::new(
+        TEST_SCHEDULER_ENDPOINT,
+        &"job".into(),
+        "",
+        "session",
+        plan,
+        0,
+        session_config.into(),
+        &mut DefaultDistributedPlanner::new(),
+        None,
+    )
+    .unwrap()
+}
+
+fn static_graph(
+    plan: Arc<dyn ExecutionPlan>,
+    job_id: &JobId,
+    session_config: Arc<SessionConfig>,
+) -> StaticExecutionGraph {
+    StaticExecutionGraph::new(
+        TEST_SCHEDULER_ENDPOINT,
+        job_id,
+        "",
+        "session",
+        plan,
+        0,
+        session_config,
+        &mut DefaultDistributedPlanner::new(),
+        None,
+    )
+    .unwrap()
 }
 
 /// Optimizes and plans `logical_plan` with `ctx` and builds a static
@@ -1141,19 +1235,7 @@ async fn graph_from_logical(
         "{}",
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
-    let mut planner = DefaultDistributedPlanner::new();
-    let graph = StaticExecutionGraph::new(
-        "localhost:50050",
-        job_id,
-        "",
-        "session",
-        plan,
-        0,
-        session_config,
-        &mut planner,
-        None,
-    )
-    .unwrap();
+    let graph = static_graph(plan, job_id, session_config);
 
     println!("{graph:?}");
 
@@ -1243,6 +1325,34 @@ pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
     .await
 }
 
+/// The logical plan of an inner join of two scans, `left` and `right`, on
+/// `id`, followed by `sum(left.gmv)` grouped by `left.id` and a sort on `id`
+/// (descending, nulls last). Both scans have two partitions of `(id Utf8, gmv
+/// UInt64)`.
+///
+/// The scans have more than one partition because of
+/// <https://github.com/apache/datafusion/issues/12611>.
+pub fn join_aggregate_sort_logical_plan() -> LogicalPlan {
+    let schema = id_gmv_schema();
+
+    let left_plan = scan_empty_with_partitions(Some("left"), &schema, None, 2).unwrap();
+
+    let right_plan = scan_empty_with_partitions(Some("right"), &schema, None, 2)
+        .unwrap()
+        .build()
+        .unwrap();
+
+    left_plan
+        .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
+        .unwrap()
+        .aggregate(vec![col("left.id")], vec![sum(col("left.gmv"))])
+        .unwrap()
+        .sort(vec![SortExpr::new(col("id"), false, false)])
+        .unwrap()
+        .build()
+        .unwrap()
+}
+
 /// Creates a test execution graph with a join operation.
 pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
     let mut config = SessionConfig::new_with_ballista().with_target_partitions(partition);
@@ -1252,31 +1362,9 @@ pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
         .enable_round_robin_repartition = false;
     let ctx = SessionContext::new_with_config(config);
 
-    let schema = id_gmv_schema();
-
-    // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
-    let left_plan = scan_empty_with_partitions(Some("left"), &schema, None, 2).unwrap();
-
-    let right_plan = scan_empty_with_partitions(Some("right"), &schema, None, 2)
-        .unwrap()
-        .build()
-        .unwrap();
-
-    let sort_expr = SortExpr::new(col("id"), false, false);
-
-    let logical_plan = left_plan
-        .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
-        .unwrap()
-        .aggregate(vec![col("left.id")], vec![sum(col("left.gmv"))])
-        .unwrap()
-        .sort(vec![sort_expr])
-        .unwrap()
-        .build()
-        .unwrap();
-
     graph_from_logical(
         &ctx,
-        &logical_plan,
+        &join_aggregate_sort_logical_plan(),
         &"job".into(),
         Arc::new(SessionConfig::new_with_ballista()),
     )
@@ -1377,26 +1465,59 @@ pub fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
     DataSourceExec::from_data_source(builder.build())
 }
 
-/// Wraps a plan and fails every attempt to rewrite its children, so tests can
-/// force the plan rewrites done by stage transitions (resolve, rollback) to fail.
+/// An operator that passes its input through unchanged: its properties are the
+/// input's, its only child is the input, and it executes by executing the
+/// input. It declares nothing about what it needs from the input, like an
+/// opaque fragment a planner cannot see into.
+///
+/// `name` is what the operator is called in plans and displays as, so that
+/// plan snapshots can tell the stand-ins apart. When `rewrite_fails` is set,
+/// `with_new_children` returns an error, which forces a failure in the plan
+/// rewrites done by stage transitions (resolve, rollback). Otherwise it
+/// rebuilds the operator over the new child.
 #[derive(Debug)]
-pub struct FailingPlanRewriteExec {
+pub struct PassThroughExec {
+    name: String,
     input: Arc<dyn ExecutionPlan>,
+    rewrite_fails: bool,
 }
 
-impl DisplayAs for FailingPlanRewriteExec {
+impl PassThroughExec {
+    /// Creates an operator called `name` over `input` that accepts new children.
+    pub fn new(name: impl Into<String>, input: Arc<dyn ExecutionPlan>) -> Self {
+        Self {
+            name: name.into(),
+            input,
+            rewrite_fails: false,
+        }
+    }
+
+    /// Creates an operator called `name` over `input` whose `with_new_children`
+    /// fails.
+    pub fn failing_rewrites(
+        name: impl Into<String>,
+        input: Arc<dyn ExecutionPlan>,
+    ) -> Self {
+        Self {
+            rewrite_fails: true,
+            ..Self::new(name, input)
+        }
+    }
+}
+
+impl DisplayAs for PassThroughExec {
     fn fmt_as(
         &self,
         _t: DisplayFormatType,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
-        write!(f, "FailingPlanRewriteExec")
+        write!(f, "{}", self.name)
     }
 }
 
-impl ExecutionPlan for FailingPlanRewriteExec {
+impl ExecutionPlan for PassThroughExec {
     fn name(&self) -> &str {
-        "FailingPlanRewriteExec"
+        &self.name
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -1418,11 +1539,18 @@ impl ExecutionPlan for FailingPlanRewriteExec {
 
     fn with_new_children(
         self: Arc<Self>,
-        _children: Vec<Arc<dyn ExecutionPlan>>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        Err(DataFusionError::Internal(
-            "forced plan rewrite failure".to_owned(),
-        ))
+        if self.rewrite_fails {
+            return Err(DataFusionError::Internal(
+                "forced plan rewrite failure".to_owned(),
+            ));
+        }
+        Ok(Arc::new(Self {
+            name: self.name.clone(),
+            input: children.swap_remove(0),
+            rewrite_fails: false,
+        }))
     }
 
     fn execute(
@@ -1434,11 +1562,12 @@ impl ExecutionPlan for FailingPlanRewriteExec {
     }
 }
 
-/// Wraps `plan` in a [`FailingPlanRewriteExec`] in place and returns the new plan.
+/// Wraps `plan` in a [`PassThroughExec`] that fails every attempt to rewrite
+/// its children, in place, and returns the new plan.
 pub fn fail_plan_rewrites(plan: &mut Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-    let failing_plan: Arc<dyn ExecutionPlan> = Arc::new(FailingPlanRewriteExec {
-        input: Arc::clone(plan),
-    });
+    let failing_plan: Arc<dyn ExecutionPlan> = Arc::new(
+        PassThroughExec::failing_rewrites("FailingPlanRewriteExec", Arc::clone(plan)),
+    );
     *plan = Arc::clone(&failing_plan);
     failing_plan
 }

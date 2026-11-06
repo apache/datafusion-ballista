@@ -1003,18 +1003,15 @@ mod tests {
     use super::*;
     use crate::config::SchedulerConfig;
     use crate::metrics::default_metrics_collector;
-    use crate::planner::DefaultDistributedPlanner;
     use crate::test_utils::{
         SchedulerTest, TaskRunnerFn, aggregation_logical_plan, await_condition,
-        mock_completed_task, mock_executor, mock_failed_task, test_aggregation_plan,
-        test_join_plan,
+        execution_failure, failing_task_runner, id_gmv_schema, mock_completed_task,
+        mock_executor, mock_failed_task, pipelined_graph_from_physical,
+        test_aggregation_plan, test_join_plan,
     };
     use ballista_core::config::{BALLISTA_EXECUTION_MODE, TaskSchedulingPolicy};
     use ballista_core::extension::SessionConfigExt;
-    use ballista_core::serde::protobuf::{
-        ExecutionError, FailedTask, MultiTaskDefinition, failed_task,
-    };
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use ballista_core::serde::protobuf::{FailedTask, MultiTaskDefinition};
 
     use datafusion::logical_expr::LogicalPlan;
     use datafusion::test_util::scan_empty_with_partitions;
@@ -1162,19 +1159,10 @@ mod tests {
     }
 
     async fn pipelined_join_graph() -> PipelinedExecutionGraph {
-        let plan = test_join_plan(4).await.physical_plan();
-        PipelinedExecutionGraph::new(
-            "localhost:50050",
-            &"job".into(),
-            "",
-            "session",
-            plan,
-            0,
-            Arc::new(SessionConfig::new_with_ballista()),
-            &mut DefaultDistributedPlanner::new(),
-            None,
+        pipelined_graph_from_physical(
+            test_join_plan(4).await.physical_plan(),
+            SessionConfig::new_with_ballista(),
         )
-        .unwrap()
     }
 
     fn executors(ids: &[&str]) -> HashMap<String, ExecutorMetadata> {
@@ -1285,18 +1273,7 @@ mod tests {
             .create_physical_plan(&state.optimize(&plan).unwrap())
             .await
             .unwrap();
-        PipelinedExecutionGraph::new(
-            "localhost:50050",
-            &"job".into(),
-            "",
-            "session",
-            plan,
-            0,
-            Arc::new(config),
-            &mut DefaultDistributedPlanner::new(),
-            None,
-        )
-        .unwrap()
+        pipelined_graph_from_physical(plan, config)
     }
 
     /// A cross join reads its left side in full in every task of its stage,
@@ -1304,10 +1281,7 @@ mod tests {
     /// could be read by only one.
     #[tokio::test]
     async fn an_input_every_task_reads_in_full_is_replayed() {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
+        let schema = id_gmv_schema();
         let left = scan_empty_with_partitions(Some("left"), &schema, None, 2)
             .unwrap()
             .build()
@@ -1438,12 +1412,9 @@ mod tests {
         let failed = mock_failed_task(
             task.clone(),
             FailedTask {
-                error: "boom".to_owned(),
                 retryable: true,
                 count_to_failures: true,
-                failed_reason: Some(failed_task::FailedReason::ExecutionError(
-                    ExecutionError {},
-                )),
+                ..execution_failure("boom")
             },
         );
         let events = graph
@@ -1481,19 +1452,10 @@ mod tests {
 
     #[tokio::test]
     async fn aggregation_plan_places_a_collapse_free_two_stage_job() {
-        let plan = test_aggregation_plan(4).await.physical_plan();
-        let graph = PipelinedExecutionGraph::new(
-            "localhost:50050",
-            &"job".into(),
-            "",
-            "session",
-            plan,
-            0,
-            Arc::new(SessionConfig::new_with_ballista()),
-            &mut DefaultDistributedPlanner::new(),
-            None,
-        )
-        .unwrap();
+        let graph = pipelined_graph_from_physical(
+            test_aggregation_plan(4).await.physical_plan(),
+            SessionConfig::new_with_ballista(),
+        );
         let requirements = graph.placement_requirements().unwrap();
         assert_eq!(requirements.len(), 2);
         assert!(requirements.iter().all(|r| r.partitions > 0));
@@ -1528,10 +1490,7 @@ mod tests {
             matches!(status.status, Some(Status::Successful(_))),
             "{status:?}"
         );
-        let released = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(test.free_vcores().await? == 8)
-        })
-        .await?;
+        let released = test.await_free_vcores(|free| free == 8).await?;
         assert!(released, "the job's vcores were not released");
         Ok(())
     }
@@ -1566,54 +1525,26 @@ mod tests {
         assert!(test.free_vcores().await? < 8, "the job reserved vcores");
 
         test.cancel(&job_id).await?;
-        let released = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(test.free_vcores().await? == 8)
-        })
-        .await?;
+        let released = test.await_free_vcores(|free| free == 8).await?;
         assert!(released, "cancelling the job did not release its vcores");
         Ok(())
     }
 
     #[tokio::test]
     async fn pipelined_job_fails_when_a_task_fails() -> Result<()> {
-        let runner =
-            TaskRunnerFn::new(|executor_id: String, task: MultiTaskDefinition| {
-                task.task_ids
-                    .iter()
-                    .map(|id| TaskStatus {
-                        task_id: id.task_id,
-                        job_id: task.job_id.clone(),
-                        stage_id: task.stage_id,
-                        stage_attempt_num: task.stage_attempt_num,
-                        launch_time: 0,
-                        start_exec_time: 0,
-                        end_exec_time: 0,
-                        metrics: vec![],
-                        status: Some(task_status::Status::Failed(FailedTask {
-                            error: format!("injected failure on {executor_id}"),
-                            retryable: true,
-                            count_to_failures: true,
-                            failed_reason: Some(
-                                failed_task::FailedReason::ExecutionError(
-                                    ExecutionError {},
-                                ),
-                            ),
-                        })),
-                    })
-                    .collect()
-            });
+        let runner = failing_task_runner(|executor_id| FailedTask {
+            retryable: true,
+            count_to_failures: true,
+            ..execution_failure(&format!("injected failure on {executor_id}"))
+        });
         let mut test =
-            pipelined_scheduler(TaskSchedulingPolicy::PushStaged, Some(Arc::new(runner)))
-                .await;
+            pipelined_scheduler(TaskSchedulingPolicy::PushStaged, Some(runner)).await;
         let (status, _) = test.run("pipelined", &aggregation_logical_plan(4)).await?;
         let Some(Status::Failed(failed)) = status.status else {
             panic!("expected the job to fail, got {status:?}");
         };
         assert!(failed.error.contains("do not retry"), "{}", failed.error);
-        let released = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(test.free_vcores().await? == 8)
-        })
-        .await?;
+        let released = test.await_free_vcores(|free| free == 8).await?;
         assert!(released, "a failed job's vcores were not released");
         Ok(())
     }
@@ -1627,10 +1558,7 @@ mod tests {
             matches!(status.status, Some(Status::Successful(_))),
             "{status:?}"
         );
-        let released = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(test.free_vcores().await? == 8)
-        })
-        .await?;
+        let released = test.await_free_vcores(|free| free == 8).await?;
         assert!(released, "the job's vcores were not released");
         Ok(())
     }
@@ -1672,10 +1600,7 @@ mod tests {
             };
 
             let holder = test.submit("holder", &aggregation_logical_plan(8)).await?;
-            let held = await_condition(Duration::from_millis(20), 100, || async {
-                Ok(test.free_vcores().await? == 0)
-            })
-            .await?;
+            let held = test.await_free_vcores(|free| free == 0).await?;
             assert!(held, "the first job did not take every vcore");
             let waiter = test.submit("waiter", &aggregation_logical_plan(8)).await?;
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1714,23 +1639,13 @@ mod tests {
         let job_id = test
             .submit("pipelined", &aggregation_logical_plan(4))
             .await?;
-        let reserved = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(test.free_vcores().await? < 8)
-        })
-        .await?;
+        let reserved = test.await_free_vcores(|free| free < 8).await?;
         assert!(reserved, "the job was never placed");
 
         test.lose_executor("virtual-executor-0").await?;
-        let failed = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(matches!(
-                test.job_status(&job_id).await?,
-                Some(JobStatus {
-                    status: Some(Status::Failed(_)),
-                    ..
-                })
-            ))
-        })
-        .await?;
+        let failed = test
+            .await_job_status(&job_id, |status| matches!(status, Status::Failed(_)))
+            .await?;
         assert!(failed, "losing an executor did not fail the job");
         Ok(())
     }
@@ -1749,24 +1664,14 @@ mod tests {
         let job_id = test
             .submit("pipelined", &aggregation_logical_plan(8))
             .await?;
-        let reserved = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(test.free_vcores().await? == 0)
-        })
-        .await?;
+        let reserved = test.await_free_vcores(|free| free == 0).await?;
         assert!(reserved, "the job was never placed on every vcore");
 
         test.lose_executor("virtual-executor-0").await?;
         test.register_executor("virtual-executor-0", 4).await?;
-        let failed = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(matches!(
-                test.job_status(&job_id).await?,
-                Some(JobStatus {
-                    status: Some(Status::Failed(_)),
-                    ..
-                })
-            ))
-        })
-        .await?;
+        let failed = test
+            .await_job_status(&job_id, |status| matches!(status, Status::Failed(_)))
+            .await?;
         assert!(failed, "losing an executor did not fail the job");
         // The reservation is released before the job is evicted.
         let evicted = await_condition(Duration::from_millis(20), 100, || async {
