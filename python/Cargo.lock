@@ -614,6 +614,7 @@ dependencies = [
  "async-trait",
  "axum",
  "ballista-core",
+ "blake3",
  "dashmap",
  "datafusion",
  "datafusion-proto",

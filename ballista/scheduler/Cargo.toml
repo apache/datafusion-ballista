@@ -78,6 +78,7 @@ ballista-api-types = { workspace = true, optional = true }
 ballista-core = { workspace = true }
 ballista-flight-sql = { workspace = true, optional = true }
 ballista-history = { workspace = true, optional = true }
+blake3 = "1.8"
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
