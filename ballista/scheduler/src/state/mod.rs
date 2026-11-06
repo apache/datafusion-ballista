@@ -686,7 +686,7 @@ mod tests {
     use crate::scheduler_server::timestamp_millis;
     use crate::state::executor_manager::ExecutorManager;
     use crate::state::task_manager::TaskLauncher;
-    use crate::test_utils::test_cluster_context;
+    use crate::test_utils::{aggregation_logical_plan, test_cluster_context};
     use ballista_core::config::BALLISTA_EXECUTION_MODE;
     use ballista_core::extension::SessionConfigExt;
     use ballista_core::serde::BallistaCodec;
@@ -695,11 +695,9 @@ mod tests {
         ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
         ExecutorSpecification,
     };
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
     use datafusion::execution::context::SessionConfig;
-    use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{LogicalPlan, col};
-    use datafusion::test_util::scan_empty_with_partitions;
+
     use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
     struct RejectOne {
@@ -721,19 +719,6 @@ mod tests {
                 .take(1)
                 .collect())
         }
-    }
-
-    fn agg_plan() -> LogicalPlan {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .build()
-            .unwrap()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -787,7 +772,7 @@ mod tests {
                     job_id,
                     "",
                     ctx.clone(),
-                    &agg_plan(),
+                    &aggregation_logical_plan(2),
                     timestamp_millis(),
                     None,
                 )
@@ -886,7 +871,7 @@ mod tests {
                     job_id,
                     "",
                     ctx.clone(),
-                    &agg_plan(),
+                    &aggregation_logical_plan(2),
                     timestamp_millis(),
                     None,
                 )
@@ -985,7 +970,14 @@ mod tests {
             .queue_job(&job_id, "", timestamp_millis())?;
         state
             .task_manager
-            .submit_job(&job_id, "", ctx, &agg_plan(), timestamp_millis(), None)
+            .submit_job(
+                &job_id,
+                "",
+                ctx,
+                &aggregation_logical_plan(2),
+                timestamp_millis(),
+                None,
+            )
             .await?;
 
         let bound = state
@@ -1068,7 +1060,14 @@ mod tests {
         state.task_manager.queue_job(&job, "", timestamp_millis())?;
         state
             .task_manager
-            .submit_job(&job, "", ctx, &agg_plan(), timestamp_millis(), None)
+            .submit_job(
+                &job,
+                "",
+                ctx,
+                &aggregation_logical_plan(2),
+                timestamp_millis(),
+                None,
+            )
             .await?;
 
         let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);

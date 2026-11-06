@@ -669,12 +669,9 @@ mod test {
     use ballista_core::JobId;
     use ballista_core::extension::SessionConfigExt;
     use ballista_core::serde::protobuf::job_status::Status;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{LogicalPlan, col};
 
     use datafusion::prelude::SessionConfig;
-    use datafusion::test_util::scan_empty_with_partitions;
+
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
     use futures::StreamExt;
@@ -699,9 +696,9 @@ mod test {
 
     use crate::test_utils::{
         ExplodingTableProvider, PanickingTableProvider, RejectingTaskLauncher,
-        SchedulerTest, TaskRunnerFn, TestMetricsCollector, assert_completed_event,
-        assert_failed_event, assert_no_submitted_event, assert_submitted_event,
-        test_cluster_context,
+        SchedulerTest, TaskRunnerFn, TestMetricsCollector, aggregation_logical_plan,
+        assert_completed_event, assert_failed_event, assert_no_submitted_event,
+        assert_submitted_event, test_cluster_context,
     };
 
     #[tokio::test]
@@ -759,7 +756,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pull_scheduling() -> Result<()> {
-        let plan = test_plan();
+        let plan = aggregation_logical_plan(2);
         // this test will fail when AQE scheduling is used.
         // as AQE will fold plan due to empty scan
         let total_vcores = 4;
@@ -877,7 +874,7 @@ mod test {
     // Verify a job can be submitted as an already-built physical plan.
     #[tokio::test]
     async fn test_submit_physical_plan() -> Result<()> {
-        let logical_plan = test_plan();
+        let logical_plan = aggregation_logical_plan(2);
         let total_vcores = 4;
 
         let scheduler = test_scheduler(TaskSchedulingPolicy::PullStaged).await?;
@@ -936,7 +933,7 @@ mod test {
     async fn test_submit_physical_plan_uses_adaptive_planner() -> Result<()> {
         use crate::state::aqe::execution_plan::AdaptiveDatafusionExec;
 
-        let logical_plan = test_plan();
+        let logical_plan = aggregation_logical_plan(2);
         let total_vcores = 4;
 
         let scheduler = test_scheduler(TaskSchedulingPolicy::PullStaged).await?;
@@ -997,7 +994,7 @@ mod test {
 
     #[tokio::test]
     async fn test_push_scheduling() -> Result<()> {
-        let plan = test_plan();
+        let plan = aggregation_logical_plan(2);
         // this test will fail when AQE scheduling is used.
         // as AQE will fold plan due to empty scan
         let metrics_collector = Arc::new(TestMetricsCollector::default());
@@ -1035,7 +1032,7 @@ mod test {
     // checks if job subscriber is getting same events
     #[tokio::test]
     async fn test_push_scheduling_with_subscriber() -> Result<()> {
-        let plan = test_plan();
+        let plan = aggregation_logical_plan(2);
         // this test will fail when AQE scheduling is used.
         // as AQE will fold plan due to empty scan
         let metrics_collector = Arc::new(TestMetricsCollector::default());
@@ -1093,7 +1090,7 @@ mod test {
     // Simulate a task failure and ensure the job status is updated correctly
     #[tokio::test]
     async fn test_job_failure() -> Result<()> {
-        let plan = test_plan();
+        let plan = aggregation_logical_plan(2);
 
         let runner = Arc::new(TaskRunnerFn::new(
             |_executor_id: String, task: MultiTaskDefinition| {
@@ -1163,7 +1160,7 @@ mod test {
     // it also checks if job subscriber is getting same events
     #[tokio::test]
     async fn test_job_failure_subscriber() -> Result<()> {
-        let plan = test_plan();
+        let plan = aggregation_logical_plan(2);
 
         let runner = Arc::new(TaskRunnerFn::new(
             |_executor_id: String, task: MultiTaskDefinition| {
@@ -1276,7 +1273,7 @@ mod test {
             .submit_job(
                 "",
                 Arc::new(datafusion::prelude::SessionContext::new()),
-                &test_plan(),
+                &aggregation_logical_plan(2),
                 None,
             )
             .await
@@ -1526,7 +1523,7 @@ mod test {
         )
         .await?;
 
-        let plan = test_plan();
+        let plan = aggregation_logical_plan(2);
 
         // `run` submits the job and polls until it reaches a terminal state.
         // Hard wall-clock bound so a stuck job fails the test instead of hanging.
@@ -1608,21 +1605,5 @@ mod test {
                 },
             ),
         ]
-    }
-
-    fn test_plan() -> LogicalPlan {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-
-        // partitions need to be > 1 for the datafusion's optimizer to insert a repartition node
-        // behavior changed with: https://github.com/apache/datafusion/pull/11875
-        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .build()
-            .unwrap()
     }
 }

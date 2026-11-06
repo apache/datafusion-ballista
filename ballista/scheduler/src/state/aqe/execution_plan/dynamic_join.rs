@@ -870,10 +870,7 @@ fn estimated_value_width(data_type: &DataType) -> usize {
 mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::ExchangeExec;
-    use ballista_core::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId, PartitionLocation, PartitionStats,
-    };
+    use crate::state::aqe::test::mock_partition_location;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::config::ExtensionOptions;
     use datafusion::physical_plan::Partitioning;
@@ -1761,31 +1758,7 @@ mod tests {
         let partitions = per_partition_bytes
             .iter()
             .enumerate()
-            .map(|(idx, &bytes)| {
-                vec![PartitionLocation {
-                    map_partition_id: 0,
-                    partition_id: PartitionId {
-                        job_id: "".into(),
-                        stage_id: 0,
-                        partition_id: idx,
-                    },
-                    executor_meta: ExecutorMetadata {
-                        id: "".to_string(),
-                        host: "".to_string(),
-                        port: 0,
-                        grpc_port: 0,
-                        specification: ExecutorSpecification::default().with_vcores(0),
-                        os_info: ExecutorOperatingSystemSpecification::default(),
-                    },
-                    partition_stats: PartitionStats::new(
-                        Some(1),
-                        None,
-                        Some(bytes as u64),
-                    ),
-                    file_id: None,
-                    is_sort_shuffle: false,
-                }]
-            })
+            .map(|(idx, &bytes)| vec![mock_partition_location(idx, 1, bytes as u64)])
             .collect();
         exchange.resolve_shuffle_partitions(partitions);
 

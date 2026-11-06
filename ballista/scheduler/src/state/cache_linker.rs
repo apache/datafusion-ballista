@@ -771,6 +771,7 @@ mod tests {
     use crate::state::cache_registry::MaterializedCache;
     use crate::test_utils::{
         MetricEvent, SchedulerTest, TaskRunnerFn, TestMetricsCollector,
+        aggregation_logical_plan,
     };
     use ballista_core::config::{BALLISTA_EXECUTION_MODE, TaskSchedulingPolicy};
     use ballista_core::extension::BallistaCacheNode;
@@ -779,24 +780,10 @@ mod tests {
         ExecutionError, FailedTask, FetchPartitionError, MultiTaskDefinition, TaskId,
         TaskStatus, failed_task, task_status,
     };
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{Extension, LogicalPlanBuilder, col};
-    use datafusion::test_util::scan_empty_with_partitions;
-    use std::time::Duration;
 
-    fn scan() -> LogicalPlan {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .build()
-            .unwrap()
-    }
+    use datafusion::logical_expr::{Extension, LogicalPlanBuilder};
+
+    use std::time::Duration;
 
     fn cache_over(cache_id: &str, input: LogicalPlan) -> LogicalPlan {
         LogicalPlan::Extension(Extension {
@@ -891,7 +878,7 @@ mod tests {
     #[tokio::test]
     async fn explain_does_not_materialize() {
         let (mut test, metrics) = scheduler_test(None).await;
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
         let key = CacheKey::new("session", "c1");
 
         // Cold: only the EXPLAIN job runs, and nothing is claimed.
@@ -925,7 +912,7 @@ mod tests {
     async fn disabled_cache_runs_the_query_uncached() {
         let config = SchedulerConfig::default().with_disable_dataframe_cache(true);
         let (mut test, metrics) = scheduler_test_with(config, None).await;
-        let plan = cache_over("outer", cache_over("inner", scan()));
+        let plan = cache_over("outer", cache_over("inner", aggregation_logical_plan(2)));
 
         let job = test.submit("query", &plan).await.unwrap();
         assert!(is_successful(&finish(&mut test, &job).await));
@@ -949,7 +936,7 @@ mod tests {
     async fn a_cache_is_built_once_then_read(#[values(false, true)] adaptive: bool) {
         let (mut test, metrics) = scheduler_test(None).await;
         test.set_adaptive_planner(adaptive);
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
 
         let read = test.submit("query", &plan).await.unwrap();
         assert!(
@@ -978,7 +965,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_queries_share_one_build() {
         let (mut test, metrics) = scheduler_test(None).await;
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
 
         let first = test.submit("first", &plan).await.unwrap();
         let second = test.submit("second", &plan).await.unwrap();
@@ -1026,7 +1013,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_build_fails_what_waits_on_it_and_frees_the_keys() {
         let (mut test, _metrics) = scheduler_test(Some(failing_runner())).await;
-        let plan = cache_over("outer", cache_over("inner", scan()));
+        let plan = cache_over("outer", cache_over("inner", aggregation_logical_plan(2)));
 
         let read = test.submit("query", &plan).await.unwrap();
         let status = finish(&mut test, &read).await;
@@ -1051,7 +1038,7 @@ mod tests {
     #[tokio::test]
     async fn cancelling_a_waiting_read_job_fails_it() {
         let (mut test, metrics) = scheduler_test(None).await;
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
 
         let read = test.submit("query", &plan).await.unwrap();
         test.cancel(&read).await.unwrap();
@@ -1102,7 +1089,7 @@ mod tests {
     #[tokio::test]
     async fn losing_an_executor_with_cache_data_fails_the_query() {
         let (mut test, _metrics) = scheduler_test(None).await;
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
         let read = test.submit("query", &plan).await.unwrap();
         let entry = build(&mut test, "c1").await;
         wait_until_running(&test, &read).await;
@@ -1165,7 +1152,7 @@ mod tests {
         let (mut test, metrics) = scheduler_test(None).await;
         test.set_session_option(BALLISTA_EXECUTION_MODE, "pipelined")
             .unwrap();
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
 
         let read = test.submit("query", &plan).await.unwrap();
         assert!(is_successful(&finish(&mut test, &read).await));
@@ -1187,7 +1174,7 @@ mod tests {
     #[tokio::test]
     async fn losing_an_executor_with_cache_data_fails_a_pipelined_query() {
         let (mut test, _metrics) = scheduler_test(None).await;
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
         // Built under the default (staged) mode, so the build can be
         // stepped while the read job is held.
         let read = test.submit("query", &plan).await.unwrap();
@@ -1268,7 +1255,7 @@ mod tests {
         let (mut test, _metrics) = scheduler_test(Some(Arc::new(runner))).await;
         test.set_session_option(BALLISTA_EXECUTION_MODE, "pipelined")
             .unwrap();
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
         let read = test.submit("query", &plan).await.unwrap();
         assert!(is_successful(&finish(&mut test, &read).await));
         let key = CacheKey::new("session", "c1");
@@ -1293,7 +1280,7 @@ mod tests {
     async fn a_cache_gone_stale_while_held_is_rebuilt_before_release() {
         let (mut test, metrics) = scheduler_test(None).await;
         let warm = test
-            .submit("warm", &cache_over("c1", scan()))
+            .submit("warm", &cache_over("c1", aggregation_logical_plan(2)))
             .await
             .unwrap();
         assert!(is_successful(&finish(&mut test, &warm).await));
@@ -1310,7 +1297,10 @@ mod tests {
         let query = test
             .submit(
                 "query",
-                &union(cache_over("c1", scan()), cache_over("c2", scan())),
+                &union(
+                    cache_over("c1", aggregation_logical_plan(2)),
+                    cache_over("c2", aggregation_logical_plan(2)),
+                ),
             )
             .await
             .unwrap();
@@ -1348,7 +1338,10 @@ mod tests {
         let generator = Arc::new(StallingIds::default());
         let config = SchedulerConfig::default().with_job_id_generator(generator.clone());
         let (mut test, _metrics) = scheduler_test_with(config, None).await;
-        let plan = union(cache_over("c1", scan()), cache_over("c2", scan()));
+        let plan = union(
+            cache_over("c1", aggregation_logical_plan(2)),
+            cache_over("c2", aggregation_logical_plan(2)),
+        );
 
         let dropped = test.submit("dropped", &plan);
         let _ = tokio::time::timeout(Duration::from_millis(300), dropped).await;

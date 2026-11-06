@@ -1937,8 +1937,8 @@ mod test {
     use crate::state::execution_stage::ExecutionStage;
     use crate::state::execution_stage::StageOutput;
     use crate::test_utils::{
-        fail_plan_rewrites, mock_completed_task, mock_executor, mock_failed_task,
-        revive_graph_and_complete_next_stage,
+        aggregation_logical_plan, fail_plan_rewrites, mock_completed_task, mock_executor,
+        mock_failed_task, revive_graph_and_complete_next_stage,
         revive_graph_and_complete_next_stage_with_executor, test_aggregation_plan,
         test_coalesce_plan, test_join_plan, test_two_aggregations_plan,
         test_union_all_plan, test_union_plan,
@@ -1950,13 +1950,10 @@ mod test {
         ExecutorMetadata, ExecutorSpecification, PartitionId, PartitionLocation,
         PartitionStats,
     };
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::col;
+
     use datafusion::physical_plan::union::UnionExec;
     use datafusion::physical_plan::{ExecutionPlan, Partitioning};
     use datafusion::prelude::{SessionConfig, SessionContext};
-    use datafusion::test_util::scan_empty_with_partitions;
 
     #[tokio::test]
     async fn test_intermediate_stage_ids() {
@@ -3416,13 +3413,7 @@ mod test {
         let ctx = SessionContext::new_with_config(
             SessionConfig::new().with_target_partitions(2),
         );
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-        let logical = scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)?
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])?
-            .build()?;
+        let logical = aggregation_logical_plan(2);
         let aggregate = ctx
             .state()
             .create_physical_plan(&ctx.state().optimize(&logical)?)

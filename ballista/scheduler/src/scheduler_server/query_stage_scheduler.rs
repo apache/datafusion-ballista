@@ -914,7 +914,8 @@ mod tests {
     use crate::config::{SchedulerConfig, WorkAvailableReason};
     use crate::scheduler_server::SchedulerServer;
     use crate::test_utils::{
-        SchedulerTest, TestMetricsCollector, await_condition, test_cluster_context,
+        SchedulerTest, TestMetricsCollector, aggregation_logical_plan, await_condition,
+        test_cluster_context,
     };
     use ballista_core::BALLISTA_PROTOCOL_VERSION;
     use ballista_core::config::TaskSchedulingPolicy;
@@ -930,11 +931,9 @@ mod tests {
     use ballista_core::serde::scheduler::{
         ExecutorOperatingSystemSpecification, ExecutorSpecification,
     };
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{LogicalPlan, col};
+
     use datafusion::prelude::SessionConfig;
-    use datafusion::test_util::scan_empty_with_partitions;
+
     use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
     use futures::StreamExt;
     use std::sync::{Arc, Mutex};
@@ -943,7 +942,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pending_job_metric() -> Result<()> {
-        let plan = test_plan(10);
+        let plan = aggregation_logical_plan(10);
 
         let metrics_collector = Arc::new(TestMetricsCollector::default());
 
@@ -997,7 +996,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scheduler_exposes_job_state_events() -> Result<()> {
-        let plan = test_plan(1);
+        let plan = aggregation_logical_plan(1);
         let metrics_collector = Arc::new(TestMetricsCollector::default());
         let mut test = SchedulerTest::new(
             SchedulerConfig::default()
@@ -1073,7 +1072,9 @@ mod tests {
                     .with_ballista_adaptive_query_planner(false),
             )
             .await?;
-        let job_id = scheduler.submit_job("", ctx, &test_plan(2), None).await?;
+        let job_id = scheduler
+            .submit_job("", ctx, &aggregation_logical_plan(2), None)
+            .await?;
 
         // Job submission runs asynchronously through the event loop.
         let submitted = await_condition(Duration::from_millis(10), 100, || {
@@ -1175,7 +1176,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_running_job_fails_when_all_executors_are_lost() -> Result<()> {
-        let plan = test_plan(10);
+        let plan = aggregation_logical_plan(10);
 
         let metrics_collector = Arc::new(TestMetricsCollector::default());
 
@@ -1239,7 +1240,7 @@ mod tests {
     #[tokio::test]
     async fn test_running_job_fails_when_launch_failure_loses_last_executor() -> Result<()>
     {
-        let plan = test_plan(10);
+        let plan = aggregation_logical_plan(10);
 
         let metrics_collector = Arc::new(TestMetricsCollector::default());
 
@@ -1282,7 +1283,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_running_job_survives_partial_executor_loss() -> Result<()> {
-        let plan = test_plan(10);
+        let plan = aggregation_logical_plan(10);
 
         let metrics_collector = Arc::new(TestMetricsCollector::default());
 
@@ -1328,19 +1329,5 @@ mod tests {
         );
 
         Ok(())
-    }
-
-    fn test_plan(partitions: usize) -> LogicalPlan {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-
-        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), partitions)
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .build()
-            .unwrap()
     }
 }

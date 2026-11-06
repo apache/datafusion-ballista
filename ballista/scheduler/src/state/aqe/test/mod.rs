@@ -176,13 +176,22 @@ pub(crate) fn mock_partitions_with_size(
     num_rows: u64,
     num_bytes: u64,
 ) -> Vec<Vec<PartitionLocation>> {
-    let location = PartitionLocation {
-        // next few properties are generic values
+    vec![vec![mock_partition_location(0, num_rows, num_bytes)]]
+}
+
+/// Output partition `partition_id` of stage 0 on a blank executor, reporting
+/// `num_rows` rows over `num_bytes` bytes.
+pub(crate) fn mock_partition_location(
+    partition_id: usize,
+    num_rows: u64,
+    num_bytes: u64,
+) -> PartitionLocation {
+    PartitionLocation {
         map_partition_id: 0,
         partition_id: PartitionId {
             job_id: "".into(),
             stage_id: 0,
-            partition_id: 0,
+            partition_id,
         },
         executor_meta: ExecutorMetadata {
             id: "".to_string(),
@@ -192,12 +201,10 @@ pub(crate) fn mock_partitions_with_size(
             specification: ExecutorSpecification::default().with_vcores(0),
             os_info: ExecutorOperatingSystemSpecification::default(),
         },
-        // next few properties are needed
         partition_stats: PartitionStats::new(Some(num_rows), None, Some(num_bytes)),
         file_id: None,
         is_sort_shuffle: false,
-    };
-    vec![vec![location]]
+    }
 }
 
 /// Column statistics carrying only the given exact null counts.

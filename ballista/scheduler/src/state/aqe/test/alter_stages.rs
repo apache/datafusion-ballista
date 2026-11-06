@@ -17,14 +17,12 @@
 
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{
-    mock_batch, mock_context, mock_partitions_with_statistics_no_data,
+    mock_batch, mock_context, mock_partitions_with_size,
+    mock_partitions_with_statistics_no_data,
 };
 use ballista_core::assert_plan;
 use ballista_core::extension::SessionConfigExt;
-use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
-};
+use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -567,66 +565,19 @@ fn create_big_and_small_statistic_scan()
 /// Return statistics for small table
 fn small_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
     let (threshold_num_rows, threshold_byte_size) = get_thresholds();
-
-    let location = PartitionLocation {
-        // next few properties are generic values
-        map_partition_id: 0,
-        partition_id: PartitionId {
-            job_id: "".into(),
-            stage_id: 0,
-            partition_id: 0,
-        },
-        executor_meta: ExecutorMetadata {
-            id: "".to_string(),
-            host: "".to_string(),
-            port: 0,
-            grpc_port: 0,
-            specification: ExecutorSpecification::default().with_vcores(0),
-            os_info: ExecutorOperatingSystemSpecification::default(),
-        },
-        // next few properties are needed
-        partition_stats: PartitionStats::new(
-            Some(threshold_num_rows as u64 / 128),
-            None,
-            Some(threshold_byte_size as u64 / 128),
-        ),
-        file_id: None,
-        is_sort_shuffle: false,
-    };
-    vec![vec![location]]
+    mock_partitions_with_size(
+        threshold_num_rows as u64 / 128,
+        threshold_byte_size as u64 / 128,
+    )
 }
 
 /// Return statistics for big table
 fn big_statistics_exchange() -> Vec<Vec<PartitionLocation>> {
     let (threshold_num_rows, threshold_byte_size) = get_thresholds();
-
-    let location = PartitionLocation {
-        // next few properties are generic values
-        map_partition_id: 0,
-        partition_id: PartitionId {
-            job_id: "".into(),
-            stage_id: 0,
-            partition_id: 0,
-        },
-        executor_meta: ExecutorMetadata {
-            id: "".to_string(),
-            host: "".to_string(),
-            port: 0,
-            grpc_port: 0,
-            specification: ExecutorSpecification::default().with_vcores(0),
-            os_info: ExecutorOperatingSystemSpecification::default(),
-        },
-
-        // next few properties are needed
-        partition_stats: PartitionStats::new(
-            Some(threshold_num_rows as u64 * 2),
-            None,
-            Some(threshold_byte_size as u64 * 2),
-        ),
-        file_id: None,
-        is_sort_shuffle: false,
-    };
-    vec![vec![location]]
+    mock_partitions_with_size(
+        threshold_num_rows as u64 * 2,
+        threshold_byte_size as u64 * 2,
+    )
 }
 
 /// Return statistics for small table

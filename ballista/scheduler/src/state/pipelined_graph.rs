@@ -1005,8 +1005,9 @@ mod tests {
     use crate::metrics::default_metrics_collector;
     use crate::planner::DefaultDistributedPlanner;
     use crate::test_utils::{
-        SchedulerTest, TaskRunnerFn, await_condition, mock_completed_task, mock_executor,
-        mock_failed_task, test_aggregation_plan, test_join_plan,
+        SchedulerTest, TaskRunnerFn, aggregation_logical_plan, await_condition,
+        mock_completed_task, mock_executor, mock_failed_task, test_aggregation_plan,
+        test_join_plan,
     };
     use ballista_core::config::{BALLISTA_EXECUTION_MODE, TaskSchedulingPolicy};
     use ballista_core::extension::SessionConfigExt;
@@ -1014,8 +1015,8 @@ mod tests {
         ExecutionError, FailedTask, MultiTaskDefinition, failed_task,
     };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{LogicalPlan, col};
+
+    use datafusion::logical_expr::LogicalPlan;
     use datafusion::test_util::scan_empty_with_partitions;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -1500,19 +1501,6 @@ mod tests {
 
     // Scheduler-level tests: a real event loop over virtual executors.
 
-    fn aggregation(partitions: usize) -> LogicalPlan {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), partitions)
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .build()
-            .unwrap()
-    }
-
     async fn pipelined_scheduler(
         policy: TaskSchedulingPolicy,
         runner: Option<Arc<dyn crate::test_utils::TaskRunner>>,
@@ -1535,7 +1523,7 @@ mod tests {
     async fn pipelined_job_runs_to_success_and_releases_its_vcores() -> Result<()> {
         let mut test = pipelined_scheduler(TaskSchedulingPolicy::PushStaged, None).await;
         assert_eq!(test.free_vcores().await?, 8);
-        let (status, _) = test.run("pipelined", &aggregation(4)).await?;
+        let (status, _) = test.run("pipelined", &aggregation_logical_plan(4)).await?;
         assert!(
             matches!(status.status, Some(Status::Successful(_))),
             "{status:?}"
@@ -1562,7 +1550,9 @@ mod tests {
         let mut test =
             pipelined_scheduler(TaskSchedulingPolicy::PushStaged, Some(Arc::new(runner)))
                 .await;
-        let job_id = test.submit("pipelined", &aggregation(4)).await?;
+        let job_id = test
+            .submit("pipelined", &aggregation_logical_plan(4))
+            .await?;
 
         let all_launched = await_condition(Duration::from_millis(20), 100, || async {
             Ok(launched.lock().unwrap().len() == 2)
@@ -1615,7 +1605,7 @@ mod tests {
         let mut test =
             pipelined_scheduler(TaskSchedulingPolicy::PushStaged, Some(Arc::new(runner)))
                 .await;
-        let (status, _) = test.run("pipelined", &aggregation(4)).await?;
+        let (status, _) = test.run("pipelined", &aggregation_logical_plan(4)).await?;
         let Some(Status::Failed(failed)) = status.status else {
             panic!("expected the job to fail, got {status:?}");
         };
@@ -1632,7 +1622,7 @@ mod tests {
     async fn pipelined_job_wider_than_the_cluster_shares_its_vcores() -> Result<()> {
         let mut test = pipelined_scheduler(TaskSchedulingPolicy::PushStaged, None).await;
         test.set_session_option("datafusion.execution.target_partitions", "64")?;
-        let (status, _) = test.run("pipelined", &aggregation(64)).await?;
+        let (status, _) = test.run("pipelined", &aggregation_logical_plan(64)).await?;
         assert!(
             matches!(status.status, Some(Status::Successful(_))),
             "{status:?}"
@@ -1681,13 +1671,13 @@ mod tests {
                 )
             };
 
-            let holder = test.submit("holder", &aggregation(8)).await?;
+            let holder = test.submit("holder", &aggregation_logical_plan(8)).await?;
             let held = await_condition(Duration::from_millis(20), 100, || async {
                 Ok(test.free_vcores().await? == 0)
             })
             .await?;
             assert!(held, "the first job did not take every vcore");
-            let waiter = test.submit("waiter", &aggregation(8)).await?;
+            let waiter = test.submit("waiter", &aggregation_logical_plan(8)).await?;
             tokio::time::sleep(Duration::from_millis(100)).await;
             assert!(
                 !placed(test.job_status(&waiter).await?),
@@ -1721,7 +1711,9 @@ mod tests {
         let mut test =
             pipelined_scheduler(TaskSchedulingPolicy::PushStaged, Some(Arc::new(runner)))
                 .await;
-        let job_id = test.submit("pipelined", &aggregation(4)).await?;
+        let job_id = test
+            .submit("pipelined", &aggregation_logical_plan(4))
+            .await?;
         let reserved = await_condition(Duration::from_millis(20), 100, || async {
             Ok(test.free_vcores().await? < 8)
         })
@@ -1754,7 +1746,9 @@ mod tests {
             pipelined_scheduler(TaskSchedulingPolicy::PushStaged, Some(Arc::new(runner)))
                 .await;
         test.set_session_option("datafusion.execution.target_partitions", "8")?;
-        let job_id = test.submit("pipelined", &aggregation(8)).await?;
+        let job_id = test
+            .submit("pipelined", &aggregation_logical_plan(8))
+            .await?;
         let reserved = await_condition(Duration::from_millis(20), 100, || async {
             Ok(test.free_vcores().await? == 0)
         })
@@ -1787,7 +1781,7 @@ mod tests {
     #[tokio::test]
     async fn pipelined_job_is_rejected_under_pull_staged_scheduling() -> Result<()> {
         let mut test = pipelined_scheduler(TaskSchedulingPolicy::PullStaged, None).await;
-        let (status, _) = test.run("pipelined", &aggregation(4)).await?;
+        let (status, _) = test.run("pipelined", &aggregation_logical_plan(4)).await?;
         let Some(Status::Failed(failed)) = status.status else {
             panic!("expected the job to fail, got {status:?}");
         };

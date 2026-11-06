@@ -25,13 +25,10 @@
 //! against `split_size_list_by_target_size`.
 
 use crate::state::aqe::planner::{AdaptivePlanner, AdaptiveStageInfo};
-use crate::state::aqe::test::{mock_batch, mock_schema};
+use crate::state::aqe::test::{mock_batch, mock_partition_location, mock_schema};
 use ballista_core::assert_plan;
 use ballista_core::extension::SessionConfigExt;
-use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
-};
+use ballista_core::serde::scheduler::PartitionLocation;
 use datafusion::common::ScalarValue;
 use datafusion::datasource::MemTable;
 use datafusion::execution::SessionStateBuilder;
@@ -94,27 +91,7 @@ pub(super) fn partitions_with_byte_sizes(
     per_partition_bytes
         .iter()
         .enumerate()
-        .map(|(idx, &bytes)| {
-            vec![PartitionLocation {
-                map_partition_id: 0,
-                partition_id: PartitionId {
-                    job_id: "".into(),
-                    stage_id: 0,
-                    partition_id: idx,
-                },
-                executor_meta: ExecutorMetadata {
-                    id: "".to_string(),
-                    host: "".to_string(),
-                    port: 0,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_vcores(0),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                partition_stats: PartitionStats::new(Some(1), None, Some(bytes)),
-                file_id: None,
-                is_sort_shuffle: false,
-            }]
-        })
+        .map(|(idx, &bytes)| vec![mock_partition_location(idx, 1, bytes)])
         .collect()
 }
 

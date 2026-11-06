@@ -65,16 +65,11 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionStage, StaticExecutionGraph, TaskDescription,
 };
-use ballista_core::test_utils::tpch::tpch_schema;
+use ballista_core::test_utils::tpch::{TPCH_TABLES, tpch_schema};
 use ballista_core::utils::{default_config_producer, default_session_builder};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-
-/// List of TPC-H benchmark table names.
-pub const TPCH_TABLES: &[&str] = &[
-    "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
-];
 
 const TEST_SCHEDULER_ENDPOINT: &str = "localhost:50050";
 
@@ -940,6 +935,72 @@ pub fn revive_graph_and_complete_next_stage_with_executor(
     Ok(num_available_tasks)
 }
 
+/// The logical plan of `SELECT id, sum(gmv) FROM t GROUP BY id`, over a scan
+/// of `partitions` partitions of `(id Utf8, gmv UInt64)`.
+///
+/// DataFusion's optimizer only inserts a repartition when the scan has more
+/// than one partition (https://github.com/apache/datafusion/pull/11875).
+pub fn aggregation_logical_plan(partitions: usize) -> LogicalPlan {
+    scan_empty_with_partitions(None, &id_gmv_schema(), Some(vec![0, 1]), partitions)
+        .unwrap()
+        .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+        .unwrap()
+        .build()
+        .unwrap()
+}
+
+fn id_gmv_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("gmv", DataType::UInt64, false),
+    ])
+}
+
+/// A DataFusion session with `partition` target partitions.
+fn test_session(partition: usize) -> SessionContext {
+    SessionContext::new_with_config(
+        SessionConfig::new().with_target_partitions(partition),
+    )
+}
+
+/// Optimizes and plans `logical_plan` with `ctx` and builds a static
+/// execution graph of it.
+async fn graph_from_logical(
+    ctx: &SessionContext,
+    logical_plan: &LogicalPlan,
+    job_id: &JobId,
+    session_config: Arc<SessionConfig>,
+) -> StaticExecutionGraph {
+    let session_state = ctx.state();
+    let optimized_plan = session_state.optimize(logical_plan).unwrap();
+    let plan = session_state
+        .create_physical_plan(&optimized_plan)
+        .await
+        .unwrap();
+
+    println!(
+        "{}",
+        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
+    );
+    let mut planner = DefaultDistributedPlanner::new();
+    let graph = StaticExecutionGraph::new(
+        "localhost:50050",
+        job_id,
+        "",
+        "session",
+        plan,
+        0,
+        session_config,
+        &mut planner,
+        None,
+    )
+    .unwrap();
+
+    println!("{graph:?}");
+
+    graph
+}
+
 /// Creates a test execution graph with a simple aggregation plan.
 pub async fn test_aggregation_plan(partition: usize) -> StaticExecutionGraph {
     test_aggregation_plan_with_job_id(partition, &"job".into()).await
@@ -967,55 +1028,17 @@ pub async fn test_aggregation_plan_with_config(
     job_id: &JobId,
     session_config: Arc<SessionConfig>,
 ) -> StaticExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
-
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
-        Field::new("gmv", DataType::UInt64, false),
-    ]);
-
-    // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
-    let logical_plan = scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
-        .unwrap()
-        .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-        .unwrap()
-        .build()
-        .unwrap();
-
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-
-    println!(
-        "{}",
-        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
-    );
-    let mut planner = DefaultDistributedPlanner::new();
-    StaticExecutionGraph::new(
-        "localhost:50050",
+    graph_from_logical(
+        &test_session(partition),
+        &aggregation_logical_plan(2),
         job_id,
-        "",
-        "session",
-        plan,
-        0,
         session_config,
-        &mut planner,
-        None,
     )
-    .unwrap()
+    .await
 }
 
 /// Creates a test execution graph with two nested aggregations.
 pub async fn test_two_aggregations_plan(partition: usize) -> StaticExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
-
     let schema = Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
         Field::new("name", DataType::Utf8, false),
@@ -1032,72 +1055,33 @@ pub async fn test_two_aggregations_plan(partition: usize) -> StaticExecutionGrap
         .build()
         .unwrap();
 
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-
-    println!(
-        "{}",
-        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
-    );
-    let mut planner = DefaultDistributedPlanner::new();
-
-    StaticExecutionGraph::new(
-        "localhost:50050",
+    graph_from_logical(
+        &test_session(partition),
+        &logical_plan,
         &"job".into(),
-        "",
-        "session",
-        plan,
-        0,
         Arc::new(SessionConfig::new_with_ballista()),
-        &mut planner,
-        None,
     )
-    .unwrap()
+    .await
 }
 
 /// Creates a test execution graph with a coalesce (limit) operation.
 pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
-
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
-        Field::new("gmv", DataType::UInt64, false),
-    ]);
-
     // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
-    let logical_plan = scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
-        .unwrap()
-        .limit(0, Some(1))
-        .unwrap()
-        .build()
-        .unwrap();
+    let logical_plan =
+        scan_empty_with_partitions(None, &id_gmv_schema(), Some(vec![0, 1]), 2)
+            .unwrap()
+            .limit(0, Some(1))
+            .unwrap()
+            .build()
+            .unwrap();
 
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-    let mut planner = DefaultDistributedPlanner::new();
-
-    StaticExecutionGraph::new(
-        "localhost:50050",
+    graph_from_logical(
+        &test_session(partition),
+        &logical_plan,
         &"job".into(),
-        "",
-        "session",
-        plan,
-        0,
         Arc::new(SessionConfig::new_with_ballista()),
-        &mut planner,
-        None,
     )
-    .unwrap()
+    .await
 }
 
 /// Creates a test execution graph with a join operation.
@@ -1107,13 +1091,9 @@ pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
         .options_mut()
         .optimizer
         .enable_round_robin_repartition = false;
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
+    let ctx = SessionContext::new_with_config(config);
 
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
-        Field::new("gmv", DataType::UInt64, false),
-    ]);
+    let schema = id_gmv_schema();
 
     // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
     let left_plan = scan_empty_with_partitions(Some("left"), &schema, None, 2).unwrap();
@@ -1135,120 +1115,40 @@ pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
         .build()
         .unwrap();
 
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-
-    println!(
-        "{}",
-        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
-    );
-    let mut planner = DefaultDistributedPlanner::new();
-    let graph = StaticExecutionGraph::new(
-        "localhost:50050",
+    graph_from_logical(
+        &ctx,
+        &logical_plan,
         &"job".into(),
-        "",
-        "session",
-        plan,
-        0,
         Arc::new(SessionConfig::new_with_ballista()),
-        &mut planner,
-        None,
     )
-    .unwrap();
-
-    println!("{graph:?}");
-
-    graph
+    .await
 }
 
 /// Creates a test execution graph with a UNION ALL operation.
 pub async fn test_union_all_plan(partition: usize) -> StaticExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
-
-    let logical_plan = ctx
-        .sql("SELECT 1 as NUMBER union all SELECT 1 as NUMBER;")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
-
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-
-    println!(
-        "{}",
-        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
-    );
-    let mut planner = DefaultDistributedPlanner::new();
-    let graph = StaticExecutionGraph::new(
-        "localhost:50050",
-        &"job".into(),
-        "",
-        "session",
-        plan,
-        0,
-        Arc::new(SessionConfig::new_with_ballista()),
-        &mut planner,
-        None,
+    test_sql_plan(
+        partition,
+        "SELECT 1 as NUMBER union all SELECT 1 as NUMBER;",
     )
-    .unwrap();
-
-    println!("{graph:?}");
-
-    graph
+    .await
 }
 
 /// Creates a test execution graph with a UNION (distinct) operation.
 pub async fn test_union_plan(partition: usize) -> StaticExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
+    test_sql_plan(partition, "SELECT 1 as NUMBER union SELECT 1 as NUMBER;").await
+}
 
-    let logical_plan = ctx
-        .sql("SELECT 1 as NUMBER union SELECT 1 as NUMBER;")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
+async fn test_sql_plan(partition: usize, sql: &str) -> StaticExecutionGraph {
+    let ctx = test_session(partition);
+    let logical_plan = ctx.sql(sql).await.unwrap().into_optimized_plan().unwrap();
 
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-
-    println!(
-        "{}",
-        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
-    );
-    let mut planner = DefaultDistributedPlanner::new();
-    let graph = StaticExecutionGraph::new(
-        "localhost:50050",
+    graph_from_logical(
+        &ctx,
+        &logical_plan,
         &"job".into(),
-        "",
-        "session",
-        plan,
-        0,
         Arc::new(SessionConfig::new_with_ballista()),
-        &mut planner,
-        None,
     )
-    .unwrap();
-
-    println!("{graph:?}");
-
-    graph
+    .await
 }
 
 /// Creates a mock executor metadata with the given ID.
