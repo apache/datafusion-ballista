@@ -88,7 +88,8 @@ pub fn runtime_env_with_s3_support(
 /// Custom [SessionState] with S3 support enabled
 ///
 /// It will configure [SessionState] with provided [SessionConfig],
-/// and [RuntimeEnv].
+/// and [RuntimeEnv], plus Ballista's functions and optimizer rules, as
+/// [crate::utils::default_session_builder] does.
 pub fn session_state_with_s3_support(
     session_config: SessionConfig,
 ) -> datafusion::common::Result<SessionState> {
@@ -103,6 +104,7 @@ pub fn session_state_with_s3_support(
         .with_runtime_env(runtime_env)
         .with_config(session_config)
         .with_default_features()
+        .with_optimizer_rules(crate::optimizer::ballista_default_optimizer_rules())
         .with_scalar_functions(ballista_scalar_functions())
         .with_aggregate_functions(ballista_aggregate_functions())
         .with_window_functions(ballista_window_functions())
@@ -468,6 +470,18 @@ mod tests {
     use object_store::memory::InMemory;
     use std::sync::Barrier;
     use std::thread;
+
+    #[test]
+    fn session_state_with_s3_support_has_ballista_optimizer_rules() {
+        let state = state_with_s3_support().unwrap();
+        assert!(
+            state
+                .optimizers()
+                .iter()
+                .any(|rule| rule.name() == "not_in_subquery_rewrite"),
+            "NotInSubqueryRewrite missing from S3 session state"
+        );
+    }
 
     /// Builds options the same way `SET s3.<key> = '<value>'` does.
     fn s3_options(entries: &[(&str, &str)]) -> S3Options {

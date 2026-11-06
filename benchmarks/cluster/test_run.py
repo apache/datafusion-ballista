@@ -108,11 +108,16 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(args("--engine", "ballista").iterations, 2)
         self.assertEqual(args("--engine", "spark").iterations, 2)
         self.assertEqual(args("--engine", "trino").iterations, 3)
+        self.assertEqual(args("--engine", "datafusion-distributed").iterations, 3)
         self.assertEqual(args("--engine", "trino", "--iterations", "1").iterations, 1)
 
-    def test_trino_runs_tpch_only(self):
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            args("--engine", "trino", "--benchmark", "tpcds")
+    def test_trino_and_datafusion_distributed_run_tpch_only(self):
+        for engine in ("trino", "datafusion-distributed"):
+            with (
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                args("--engine", engine, "--benchmark", "tpcds")
 
     def test_missing_image_is_reported(self):
         cfg = config(images={"ballista": ""})
@@ -437,6 +442,157 @@ class TrinoTest(unittest.TestCase):
         self.assertIn("trino.metastore_dir", str(ctx.exception))
 
 
+class DatafusionDistributedTest(unittest.TestCase):
+    def manifests(self, *argv, cfg=None, data="s3://bucket/tpch/sf1000"):
+        a = args("--engine", "datafusion-distributed", *argv)
+        return run.dfd_manifests(
+            a, cfg or config(), "tpch-datafusion-distributed-abc", data, None
+        )
+
+    def by_name(self, cluster, suffix, kind=None):
+        return next(
+            m
+            for m in cluster
+            if m["metadata"]["name"].endswith(suffix) and kind in (None, m["kind"])
+        )
+
+    def test_workers_and_coordinator(self):
+        _, cluster, deployments, runner, settings = self.manifests("--executors", "4")
+        self.assertEqual(
+            deployments,
+            [
+                ("tpch-datafusion-distributed-abc-coordinator", 1),
+                ("tpch-datafusion-distributed-abc-worker", 4),
+            ],
+        )
+        worker = self.by_name(cluster, "-worker")
+        self.assertEqual(worker["spec"]["replicas"], 4)
+        (c,) = containers(worker)
+        self.assertEqual(flag_value(c["args"], "--bucket"), "bucket")
+        self.assertEqual(
+            flag_value(c["args"], "--worker-dns-name"),
+            "tpch-datafusion-distributed-abc-workers",
+        )
+        env = {e["name"]: e.get("value") for e in c["env"]}
+        self.assertEqual(env["MEMORY_POOL_BYTES"], "48103633715")  # 70% of 64 GiB
+        self.assertEqual(env["SPILL_DIR"], "/spill")
+        self.assertEqual(c["resources"]["limits"], {"cpu": "8", "memory": "64Gi"})
+        coordinator = self.by_name(cluster, "-coordinator", "Deployment")
+        (c,) = containers(coordinator)
+        env = {e["name"]: e.get("value") for e in c["env"]}
+        self.assertEqual(env["MEMORY_POOL_BYTES"], "24051816857")  # 70% of 32 GiB
+        self.assertEqual(settings["worker_memory_pool_bytes"], 48103633715)
+
+    def test_only_the_workers_are_behind_the_headless_service(self):
+        _, cluster, _, _, _ = self.manifests()
+        services = [m for m in cluster if m["kind"] == "Service"]
+        (headless,) = [m for m in services if m["spec"].get("clusterIP") == "None"]
+        self.assertEqual(
+            headless["metadata"]["name"], "tpch-datafusion-distributed-abc-workers"
+        )
+        self.assertEqual(headless["spec"]["selector"]["app"], "dfd-worker")
+        self.assertEqual(headless["spec"]["ports"][0]["port"], 9001)
+
+    def test_workers_spill_to_a_volume_of_their_own(self):
+        _, cluster, _, _, _ = self.manifests()
+        volumes = self.by_name(cluster, "-worker")["spec"]["template"]["spec"][
+            "volumes"
+        ]
+        (spill,) = [v for v in volumes if v["name"] == "spill"]
+        claim = spill["ephemeral"]["volumeClaimTemplate"]["spec"]
+        self.assertEqual(claim["storageClassName"], "gp3")
+        self.assertEqual(
+            claim["resources"]["requests"]["storage"], run.DFD_SPILL_VOLUME_SIZE
+        )
+
+    def test_runner_environment(self):
+        _, cluster, _, runner, _ = self.manifests(
+            "--executors",
+            "4",
+            "--dfd-config",
+            "distributed.compression=zstd",
+            "--dfd-config",
+            "datafusion.execution.batch_size=16384",
+            "--no-warmup",
+        )
+        env = {e["name"]: e.get("value") for e in containers(runner)[0]["env"]}
+        self.assertEqual(
+            env["COORDINATOR_URL"],
+            "http://tpch-datafusion-distributed-abc-coordinator:9000",
+        )
+        self.assertEqual(env["DATA_PATH"], "s3://bucket/tpch/sf1000")
+        self.assertEqual(env["EXPECTED_WORKERS"], "4")
+        self.assertEqual(env["ITERATIONS"], "3")
+        self.assertEqual(env["WARMUP"], "0")
+        self.assertEqual(env["CHECK_ROWS"], "1")
+        self.assertEqual(env["PARTITIONED"], "0")
+        self.assertEqual(env["MONEY_TYPE"], "decimal(15, 2)")
+        self.assertEqual(
+            env["SETTINGS"],
+            "distributed.compression=zstd,datafusion.execution.batch_size=16384",
+        )
+        scripts = self.by_name(cluster, "-scripts")["data"]
+        self.assertEqual(
+            sorted(scripts),
+            ["run_queries.py", "tpch_expected_rows.py", "tpch_tables.py"],
+        )
+        queries = self.by_name(cluster, "-queries")["data"]
+        self.assertIn("q1.sql", queries)
+        self.assertIn("q22.sql", queries)
+
+    def test_partitioned_layout_reaches_the_runner(self):
+        cfg = config(
+            data={"tpch_partitioned": True}, trino={"money_type": "decimal(12, 2)"}
+        )
+        _, _, _, runner, _ = self.manifests(cfg=cfg)
+        env = {e["name"]: e.get("value") for e in containers(runner)[0]["env"]}
+        self.assertEqual(env["PARTITIONED"], "1")
+        self.assertEqual(env["MONEY_TYPE"], "decimal(12, 2)")
+
+    def test_settings_must_be_plain_tokens(self):
+        with self.assertRaises(SystemExit):
+            self.manifests("--dfd-config", "distributed.compression=zstd;DROP")
+        with self.assertRaises(SystemExit):
+            self.manifests("--dfd-config", "no-equals-sign")
+
+    def test_the_data_must_be_in_s3(self):
+        with self.assertRaises(SystemExit):
+            self.manifests(data="/mnt/tpch")
+
+    def test_missing_image_is_reported(self):
+        cfg = config(images={"datafusion_distributed": ""})
+        with self.assertRaises(SystemExit) as ctx:
+            self.manifests(cfg=cfg)
+        self.assertIn("images.datafusion_distributed", str(ctx.exception))
+
+    def test_an_image_without_a_memory_pool_is_refused(self):
+        class Kube:
+            def __init__(self, logs):
+                self._logs = logs
+
+            def logs(self, target, tail=-1):
+                return self._logs
+
+        run.check_dfd_memory_pool(
+            Kube(f"INFO {run.DFD_MEMORY_POOL_LOG}1024 bytes"), "r"
+        )
+        with self.assertRaises(SystemExit) as ctx:
+            run.check_dfd_memory_pool(Kube("INFO Memory pool: unbounded"), "r")
+        self.assertIn("worker-memory-limit.patch", str(ctx.exception))
+
+    def test_plans_are_saved_apart_from_the_results(self):
+        queries = [
+            {"query": 1, "plan": "plan one", "iterations": []},
+            {"query": 2, "iterations": []},
+        ]
+        with tempfile.TemporaryDirectory() as results:
+            run.save_plans(results, "r", queries)
+            with open(os.path.join(results, "r-plans", "q1.txt")) as f:
+                self.assertEqual(f.read(), "plan one")
+            self.assertEqual(os.listdir(os.path.join(results, "r-plans")), ["q1.txt"])
+        self.assertNotIn("plan", queries[0])
+
+
 class ResultsTest(unittest.TestCase):
     def test_parse_summaries_reads_every_marker(self):
         logs = (
@@ -530,6 +686,8 @@ FAKE_KUBECTL = textwrap.dedent("""\
         print("Running")
     elif verb == "logs" and any(a.startswith("job/") for a in args):
         print(open(os.path.join(state, "runner.log")).read())
+    elif verb == "logs" and any(a.startswith("deployment/") for a in args):
+        print("INFO Memory pool: FairSpillPool of 1024 bytes")
     """)
 
 
@@ -620,6 +778,71 @@ class EndToEndTest(unittest.TestCase):
             ],
         )
         self.assertTrue(any(p.endswith(".log") for p in os.listdir(self.results)))
+
+    def test_datafusion_distributed_run(self):
+        summary = {
+            "git_commit": "9e7a5ce",
+            "queries": [
+                {
+                    "query": 6,
+                    "iterations": [
+                        {
+                            "elapsed": 3.0,
+                            "server_elapsed": 2.5,
+                            "row_count": 1,
+                            "tasks": 9,
+                        }
+                    ],
+                    "warmup": {"elapsed": 4.0, "error": None},
+                    "error": None,
+                    "plan": "the distributed plan",
+                }
+            ],
+        }
+        self.write_log(f"{run.RESULTS_MARKER}\n{json.dumps(summary)}\n")
+        result = self.run_cli(
+            "--engine", "datafusion-distributed", "--query", "6", "--executors", "4"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        verbs = [c["args"][2] for c in self.calls()]
+        self.assertEqual(verbs[-1], "delete")
+        applied = [json.loads(c["stdin"]) for c in self.calls() if "apply" in c["args"]]
+        kinds = [item["kind"] for manifest in applied for item in manifest["items"]]
+        self.assertEqual(
+            kinds,
+            [
+                "ConfigMap",
+                "ConfigMap",
+                "Service",
+                "Service",
+                "Deployment",
+                "Deployment",
+                "Job",
+            ],
+        )
+        (path,) = [p for p in os.listdir(self.results) if p.endswith(".json")]
+        with open(os.path.join(self.results, path)) as f:
+            results = json.load(f)
+        self.assertEqual(results["engine"], "datafusion-distributed")
+        self.assertEqual(results["datafusion_distributed_commit"], "9e7a5ce")
+        self.assertEqual(
+            results["queries"],
+            [
+                {
+                    "query": 6,
+                    "elapsed": [3.0],
+                    "error": None,
+                    "mean": 3.0,
+                    "row_count": 1,
+                    "warmup": 4.0,
+                }
+            ],
+        )
+        # The plan is in its own file, not in the results.
+        self.assertNotIn("the distributed plan", json.dumps(results))
+        plans = os.path.join(self.results, path[: -len(".json")] + "-plans", "q6.txt")
+        with open(plans) as f:
+            self.assertEqual(f.read(), "the distributed plan")
 
     def test_failed_query_fails_the_run_and_still_tears_down(self):
         summary = {
