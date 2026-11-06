@@ -678,3 +678,45 @@ async fn should_resolve_every_declared_partition_of_coalesced_passthrough_stage(
 
     Ok(())
 }
+
+#[tokio::test]
+async fn should_coalesce_the_readers_of_a_shared_stage() -> datafusion::error::Result<()>
+{
+    let ctx = coalesce_context(8, true);
+    register_partitioned_table(&ctx, "t1", 8)?;
+    register_partitioned_table(&ctx, "t2", 8)?;
+
+    let plan = ctx
+        .sql("select count(*) from t1 join t2 on t1.c = t2.c")
+        .await?
+        .create_physical_plan()
+        .await?;
+    let mut planner =
+        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[25; 8]))?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+    assert_eq!(stages[0].plan.input_partition_count(), 2);
+    assert_plan!(planner.current_plan(),  @ r"
+    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
+      ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
+        AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
+          CoalescePartitionsExec
+            ExchangeExec: partitioning=None, plan_id=3, stage_id=1, stage_resolved=false
+              AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+                ProjectionExec: expr=[]
+                  SortMergeJoinExec: join_type=Inner, on=[(c@0, c@0)]
+                    SortExec: expr=[c@0 ASC], preserve_partitioning=[true]
+                      ExchangeExec: partitioning=Hash([c@0], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
+                        DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+                    SortExec: expr=[c@0 ASC], preserve_partitioning=[true]
+                      ExchangeExec: partitioning=Hash([c@0], 8), plan_id=1, stage_id=0, stage_resolved=true, coalesce=2 of 8
+                        DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+    ");
+
+    Ok(())
+}
