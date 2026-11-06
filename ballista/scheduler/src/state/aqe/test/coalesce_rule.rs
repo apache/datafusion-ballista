@@ -644,7 +644,7 @@ async fn should_resolve_every_declared_partition_of_coalesced_passthrough_stage(
     register_partitioned_table(&ctx, "t2", 8)?;
 
     let plan = ctx
-        .sql("select count(*) from t1 join t2 on t1.c = t2.c")
+        .sql("select count(*), sum(t1.a + t2.b) from t1 join t2 on t1.c = t2.c")
         .await?
         .create_physical_plan()
         .await?;
