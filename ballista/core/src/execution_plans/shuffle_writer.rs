@@ -1283,7 +1283,6 @@ mod tests {
     };
     use datafusion::arrow::ipc::reader::StreamReader;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::display::DefaultDisplay;
     use datafusion::physical_plan::expressions::Column;
@@ -1299,24 +1298,9 @@ mod tests {
         plan: Arc<ShuffleWriterExec>,
         task_ctx: Arc<TaskContext>,
     ) -> Result<Vec<RecordBatch>> {
-        let k = plan.properties().output_partitioning().partition_count();
-        let mut handles = Vec::with_capacity(k);
-        for n in 0..k {
-            let plan = plan.clone();
-            let ctx = task_ctx.clone();
-            handles.push(tokio::spawn(async move {
-                let mut stream = plan.execute(n, ctx)?;
-                utils::collect_stream(&mut stream)
-                    .await
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
-            }));
-        }
         let mut all = Vec::new();
-        for h in handles {
-            let batches = h.await.map_err(|e| {
-                DataFusionError::Execution(format!("drive_all_partitions panic: {e}"))
-            })??;
-            all.extend(batches);
+        for result in drive_partition_results(plan, task_ctx).await {
+            all.extend(result.map_err(|e| DataFusionError::Execution(format!("{e:?}")))?);
         }
         Ok(all)
     }
@@ -1479,11 +1463,8 @@ mod tests {
         // 2 rows backed by a data buffer that holds all 1000 strings
         let batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(strings)])?.slice(10, 2);
-        let input = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
-            &[vec![batch.clone()]],
-            schema,
-            None,
-        )?)));
+        let input =
+            MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], schema, None)?;
         let work_dir = TempDir::new()?;
         let query_stage = Arc::new(ShuffleWriterExec::try_new(
             JobId::new("jobViews"),
@@ -1626,11 +1607,7 @@ mod tests {
             ],
         )?;
         let partitions = vec![vec![batch.clone(), batch.clone()], vec![batch]];
-        let input = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
-            &partitions,
-            schema,
-            None,
-        )?)));
+        let input = MemorySourceConfig::try_new_exec(&partitions, schema, None)?;
 
         let work_dir = TempDir::new()?;
         let writer = Arc::new(ShuffleWriterExec::try_new(
@@ -1664,9 +1641,7 @@ mod tests {
                 Arc::new(UInt32Array::from_iter_values(0..1000)),
             ],
         )?;
-        let source = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(&[vec![batch]], schema, None)?,
-        )));
+        let source = MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None)?;
         let input = Arc::new(RepartitionExec::try_new(
             source,
             Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
