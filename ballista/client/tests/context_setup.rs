@@ -33,7 +33,7 @@ mod remote {
         let url = format!("df://{host}:{port}");
         let state = SessionStateBuilder::new().with_default_features().build();
 
-        let test_data = crate::common::example_test_data();
+        let test_data = crate::common::test_data_dir();
         let ctx: SessionContext = SessionContext::remote_with_state(&url, state).await?;
 
         ctx.register_parquet(
@@ -158,7 +158,7 @@ mod standalone {
     // fail the query.
     #[tokio::test]
     async fn should_set_logical_codec() -> datafusion::error::Result<()> {
-        let test_data = crate::common::example_test_data();
+        let test_data = crate::common::test_data_dir();
         let codec = Arc::new(BadLogicalCodec::default());
 
         let session_config = SessionConfig::new_with_ballista()
@@ -200,7 +200,7 @@ mod standalone {
     // tests if we can correctly set physical codec
     #[tokio::test]
     async fn should_set_physical_codec() -> datafusion::error::Result<()> {
-        let test_data = crate::common::example_test_data();
+        let test_data = crate::common::test_data_dir();
         let physical_codec = Arc::new(MockPhysicalCodec::default());
         let session_config = SessionConfig::new_with_ballista()
             .with_information_schema(true)

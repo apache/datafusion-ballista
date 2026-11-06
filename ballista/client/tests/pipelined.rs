@@ -23,67 +23,22 @@ mod common;
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod pipelined {
-    use crate::common::setup_test_cluster_with_executors;
+    use crate::common::{
+        ballista_state, collect_lines, orders_customers_context,
+        register_orders_customers, set_option, setup_test_cluster_with_executors,
+        write_orders_customers,
+    };
     use ballista::prelude::SessionContextExt;
     use ballista_core::config::{
         BALLISTA_EXECUTION_MODE, BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ,
-        BALLISTA_STANDALONE_PARALLELISM,
     };
     use ballista_core::extension::SessionConfigExt;
     use datafusion::arrow::util::pretty::pretty_format_batches;
-    use datafusion::execution::{SessionState, SessionStateBuilder};
-    use datafusion::prelude::{CsvReadOptions, SessionConfig, SessionContext};
+    use datafusion::prelude::{SessionConfig, SessionContext};
     use futures::StreamExt;
-    use std::io::Write;
     use std::path::Path;
     use std::time::Duration;
     use tempfile::TempDir;
-
-    /// Writes an `orders` table split over four files, so its scan has four
-    /// partitions, and a small `customers` table.
-    fn write_tables(dir: &Path) {
-        let orders = dir.join("orders");
-        std::fs::create_dir(&orders).unwrap();
-        for file in 0..4 {
-            let mut out =
-                std::fs::File::create(orders.join(format!("part-{file}.csv"))).unwrap();
-            writeln!(out, "o_id,o_cust,o_amount").unwrap();
-            for i in 0..250 {
-                let id = file * 250 + i;
-                writeln!(out, "{id},{},{}", id % 97, (id * 7) % 1000).unwrap();
-            }
-        }
-        let mut out = std::fs::File::create(dir.join("customers.csv")).unwrap();
-        writeln!(out, "c_id,c_name,c_region").unwrap();
-        for id in 0..100 {
-            writeln!(out, "{id},customer-{id},region-{}", id % 5).unwrap();
-        }
-    }
-
-    fn state(options: &[(&str, &str)]) -> SessionState {
-        // A pipelined job wants a vcore per partition of its widest stage at
-        // once, so give the standalone executor as many vcores as the plan
-        // has partitions, whatever the machine's core count.
-        let mut config = SessionConfig::new_with_ballista()
-            .with_target_partitions(4)
-            .set_str(BALLISTA_STANDALONE_PARALLELISM, "4");
-        for (key, value) in options {
-            config = config.set_str(key, value);
-        }
-        SessionStateBuilder::new()
-            .with_config(config)
-            .with_default_features()
-            .build()
-    }
-
-    /// A standalone cluster: one scheduler and one executor.
-    async fn context(dir: &Path, options: &[(&str, &str)]) -> SessionContext {
-        let ctx = SessionContext::standalone_with_state(state(options))
-            .await
-            .unwrap();
-        register_tables(&ctx, dir).await;
-        ctx
-    }
 
     /// A scheduler with `executors` executors of `vcores` vcores each.
     async fn cluster_context(
@@ -92,38 +47,19 @@ mod pipelined {
         executors: usize,
         vcores: usize,
     ) -> SessionContext {
-        let state = state(options);
+        let state = ballista_state(options);
         let (host, port) =
             setup_test_cluster_with_executors(&state, executors, vcores).await;
         let ctx =
             SessionContext::remote_with_state(&format!("df://{host}:{port}"), state)
                 .await
                 .unwrap();
-        register_tables(&ctx, dir).await;
+        register_orders_customers(&ctx, dir).await;
         ctx
     }
 
-    async fn register_tables(ctx: &SessionContext, dir: &Path) {
-        ctx.register_csv(
-            "orders",
-            dir.join("orders").to_str().unwrap(),
-            CsvReadOptions::new(),
-        )
-        .await
-        .unwrap();
-        ctx.register_csv(
-            "customers",
-            dir.join("customers.csv").to_str().unwrap(),
-            CsvReadOptions::new(),
-        )
-        .await
-        .unwrap();
-    }
-
     async fn rows(ctx: &SessionContext, sql: &str, sorted: bool) -> Vec<String> {
-        let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
-        let text = pretty_format_batches(&batches).unwrap().to_string();
-        let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        let mut lines = collect_lines(ctx, sql).await;
         if sorted {
             lines.sort();
         }
@@ -180,7 +116,7 @@ mod pipelined {
     ];
 
     async fn check_matches_staged(dir: &Path, pipelined: &SessionContext) {
-        let staged = context(dir, &[]).await;
+        let staged = orders_customers_context(dir, &[]).await;
         for (sql, sorted) in QUERIES {
             let expected = rows(&staged, sql, *sorted).await;
             let actual = rows(pipelined, sql, *sorted).await;
@@ -191,9 +127,12 @@ mod pipelined {
     #[tokio::test]
     async fn pipelined_results_match_staged() {
         let dir = TempDir::new().unwrap();
-        write_tables(dir.path());
-        let pipelined =
-            context(dir.path(), &[(BALLISTA_EXECUTION_MODE, "pipelined")]).await;
+        write_orders_customers(dir.path());
+        let pipelined = orders_customers_context(
+            dir.path(),
+            &[(BALLISTA_EXECUTION_MODE, "pipelined")],
+        )
+        .await;
         check_matches_staged(dir.path(), &pipelined).await;
     }
 
@@ -203,8 +142,8 @@ mod pipelined {
     #[tokio::test]
     async fn pipelined_results_match_staged_over_flight() {
         let dir = TempDir::new().unwrap();
-        write_tables(dir.path());
-        let pipelined = context(
+        write_orders_customers(dir.path());
+        let pipelined = orders_customers_context(
             dir.path(),
             &[
                 (BALLISTA_EXECUTION_MODE, "pipelined"),
@@ -220,20 +159,11 @@ mod pipelined {
     #[tokio::test]
     async fn pipelined_results_match_staged_across_executors() {
         let dir = TempDir::new().unwrap();
-        write_tables(dir.path());
+        write_orders_customers(dir.path());
         let pipelined =
             cluster_context(dir.path(), &[(BALLISTA_EXECUTION_MODE, "pipelined")], 2, 2)
                 .await;
         check_matches_staged(dir.path(), &pipelined).await;
-    }
-
-    async fn set(ctx: &SessionContext, key: &str, value: &str) {
-        ctx.sql(&format!("SET {key} = '{value}'"))
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
     }
 
     /// One session switches mode with `SET`: each query runs in the mode set
@@ -241,13 +171,17 @@ mod pipelined {
     #[tokio::test]
     async fn one_session_switches_between_staged_and_pipelined() {
         let dir = TempDir::new().unwrap();
-        write_tables(dir.path());
+        write_orders_customers(dir.path());
         // Started pipelined, so the standalone cluster runs push-staged.
-        let ctx = context(dir.path(), &[(BALLISTA_EXECUTION_MODE, "pipelined")]).await;
+        let ctx = orders_customers_context(
+            dir.path(),
+            &[(BALLISTA_EXECUTION_MODE, "pipelined")],
+        )
+        .await;
         for (sql, sorted) in QUERIES {
-            set(&ctx, BALLISTA_EXECUTION_MODE, "staged").await;
+            set_option(&ctx, BALLISTA_EXECUTION_MODE, "staged").await;
             let staged = rows(&ctx, sql, *sorted).await;
-            set(&ctx, BALLISTA_EXECUTION_MODE, "pipelined").await;
+            set_option(&ctx, BALLISTA_EXECUTION_MODE, "pipelined").await;
             let pipelined = rows(&ctx, sql, *sorted).await;
             assert_eq!(pipelined, staged, "pipelined result differs for: {sql}");
         }
@@ -258,12 +192,17 @@ mod pipelined {
     #[tokio::test]
     async fn pipelined_session_caches_a_data_frame() {
         let dir = TempDir::new().unwrap();
-        write_tables(dir.path());
-        let ctx = context(dir.path(), &[(BALLISTA_EXECUTION_MODE, "pipelined")]).await;
-        set(&ctx, "ballista.cache.noop", "false").await;
+        write_orders_customers(dir.path());
+        let ctx = orders_customers_context(
+            dir.path(),
+            &[(BALLISTA_EXECUTION_MODE, "pipelined")],
+        )
+        .await;
+        set_option(&ctx, "ballista.cache.noop", "false").await;
         let sql = "SELECT o_cust, count(*) AS n, sum(o_amount) AS total \
                    FROM orders GROUP BY o_cust";
-        let expected = rows(&context(dir.path(), &[]).await, sql, true).await;
+        let expected =
+            rows(&orders_customers_context(dir.path(), &[]).await, sql, true).await;
 
         let cached = ctx.sql(sql).await.unwrap().cache().await.unwrap();
         for _ in 0..2 {
@@ -280,9 +219,9 @@ mod pipelined {
     #[tokio::test]
     async fn dropping_the_results_early_frees_the_cluster() {
         let dir = TempDir::new().unwrap();
-        write_tables(dir.path());
+        write_orders_customers(dir.path());
         // Small batches, so the scan stays blocked on its full queues.
-        let ctx = context(
+        let ctx = orders_customers_context(
             dir.path(),
             &[
                 (BALLISTA_EXECUTION_MODE, "pipelined"),
@@ -312,8 +251,12 @@ mod pipelined {
     #[tokio::test]
     async fn pipelined_limit_without_order_returns_the_limit() {
         let dir = TempDir::new().unwrap();
-        write_tables(dir.path());
-        let ctx = context(dir.path(), &[(BALLISTA_EXECUTION_MODE, "pipelined")]).await;
+        write_orders_customers(dir.path());
+        let ctx = orders_customers_context(
+            dir.path(),
+            &[(BALLISTA_EXECUTION_MODE, "pipelined")],
+        )
+        .await;
         let batches = ctx
             .sql("SELECT o_id FROM orders LIMIT 3")
             .await
@@ -327,8 +270,12 @@ mod pipelined {
     #[tokio::test]
     async fn pipelined_query_error_reaches_the_client() {
         let dir = TempDir::new().unwrap();
-        write_tables(dir.path());
-        let ctx = context(dir.path(), &[(BALLISTA_EXECUTION_MODE, "pipelined")]).await;
+        write_orders_customers(dir.path());
+        let ctx = orders_customers_context(
+            dir.path(),
+            &[(BALLISTA_EXECUTION_MODE, "pipelined")],
+        )
+        .await;
         let result = ctx
             .sql("SELECT o_id / (o_id - o_id) FROM orders")
             .await
@@ -346,12 +293,7 @@ mod pipelined {
     async fn pipelined_mode_is_rejected_by_a_pull_staged_cluster() {
         // A standalone cluster for a staged session runs pull-staged.
         let ctx = SessionContext::standalone().await.unwrap();
-        ctx.sql(&format!("SET {BALLISTA_EXECUTION_MODE} = 'pipelined'"))
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
+        set_option(&ctx, BALLISTA_EXECUTION_MODE, "pipelined").await;
         let err = ctx
             .sql("SELECT 1")
             .await

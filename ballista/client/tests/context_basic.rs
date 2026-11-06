@@ -24,8 +24,8 @@ mod common;
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod basic {
+    use crate::common::{assert_result_eq, test_data_dir};
     use ballista::prelude::SessionContextExt;
-    use datafusion::arrow;
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::Result;
     use datafusion::config::TableParquetOptions;
@@ -470,20 +470,6 @@ mod basic {
         assert_result_eq(expected, &res);
     }
 
-    fn assert_result_eq(
-        expected: Vec<&str>,
-        results: &[arrow::record_batch::RecordBatch],
-    ) {
-        assert_eq!(
-            expected,
-            pretty_format_batches(results)
-                .unwrap()
-                .to_string()
-                .trim()
-                .lines()
-                .collect::<Vec<&str>>()
-        );
-    }
     #[tokio::test]
     async fn test_describe_table() -> Result<()> {
         let context = create_test_context().await;
@@ -510,7 +496,7 @@ mod basic {
         context
             .register_parquet(
                 "test",
-                "testdata/alltypes_plain.parquet",
+                &format!("{}/alltypes_plain.parquet", test_data_dir()),
                 ParquetReadOptions::default(),
             )
             .await

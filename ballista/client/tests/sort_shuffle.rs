@@ -28,6 +28,7 @@ mod common;
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod sort_shuffle_tests {
+    use crate::common::{assert_result_eq, state_with_config, test_data_dir};
     use ballista::prelude::{SessionConfigExt, SessionContextExt};
     use ballista_core::config::{
         BALLISTA_ADAPTIVE_PLANNER_ENABLED,
@@ -39,9 +40,7 @@ mod sort_shuffle_tests {
         BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
     };
     use datafusion::arrow::datatypes::DataType;
-    use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::Result;
-    use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
     use rstest::rstest;
 
@@ -85,12 +84,9 @@ mod sort_shuffle_tests {
             }
         }
 
-        let state = SessionStateBuilder::new()
-            .with_config(config)
-            .with_default_features()
-            .build();
-
-        SessionContext::standalone_with_state(state).await.unwrap()
+        SessionContext::standalone_with_state(state_with_config(config))
+            .await
+            .unwrap()
     }
 
     /// Remote-flight sort-shuffle context with a deliberately tiny governor
@@ -107,37 +103,20 @@ mod sort_shuffle_tests {
             .set_str(BALLISTA_SHUFFLE_READER_MAX_BLOCKS_PER_ADDRESS, "2")
             .set_str(BALLISTA_CLIENT_INITIAL_CONNECTION_WINDOW_SIZE, "8388608")
             .set_str(BALLISTA_CLIENT_INITIAL_STREAM_WINDOW_SIZE, "8388608");
-        let state = SessionStateBuilder::new()
-            .with_config(config)
-            .with_default_features()
-            .build();
-        SessionContext::standalone_with_state(state).await.unwrap()
+        SessionContext::standalone_with_state(state_with_config(config))
+            .await
+            .unwrap()
     }
 
     /// Registers test data in the context.
     async fn register_test_data(ctx: &SessionContext) {
         ctx.register_parquet(
             "test",
-            "testdata/alltypes_plain.parquet",
+            &format!("{}/alltypes_plain.parquet", test_data_dir()),
             ParquetReadOptions::default(),
         )
         .await
         .unwrap();
-    }
-
-    fn assert_result_eq(
-        expected: Vec<&str>,
-        results: &[datafusion::arrow::record_batch::RecordBatch],
-    ) {
-        assert_eq!(
-            expected,
-            pretty_format_batches(results)
-                .unwrap()
-                .to_string()
-                .trim()
-                .lines()
-                .collect::<Vec<&str>>()
-        );
     }
 
     // ==================== Basic Aggregation Tests ====================

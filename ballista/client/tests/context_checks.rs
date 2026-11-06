@@ -21,7 +21,7 @@ mod supported {
 
     use crate::common::{
         remote_context, remote_context_with_state, standalone_context,
-        standalone_context_with_state,
+        standalone_context_with_state, test_data,
     };
     use ballista_core::config::BallistaConfig;
     use ballista_core::execution_plans::DistributedQueryExec;
@@ -36,11 +36,6 @@ mod supported {
     use rstest::*;
     use std::path::PathBuf;
     use std::sync::Arc;
-
-    #[rstest::fixture]
-    fn test_data() -> String {
-        crate::common::example_test_data()
-    }
 
     #[rstest]
     #[case::standalone(standalone_context())]

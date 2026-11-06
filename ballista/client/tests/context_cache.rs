@@ -24,17 +24,12 @@ mod common;
 /// that shuffle output, and collecting it again hits the registry.
 #[cfg(test)]
 mod cache {
-    use crate::common::{remote_context, standalone_context};
+    use crate::common::{remote_context, standalone_context, test_data};
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::functions::math::expr_fn::random;
     use datafusion::prelude::*;
     use datafusion::{assert_batches_eq, assert_batches_sorted_eq};
     use rstest::*;
-
-    #[rstest::fixture]
-    fn test_data() -> String {
-        crate::common::example_test_data()
-    }
 
     /// A cached DataFrame is materialized once and read back from the pinned
     /// shuffle output. Collecting it again, or a different query over it, reads

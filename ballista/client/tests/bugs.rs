@@ -36,7 +36,7 @@ mod extended {
     //
     #[tokio::test]
     async fn bug_1296_basic() -> datafusion::error::Result<()> {
-        let test_data = crate::common::example_test_data();
+        let test_data = crate::common::test_data_dir();
 
         let ctx = SessionContext::standalone().await?;
 

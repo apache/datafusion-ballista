@@ -32,6 +32,7 @@ mod common;
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod prefix_window_tests {
+    use crate::common::state_with_config;
     use ballista::prelude::{SessionConfigExt, SessionContextExt};
     use ballista_core::config::{
         BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_PARALLEL_WINDOW_ENABLED,
@@ -41,7 +42,6 @@ mod prefix_window_tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::Result;
-    use datafusion::execution::SessionStateBuilder;
     use datafusion::parquet::arrow::ArrowWriter;
     use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
     use std::fs::File;
@@ -108,11 +108,9 @@ mod prefix_window_tests {
                 &MAX_PARTITIONS_PER_TASK.to_string(),
             )
             .set_bool(BALLISTA_PARALLEL_WINDOW_ENABLED, parallel_window);
-        let state = SessionStateBuilder::new()
-            .with_config(config)
-            .with_default_features()
-            .build();
-        SessionContext::standalone_with_state(state).await.unwrap()
+        SessionContext::standalone_with_state(state_with_config(config))
+            .await
+            .unwrap()
     }
 
     /// Register `t(v Float64)` as one parquet file per partition.

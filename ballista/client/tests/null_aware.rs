@@ -15,15 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod common;
+
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod null_aware {
     use std::fs;
     use std::path::Path;
 
+    use crate::common::{
+        collect_text, datafusion_context, register_csv_tables, set_option,
+    };
     use ballista::prelude::SessionContextExt;
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::prelude::*;
+    use tempfile::TempDir;
 
     fn write_tables(dir: &Path, t2_has_null: bool) {
         // t1: 4 files -> 4 partitions, values 0..19
@@ -56,34 +62,16 @@ mod null_aware {
         fs::write(t2.join("p3.csv"), "b,tag\n4,x\n").unwrap();
     }
 
-    async fn register(ctx: &SessionContext, dir: &Path) {
-        for name in ["t1", "t2"] {
-            ctx.register_csv(
-                name,
-                dir.join(name).to_str().unwrap(),
-                CsvReadOptions::new()
-                    .has_header(true)
-                    .file_extension(".csv"),
-            )
-            .await
-            .unwrap();
-        }
-    }
-
     const QUERY: &str = "select a from t1 where a not in (select b from t2) order by a";
 
     async fn run_case(case: &str, t2_has_null: bool) {
-        let dir = std::env::temp_dir().join(format!("ballista_null_aware_{case}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        write_tables(&dir, t2_has_null);
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        write_tables(dir, t2_has_null);
 
-        let df_ctx = SessionContext::new_with_config(
-            SessionConfig::new().with_target_partitions(4),
-        );
-        register(&df_ctx, &dir).await;
-        let df_batches = df_ctx.sql(QUERY).await.unwrap().collect().await.unwrap();
-        let expected = pretty_format_batches(&df_batches).unwrap().to_string();
+        let df_ctx = datafusion_context();
+        register_csv_tables(&df_ctx, dir, &["t1", "t2"]).await;
+        let expected = collect_text(&df_ctx, QUERY).await;
 
         let mut mismatches = vec![];
         // "default" exercises the NOT IN logical rewrite under Ballista's
@@ -96,30 +84,16 @@ mod null_aware {
         for variant in ["default", "prefer_hash_join", "aqe", "rewrite_disabled"] {
             let ctx = SessionContext::standalone().await.unwrap();
             if variant == "aqe" {
-                ctx.sql("SET ballista.planner.adaptive.enabled = true")
-                    .await
-                    .unwrap()
-                    .collect()
-                    .await
-                    .unwrap();
+                set_option(&ctx, "ballista.planner.adaptive.enabled", "true").await;
             }
             if variant != "default" {
-                ctx.sql("SET datafusion.optimizer.prefer_hash_join = true")
-                    .await
-                    .unwrap()
-                    .collect()
-                    .await
-                    .unwrap();
+                set_option(&ctx, "datafusion.optimizer.prefer_hash_join", "true").await;
             }
             if variant == "rewrite_disabled" {
-                ctx.sql("SET ballista.optimizer.not_in_subquery_rewrite = false")
-                    .await
-                    .unwrap()
-                    .collect()
-                    .await
-                    .unwrap();
+                set_option(&ctx, "ballista.optimizer.not_in_subquery_rewrite", "false")
+                    .await;
             }
-            register(&ctx, &dir).await;
+            register_csv_tables(&ctx, dir, &["t1", "t2"]).await;
 
             match ctx.sql(QUERY).await.unwrap().collect().await {
                 Ok(batches) => {
@@ -136,7 +110,6 @@ mod null_aware {
             }
         }
 
-        let _ = fs::remove_dir_all(&dir);
         assert!(mismatches.is_empty(), "{}", mismatches.join("\n\n"));
     }
 

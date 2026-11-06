@@ -23,14 +23,9 @@ mod common;
 /// gets support for them
 #[cfg(test)]
 mod unsupported {
-    use crate::common::{remote_context, standalone_context};
+    use crate::common::{remote_context, standalone_context, test_data};
     use datafusion::prelude::SessionContext;
     use rstest::*;
-
-    #[rstest::fixture]
-    fn test_data() -> String {
-        crate::common::example_test_data()
-    }
 
     #[rstest]
     #[case::standalone(standalone_context())]
