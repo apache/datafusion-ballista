@@ -31,10 +31,9 @@ mod coalesce {
     use std::path::Path;
 
     use crate::common::{
-        collect_text, datafusion_context, register_csv_tables, set_option,
+        check_matches, collect_text, datafusion_context, register_csv_tables, set_option,
     };
     use ballista::prelude::SessionContextExt;
-    use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::prelude::*;
     use tempfile::TempDir;
 
@@ -111,20 +110,7 @@ mod coalesce {
                 .await;
                 for (query, expected) in QUERIES.iter().zip(&expected) {
                     let case = format!("broadcast={broadcast} target={target} `{query}`");
-                    match ctx.sql(query).await.unwrap().collect().await {
-                        Ok(batches) => {
-                            let actual =
-                                pretty_format_batches(&batches).unwrap().to_string();
-                            if actual.trim() != expected.trim() {
-                                mismatches.push(format!(
-                                    "[{case}] expected:\n{expected}\nactual:\n{actual}"
-                                ));
-                            }
-                        }
-                        Err(error) => {
-                            mismatches.push(format!("[{case}] failed: {error}"))
-                        }
-                    }
+                    check_matches(&ctx, &case, query, expected, &mut mismatches).await;
                 }
             }
         }

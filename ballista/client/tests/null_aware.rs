@@ -24,10 +24,9 @@ mod null_aware {
     use std::path::Path;
 
     use crate::common::{
-        collect_text, datafusion_context, register_csv_tables, set_option,
+        check_matches, collect_text, datafusion_context, register_csv_tables, set_option,
     };
     use ballista::prelude::SessionContextExt;
-    use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::prelude::*;
     use tempfile::TempDir;
 
@@ -95,19 +94,8 @@ mod null_aware {
             }
             register_csv_tables(&ctx, dir, &["t1", "t2"]).await;
 
-            match ctx.sql(QUERY).await.unwrap().collect().await {
-                Ok(batches) => {
-                    let actual = pretty_format_batches(&batches).unwrap().to_string();
-                    if actual.trim() != expected.trim() {
-                        mismatches.push(format!(
-                            "[{case}/{variant}] expected:\n{expected}\nactual:\n{actual}"
-                        ));
-                    }
-                }
-                Err(error) => {
-                    mismatches.push(format!("[{case}/{variant}] failed: {error}"));
-                }
-            }
+            let label = format!("{case}/{variant}");
+            check_matches(&ctx, &label, QUERY, &expected, &mut mismatches).await;
         }
 
         assert!(mismatches.is_empty(), "{}", mismatches.join("\n\n"));
