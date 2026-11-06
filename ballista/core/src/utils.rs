@@ -305,10 +305,7 @@ pub async fn write_stream_to_disk(
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(channel_capacity);
 
-    let work_dir_writer_lease = crate::work_dir_lifetime::lease_for_writer(path)
-        .map_err(|_| BallistaError::Cancelled)?;
     let handle = tokio::task::spawn_blocking(move || -> Result<u64> {
-        let _work_dir_writer_lease = work_dir_writer_lease;
         let file = BufWriter::new(File::create(&path_owned).map_err(|e| {
             error!("Failed to create partition file at {:?}: {e:?}", path_owned);
             BallistaError::IoError(e)

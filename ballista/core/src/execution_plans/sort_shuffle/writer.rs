@@ -263,8 +263,6 @@ pub struct SortShuffleWriterExec {
     plan: Arc<dyn ExecutionPlan>,
     /// Path to write output streams to
     work_dir: String,
-    /// Private-root lease acquired during construction, shared by clones.
-    _work_dir_owner_lease: Option<Arc<crate::work_dir_lifetime::WorkDirLease>>,
     /// Shuffle output partitioning (must be Hash partitioning)
     shuffle_output_partitioning: Partitioning,
     /// Sort shuffle configuration
@@ -301,7 +299,6 @@ impl Clone for SortShuffleWriterExec {
             stage_id: self.stage_id,
             plan: self.plan.clone(),
             work_dir: self.work_dir.clone(),
-            _work_dir_owner_lease: self._work_dir_owner_lease.clone(),
             shuffle_output_partitioning: self.shuffle_output_partitioning.clone(),
             config: self.config.clone(),
             task_id: self.task_id,
@@ -429,10 +426,6 @@ impl SortShuffleWriteMetrics {
 }
 
 impl SortShuffleWriterExec {
-    /// Work root for executor-owned lifetime accounting.
-    pub fn work_dir(&self) -> &str {
-        &self.work_dir
-    }
     /// Create a new sort-based shuffle writer.
     pub fn try_new(
         job_id: JobId,
@@ -475,18 +468,11 @@ impl SortShuffleWriterExec {
         let default_partition_slice: Vec<usize> = (0..child_partition_count).collect();
         let output_partition_count = properties.output_partitioning().partition_count();
 
-        let work_dir_owner_lease =
-            crate::work_dir_lifetime::lease_for_writer(std::path::Path::new(&work_dir))
-                .map_err(|_| {
-                    DataFusionError::Execution("executor workdir is sealed".into())
-                })?
-                .map(Arc::new);
         Ok(Self {
             job_id,
             stage_id,
             plan,
             work_dir,
-            _work_dir_owner_lease: work_dir_owner_lease,
             shuffle_output_partitioning,
             config,
             task_id: 0,
@@ -999,10 +985,6 @@ impl ExecutionPlan for SortShuffleWriterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let coordinator_lease = crate::work_dir_lifetime::lease_for_writer(
-            std::path::Path::new(&self.work_dir),
-        )
-        .map_err(|_| DataFusionError::Execution("executor workdir is sealed".into()))?;
         let mut guard = self.state.lock().map_err(|_| {
             DataFusionError::Internal(
                 "SortShuffleWriterExec state mutex poisoned".to_owned(),
@@ -1017,7 +999,6 @@ impl ExecutionPlan for SortShuffleWriterExec {
             |senders| {
                 let writer = self.clone();
                 tokio::spawn(async move {
-                    let _coordinator_lease = coordinator_lease;
                     run_coordinator(writer, context, senders).await;
                 });
             },

@@ -507,75 +507,9 @@ pub async fn start_executor_process_with_memory_metrics(
     start_executor_process_inner(opt, Some(memory_metrics)).await
 }
 
-/// Guard for a default executor work directory.
-///
-/// Once the executor has started workers, an unverified shutdown must not
-/// remove this directory: a writer with a retained pathname could otherwise
-/// recreate it with ambient (possibly public) permissions. We intentionally
-/// preserve it on abnormal termination; operators may remove private residuals.
-pub(crate) struct ExecutorWorkDirGuard {
-    activity: Arc<ballista_core::work_dir_lifetime::WorkDirActivity>,
-    temp_dir: Option<TempDir>,
-    may_have_active_writers: bool,
-}
-
-impl ExecutorWorkDirGuard {
-    fn new(temp_dir: TempDir) -> Self {
-        Self {
-            activity: ballista_core::work_dir_lifetime::WorkDirActivity::register(
-                temp_dir.path().to_path_buf(),
-            ),
-            temp_dir: Some(temp_dir),
-            may_have_active_writers: false,
-        }
-    }
-
-    pub(crate) fn arm(&mut self) {
-        self.may_have_active_writers = true;
-    }
-
-    pub(crate) fn activity(
-        &self,
-    ) -> Arc<ballista_core::work_dir_lifetime::WorkDirActivity> {
-        self.activity.clone()
-    }
-
-    pub(crate) fn finish(&mut self) -> bool {
-        if !self.activity.seal_if_idle() {
-            return false;
-        }
-        self.may_have_active_writers = false;
-        true
-    }
-}
-
-impl Drop for ExecutorWorkDirGuard {
-    fn drop(&mut self) {
-        if let Some(temp_dir) = self
-            .temp_dir
-            .take()
-            .filter(|_| self.may_have_active_writers)
-        {
-            let path = temp_dir.keep();
-            warn!(
-                "Retaining private executor work directory {} after unverified shutdown",
-                path.display()
-            );
-        }
-    }
-}
-
-/// Resolve the work directory and retain ownership of an automatically-created one.
-/// The returned guard is explicitly released only after all tracked work has drained.
-pub(crate) fn resolve_executor_work_dir(
-    configured_work_dir: Option<String>,
-) -> ballista_core::error::Result<(String, Option<ExecutorWorkDirGuard>)> {
-    if let Some(work_dir) = configured_work_dir {
-        return Ok((work_dir, None));
-    }
-
+fn create_default_work_dir() -> ballista_core::error::Result<(String, TempDir)> {
     let temp_dir = TempDir::new()?;
-    // Do not rely on tempfile's platform-dependent default permissions.
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -585,14 +519,34 @@ pub(crate) fn resolve_executor_work_dir(
         )?;
     }
 
-    let work_dir = temp_dir
+    let path = temp_dir
         .path()
         .to_str()
         .map(ToOwned::to_owned)
-        .ok_or_else(|| {
-            BallistaError::Configuration("Unable to bind work dir".to_string())
-        })?;
-    Ok((work_dir, Some(ExecutorWorkDirGuard::new(temp_dir))))
+        .ok_or_else(|| BallistaError::Configuration("Unable to bind work dir".into()))?;
+
+    Ok((path, temp_dir))
+}
+
+#[cfg(all(test, unix))]
+mod default_work_dir_regression_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    #[tokio::test]
+    async fn default_work_dir_survives_await_with_private_permissions() {
+        let (path, owner) = create_default_work_dir().unwrap();
+
+        tokio::task::yield_now().await;
+
+        assert!(Path::new(&path).is_dir());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+
+        drop(owner);
+        assert!(!Path::new(&path).exists());
+    }
 }
 
 async fn start_executor_process_inner(
@@ -610,8 +564,13 @@ async fn start_executor_process_inner(
     let scheduler_port = opt.scheduler_port;
     let scheduler_url = format!("http://{scheduler_host}:{scheduler_port}");
 
-    let (work_dir, mut work_dir_guard) = resolve_executor_work_dir(opt.work_dir.clone())?;
-    let work_dir_activity = work_dir_guard.as_ref().map(|guard| guard.activity());
+    let (work_dir, _default_work_dir_owner) = match opt.work_dir.clone() {
+        Some(work_dir) => (work_dir, None),
+        None => {
+            let (path, owner) = create_default_work_dir()?;
+            (path, Some(owner))
+        }
+    };
 
     let vcores = if opt.vcores == 0 {
         // use all available cores if no concurrency level is specified
@@ -766,8 +725,7 @@ async fn start_executor_process_inner(
             }),
         )
         .with_session_runtime_cache(Some(session_runtime_cache))
-        .with_memory_metrics(memory_metrics)
-        .with_work_dir_activity(work_dir_activity),
+        .with_memory_metrics(memory_metrics),
     );
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
@@ -855,12 +813,6 @@ async fn start_executor_process_inner(
 
     let scheduler_policy = opt.task_scheduling_policy;
     let job_data_ttl_seconds = opt.job_data_ttl_seconds;
-
-    // Before any service or cleaner can use the work directory, arm its
-    // fail-closed lifetime policy. An abnormal return leaves it private.
-    if let Some(guard) = work_dir_guard.as_mut() {
-        guard.arm();
-    }
 
     // Graceful shutdown notification
     let shutdown_notification = ShutdownNotifier::new();
@@ -1052,14 +1004,10 @@ async fn start_executor_process_inner(
             }
         }
         if clean_job_data_on_shutdown {
-            match try_clean_private_shutdown(&work_dir, &executor, &mut work_dir_guard)
-                .await
-            {
-                Ok(true) => info!("Shuffle data cleaned after private workdir seal."),
-                Ok(false) => warn!(
-                    "Deferring private shuffle cleanup: late admission or active writer"
-                ),
-                Err(e) => error!("Ballista executor fail to clean_shuffle_data {e:?}"),
+            if let Err(e) = clean_all_shuffle_data(&work_dir).await {
+                error!("Ballista executor fail to clean_shuffle_data {e:?}")
+            } else {
+                info!("Shuffle data cleaned.");
             }
         }
     };
@@ -1073,21 +1021,6 @@ async fn start_executor_process_inner(
             service.abort();
         }
         return Err(timed_out.into());
-    }
-    // Releasing the directory is safe only after services have stopped
-    // and the executor reports that no tracked work remains. On timeout,
-    // cancellation or an incomplete stop the guard instead retains 0700.
-    if let Some(guard) = work_dir_guard.as_mut() {
-        if futures::FutureExt::now_or_never(TasksDrainedFuture(executor.clone()))
-            .is_some()
-            && guard.finish()
-        {
-            // The final seal makes any late writer registration fail.
-        } else {
-            warn!(
-                "Retaining private executor directory: active tasks remain at shutdown"
-            );
-        }
     }
     info!("Executor stopped.");
     Ok(())
@@ -1231,29 +1164,6 @@ async fn clean_shuffle_data_loop(
 }
 
 /// This function will clean up all shuffle data on this executor
-/// Only after service handlers have stopped: atomically reject new private
-/// writer leases before deleting shuffle data. Caller-owned roots keep
-/// their existing cleanup semantics (no private registration).
-pub(crate) async fn try_clean_private_shutdown(
-    work_dir: &str,
-    executor: &Arc<Executor>,
-    guard: &mut Option<ExecutorWorkDirGuard>,
-) -> ballista_core::error::Result<bool> {
-    let can_clean = match guard.as_mut() {
-        Some(guard) => {
-            futures::FutureExt::now_or_never(TasksDrainedFuture(executor.clone()))
-                .is_some()
-                && guard.finish()
-        }
-        None => true,
-    };
-    if !can_clean {
-        return Ok(false);
-    }
-    clean_all_shuffle_data(work_dir).await?;
-    Ok(true)
-}
-
 async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<()> {
     let mut dir = fs::read_dir(work_dir).await?;
     let mut to_deleted = Vec::new();
@@ -2062,131 +1972,4 @@ mod spill_limit_tests {
             &base.object_store_registry
         ));
     }
-}
-
-#[cfg(test)]
-mod executor_work_dir_tests {
-    use super::*;
-
-    #[test]
-    fn default_work_dir_is_private_and_removed_when_guard_drops() {
-        let (path, guard) = resolve_executor_work_dir(None).unwrap();
-        let guard = guard.expect("default directory must be owned by executor");
-        assert!(Path::new(&path).is_dir());
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o700);
-        }
-
-        drop(guard);
-        assert!(!Path::new(&path).exists());
-    }
-
-    #[test]
-    fn explicitly_configured_work_dir_remains_caller_owned() {
-        let configured = TempDir::new().unwrap();
-        let configured_path = configured.path().to_string_lossy().into_owned();
-        let (path, guard) =
-            resolve_executor_work_dir(Some(configured_path.clone())).unwrap();
-        assert_eq!(path, configured_path);
-        assert!(guard.is_none());
-        assert!(Path::new(&path).is_dir());
-    }
-}
-
-#[cfg(all(test, unix))]
-mod executor_shutdown_r9_green {
-    use super::*;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use tokio::sync::oneshot;
-    use tokio::time::{Duration, timeout};
-
-    fn mode(path: &str) -> u32 {
-        fs::metadata(path).unwrap().permissions().mode() & 0o777
-    }
-
-    async fn late_writer(path: String, go: oneshot::Receiver<()>) -> u32 {
-        go.await.expect("release late writer");
-        tokio::fs::create_dir_all(format!("{path}/job/stage"))
-            .await
-            .unwrap();
-        tokio::fs::write(format!("{path}/job/stage/data-0.arrow"), b"synthetic")
-            .await
-            .unwrap();
-        mode(&path)
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn normal_shutdown_waits_for_writer_before_directory_cleanup() {
-        let (path, mut guard) = resolve_executor_work_dir(None).unwrap();
-        guard.as_mut().unwrap().arm();
-        let (release, wake) = oneshot::channel();
-        let task = tokio::spawn(late_writer(path.clone(), wake));
-        release.send(()).unwrap();
-        assert_eq!(task.await.unwrap(), 0o700);
-        guard.as_mut().unwrap().finish();
-        drop(guard);
-        assert!(
-            !Path::new(&path).exists(),
-            "normal shutdown left shuffle data"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn forced_timeout_retains_private_directory_for_late_writer() {
-        let (path, mut guard) = resolve_executor_work_dir(None).unwrap();
-        guard.as_mut().unwrap().arm();
-        let (release, wake) = oneshot::channel();
-        let task = tokio::spawn(late_writer(path.clone(), wake));
-        assert_eq!(mode(&path), 0o700);
-        let result =
-            timeout(Duration::from_millis(20), std::future::pending::<()>()).await;
-        assert!(result.is_err(), "expected forced shutdown timeout");
-        drop(guard);
-        release.send(()).unwrap();
-        let observed = task.await.unwrap();
-        let _ = fs::remove_dir_all(&path);
-        assert_eq!(
-            observed, 0o700,
-            "SECURITY_RED: late writer recreated a nonprivate directory after timeout"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn caller_cancellation_retains_private_directory_for_late_writer() {
-        let (ready, receive) = oneshot::channel();
-        let owner = tokio::spawn(async move {
-            let (path, mut guard) = resolve_executor_work_dir(None).unwrap();
-            guard.as_mut().unwrap().arm();
-            ready.send(path).unwrap();
-            std::future::pending::<()>().await;
-            drop(guard);
-        });
-        let path = receive.await.unwrap();
-        let (release, wake) = oneshot::channel();
-        let task = tokio::spawn(late_writer(path.clone(), wake));
-        owner.abort();
-        assert!(owner.await.unwrap_err().is_cancelled());
-        release.send(()).unwrap();
-        let observed = task.await.unwrap();
-        let _ = fs::remove_dir_all(&path);
-        assert_eq!(
-            observed, 0o700,
-            "SECURITY_RED: cancelled owner let late writer recreate a nonprivate directory"
-        );
-    }
-}
-
-#[cfg(all(test, unix))]
-pub(crate) async fn r11_m2_real_cleanup_test_only(
-    work_dir: &str,
-    executor: &Arc<Executor>,
-    guard: &mut Option<ExecutorWorkDirGuard>,
-) -> ballista_core::error::Result<bool> {
-    // The actual production admission/cleanup gate, not a reimplementation.
-    try_clean_private_shutdown(work_dir, executor, guard).await
 }
