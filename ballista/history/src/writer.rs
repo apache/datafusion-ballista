@@ -257,38 +257,14 @@ async fn open_for<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{
-        HistoryEvent, JobEnd, JobEndStatus, JobIndex, JobStart, StageStart, TaskEnd,
-        TaskEndMetrics,
-    };
+    use crate::event::{HistoryEvent, StageStart, TaskEnd, TaskEndMetrics};
+    use crate::test_util::{job_end, job_start};
     use ballista_api_types::dto::TaskStatus;
-    use serde_json::value::RawValue;
-    use std::collections::BTreeMap;
 
-    /// A minimal succeeded `JobEnd` for `job_id`; the payloads are placeholders,
-    /// only the record's presence and the file lifecycle matter to these tests.
+    /// A succeeded `JobEnd` for `job_id`; the payloads are placeholders, only
+    /// the record's presence and the file lifecycle matter to these tests.
     fn succeeded_job_end(job_id: &str) -> HistoryEvent {
-        HistoryEvent::JobEnd(Box::new(JobEnd {
-            status: JobEndStatus::Succeeded,
-            queued_at: 1,
-            started_at: 2,
-            completed_at: 20,
-            index: JobIndex {
-                job_id: job_id.into(),
-                job_name: "q1".into(),
-                status: "Completed".into(),
-                job_status: "COMPLETED".into(),
-                start_time: 10,
-                end_time: 20,
-                num_stages: 1,
-                completed_stages: 1,
-                percent_complete: 100,
-            },
-            job: RawValue::from_string(format!(r#"{{"job_id":"{job_id}"}}"#)).unwrap(),
-            stages: RawValue::from_string(r#"{"stages":[]}"#.to_string()).unwrap(),
-            config: BTreeMap::new(),
-            dot: "digraph {}".into(),
-        }))
+        HistoryEvent::JobEnd(Box::new(job_end(job_id)))
     }
 
     #[tokio::test]
@@ -298,18 +274,7 @@ mod tests {
         // under load; `append_final` must still guarantee delivery.
         let writer = EventLogWriter::new(dir.path().to_path_buf(), 1);
 
-        writer.append(
-            "job-1",
-            HistoryEvent::JobStart(JobStart {
-                job_id: "job-1".into(),
-                job_name: "q1".into(),
-                queued_at: 1,
-                submitted_at: 2,
-                scheduler_id: None,
-                logical_plan: None,
-                physical_plan: None,
-            }),
-        );
+        writer.append("job-1", HistoryEvent::JobStart(job_start("job-1")));
         for stage_id in 0..10 {
             writer.append(
                 "job-1",
@@ -320,27 +285,7 @@ mod tests {
             );
         }
 
-        let job_end = HistoryEvent::JobEnd(Box::new(JobEnd {
-            status: JobEndStatus::Succeeded,
-            queued_at: 1,
-            started_at: 2,
-            completed_at: 20,
-            index: JobIndex {
-                job_id: "job-1".into(),
-                job_name: "q1".into(),
-                status: "Completed".into(),
-                job_status: "COMPLETED".into(),
-                start_time: 10,
-                end_time: 20,
-                num_stages: 1,
-                completed_stages: 1,
-                percent_complete: 100,
-            },
-            job: RawValue::from_string(r#"{"job_id":"job-1"}"#.to_string()).unwrap(),
-            stages: RawValue::from_string(r#"{"stages":[]}"#.to_string()).unwrap(),
-            config: BTreeMap::new(),
-            dot: "digraph {}".into(),
-        }));
+        let job_end = succeeded_job_end("job-1");
         writer.append_final("job-1", job_end).await;
         writer.finish_job("job-1").await;
 
@@ -364,18 +309,7 @@ mod tests {
     async fn append_writes_one_jsonl_line_per_event() {
         let dir = tempfile::tempdir().unwrap();
         let writer = EventLogWriter::new(dir.path().to_path_buf(), 16);
-        writer.append(
-            "job-1",
-            HistoryEvent::JobStart(JobStart {
-                job_id: "job-1".into(),
-                job_name: "q1".into(),
-                queued_at: 1,
-                submitted_at: 2,
-                scheduler_id: None,
-                logical_plan: None,
-                physical_plan: None,
-            }),
-        );
+        writer.append("job-1", HistoryEvent::JobStart(job_start("job-1")));
         writer.append(
             "job-1",
             HistoryEvent::StageStart(StageStart {
@@ -410,18 +344,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let writer = EventLogWriter::new(dir.path().to_path_buf(), 16);
 
-        writer.append(
-            "job-1",
-            HistoryEvent::JobStart(JobStart {
-                job_id: "job-1".into(),
-                job_name: "q1".into(),
-                queued_at: 1,
-                submitted_at: 2,
-                scheduler_id: None,
-                logical_plan: None,
-                physical_plan: None,
-            }),
-        );
+        writer.append("job-1", HistoryEvent::JobStart(job_start("job-1")));
         writer
             .append_final("job-1", succeeded_job_end("job-1"))
             .await;
