@@ -24,6 +24,7 @@ use crate::tui::domain::jobs::stages::{
 };
 use ballista_api_types::dto::Percentiles;
 
+/// An executor on Ubuntu with four physical cores and the given memory metrics.
 pub(crate) fn make_executor(
     host: &str,
     port: u16,
@@ -63,6 +64,7 @@ pub(crate) fn make_executor(
     }
 }
 
+/// A job with the given status and progress, and no plans.
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn make_job(
     id: &str,
