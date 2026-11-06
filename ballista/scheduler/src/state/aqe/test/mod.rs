@@ -47,7 +47,7 @@ mod stage_transitions;
 /// A table whose statistics are declared rather than measured
 mod stats_table;
 
-use crate::state::aqe::adaptive_rules::AdaptiveRules;
+use crate::state::aqe::adaptive_rules::{AdaptiveRule, AdaptiveRules};
 use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::{AdaptivePlanner, RunnableStages};
 use ballista_core::JobId;
@@ -60,16 +60,21 @@ use datafusion::arrow::array::{Int32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::TableProvider;
 use datafusion::common::stats::Precision;
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{ColumnStatistics, Statistics};
+use datafusion::config::ConfigOptions;
 use datafusion::datasource::MemTable;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::statistics::StatisticsContext;
+use datafusion::physical_plan::{ExecutionPlan, StatisticsArgs};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use stats_table::StatsTable;
 use std::collections::HashSet;
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 impl AdaptivePlanner {
     /// Creates an `AdaptivePlanner` over an already-built physical `plan`, with
@@ -335,4 +340,123 @@ pub(crate) fn partitions_with_byte_sizes(
         .enumerate()
         .map(|(idx, &bytes)| vec![mock_partition_location(idx, 1, bytes)])
         .collect()
+}
+
+/// What an embedder's rules saw.
+#[derive(Debug, Default)]
+pub(crate) struct Seen {
+    pub(crate) preparation_runs: AtomicUsize,
+    pub(crate) replan_runs: AtomicUsize,
+    /// The measured row counts of finished stages' exchanges, by stage id.
+    pub(crate) measured_rows: Mutex<Vec<(usize, usize)>>,
+    /// A preparation rule was given a `RepartitionExec`.
+    pub(crate) prepared_submitted_shuffle: AtomicBool,
+    /// A preparation rule was given an `ExchangeExec`.
+    pub(crate) prepared_stage_boundary: AtomicBool,
+}
+
+/// Counts its runs, records what a preparation rule is given and the measured
+/// rows of each finished stage a replan rule is given, and optionally holds
+/// back every stage that hasn't run yet.
+#[derive(Debug)]
+struct Recording {
+    seen: Arc<Seen>,
+    replan: bool,
+    hold: bool,
+}
+
+impl PhysicalOptimizerRule for Recording {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        _config: &ConfigOptions,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        if !self.replan {
+            self.seen.preparation_runs.fetch_add(1, Ordering::Relaxed);
+            plan.apply(|node| {
+                if node.is::<RepartitionExec>() {
+                    self.seen
+                        .prepared_submitted_shuffle
+                        .store(true, Ordering::Relaxed);
+                }
+                if node.is::<ExchangeExec>() {
+                    self.seen
+                        .prepared_stage_boundary
+                        .store(true, Ordering::Relaxed);
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })?;
+            return Ok(plan);
+        }
+        self.seen.replan_runs.fetch_add(1, Ordering::Relaxed);
+        plan.apply(|node| {
+            if let Some(exchange) = node.downcast_ref::<ExchangeExec>()
+                && exchange.shuffle_created()
+            {
+                let stats = StatisticsContext::new()
+                    .compute(node.as_ref(), &StatisticsArgs::new())?;
+                if let (Some(stage_id), Some(rows)) =
+                    (exchange.stage_id(), stats.num_rows.get_value())
+                {
+                    self.seen
+                        .measured_rows
+                        .lock()
+                        .unwrap()
+                        .push((stage_id, *rows));
+                }
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        if !self.hold {
+            return Ok(plan);
+        }
+        Ok(plan
+            .transform_up(|node| {
+                let Some(exchange) = node.downcast_ref::<ExchangeExec>() else {
+                    return Ok(Transformed::no(node));
+                };
+                if exchange.shuffle_created() || exchange.is_inactive_stage() {
+                    return Ok(Transformed::no(node));
+                }
+                let held: Arc<dyn ExecutionPlan> =
+                    Arc::new(exchange.with_inactive_stage(true));
+                Ok(Transformed::yes(held))
+            })?
+            .data)
+    }
+
+    fn name(&self) -> &str {
+        "Recording"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
+/// A scheduler embedder whose preparation and replan rules are [`Recording`]
+/// rules. Its replan rule holds back the stages that haven't run when `hold`
+/// is set.
+#[derive(Debug)]
+pub(crate) struct Embedder {
+    pub(crate) seen: Arc<Seen>,
+    pub(crate) hold: bool,
+}
+
+impl AdaptiveRules for Embedder {
+    fn preparation_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
+        vec![Arc::new(Recording {
+            seen: Arc::clone(&self.seen),
+            replan: false,
+            hold: false,
+        })]
+    }
+
+    fn replan_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
+        vec![Arc::new(Recording {
+            seen: Arc::clone(&self.seen),
+            replan: true,
+            hold: self.hold,
+        })]
+    }
 }

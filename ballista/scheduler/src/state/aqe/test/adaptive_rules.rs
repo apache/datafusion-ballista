@@ -17,116 +17,12 @@
 
 //! Tests for the rules a scheduler embedder adds to adaptive planning.
 
-use crate::state::aqe::adaptive_rules::{AdaptiveRule, AdaptiveRules};
-use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::AdaptivePlanner;
-use crate::state::aqe::test::{mock_batch, mock_context, mock_partitions_with_size};
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::config::ConfigOptions;
-use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::StatisticsArgs;
-use datafusion::physical_plan::statistics::StatisticsContext;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-
-/// What the embedder's rules saw.
-#[derive(Debug, Default)]
-struct Seen {
-    preparation_runs: AtomicUsize,
-    replan_runs: AtomicUsize,
-    /// The measured row counts of finished stages' exchanges, by stage id.
-    measured_rows: Mutex<Vec<(usize, usize)>>,
-}
-
-/// Counts its runs, records the measured rows of each finished stage, and
-/// optionally holds back every stage that hasn't run yet.
-#[derive(Debug)]
-struct Recording {
-    seen: Arc<Seen>,
-    replan: bool,
-    hold: bool,
-}
-
-impl PhysicalOptimizerRule for Recording {
-    fn optimize(
-        &self,
-        plan: Arc<dyn ExecutionPlan>,
-        _config: &ConfigOptions,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        if !self.replan {
-            self.seen.preparation_runs.fetch_add(1, Ordering::Relaxed);
-            return Ok(plan);
-        }
-        self.seen.replan_runs.fetch_add(1, Ordering::Relaxed);
-        plan.apply(|node| {
-            if let Some(exchange) = node.downcast_ref::<ExchangeExec>()
-                && exchange.shuffle_created()
-            {
-                let stats = StatisticsContext::new()
-                    .compute(node.as_ref(), &StatisticsArgs::new())?;
-                if let (Some(stage_id), Some(rows)) =
-                    (exchange.stage_id(), stats.num_rows.get_value())
-                {
-                    self.seen
-                        .measured_rows
-                        .lock()
-                        .unwrap()
-                        .push((stage_id, *rows));
-                }
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
-        if !self.hold {
-            return Ok(plan);
-        }
-        Ok(plan
-            .transform_up(|node| {
-                let Some(exchange) = node.downcast_ref::<ExchangeExec>() else {
-                    return Ok(Transformed::no(node));
-                };
-                if exchange.shuffle_created() || exchange.is_inactive_stage() {
-                    return Ok(Transformed::no(node));
-                }
-                let held: Arc<dyn ExecutionPlan> =
-                    Arc::new(exchange.with_inactive_stage(true));
-                Ok(Transformed::yes(held))
-            })?
-            .data)
-    }
-
-    fn name(&self) -> &str {
-        "Recording"
-    }
-
-    fn schema_check(&self) -> bool {
-        true
-    }
-}
-
-#[derive(Debug)]
-struct Embedder {
-    seen: Arc<Seen>,
-    hold: bool,
-}
-
-impl AdaptiveRules for Embedder {
-    fn preparation_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
-        vec![Arc::new(Recording {
-            seen: Arc::clone(&self.seen),
-            replan: false,
-            hold: false,
-        })]
-    }
-
-    fn replan_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
-        vec![Arc::new(Recording {
-            seen: Arc::clone(&self.seen),
-            replan: true,
-            hold: self.hold,
-        })]
-    }
-}
+use crate::state::aqe::test::{
+    Embedder, Seen, mock_batch, mock_context, mock_partitions_with_size,
+};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 /// Two stages: one shuffling on `(a, c)`, and one reading it and shuffling on
 /// `c`, then the final stage.

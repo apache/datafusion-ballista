@@ -22,17 +22,15 @@
 //! must keep those shuffles as stage boundaries and must not make decisions
 //! that assume it knows what an extension operator does with its input.
 
-use crate::state::aqe::adaptive_rules::{AdaptiveRule, AdaptiveRules};
-use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::AdaptivePlanner;
-use crate::state::aqe::test::{coalesce_context, mock_batch, partitions_with_byte_sizes};
+use crate::state::aqe::test::{
+    Embedder, Seen, coalesce_context, mock_batch, partitions_with_byte_sizes,
+};
 use ballista_core::assert_plan;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::config::ConfigOptions;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -41,7 +39,7 @@ use datafusion::physical_plan::{
 use datafusion::prelude::SessionContext;
 use std::fmt::Formatter;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 
 /// A coalesce-tuned session with partition coalescing switched on or off and
 /// the table `t` registered.
@@ -168,6 +166,7 @@ async fn should_run_an_embedders_rules_on_a_submitted_plan()
     let seen = Arc::new(Seen::default());
     let embedder = Embedder {
         seen: Arc::clone(&seen),
+        hold: false,
     };
     let ctx = physical_context(false);
     let plan =
@@ -198,81 +197,6 @@ async fn should_run_an_embedders_rules_on_a_submitted_plan()
     assert_eq!(seen.replan_runs.load(Ordering::Relaxed), 2);
 
     Ok(())
-}
-
-/// What an embedder's rules saw.
-#[derive(Debug, Default)]
-struct Seen {
-    preparation_runs: AtomicUsize,
-    replan_runs: AtomicUsize,
-    /// A preparation rule was given a `RepartitionExec`.
-    prepared_submitted_shuffle: AtomicBool,
-    /// A preparation rule was given an `ExchangeExec`.
-    prepared_stage_boundary: AtomicBool,
-}
-
-/// Records what it is given and changes nothing.
-#[derive(Debug)]
-struct Recording {
-    seen: Arc<Seen>,
-    replan: bool,
-}
-
-impl PhysicalOptimizerRule for Recording {
-    fn optimize(
-        &self,
-        plan: Arc<dyn ExecutionPlan>,
-        _config: &ConfigOptions,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        if self.replan {
-            self.seen.replan_runs.fetch_add(1, Ordering::Relaxed);
-            return Ok(plan);
-        }
-        self.seen.preparation_runs.fetch_add(1, Ordering::Relaxed);
-        plan.apply(|node| {
-            if node.is::<RepartitionExec>() {
-                self.seen
-                    .prepared_submitted_shuffle
-                    .store(true, Ordering::Relaxed);
-            }
-            if node.is::<ExchangeExec>() {
-                self.seen
-                    .prepared_stage_boundary
-                    .store(true, Ordering::Relaxed);
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
-        Ok(plan)
-    }
-
-    fn name(&self) -> &str {
-        "Recording"
-    }
-
-    fn schema_check(&self) -> bool {
-        true
-    }
-}
-
-#[derive(Debug)]
-struct Embedder {
-    seen: Arc<Seen>,
-}
-
-impl AdaptiveRules for Embedder {
-    fn preparation_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
-        vec![Arc::new(Recording {
-            seen: Arc::clone(&self.seen),
-            replan: false,
-        })]
-    }
-
-    fn replan_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
-        vec![Arc::new(Recording {
-            seen: Arc::clone(&self.seen),
-            replan: true,
-        })]
-    }
 }
 
 /// A stand-in for a client's extension operator: passes its input through
