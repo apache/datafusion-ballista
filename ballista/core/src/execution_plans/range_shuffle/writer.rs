@@ -549,7 +549,6 @@ mod tests {
     use crate::utils::collect_stream;
     use datafusion::arrow::array::Int32Array;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::sorts::sort::SortExec;
@@ -572,9 +571,7 @@ mod tests {
             vec![key_payload_batch(&[5, 6]), key_payload_batch(&[7, 8])],
         ];
         let schema = partitions[0][0].schema();
-        let source = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(&partitions, schema, None).unwrap(),
-        )));
+        let source = MemorySourceConfig::try_new_exec(&partitions, schema, None).unwrap();
         Arc::new(SortExec::new(key_ordering(), source).with_preserve_partitioning(true))
     }
 

@@ -955,7 +955,6 @@ mod tests {
     use datafusion::arrow::array::{Int64Array, RecordBatch};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::prelude::SessionContext;
     use futures::TryStreamExt;
 
@@ -1085,10 +1084,11 @@ mod tests {
         // Local (wrong-globally) BWAG output per partition.
         let p0 = batch(&[1, 2, 3], &[1, 2, 3]);
         let p1 = batch(&[4, 5, 6], &[1, 2, 3]);
-        let source =
-            MemorySourceConfig::try_new(&[vec![p0], vec![p1]], schema.clone(), None)?;
-        let input: Arc<dyn ExecutionPlan> =
-            Arc::new(DataSourceExec::new(Arc::new(source)));
+        let input: Arc<dyn ExecutionPlan> = MemorySourceConfig::try_new_exec(
+            &[vec![p0], vec![p1]],
+            schema.clone(),
+            None,
+        )?;
 
         let udf = approx_distinct_udaf();
         // Partition 1's offset = the HLL state after ingesting {1,2,3}.
@@ -1200,10 +1200,11 @@ mod tests {
         // Local (wrong-globally) BWAG output per partition.
         let p0 = batch(&[10.0, 20.0, 30.0], &[10.0, 15.0, 20.0]);
         let p1 = batch(&[40.0, 50.0, 60.0], &[40.0, 45.0, 50.0]);
-        let source =
-            MemorySourceConfig::try_new(&[vec![p0], vec![p1]], schema.clone(), None)?;
-        let input: Arc<dyn ExecutionPlan> =
-            Arc::new(DataSourceExec::new(Arc::new(source)));
+        let input: Arc<dyn ExecutionPlan> = MemorySourceConfig::try_new_exec(
+            &[vec![p0], vec![p1]],
+            schema.clone(),
+            None,
+        )?;
 
         let udf = avg_udaf();
         // Partition 1's offset = AVG's terminal state after ingesting
@@ -1309,10 +1310,11 @@ mod tests {
         };
         let p0 = batch(&[1, 2, 3], &[1, 3, 6]);
         let p1 = batch(&[4, 5, 6], &[4, 9, 15]);
-        let source =
-            MemorySourceConfig::try_new(&[vec![p0], vec![p1]], schema.clone(), None)?;
-        let input: Arc<dyn ExecutionPlan> =
-            Arc::new(DataSourceExec::new(Arc::new(source)));
+        let input: Arc<dyn ExecutionPlan> = MemorySourceConfig::try_new_exec(
+            &[vec![p0], vec![p1]],
+            schema.clone(),
+            None,
+        )?;
 
         let apply = WindowApply::Scalar {
             op: ScalarOp::Add,

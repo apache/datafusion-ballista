@@ -1351,7 +1351,6 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::prelude::{SessionConfig, SessionContext};
@@ -1716,13 +1715,8 @@ mod tests {
             })
             .collect();
         let partitions = vec![batches];
-        let memory_data_source = Arc::new(MemorySourceConfig::try_new(
-            &partitions,
-            schema.clone(),
-            None,
-        )?);
         let input: Arc<dyn ExecutionPlan> =
-            Arc::new(DataSourceExec::new(memory_data_source));
+            MemorySourceConfig::try_new_exec(&partitions, schema.clone(), None)?;
 
         let runtime_env = Arc::new(
             RuntimeEnvBuilder::new()
@@ -1886,13 +1880,8 @@ mod tests {
             })
             .collect();
 
-        let memory_data_source = Arc::new(MemorySourceConfig::try_new(
-            &partitions,
-            schema.clone(),
-            None,
-        )?);
         let input: Arc<dyn ExecutionPlan> =
-            Arc::new(DataSourceExec::new(memory_data_source));
+            MemorySourceConfig::try_new_exec(&partitions, schema.clone(), None)?;
         assert_eq!(
             input.output_partitioning().partition_count(),
             num_inputs,
@@ -1968,12 +1957,8 @@ mod tests {
         hash_col: &str,
         num_output_partitions: usize,
     ) -> Result<Vec<u64>> {
-        let source = Arc::new(MemorySourceConfig::try_new(
-            &partitions,
-            schema.clone(),
-            None,
-        )?);
-        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(source));
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&partitions, schema.clone(), None)?;
         let task_ctx = SessionContext::new().task_ctx();
         let work_dir = TempDir::new()?;
         let col_idx = schema.index_of(hash_col)?;
@@ -2014,16 +1999,12 @@ mod tests {
             )
         };
         let partitions = vec![vec![batch(0..1000)?], vec![batch(500..1500)?]];
-        let source = Arc::new(MemorySourceConfig::try_new(
-            &partitions,
-            schema.clone(),
-            None,
-        )?);
+        let source = MemorySourceConfig::try_new_exec(&partitions, schema.clone(), None)?;
         let work_dir = TempDir::new()?;
         let writer = Arc::new(SortShuffleWriterExec::try_new(
             "distinct_count_job".into(),
             1,
-            Arc::new(DataSourceExec::new(source)),
+            source,
             work_dir.path().to_str().unwrap().to_string(),
             Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
             SortShuffleConfig::default(),
@@ -2260,13 +2241,8 @@ mod tests {
         )
         .unwrap();
         let partitions = vec![vec![batch]];
-        let memory_data_source = Arc::new(MemorySourceConfig::try_new(
-            &partitions,
-            schema.clone(),
-            None,
-        )?);
         let input: Arc<dyn ExecutionPlan> =
-            Arc::new(DataSourceExec::new(memory_data_source));
+            MemorySourceConfig::try_new_exec(&partitions, schema.clone(), None)?;
 
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();

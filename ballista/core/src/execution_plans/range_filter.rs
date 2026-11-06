@@ -833,10 +833,9 @@ mod tests {
 
     fn v_source(partitions: usize) -> Arc<dyn ExecutionPlan> {
         let schema = v_schema();
-        let source: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(&vec![vec![]; partitions], schema.clone(), None)
-                .unwrap(),
-        )));
+        let source: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&vec![vec![]; partitions], schema, None)
+                .unwrap();
         Arc::new(
             RepartitionExec::try_new(source, Partitioning::RoundRobinBatch(partitions))
                 .unwrap(),
@@ -1040,10 +1039,8 @@ mod tests {
             vec![Arc::new(Float64Array::from(vec![Some(1.0), None]))],
         )
         .unwrap();
-        let source =
-            MemorySourceConfig::try_new(&[vec![batch]], schema.clone(), None).unwrap();
         let input: Arc<dyn ExecutionPlan> =
-            Arc::new(DataSourceExec::new(Arc::new(source)));
+            MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap();
 
         let err = RangeFilterExec::try_new_resolved(
             input,
@@ -1402,14 +1399,12 @@ mod tests {
 
     #[tokio::test]
     async fn slow_path_matches_fast_path_when_input_unsorted() {
-        let cfg = MemorySourceConfig::try_new(
+        let mem_src: Arc<dyn ExecutionPlan> = MemorySourceConfig::try_new_exec(
             &[vec![batch(&[5.0, 10.0, 15.0, 19.0, 20.0, 25.0])]],
             v_schema(),
             None,
         )
         .unwrap();
-        let mem_src: Arc<dyn ExecutionPlan> =
-            Arc::new(DataSourceExec::new(Arc::new(cfg)));
         // RepartitionExec to 1 partition drops the ordering claim without
         // fanning the data out (RoundRobinBatch to 1 = identity).
         let repart: Arc<dyn ExecutionPlan> = Arc::new(
@@ -1428,18 +1423,16 @@ mod tests {
         // resolve bounds equivalent to cuts [10, 20], verify each partition
         // emits only its slice.
         let schema = v_schema();
-        let source: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(
-                &[
-                    vec![batch(&[5.0, 15.0, 25.0])],
-                    vec![batch(&[5.0, 15.0, 25.0])],
-                    vec![batch(&[5.0, 15.0, 25.0])],
-                ],
-                schema.clone(),
-                None,
-            )
-            .unwrap(),
-        )));
+        let source: Arc<dyn ExecutionPlan> = MemorySourceConfig::try_new_exec(
+            &[
+                vec![batch(&[5.0, 15.0, 25.0])],
+                vec![batch(&[5.0, 15.0, 25.0])],
+                vec![batch(&[5.0, 15.0, 25.0])],
+            ],
+            schema.clone(),
+            None,
+        )
+        .unwrap();
         let rf = Arc::new(
             RangeFilterExec::try_new_resolved(
                 source,

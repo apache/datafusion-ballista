@@ -24,7 +24,6 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::memory::MemorySourceConfig;
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
@@ -50,8 +49,7 @@ pub(crate) fn two_by_two_input() -> Result<Arc<dyn ExecutionPlan>> {
     )?;
     let partition = vec![batch.clone(), batch];
     let partitions = vec![partition.clone(), partition];
-    let source = Arc::new(MemorySourceConfig::try_new(&partitions, schema, None)?);
-    Ok(Arc::new(DataSourceExec::new(source)))
+    Ok(MemorySourceConfig::try_new_exec(&partitions, schema, None)?)
 }
 
 /// Executes every output partition of `plan` on its own task and returns the
@@ -100,8 +98,7 @@ pub(crate) fn partitioned_source(
         let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(arr)]).unwrap();
         per_partition.push(vec![batch]);
     }
-    let source = MemorySourceConfig::try_new(&per_partition, schema, None).unwrap();
-    Arc::new(DataSourceExec::new(Arc::new(source)))
+    MemorySourceConfig::try_new_exec(&per_partition, schema, None).unwrap()
 }
 
 /// A batch of `(k Int32, payload Utf8)` with `payload` `row-<k>`.

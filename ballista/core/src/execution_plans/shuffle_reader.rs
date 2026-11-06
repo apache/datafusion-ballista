@@ -1484,7 +1484,6 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::StatisticsArgs;
     use datafusion::physical_plan::common;
     use datafusion::physical_plan::statistics::StatisticsContext;
@@ -2125,13 +2124,11 @@ mod tests {
         let batch = create_test_batch();
         let partition = vec![batch.clone(), batch];
         let partitions = vec![partition.clone(), partition];
-        let memory_data_source = Arc::new(MemorySourceConfig::try_new(
+        Ok(MemorySourceConfig::try_new_exec(
             &partitions,
             create_test_schema(),
             None,
-        )?);
-
-        Ok(Arc::new(DataSourceExec::new(memory_data_source)))
+        )?)
     }
 
     fn create_test_batch() -> RecordBatch {

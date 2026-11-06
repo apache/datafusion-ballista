@@ -1088,7 +1088,6 @@ mod stream_tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::ScalarValue;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_plan::common;
     use datafusion::physical_plan::expressions::col;
@@ -1125,10 +1124,9 @@ mod stream_tests {
         );
         let b2 = batch(&schema, vec![Some(2.0), Some(4.0)], vec![20, 21]);
 
-        let memory = Arc::new(
-            MemorySourceConfig::try_new(&[vec![b1, b2]], schema.clone(), None).unwrap(),
-        );
-        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(memory));
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[vec![b1, b2]], schema.clone(), None)
+                .unwrap();
 
         let sort_expr = PhysicalSortExpr {
             expr: col("v", schema.as_ref()).unwrap(),
@@ -1187,10 +1185,8 @@ mod stream_tests {
             })
             .collect();
 
-        let memory = Arc::new(
-            MemorySourceConfig::try_new(&[batches], schema.clone(), None).unwrap(),
-        );
-        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(memory));
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[batches], schema.clone(), None).unwrap();
         let sort_expr = PhysicalSortExpr {
             expr: col("v", schema.as_ref()).unwrap(),
             options: SortOptions {
@@ -1231,9 +1227,8 @@ mod stream_tests {
         let b1 = batch(&schema, vec![Some(1.0), Some(2.0)], vec![40, 41]);
         let b2 = batch(&schema, vec![Some(3.0)], vec![42]);
 
-        let memory =
-            Arc::new(MemorySourceConfig::try_new(&[vec![b1, b2]], schema, None).unwrap());
-        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(memory));
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[vec![b1, b2]], schema, None).unwrap();
 
         let stats = Arc::new(RuntimeStatsExec::try_new(input, None).unwrap());
 
@@ -1266,7 +1261,6 @@ mod collect_tests {
     use datafusion::arrow::datatypes::Schema;
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
     use datafusion::physical_plan::common;
     use datafusion::physical_plan::expressions::col;
@@ -1281,9 +1275,7 @@ mod collect_tests {
     fn v_input(schema: Arc<Schema>) -> Arc<dyn ExecutionPlan> {
         let b1 = v_batch(&schema, vec![1.0, 3.0, 5.0]);
         let b2 = v_batch(&schema, vec![2.0, 4.0]);
-        let memory =
-            Arc::new(MemorySourceConfig::try_new(&[vec![b1, b2]], schema, None).unwrap());
-        Arc::new(DataSourceExec::new(memory))
+        MemorySourceConfig::try_new_exec(&[vec![b1, b2]], schema, None).unwrap()
     }
 
     fn sort_expr_on_v(schema: &Arc<Schema>) -> PhysicalSortExpr {
@@ -1710,16 +1702,13 @@ mod plan_walker_tests {
     };
     use datafusion::arrow::compute::SortOptions;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
     use datafusion::physical_plan::expressions::col;
     use datafusion::physical_plan::sorts::sort::SortExec;
 
     fn v_source() -> Arc<dyn ExecutionPlan> {
         let schema = v_schema();
-        let memory =
-            Arc::new(MemorySourceConfig::try_new(&[vec![]], schema, None).unwrap());
-        Arc::new(DataSourceExec::new(memory))
+        MemorySourceConfig::try_new_exec(&[vec![]], schema, None).unwrap()
     }
 
     fn sort_expr_v() -> PhysicalSortExpr {
