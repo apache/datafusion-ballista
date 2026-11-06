@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::state::aqe::execution_plan::ExchangeExec;
+use ballista_core::config::BallistaConfig;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::JoinType;
 use datafusion::common::ScalarValue;
@@ -235,9 +236,18 @@ impl PhysicalOptimizerRule for PropagateEmptyExecRule {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-        _config: &ConfigOptions,
+        config: &ConfigOptions,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        Ok(plan.transform_up(Self::transform)?.data)
+        let bc = config
+            .extensions
+            .get::<BallistaConfig>()
+            .cloned()
+            .unwrap_or_default();
+        if !bc.propagate_empty_enabled() {
+            Ok(plan)
+        } else {
+            Ok(plan.transform_up(Self::transform)?.data)
+        }
     }
 
     fn name(&self) -> &str {

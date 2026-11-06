@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Run TPC-H or TPC-DS on Kubernetes with Ballista, Spark, Spark + Comet or Trino.
+"""Run TPC-H or TPC-DS on Kubernetes with Ballista, Spark, Spark + Comet, Trino or DataFusion Distributed.
 
 Each run deploys a fresh cluster for one engine in the namespace that
 cluster.toml names, runs the queries from a runner Job inside it, reads the
@@ -29,6 +29,9 @@ same CPU and memory, and reads the same Parquet files.
             N executor pods
   comet     the same, with Comet's settings (conf/comet.conf) and image
   trino     a coordinator, N workers, and a Job running trino/run_queries.py
+  datafusion-distributed
+            a coordinator, N workers, and a Job running
+            datafusion-distributed/run_queries.py (TPC-H only)
 
 Only the standard library is used, and kubectl must be on the PATH and point at
 the cluster. See README.md for what the cluster needs.
@@ -54,16 +57,19 @@ QUERIES_DIRS = {
     "tpcds": os.path.join(BENCHMARKS_DIR, "queries-tpcds"),
 }
 NUM_QUERIES = {"tpch": 22, "tpcds": 99}
-ENGINES = ["ballista", "spark", "comet", "trino"]
+ENGINES = ["ballista", "spark", "comet", "trino", "datafusion-distributed"]
 
 # The runners print this line, then their JSON summary.
 RESULTS_MARKER = "===RESULTS-JSON-FILE==="
+# Engines whose runner does an untimed warm-up pass and then 3 timed iterations.
+TIMED_AFTER_WARMUP = ("trino", "datafusion-distributed")
 # ... and, as each query finishes, a line with this prefix, so a run that died
 # part way can be recovered from the log.
 QUERY_RESULT_PREFIXES = {
     "spark": "SPARK-QUERY-RESULT ",
     "comet": "SPARK-QUERY-RESULT ",
     "trino": "TRINO-QUERY-RESULT ",
+    "datafusion-distributed": "DFD-QUERY-RESULT ",
 }
 
 # Raised from the 16 MiB default: some SF1000 plans (q11, q21, q22) encode
@@ -72,6 +78,17 @@ BALLISTA_GRPC_MESSAGE_SIZE = 128 * 1024 * 1024
 # Each Ballista executor's DataFusion memory pool, as a fraction of its
 # container, leaving room for shuffle buffers and the rest of the process.
 BALLISTA_MEMORY_POOL_FRACTION = 0.7
+
+# Each DataFusion Distributed pod's DataFusion memory pool, as a fraction of its
+# container: the same as a Ballista executor's.
+DFD_MEMORY_POOL_FRACTION = 0.7
+# Each worker's spill volume. DataFusion caps a pod's spill files at 100GB.
+DFD_SPILL_VOLUME_SIZE = "200Gi"
+# What the patched worker logs when it starts (docker/datafusion-distributed.Dockerfile).
+# An image built without the patch has no memory limit.
+DFD_MEMORY_POOL_LOG = "Memory pool: FairSpillPool of "
+# --dfd-config values become SET statements, so they are kept to plain tokens.
+DFD_SETTING = re.compile(r"[A-Za-z][A-Za-z0-9_.]*=[A-Za-z0-9._-]+")
 
 # The user and group the apache/spark image runs as. A fresh shuffle volume is
 # owned by root, so the pods' fsGroup makes it writable.
@@ -475,6 +492,23 @@ def write_results(results_dir, run, summaries, queries):
     with open(path, "w") as f:
         json.dump(run, f, indent=2)
     return path
+
+
+def save_plans(results_dir, run_name, queries):
+    """Move each query's plan out of the results into <run>-plans/qN.txt.
+
+    DataFusion Distributed's runner returns the distributed plan of the last
+    iteration, with the metrics of every node. It is long, and for debugging a
+    slow query rather than for comparing runs.
+    """
+    plans = {q["query"]: q.pop("plan") for q in queries if q.get("plan")}
+    if not plans:
+        return
+    directory = os.path.join(results_dir, f"{run_name}-plans")
+    os.makedirs(directory, exist_ok=True)
+    for number, plan in plans.items():
+        with open(os.path.join(directory, f"q{number}.txt"), "w") as f:
+            f.write(plan)
 
 
 def print_results(run):
@@ -1160,6 +1194,228 @@ def trino_manifests(args, cfg, run_name, data_path, numbers):
 
 
 # ---------------------------------------------------------------------------
+# DataFusion Distributed
+# ---------------------------------------------------------------------------
+
+
+def dfd_pool_bytes(container_gib):
+    return int(container_gib * DFD_MEMORY_POOL_FRACTION * 1024**3)
+
+
+def dfd_manifests(args, cfg, run_name, data_path, numbers):
+    """Workers, a coordinator, and a runner Job.
+
+    Every pod runs the same `worker` binary. The coordinator is not behind the
+    workers' headless Service, so it gets no tasks: it plans each query, sends
+    the stages to the workers it finds through that Service, and runs the last
+    stage itself.
+    """
+    image = require(
+        cfg,
+        "images",
+        "datafusion_distributed",
+        "the image built from docker/datafusion-distributed.Dockerfile",
+    )
+    if not data_path.startswith("s3://"):
+        sys.exit(f"--engine datafusion-distributed reads s3:// data, got {data_path}")
+    bucket = data_path.split("/")[2]
+    partitioned = bool(cfg["data"]["tpch_partitioned"])
+    money_type = cfg["trino"]["money_type"]
+    settings = parse_pairs(args.dfd_config, "--dfd-config")
+    for key, value in settings:
+        if not DFD_SETTING.fullmatch(f"{key}={value}"):
+            sys.exit(
+                f"--dfd-config {key}={value}: use letters, digits, '.', '_' and '-' only"
+            )
+    coordinator_gib = args.dfd_coordinator_memory_gib
+    worker_pool = dfd_pool_bytes(args.executor_memory_gib)
+    coordinator_pool = dfd_pool_bytes(coordinator_gib)
+
+    def container(role, cpu, gib, pool, ports, probe_port, mounts):
+        return {
+            "name": role,
+            "image": image,
+            "command": ["/opt/datafusion-distributed/worker"],
+            # --bucket registers the dataset's bucket as an object store.
+            "args": [
+                "--bucket",
+                bucket,
+                "--worker-dns-name",
+                f"{run_name}-workers",
+            ],
+            "ports": [{"containerPort": p, "name": n} for n, p in ports],
+            "env": [
+                # The URL the worker gives for itself, http://<POD_IP>:9001.
+                {
+                    "name": "POD_IP",
+                    "valueFrom": {"fieldRef": {"fieldPath": "status.podIP"}},
+                },
+                {"name": "RUST_LOG", "value": "info"},
+                {"name": "RUST_BACKTRACE", "value": "1"},
+                # Read by worker-memory-limit.patch: a FairSpillPool of 70% of
+                # the container, which operators that can spill go past by
+                # writing to the volume.
+                {"name": "MEMORY_POOL_BYTES", "value": str(pool)},
+                {"name": "SPILL_DIR", "value": "/spill"},
+            ],
+            "resources": resources(cpu, gib),
+            "volumeMounts": mounts,
+            "readinessProbe": {"tcpSocket": {"port": probe_port}, "periodSeconds": 5},
+        }
+
+    spill_mount = [{"name": "spill", "mountPath": "/spill"}]
+    workers = deployment(
+        f"{run_name}-worker",
+        run_name,
+        "dfd-worker",
+        args.executors,
+        pod_spec(
+            cfg,
+            [
+                container(
+                    "worker",
+                    args.executor_cpus,
+                    args.executor_memory_gib,
+                    worker_pool,
+                    [("http", 9000), ("grpc", 9001)],
+                    9001,
+                    spill_mount,
+                )
+            ],
+            volumes=[
+                scratch_volume(
+                    cfg, "spill", run_name, "dfd-worker", DFD_SPILL_VOLUME_SIZE
+                )
+            ],
+        ),
+    )
+    # The last stage of a TPC-H query is small: the coordinator spills to the
+    # node's disk.
+    coordinator = deployment(
+        f"{run_name}-coordinator",
+        run_name,
+        "dfd-coordinator",
+        1,
+        pod_spec(
+            cfg,
+            [
+                container(
+                    "coordinator",
+                    8,
+                    coordinator_gib,
+                    coordinator_pool,
+                    [("http", 9000)],
+                    9000,
+                    spill_mount,
+                )
+            ],
+            volumes=[{"name": "spill", "emptyDir": {}}],
+        ),
+    )
+
+    runner_env = {
+        "COORDINATOR_URL": f"http://{run_name}-coordinator:9000",
+        "DATA_PATH": data_path,
+        "PARTITIONED": "1" if partitioned else "0",
+        "MONEY_TYPE": money_type,
+        "SCALE_FACTOR": str(cfg["data"]["scale_factor"]),
+        "EXPECTED_WORKERS": str(args.executors),
+        "ITERATIONS": str(args.iterations),
+        "WARMUP": "0" if args.no_warmup else "1",
+        "CHECK_ROWS": "0" if args.no_check_rows else "1",
+        "QUERIES": ",".join(map(str, numbers or [])),
+        "SETTINGS": ",".join(f"{k}={v}" for k, v in settings),
+        "QUERY_TIMEOUT_S": str(args.query_timeout),
+    }
+    runner = job(
+        f"{run_name}-runner",
+        run_name,
+        "dfd-runner",
+        pod_spec(
+            cfg,
+            [
+                {
+                    "name": "runner",
+                    "image": cfg["images"]["python"],
+                    "command": ["python3", "-u", "/opt/bench/scripts/run_queries.py"],
+                    "env": [{"name": k, "value": v} for k, v in runner_env.items()],
+                    "resources": resources(2, 2, request_cpu=1),
+                    "volumeMounts": [
+                        {
+                            "name": "scripts",
+                            "mountPath": "/opt/bench/scripts",
+                            "readOnly": True,
+                        },
+                        {
+                            "name": "queries",
+                            "mountPath": "/opt/bench/queries",
+                            "readOnly": True,
+                        },
+                    ],
+                }
+            ],
+            volumes=[
+                {"name": "scripts", "configMap": {"name": f"{run_name}-scripts"}},
+                {"name": "queries", "configMap": {"name": f"{run_name}-queries"}},
+            ],
+            restart_policy="Never",
+        ),
+    )
+
+    # The table definitions and expected row counts are Trino's.
+    scripts = read_files(
+        os.path.join(HERE, "datafusion-distributed"), ["run_queries.py"]
+    )
+    scripts.update(read_files(os.path.join(HERE, "trino"), ["tpch_tables.py"]))
+    scripts.update(read_files(HERE, ["tpch_expected_rows.py"]))
+    cluster = [
+        configmap(f"{run_name}-scripts", run_name, "dfd-runner", scripts),
+        configmap(f"{run_name}-queries", run_name, "dfd-runner", query_files("tpch")),
+        # Headless: its DNS name resolves to the IP of every ready worker, and
+        # the workers re-resolve it every second. Nothing registers anywhere.
+        service(
+            f"{run_name}-workers",
+            run_name,
+            "dfd-worker",
+            [("grpc", 9001)],
+            headless=True,
+        ),
+        service(
+            f"{run_name}-coordinator", run_name, "dfd-coordinator", [("http", 9000)]
+        ),
+        coordinator,
+        workers,
+    ]
+    run_settings = {
+        "workers": args.executors,
+        "worker_cpus": args.executor_cpus,
+        "worker_memory_gib": args.executor_memory_gib,
+        "worker_memory_pool_bytes": worker_pool,
+        "coordinator_memory_gib": coordinator_gib,
+        "coordinator_memory_pool_bytes": coordinator_pool,
+        "partitioned": partitioned,
+        "money_type": money_type,
+        "warmup": not args.no_warmup,
+        "datafusion_config": dict(settings),
+    }
+    return (
+        image,
+        cluster,
+        [(f"{run_name}-coordinator", 1), (f"{run_name}-worker", args.executors)],
+        runner,
+        run_settings,
+    )
+
+
+def dfd_run_info(summaries):
+    """The commit the workers were built from, as the coordinator reports it."""
+    for s in summaries:
+        if s.get("git_commit"):
+            return {"datafusion_distributed_commit": s["git_commit"]}
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # Running
 # ---------------------------------------------------------------------------
 
@@ -1168,7 +1424,24 @@ MANIFESTS = {
     "spark": spark_manifests,
     "comet": spark_manifests,
     "trino": trino_manifests,
+    "datafusion-distributed": dfd_manifests,
 }
+
+
+def check_dfd_memory_pool(kube, run_name):
+    """Stop unless the coordinator logged its memory pool.
+
+    An image built without worker-memory-limit.patch has no memory limit, so it
+    would give results that look limited and are not.
+    """
+    logs = kube.logs(f"deployment/{run_name}-coordinator")
+    if DFD_MEMORY_POOL_LOG not in logs:
+        raise SystemExit(
+            f"The coordinator did not log a memory pool ({DFD_MEMORY_POOL_LOG!r}): the image "
+            "was built without datafusion-distributed/worker-memory-limit.patch and "
+            "its pods have no memory limit. Build it with "
+            "docker/datafusion-distributed.Dockerfile.\nLog:\n" + logs[-3000:]
+        )
 
 
 def run_benchmark(args, cfg):
@@ -1224,6 +1497,8 @@ def run_benchmark(args, cfg):
                     file=sys.stderr,
                 )
                 raise SystemExit(f"{name} did not start")
+        if args.engine == "datafusion-distributed":
+            check_dfd_memory_pool(kube, run_name)
         kube.apply([runner])
         print(
             f"Running the queries. Follow them with:\n"
@@ -1242,10 +1517,13 @@ def run_benchmark(args, cfg):
             queries = parse_query_lines(logs, QUERY_RESULT_PREFIXES[args.engine])
         if args.engine == "ballista":
             run.update(ballista_run_info(logs))
+        if args.engine == "datafusion-distributed":
+            run.update(dfd_run_info(summaries))
         for s in summaries:
             if s.get("error"):
                 print(f"Runner failed: {s['error']}", file=sys.stderr)
         if queries:
+            save_plans(args.results_dir, run_name, queries)
             path = write_results(args.results_dir, run, summaries, queries)
             print_results(run)
             print(f"\nResults: {path}", file=sys.stderr)
@@ -1291,13 +1569,14 @@ def parse_args(argv=None):
     parser.add_argument(
         "--iterations",
         type=int,
-        help="Timed iterations of each query (default: 2; 3 for trino, after a warm-up run)",
+        help="Timed iterations of each query (default: 2; 3 for trino and "
+        "datafusion-distributed, after a warm-up run)",
     )
     parser.add_argument(
         "--executors",
         type=int,
         default=32,
-        help="Executor pods (Trino: worker pods) (default: 32)",
+        help="Executor pods (Trino and DataFusion Distributed: worker pods) (default: 32)",
     )
     parser.add_argument(
         "--executor-cpus",
@@ -1309,7 +1588,8 @@ def parse_args(argv=None):
         "--executor-memory-gib",
         type=int,
         default=64,
-        help="Memory of each Ballista executor and Trino worker pod (default: 64). Spark's "
+        help="Memory of each Ballista executor, Trino worker and DataFusion Distributed worker "
+        "pod (default: 64). Spark's "
         "executor memory is in conf/spark.conf",
     )
     parser.add_argument("--results-dir", default=os.path.join(HERE, "results"))
@@ -1322,7 +1602,8 @@ def parse_args(argv=None):
     parser.add_argument(
         "--no-check-rows",
         action="store_true",
-        help="Spark and Trino: do not check row counts (tpch_expected_rows.py)",
+        help="Spark, Trino and DataFusion Distributed: do not check row counts "
+        "(tpch_expected_rows.py)",
     )
 
     ballista = parser.add_argument_group("Ballista")
@@ -1393,12 +1674,31 @@ def parse_args(argv=None):
         metavar="KEY=VALUE",
         help="Session property for every query. Can be repeated",
     )
-    trino.add_argument(
+
+    dfd = parser.add_argument_group("DataFusion Distributed (TPC-H only)")
+    dfd.add_argument(
+        "--dfd-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="DataFusion or distributed.* setting for every query, run as SET on the "
+        "coordinator, e.g. distributed.compression=zstd. Can be repeated",
+    )
+    dfd.add_argument(
+        "--dfd-coordinator-memory-gib",
+        type=int,
+        default=32,
+        help="Memory of the coordinator pod, which runs the last stage of each query "
+        "(default: 32)",
+    )
+
+    timing = parser.add_argument_group("Trino and DataFusion Distributed")
+    timing.add_argument(
         "--no-warmup",
         action="store_true",
         help="Do not run each query once untimed before the timed iterations",
     )
-    trino.add_argument(
+    timing.add_argument(
         "--query-timeout",
         type=int,
         default=3600,
@@ -1407,9 +1707,9 @@ def parse_args(argv=None):
 
     args = parser.parse_args(argv)
     if args.iterations is None:
-        args.iterations = 3 if args.engine == "trino" else 2
-    if args.engine == "trino" and args.benchmark != "tpch":
-        parser.error("--engine trino runs TPC-H only")
+        args.iterations = 3 if args.engine in TIMED_AFTER_WARMUP else 2
+    if args.engine in ("trino", "datafusion-distributed") and args.benchmark != "tpch":
+        parser.error(f"--engine {args.engine} runs TPC-H only")
     if args.engine == "trino" and args.executor_memory_gib < 16:
         parser.error("--executor-memory-gib must be at least 16 for Trino")
     return args

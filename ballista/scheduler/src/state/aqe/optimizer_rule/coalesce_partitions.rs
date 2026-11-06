@@ -76,11 +76,23 @@
 //!   4. Bin-pack the summed sizes into `K` buckets near
 //!      `target_partition_bytes` (Spark's `advisoryPartitionSizeInBytes`,
 //!      64 MB by default) using `split_size_list_by_target_size`.
-//!   5. If `K >= M` or `K <= 1`, the rewrite is degenerate and is skipped.
+//!   5. If `K >= M`, nothing merges and the rewrite is skipped. `K = 1` is
+//!      kept: the whole shuffle fits in one target-sized partition, so the
+//!      stage runs as a single task, as Spark's `CoalesceShufflePartitions`
+//!      does.
 //!   6. Otherwise, attach a shared [`CoalescePlan`] (with `K` partition
 //!      groups) to every leaf `ExchangeExec` via `set_coalesce(..)`. The
 //!      adapter consumes that decision when it builds the downstream
 //!      `ShuffleReaderExec`s.
+//!
+//! # Sorted inputs
+//!
+//! The adapter reads an exchange whose input declares an ordering with a
+//! k-way merge per partition (`RangeShuffleReaderExec`), which is what keeps a
+//! `SortPreservingMergeExec` above it correct. A coalesced reader concatenates
+//! a group's files in arrival order instead, so the rule leaves the stage alone
+//! when any leaf is sorted. Such a stage is usually the final merge of an
+//! `ORDER BY`, which runs as one task whatever its input partition count.
 //!
 //! # Carrier semantics
 //!
@@ -104,25 +116,43 @@
 //! # Behavior preservation
 //!
 //! When `ballista.planner.coalesce.enabled=false`, when the subtree has no
-//! leaf Exchanges, or when the bin-pack returns a degenerate `K`, the rule
+//! leaf Exchanges, or when the bin-pack merges nothing (`K >= M`), the rule
 //! is a no-op and returns the input `Arc` verbatim (preserving
 //! `Arc::ptr_eq`).
 
 use std::sync::Arc;
 
 use ballista_core::config::BallistaConfig;
-use ballista_core::execution_plans::CoalescePlan;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use ballista_core::execution_plans::{
+    BufferExec, ChaosExec, CoalescePlan, PartitionedBoundedWindowAggExec,
+    PerPartitionFilterExec, PrefixMergeExec, RangeFilterExec, RuntimeStatsExec,
+};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::aggregates::AggregateExec;
+#[allow(deprecated)]
+use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::joins::{
+    CrossJoinExec, HashJoinExec, NestedLoopJoinExec, SortMergeJoinExec,
+};
+use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
+use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::sorts::sort::SortExec;
+use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::union::{InterleaveExec, UnionExec};
+use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use log::debug;
 
 use crate::state::aqe::coalesce::{
     split_size_list_by_target_size, start_indices_to_partition_groups,
 };
-use crate::state::aqe::execution_plan::AdaptiveDatafusionExec;
-use crate::state::aqe::execution_plan::ExchangeExec;
+use crate::state::aqe::execution_plan::{
+    AdaptiveDatafusionExec, DynamicJoinSelectionExec, ExchangeExec,
+};
 
 /// AQE rule that attaches a coalesce decision to every leaf `ExchangeExec`
 /// feeding the current stage, so the downstream reader exposes `K < M`
@@ -177,18 +207,18 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
         };
 
         // Collect the alignment group: every leaf `ExchangeExec` feeding
-        // this stage. `Jump` after each hit stops the walk from descending
-        // into the upstream stage's compute — those nodes aren't part of
-        // *this* stage's group, they belong to whatever stage wrote them.
+        // this stage. The walk stops at each hit rather than descending into
+        // the upstream stage's compute — those nodes aren't part of *this*
+        // stage's group, they belong to whatever stage wrote them. It also
+        // checks every operator between the stage root and a leaf, since each
+        // of them runs over the coalesced partition count.
         let mut leaves: Vec<Arc<dyn ExecutionPlan>> = Vec::new();
-        input.apply(|node| {
-            if node.is::<ExchangeExec>() {
-                leaves.push(node.clone());
-                Ok(TreeNodeRecursion::Jump)
-            } else {
-                Ok(TreeNodeRecursion::Continue)
-            }
-        })?;
+        if !collect_alignment_group(&input, &mut leaves) {
+            debug!(
+                "[coalesce-rule] an operator of unknown partition-count sensitivity consumes a leaf; bail"
+            );
+            return Ok(plan);
+        }
 
         // Helper: downcast each Arc back to &ExchangeExec.
         fn as_exchange(arc: &Arc<dyn ExecutionPlan>) -> &ExchangeExec {
@@ -235,6 +265,16 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             .any(|arc| as_exchange(arc).range_repartition_routing().is_some())
         {
             debug!("[coalesce-rule] range-repartitioned leaf present; bail entire group");
+            return Ok(plan);
+        }
+
+        // A sorted leaf is read with one k-way merge per partition, and the
+        // coalesced reader can't merge (see module docs).
+        if leaves
+            .iter()
+            .any(|arc| as_exchange(arc).input().output_ordering().is_some())
+        {
+            debug!("[coalesce-rule] sorted leaf present; bail entire group");
             return Ok(plan);
         }
 
@@ -290,10 +330,9 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             split_size_list_by_target_size(&summed, target as u64, small, merged);
         let k = starts.len();
         debug!("[coalesce-rule] bin-pack result: K={k} M={m}");
-        if k >= m || k <= 1 {
-            debug!(
-                "[coalesce-rule] K degenerate (K>=M or K<=1); bail without setting coalesce"
-            );
+        // `K = 1` is kept: the stage then runs as a single task.
+        if k >= m {
+            debug!("[coalesce-rule] K>=M merges nothing; bail without setting coalesce");
             return Ok(plan);
         }
 
@@ -325,4 +364,65 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
     fn schema_check(&self) -> bool {
         false
     }
+}
+
+/// Collects the leaf `ExchangeExec`s under `node` into `leaves`.
+///
+/// Returns `false` when an operator between `node` and one of those leaves
+/// is not known to [`tolerates_partition_count_change`]: the rule then has no
+/// basis for changing the partition count that operator sees.
+fn collect_alignment_group(
+    node: &Arc<dyn ExecutionPlan>,
+    leaves: &mut Vec<Arc<dyn ExecutionPlan>>,
+) -> bool {
+    if node.is::<ExchangeExec>() {
+        leaves.push(Arc::clone(node));
+        return true;
+    }
+    let leaves_before = leaves.len();
+    for child in node.children() {
+        if !collect_alignment_group(child, leaves) {
+            return false;
+        }
+    }
+    let consumes_leaf = leaves.len() > leaves_before;
+    !consumes_leaf || tolerates_partition_count_change(node.as_ref())
+}
+
+/// Operators that produce the same rows over any partitioning of their
+/// input, as long as hash co-partitioning is kept — which the shared
+/// `CoalescePlan` across an alignment group guarantees.
+///
+/// `ExecutionPlan` has no way to declare this, so the list is maintained by
+/// hand, like the whitelists in `ballista_core::execution_plans::plan_algebra`.
+/// Anything else, in particular an extension operator from a client that
+/// submitted its own physical plan, is assumed to depend on the count.
+#[allow(deprecated)]
+fn tolerates_partition_count_change(plan: &dyn ExecutionPlan) -> bool {
+    plan.is::<ProjectionExec>()
+        || plan.is::<FilterExec>()
+        || plan.is::<AggregateExec>()
+        || plan.is::<HashJoinExec>()
+        || plan.is::<SortMergeJoinExec>()
+        || plan.is::<NestedLoopJoinExec>()
+        || plan.is::<CrossJoinExec>()
+        || plan.is::<DynamicJoinSelectionExec>()
+        || plan.is::<SortExec>()
+        || plan.is::<SortPreservingMergeExec>()
+        || plan.is::<CoalesceBatchesExec>()
+        || plan.is::<CoalescePartitionsExec>()
+        || plan.is::<RepartitionExec>()
+        || plan.is::<LocalLimitExec>()
+        || plan.is::<GlobalLimitExec>()
+        || plan.is::<UnionExec>()
+        || plan.is::<InterleaveExec>()
+        || plan.is::<WindowAggExec>()
+        || plan.is::<BoundedWindowAggExec>()
+        || plan.is::<PartitionedBoundedWindowAggExec>()
+        || plan.is::<PrefixMergeExec>()
+        || plan.is::<RangeFilterExec>()
+        || plan.is::<PerPartitionFilterExec>()
+        || plan.is::<RuntimeStatsExec>()
+        || plan.is::<BufferExec>()
+        || plan.is::<ChaosExec>()
 }
