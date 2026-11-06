@@ -444,12 +444,12 @@ pub(super) mod test_util {
         ))
     }
 
-    /// Drain all K output partitions of `exec` **concurrently**, mapping each
-    /// batch with `extract` — otherwise the bounded scatter channels can
-    /// deadlock: while a test sequentially polls partition 0, scatter tasks
-    /// fill channels 1..K-1 to `CHANNEL_CAPACITY` and block on send, never
-    /// dropping their partition-0 senders. In production K downstream tasks
-    /// run concurrently and this pattern never arises.
+    /// Drains all K output partitions of `exec` **concurrently** and maps each
+    /// batch with `extract`. Draining them one after another can deadlock the
+    /// bounded scatter channels: while a test sequentially polls partition 0,
+    /// scatter tasks fill channels 1..K-1 to `CHANNEL_CAPACITY` and block on
+    /// send, never dropping their partition-0 senders. In production K
+    /// downstream tasks run concurrently and this pattern never arises.
     pub(crate) async fn drain_concurrent<T: Send + 'static>(
         exec: Arc<dyn ExecutionPlan>,
         ctx: Arc<SessionContext>,

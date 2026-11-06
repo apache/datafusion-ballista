@@ -136,7 +136,7 @@ pub(crate) fn key_payload_batch(keys: &[i32]) -> RecordBatch {
 }
 
 /// A single-vcore executor with the id and host `executor_1`.
-pub(crate) fn test_executor() -> ExecutorMetadata {
+fn test_executor() -> ExecutorMetadata {
     ExecutorMetadata {
         id: "executor_1".to_string(),
         host: "executor_1".to_string(),
