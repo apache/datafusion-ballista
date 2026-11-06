@@ -24,7 +24,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{Result, not_impl_err};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion_proto::physical_plan::{
     ComposedPhysicalExtensionCodec, PhysicalExtensionCodec,
     PhysicalProtoConverterExtension,
@@ -96,6 +96,15 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         else {
             return not_impl_err!("{} isn't an Iceberg scan", node.name());
         };
+        // Ballista restricts each task to its partitions only for the scans it
+        // knows, such as file scans, so each task would read every partition
+        // of this one and rows would come back duplicated.
+        let partitions = node.output_partitioning().partition_count();
+        if partitions > 1 {
+            return not_impl_err!(
+                "Iceberg scans with {partitions} partitions aren't supported on Ballista yet"
+            );
+        }
         wire::encode(
             buf,
             &ScanWire {
