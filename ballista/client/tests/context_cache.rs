@@ -24,7 +24,7 @@ mod common;
 /// that shuffle output, and collecting it again hits the registry.
 #[cfg(test)]
 mod cache {
-    use crate::common::{remote_context, standalone_context, test_data};
+    use crate::common::{remote_context, set_option, standalone_context, test_data};
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::functions::math::expr_fn::random;
     use datafusion::prelude::*;
@@ -83,12 +83,7 @@ mod cache {
     }
 
     async fn enable_cache(ctx: &SessionContext) {
-        ctx.sql("SET ballista.cache.noop = false")
-            .await
-            .unwrap()
-            .show()
-            .await
-            .unwrap();
+        set_option(ctx, "ballista.cache.noop", "false").await;
     }
 
     async fn alltypes(ctx: &SessionContext, test_data: &str) -> DataFrame {

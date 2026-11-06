@@ -28,7 +28,7 @@ mod common;
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod sort_shuffle_tests {
-    use crate::common::{assert_result_eq, state_with_config, test_data_dir};
+    use crate::common::{assert_result_eq, register_alltypes, state_with_config};
     use ballista::prelude::{SessionConfigExt, SessionContextExt};
     use ballista_core::config::{
         BALLISTA_ADAPTIVE_PLANNER_ENABLED,
@@ -41,7 +41,7 @@ mod sort_shuffle_tests {
     };
     use datafusion::arrow::datatypes::DataType;
     use datafusion::common::Result;
-    use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
+    use datafusion::prelude::{SessionConfig, SessionContext};
     use rstest::rstest;
 
     /// Read mode for shuffle data
@@ -108,17 +108,6 @@ mod sort_shuffle_tests {
             .unwrap()
     }
 
-    /// Registers test data in the context.
-    async fn register_test_data(ctx: &SessionContext) {
-        ctx.register_parquet(
-            "test",
-            &format!("{}/alltypes_plain.parquet", test_data_dir()),
-            ParquetReadOptions::default(),
-        )
-        .await
-        .unwrap();
-    }
-
     // ==================== Basic Aggregation Tests ====================
 
     #[rstest]
@@ -134,7 +123,7 @@ mod sort_shuffle_tests {
         #[case] aqe_enabled: bool,
     ) -> Result<()> {
         let ctx = create_sort_shuffle_context_with_aqe(read_mode, aqe_enabled).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx
             .sql("SELECT bool_col, COUNT(*) as cnt FROM test GROUP BY bool_col ORDER BY bool_col")
@@ -162,7 +151,7 @@ mod sort_shuffle_tests {
         #[case] read_mode: ReadMode,
     ) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx
             .sql(
@@ -193,7 +182,7 @@ mod sort_shuffle_tests {
         #[case] read_mode: ReadMode,
     ) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx
             .sql(
@@ -235,7 +224,7 @@ mod sort_shuffle_tests {
         #[case] read_mode: ReadMode,
     ) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx
             .sql(
@@ -276,7 +265,7 @@ mod sort_shuffle_tests {
     #[tokio::test]
     async fn test_sort_shuffle_aggregate_sum(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx.sql("SELECT SUM(id) FROM test").await?;
         let results = df.collect().await?;
@@ -299,7 +288,7 @@ mod sort_shuffle_tests {
     #[tokio::test]
     async fn test_sort_shuffle_aggregate_avg(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx.sql("SELECT AVG(id) FROM test").await?;
         let results = df.collect().await?;
@@ -324,7 +313,7 @@ mod sort_shuffle_tests {
         #[case] read_mode: ReadMode,
     ) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx.sql("SELECT COUNT(*) FROM test").await?;
         let results = df.collect().await?;
@@ -349,7 +338,7 @@ mod sort_shuffle_tests {
         #[case] read_mode: ReadMode,
     ) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx.sql("SELECT MIN(id), MAX(id) FROM test").await?;
         let results = df.collect().await?;
@@ -374,7 +363,7 @@ mod sort_shuffle_tests {
     #[tokio::test]
     async fn test_sort_shuffle_empty_result(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx.sql("SELECT id FROM test WHERE id > 100").await?;
         let results = df.collect().await?;
@@ -394,7 +383,7 @@ mod sort_shuffle_tests {
         #[case] read_mode: ReadMode,
     ) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         // Query that results in single partition output
         let df = ctx.sql("SELECT COUNT(*) FROM test").await?;
@@ -413,7 +402,7 @@ mod sort_shuffle_tests {
         #[case] read_mode: ReadMode,
     ) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx
             .sql(
@@ -445,7 +434,7 @@ mod sort_shuffle_tests {
     #[tokio::test]
     async fn test_sort_shuffle_having_clause(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx
             .sql(
@@ -473,7 +462,7 @@ mod sort_shuffle_tests {
     #[tokio::test]
     async fn test_sort_shuffle_subquery(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx
             .sql(
@@ -498,7 +487,7 @@ mod sort_shuffle_tests {
     #[tokio::test]
     async fn test_sort_shuffle_union(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx
             .sql(
@@ -524,7 +513,7 @@ mod sort_shuffle_tests {
     #[tokio::test]
     async fn test_sort_shuffle_order_by(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx.sql("SELECT id FROM test ORDER BY id").await?;
         let results = df.collect().await?;
@@ -545,7 +534,7 @@ mod sort_shuffle_tests {
     #[tokio::test]
     async fn test_sort_shuffle_order_by_desc(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx.sql("SELECT id FROM test ORDER BY id DESC").await?;
         let results = df.collect().await?;
@@ -566,7 +555,7 @@ mod sort_shuffle_tests {
     #[tokio::test]
     async fn test_sort_shuffle_limit(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         let df = ctx.sql("SELECT id FROM test ORDER BY id LIMIT 3").await?;
         let results = df.collect().await?;
@@ -583,7 +572,7 @@ mod sort_shuffle_tests {
     #[tokio::test]
     async fn test_shuffle_completes_under_tiny_governor_budget() -> Result<()> {
         let ctx = create_tiny_budget_remote_context().await;
-        register_test_data(&ctx).await;
+        register_alltypes(&ctx, "test").await;
 
         // GROUP BY forces a shuffle; the reducer fetches every upstream partition
         // remotely under the tiny in-flight budget.
