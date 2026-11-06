@@ -40,33 +40,14 @@ mod extended {
 
         let ctx = SessionContext::standalone().await?;
 
-        ctx.register_csv(
-            "date_dim",
-            &format!("{}/bug_1296/date_dim.csv", test_data),
-            CsvReadOptions::new().has_header(true),
-        )
-        .await?;
-
-        ctx.register_csv(
-            "store",
-            &format!("{}/bug_1296/store.csv", test_data),
-            CsvReadOptions::new().has_header(true),
-        )
-        .await?;
-
-        ctx.register_csv(
-            "item",
-            &format!("{}/bug_1296/item.csv", test_data),
-            CsvReadOptions::new().has_header(true),
-        )
-        .await?;
-
-        ctx.register_csv(
-            "store_sales",
-            &format!("{}/bug_1296/store_sales.csv", test_data),
-            CsvReadOptions::new().has_header(true),
-        )
-        .await?;
+        for table in ["date_dim", "store", "item", "store_sales"] {
+            ctx.register_csv(
+                table,
+                &format!("{test_data}/bug_1296/{table}.csv"),
+                CsvReadOptions::new().has_header(true),
+            )
+            .await?;
+        }
 
         let query = r#"
 with v1 as(
