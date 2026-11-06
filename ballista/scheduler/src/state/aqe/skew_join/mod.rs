@@ -20,7 +20,26 @@
 mod algorithm;
 pub(crate) use algorithm::*;
 
+use ballista_core::config::BallistaConfig;
 use ballista_core::serde::scheduler::PartitionLocation;
+use datafusion::config::ConfigOptions;
+
+/// Reports an explicitly enabled skew-join optimization blocked by configuration.
+pub(crate) fn skew_join_config_warning(options: &ConfigOptions) -> Option<&'static str> {
+    if options
+        .extensions
+        .get::<BallistaConfig>()
+        .is_some_and(|config| config.skew_join_enabled())
+        && options.optimizer.enable_join_dynamic_filter_pushdown
+    {
+        Some(
+            "skew-join optimization skipped: join dynamic-filter pushdown is enabled; \
+             set datafusion.optimizer.enable_dynamic_filter_pushdown=false to allow skew splitting",
+        )
+    } else {
+        None
+    }
+}
 
 /// Shard windows use mapper order, not the order task completions arrived.
 /// Apply the same ordering when planning ranges and materializing readers.

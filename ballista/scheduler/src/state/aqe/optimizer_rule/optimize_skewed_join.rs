@@ -37,11 +37,12 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode, SortMergeJoi
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, Partitioning};
-use log::debug;
+use log::{debug, warn};
 
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::skew_join::{
-    map_ranges_for_upstream, pair_shards, skew_threshold, sort_mapper_outputs,
+    map_ranges_for_upstream, pair_shards, skew_join_config_warning, skew_threshold,
+    sort_mapper_outputs,
 };
 
 #[derive(Debug, Default)]
@@ -64,8 +65,8 @@ impl PhysicalOptimizerRule for OptimizeSkewedJoinRule {
         // Partition-routed dynamic filters assume hash(key) % partition_count.
         // Shards deliberately break that invariant. Disable the umbrella option
         // datafusion.optimizer.enable_dynamic_filter_pushdown to use this rule.
-        if config.optimizer.enable_join_dynamic_filter_pushdown {
-            debug!("skew join skipped: join dynamic-filter pushdown is enabled");
+        if let Some(warning) = skew_join_config_warning(config) {
+            warn!("{warning}");
             return Ok(plan);
         }
 

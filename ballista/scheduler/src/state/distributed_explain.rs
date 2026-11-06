@@ -36,6 +36,7 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
 use datafusion::prelude::SessionContext;
 
+use crate::state::aqe::skew_join::skew_join_config_warning;
 use crate::state::execution_graph::ExecutionStage;
 use crate::{
     planner::{DefaultDistributedPlanner, DistributedPlanner},
@@ -57,7 +58,12 @@ pub(crate) async fn generate_distributed_explain_plan(
     let builder = ExecutionStageBuilder::new(session_config.clone());
     let stages = builder.build(shuffle_stages)?;
 
-    Ok(render_stages(stages))
+    let mut plan = render_stages(stages);
+    if let Some(warning) = skew_join_config_warning(session_config.options()) {
+        plan.push_str("\nAQE note: ");
+        plan.push_str(warning);
+    }
+    Ok(plan)
 }
 
 pub(crate) fn extract_logical_and_physical_plans(
@@ -218,7 +224,57 @@ pub(crate) async fn handle_explain_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ballista_core::extension::SessionConfigExt;
+    use datafusion::arrow::array::StringArray;
     use datafusion::physical_plan::collect;
+    use datafusion::prelude::SessionConfig;
+
+    #[tokio::test]
+    async fn explain_reports_skew_join_config_conflict() -> Result<()> {
+        // The note disappears when the user applies its suggested setting.
+        for dynamic_filters in [true, false] {
+            let config = SessionConfig::new_with_ballista()
+                .with_ballista_skew_join_enabled(true)
+                .set_bool(
+                    "datafusion.optimizer.enable_dynamic_filter_pushdown",
+                    dynamic_filters,
+                );
+            let ctx = SessionContext::new_with_config(config);
+            let logical = ctx.sql("EXPLAIN SELECT 1").await?.into_optimized_plan()?;
+            let physical = ctx.state().create_physical_plan(&logical).await?;
+            let plan =
+                handle_explain_plan(&"explain-test".into(), &ctx, &logical, physical)
+                    .await?;
+            let batches = collect(plan, ctx.task_ctx()).await?;
+            assert_eq!(batches.len(), 1);
+            let batch = &batches[0];
+            assert_eq!(batch.schema(), LogicalPlan::explain_schema());
+            assert_eq!(batch.num_rows(), 3);
+            let types = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let plans = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let index = types
+                .iter()
+                .position(|value| value == Some("distributed_plan"))
+                .unwrap();
+            let text = plans.value(index);
+            assert_eq!(text.contains("AQE note:"), dynamic_filters);
+            if dynamic_filters {
+                assert!(text.contains("join dynamic-filter pushdown is enabled"));
+                assert!(text.contains(
+                    "datafusion.optimizer.enable_dynamic_filter_pushdown=false"
+                ));
+            }
+        }
+        Ok(())
+    }
 
     /// `EXPLAIN` has to describe its output the same way whether DataFusion or
     /// Ballista answers it, and the rows it produces have to match that
