@@ -268,7 +268,7 @@ pub fn failing_task_runner(
 }
 
 /// The output partitions `0..n` of a task, each with one batch of one row.
-pub fn shuffle_write_partitions(n: usize) -> Vec<ShuffleWritePartition> {
+fn shuffle_write_partitions(n: usize) -> Vec<ShuffleWritePartition> {
     (0..n)
         .map(|partition_id| ShuffleWritePartition {
             partition_id: partition_id as u64,
@@ -1167,6 +1167,7 @@ pub fn aggregation_logical_plan(partitions: usize) -> LogicalPlan {
         .unwrap()
 }
 
+/// The `(id Utf8, gmv UInt64)` schema of the aggregation and join plans.
 pub(crate) fn id_gmv_schema() -> Schema {
     Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
