@@ -288,10 +288,11 @@ pub(super) mod test_util {
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
-        SendableRecordBatchStream,
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+        PlanProperties, SendableRecordBatchStream,
     };
     use datafusion::prelude::SessionContext;
+    use futures::StreamExt;
 
     /// Message the synthetic panic will surface. Exposed so tests can
     /// assert-round-trip: after `guarded_scatter`'s payload downcast, this
@@ -441,6 +442,42 @@ pub(super) mod test_util {
         Arc::new(SessionContext::new_with_state(
             SessionStateBuilder::new().with_default_features().build(),
         ))
+    }
+
+    /// Drain all K output partitions of `exec` **concurrently**, mapping each
+    /// batch with `extract` — otherwise the bounded scatter channels can
+    /// deadlock: while a test sequentially polls partition 0, scatter tasks
+    /// fill channels 1..K-1 to `CHANNEL_CAPACITY` and block on send, never
+    /// dropping their partition-0 senders. In production K downstream tasks
+    /// run concurrently and this pattern never arises.
+    pub(crate) async fn drain_concurrent<T: Send + 'static>(
+        exec: Arc<dyn ExecutionPlan>,
+        ctx: Arc<SessionContext>,
+        extract: fn(&RecordBatch) -> Vec<T>,
+    ) -> Vec<Vec<T>> {
+        let output_partitions = exec.output_partitioning().partition_count();
+        let streams: Vec<_> = (0..output_partitions)
+            .map(|p| exec.execute(p, ctx.task_ctx()).unwrap())
+            .collect();
+        let handles: Vec<_> = streams
+            .into_iter()
+            .map(|stream| {
+                tokio::spawn(async move {
+                    let batches: Vec<RecordBatch> = stream
+                        .collect::<Vec<Result<RecordBatch>>>()
+                        .await
+                        .into_iter()
+                        .map(|r| r.unwrap())
+                        .collect();
+                    batches.iter().flat_map(extract).collect()
+                })
+            })
+            .collect();
+        let mut per_output = Vec::with_capacity(output_partitions);
+        for handle in handles {
+            per_output.push(handle.await.unwrap());
+        }
+        per_output
     }
 
     /// A single non-nullable `v Float64` column.

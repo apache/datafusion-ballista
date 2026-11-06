@@ -441,7 +441,7 @@ mod tests {
     use super::*;
     use crate::execution_plans::RuntimeStatsExec;
     use crate::execution_plans::range_repartition_common::test_util::{
-        asc, batch, empty_input, schema_v2_id, session,
+        asc, batch, drain_concurrent, empty_input, schema_v2_id, session,
     };
     use datafusion::arrow::array::{Float64Array, Int64Array};
     use datafusion::arrow::datatypes::DataType;
@@ -541,48 +541,9 @@ mod tests {
         )
     }
 
-    /// Drain all K output partitions **concurrently** — otherwise the
-    /// bounded scatter channels can deadlock: while a test sequentially
-    /// polls partition 0, scatter tasks fill channels 1..K-1 to
-    /// `CHANNEL_CAPACITY` and block on send, never dropping their partition-0
-    /// senders. In production K downstream tasks run concurrently and this
-    /// pattern never arises.
-    async fn drain_concurrent<T: Send + 'static>(
-        exec: Arc<dyn ExecutionPlan>,
-        ctx: Arc<SessionContext>,
-        column: usize,
-        extract: fn(&RecordBatch, usize) -> Vec<T>,
-    ) -> Vec<Vec<T>> {
-        let output_partitions = exec.output_partitioning().partition_count();
-        let streams: Vec<_> = (0..output_partitions)
-            .map(|p| exec.execute(p, ctx.task_ctx()).unwrap())
-            .collect();
-        let handles: Vec<_> = streams
-            .into_iter()
-            .map(|stream| {
-                tokio::spawn(async move {
-                    let batches: Vec<RecordBatch> =
-                        <_ as futures::stream::StreamExt>::collect::<
-                            Vec<Result<RecordBatch>>,
-                        >(stream)
-                        .await
-                        .into_iter()
-                        .map(|r| r.unwrap())
-                        .collect();
-                    batches.iter().flat_map(|b| extract(b, column)).collect()
-                })
-            })
-            .collect();
-        let mut per_output = Vec::with_capacity(output_partitions);
-        for handle in handles {
-            per_output.push(handle.await.unwrap());
-        }
-        per_output
-    }
-
-    fn extract_ids(batch: &RecordBatch, column: usize) -> Vec<i64> {
+    fn extract_ids(batch: &RecordBatch) -> Vec<i64> {
         batch
-            .column(column)
+            .column(1)
             .as_any()
             .downcast_ref::<Int64Array>()
             .unwrap()
@@ -591,9 +552,9 @@ mod tests {
             .collect()
     }
 
-    fn extract_keys(batch: &RecordBatch, column: usize) -> Vec<f64> {
+    fn extract_keys(batch: &RecordBatch) -> Vec<f64> {
         batch
-            .column(column)
+            .column(0)
             .as_any()
             .downcast_ref::<Float64Array>()
             .unwrap()
@@ -606,14 +567,14 @@ mod tests {
         exec: Arc<dyn ExecutionPlan>,
         ctx: Arc<SessionContext>,
     ) -> Vec<Vec<i64>> {
-        drain_concurrent(exec, ctx, 1, extract_ids).await
+        drain_concurrent(exec, ctx, extract_ids).await
     }
 
     async fn keys_per_output(
         exec: Arc<dyn ExecutionPlan>,
         ctx: Arc<SessionContext>,
     ) -> Vec<Vec<f64>> {
-        drain_concurrent(exec, ctx, 0, extract_keys).await
+        drain_concurrent(exec, ctx, extract_keys).await
     }
 
     /// Random-uniform-ish input over Scan → RuntimeStatsExec → DRR: verify
