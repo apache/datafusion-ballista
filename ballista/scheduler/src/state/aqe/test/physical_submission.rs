@@ -26,18 +26,12 @@ use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{
     Embedder, Seen, coalesce_context, mock_batch, partitions_with_byte_sizes,
 };
+use crate::test_utils::PassThroughExec;
 use ballista_core::assert_plan;
-use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::execution::TaskContext;
-use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream,
-};
+use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::prelude::SessionContext;
-use std::fmt::Formatter;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -71,8 +65,10 @@ async fn hand_built_plan(
 async fn should_keep_submitted_shuffle_under_extension_operator()
 -> datafusion::common::Result<()> {
     let ctx = physical_context(false);
-    let plan =
-        hand_built_plan(&ctx, |shuffle| Arc::new(OpaqueExec::new(shuffle))).await?;
+    let plan = hand_built_plan(&ctx, |shuffle| {
+        Arc::new(PassThroughExec::new("OpaqueExec", shuffle))
+    })
+    .await?;
 
     let planner =
         AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into(), None)?;
@@ -112,7 +108,8 @@ async fn should_keep_submitted_range_shuffle_under_extension_operator()
     )?;
     let shuffle: Arc<dyn ExecutionPlan> =
         Arc::new(RepartitionExec::try_new(scan, Partitioning::Range(range))?);
-    let plan: Arc<dyn ExecutionPlan> = Arc::new(OpaqueExec::new(shuffle));
+    let plan: Arc<dyn ExecutionPlan> =
+        Arc::new(PassThroughExec::new("OpaqueExec", shuffle));
 
     let planner =
         AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into(), None)?;
@@ -134,8 +131,10 @@ async fn should_keep_submitted_range_shuffle_under_extension_operator()
 async fn should_not_coalesce_shuffle_feeding_extension_operator()
 -> datafusion::common::Result<()> {
     let ctx = physical_context(true);
-    let plan =
-        hand_built_plan(&ctx, |shuffle| Arc::new(OpaqueExec::new(shuffle))).await?;
+    let plan = hand_built_plan(&ctx, |shuffle| {
+        Arc::new(PassThroughExec::new("OpaqueExec", shuffle))
+    })
+    .await?;
 
     let mut planner =
         AdaptivePlanner::try_new_from_physical(&ctx, plan, "test_job".into(), None)?;
@@ -169,8 +168,10 @@ async fn should_run_an_embedders_rules_on_a_submitted_plan()
         hold: false,
     };
     let ctx = physical_context(false);
-    let plan =
-        hand_built_plan(&ctx, |shuffle| Arc::new(OpaqueExec::new(shuffle))).await?;
+    let plan = hand_built_plan(&ctx, |shuffle| {
+        Arc::new(PassThroughExec::new("OpaqueExec", shuffle))
+    })
+    .await?;
 
     let mut planner = AdaptivePlanner::try_new_from_physical(
         &ctx,
@@ -197,62 +198,4 @@ async fn should_run_an_embedders_rules_on_a_submitted_plan()
     assert_eq!(seen.replan_runs.load(Ordering::Relaxed), 2);
 
     Ok(())
-}
-
-/// A stand-in for a client's extension operator: passes its input through
-/// and declares nothing about what it needs from it, like an opaque fragment
-/// the planner cannot see into.
-#[derive(Debug)]
-struct OpaqueExec {
-    input: Arc<dyn ExecutionPlan>,
-}
-
-impl OpaqueExec {
-    fn new(input: Arc<dyn ExecutionPlan>) -> Self {
-        Self { input }
-    }
-}
-
-impl DisplayAs for OpaqueExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "OpaqueExec")
-    }
-}
-
-impl ExecutionPlan for OpaqueExec {
-    fn name(&self) -> &str {
-        "OpaqueExec"
-    }
-
-    fn properties(&self) -> &Arc<PlanProperties> {
-        self.input.properties()
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![&self.input]
-    }
-
-    fn apply_expressions(
-        &self,
-        _f: &mut dyn FnMut(
-            &Arc<dyn PhysicalExpr>,
-        ) -> datafusion::common::Result<TreeNodeRecursion>,
-    ) -> datafusion::common::Result<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        mut children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(Self::new(children.swap_remove(0))))
-    }
-
-    fn execute(
-        &self,
-        partition: usize,
-        context: Arc<TaskContext>,
-    ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        self.input.execute(partition, context)
-    }
 }
