@@ -2476,10 +2476,9 @@ mod tests {
 #[cfg(test)]
 mod governor_tests {
     use super::*;
-    use crate::execution_plans::test_util::test_executor;
+    use crate::execution_plans::test_util::{int32_batch, int32_schema, test_executor};
     use crate::serde::scheduler::PartitionId;
     use crate::utils;
-    use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 
@@ -2540,22 +2539,14 @@ mod governor_tests {
         }
     }
 
-    fn int_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
-    }
-
     fn int_batch(value: i32) -> RecordBatch {
-        RecordBatch::try_new(
-            int_schema(),
-            vec![Arc::new(Int32Array::from(vec![value; 1024]))],
-        )
-        .unwrap()
+        int32_batch(&[value; 1024])
     }
 
     fn batch_stream(
         batches: impl Stream<Item = Result<RecordBatch>> + Send + 'static,
     ) -> SendableRecordBatchStream {
-        Box::pin(RecordBatchStreamAdapter::new(int_schema(), batches))
+        Box::pin(RecordBatchStreamAdapter::new(int32_schema(), batches))
     }
 
     #[tokio::test]

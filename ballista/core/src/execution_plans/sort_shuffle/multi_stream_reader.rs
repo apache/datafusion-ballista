@@ -138,23 +138,13 @@ impl RecordBatchStream for MultiStreamPartitionStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_plans::test_util::{int32_batch, int32_schema};
     use datafusion::arrow::array::Int32Array;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
     use futures::StreamExt;
     use std::fs::OpenOptions;
     use std::io::Write;
-    use std::sync::Arc;
     use tempfile::TempDir;
-
-    fn schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
-    }
-
-    fn batch(schema: &SchemaRef, values: Vec<i32>) -> RecordBatch {
-        RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(values))])
-            .unwrap()
-    }
 
     /// Writes an IPC stream containing `batches` to `path`, appending if
     /// the file already exists. Returns the number of bytes written.
@@ -196,8 +186,8 @@ mod tests {
     async fn yields_batches_from_single_stream() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("data.arrow");
-        let s = schema();
-        let len = append_stream(&path, &s, &[batch(&s, vec![1, 2]), batch(&s, vec![3])]);
+        let s = int32_schema();
+        let len = append_stream(&path, &s, &[int32_batch(&[1, 2]), int32_batch(&[3])]);
 
         let mut stream = MultiStreamPartitionStream::new(path, s.clone(), 0, len);
         let mut rows = vec![];
@@ -213,10 +203,10 @@ mod tests {
     async fn yields_batches_across_two_concatenated_streams() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("data.arrow");
-        let s = schema();
+        let s = int32_schema();
         let mut total = 0;
-        total += append_stream(&path, &s, &[batch(&s, vec![1, 2])]);
-        total += append_stream(&path, &s, &[batch(&s, vec![3]), batch(&s, vec![4, 5])]);
+        total += append_stream(&path, &s, &[int32_batch(&[1, 2])]);
+        total += append_stream(&path, &s, &[int32_batch(&[3]), int32_batch(&[4, 5])]);
 
         let mut stream = MultiStreamPartitionStream::new(path, s.clone(), 0, total);
         let mut rows = vec![];
@@ -234,7 +224,7 @@ mod tests {
         let path = dir.path().join("data.arrow");
         // Touch the file so it exists but is empty.
         std::fs::write(&path, b"").unwrap();
-        let s = schema();
+        let s = int32_schema();
 
         let mut stream = MultiStreamPartitionStream::new(path, s.clone(), 0, 0);
         assert!(stream.next().await.is_none());
@@ -244,10 +234,10 @@ mod tests {
     async fn respects_end_offset_when_more_bytes_follow() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("data.arrow");
-        let s = schema();
-        let len_first = append_stream(&path, &s, &[batch(&s, vec![1, 2])]);
+        let s = int32_schema();
+        let len_first = append_stream(&path, &s, &[int32_batch(&[1, 2])]);
         // Append a second stream whose bytes must NOT be read.
-        append_stream(&path, &s, &[batch(&s, vec![99])]);
+        append_stream(&path, &s, &[int32_batch(&[99])]);
 
         let mut stream = MultiStreamPartitionStream::new(path, s.clone(), 0, len_first);
         let mut rows = vec![];
@@ -263,10 +253,10 @@ mod tests {
     async fn starts_at_non_zero_offset() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("data.arrow");
-        let s = schema();
+        let s = int32_schema();
         // Two streams in sequence; the test reads only the second.
-        let len_first = append_stream(&path, &s, &[batch(&s, vec![1, 2, 3])]);
-        let len_second = append_stream(&path, &s, &[batch(&s, vec![10, 20])]);
+        let len_first = append_stream(&path, &s, &[int32_batch(&[1, 2, 3])]);
+        let len_second = append_stream(&path, &s, &[int32_batch(&[10, 20])]);
 
         let mut stream = MultiStreamPartitionStream::new(
             path,

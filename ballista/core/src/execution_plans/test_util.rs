@@ -101,6 +101,20 @@ pub(crate) fn partitioned_source(
     MemorySourceConfig::try_new_exec(&per_partition, schema, None).unwrap()
 }
 
+/// A single non-nullable `a Int32` column.
+pub(crate) fn int32_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
+}
+
+/// A batch of [`int32_schema`] holding `values`.
+pub(crate) fn int32_batch(values: &[i32]) -> RecordBatch {
+    RecordBatch::try_new(
+        int32_schema(),
+        vec![Arc::new(Int32Array::from(values.to_vec()))],
+    )
+    .unwrap()
+}
+
 /// A batch of `(k Int32, payload Utf8)` with `payload` `row-<k>`.
 pub(crate) fn key_payload_batch(keys: &[i32]) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
