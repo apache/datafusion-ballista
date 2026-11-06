@@ -16,8 +16,9 @@
 # under the License.
 
 
-# ballista-iceberg is its own workspace, outside Ballista's, so it doesn't
-# block Ballista's build or release; this workflow checks it separately.
+# ballista-iceberg is its own workspace, outside Ballista's, and depends on a
+# pinned commit of Ballista, so it doesn't block Ballista's build or release;
+# this workflow checks it separately.
 name: Ballista Iceberg
 
 concurrency:
@@ -28,13 +29,11 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - "ballista/**"
       - "integrations/iceberg/**"
       - ".github/workflows/iceberg.yml"
       - "!**/*.md"
   pull_request:
     paths:
-      - "ballista/**"
       - "integrations/iceberg/**"
       - ".github/workflows/iceberg.yml"
       - "!**/*.md"

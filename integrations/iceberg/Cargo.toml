@@ -43,9 +43,12 @@ ignored = ["arrow-schema"]
 [dependencies]
 arrow-schema = { version = "59.2.0", features = ["serde"] }
 async-trait = "0.1"
-ballista-core = { path = "../../ballista/core", version = "55.0.0" }
-ballista-executor = { path = "../../ballista/executor", version = "55.0.0", default-features = false, optional = true }
-ballista-scheduler = { path = "../../ballista/scheduler", version = "55.0.0", default-features = false, optional = true }
+# A commit on main with ComposedLogicalExtensionCodec (#2752), not the crates
+# in this repo, so a change to Ballista doesn't break this build. Move to
+# crates.io once a release includes #2752.
+ballista-core = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0" }
+ballista-executor = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0", default-features = false, optional = true }
+ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0", default-features = false, optional = true }
 datafusion = "55"
 datafusion-proto = "55"
 futures = "0.3"
@@ -61,8 +64,8 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [dev-dependencies]
 arrow-flight = { version = "59.2.0", features = ["flight-sql-experimental"] }
-ballista = { path = "../../ballista/client", version = "55.0.0", features = ["standalone"] }
-ballista-scheduler = { path = "../../ballista/scheduler", version = "55.0.0", features = ["flight-sql"] }
+ballista = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0", features = ["standalone"] }
+ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0", features = ["flight-sql"] }
 iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
 tempfile = "3.27"
 testcontainers = { version = "0.28", features = ["http_wait_plain"] }
