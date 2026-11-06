@@ -27,7 +27,8 @@ the executors.
 
 The crate is not published yet. It depends on unreleased revisions of
 iceberg-datafusion and iceberg-rust, and needs Rust 1.95. It is its own
-workspace, with its own `Cargo.lock` and CI, outside Ballista's, so a
+workspace, with its own `Cargo.lock` and CI, outside Ballista's, and depends
+on a pinned commit of Ballista rather than the crates beside it, so a
 DataFusion upgrade in Ballista that iceberg-rust doesn't support yet doesn't
 block Ballista's build or release. Build and test it from
 `integrations/iceberg`.
@@ -139,7 +140,8 @@ and executors must all set the same codecs in the same order.
   scheduler yet.
 - **One task per scan.** Iceberg scans do not split into partitions yet, so one
   executor reads the whole table. Operators above the scan still run in
-  parallel.
+  parallel. A scan reporting more than one partition fails to encode, rather
+  than being read in full by every task.
 - **Storage credentials travel in plain text.** Each table's serialized
   `FileIO` includes them, so the links between client, scheduler and executors
   must be trusted.
@@ -152,6 +154,9 @@ and executors must all set the same codecs in the same order.
   `ballista-iceberg` and be readied with `with_iceberg` (see
   [SQL clients](#sql-clients)). The tests cover standalone mode and an
   in-process scheduler serving Flight SQL.
+- **`ctx.catalog(name)` returns a wrapper.** `register_iceberg` wraps each
+  catalog to pin its tables, so the result doesn't downcast to the type you
+  registered. Keep the `Arc` you registered to reach it.
 - **A mounted catalog lists its tables once.** `IcebergCatalogProvider` reads
   the table names when it is built, so a table created afterwards isn't
   visible until the catalog is mounted again.
