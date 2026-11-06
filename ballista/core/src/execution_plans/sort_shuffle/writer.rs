@@ -33,7 +33,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
 use super::super::shuffle_writer::{
-    ColumnStatsCollector, handoff_stream, sketched_columns, take_handoff,
+    ColumnStatsCollector, WriterState, handoff_stream, sketched_columns,
 };
 use super::super::shuffle_writer_trait::ShuffleWriter;
 use super::buffer::BufferedBatches;
@@ -51,6 +51,7 @@ use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
 use datafusion::common::internal_err;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
@@ -144,24 +145,6 @@ fn encode_buffered_partitions(
     })?;
 
     Ok(EncodedPartitions { encoded, stats })
-}
-
-/// Coordinator handoff state — same shape as `ShuffleWriterExec`. Each output
-/// hash partition (0..K) gets one `oneshot::Receiver`; the first `execute(N)`
-/// call spawns the coordinator, subsequent calls take their receiver and
-/// await the summaries for their output partition.
-struct WriterState {
-    initialized: bool,
-    handoffs: Vec<Option<oneshot::Receiver<Result<Vec<ShuffleWritePartition>>>>>,
-}
-
-impl Debug for WriterState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WriterState")
-            .field("initialized", &self.initialized)
-            .field("handoffs", &self.handoffs.len())
-            .finish()
-    }
 }
 
 /// Sort-based shuffle writer that produces a single consolidated output file
@@ -479,10 +462,7 @@ impl SortShuffleWriterExec {
             global_output_partition_ids: default_partition_slice,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
-            state: Arc::new(Mutex::new(WriterState {
-                initialized: false,
-                handoffs: (0..output_partition_count).map(|_| None).collect(),
-            })),
+            state: Arc::new(Mutex::new(WriterState::new(output_partition_count))),
             column_stats: ColumnStatsCollector::default(),
         })
     }
@@ -979,35 +959,32 @@ impl ExecutionPlan for SortShuffleWriterExec {
     /// summaries pointing at that input's on-disk file; the coordinator
     /// re-buckets them by output partition and sends each bucket's
     /// summaries to the matching oneshot. Subsequent calls take their
-    /// receiver and return a stream that awaits it.
+    /// receiver and return a stream that awaits it. If every stream returned
+    /// so far is dropped before its summaries arrive, the coordinator stops,
+    /// and the streams of later calls fail.
     fn execute(
         &self,
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let mut guard = self.state.lock().map_err(|_| {
-            DataFusionError::Internal(
-                "SortShuffleWriterExec state mutex poisoned".to_owned(),
-            )
-        })?;
-        let state = &mut *guard;
-        let rx = take_handoff(
-            "SortShuffleWriterExec",
-            &mut state.initialized,
-            &mut state.handoffs,
-            partition,
-            |senders| {
+        let handoff = self
+            .state
+            .lock()
+            .map_err(|_| {
+                DataFusionError::Internal(
+                    "SortShuffleWriterExec state mutex poisoned".to_owned(),
+                )
+            })?
+            .take_handoff("SortShuffleWriterExec", partition, |senders| {
                 let writer = self.clone();
-                tokio::spawn(async move {
+                SpawnedTask::spawn(async move {
                     run_coordinator(writer, context, senders).await;
-                });
-            },
-        )?;
-        drop(guard);
+                })
+            })?;
 
         Ok(handoff_stream(
             "SortShuffleWriterExec",
-            rx,
+            handoff,
             self.work_dir.clone(),
             self.job_id.clone(),
             self.stage_id,
