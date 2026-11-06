@@ -64,8 +64,12 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [dev-dependencies]
 arrow-flight = { version = "59.2.0", features = ["flight-sql-experimental"] }
-ballista = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0", features = ["standalone"] }
-ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0", features = ["flight-sql"] }
+ballista = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0", features = [
+    "standalone",
+] }
+ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "d151e3275081f0506cb252d45e10553841c3ba9c", version = "55.0.0", features = [
+    "flight-sql",
+] }
 iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
 tempfile = "3.27"
 testcontainers = { version = "0.28", features = ["http_wait_plain"] }
