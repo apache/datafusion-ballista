@@ -1557,6 +1557,7 @@ mod tests {
 #[cfg(test)]
 mod memory_pool_tests {
     use super::*;
+    use crate::test_util::fresh_runtime_producer;
     use datafusion::execution::memory_pool::{
         GreedyMemoryPool, MemoryConsumer, MemoryLimit,
     };
@@ -1626,11 +1627,7 @@ mod memory_pool_tests {
         metrics.set_pool_size(Some(8192));
         let policy =
             observe_memory_pools(memory_pool_policy(8192, 8).unwrap(), metrics.clone());
-        let cache = DefaultSessionRuntimeCache::new(
-            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default()))),
-            policy,
-            2,
-        );
+        let cache = DefaultSessionRuntimeCache::new(fresh_runtime_producer(), policy, 2);
         let config = SessionConfig::new();
         let first = cache.produce_runtime("session", &config, 1).unwrap();
         let second = cache.produce_runtime("session", &config, 4).unwrap();

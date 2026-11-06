@@ -391,12 +391,12 @@ mod test {
     use crate::runtime_cache::{
         DefaultSessionRuntimeCache, MemoryPoolPolicy, SessionRuntimeCache,
     };
+    use crate::test_util::{fresh_runtime_producer, test_executor};
     use ballista_core::RuntimeProducer;
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::ShuffleWriterExec;
-    use ballista_core::serde::protobuf::{ExecutorRegistration, ShuffleWritePartition};
+    use ballista_core::serde::protobuf::ShuffleWritePartition;
     use ballista_core::serde::scheduler::TaskKey;
-    use ballista_core::utils::default_config_producer;
     use datafusion::arrow::datatypes::{Schema, SchemaRef};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::tree_node::TreeNodeRecursion;
@@ -533,23 +533,12 @@ mod test {
     /// Builds an executor over `work_dir`, along with the session context whose
     /// runtime its tasks run on.
     fn never_ending_executor(work_dir: &str) -> (Arc<Executor>, SessionContext) {
-        let executor_registration = ExecutorRegistration {
-            id: "executor".to_string(),
-            ..Default::default()
-        };
-        let config_producer = Arc::new(default_config_producer);
         let ctx = SessionContext::new();
         let runtime_env = ctx.runtime_env().clone();
         let runtime_producer: RuntimeProducer =
             Arc::new(move |_| Ok(runtime_env.clone()));
 
-        let executor = Arc::new(Executor::new_basic(
-            executor_registration,
-            work_dir,
-            runtime_producer,
-            config_producer,
-            2,
-        ));
+        let executor = Arc::new(test_executor(work_dir, runtime_producer, 2));
 
         (executor, ctx)
     }
@@ -710,29 +699,16 @@ mod test {
 
     #[test]
     fn produce_runtime_for_session_shares_read_side_state() {
-        let executor_registration = ExecutorRegistration {
-            id: "executor".to_string(),
-            ..Default::default()
-        };
-        let config_producer = Arc::new(default_config_producer);
-
         // A base producer that builds a fresh env each call, plus an identity
         // pool policy, so shared read-side state is observable via ptr equality.
-        let base_producer: RuntimeProducer =
-            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
+        let base_producer = fresh_runtime_producer();
         let identity: MemoryPoolPolicy = Arc::new(|base, _, _| Ok(base));
         let cache: Arc<dyn SessionRuntimeCache> = Arc::new(
             DefaultSessionRuntimeCache::new(base_producer.clone(), identity, 4),
         );
 
-        let executor = Executor::new_basic(
-            executor_registration,
-            "/tmp",
-            base_producer,
-            config_producer,
-            2,
-        )
-        .with_session_runtime_cache(Some(cache));
+        let executor = test_executor("/tmp", base_producer, 2)
+            .with_session_runtime_cache(Some(cache));
 
         let cfg = SessionConfig::new();
         let e1 = executor.produce_runtime_for_session("s1", &cfg, 1).unwrap();
@@ -745,22 +721,8 @@ mod test {
 
     #[test]
     fn produce_runtime_for_session_falls_back_without_cache() {
-        let executor_registration = ExecutorRegistration {
-            id: "executor".to_string(),
-            ..Default::default()
-        };
-        let config_producer = Arc::new(default_config_producer);
-        let base_producer: RuntimeProducer =
-            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
-
         // No cache attached: each call builds a fresh env.
-        let executor = Executor::new_basic(
-            executor_registration,
-            "/tmp",
-            base_producer,
-            config_producer,
-            2,
-        );
+        let executor = test_executor("/tmp", fresh_runtime_producer(), 2);
 
         let cfg = SessionConfig::new();
         let e1 = executor.produce_runtime_for_session("s1", &cfg, 1).unwrap();
@@ -770,13 +732,7 @@ mod test {
 
     #[test]
     fn pipelined_tasks_of_a_job_share_one_runtime_sized_by_its_reservation() {
-        let executor_registration = ExecutorRegistration {
-            id: "executor".to_string(),
-            ..Default::default()
-        };
-        let config_producer = Arc::new(default_config_producer);
-        let base_producer: RuntimeProducer =
-            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
+        let base_producer = fresh_runtime_producer();
         // Records the vcores each new pool is sized for.
         let sized: Arc<std::sync::Mutex<Vec<u32>>> = Default::default();
         let recorder = sized.clone();
@@ -787,14 +743,8 @@ mod test {
         let cache: Arc<dyn SessionRuntimeCache> = Arc::new(
             DefaultSessionRuntimeCache::new(base_producer.clone(), policy, 4),
         );
-        let executor = Executor::new_basic(
-            executor_registration,
-            "/tmp",
-            base_producer,
-            config_producer,
-            4,
-        )
-        .with_session_runtime_cache(Some(cache));
+        let executor = test_executor("/tmp", base_producer, 4)
+            .with_session_runtime_cache(Some(cache));
 
         let cfg = SessionConfig::new();
         let first = executor
