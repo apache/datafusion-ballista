@@ -541,11 +541,8 @@ mod tests {
     use super::super::ipc_file::read_file_layout;
     use super::*;
     use crate::execution_plans::shuffle_reader::fetch_partition_local;
-    use crate::execution_plans::test_util::key_payload_batch;
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId, PartitionLocation, PartitionStats,
-    };
+    use crate::execution_plans::test_util::{key_payload_batch, test_location};
+    use crate::serde::scheduler::PartitionLocation;
     use crate::utils::collect_stream;
     use datafusion::arrow::array::Int32Array;
     use datafusion::datasource::memory::MemorySourceConfig;
@@ -578,22 +575,8 @@ mod tests {
     fn location(job: &str, stage_id: usize, partition: usize) -> PartitionLocation {
         PartitionLocation {
             map_partition_id: partition,
-            partition_id: PartitionId {
-                job_id: job.into(),
-                stage_id,
-                partition_id: partition,
-            },
-            executor_meta: ExecutorMetadata {
-                id: "test-executor".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default(),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
-            partition_stats: PartitionStats::default(),
             file_id: Some(0),
-            is_sort_shuffle: false,
+            ..test_location(job, stage_id, partition)
         }
     }
 

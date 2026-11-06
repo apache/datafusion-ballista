@@ -478,11 +478,7 @@ impl ExecutionPlan for RangeShuffleReaderExec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution_plans::test_util::write_ipc_stream;
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId, PartitionStats,
-    };
+    use crate::execution_plans::test_util::{test_location, write_ipc_stream};
     use datafusion::arrow::array::{ArrayRef, Float64Array, RecordBatch};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_expr::PhysicalSortExpr;
@@ -499,22 +495,7 @@ mod tests {
     fn make_location(job: &str, stage: usize, partition: usize) -> PartitionLocation {
         PartitionLocation {
             map_partition_id: partition,
-            partition_id: PartitionId {
-                job_id: job.into(),
-                stage_id: stage,
-                partition_id: partition,
-            },
-            executor_meta: ExecutorMetadata {
-                id: "test-executor".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default(),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
-            partition_stats: PartitionStats::default(),
-            file_id: None,
-            is_sort_shuffle: false,
+            ..test_location(job, stage, partition)
         }
     }
 

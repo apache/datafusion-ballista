@@ -1816,36 +1816,20 @@ mod overlap_remap_tests {
 
     use super::*;
     use crate::execution_plans::range_repartition_common::test_util::cuts;
+    use crate::execution_plans::test_util::test_location;
     use crate::serde::protobuf::{RuntimeStatsPartitionEntry, RuntimeStatsReport};
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId, PartitionLocation, PartitionStats,
-    };
+    use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 
     /// Build a `PartitionLocation` for a producer file identified by
     /// `(producer_task_id, sub_part_id)`. `file_id = producer_task_id`
     /// matches the passthrough writer's convention.
     fn location(sub_part_id: usize, producer_task_id: usize) -> PartitionLocation {
         PartitionLocation {
-            map_partition_id: 0,
-            partition_id: PartitionId {
-                job_id: "test-job".into(),
-                stage_id: 0,
-                partition_id: sub_part_id,
-            },
-            executor_meta: ExecutorMetadata {
-                id: format!("exec-{producer_task_id}"),
-                host: "".to_string(),
-                port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default().with_vcores(0),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
             // `Some(0)` — helper's default is "empty file". Tests that
             // need rows overwrite `.partition_stats` explicitly.
             partition_stats: PartitionStats::new(Some(0), None, None),
             file_id: Some(producer_task_id as u64),
-            is_sort_shuffle: false,
+            ..test_location("test-job", 0, sub_part_id)
         }
     }
 

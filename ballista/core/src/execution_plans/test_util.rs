@@ -33,6 +33,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use crate::error::BallistaError;
 use crate::serde::scheduler::{
     ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
+    PartitionId, PartitionLocation, PartitionStats,
 };
 use crate::utils;
 
@@ -143,6 +144,28 @@ pub(crate) fn test_executor() -> ExecutorMetadata {
         grpc_port: 8080,
         specification: ExecutorSpecification::default().with_vcores(1),
         os_info: ExecutorOperatingSystemSpecification::default(),
+    }
+}
+
+/// A location of partition `partition` of stage `stage_id` on
+/// [`test_executor`], with default stats and no file id. Tests override the
+/// fields they care about with struct update syntax.
+pub(crate) fn test_location(
+    job: &str,
+    stage_id: usize,
+    partition: usize,
+) -> PartitionLocation {
+    PartitionLocation {
+        map_partition_id: 0,
+        partition_id: PartitionId {
+            job_id: job.into(),
+            stage_id,
+            partition_id: partition,
+        },
+        executor_meta: test_executor(),
+        partition_stats: PartitionStats::default(),
+        file_id: None,
+        is_sort_shuffle: false,
     }
 }
 
