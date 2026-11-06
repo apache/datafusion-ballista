@@ -1515,6 +1515,7 @@ mod test {
             Arc::new(RejectingTaskLauncher::default()),
         )
         .await?;
+        test.set_adaptive_planner(true);
 
         let plan = aggregation_logical_plan(2);
 
