@@ -610,13 +610,14 @@ mod test {
 
     #[tokio::test]
     async fn test_task_cancellation() {
-        let work_dir = TempDir::new().unwrap().path().to_str().unwrap().to_string();
-        let (executor, ctx) = never_ending_executor(&work_dir);
+        let temp_dir = TempDir::new().unwrap();
+        let work_dir = temp_dir.path().to_str().unwrap();
+        let (executor, ctx) = never_ending_executor(work_dir);
 
         let receiver = spawn_never_ending_task(
             &executor,
             &ctx,
-            &work_dir,
+            work_dir,
             TaskKey {
                 job_id: "job-id".into(),
                 stage_id: 1,
@@ -646,13 +647,14 @@ mod test {
 
     #[tokio::test]
     async fn test_tasks_drained_waits_for_last_task() {
-        let work_dir = TempDir::new().unwrap().path().to_str().unwrap().to_string();
-        let (executor, ctx) = never_ending_executor(&work_dir);
+        let temp_dir = TempDir::new().unwrap();
+        let work_dir = temp_dir.path().to_str().unwrap();
+        let (executor, ctx) = never_ending_executor(work_dir);
 
         let first = spawn_never_ending_task(
             &executor,
             &ctx,
-            &work_dir,
+            work_dir,
             TaskKey {
                 job_id: "job-id".into(),
                 stage_id: 1,
@@ -662,7 +664,7 @@ mod test {
         let second = spawn_never_ending_task(
             &executor,
             &ctx,
-            &work_dir,
+            work_dir,
             TaskKey {
                 job_id: "job-id".into(),
                 stage_id: 1,
