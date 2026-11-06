@@ -421,13 +421,59 @@ Parquet, CSV, JSON, and other file formats, run it in a distributed environment,
 collect the results back in Python.</p>
 <section id="installation">
 <h2>Installation<a class="headerlink" href="#installation" title="Link to this heading">#</a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>ballista
+<p>The <code class="docutils literal notranslate"><span class="pre">ballista</span></code> package is published on <a class="reference external" href="https://pypi.org/project/ballista/">PyPI</a> and requires Python 3.10 or later. Installing into a virtual environment is recommended:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>.venv
+<span class="nb">source</span><span class="w"> </span>.venv/bin/activate
+pip<span class="w"> </span>install<span class="w"> </span>ballista
+</pre></div>
+</div>
+<p>or with <a class="reference external" href="https://docs.astral.sh/uv/">uv</a>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>add<span class="w"> </span>ballista<span class="w">          </span><span class="c1"># in a uv project</span>
+uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>ballista<span class="w">  </span><span class="c1"># in an existing environment</span>
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">ballista</span></code> depends on a matching <code class="docutils literal notranslate"><span class="pre">datafusion</span></code> release, for example <code class="docutils literal notranslate"><span class="pre">ballista</span></code> 55
-requires <code class="docutils literal notranslate"><span class="pre">datafusion</span></code> 55. Queries are planned by DataFusion Python on the client
-and executed by the Ballista cluster, so the cluster should run the same Ballista
-version as the client.</p>
+requires <code class="docutils literal notranslate"><span class="pre">datafusion</span></code> 55, which is installed automatically. Queries are planned by DataFusion Python on the client and executed by the Ballista cluster, so the client should have the same major version as the cluster. To install a specific version:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"ballista==55.*"</span>
+</pre></div>
+</div>
+<p>See <a class="reference internal" href="../versioning.html"><span class="std std-doc">Versioning</span></a> for the compatibility rules.</p>
+<section id="optional-extras">
+<h3>Optional Extras<a class="headerlink" href="#optional-extras" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Extra</p></th>
+<th class="head"><p>Install</p></th>
+<th class="head"><p>Provides</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">jupyter</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">&quot;ballista[jupyter]&quot;</span></code></p></td>
+<td><p>Jupyter magics, see <a class="reference internal" href="jupyter.html"><span class="std std-doc">Jupyter Notebooks</span></a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">python-client</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">&quot;ballista[python-client]&quot;</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">BallistaClient</span></code> and <code class="docutils literal notranslate"><span class="pre">BallistaPythonSessionContext</span></code>, a cluster client written in Python</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="verifying-the-installation">
+<h3>Verifying the Installation<a class="headerlink" href="#verifying-the-installation" title="Link to this heading">#</a></h3>
+<p>Start an in-process cluster to check that the package and its native extension load:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">"from ballista import setup_test_cluster; print(setup_test_cluster())"</span>
+</pre></div>
+</div>
+<p>This prints the host and port of the test scheduler.</p>
+</section>
+<section id="building-from-source">
+<h3>Building from Source<a class="headerlink" href="#building-from-source" title="Link to this heading">#</a></h3>
+<p>If no wheel is available for your platform, or you want to use an unreleased version,
+see the <a class="reference internal" href="../../contributors-guide/development.html"><span class="std std-doc">contributors guide</span></a> for building the
+package from source with <code class="docutils literal notranslate"><span class="pre">maturin</span></code>.</p>
+</section>
 </section>
 <section id="connecting-to-a-cluster">
 <h2>Connecting to a Cluster<a class="headerlink" href="#connecting-to-a-cluster" title="Link to this heading">#</a></h2>
@@ -732,7 +778,12 @@ uses a temporary directory.</p>
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-extras">Optional Extras</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#verifying-the-installation">Verifying the Installation</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#building-from-source">Building from Source</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connecting-to-a-cluster">Connecting to a Cluster</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#target-partitions">Target Partitions</a></li>
