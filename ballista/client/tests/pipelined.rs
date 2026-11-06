@@ -24,9 +24,9 @@ mod common;
 #[cfg(feature = "standalone")]
 mod pipelined {
     use crate::common::{
-        ballista_state, collect_lines, orders_customers_context,
-        register_orders_customers, set_option, setup_test_cluster_with_executors,
-        write_orders_customers,
+        ORDERS_QUERIES, ballista_state, collect_lines, orders_customers_context,
+        orders_customers_dir, register_orders_customers, set_option,
+        setup_test_cluster_with_executors,
     };
     use ballista::prelude::SessionContextExt;
     use ballista_core::config::{
@@ -38,7 +38,6 @@ mod pipelined {
     use futures::StreamExt;
     use std::path::Path;
     use std::time::Duration;
-    use tempfile::TempDir;
 
     /// A scheduler with `executors` executors of `vcores` vcores each.
     async fn cluster_context(
@@ -66,58 +65,9 @@ mod pipelined {
         lines
     }
 
-    const QUERIES: &[(&str, bool)] = &[
-        // Scan and a collapse to one partition.
-        ("SELECT count(*), sum(o_amount) FROM orders", false),
-        // Hash repartition, aggregate, sort.
-        (
-            "SELECT o_cust, count(*) AS n, sum(o_amount) AS total \
-             FROM orders GROUP BY o_cust ORDER BY o_cust",
-            false,
-        ),
-        // Join (broadcast, since customers is small), aggregate, sort.
-        (
-            "SELECT c_region, count(*) AS n, sum(o_amount) AS total \
-             FROM orders JOIN customers ON o_cust = c_id \
-             GROUP BY c_region ORDER BY c_region",
-            false,
-        ),
-        // Top-k over an aggregate.
-        (
-            "SELECT o_cust, sum(o_amount) AS total FROM orders \
-             GROUP BY o_cust ORDER BY total DESC, o_cust LIMIT 5",
-            false,
-        ),
-        // Filter with no exchange but the final merge.
-        (
-            "SELECT o_id, o_amount FROM orders WHERE o_amount > 990 ORDER BY o_id",
-            false,
-        ),
-        // Union of two scans.
-        (
-            "SELECT o_id AS id FROM orders WHERE o_id < 10 \
-             UNION ALL SELECT c_id AS id FROM customers WHERE c_id < 5",
-            true,
-        ),
-        // Window function over a hash-partitioned input.
-        (
-            "SELECT o_cust, o_id, \
-             row_number() OVER (PARTITION BY o_cust ORDER BY o_id) AS rn \
-             FROM orders WHERE o_cust < 3 ORDER BY o_cust, o_id",
-            false,
-        ),
-        // A scalar subquery, joined to every row: each task of the join's
-        // stage reads the subquery's whole result.
-        (
-            "SELECT o_id, o_amount FROM orders \
-             WHERE o_amount > (SELECT avg(o_amount) + 400 FROM orders) ORDER BY o_id",
-            false,
-        ),
-    ];
-
     async fn check_matches_staged(dir: &Path, pipelined: &SessionContext) {
         let staged = orders_customers_context(dir, &[]).await;
-        for (sql, sorted) in QUERIES {
+        for (sql, sorted) in ORDERS_QUERIES {
             let expected = rows(&staged, sql, *sorted).await;
             let actual = rows(pipelined, sql, *sorted).await;
             assert_eq!(actual, expected, "pipelined result differs for: {sql}");
@@ -126,8 +76,7 @@ mod pipelined {
 
     #[tokio::test]
     async fn pipelined_results_match_staged() {
-        let dir = TempDir::new().unwrap();
-        write_orders_customers(dir.path());
+        let dir = orders_customers_dir();
         let pipelined = orders_customers_context(
             dir.path(),
             &[(BALLISTA_EXECUTION_MODE, "pipelined")],
@@ -141,8 +90,7 @@ mod pipelined {
     /// Arrow Flight instead.
     #[tokio::test]
     async fn pipelined_results_match_staged_over_flight() {
-        let dir = TempDir::new().unwrap();
-        write_orders_customers(dir.path());
+        let dir = orders_customers_dir();
         let pipelined = orders_customers_context(
             dir.path(),
             &[
@@ -158,8 +106,7 @@ mod pipelined {
     /// split between them and its exchanges cross executors.
     #[tokio::test]
     async fn pipelined_results_match_staged_across_executors() {
-        let dir = TempDir::new().unwrap();
-        write_orders_customers(dir.path());
+        let dir = orders_customers_dir();
         let pipelined =
             cluster_context(dir.path(), &[(BALLISTA_EXECUTION_MODE, "pipelined")], 2, 2)
                 .await;
@@ -170,15 +117,14 @@ mod pipelined {
     /// when it is submitted, on the same cluster, with the same results.
     #[tokio::test]
     async fn one_session_switches_between_staged_and_pipelined() {
-        let dir = TempDir::new().unwrap();
-        write_orders_customers(dir.path());
+        let dir = orders_customers_dir();
         // Started pipelined, so the standalone cluster runs push-staged.
         let ctx = orders_customers_context(
             dir.path(),
             &[(BALLISTA_EXECUTION_MODE, "pipelined")],
         )
         .await;
-        for (sql, sorted) in QUERIES {
+        for (sql, sorted) in ORDERS_QUERIES {
             set_option(&ctx, BALLISTA_EXECUTION_MODE, "staged").await;
             let staged = rows(&ctx, sql, *sorted).await;
             set_option(&ctx, BALLISTA_EXECUTION_MODE, "pipelined").await;
@@ -191,8 +137,7 @@ mod pipelined {
     /// leaves shuffle output to cache, and reads it back pipelined.
     #[tokio::test]
     async fn pipelined_session_caches_a_data_frame() {
-        let dir = TempDir::new().unwrap();
-        write_orders_customers(dir.path());
+        let dir = orders_customers_dir();
         let ctx = orders_customers_context(
             dir.path(),
             &[(BALLISTA_EXECUTION_MODE, "pipelined")],
@@ -218,8 +163,7 @@ mod pipelined {
     /// vcores: the next job, which needs every vcore, still runs.
     #[tokio::test]
     async fn dropping_the_results_early_frees_the_cluster() {
-        let dir = TempDir::new().unwrap();
-        write_orders_customers(dir.path());
+        let dir = orders_customers_dir();
         // Small batches, so the scan stays blocked on its full queues.
         let ctx = orders_customers_context(
             dir.path(),
@@ -250,8 +194,7 @@ mod pipelined {
 
     #[tokio::test]
     async fn pipelined_limit_without_order_returns_the_limit() {
-        let dir = TempDir::new().unwrap();
-        write_orders_customers(dir.path());
+        let dir = orders_customers_dir();
         let ctx = orders_customers_context(
             dir.path(),
             &[(BALLISTA_EXECUTION_MODE, "pipelined")],
@@ -269,8 +212,7 @@ mod pipelined {
 
     #[tokio::test]
     async fn pipelined_query_error_reaches_the_client() {
-        let dir = TempDir::new().unwrap();
-        write_orders_customers(dir.path());
+        let dir = orders_customers_dir();
         let ctx = orders_customers_context(
             dir.path(),
             &[(BALLISTA_EXECUTION_MODE, "pipelined")],

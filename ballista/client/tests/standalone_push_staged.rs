@@ -23,8 +23,8 @@ mod common;
 #[cfg(feature = "standalone")]
 mod standalone_push_staged {
     use crate::common::{
-        ballista_state, collect_text, register_orders_customers,
-        setup_test_cluster_with_executors, write_orders_customers,
+        ORDERS_QUERIES, ballista_state, collect_text, orders_customers_dir,
+        register_orders_customers, setup_test_cluster_with_executors,
     };
     use ballista::prelude::SessionContextExt;
     use ballista_core::config::BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY;
@@ -33,20 +33,16 @@ mod standalone_push_staged {
     use datafusion::execution::SessionState;
     use datafusion::prelude::SessionContext;
     use std::path::Path;
-    use tempfile::TempDir;
 
     fn state(policy: &str) -> SessionState {
         ballista_state(&[(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY, policy)])
     }
 
-    const QUERIES: &[&str] = &[
-        "SELECT count(*), sum(o_amount) FROM orders",
-        "SELECT o_cust, count(*) AS n, sum(o_amount) AS total \
-         FROM orders GROUP BY o_cust ORDER BY o_cust",
-        "SELECT c_region, count(*) AS n, sum(o_amount) AS total \
-         FROM orders JOIN customers ON o_cust = c_id \
-         GROUP BY c_region ORDER BY c_region",
-    ];
+    /// The scan, aggregate and join of [`ORDERS_QUERIES`], none of which has an
+    /// unspecified row order.
+    fn queries() -> impl Iterator<Item = &'static str> {
+        ORDERS_QUERIES[..3].iter().map(|(sql, _)| *sql)
+    }
 
     async fn expected(dir: &Path) -> Vec<String> {
         let ctx = SessionContext::standalone_with_state(state("pull-staged"))
@@ -54,7 +50,7 @@ mod standalone_push_staged {
             .unwrap();
         register_orders_customers(&ctx, dir).await;
         let mut out = Vec::new();
-        for sql in QUERIES {
+        for sql in queries() {
             out.push(collect_text(&ctx, sql).await);
         }
         out
@@ -62,23 +58,21 @@ mod standalone_push_staged {
 
     #[tokio::test]
     async fn push_staged_standalone_matches_pull_staged() {
-        let dir = TempDir::new().unwrap();
-        write_orders_customers(dir.path());
+        let dir = orders_customers_dir();
         let expected = expected(dir.path()).await;
 
         let ctx = SessionContext::standalone_with_state(state("push-staged"))
             .await
             .unwrap();
         register_orders_customers(&ctx, dir.path()).await;
-        for (sql, expected) in QUERIES.iter().zip(&expected) {
+        for (sql, expected) in queries().zip(&expected) {
             assert_eq!(&collect_text(&ctx, sql).await, expected, "{sql}");
         }
     }
 
     #[tokio::test]
     async fn push_staged_cluster_of_two_executors_matches_pull_staged() {
-        let dir = TempDir::new().unwrap();
-        write_orders_customers(dir.path());
+        let dir = orders_customers_dir();
         let expected = expected(dir.path()).await;
 
         let state = state("push-staged");
@@ -100,7 +94,7 @@ mod standalone_push_staged {
                 .await
                 .unwrap();
         register_orders_customers(&ctx, dir.path()).await;
-        for (sql, expected) in QUERIES.iter().zip(&expected) {
+        for (sql, expected) in queries().zip(&expected) {
             assert_eq!(&collect_text(&ctx, sql).await, expected, "{sql}");
         }
     }

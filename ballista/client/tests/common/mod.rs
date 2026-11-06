@@ -31,7 +31,9 @@ use ballista_scheduler::SessionBuilder;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::parquet::arrow::ArrowWriter;
 use datafusion::prelude::{CsvReadOptions, SessionConfig, SessionContext};
+use tempfile::TempDir;
 
 /// Returns the `testdata` directory of this crate.
 pub fn test_data_dir() -> String {
@@ -46,6 +48,57 @@ pub fn test_data_dir() -> String {
 pub fn test_data() -> String {
     test_data_dir()
 }
+
+/// The path of `alltypes_plain.parquet` in the `testdata` directory.
+pub fn alltypes_parquet() -> String {
+    format!("{}/alltypes_plain.parquet", test_data_dir())
+}
+
+/// Registers `alltypes_plain.parquet` as the table `name`.
+pub async fn register_alltypes(ctx: &SessionContext, name: &str) {
+    ctx.register_parquet(name, &alltypes_parquet(), Default::default())
+        .await
+        .unwrap();
+}
+
+/// The query of [`ALLTYPES_ID_GT_4`], over the table `test`.
+pub const ALLTYPES_ID_GT_4_SQL: &str =
+    "select string_col, timestamp_col from test where id > 4";
+
+/// The result of [`ALLTYPES_ID_GT_4_SQL`], or of the same query over the
+/// contents of `alltypes_plain.parquet`.
+pub const ALLTYPES_ID_GT_4: [&str; 7] = [
+    "+------------+---------------------+",
+    "| string_col | timestamp_col       |",
+    "+------------+---------------------+",
+    "| 31         | 2009-03-01T00:01:00 |",
+    "| 30         | 2009-04-01T00:00:00 |",
+    "| 31         | 2009-04-01T00:01:00 |",
+    "+------------+---------------------+",
+];
+
+/// A grouped count over the table `test`.
+pub const ALLTYPES_GROUP_BY_SQL: &str = "select string_col, count(*) from test where id > 4 group by string_col order by string_col";
+
+/// The result of [`ALLTYPES_GROUP_BY_SQL`].
+pub const ALLTYPES_GROUP_BY: [&str; 6] = [
+    "+------------+----------+",
+    "| string_col | count(*) |",
+    "+------------+----------+",
+    "| 30         | 1        |",
+    "| 31         | 2        |",
+    "+------------+----------+",
+];
+
+/// A self-join of `alltypes_plain.parquet`, registered as `t0` and `t1`.
+pub const ALLTYPES_JOIN_SQL: &str =
+    "select t0.id from t0 join t1 on t0.id = t1.id order by t0.id desc limit 5";
+
+/// The result of [`ALLTYPES_JOIN_SQL`].
+pub const ALLTYPES_JOIN: [&str; 9] = [
+    "+----+", "| id |", "+----+", "| 7  |", "| 6  |", "| 5  |", "| 4  |", "| 3  |",
+    "+----+",
+];
 
 /// starts a ballista cluster for integration tests
 pub async fn setup_test_cluster() -> (String, u16) {
@@ -206,6 +259,13 @@ pub async fn standalone_context() -> SessionContext {
     SessionContext::standalone().await.unwrap()
 }
 
+/// A standalone context with `alltypes_plain.parquet` registered as `test`.
+pub async fn alltypes_context() -> SessionContext {
+    let ctx = standalone_context().await;
+    register_alltypes(&ctx, "test").await;
+    ctx
+}
+
 pub async fn remote_context() -> SessionContext {
     let (host, port) = setup_test_cluster().await;
     SessionContext::remote(&format!("df://{host}:{port}"))
@@ -253,9 +313,9 @@ pub fn datafusion_context() -> SessionContext {
     SessionContext::new_with_config(SessionConfig::new().with_target_partitions(4))
 }
 
-/// Writes an `orders` table split over four files, so its scan has four
-/// partitions, and a small `customers` table.
-pub fn write_orders_customers(dir: &Path) {
+/// Writes the tables of [`orders_customers_dir`] to `dir`. `orders` is split
+/// over four files, so its scan has four partitions.
+fn write_orders_customers(dir: &Path) {
     let orders = dir.join("orders");
     std::fs::create_dir(&orders).unwrap();
     for file in 0..4 {
@@ -267,33 +327,82 @@ pub fn write_orders_customers(dir: &Path) {
             writeln!(out, "{id},{},{}", id % 97, (id * 7) % 1000).unwrap();
         }
     }
-    let mut out = std::fs::File::create(dir.join("customers.csv")).unwrap();
+    let customers = dir.join("customers");
+    std::fs::create_dir(&customers).unwrap();
+    let mut out = std::fs::File::create(customers.join("part-0.csv")).unwrap();
     writeln!(out, "c_id,c_name,c_region").unwrap();
     for id in 0..100 {
         writeln!(out, "{id},customer-{id},region-{}", id % 5).unwrap();
     }
 }
 
-/// Registers the tables written by [`write_orders_customers`].
-pub async fn register_orders_customers(ctx: &SessionContext, dir: &Path) {
-    ctx.register_csv(
-        "orders",
-        dir.join("orders").to_str().unwrap(),
-        CsvReadOptions::new(),
-    )
-    .await
-    .unwrap();
-    ctx.register_csv(
-        "customers",
-        dir.join("customers.csv").to_str().unwrap(),
-        CsvReadOptions::new(),
-    )
-    .await
-    .unwrap();
+/// A temporary directory holding an `orders` table of four files and a small
+/// `customers` table, one directory each.
+pub fn orders_customers_dir() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    write_orders_customers(dir.path());
+    dir
 }
 
+/// Registers the tables of [`orders_customers_dir`].
+pub async fn register_orders_customers(ctx: &SessionContext, dir: &Path) {
+    register_csv_tables(ctx, dir, &["orders", "customers"]).await;
+}
+
+/// Queries over the tables of [`orders_customers_dir`], each with whether its
+/// result has no defined row order, so its rows are compared sorted. The first
+/// three are a scan, an aggregate and a join.
+pub const ORDERS_QUERIES: &[(&str, bool)] = &[
+    // Scan and a collapse to one partition.
+    ("SELECT count(*), sum(o_amount) FROM orders", false),
+    // Hash repartition, aggregate, sort.
+    (
+        "SELECT o_cust, count(*) AS n, sum(o_amount) AS total \
+         FROM orders GROUP BY o_cust ORDER BY o_cust",
+        false,
+    ),
+    // Join (broadcast, since customers is small), aggregate, sort.
+    (
+        "SELECT c_region, count(*) AS n, sum(o_amount) AS total \
+         FROM orders JOIN customers ON o_cust = c_id \
+         GROUP BY c_region ORDER BY c_region",
+        false,
+    ),
+    // Top-k over an aggregate.
+    (
+        "SELECT o_cust, sum(o_amount) AS total FROM orders \
+         GROUP BY o_cust ORDER BY total DESC, o_cust LIMIT 5",
+        false,
+    ),
+    // Filter with no exchange but the final merge.
+    (
+        "SELECT o_id, o_amount FROM orders WHERE o_amount > 990 ORDER BY o_id",
+        false,
+    ),
+    // Union of two scans.
+    (
+        "SELECT o_id AS id FROM orders WHERE o_id < 10 \
+         UNION ALL SELECT c_id AS id FROM customers WHERE c_id < 5",
+        true,
+    ),
+    // Window function over a hash-partitioned input.
+    (
+        "SELECT o_cust, o_id, \
+         row_number() OVER (PARTITION BY o_cust ORDER BY o_id) AS rn \
+         FROM orders WHERE o_cust < 3 ORDER BY o_cust, o_id",
+        false,
+    ),
+    // A scalar subquery, joined to every row: each task of the join's
+    // stage reads the subquery's whole result.
+    (
+        "SELECT o_id, o_amount FROM orders \
+         WHERE o_amount > (SELECT avg(o_amount) + 400 FROM orders) ORDER BY o_id",
+        false,
+    ),
+];
+
 /// A standalone cluster over [`ballista_state`] with `options`, with the
-/// tables written by [`write_orders_customers`] registered.
+/// tables of [`orders_customers_dir`] registered.
 pub async fn orders_customers_context(
     dir: &Path,
     options: &[(&str, &str)],
@@ -321,6 +430,14 @@ pub async fn register_csv_tables(ctx: &SessionContext, dir: &Path, names: &[&str
     }
 }
 
+/// Writes `batch` to the Parquet file `path`.
+pub fn write_parquet_file(path: &Path, batch: &RecordBatch) {
+    let file = std::fs::File::create(path).expect("create parquet file");
+    let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+    writer.write(batch).unwrap();
+    writer.close().unwrap();
+}
+
 /// Runs `SET key = 'value'`.
 pub async fn set_option(ctx: &SessionContext, key: &str, value: &str) {
     ctx.sql(&format!("SET {key} = '{value}'"))
@@ -335,6 +452,29 @@ pub async fn set_option(ctx: &SessionContext, key: &str, value: &str) {
 pub async fn collect_text(ctx: &SessionContext, sql: &str) -> String {
     let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
     pretty_format_batches(&batches).unwrap().to_string()
+}
+
+/// Runs `sql` on `ctx` and compares the formatted result, ignoring surrounding
+/// whitespace, with `expected`. A difference, or a failed query, adds a
+/// message that starts with `[label]` to `mismatches`.
+pub async fn check_matches(
+    ctx: &SessionContext,
+    label: &str,
+    sql: &str,
+    expected: &str,
+    mismatches: &mut Vec<String>,
+) {
+    match ctx.sql(sql).await.unwrap().collect().await {
+        Ok(batches) => {
+            let actual = pretty_format_batches(&batches).unwrap().to_string();
+            if actual.trim() != expected.trim() {
+                mismatches.push(format!(
+                    "[{label}] expected:\n{expected}\nactual:\n{actual}"
+                ));
+            }
+        }
+        Err(error) => mismatches.push(format!("[{label}] failed: {error}")),
+    }
 }
 
 /// The lines of the formatted table of the result of `sql`.

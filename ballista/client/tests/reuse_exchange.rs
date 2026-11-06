@@ -25,15 +25,12 @@ mod common;
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod reuse_exchange {
-    use crate::common::{
-        collect_lines, orders_customers_context, write_orders_customers,
-    };
+    use crate::common::{collect_lines, orders_customers_context, orders_customers_dir};
     use ballista_core::config::{
         BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_COALESCE_ENABLED,
         BALLISTA_REUSE_EXCHANGE_ENABLED, BALLISTA_SKEW_JOIN_ENABLED,
     };
     use rstest::rstest;
-    use tempfile::TempDir;
 
     /// Each query reads the same aggregate, and so the same exchanges, more
     /// than once.
@@ -72,8 +69,7 @@ mod reuse_exchange {
         // join, which only run with these rules on.
         #[values(false, true)] reader_rules: bool,
     ) {
-        let dir = TempDir::new().unwrap();
-        write_orders_customers(dir.path());
+        let dir = orders_customers_dir();
 
         // The static planner never shares a stage between readers.
         let reference = orders_customers_context(
