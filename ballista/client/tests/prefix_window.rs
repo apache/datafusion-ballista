@@ -32,19 +32,17 @@ mod common;
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod prefix_window_tests {
-    use crate::common::state_with_config;
+    use crate::common::{state_with_config, write_parquet_file};
     use ballista::prelude::{SessionConfigExt, SessionContextExt};
     use ballista_core::config::{
         BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_PARALLEL_WINDOW_ENABLED,
         BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK,
     };
-    use datafusion::arrow::array::{Float64Array, Int64Array};
+    use datafusion::arrow::array::{ArrayRef, Float64Array, Int64Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::Result;
-    use datafusion::parquet::arrow::ArrowWriter;
     use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
-    use std::fs::File;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -113,7 +111,8 @@ mod prefix_window_tests {
             .unwrap()
     }
 
-    /// Register `t(v Float64)` as one parquet file per partition.
+    /// Writes `batches` as one parquet file each, with `schema`, and registers
+    /// the files as the table `name`.
     ///
     /// Parquet rather than a `MemTable` because Ballista ships the *logical*
     /// plan to the scheduler, and an in-memory provider has no
@@ -123,28 +122,39 @@ mod prefix_window_tests {
     /// split a single small file.
     ///
     /// The returned [`TempDir`] owns the files and must outlive the query.
-    async fn register_input(ctx: &SessionContext) -> Result<TempDir> {
-        let schema =
-            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+    async fn register_parts(
+        ctx: &SessionContext,
+        name: &str,
+        schema: &Arc<Schema>,
+        batches: Vec<Vec<ArrayRef>>,
+    ) -> Result<TempDir> {
         let dir = TempDir::new().expect("temp dir");
-        for (partition, values) in input_partitions().into_iter().enumerate() {
-            let batch = RecordBatch::try_new(
-                Arc::clone(&schema),
-                vec![Arc::new(Float64Array::from(values))],
-            )?;
-            let path = dir.path().join(format!("part-{partition}.parquet"));
-            let file = File::create(&path).expect("create parquet file");
-            let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None)?;
-            writer.write(&batch)?;
-            writer.close()?;
+        for (partition, columns) in batches.into_iter().enumerate() {
+            let batch = RecordBatch::try_new(Arc::clone(schema), columns)?;
+            write_parquet_file(
+                &dir.path().join(format!("part-{partition}.parquet")),
+                &batch,
+            );
         }
         ctx.register_parquet(
-            "t",
+            name,
             dir.path().to_str().expect("utf-8 temp path"),
             ParquetReadOptions::default(),
         )
         .await?;
         Ok(dir)
+    }
+
+    /// Register `t(v Float64)` as one parquet file per partition, see
+    /// [`register_parts`].
+    async fn register_input(ctx: &SessionContext) -> Result<TempDir> {
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]));
+        let batches = input_partitions()
+            .into_iter()
+            .map(|values| vec![Arc::new(Float64Array::from(values)) as ArrayRef])
+            .collect();
+        register_parts(ctx, "t", &schema, batches).await
     }
 
     /// `(k, v)` rows per partition, where `k` is a nullable `Int64` routing
@@ -186,33 +196,21 @@ mod prefix_window_tests {
     }
 
     /// Register [`nullable_key_partitions`] as `tk(k Int64 NULL, v Float64)`,
-    /// one parquet file per partition. Same reasons as [`register_input`].
+    /// one parquet file per partition. Same reasons as [`register_parts`].
     async fn register_nullable_key_input(ctx: &SessionContext) -> Result<TempDir> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("k", DataType::Int64, true),
             Field::new("v", DataType::Float64, false),
         ]));
-        let dir = TempDir::new().expect("temp dir");
-        for (partition, rows) in nullable_key_partitions().into_iter().enumerate() {
-            let keys: Int64Array = rows.iter().map(|(k, _)| *k).collect();
-            let values: Float64Array = rows.iter().map(|(_, v)| *v).collect();
-            let batch = RecordBatch::try_new(
-                Arc::clone(&schema),
-                vec![Arc::new(keys), Arc::new(values)],
-            )?;
-            let path = dir.path().join(format!("part-{partition}.parquet"));
-            let file = File::create(&path).expect("create parquet file");
-            let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None)?;
-            writer.write(&batch)?;
-            writer.close()?;
-        }
-        ctx.register_parquet(
-            "tk",
-            dir.path().to_str().expect("utf-8 temp path"),
-            ParquetReadOptions::default(),
-        )
-        .await?;
-        Ok(dir)
+        let batches = nullable_key_partitions()
+            .into_iter()
+            .map(|rows| {
+                let keys: Int64Array = rows.iter().map(|(k, _)| *k).collect();
+                let values: Float64Array = rows.iter().map(|(_, v)| *v).collect();
+                vec![Arc::new(keys) as ArrayRef, Arc::new(values) as ArrayRef]
+            })
+            .collect();
+        register_parts(ctx, "tk", &schema, batches).await
     }
 
     /// Running sums over `tk`, ordered by the nullable key.
