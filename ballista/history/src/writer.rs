@@ -142,6 +142,18 @@ impl EventLogWriter {
     }
 }
 
+/// Check that event logs can be written under `log_dir`: create it if it is
+/// missing, then create and remove a file in it.
+///
+/// [`EventLogWriter`] only logs a warning when it cannot write, so a caller
+/// that needs the logs should check the directory before starting the writer.
+pub async fn check_log_dir(log_dir: &Path) -> std::io::Result<()> {
+    tokio::fs::create_dir_all(log_dir).await?;
+    let probe = log_dir.join(format!(".write-check-{}", std::process::id()));
+    tokio::fs::File::create(&probe).await?;
+    tokio::fs::remove_file(&probe).await
+}
+
 async fn run(log_dir: PathBuf, mut rx: mpsc::Receiver<WriterMsg>) {
     if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
         log::warn!("event-log writer: cannot create {}: {e}", log_dir.display());
@@ -463,5 +475,25 @@ mod tests {
             finalized,
             "the finalized .eventlog must be left untouched"
         );
+    }
+
+    #[tokio::test]
+    async fn check_log_dir_creates_the_dir_and_leaves_it_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_dir = dir.path().join("a").join("logs");
+
+        check_log_dir(&log_dir).await.unwrap();
+
+        assert!(log_dir.is_dir());
+        assert_eq!(std::fs::read_dir(&log_dir).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn check_log_dir_fails_when_the_dir_cannot_be_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+
+        assert!(check_log_dir(&file.join("logs")).await.is_err());
     }
 }
