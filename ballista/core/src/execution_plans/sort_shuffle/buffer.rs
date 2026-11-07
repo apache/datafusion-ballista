@@ -25,6 +25,7 @@
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::utils::memory::RecordBatchMemoryCounter;
 use datafusion::error::Result;
 
 /// Rows buffered for every output partition of one input partition.
@@ -34,8 +35,13 @@ pub struct BufferedBatches {
     batch_size: usize,
     /// Input batches in arrival order, indexed by `batch_idx`.
     batches: Vec<RecordBatch>,
-    /// Total `get_array_memory_size` of `batches`.
+    /// Bytes of the distinct buffers `batches` hold.
     batches_bytes: usize,
+    /// Counts each buffer once across `batches`. Operators such as aggregates
+    /// emit one large array as many zero-copy slices; summing each slice's
+    /// `get_array_memory_size` would count the shared buffer once per slice
+    /// and trigger a spill on almost every batch.
+    batches_counter: RecordBatchMemoryCounter,
     /// One list of `(batch_idx, row_idx)` pairs per output partition.
     indices: Vec<Vec<(u32, u32)>>,
     /// Total allocated capacity of `indices`, in bytes.
@@ -51,6 +57,7 @@ impl BufferedBatches {
             batch_size,
             batches: Vec::new(),
             batches_bytes: 0,
+            batches_counter: RecordBatchMemoryCounter::new(),
             indices: vec![Vec::new(); num_partitions],
             indices_bytes: 0,
         }
@@ -89,7 +96,7 @@ impl BufferedBatches {
             self.indices_bytes += (partition_indices.capacity() - capacity_before)
                 * size_of::<(u32, u32)>();
         }
-        self.batches_bytes += batch.get_array_memory_size();
+        self.batches_bytes += self.batches_counter.count_batch(&batch);
         self.batches.push(batch);
     }
 
@@ -103,6 +110,7 @@ impl BufferedBatches {
         mut f: impl FnMut(usize, &mut dyn Iterator<Item = Result<RecordBatch>>) -> Result<()>,
     ) -> Result<()> {
         self.batches_bytes = 0;
+        self.batches_counter = RecordBatchMemoryCounter::new();
         self.indices_bytes = 0;
         let batches = std::mem::take(&mut self.batches);
         let indices: Vec<_> = self.indices.iter_mut().map(std::mem::take).collect();
@@ -127,6 +135,7 @@ mod tests {
     use super::*;
     use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::utils::memory::get_record_batch_memory_size;
     use std::sync::Arc;
 
     fn schema() -> SchemaRef {
@@ -185,12 +194,41 @@ mod tests {
     }
 
     #[test]
+    fn memory_size_counts_buffers_shared_by_slices_once() {
+        let whole = batch((0..8192).collect());
+        let whole_bytes = get_record_batch_memory_size(&whole);
+        let mut bb = BufferedBatches::new(1, schema(), 8);
+        for i in 0..8 {
+            bb.push_batch(whole.slice(i * 1024, 1024), &[vec![0]]);
+        }
+        assert_eq!(
+            bb.memory_size(),
+            whole_bytes + index_bytes(&bb),
+            "eight slices of one array hold that array's buffers once"
+        );
+        bb.drain(|_, it| {
+            for b in it {
+                b?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(bb.memory_size(), 0);
+        bb.push_batch(whole.slice(0, 1024), &[vec![0]]);
+        assert_eq!(
+            bb.memory_size(),
+            whole_bytes + index_bytes(&bb),
+            "a drained buffer counts the shared buffers again"
+        );
+    }
+
+    #[test]
     fn memory_size_counts_batches_and_index_capacity() {
         let mut bb = BufferedBatches::new(2, schema(), 8);
         assert_eq!(bb.memory_size(), 0);
 
         let first = batch(vec![1, 2, 3]);
-        let mut batch_bytes = first.get_array_memory_size();
+        let mut batch_bytes = get_record_batch_memory_size(&first);
         bb.push_batch(first, &[vec![0, 2], vec![1]]);
         assert_eq!(bb.memory_size(), batch_bytes + index_bytes(&bb));
 
@@ -198,7 +236,7 @@ mod tests {
         // running total must follow a reallocation.
         let capacity_before = bb.indices[0].capacity();
         let second = batch((0..8).collect());
-        batch_bytes += second.get_array_memory_size();
+        batch_bytes += get_record_batch_memory_size(&second);
         bb.push_batch(second, &[(0..8).collect(), vec![]]);
         assert!(bb.indices[0].capacity() > capacity_before);
         assert_eq!(bb.memory_size(), batch_bytes + index_bytes(&bb));

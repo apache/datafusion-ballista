@@ -76,6 +76,7 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::utils::memory::RecordBatchMemoryCounter;
 use datafusion::common::{DataFusionError, Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -315,11 +316,15 @@ fn build_dam_stream(
         // `get_array_memory_size()` ever changed between calls.
         let mut buffered: VecDeque<(usize, RecordBatch)> = VecDeque::new();
         let mut dam_broken = false;
+        // Counts each buffer once across the buffered batches, so zero-copy
+        // slices of one large array (as aggregates emit) are not charged
+        // once per slice.
+        let mut counter = RecordBatchMemoryCounter::new();
 
         // Fill phase: read and buffer until pool pressure or end-of-stream.
         while let Some(batch) = input.next().await {
             let batch = batch?;
-            let size = batch.get_array_memory_size();
+            let size = counter.count_batch(&batch);
             match reservation.try_grow(size) {
                 Ok(_) => buffered.push_back((size, batch)),
                 Err(err) => {
@@ -486,10 +491,9 @@ mod tests {
     #[tokio::test]
     async fn dam_reservation_shrinks_incrementally_during_drain() -> Result<()> {
         let src_batches = batches(100, 5);
-        let sizes: Vec<usize> = src_batches
-            .iter()
-            .map(|b| b.get_array_memory_size())
-            .collect();
+        let mut counter = RecordBatchMemoryCounter::new();
+        let sizes: Vec<usize> =
+            src_batches.iter().map(|b| counter.count_batch(b)).collect();
         let total: usize = sizes.iter().sum();
 
         let src = memory_source(src_batches);
