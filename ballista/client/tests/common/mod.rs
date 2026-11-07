@@ -351,7 +351,8 @@ pub async fn register_orders_customers(ctx: &SessionContext, dir: &Path) {
 
 /// Queries over the tables of [`orders_customers_dir`], each with whether its
 /// result has no defined row order, so its rows are compared sorted. The first
-/// three are a scan, an aggregate and a join.
+/// three are a scan, an aggregate and a join, and `standalone_push_staged` runs
+/// only those three, so keep them first.
 pub const ORDERS_QUERIES: &[(&str, bool)] = &[
     // Scan and a collapse to one partition.
     ("SELECT count(*), sum(o_amount) FROM orders", false),
