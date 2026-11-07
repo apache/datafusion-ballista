@@ -41,6 +41,7 @@ use tokio::task::JoinHandle;
 use tokio::{fs, time};
 use tonic::transport::Channel;
 
+use datafusion::execution::disk_manager::DEFAULT_MAX_TEMP_DIRECTORY_SIZE;
 use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool, TrackConsumersPool};
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::prelude::SessionConfig;
@@ -196,6 +197,52 @@ fn read_host_total_memory() -> Option<u64> {
     system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
     let total = system.total_memory();
     (total > 0).then_some(total)
+}
+
+/// DataFusion caps spill files at 100 GB per runtime unless told otherwise.
+/// An executor's work dir is usually a volume of its own, so when no limit is
+/// configured, let spills use the space free on it at startup (never less
+/// than DataFusion's default). Large joins and sorts at TPC-H SF1000 spill
+/// more than 100 GB per executor and would otherwise fail with "The used disk
+/// space during the spilling process has exceeded the allowable limit".
+fn default_spill_limit(work_dir: &str) -> Option<u64> {
+    let Some(free) = free_disk_space(work_dir) else {
+        warn!(
+            "Could not read the free space of {work_dir}; spill files stay limited to DataFusion's default"
+        );
+        return None;
+    };
+    spill_limit_for_free_space(free)
+}
+
+fn spill_limit_for_free_space(free: u64) -> Option<u64> {
+    (free > DEFAULT_MAX_TEMP_DIRECTORY_SIZE).then_some(free)
+}
+
+/// Bytes available to unprivileged users on the filesystem holding `path`, or
+/// on the closest existing parent when `path` itself does not exist yet.
+fn free_disk_space(path: &str) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let existing = std::path::Path::new(path)
+            .ancestors()
+            .find(|p| p.exists())
+            .unwrap_or(std::path::Path::new("."));
+        let c_path = std::ffi::CString::new(existing.to_str()?).ok()?;
+        // SAFETY: statvfs only writes the struct passed in; c_path is a valid
+        // NUL-terminated string for the duration of the call.
+        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } != 0 {
+            return None;
+        }
+        #[allow(clippy::unnecessary_cast)]
+        Some((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 /// Resolve the pool decision, reading host/cgroup limits only when auto-sizing.
@@ -374,7 +421,8 @@ pub struct ExecutorProcessConfig {
     pub memory_pool_fraction: f64,
     /// Maximum disk space spill files may use, applied to every runtime the
     /// executor produces (including one from `override_runtime_producer`), so
-    /// per session runtime. When `None`, DataFusion's default limit applies.
+    /// per session runtime. When `None`, the space free on the work dir's
+    /// filesystem at startup (at least DataFusion's 100 GB default) applies.
     pub max_temp_directory_size: Option<u64>,
     /// Maximum number of (session, config fingerprint) entries whose shared
     /// base runtime env is retained on the executor (LRU). Sharing reuses
@@ -568,7 +616,10 @@ async fn start_executor_process_inner(
                 Ok(Arc::new(runtime_env))
             })
         });
-    let base_runtime_producer = match opt.max_temp_directory_size {
+    let spill_limit = opt
+        .max_temp_directory_size
+        .or_else(|| default_spill_limit(&work_dir));
+    let base_runtime_producer = match spill_limit {
         Some(size) => {
             info!("Executor spill disk limit: {}", bytesize::ByteSize::b(size));
             with_max_temp_directory_size(base_runtime_producer, size)
@@ -1564,6 +1615,29 @@ mod memory_pool_tests {
     use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
     use std::sync::Arc;
 
+    #[cfg(unix)]
+    #[test]
+    fn free_disk_space_reads_the_work_dir_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let free = super::free_disk_space(dir.path().to_str().unwrap());
+        assert!(free.is_some(), "{free:?}");
+        // A work dir that does not exist yet is measured on its parent.
+        let missing = dir.path().join("not/created/yet");
+        assert!(super::free_disk_space(missing.to_str().unwrap()).is_some());
+    }
+
+    #[test]
+    fn spill_limit_is_never_below_datafusions_default() {
+        use super::spill_limit_for_free_space;
+        assert_eq!(
+            spill_limit_for_free_space(DEFAULT_MAX_TEMP_DIRECTORY_SIZE),
+            None
+        );
+        assert_eq!(spill_limit_for_free_space(1), None);
+        let tb = 1024 * 1024 * 1024 * 1024;
+        assert_eq!(spill_limit_for_free_space(tb), Some(tb));
+    }
+
     #[test]
     fn observes_per_task_pools_without_changing_their_limits() {
         let metrics = ExecutorMemoryMetrics::default();
@@ -1878,7 +1952,6 @@ mod memory_pool_tests {
 #[cfg(test)]
 mod spill_limit_tests {
     use super::*;
-    use datafusion::execution::disk_manager::DEFAULT_MAX_TEMP_DIRECTORY_SIZE;
 
     #[test]
     fn applies_spill_limit_to_custom_runtime_producer() {
