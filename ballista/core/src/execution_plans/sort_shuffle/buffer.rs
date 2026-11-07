@@ -24,14 +24,17 @@
 //!   or write time. Memory does not grow with the partition count, but on
 //!   large buffers the gather misses the cache on almost every row.
 //! * **Split.** Each partition's rows are copied into its [`BatchCoalescer`]
-//!   while the input batch is still in cache, and the batch is dropped.
-//!   Cheaper per row, but every partition holds a partly filled
-//!   `batch_size`-row batch, plus a string block per view column with long
-//!   strings.
+//!   while the input batch is still in cache. Cheaper per row, but every
+//!   partition holds a partly filled `batch_size`-row batch, plus a string
+//!   block per view column with long strings.
 //!
 //! Only schemas whose columns are all [`coalescer_copies`] types can split;
 //! the coalescer keeps slices of other columns and concatenates them later,
-//! which the split layout's cost model does not cover.
+//! which the split layout's cost model does not cover. Even a view column's
+//! strings are copied only if its rows use less than half of the input's
+//! string buffers; otherwise the coalescer keeps those buffers, so a
+//! completed batch that holds string bytes no view references is compacted,
+//! as the deferred gather compacts every batch.
 //!
 //! Every buffer starts deferred. Once it has `num_partitions × batch_size`
 //! rows, it switches to split if the partly filled batches would fit in
@@ -288,8 +291,10 @@ impl BufferedBatches {
 }
 
 /// Whether a [`BatchCoalescer`] copies a `data_type` column's rows into the
-/// batch it builds: primitive and view types. It keeps slices of any other
-/// column, which hold on to the whole array they were sliced from.
+/// batch it builds: primitive and view types, though for views it may keep
+/// the input's string buffers instead (see [`compact_view_columns`]). It
+/// keeps slices of any other column, which hold on to the whole array they
+/// were sliced from.
 fn coalescer_copies(data_type: &DataType) -> bool {
     data_type.is_primitive()
         || matches!(data_type, DataType::Utf8View | DataType::BinaryView)
@@ -378,6 +383,47 @@ fn list_used_bytes<O: OffsetSizeTrait>(
 ) -> usize {
     let (start, end) = (offsets[0].as_usize(), offsets[offsets.len() - 1].as_usize());
     size_of_val(offsets) + nulls + used_bytes(&values.slice(start, end - start))
+}
+
+/// `batch` with every view column whose string buffers hold more bytes than
+/// its views reference rewritten by `gc()`.
+///
+/// A [`BatchCoalescer`] copies a view column's strings only if the rows
+/// pushed use less than half of their string buffers; otherwise it keeps the
+/// buffers, unused bytes and all, and they would be spilled and written with
+/// the batch. Buffers it copied into hold exactly the bytes used, so only a
+/// batch that kept an input's buffers is copied again.
+fn compact_view_columns(
+    batch: RecordBatch,
+) -> std::result::Result<RecordBatch, ArrowError> {
+    let wasteful = |array: &ArrayRef| {
+        let held = match array.data_type() {
+            DataType::Utf8View => array.as_string_view().data_buffers(),
+            DataType::BinaryView => array.as_binary_view().data_buffers(),
+            _ => return false,
+        }
+        .iter()
+        .map(|b| b.len())
+        .sum::<usize>();
+        view_data_bytes(array).is_some_and(|used| held > used)
+    };
+    if !batch.columns().iter().any(wasteful) {
+        return Ok(batch);
+    }
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|array| -> ArrayRef {
+            if !wasteful(array) {
+                return array.clone();
+            }
+            match array.data_type() {
+                DataType::Utf8View => std::sync::Arc::new(array.as_string_view().gc()),
+                _ => std::sync::Arc::new(array.as_binary_view().gc()),
+            }
+        })
+        .collect();
+    RecordBatch::try_new(batch.schema(), columns)
 }
 
 /// [`used_bytes`] summed over `batch`'s columns.
@@ -469,15 +515,12 @@ impl SplitBuffer {
         batch: RecordBatch,
     ) -> std::result::Result<(), ArrowError> {
         self.coalescers[partition].push_batch(batch)?;
-        self.collect_completed(partition);
-        Ok(())
-    }
-
-    fn collect_completed(&mut self, partition: usize) {
         while let Some(done) = self.coalescers[partition].next_completed_batch() {
+            let done = compact_view_columns(done)?;
             self.completed_bytes += done.get_array_memory_size();
             self.completed[partition].push(done);
         }
+        Ok(())
     }
 
     /// Empties the buffer, returning each partition's batches.
@@ -489,7 +532,9 @@ impl SplitBuffer {
             .map(|(coalescer, completed)| {
                 coalescer.finish_buffered_batch()?;
                 let mut batches = std::mem::take(completed);
-                batches.extend(std::iter::from_fn(|| coalescer.next_completed_batch()));
+                while let Some(done) = coalescer.next_completed_batch() {
+                    batches.push(compact_view_columns(done)?);
+                }
                 Ok(batches)
             })
             .collect()
@@ -777,10 +822,10 @@ mod tests {
 
     #[test]
     fn view_block_bytes_is_the_coalescers_largest_string_block() {
-        // Slices share their batch's whole data buffer, so the coalescer
-        // copies their strings, as it does the per-partition rows `take`
-        // picks out. Copy enough for the blocks to grow as large as they get,
-        // then check the block one more row is copied into.
+        // Each 64-row slice shares its batch's whole data buffer but uses a
+        // sixteenth of it, so the coalescer copies its strings. Copy enough
+        // for the blocks to grow as large as they get, then check the block
+        // one more row is copied into.
         let rows = batch_with((0..1024).collect(), |v| format!("{v:<1024}"));
         let mut coalescer = BatchCoalescer::new(schema(), 1024);
         for offset in (0..1024).step_by(64).cycle().take(64) {
@@ -1008,6 +1053,54 @@ mod tests {
             let buffered: usize = strings.data_buffers().iter().map(|b| b.len()).sum();
             assert_eq!(buffered, 32, "budget {budget}");
         }
+    }
+
+    #[test]
+    fn split_compacts_the_input_string_buffers_the_coalescer_keeps() {
+        // Partition 0's 5 rows of each 8 use more than half of the batch's
+        // string buffer, so the coalescer keeps the buffer rather than copy.
+        // `gc()` sizes the buffer to the strings; the builder's has room for
+        // far more, which the coalescer would count as unused.
+        let dense = |values: Vec<i32>| {
+            let b = batch(values);
+            let strings = b.column(1).as_string_view().gc();
+            RecordBatch::try_new(b.schema(), vec![b.column(0).clone(), Arc::new(strings)])
+                .unwrap()
+        };
+        let rows = [vec![0, 2, 3, 5, 6], vec![1, 4, 7]];
+        let run = |budget| {
+            let mut bb = BufferedBatches::new(2, 4, budget);
+            for i in 0..3 {
+                bb.push(dense((8 * i..8 * i + 8).collect()), &rows).unwrap();
+            }
+            let layout = bb.layout();
+            let out: Vec<(usize, RecordBatch, usize)> = drain(&mut bb)
+                .into_iter()
+                .map(|(partition, batch)| {
+                    let strings = batch.column(1).as_string_view();
+                    let held = strings.data_buffers().iter().map(|b| b.len()).sum();
+                    (partition, batch, held)
+                })
+                .collect();
+            (layout, out)
+        };
+        let (split_layout, split) = run(usize::MAX);
+        let (deferred_layout, deferred) = run(0);
+        assert_eq!((split_layout, deferred_layout), ("split", "deferred"));
+        // Both layouts write the same batches, holding only the strings used.
+        assert_eq!(split, deferred);
+        assert_eq!(
+            deferred,
+            vec![
+                (0, batch(vec![0, 2, 3, 5]), 4 * 32),
+                (0, batch(vec![6, 8, 10, 11]), 4 * 32),
+                (0, batch(vec![13, 14, 16, 18]), 4 * 32),
+                (0, batch(vec![19, 21, 22]), 3 * 32),
+                (1, batch(vec![1, 4, 7, 9]), 4 * 32),
+                (1, batch(vec![12, 15, 17, 20]), 4 * 32),
+                (1, batch(vec![23]), 32),
+            ]
+        );
     }
 
     #[test]
