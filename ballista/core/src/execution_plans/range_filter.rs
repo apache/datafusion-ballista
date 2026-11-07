@@ -818,7 +818,7 @@ impl RecordBatchStream for RangeFilterStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution_plans::range_repartition_common::test_util::v_schema;
+    use crate::execution_plans::test_util::float64_v_schema;
     use datafusion::arrow::array::Float64Array;
     use datafusion::arrow::compute::SortOptions;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -832,7 +832,7 @@ mod tests {
     use datafusion::prelude::SessionContext;
 
     fn v_source(partitions: usize) -> Arc<dyn ExecutionPlan> {
-        let schema = v_schema();
+        let schema = float64_v_schema();
         let source: Arc<dyn ExecutionPlan> =
             MemorySourceConfig::try_new_exec(&vec![vec![]; partitions], schema, None)
                 .unwrap();
@@ -843,14 +843,14 @@ mod tests {
     }
 
     fn v_col() -> Arc<dyn PhysicalExpr> {
-        Arc::new(Column::new_with_schema("v", v_schema().as_ref()).unwrap())
+        Arc::new(Column::new_with_schema("v", float64_v_schema().as_ref()).unwrap())
     }
 
     fn sorted_v_source(
         batches: Vec<RecordBatch>,
         options: SortOptions,
     ) -> Arc<dyn ExecutionPlan> {
-        let schema = v_schema();
+        let schema = float64_v_schema();
         let sort_expr = PhysicalSortExpr::new(v_col(), options);
         let ordering = LexOrdering::new(vec![sort_expr]).unwrap();
         let cfg = MemorySourceConfig::try_new(&[batches], schema.clone(), None).unwrap();
@@ -867,7 +867,7 @@ mod tests {
 
     fn batch(values: &[f64]) -> RecordBatch {
         let arr = Float64Array::from(values.to_vec());
-        RecordBatch::try_new(v_schema(), vec![Arc::new(arr)]).unwrap()
+        RecordBatch::try_new(float64_v_schema(), vec![Arc::new(arr)]).unwrap()
     }
 
     fn sv(v: f64) -> ScalarValue {
@@ -1401,7 +1401,7 @@ mod tests {
     async fn slow_path_matches_fast_path_when_input_unsorted() {
         let mem_src: Arc<dyn ExecutionPlan> = MemorySourceConfig::try_new_exec(
             &[vec![batch(&[5.0, 10.0, 15.0, 19.0, 20.0, 25.0])]],
-            v_schema(),
+            float64_v_schema(),
             None,
         )
         .unwrap();
@@ -1422,7 +1422,7 @@ mod tests {
         // Build an input with 3 sorted partitions containing a batch each,
         // resolve bounds equivalent to cuts [10, 20], verify each partition
         // emits only its slice.
-        let schema = v_schema();
+        let schema = float64_v_schema();
         let source: Arc<dyn ExecutionPlan> = MemorySourceConfig::try_new_exec(
             &[
                 vec![batch(&[5.0, 15.0, 25.0])],

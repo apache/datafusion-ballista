@@ -1255,7 +1255,7 @@ mod collect_tests {
     use super::*;
     use crate::execution_plans::BufferExec;
     use crate::execution_plans::buffer::BufferMode;
-    use crate::execution_plans::range_repartition_common::test_util::v_schema;
+    use crate::execution_plans::test_util::float64_v_schema;
     use datafusion::arrow::array::Float64Array;
     use datafusion::arrow::compute::SortOptions;
     use datafusion::arrow::datatypes::Schema;
@@ -1294,7 +1294,7 @@ mod collect_tests {
     /// trip via `sketch_from_proto`.
     #[tokio::test]
     async fn collect_reports_finds_stats_and_ships_sketch() {
-        let schema = v_schema();
+        let schema = float64_v_schema();
         let input = v_input(schema.clone());
         let stats = Arc::new(
             RuntimeStatsExec::try_new(input, Some(vec![sort_expr_on_v(&schema)]))
@@ -1352,7 +1352,7 @@ mod collect_tests {
     /// carries no sketch.
     #[tokio::test]
     async fn collect_reports_row_count_only_emits_report_without_sketch() {
-        let schema = v_schema();
+        let schema = float64_v_schema();
         let input = v_input(schema.clone());
         let stats = Arc::new(RuntimeStatsExec::try_new(input, None).unwrap());
 
@@ -1376,7 +1376,7 @@ mod collect_tests {
     /// root and the stats-tap: walker still descends to it.
     #[tokio::test]
     async fn collect_reports_descends_through_whitelisted_op() {
-        let schema = v_schema();
+        let schema = float64_v_schema();
         let input = v_input(schema.clone());
         let stats = Arc::new(
             RuntimeStatsExec::try_new(input, Some(vec![sort_expr_on_v(&schema)]))
@@ -1400,7 +1400,7 @@ mod collect_tests {
     /// stops at the collapse and doesn't reach the stats below.
     #[tokio::test]
     async fn collect_reports_stops_at_sort_that_collapses_partitions() {
-        let schema = v_schema();
+        let schema = float64_v_schema();
         let input = v_input(schema.clone());
         let stats: Arc<dyn ExecutionPlan> = Arc::new(
             RuntimeStatsExec::try_new(input, Some(vec![sort_expr_on_v(&schema)]))
@@ -1696,7 +1696,7 @@ mod plan_walker_tests {
     //! at any depth.
 
     use super::*;
-    use crate::execution_plans::range_repartition_common::test_util::v_schema;
+    use crate::execution_plans::test_util::float64_v_schema;
     use crate::execution_plans::{
         OrderedRangeRepartitionExec, UnorderedRangeRepartitionExec,
     };
@@ -1707,12 +1707,12 @@ mod plan_walker_tests {
     use datafusion::physical_plan::sorts::sort::SortExec;
 
     fn v_source() -> Arc<dyn ExecutionPlan> {
-        let schema = v_schema();
+        let schema = float64_v_schema();
         MemorySourceConfig::try_new_exec(&[vec![]], schema, None).unwrap()
     }
 
     fn sort_expr_v() -> PhysicalSortExpr {
-        let schema = v_schema();
+        let schema = float64_v_schema();
         PhysicalSortExpr {
             expr: col("v", schema.as_ref()).unwrap(),
             options: SortOptions {
@@ -1815,7 +1815,7 @@ mod overlap_remap_tests {
     //! surface as errors rather than silent misroutes.
 
     use super::*;
-    use crate::execution_plans::range_repartition_common::test_util::cuts;
+    use crate::execution_plans::test_util::cuts;
     use crate::execution_plans::test_util::test_location;
     use crate::serde::protobuf::{RuntimeStatsPartitionEntry, RuntimeStatsReport};
     use crate::serde::scheduler::{PartitionLocation, PartitionStats};

@@ -25,6 +25,7 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::ipc::writer::StreamWriter;
+use datafusion::common::ScalarValue;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::error::Result;
 use datafusion::execution::TaskContext;
@@ -82,18 +83,31 @@ pub(crate) async fn drive_partition_results<P: ExecutionPlan + 'static>(
 }
 
 /// A single non-nullable `v Int64` column.
-pub(crate) fn one_col_schema() -> SchemaRef {
+pub(crate) fn int64_v_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]))
 }
 
-/// Memory source with `partitions` partitions over [`one_col_schema`], each
+/// A single non-nullable `v Float64` column.
+pub(crate) fn float64_v_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]))
+}
+
+/// Boundaries as `Float64` scalars, which is what range discovery produces.
+pub(crate) fn cuts<const N: usize>(values: [f64; N]) -> Vec<ScalarValue> {
+    values
+        .into_iter()
+        .map(|v| ScalarValue::Float64(Some(v)))
+        .collect()
+}
+
+/// Memory source with `partitions` partitions over [`int64_v_schema`], each
 /// carrying a single batch of `[start .. start + rows_per)` where
 /// `start = k * rows_per`.
 pub(crate) fn partitioned_source(
     partitions: usize,
     rows_per: usize,
 ) -> Arc<dyn ExecutionPlan> {
-    let schema = one_col_schema();
+    let schema = int64_v_schema();
     let mut per_partition: Vec<Vec<RecordBatch>> = Vec::with_capacity(partitions);
     for k in 0..partitions {
         let start = (k * rows_per) as i64;

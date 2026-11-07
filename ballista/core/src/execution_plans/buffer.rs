@@ -377,7 +377,7 @@ fn oom_context(e: DataFusionError) -> DataFusionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution_plans::test_util::one_col_schema;
+    use crate::execution_plans::test_util::int64_v_schema;
     use datafusion::arrow::array::Int64Array;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
@@ -390,13 +390,13 @@ mod tests {
             .map(|b| {
                 let start = (b * rows_per) as i64;
                 let array = Int64Array::from_iter_values(start..start + rows_per as i64);
-                RecordBatch::try_new(one_col_schema(), vec![Arc::new(array)]).unwrap()
+                RecordBatch::try_new(int64_v_schema(), vec![Arc::new(array)]).unwrap()
             })
             .collect()
     }
 
     fn memory_source(batches: Vec<RecordBatch>) -> Arc<dyn ExecutionPlan> {
-        let schema = one_col_schema();
+        let schema = int64_v_schema();
         MemorySourceConfig::try_new_exec(&[batches], schema, None).expect("mem source")
     }
 

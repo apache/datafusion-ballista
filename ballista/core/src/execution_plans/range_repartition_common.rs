@@ -265,8 +265,7 @@ pub(super) async fn guarded_scatter<F>(
     }
 }
 
-/// Shared test-only utilities for the range-repartition operators and the
-/// plans that read their statistics.
+/// Shared test-only utilities for the two range-repartition operators.
 /// The ordered variant will exercise the same `guarded_scatter` panic-path,
 /// so the panic-source lives here rather than being duplicated per operator.
 #[cfg(test)]
@@ -277,7 +276,6 @@ pub(super) mod test_util {
     use datafusion::arrow::array::{Float64Array, Int64Array, RecordBatch};
     use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::common::Result;
-    use datafusion::common::ScalarValue;
     use datafusion::common::tree_node::TreeNodeRecursion;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::execution::{SessionStateBuilder, TaskContext};
@@ -479,25 +477,12 @@ pub(super) mod test_util {
         }
         per_output
     }
-
-    /// A single non-nullable `v Float64` column.
-    pub(crate) fn v_schema() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]))
-    }
-
-    /// Boundaries as `Float64` scalars, which is what discovery produces.
-    pub(crate) fn cuts<const N: usize>(values: [f64; N]) -> Vec<ScalarValue> {
-        values
-            .into_iter()
-            .map(|v| ScalarValue::Float64(Some(v)))
-            .collect()
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_util::cuts;
     use super::*;
+    use crate::execution_plans::test_util::cuts;
     use datafusion::arrow::array::{Float64Array, Int64Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_expr::expressions::col;
