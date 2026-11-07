@@ -20,8 +20,10 @@ mod common;
 mod supported {
 
     use crate::common::{
-        remote_context, remote_context_with_state, standalone_context,
-        standalone_context_with_state,
+        ALLTYPES_GROUP_BY, ALLTYPES_GROUP_BY_SQL, ALLTYPES_ID_GT_4, ALLTYPES_ID_GT_4_SQL,
+        ALLTYPES_JOIN, ALLTYPES_JOIN_SQL, register_alltypes, remote_context,
+        remote_context_with_state, set_option, standalone_context,
+        standalone_context_with_state, test_data,
     };
     use ballista_core::config::BallistaConfig;
     use ballista_core::execution_plans::DistributedQueryExec;
@@ -37,11 +39,6 @@ mod supported {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    #[rstest::fixture]
-    fn test_data() -> String {
-        crate::common::example_test_data()
-    }
-
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
@@ -50,31 +47,11 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
-        let result = ctx
-            .sql("select string_col, timestamp_col from test where id > 4")
-            .await?
-            .collect()
-            .await?;
-        let expected = [
-            "+------------+---------------------+",
-            "| string_col | timestamp_col       |",
-            "+------------+---------------------+",
-            "| 31         | 2009-03-01T00:01:00 |",
-            "| 30         | 2009-04-01T00:00:00 |",
-            "| 31         | 2009-04-01T00:01:00 |",
-            "+------------+---------------------+",
-        ];
-
-        assert_batches_eq!(expected, &result);
+        let result = ctx.sql(ALLTYPES_ID_GT_4_SQL).await?.collect().await?;
+        assert_batches_eq!(ALLTYPES_ID_GT_4, &result);
 
         Ok(())
     }
@@ -89,34 +66,18 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
         let plan = ctx
-            .sql("select string_col, timestamp_col from test where id > 4")
+            .sql(ALLTYPES_ID_GT_4_SQL)
             .await?
             .create_physical_plan()
             .await?;
 
         let result = collect(plan.clone(), ctx.task_ctx()).await?;
 
-        let expected = [
-            "+------------+---------------------+",
-            "| string_col | timestamp_col       |",
-            "+------------+---------------------+",
-            "| 31         | 2009-03-01T00:01:00 |",
-            "| 30         | 2009-04-01T00:00:00 |",
-            "| 31         | 2009-04-01T00:01:00 |",
-            "+------------+---------------------+",
-        ];
-
-        assert_batches_eq!(expected, &result);
+        assert_batches_eq!(ALLTYPES_ID_GT_4, &result);
 
         let metrics = plan.metrics().unwrap();
         let rows = metrics.output_rows().unwrap();
@@ -169,15 +130,8 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await
-        .unwrap();
+        register_alltypes(&ctx, "test").await;
         let write_dir = tempfile::tempdir().expect("temporary directory to be created");
         let write_dir_path = write_dir
             .path()
@@ -308,10 +262,7 @@ mod supported {
         #[case]
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
-        ctx.sql("SET ballista.job.name = 'Super Cool Ballista App'")
-            .await?
-            .show()
-            .await?;
+        set_option(&ctx, "ballista.job.name", "Super Cool Ballista App").await;
 
         let result = ctx
             .sql("select name, value from information_schema.df_settings where name like 'ballista.job.name' order by name limit 1")
@@ -342,15 +293,9 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
         // registering table to show in show tables
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
         let result = ctx.sql("show tables").await?.collect().await?;
         //
@@ -449,14 +394,8 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
         let write_dir = tempfile::tempdir().expect("temporary directory to be created");
         let write_dir_path = write_dir
             .path()
@@ -574,17 +513,7 @@ mod supported {
             .collect()
             .await?;
 
-        let expected = [
-            "+------------+---------------------+",
-            "| string_col | timestamp_col       |",
-            "+------------+---------------------+",
-            "| 31         | 2009-03-01T00:01:00 |",
-            "| 30         | 2009-04-01T00:00:00 |",
-            "| 31         | 2009-04-01T00:01:00 |",
-            "+------------+---------------------+",
-        ];
-
-        assert_batches_eq!(expected, &result);
+        assert_batches_eq!(ALLTYPES_ID_GT_4, &result);
 
         Ok(())
     }
@@ -597,15 +526,8 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await
-        .unwrap();
+        register_alltypes(&ctx, "test").await;
         let write_dir = tempfile::tempdir().expect("temporary directory to be created");
         let write_dir_path = write_dir
             .path()
@@ -658,14 +580,8 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
         let expected = [
             "+----+------------+",
@@ -755,35 +671,16 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
-        let expected = [
-            "+------------+---------------------+",
-            "| string_col | timestamp_col       |",
-            "+------------+---------------------+",
-            "| 31         | 2009-03-01T00:01:00 |",
-            "| 30         | 2009-04-01T00:00:00 |",
-            "| 31         | 2009-04-01T00:01:00 |",
-            "+------------+---------------------+",
-        ];
         // there were cases when we break session context
         // with standalone setup. so subsequent query for the
         // same table fails with table does not exist
         for _ in 0..5 {
-            let result = ctx
-                .sql("select string_col, timestamp_col from test where id > 4")
-                .await?
-                .collect()
-                .await?;
+            let result = ctx.sql(ALLTYPES_ID_GT_4_SQL).await?.collect().await?;
 
-            assert_batches_eq!(expected, &result);
+            assert_batches_eq!(ALLTYPES_ID_GT_4, &result);
         }
 
         Ok(())
@@ -799,31 +696,12 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
-        let expected = [
-            "+------------+----------+",
-            "| string_col | count(*) |",
-            "+------------+----------+",
-            "| 30         | 1        |",
-            "| 31         | 2        |",
-            "+------------+----------+",
-        ];
+        let result = ctx.sql(ALLTYPES_GROUP_BY_SQL).await?.collect().await?;
 
-        let result = ctx
-            .sql("select string_col, count(*) from test where id > 4 group by string_col order by string_col")
-            .await?
-            .collect()
-            .await?;
-
-        assert_batches_eq!(expected, &result);
+        assert_batches_eq!(ALLTYPES_GROUP_BY, &result);
 
         Ok(())
     }
@@ -836,19 +714,10 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
-        ctx.sql("SET ballista.shuffle.force_remote_read = true")
-            .await?
-            .show()
-            .await?;
+        set_option(&ctx, "ballista.shuffle.force_remote_read", "true").await;
 
         let result = ctx
             .sql("select name, value from information_schema.df_settings where name like 'ballista.shuffle.force_remote_read' order by name limit 1")
@@ -866,22 +735,9 @@ mod supported {
 
         assert_batches_eq!(expected, &result);
 
-        let expected = [
-            "+------------+----------+",
-            "| string_col | count(*) |",
-            "+------------+----------+",
-            "| 30         | 1        |",
-            "| 31         | 2        |",
-            "+------------+----------+",
-        ];
+        let result = ctx.sql(ALLTYPES_GROUP_BY_SQL).await?.collect().await?;
 
-        let result = ctx
-            .sql("select string_col, count(*) from test where id > 4 group by string_col order by string_col")
-            .await?
-            .collect()
-            .await?;
-
-        assert_batches_eq!(expected, &result);
+        assert_batches_eq!(ALLTYPES_GROUP_BY, &result);
 
         Ok(())
     }
@@ -894,24 +750,12 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
-        ctx.sql("SET ballista.shuffle.force_remote_read = true")
-            .await?
-            .show()
-            .await?;
+        set_option(&ctx, "ballista.shuffle.force_remote_read", "true").await;
 
-        ctx.sql("SET ballista.shuffle.remote_read_prefer_flight = true")
-            .await?
-            .show()
-            .await?;
+        set_option(&ctx, "ballista.shuffle.remote_read_prefer_flight", "true").await;
 
         let result = ctx
             .sql("select name, value from information_schema.df_settings where name like 'ballista.shuffle.remote_read_prefer_flight' order by name limit 1")
@@ -929,22 +773,9 @@ mod supported {
 
         assert_batches_eq!(expected, &result);
 
-        let expected = [
-            "+------------+----------+",
-            "| string_col | count(*) |",
-            "+------------+----------+",
-            "| 30         | 1        |",
-            "| 31         | 2        |",
-            "+------------+----------+",
-        ];
+        let result = ctx.sql(ALLTYPES_GROUP_BY_SQL).await?.collect().await?;
 
-        let result = ctx
-            .sql("select string_col, count(*) from test where id > 4 group by string_col order by string_col")
-            .await?
-            .collect()
-            .await?;
-
-        assert_batches_eq!(expected, &result);
+        assert_batches_eq!(ALLTYPES_GROUP_BY, &result);
 
         Ok(())
     }
@@ -960,27 +791,13 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "t0",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "t0").await;
 
-        ctx.register_parquet(
-            "t1",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
-
-        let join_sql =
-            "select t0.id from t0 join t1 on t0.id = t1.id order by t0.id desc limit 5";
+        register_alltypes(&ctx, "t1").await;
 
         let plan = ctx
-            .sql(&format!("EXPLAIN {join_sql}"))
+            .sql(&format!("EXPLAIN {ALLTYPES_JOIN_SQL}"))
             .await?
             .collect()
             .await?;
@@ -994,13 +811,9 @@ mod supported {
             "did not expect HashJoinExec in plan, got:\n{plan_text}"
         );
 
-        let result = ctx.sql(join_sql).await?.collect().await?;
+        let result = ctx.sql(ALLTYPES_JOIN_SQL).await?.collect().await?;
 
-        let expected = [
-            "+----+", "| id |", "+----+", "| 7  |", "| 6  |", "| 5  |", "| 4  |",
-            "| 3  |", "+----+",
-        ];
-        assert_batches_eq!(expected, &result);
+        assert_batches_eq!(ALLTYPES_JOIN, &result);
 
         Ok(())
     }
@@ -1015,32 +828,15 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "t0",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "t0").await;
 
-        ctx.register_parquet(
-            "t1",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "t1").await;
 
-        ctx.sql("SET datafusion.optimizer.prefer_hash_join = true")
-            .await?
-            .show()
-            .await?;
-
-        let join_sql =
-            "select t0.id from t0 join t1 on t0.id = t1.id order by t0.id desc limit 5";
+        set_option(&ctx, "datafusion.optimizer.prefer_hash_join", "true").await;
 
         let plan = ctx
-            .sql(&format!("EXPLAIN {join_sql}"))
+            .sql(&format!("EXPLAIN {ALLTYPES_JOIN_SQL}"))
             .await?
             .collect()
             .await?;
@@ -1054,13 +850,9 @@ mod supported {
             "did not expect SortMergeJoinExec in plan after opt-in, got:\n{plan_text}"
         );
 
-        let result = ctx.sql(join_sql).await?.collect().await?;
+        let result = ctx.sql(ALLTYPES_JOIN_SQL).await?.collect().await?;
 
-        let expected = [
-            "+----+", "| id |", "+----+", "| 7  |", "| 6  |", "| 5  |", "| 4  |",
-            "| 3  |", "+----+",
-        ];
-        assert_batches_eq!(expected, &result);
+        assert_batches_eq!(ALLTYPES_JOIN, &result);
 
         Ok(())
     }
@@ -1260,19 +1052,10 @@ mod supported {
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
-        ctx.sql("SET ballista.client.pull = true")
-            .await?
-            .show()
-            .await?;
+        set_option(&ctx, "ballista.client.pull", "true").await;
 
         let result = ctx
             .sql("select name, value from information_schema.df_settings where name like 'ballista.client.pull' order by name limit 1")
@@ -1290,22 +1073,9 @@ mod supported {
 
         assert_batches_eq!(expected, &result);
 
-        let expected = [
-            "+------------+----------+",
-            "| string_col | count(*) |",
-            "+------------+----------+",
-            "| 30         | 1        |",
-            "| 31         | 2        |",
-            "+------------+----------+",
-        ];
+        let result = ctx.sql(ALLTYPES_GROUP_BY_SQL).await?.collect().await?;
 
-        let result = ctx
-            .sql("select string_col, count(*) from test where id > 4 group by string_col order by string_col")
-            .await?
-            .collect()
-            .await?;
-
-        assert_batches_eq!(expected, &result);
+        assert_batches_eq!(ALLTYPES_GROUP_BY, &result);
 
         Ok(())
     }
@@ -1328,22 +1098,8 @@ mod supported {
         )
         .await?;
 
-        let result = ctx
-            .sql("select string_col, timestamp_col from test where id > 4")
-            .await?
-            .collect()
-            .await?;
-        let expected = [
-            "+------------+---------------------+",
-            "| string_col | timestamp_col       |",
-            "+------------+---------------------+",
-            "| 31         | 2009-03-01T00:01:00 |",
-            "| 30         | 2009-04-01T00:00:00 |",
-            "| 31         | 2009-04-01T00:01:00 |",
-            "+------------+---------------------+",
-        ];
-
-        assert_batches_eq!(expected, &result);
+        let result = ctx.sql(ALLTYPES_ID_GT_4_SQL).await?.collect().await?;
+        assert_batches_eq!(ALLTYPES_ID_GT_4, &result);
 
         Ok(())
     }
@@ -1357,15 +1113,9 @@ mod supported {
         #[case]
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
-        ctx.sql("SET ballista.client.io_retries_times = 5")
-            .await?
-            .show()
-            .await?;
+        set_option(&ctx, "ballista.client.io_retries_times", "5").await;
 
-        ctx.sql("SET ballista.client.io_retry_wait_time_ms = 1500")
-            .await?
-            .show()
-            .await?;
+        set_option(&ctx, "ballista.client.io_retry_wait_time_ms", "1500").await;
 
         let result = ctx
             .sql("select name, value from information_schema.df_settings where name like 'ballista.client.io_%' order by name")

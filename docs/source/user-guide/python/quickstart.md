@@ -26,14 +26,52 @@ collect the results back in Python.
 
 ## Installation
 
+The `ballista` package is published on [PyPI](https://pypi.org/project/ballista/) and requires Python 3.10 or later. Installing into a virtual environment is recommended:
+
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install ballista
 ```
 
+or with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv add ballista          # in a uv project
+uv pip install ballista  # in an existing environment
+```
+
 `ballista` depends on a matching `datafusion` release, for example `ballista` 55
-requires `datafusion` 55. Queries are planned by DataFusion Python on the client
-and executed by the Ballista cluster, so the cluster should run the same Ballista
-version as the client.
+requires `datafusion` 55, which is installed automatically. Queries are planned by DataFusion Python on the client and executed by the Ballista cluster, so the client should have the same major version as the cluster. To install a specific version:
+
+```bash
+pip install "ballista==55.*"
+```
+
+See [Versioning](../versioning.md) for the compatibility rules.
+
+### Optional Extras
+
+| Extra           | Install                                 | Provides                                                                                |
+| --------------- | --------------------------------------- | --------------------------------------------------------------------------------------- |
+| `jupyter`       | `pip install "ballista[jupyter]"`       | Jupyter magics, see [Jupyter Notebooks](jupyter.md)                                     |
+| `python-client` | `pip install "ballista[python-client]"` | `BallistaClient` and `BallistaPythonSessionContext`, a cluster client written in Python |
+
+### Verifying the Installation
+
+Start an in-process cluster to check that the package and its native extension load:
+
+```bash
+python -c "from ballista import setup_test_cluster; print(setup_test_cluster())"
+```
+
+This prints the host and port of the test scheduler.
+
+### Building from Source
+
+If no wheel is available for your platform, or you want to use an unreleased version,
+see the [contributors guide](../../contributors-guide/development.md) for building the
+package from source with `maturin`.
 
 ## Connecting to a Cluster
 

@@ -15,92 +15,92 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::env;
-use std::error::Error;
-use std::path::PathBuf;
+// Each test binary compiles this module separately and uses a subset of it.
+#![allow(dead_code)]
+
+use std::io::Write;
+use std::path::Path;
 
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
+use ballista_core::config::BALLISTA_STANDALONE_PARALLELISM;
 use ballista_core::serde::{
     BallistaCodec, protobuf::scheduler_grpc_client::SchedulerGrpcClient,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
 use ballista_scheduler::SessionBuilder;
+use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::execution::{SessionState, SessionStateBuilder};
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::parquet::arrow::ArrowWriter;
+use datafusion::prelude::{CsvReadOptions, SessionConfig, SessionContext};
+use tempfile::TempDir;
 
-/// Returns the parquet test data directory, which is by default
-/// stored in a git submodule rooted at
-/// `examples/testdata`.
-///
-/// The default can be overridden by the optional environment variable
-/// `EXAMPLES_TEST_DATA`
-///
-/// panics when the directory can not be found.
-///
-/// Example:
-/// ```
-/// use ballista_examples::test_util;
-/// let testdata = test_util::examples_test_data();
-/// let filename = format!("{testdata}/aggregate_test_100.csv");
-/// assert!(std::path::PathBuf::from(filename).exists());
-/// ```
-#[allow(dead_code)]
-pub fn example_test_data() -> String {
-    match get_data_dir("EXAMPLES_TEST_DATA", "testdata") {
-        Ok(pb) => pb.display().to_string(),
-        Err(err) => panic!("failed to get examples test data dir: {err}"),
-    }
+/// Returns the `testdata` directory of this crate.
+pub fn test_data_dir() -> String {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .display()
+        .to_string()
 }
 
-/// Returns a directory path for finding test data.
-///
-/// udf_env: name of an environment variable
-///
-/// submodule_dir: fallback path (relative to CARGO_MANIFEST_DIR)
-///
-///  Returns either:
-/// The path referred to in `udf_env` if that variable is set and refers to a directory
-/// The submodule_data directory relative to CARGO_MANIFEST_PATH
-#[allow(dead_code)]
-fn get_data_dir(udf_env: &str, submodule_data: &str) -> Result<PathBuf, Box<dyn Error>> {
-    // Try user defined env.
-    if let Ok(dir) = env::var(udf_env) {
-        let trimmed = dir.trim().to_string();
-        if !trimmed.is_empty() {
-            let pb = PathBuf::from(trimmed);
-            if pb.is_dir() {
-                return Ok(pb);
-            } else {
-                return Err(format!(
-                    "the data dir `{}` defined by env {udf_env} not found",
-                    pb.display()
-                )
-                .into());
-            }
-        }
-    }
-
-    // The env is undefined or its value is trimmed to empty, let's try default dir.
-
-    // env "CARGO_MANIFEST_DIR" is "the directory containing the manifest of your package",
-    // set by `cargo run` or `cargo test`, see:
-    // https://doc.rust-lang.org/cargo/reference/environment-variables.html
-    let dir = env!("CARGO_MANIFEST_DIR");
-
-    let pb = PathBuf::from(dir).join(submodule_data);
-    if pb.is_dir() {
-        Ok(pb)
-    } else {
-        Err(format!(
-            "env `{udf_env}` is undefined or has empty value, and the pre-defined data dir `{}` not found\n\
-             HINT: try running `git submodule update --init`",
-            pb.display(),
-        ).into())
-    }
+/// The `testdata` directory as an rstest fixture.
+#[rstest::fixture]
+pub fn test_data() -> String {
+    test_data_dir()
 }
+
+/// The path of `alltypes_plain.parquet` in the `testdata` directory.
+pub fn alltypes_parquet() -> String {
+    format!("{}/alltypes_plain.parquet", test_data_dir())
+}
+
+/// Registers `alltypes_plain.parquet` as the table `name`.
+pub async fn register_alltypes(ctx: &SessionContext, name: &str) {
+    ctx.register_parquet(name, &alltypes_parquet(), Default::default())
+        .await
+        .unwrap();
+}
+
+/// The query of [`ALLTYPES_ID_GT_4`], over the table `test`.
+pub const ALLTYPES_ID_GT_4_SQL: &str =
+    "select string_col, timestamp_col from test where id > 4";
+
+/// The result of [`ALLTYPES_ID_GT_4_SQL`], or of the same query over the
+/// contents of `alltypes_plain.parquet`.
+pub const ALLTYPES_ID_GT_4: [&str; 7] = [
+    "+------------+---------------------+",
+    "| string_col | timestamp_col       |",
+    "+------------+---------------------+",
+    "| 31         | 2009-03-01T00:01:00 |",
+    "| 30         | 2009-04-01T00:00:00 |",
+    "| 31         | 2009-04-01T00:01:00 |",
+    "+------------+---------------------+",
+];
+
+/// A grouped count over the table `test`.
+pub const ALLTYPES_GROUP_BY_SQL: &str = "select string_col, count(*) from test where id > 4 group by string_col order by string_col";
+
+/// The result of [`ALLTYPES_GROUP_BY_SQL`].
+pub const ALLTYPES_GROUP_BY: [&str; 6] = [
+    "+------------+----------+",
+    "| string_col | count(*) |",
+    "+------------+----------+",
+    "| 30         | 1        |",
+    "| 31         | 2        |",
+    "+------------+----------+",
+];
+
+/// A self-join of `alltypes_plain.parquet`, registered as `t0` and `t1`.
+pub const ALLTYPES_JOIN_SQL: &str =
+    "select t0.id from t0 join t1 on t0.id = t1.id order by t0.id desc limit 5";
+
+/// The result of [`ALLTYPES_JOIN_SQL`].
+pub const ALLTYPES_JOIN: [&str; 9] = [
+    "+----+", "| id |", "+----+", "| 7  |", "| 6  |", "| 5  |", "| 4  |", "| 3  |",
+    "+----+",
+];
 
 /// starts a ballista cluster for integration tests
-#[allow(dead_code)]
 pub async fn setup_test_cluster() -> (String, u16) {
     let config = SessionConfig::new_with_ballista();
     let default_codec = BallistaCodec::default();
@@ -128,7 +128,6 @@ pub async fn setup_test_cluster() -> (String, u16) {
 }
 
 /// starts a ballista cluster for integration tests
-#[allow(dead_code)]
 pub async fn setup_test_cluster_with_state(session_state: SessionState) -> (String, u16) {
     let config = SessionConfig::new_with_ballista();
 
@@ -158,7 +157,6 @@ pub async fn setup_test_cluster_with_state(session_state: SessionState) -> (Stri
 
 /// Starts a scheduler and `executors` executors of `vcores` vcores each, all
 /// in this process and all from `session_state`.
-#[allow(dead_code)]
 pub async fn setup_test_cluster_with_executors(
     session_state: &SessionState,
     executors: usize,
@@ -193,7 +191,6 @@ pub async fn setup_test_cluster_with_executors(
     (host, addr.port())
 }
 
-#[allow(dead_code)]
 pub async fn setup_test_cluster_with_builders(
     config_producer: ConfigProducer,
     runtime_producer: RuntimeProducer,
@@ -258,12 +255,17 @@ async fn connect_to_scheduler(
     }
 }
 
-#[allow(dead_code)]
 pub async fn standalone_context() -> SessionContext {
     SessionContext::standalone().await.unwrap()
 }
 
-#[allow(dead_code)]
+/// A standalone context with `alltypes_plain.parquet` registered as `test`.
+pub async fn alltypes_context() -> SessionContext {
+    let ctx = standalone_context().await;
+    register_alltypes(&ctx, "test").await;
+    ctx
+}
+
 pub async fn remote_context() -> SessionContext {
     let (host, port) = setup_test_cluster().await;
     SessionContext::remote(&format!("df://{host}:{port}"))
@@ -271,27 +273,232 @@ pub async fn remote_context() -> SessionContext {
         .unwrap()
 }
 
-#[allow(dead_code)]
 pub async fn standalone_context_with_state() -> SessionContext {
-    let config = SessionConfig::new_with_ballista();
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .build();
+    let state = state_with_config(SessionConfig::new_with_ballista());
     SessionContext::standalone_with_state(state).await.unwrap()
 }
 
-#[allow(dead_code)]
 pub async fn remote_context_with_state() -> SessionContext {
-    let config = SessionConfig::new_with_ballista();
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .build();
+    let state = state_with_config(SessionConfig::new_with_ballista());
     let (host, port) = setup_test_cluster_with_state(state.clone()).await;
     SessionContext::remote_with_state(&format!("df://{host}:{port}"), state)
         .await
         .unwrap()
+}
+
+/// A session state with DataFusion's default features and `config`.
+pub fn state_with_config(config: SessionConfig) -> SessionState {
+    SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build()
+}
+
+/// A Ballista session state with four target partitions and four standalone
+/// executor vcores, so a stage of four partitions runs at once whatever the
+/// machine's core count. `options` are set on top, in order.
+pub fn ballista_state(options: &[(&str, &str)]) -> SessionState {
+    let mut config = SessionConfig::new_with_ballista()
+        .with_target_partitions(4)
+        .set_str(BALLISTA_STANDALONE_PARALLELISM, "4");
+    for (key, value) in options {
+        config = config.set_str(key, value);
+    }
+    state_with_config(config)
+}
+
+/// A DataFusion session with four target partitions, used as the reference
+/// for results from a Ballista session.
+pub fn datafusion_context() -> SessionContext {
+    SessionContext::new_with_config(SessionConfig::new().with_target_partitions(4))
+}
+
+/// Writes the tables of [`orders_customers_dir`] to `dir`. `orders` is split
+/// over four files, so its scan has four partitions.
+fn write_orders_customers(dir: &Path) {
+    let orders = dir.join("orders");
+    std::fs::create_dir(&orders).unwrap();
+    for file in 0..4 {
+        let mut out =
+            std::fs::File::create(orders.join(format!("part-{file}.csv"))).unwrap();
+        writeln!(out, "o_id,o_cust,o_amount").unwrap();
+        for i in 0..250 {
+            let id = file * 250 + i;
+            writeln!(out, "{id},{},{}", id % 97, (id * 7) % 1000).unwrap();
+        }
+    }
+    let customers = dir.join("customers");
+    std::fs::create_dir(&customers).unwrap();
+    let mut out = std::fs::File::create(customers.join("part-0.csv")).unwrap();
+    writeln!(out, "c_id,c_name,c_region").unwrap();
+    for id in 0..100 {
+        writeln!(out, "{id},customer-{id},region-{}", id % 5).unwrap();
+    }
+}
+
+/// A temporary directory holding an `orders` table of four files and a small
+/// `customers` table, one directory each.
+pub fn orders_customers_dir() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    write_orders_customers(dir.path());
+    dir
+}
+
+/// Registers the tables of [`orders_customers_dir`].
+pub async fn register_orders_customers(ctx: &SessionContext, dir: &Path) {
+    register_csv_tables(ctx, dir, &["orders", "customers"]).await;
+}
+
+/// Queries over the tables of [`orders_customers_dir`], each with whether its
+/// result has no defined row order, so its rows are compared sorted. The first
+/// three are a scan, an aggregate and a join, and `standalone_push_staged` runs
+/// only those three, so keep them first.
+pub const ORDERS_QUERIES: &[(&str, bool)] = &[
+    // Scan and a collapse to one partition.
+    ("SELECT count(*), sum(o_amount) FROM orders", false),
+    // Hash repartition, aggregate, sort.
+    (
+        "SELECT o_cust, count(*) AS n, sum(o_amount) AS total \
+         FROM orders GROUP BY o_cust ORDER BY o_cust",
+        false,
+    ),
+    // Join (broadcast, since customers is small), aggregate, sort.
+    (
+        "SELECT c_region, count(*) AS n, sum(o_amount) AS total \
+         FROM orders JOIN customers ON o_cust = c_id \
+         GROUP BY c_region ORDER BY c_region",
+        false,
+    ),
+    // Top-k over an aggregate.
+    (
+        "SELECT o_cust, sum(o_amount) AS total FROM orders \
+         GROUP BY o_cust ORDER BY total DESC, o_cust LIMIT 5",
+        false,
+    ),
+    // Filter with no exchange but the final merge.
+    (
+        "SELECT o_id, o_amount FROM orders WHERE o_amount > 990 ORDER BY o_id",
+        false,
+    ),
+    // Union of two scans.
+    (
+        "SELECT o_id AS id FROM orders WHERE o_id < 10 \
+         UNION ALL SELECT c_id AS id FROM customers WHERE c_id < 5",
+        true,
+    ),
+    // Window function over a hash-partitioned input.
+    (
+        "SELECT o_cust, o_id, \
+         row_number() OVER (PARTITION BY o_cust ORDER BY o_id) AS rn \
+         FROM orders WHERE o_cust < 3 ORDER BY o_cust, o_id",
+        false,
+    ),
+    // A scalar subquery, joined to every row: each task of the join's
+    // stage reads the subquery's whole result.
+    (
+        "SELECT o_id, o_amount FROM orders \
+         WHERE o_amount > (SELECT avg(o_amount) + 400 FROM orders) ORDER BY o_id",
+        false,
+    ),
+];
+
+/// A standalone cluster over [`ballista_state`] with `options`, with the
+/// tables of [`orders_customers_dir`] registered.
+pub async fn orders_customers_context(
+    dir: &Path,
+    options: &[(&str, &str)],
+) -> SessionContext {
+    let ctx = SessionContext::standalone_with_state(ballista_state(options))
+        .await
+        .unwrap();
+    register_orders_customers(&ctx, dir).await;
+    ctx
+}
+
+/// Registers each directory `dir/<name>` of header-bearing `.csv` files as
+/// the table `<name>`.
+pub async fn register_csv_tables(ctx: &SessionContext, dir: &Path, names: &[&str]) {
+    for name in names {
+        ctx.register_csv(
+            *name,
+            dir.join(name).to_str().unwrap(),
+            CsvReadOptions::new()
+                .has_header(true)
+                .file_extension(".csv"),
+        )
+        .await
+        .unwrap();
+    }
+}
+
+/// Writes `batch` to the Parquet file `path`.
+pub fn write_parquet_file(path: &Path, batch: &RecordBatch) {
+    let file = std::fs::File::create(path).expect("create parquet file");
+    let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+    writer.write(batch).unwrap();
+    writer.close().unwrap();
+}
+
+/// Runs `SET key = 'value'`, with any single quote in `value` escaped.
+pub async fn set_option(ctx: &SessionContext, key: &str, value: &str) {
+    let value = value.replace('\'', "''");
+    ctx.sql(&format!("SET {key} = '{value}'"))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+}
+
+/// The result of `sql` as a formatted table.
+pub async fn collect_text(ctx: &SessionContext, sql: &str) -> String {
+    let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
+    pretty_format_batches(&batches).unwrap().to_string()
+}
+
+/// Runs `sql` on `ctx` and compares the formatted result, ignoring surrounding
+/// whitespace, with `expected`. A difference, or a failed query, adds a
+/// message that starts with `[label]` to `mismatches`.
+pub async fn check_matches(
+    ctx: &SessionContext,
+    label: &str,
+    sql: &str,
+    expected: &str,
+    mismatches: &mut Vec<String>,
+) {
+    match ctx.sql(sql).await.unwrap().collect().await {
+        Ok(batches) => {
+            let actual = pretty_format_batches(&batches).unwrap().to_string();
+            if actual.trim() != expected.trim() {
+                mismatches.push(format!(
+                    "[{label}] expected:\n{expected}\nactual:\n{actual}"
+                ));
+            }
+        }
+        Err(error) => mismatches.push(format!("[{label}] failed: {error}")),
+    }
+}
+
+/// The lines of the formatted table of the result of `sql`.
+pub async fn collect_lines(ctx: &SessionContext, sql: &str) -> Vec<String> {
+    collect_text(ctx, sql)
+        .await
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Asserts that the formatted `results` have the lines `expected`.
+pub fn assert_result_eq(expected: Vec<&str>, results: &[RecordBatch]) {
+    assert_eq!(
+        expected,
+        pretty_format_batches(results)
+            .unwrap()
+            .to_string()
+            .trim()
+            .lines()
+            .collect::<Vec<&str>>()
+    );
 }
 
 #[ctor::ctor(unsafe)]
