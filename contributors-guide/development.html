@@ -448,6 +448,18 @@ to build the Web TUI; see the <a class="reference internal" href="../user-guide/
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span><span class="nb">test</span>
 </pre></div>
 </div>
+<section id="test-fixtures">
+<h3>Test fixtures<a class="headerlink" href="#test-fixtures" title="Link to this heading">#</a></h3>
+<p>Look for an existing fixture before writing one, and put a new one in the narrowest place that every test
+using it can reach. A crate’s own unit tests cannot use a helper crate that depends on that crate, because
+they would see two copies of it, so a fixture used only by one crate’s unit tests lives in that crate under
+<code class="docutils literal notranslate"><span class="pre">#[cfg(test)]</span></code>. Tests that need table data write it into a <code class="docutils literal notranslate"><span class="pre">tempfile::TempDir</span></code> rather than add files to the
+repository. Data that has to be checked in lives in the <code class="docutils literal notranslate"><span class="pre">testdata</span></code> directory of the crate that reads it.</p>
+<p>The shared fixtures are:</p>
+<ul class="simple">
+<li><p>Integration tests of <code class="docutils literal notranslate"><span class="pre">ballista</span></code> (<code class="docutils literal notranslate"><span class="pre">ballista/client/tests</span></code>): <code class="docutils literal notranslate"><span class="pre">tests/common/mod.rs</span></code> has the cluster setup, the session state builders (<code class="docutils literal notranslate"><span class="pre">ballista_state</span></code>, <code class="docutils literal notranslate"><span class="pre">state_with_config</span></code>), the orders and customers tables (<code class="docutils literal notranslate"><span class="pre">orders_customers_context</span></code>, <code class="docutils literal notranslate"><span class="pre">ORDERS_QUERIES</span></code>), <code class="docutils literal notranslate"><span class="pre">register_alltypes</span></code> with the expected <code class="docutils literal notranslate"><span class="pre">alltypes_plain</span></code> results, and the <code class="docutils literal notranslate"><span class="pre">collect_text</span></code>, <code class="docutils literal notranslate"><span class="pre">collect_lines</span></code>, <code class="docutils literal notranslate"><span class="pre">set_option</span></code> and <code class="docutils literal notranslate"><span class="pre">assert_result_eq</span></code> helpers.</p></li>
+</ul>
+</section>
 <section id="tpc-h-plan-stability-golden-files">
 <h3>TPC-H plan-stability golden files<a class="headerlink" href="#tpc-h-plan-stability-golden-files" title="Link to this heading">#</a></h3>
 <p>The <code class="docutils literal notranslate"><span class="pre">tpch_plan_stability</span></code> test suite in the <code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code> crate guards the shape of the
@@ -728,6 +740,7 @@ such as a new field that they never read.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#development-environment">Development Environment</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-the-project">Build the project</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing-the-project">Testing the project</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-fixtures">Test fixtures</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tpc-h-plan-stability-golden-files">TPC-H plan-stability golden files</a></li>
 </ul>
 </li>
