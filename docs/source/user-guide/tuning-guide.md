@@ -282,6 +282,12 @@ quarter of the per-task budget and a quarter of the input's share of the pool's
 free memory. Raise it, together with the per-task budget, to let wider rows or
 more partitions split; set it to `0` to never split.
 
+Whatever `split_on_arrival_max_bytes` is set to, the partition sizes the writer
+reports to AQE, and its `spill_bytes` metric, count the bytes rows use rather
+than the memory allocated for them, so they can be smaller than in earlier
+releases. If you tuned `ballista.optimizer.broadcast_join_threshold_bytes`
+against the old sizes, check it again.
+
 The following session-level keys tune its behavior:
 
 <!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.shuffle.sort_based. -->

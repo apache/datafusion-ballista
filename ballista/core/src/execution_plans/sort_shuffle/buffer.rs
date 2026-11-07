@@ -26,27 +26,29 @@
 //! * **Split.** Each partition's rows are copied into its [`BatchCoalescer`]
 //!   while the input batch is still in cache, and the batch is dropped.
 //!   Cheaper per row, but every partition holds a partly filled
-//!   `batch_size`-row batch, plus a string block per view column.
+//!   `batch_size`-row batch, plus a string block per view column with long
+//!   strings.
 //!
 //! Every buffer starts deferred. Once it has `num_partitions × batch_size`
-//! rows it switches to split if the partly filled batches would fit in
-//! `split_budget_bytes`. A split buffer drained while mostly partly filled, as
-//! under memory pressure, goes back to deferred for good, so later spills do
-//! not each write a small batch per partition.
+//! rows, it switches to split if the partly filled batches would fit in
+//! `split_budget_bytes` and the memory pool grants their memory, which stays
+//! reserved while the buffer is split. A split buffer drained while mostly
+//! partly filled, as happens under memory pressure, goes back to deferred for
+//! good, so later spills do not each write a small batch per partition.
 
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
-use datafusion::arrow::array::{Array, ArrayRef, AsArray, UInt32Array};
+use datafusion::arrow::array::{Array, ArrayRef, AsArray, OffsetSizeTrait, UInt32Array};
 use datafusion::arrow::compute::BatchCoalescer;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::Result;
+use datafusion::execution::memory_pool::MemoryReservation;
 
 /// Rows buffered for every output partition of one input partition.
 #[derive(Debug)]
 pub struct BufferedBatches {
     num_partitions: usize,
-    schema: SchemaRef,
     batch_size: usize,
     split_budget_bytes: usize,
     mode: Mode,
@@ -66,13 +68,10 @@ enum Mode {
 
 impl BufferedBatches {
     /// Creates a buffer for `num_partitions` output partitions that emits
-    /// batches of at most `batch_size` rows.
-    ///
-    /// See the module docs for when it switches layout; a `split_budget_bytes`
-    /// of 0 keeps it deferred.
+    /// batches of at most `batch_size` rows. A `split_budget_bytes` of 0 keeps
+    /// it deferred.
     pub fn new(
         num_partitions: usize,
-        schema: SchemaRef,
         batch_size: usize,
         split_budget_bytes: usize,
     ) -> Self {
@@ -87,7 +86,6 @@ impl BufferedBatches {
         };
         Self {
             num_partitions,
-            schema,
             batch_size,
             split_budget_bytes,
             mode,
@@ -128,7 +126,8 @@ impl BufferedBatches {
     }
 
     /// Returns the bytes held by the buffered rows, counting allocated
-    /// capacity.
+    /// capacity. While split, the partly filled batches count as at least the
+    /// bytes reserved for them when the buffer switched.
     pub fn memory_size(&self) -> usize {
         match &self.mode {
             Mode::Deciding(b) | Mode::Deferred { buffer: b, .. } => b.memory_size(),
@@ -140,10 +139,14 @@ impl BufferedBatches {
     /// output partition `p`, for every partition.
     ///
     /// `per_partition_rows.len()` must equal `num_partitions()`.
+    ///
+    /// Before switching to split, the buffer grows `reservation` to cover the
+    /// switch, and stays deferred for good if the pool refuses.
     pub fn push_batch(
         &mut self,
         batch: RecordBatch,
         per_partition_rows: &[Vec<u32>],
+        reservation: &MemoryReservation,
     ) -> Result<()> {
         debug_assert_eq!(per_partition_rows.len(), self.num_partitions);
         if batch.num_rows() == 0 {
@@ -156,40 +159,52 @@ impl BufferedBatches {
             }
             Mode::Deciding(b) => {
                 b.push_batch(batch, per_partition_rows, true);
-                self.maybe_switch_to_split()?;
+                self.maybe_switch_to_split(reservation)?;
             }
         }
         Ok(())
     }
 
-    /// Once enough rows have arrived, switches to the split layout if they
-    /// fit the split budget, moving the buffered rows into the coalescers,
-    /// and otherwise stays deferred for good.
-    fn maybe_switch_to_split(&mut self) -> Result<()> {
+    /// Once enough rows have arrived, switches to the split layout if the
+    /// partly filled batches fit the split budget and the pool grants their
+    /// memory, moving the buffered rows into the coalescers. Otherwise stays
+    /// deferred for good.
+    fn maybe_switch_to_split(&mut self, reservation: &MemoryReservation) -> Result<()> {
         let Mode::Deciding(deferred) = &mut self.mode else {
             return Ok(());
         };
-        // A batch per partition: fewer rows could not fill the partly filled
-        // batches that splitting costs, and by then the buffer already holds
-        // about `split_bytes`, measured over many batches.
+        // Until a batch's worth of rows per partition has arrived, the
+        // deferred buffer is the smaller of the two layouts.
         let enough_rows = self.num_partitions.saturating_mul(self.batch_size);
-        if deferred.rows < enough_rows {
-            return Ok(());
-        }
-        // Decided once, from the row width seen so far.
-        let row_bytes = deferred.used_bytes.div_ceil(deferred.rows);
-        let view_block_bytes = self
-            .num_partitions
-            .saturating_mul(view_columns_with_data(&deferred.batches))
-            .saturating_mul(VIEW_BLOCK_BYTES);
-        // Worst case, every partition's batch is partly filled:
-        // partitions × batch_size × row_bytes + partitions × view_columns × 1 MiB.
-        // `row_bytes` includes the strings the blocks hold, so long strings
-        // are counted twice, erring towards staying deferred.
-        let split_bytes = enough_rows
-            .saturating_mul(row_bytes)
-            .saturating_add(view_block_bytes);
-        if split_bytes > self.split_budget_bytes {
+        let split_bytes = if deferred.rows < enough_rows {
+            // Splitting would make room for more rows than these, which
+            // already exceed the budget.
+            if deferred.used_bytes <= self.split_budget_bytes {
+                return Ok(());
+            }
+            None
+        } else {
+            let row_bytes = deferred.used_bytes.div_ceil(deferred.rows);
+            let view_block_bytes = self
+                .num_partitions
+                .saturating_mul(view_columns_with_data(&deferred.batches))
+                .saturating_mul(VIEW_BLOCK_BYTES);
+            // Worst case, every partition's batch is partly filled:
+            // partitions × batch_size × row_bytes + partitions × view_columns × 1 MiB.
+            // `row_bytes` includes the strings the blocks hold, so long strings
+            // are counted twice, erring towards staying deferred.
+            let split_bytes = enough_rows
+                .saturating_mul(row_bytes)
+                .saturating_add(view_block_bytes);
+            (split_bytes <= self.split_budget_bytes).then_some(split_bytes)
+        };
+        // Until the move finishes, the buffered rows are held twice.
+        let split_bytes = split_bytes.filter(|split_bytes| {
+            reservation
+                .try_resize(deferred.memory_size().saturating_add(*split_bytes))
+                .is_ok()
+        });
+        let Some(split_bytes) = split_bytes else {
             let buffer =
                 std::mem::replace(deferred, DeferredBuffer::new(self.num_partitions));
             self.mode = Mode::Deferred {
@@ -197,12 +212,13 @@ impl BufferedBatches {
                 after_split: false,
             };
             return Ok(());
-        }
+        };
 
-        // Until the move finishes, the buffered rows are held twice, up to
-        // `split_bytes` more than the reservation, which the budget bounds.
+        // The input batches' schema, as the deferred gather uses: the declared
+        // one can differ in nullability or metadata.
+        let schema = deferred.batches[0].schema();
         let mut split =
-            SplitBuffer::new(self.num_partitions, &self.schema, self.batch_size);
+            SplitBuffer::new(self.num_partitions, schema, self.batch_size, split_bytes);
         deferred.drain(self.batch_size, |partition, batches| {
             for batch in batches {
                 split.push_partition(partition, batch?)?;
@@ -228,8 +244,8 @@ impl BufferedBatches {
             }
             Mode::Split(b) => {
                 // A coalescer reserves a whole batch of views and values on
-                // its first row, so this means fewer completed batches than
-                // partitions since the last drain.
+                // its first row, so this roughly means fewer completed
+                // batches than partitions since the last drain.
                 let mostly_partial = b.partial_bytes() > b.completed_bytes;
                 for (partition, batches) in b.take()?.into_iter().enumerate() {
                     if batches.is_empty() {
@@ -250,9 +266,7 @@ impl BufferedBatches {
 }
 
 /// Largest string block a [`BatchCoalescer`] allocates per view column
-/// (`MAX_BLOCK_SIZE` in arrow-select, which is private; a test checks it).
-/// Blocks grow to this size and stay there, so each partly filled batch holds
-/// one per view column with non-inline values.
+/// (arrow-select's private `MAX_BLOCK_SIZE`; a test checks it).
 const VIEW_BLOCK_BYTES: usize = 1024 * 1024;
 
 /// For a view array, the bytes of non-inline values its views reference.
@@ -276,20 +290,55 @@ fn view_columns_with_data(batches: &[RecordBatch]) -> usize {
         .count()
 }
 
-/// Bytes `array`'s values take in memory, ignoring unused capacity and, for
-/// view arrays, data-buffer bytes no view references. A dictionary counts its
-/// whole values array.
+/// Bytes `array`'s values take in memory. Unused capacity does not count, nor,
+/// at any depth, list values outside the list's offsets or view data no view
+/// references. A dictionary counts its whole values array.
 pub(crate) fn used_bytes(array: &ArrayRef) -> usize {
-    match view_data_bytes(array) {
-        Some(data) => {
-            let nulls = array.nulls().map_or(0, |n| n.len().div_ceil(8));
-            array.len() * size_of::<u128>() + data + nulls
+    let nulls = array.nulls().map_or(0, |n| n.len().div_ceil(8));
+    if let Some(data) = view_data_bytes(array) {
+        return array.len() * size_of::<u128>() + data + nulls;
+    }
+    match array.data_type() {
+        DataType::Struct(_) => {
+            // `StructArray` keeps its columns sliced to its own rows.
+            let columns = array.as_struct().columns();
+            nulls + columns.iter().map(used_bytes).sum::<usize>()
         }
-        None => array
+        DataType::FixedSizeList(..) => {
+            // `FixedSizeListArray` keeps its values sliced to its own rows.
+            nulls + used_bytes(array.as_fixed_size_list().values())
+        }
+        DataType::List(_) => list_used_bytes(
+            array.as_list::<i32>().value_offsets(),
+            array.as_list::<i32>().values(),
+            nulls,
+        ),
+        DataType::LargeList(_) => list_used_bytes(
+            array.as_list::<i64>().value_offsets(),
+            array.as_list::<i64>().values(),
+            nulls,
+        ),
+        DataType::Map(..) => {
+            let map = array.as_map();
+            let entries: ArrayRef = std::sync::Arc::new(map.entries().clone());
+            list_used_bytes(map.value_offsets(), &entries, nulls)
+        }
+        _ => array
             .to_data()
             .get_slice_memory_size()
             .unwrap_or_else(|_| array.get_array_memory_size()),
     }
+}
+
+/// [`used_bytes`] of a list: its `offsets`, its `nulls` bytes and the part of
+/// `values` the offsets span.
+fn list_used_bytes<O: OffsetSizeTrait>(
+    offsets: &[O],
+    values: &ArrayRef,
+    nulls: usize,
+) -> usize {
+    let (start, end) = (offsets[0].as_usize(), offsets[offsets.len() - 1].as_usize());
+    size_of_val(offsets) + nulls + used_bytes(&values.slice(start, end - start))
 }
 
 /// [`used_bytes`] summed over `batch`'s columns.
@@ -306,16 +355,25 @@ struct SplitBuffer {
     completed: Vec<Vec<RecordBatch>>,
     /// Total `get_array_memory_size` of the batches in `completed`.
     completed_bytes: usize,
+    /// The partly filled batches' worst-case size, reserved when the buffer
+    /// switched.
+    reserved_partial_bytes: usize,
 }
 
 impl SplitBuffer {
-    fn new(num_partitions: usize, schema: &SchemaRef, batch_size: usize) -> Self {
+    fn new(
+        num_partitions: usize,
+        schema: SchemaRef,
+        batch_size: usize,
+        reserved_partial_bytes: usize,
+    ) -> Self {
         Self {
             coalescers: (0..num_partitions)
                 .map(|_| BatchCoalescer::new(schema.clone(), batch_size))
                 .collect(),
             completed: vec![Vec::new(); num_partitions],
             completed_bytes: 0,
+            reserved_partial_bytes,
         }
     }
 
@@ -330,9 +388,10 @@ impl SplitBuffer {
         self.coalescers.iter().map(BatchCoalescer::size).sum()
     }
 
-    /// Completed batches plus the coalescers' partly filled batches.
+    /// Completed batches plus the coalescers' partly filled batches, which
+    /// count as at least the bytes reserved for them.
     fn memory_size(&self) -> usize {
-        self.completed_bytes + self.partial_bytes()
+        self.completed_bytes + self.partial_bytes().max(self.reserved_partial_bytes)
     }
 
     fn push_batch(
@@ -357,7 +416,6 @@ impl SplitBuffer {
         Ok(())
     }
 
-    /// Appends all of `batch`'s rows to output partition `partition`.
     fn push_partition(
         &mut self,
         partition: usize,
@@ -401,10 +459,9 @@ struct DeferredBuffer {
     indices: Vec<Vec<(u32, u32)>>,
     /// Total allocated capacity of `indices`, in bytes.
     indices_bytes: usize,
-    /// Total rows in `batches`.
     rows: usize,
-    /// Total [`batch_used_bytes`] of `batches`; only counted while the buffer
-    /// may still switch layout, the one thing it is for.
+    /// Total [`batch_used_bytes`] of `batches`, counted only while the buffer
+    /// may still switch layout.
     used_bytes: usize,
 }
 
@@ -477,8 +534,13 @@ impl DeferredBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::{Int32Array, StringViewArray};
+    use datafusion::arrow::array::{
+        Int32Array, ListBuilder, StringBuilder, StringViewArray, StructArray,
+    };
     use datafusion::arrow::datatypes::{Field, Schema};
+    use datafusion::execution::memory_pool::{
+        GreedyMemoryPool, MemoryConsumer, MemoryPool, UnboundedMemoryPool,
+    };
     use std::sync::Arc;
 
     /// A row of [`batch`]: a 4-byte int, a 16-byte view and a 32-byte string.
@@ -525,12 +587,120 @@ mod tests {
         out
     }
 
+    fn reservation(pool: Arc<dyn MemoryPool>) -> MemoryReservation {
+        MemoryConsumer::new("test").register(&pool)
+    }
+
+    impl BufferedBatches {
+        /// [`BufferedBatches::push_batch`] against an unbounded pool.
+        fn push(&mut self, batch: RecordBatch, rows: &[Vec<u32>]) -> Result<()> {
+            let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+            self.push_batch(batch, rows, &reservation(pool))
+        }
+    }
+
+    /// A batch of `values` in one `Int32` column.
+    fn ints(values: Vec<i32>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(values))]).unwrap()
+    }
+
     #[test]
     fn used_bytes_counts_referenced_view_bytes_only() {
         let batch = batch((0..10).collect());
         assert_eq!(batch_used_bytes(&batch), 10 * ROW_BYTES);
         // The slice shares the whole data buffer; only its strings count.
         assert_eq!(batch_used_bytes(&batch.slice(2, 3)), 3 * ROW_BYTES);
+    }
+
+    #[test]
+    fn used_bytes_counts_only_the_rows_nested_columns_reach() {
+        let structs: ArrayRef = Arc::new(StructArray::from(batch((0..10).collect())));
+        assert_eq!(used_bytes(&structs), 10 * ROW_BYTES);
+        assert_eq!(used_bytes(&structs.slice(2, 3)), 3 * ROW_BYTES);
+
+        // Ten lists of two 2-byte strings each.
+        let mut lists = ListBuilder::new(StringBuilder::new());
+        for _ in 0..10 {
+            lists.values().append_value("ab");
+            lists.values().append_value("cd");
+            lists.append(true);
+        }
+        let lists: ArrayRef = Arc::new(lists.finish());
+        // 11 list offsets, 21 string offsets and 40 string bytes.
+        assert_eq!(used_bytes(&lists), 11 * 4 + 21 * 4 + 40);
+        // 4 list offsets, then only the 6 strings the slice reaches: 7
+        // string offsets and 12 string bytes.
+        assert_eq!(used_bytes(&lists.slice(2, 3)), 4 * 4 + 7 * 4 + 12);
+    }
+
+    #[test]
+    fn split_keeps_the_input_batches_schema() {
+        // A nullable column with metadata; the split output must keep both.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, true)
+                .with_metadata([("k".to_string(), "v".to_string())].into()),
+        ]));
+        let nullable = |values: Vec<Option<i32>>| {
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(values))])
+                .unwrap()
+        };
+        let mut bb = BufferedBatches::new(2, 2, usize::MAX);
+        bb.push(
+            nullable(vec![Some(1), None, Some(3), None]),
+            &[vec![0, 1], vec![2, 3]],
+        )
+        .unwrap();
+        assert!(bb.splits_on_arrival());
+        assert_eq!(
+            drain(&mut bb),
+            vec![
+                (0, nullable(vec![Some(1), None])),
+                (1, nullable(vec![Some(3), None])),
+            ]
+        );
+    }
+
+    #[test]
+    fn switches_to_split_only_if_the_pool_grants_the_switch() {
+        let rows = [vec![0, 2], vec![3, 1]];
+        let input = || batch(vec![10, 20, 30, 40]);
+        let mut deferred = BufferedBatches::new(2, 2, 0);
+        deferred.push(input(), &rows).unwrap();
+        // The deferred rows plus 2 partly filled 2-row batches with a string
+        // block each.
+        let switch_bytes =
+            deferred.memory_size() + 2 * 2 * ROW_BYTES + 2 * VIEW_BLOCK_BYTES;
+
+        for (pool_bytes, splits, reserved) in [
+            (switch_bytes, true, switch_bytes),
+            (switch_bytes - 1, false, 0),
+        ] {
+            let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(pool_bytes));
+            let reservation = reservation(pool);
+            let mut bb = BufferedBatches::new(2, 2, usize::MAX);
+            bb.push_batch(input(), &rows, &reservation).unwrap();
+            assert_eq!(
+                (bb.splits_on_arrival(), bb.has_split(), reservation.size()),
+                (splits, splits, reserved),
+                "pool {pool_bytes}"
+            );
+            // A refused switch stays deferred for good.
+            bb.push_batch(input(), &rows, &reservation).unwrap();
+            assert_eq!(bb.splits_on_arrival(), splits, "pool {pool_bytes}");
+        }
+    }
+
+    #[test]
+    fn split_memory_size_keeps_the_partly_filled_batches_reserved() {
+        let mut bb = BufferedBatches::new(1, 64, usize::MAX);
+        bb.push(ints((0..64).collect()), &[(0..64).collect()])
+            .unwrap();
+        assert!(bb.splits_on_arrival());
+        assert_eq!(drain(&mut bb), vec![(0, ints((0..64).collect()))]);
+        // Still split with nothing buffered: 64 four-byte ints reserved.
+        assert!(bb.splits_on_arrival());
+        assert_eq!(bb.memory_size(), 64 * 4);
     }
 
     #[test]
@@ -574,11 +744,11 @@ mod tests {
         // partition.
         let fits = 2 * 2 * ROW_BYTES + 2 * VIEW_BLOCK_BYTES;
         for (budget, splits) in [(fits, true), (fits - 1, false), (0, false)] {
-            let mut bb = BufferedBatches::new(2, schema(), 2, budget);
-            bb.push_batch(batch(vec![10, 20, 30, 40]), &[vec![0, 2], vec![3, 1]])
+            let mut bb = BufferedBatches::new(2, 2, budget);
+            bb.push(batch(vec![10, 20, 30, 40]), &[vec![0, 2], vec![3, 1]])
                 .unwrap();
             assert_eq!(bb.splits_on_arrival(), splits, "budget {budget}");
-            bb.push_batch(batch(vec![50, 60, 70]), &[vec![0], vec![1, 2]])
+            bb.push(batch(vec![50, 60, 70]), &[vec![0], vec![1, 2]])
                 .unwrap();
             assert_eq!(bb.splits_on_arrival(), splits, "budget {budget}");
 
@@ -597,9 +767,9 @@ mod tests {
 
     #[test]
     fn inline_strings_need_no_string_block() {
-        // A 4-byte int and a 16-byte view: 2 partitions x 2 rows x 20 bytes.
-        let mut bb = BufferedBatches::new(2, schema(), 2, 2 * 2 * 20);
-        bb.push_batch(inline_batch(vec![1, 2, 3, 4]), &[vec![0, 1], vec![2, 3]])
+        // A 4-byte int and a 16-byte view: 2 partitions × 2 rows × 20 bytes.
+        let mut bb = BufferedBatches::new(2, 2, 2 * 2 * 20);
+        bb.push(inline_batch(vec![1, 2, 3, 4]), &[vec![0, 1], vec![2, 3]])
             .unwrap();
         assert!(bb.splits_on_arrival());
         assert_eq!(
@@ -610,9 +780,9 @@ mod tests {
 
     #[test]
     fn stays_deferred_until_a_batch_per_partition_has_arrived() {
-        let mut bb = BufferedBatches::new(2, schema(), 4, usize::MAX);
+        let mut bb = BufferedBatches::new(2, 4, usize::MAX);
         // 7 of the 8 rows that would fill a batch per partition.
-        bb.push_batch(batch((0..7).collect()), &[vec![0, 1, 2], vec![3, 4, 5, 6]])
+        bb.push(batch((0..7).collect()), &[vec![0, 1, 2], vec![3, 4, 5, 6]])
             .unwrap();
         assert!(!bb.splits_on_arrival());
         assert_eq!(
@@ -622,10 +792,32 @@ mod tests {
     }
 
     #[test]
+    fn decides_to_stay_deferred_once_the_buffered_rows_pass_the_budget() {
+        // 3 rows fit a 3-row budget, 4 do not, both short of the 8 that
+        // would fill a batch per partition.
+        let mut bb = BufferedBatches::new(2, 4, 3 * ROW_BYTES);
+        bb.push(batch(vec![0, 1, 2]), &[vec![0], vec![1, 2]])
+            .unwrap();
+        assert!(matches!(bb.mode, Mode::Deciding(_)));
+        bb.push(batch(vec![3]), &[vec![0], vec![]]).unwrap();
+        assert!(matches!(
+            bb.mode,
+            Mode::Deferred {
+                after_split: false,
+                ..
+            }
+        ));
+        assert_eq!(
+            drain(&mut bb),
+            vec![(0, batch(vec![0, 3])), (1, batch(vec![1, 2]))]
+        );
+    }
+
+    #[test]
     fn goes_back_to_deferred_after_draining_mostly_partial_batches() {
-        let mut bb = BufferedBatches::new(2, schema(), 4, usize::MAX);
+        let mut bb = BufferedBatches::new(2, 4, usize::MAX);
         // 8 rows switch to split, leaving 3 + 1 rows partly filled.
-        bb.push_batch(
+        bb.push(
             batch((0..8).collect()),
             &[vec![0, 1, 2], vec![3, 4, 5, 6, 7]],
         )
@@ -642,7 +834,7 @@ mod tests {
         assert!(!bb.splits_on_arrival());
 
         // For good, however many rows arrive.
-        bb.push_batch(
+        bb.push(
             batch((0..16).collect()),
             &[(0..8).collect(), (8..16).collect()],
         )
@@ -652,14 +844,8 @@ mod tests {
 
     #[test]
     fn stays_split_after_draining_mostly_completed_batches() {
-        let ints = |values: Vec<i32>| {
-            let schema =
-                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(values))])
-                .unwrap()
-        };
-        let mut bb = BufferedBatches::new(1, ints(vec![]).schema(), 2, usize::MAX);
-        bb.push_batch(ints((0..9).collect()), &[(0..9).collect()])
+        let mut bb = BufferedBatches::new(1, 2, usize::MAX);
+        bb.push(ints((0..9).collect()), &[(0..9).collect()])
             .unwrap();
         assert!(bb.splits_on_arrival());
         assert_eq!(
@@ -678,10 +864,9 @@ mod tests {
     #[test]
     fn both_layouts_compact_sparse_view_columns() {
         for budget in [usize::MAX, 0] {
-            let mut bb = BufferedBatches::new(2, schema(), 8, budget);
+            let mut bb = BufferedBatches::new(2, 8, budget);
             let rest: Vec<u32> = (0..50).filter(|&r| r != 7).collect();
-            bb.push_batch(batch((0..50).collect()), &[vec![7], rest])
-                .unwrap();
+            bb.push(batch((0..50).collect()), &[vec![7], rest]).unwrap();
             assert_eq!(bb.splits_on_arrival(), budget > 0);
 
             // Row 7's batch keeps only its own 32-byte string.
@@ -709,12 +894,12 @@ mod tests {
         }
 
         // A zero budget keeps the buffer deferred.
-        let mut bb = BufferedBatches::new(2, schema(), 8, 0);
+        let mut bb = BufferedBatches::new(2, 8, 0);
         assert_eq!(bb.memory_size(), 0);
 
         let first = batch(vec![1, 2, 3]);
         let mut batch_bytes = first.get_array_memory_size();
-        bb.push_batch(first, &[vec![0, 2], vec![1]]).unwrap();
+        bb.push(first, &[vec![0, 2], vec![1]]).unwrap();
         assert_eq!(bb.memory_size(), batch_bytes + index_bytes(&bb));
 
         // More rows for partition 0 than its list has room for, so the
@@ -722,7 +907,7 @@ mod tests {
         let capacity_before = indices(&bb)[0].capacity();
         let second = batch((0..8).collect());
         batch_bytes += second.get_array_memory_size();
-        bb.push_batch(second, &[(0..8).collect(), vec![]]).unwrap();
+        bb.push(second, &[(0..8).collect(), vec![]]).unwrap();
         assert!(indices(&bb)[0].capacity() > capacity_before);
         assert_eq!(bb.memory_size(), batch_bytes + index_bytes(&bb));
 

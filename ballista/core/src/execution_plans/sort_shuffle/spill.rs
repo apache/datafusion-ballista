@@ -213,7 +213,7 @@ impl SpillManager {
     /// Returns `(batches, rows, bytes)` spilled for the given partition, or
     /// `(0, 0, 0)` if the partition never spilled.
     ///
-    /// The `bytes` value is the bytes each batch's values take in memory
+    /// The `bytes` value is what each batch's values take in memory
     /// (`batch_used_bytes`), not counting unused capacity. It is **not** the
     /// compressed on-disk size.
     pub fn partition_stats(&self, partition_id: usize) -> (u64, u64, u64) {

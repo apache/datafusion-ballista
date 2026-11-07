@@ -620,7 +620,6 @@ impl SortShuffleWriterExec {
 
             let mut buffered = BufferedBatches::new(
                 num_output_partitions,
-                schema.clone(),
                 config.batch_size,
                 split_on_arrival_budget(
                     config.split_on_arrival_max_bytes,
@@ -663,7 +662,7 @@ impl SortShuffleWriterExec {
                 timer.done();
 
                 let timer = metrics.buffer_time.timer();
-                buffered.push_batch(input_batch, &per_partition_rows)?;
+                buffered.push_batch(input_batch, &per_partition_rows, &reservation)?;
                 timer.done();
                 let buffered_bytes = buffered.memory_size();
 
@@ -782,18 +781,12 @@ impl SortShuffleWriterExec {
 ///
 /// - a quarter of `memory_limit_per_task_bytes`, when set;
 /// - a quarter of an even share of the pool's free memory between the task's
-///   `input_partitions`, when bounded, so the pool does not refuse the first
-///   batch;
-/// - `split_on_arrival_max_bytes`, by default 64 MiB, so the default 256 MiB
-///   budget and a disabled one agree.
+///   `input_partitions`, when bounded;
+/// - `split_on_arrival_max_bytes`.
 ///
 /// The quarters leave room for completed batches, so spills write full ones,
 /// and for the switch to split, which holds the buffered rows twice until
-/// they have moved, beyond what the reservation counts.
-///
-/// Free memory counts what other tasks on the executor hold when the input
-/// starts, not what they take later. An input left short then spills mostly
-/// partly filled batches, so it goes back to deferred after the first spill.
+/// they have moved. The pool must still grant the switch itself.
 fn split_on_arrival_budget(
     split_on_arrival_max_bytes: usize,
     memory_limit_per_task_bytes: usize,
@@ -2517,9 +2510,9 @@ mod tests {
     #[tokio::test]
     async fn split_and_deferred_layouts_write_the_same_partitions() -> Result<()> {
         // 66000 rows over 8 partitions, enough to decide. Partly filled
-        // batches take 8 x 8192 x 45 bytes plus 8 string blocks, 10.8 MiB:
-        // within the default budget's 64 MiB, so it splits, but over a
-        // quarter of 10 MiB, so it stays deferred. Neither spills.
+        // batches take 8 × 8192 × 45 bytes plus 8 string blocks, 10.8 MiB:
+        // within the default 64 MiB cap, so it splits, but over a quarter of
+        // 10 MiB, so it stays deferred. Neither spills.
         let batches = key_and_string_batches(3, 22000);
         let split =
             write_and_read_partitions(batches.clone(), 8, 256 << 20, None).await?;
@@ -2550,7 +2543,7 @@ mod tests {
     #[tokio::test]
     async fn reported_num_bytes_exclude_spare_capacity() -> Result<()> {
         // 66000 rows split over 8 partitions, each ending in a partly filled
-        // batch with room for 8192 rows, which must not be reported.
+        // batch with room for 8192 rows; the spare room must not be reported.
         let run = write_and_read_partitions(
             key_and_string_batches(3, 22000),
             8,
