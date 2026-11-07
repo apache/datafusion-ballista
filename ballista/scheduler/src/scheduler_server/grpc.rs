@@ -26,12 +26,13 @@ use ballista_core::serde::protobuf::{
     CleanJobDataResult, CreateUpdateSessionParams, CreateUpdateSessionResult,
     ExecuteQueryFailureResult, ExecuteQueryParams, ExecuteQueryResult,
     ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorRegistration,
-    ExecutorStoppedParams, ExecutorStoppedResult, GetJobMetricsParams,
+    ExecutorStoppedParams, ExecutorStoppedResult, FailedTask, GetJobMetricsParams,
     GetJobMetricsResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
     HeartBeatResult, JobStatus, KeyValuePair, PollWorkParams, PollWorkResult,
     RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
-    RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
-    execute_query_failure_result, execute_query_result, executor_metric::Metric,
+    RemoveSessionResult, TaskDefinition, TaskKilled, TaskStatus, UpdateTaskStatusParams,
+    UpdateTaskStatusResult, execute_query_failure_result, execute_query_result,
+    executor_metric::Metric, failed_task, task_status,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use ballista_core::version;
@@ -207,7 +208,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     }
                 }
             }
-            let jobs_to_clean = self
+            let jobs_to_clean: Vec<CleanJobDataParams> = self
                 .state
                 .executor_manager
                 .drain_pending_cleanup_jobs(&executor_id)
@@ -217,6 +218,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     remove_stage_ids,
                 })
                 .collect();
+            let tasks = self
+                .fit_tasks_in_response(&executor_id, tasks, &jobs_to_clean)
+                .await;
             Ok(Response::new(PollWorkResult {
                 tasks,
                 jobs_to_clean,
@@ -936,6 +940,116 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 }
 
+impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
+    /// Keeps as many of `tasks` as fit in one `PollWorkResult` under the
+    /// scheduler's gRPC encoding limit and hands the rest back to their
+    /// stages.
+    ///
+    /// The tasks are already bound (their stages count them as running), so
+    /// a response tonic refuses to encode would leave them running forever and
+    /// hang the job. This happens when many tasks carry large plans, such as
+    /// broadcast readers listing every upstream shuffle location. Returned
+    /// tasks are reported as killed, which re-queues their partitions without
+    /// counting a failure, and are bound again on a later poll.
+    async fn fit_tasks_in_response(
+        &self,
+        executor_id: &str,
+        tasks: Vec<TaskDefinition>,
+        jobs_to_clean: &[CleanJobDataParams],
+    ) -> Vec<TaskDefinition> {
+        let limit = self.state.config.grpc_server_max_encoding_message_size as usize;
+        let (kept, returned) = split_tasks_to_fit(tasks, jobs_to_clean, limit);
+        if returned.is_empty() {
+            return kept;
+        }
+        if kept.is_empty() {
+            // A single task larger than the limit can never be sent: fail its
+            // job with an actionable error instead of retrying forever.
+            let task = &returned[0];
+            let msg = format!(
+                "Task {}/{}/{} encodes to more than the scheduler's gRPC message limit \
+                 of {limit} bytes; raise --grpc-server-max-encoding-message-size on the \
+                 scheduler (and the executor's decoding limit to match)",
+                task.job_id, task.stage_id, task.task_id
+            );
+            error!("{msg}");
+            let job_ids: std::collections::HashSet<String> =
+                returned.iter().map(|t| t.job_id.clone()).collect();
+            for job_id in job_ids {
+                if let Err(e) = self.fail_job(job_id.into(), msg.clone()).await {
+                    error!("Error when failing job: {e:?}");
+                }
+            }
+            return kept;
+        }
+        warn!(
+            "Poll response for executor {executor_id} would exceed the {limit} byte gRPC \
+             limit; sending {} task(s) and returning {} to be rescheduled",
+            kept.len(),
+            returned.len()
+        );
+        let statuses = returned
+            .into_iter()
+            .map(|task| TaskStatus {
+                task_id: task.task_id,
+                job_id: task.job_id,
+                stage_id: task.stage_id,
+                stage_attempt_num: task.stage_attempt_num,
+                launch_time: task.launch_time,
+                start_exec_time: 0,
+                end_exec_time: 0,
+                status: Some(task_status::Status::Failed(FailedTask {
+                    error: "task did not fit in the poll response; rescheduled"
+                        .to_string(),
+                    retryable: true,
+                    count_to_failures: false,
+                    failed_reason: Some(failed_task::FailedReason::TaskKilled(
+                        TaskKilled {},
+                    )),
+                })),
+                metrics: vec![],
+            })
+            .collect();
+        if let Err(e) = self.update_task_status(executor_id, statuses).await {
+            error!(
+                "Failed to reschedule tasks that did not fit in a poll response: {e:?}"
+            );
+        }
+        kept
+    }
+}
+
+/// Splits `tasks` into those that fit, in order, in one `PollWorkResult` of at
+/// most `limit` encoded bytes alongside `jobs_to_clean`, and the rest.
+fn split_tasks_to_fit(
+    tasks: Vec<TaskDefinition>,
+    jobs_to_clean: &[CleanJobDataParams],
+    limit: usize,
+) -> (Vec<TaskDefinition>, Vec<TaskDefinition>) {
+    use prost::Message;
+
+    let mut size = PollWorkResult {
+        tasks: vec![],
+        jobs_to_clean: jobs_to_clean.to_vec(),
+    }
+    .encoded_len();
+    let mut kept = Vec::with_capacity(tasks.len());
+    let mut returned = vec![];
+    for task in tasks {
+        // A repeated message element is its field tag, a length prefix and
+        // the message itself.
+        let len = task.encoded_len();
+        let framed = 1 + prost::length_delimiter_len(len) + len;
+        if returned.is_empty() && size + framed <= limit {
+            size += framed;
+            kept.push(task);
+        } else {
+            returned.push(task);
+        }
+    }
+    (kept, returned)
+}
+
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
@@ -961,8 +1075,9 @@ mod test {
     use ballista_core::serde::protobuf::execute_query_params::Query;
     use ballista_core::serde::protobuf::{
         ExecuteQueryParams, ExecutorMetric, ExecutorRegistration, ExecutorStatus,
-        ExecutorStoppedParams, HeartBeatParams, PollWorkParams, RegisterExecutorParams,
-        execute_query_result, executor_metric, executor_status,
+        ExecutorStoppedParams, HeartBeatParams, PollWorkParams, PollWorkResult,
+        RegisterExecutorParams, TaskDefinition, execute_query_result, executor_metric,
+        executor_status,
     };
     use ballista_core::serde::scheduler::{
         ExecutorOperatingSystemSpecification, ExecutorSpecification,
@@ -974,6 +1089,56 @@ mod test {
     use crate::test_utils::test_cluster_context;
 
     use super::{SchedulerGrpc, SchedulerServer, executor_registration_error};
+
+    fn task_with_plan(task_id: u32, plan_bytes: usize) -> TaskDefinition {
+        TaskDefinition {
+            task_id,
+            job_id: "job".to_string(),
+            plan: vec![7u8; plan_bytes],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn poll_response_keeps_tasks_that_fit_and_returns_the_rest() {
+        use prost::Message;
+
+        let tasks: Vec<_> = (0..8).map(|i| task_with_plan(i, 1000)).collect();
+        let one = PollWorkResult {
+            tasks: vec![tasks[0].clone()],
+            jobs_to_clean: vec![],
+        }
+        .encoded_len();
+        // Room for three tasks but not four.
+        let (kept, returned) = super::split_tasks_to_fit(tasks, &[], one * 3 + 10);
+        assert_eq!(
+            kept.iter().map(|t| t.task_id).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(returned.len(), 5);
+        let encoded = PollWorkResult {
+            tasks: kept,
+            jobs_to_clean: vec![],
+        }
+        .encoded_len();
+        assert!(encoded <= one * 3 + 10, "kept tasks must fit: {encoded}");
+    }
+
+    #[test]
+    fn poll_response_keeps_every_task_under_the_limit() {
+        let tasks: Vec<_> = (0..4).map(|i| task_with_plan(i, 100)).collect();
+        let (kept, returned) = super::split_tasks_to_fit(tasks, &[], 16 * 1024 * 1024);
+        assert_eq!(kept.len(), 4);
+        assert!(returned.is_empty());
+    }
+
+    #[test]
+    fn poll_response_returns_a_task_larger_than_the_limit() {
+        let (kept, returned) =
+            super::split_tasks_to_fit(vec![task_with_plan(0, 2048)], &[], 1024);
+        assert!(kept.is_empty());
+        assert_eq!(returned.len(), 1);
+    }
 
     #[test]
     fn duplicate_executor_registration_maps_to_already_exists() {

@@ -160,6 +160,17 @@ pub const BALLISTA_STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE: &str =
 pub const BALLISTA_NOT_IN_SUBQUERY_REWRITE: &str =
     "ballista.optimizer.not_in_subquery_rewrite";
 
+/// Configuration key controlling whether semi and anti joins are pushed below
+/// inner joins and projections during logical optimization, so they
+/// filter one join input instead of the joined result. Enabled by default.
+pub const BALLISTA_SEMI_JOIN_PUSHDOWN: &str = "ballista.optimizer.semi_join_pushdown";
+
+/// Configuration key controlling whether an inner join against a small,
+/// selectively filtered dimension table also adds a semi join against that
+/// dimension below the joins between it and the table its key comes from.
+/// Enabled by default.
+pub const BALLISTA_SEMI_JOIN_REDUCTION: &str = "ballista.optimizer.semi_join_reduction";
+
 /// Configuration key controlling whether scan files are pruned by statistics
 /// during planning and the surviving files are spread evenly over the scan's
 /// file groups. Enabled by default; set to `false` to leave file groups as
@@ -442,6 +453,24 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          optimization. The rewrite avoids DataFusion's null-aware hash join, \
                          which Ballista must otherwise execute in a single task. Set to false \
                          to keep the null-aware join and its single-task lowering.".to_string(),
+                         DataType::Boolean,
+                         Some("true".to_string())),
+        ConfigEntry::new(BALLISTA_SEMI_JOIN_PUSHDOWN.to_string(),
+                         "Pushes semi and anti joins (from IN, EXISTS and NOT EXISTS subqueries) \
+                         below inner joins and projections during logical optimization, \
+                         onto the join input that holds their keys. The subquery then filters \
+                         that input before it is joined and shuffled, instead of filtering the \
+                         joined result. Set to false to leave semi and anti joins where subquery \
+                         decorrelation placed them.".to_string(),
+                         DataType::Boolean,
+                         Some("true".to_string())),
+        ConfigEntry::new(BALLISTA_SEMI_JOIN_REDUCTION.to_string(),
+                         "For an inner join against a dimension table filtered by equality, IN \
+                         or LIKE predicates on literals (such as a nation or part type), also \
+                         semi-joins the dimension with the table the join key comes from, below \
+                         the other joins in between. The filter then removes rows before they \
+                         are joined and shuffled, like Spark's runtime filters. Set to false to \
+                         apply such filters only at the join that names them.".to_string(),
                          DataType::Boolean,
                          Some("true".to_string())),
         ConfigEntry::new(BALLISTA_BALANCE_SCAN_FILE_GROUPS.to_string(),
@@ -1060,6 +1089,18 @@ impl BallistaConfig {
     /// optimization, avoiding the single-task null-aware hash join.
     pub fn not_in_subquery_rewrite_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_NOT_IN_SUBQUERY_REWRITE)
+    }
+
+    /// Whether semi and anti joins are pushed below inner joins and projections
+    /// during logical optimization.
+    pub fn semi_join_pushdown_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SEMI_JOIN_PUSHDOWN)
+    }
+
+    /// Whether inner joins against selectively filtered dimension tables also
+    /// add a semi join below the joins between the dimension and its key's table.
+    pub fn semi_join_reduction_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SEMI_JOIN_REDUCTION)
     }
 
     /// Whether scan files are pruned by statistics during planning and the

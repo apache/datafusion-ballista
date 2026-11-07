@@ -29,6 +29,7 @@ use crate::scheduler_server::SchedulerServer;
 #[cfg(feature = "keda-scaler")]
 use crate::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
 use arrow_flight::flight_service_server::FlightServiceServer;
+use axum::serve::ListenerExt;
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::error::BallistaError;
 use ballista_core::extension::BallistaConfigGrpcEndpoint;
@@ -42,7 +43,7 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use http::{HeaderName, HeaderValue, StatusCode};
-use log::info;
+use log::{info, warn};
 use std::future::Future;
 use std::time::Duration;
 use std::{net::SocketAddr, sync::Arc};
@@ -257,6 +258,16 @@ pub async fn start_grpc_service_with_listener<
     let final_route =
         with_version_headers(merged).into_make_service_with_connect_info::<SocketAddr>();
 
+    // axum, unlike tonic's own server, leaves Nagle's algorithm on for the
+    // connections it accepts. A poll response is written as several small
+    // HTTP/2 frames, so with Nagle on the later frames wait for the client's
+    // delayed ACK: up to 40 ms per executor poll on Linux, which under pull
+    // scheduling is added to every task launch.
+    let listener = listener.tap_io(|tcp| {
+        if let Err(e) = tcp.set_nodelay(true) {
+            warn!("Failed to set TCP_NODELAY on a scheduler connection: {e}");
+        }
+    });
     axum::serve(listener, final_route)
         .with_graceful_shutdown(async move { shutdown.recv().await })
         .await
