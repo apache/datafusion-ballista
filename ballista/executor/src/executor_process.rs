@@ -215,6 +215,39 @@ fn detect_pool(budget: MemoryBudget) -> ResolvedPool {
     }
 }
 
+/// DataFusion caps spill files at 100 GB per runtime unless told otherwise.
+/// An executor's work dir is usually a volume of its own, so when no limit is
+/// configured, let spills use the space free on it at startup (never less
+/// than DataFusion's default). Large joins and sorts at TPC-H SF1000 spill
+/// more than 100 GB per executor and would otherwise fail with "The used disk
+/// space during the spilling process has exceeded the allowable limit".
+fn default_spill_limit(work_dir: &str) -> Option<u64> {
+    const DATAFUSION_DEFAULT: u64 = 100 * 1024 * 1024 * 1024;
+    let free = free_disk_space(work_dir)?;
+    (free > DATAFUSION_DEFAULT).then_some(free)
+}
+
+/// Bytes available to unprivileged users on the filesystem holding `path`.
+fn free_disk_space(path: &str) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let c_path = std::ffi::CString::new(path).ok()?;
+        // SAFETY: statvfs only writes the struct passed in; c_path is a valid
+        // NUL-terminated string for the duration of the call.
+        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } != 0 {
+            return None;
+        }
+        #[allow(clippy::unnecessary_cast)]
+        Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 /// Raises the process's soft open-file limit to its hard limit.
 ///
 /// A task holds a file per shuffle partition it reads or writes, plus spill
@@ -607,7 +640,10 @@ async fn start_executor_process_inner(
                 Ok(Arc::new(runtime_env))
             })
         });
-    let base_runtime_producer = match opt.max_temp_directory_size {
+    let spill_limit = opt
+        .max_temp_directory_size
+        .or_else(|| default_spill_limit(&work_dir));
+    let base_runtime_producer = match spill_limit {
         Some(size) => {
             info!("Executor spill disk limit: {}", bytesize::ByteSize::b(size));
             with_max_temp_directory_size(base_runtime_producer, size)
@@ -1602,6 +1638,15 @@ mod memory_pool_tests {
     use datafusion::execution::object_store::DefaultObjectStoreRegistry;
     use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
     use std::sync::Arc;
+
+    #[cfg(unix)]
+    #[test]
+    fn free_disk_space_reads_the_work_dir_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let free = super::free_disk_space(dir.path().to_str().unwrap());
+        assert!(free.is_some_and(|b| b > 0), "{free:?}");
+        assert_eq!(super::free_disk_space("/no/such/dir/for/ballista"), None);
+    }
 
     #[test]
     fn observes_per_task_pools_without_changing_their_limits() {
