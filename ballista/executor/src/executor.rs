@@ -365,11 +365,14 @@ impl Executor {
     }
 
     /// Forgets the pipelined outputs of `job_id`, or of just `stage_ids` when
-    /// given, once the scheduler has cleaned the job up.
+    /// given, once the scheduler has cleaned the job up. Removing the whole job
+    /// also drops the state the execution engine keeps for it, such as cached
+    /// broadcast reads.
     pub fn remove_pipelined_job_data(&self, job_id: &JobId, stage_ids: &[u32]) {
         if stage_ids.is_empty() {
             self.pipelined_registry.remove_job(job_id);
             self.pipelined_runtimes.lock().remove(job_id.as_str());
+            self.execution_engine.remove_job(job_id.as_str());
         } else {
             for stage_id in stage_ids {
                 self.pipelined_registry
