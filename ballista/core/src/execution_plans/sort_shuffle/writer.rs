@@ -91,8 +91,8 @@ struct InputPartitionOutput {
     in_memory_stats: Vec<EncodedStats>,
     spill_manager: SpillManager,
     schema: SchemaRef,
-    /// Kept alive so the pool keeps accounting for this input until the
-    /// consolidated write has consumed its buffers.
+    /// Holds `encoded`'s bytes in the pool until the consolidated write has
+    /// consumed them.
     _reservation: MemoryReservation,
 }
 
@@ -116,34 +116,75 @@ struct EncodedPartitions {
 ///
 /// This is the work that used to happen inside each input's own file write.
 /// Doing it here keeps it on the per-input task — parallel across inputs —
-/// and leaves the coordinator with nothing but concatenation. The raw
-/// batches are dropped as soon as the buffers are built, so peak memory
-/// trades uncompressed Arrow rows for smaller encoded bytes rather than
-/// holding both.
+/// and leaves the coordinator with nothing but concatenation.
+///
+/// `reservation`, which holds the buffered rows, grows by each partition's
+/// encoded bytes, and shrinks by each buffered batch the drain frees: a split
+/// buffer frees each once written, a deferred one only when the drain ends.
+/// Once the pool refuses a partition's bytes, they and every later
+/// partition's rows go to the spill files instead. Afterwards `reservation`
+/// holds just the encoded bytes.
 fn encode_buffered_partitions(
     buffered: &mut BufferedBatches,
     schema: &SchemaRef,
     opts: &datafusion::arrow::ipc::writer::IpcWriteOptions,
+    reservation: &MemoryReservation,
+    spill_manager: &mut SpillManager,
 ) -> Result<EncodedPartitions> {
     let num_partitions = buffered.num_partitions();
     let mut encoded = vec![Vec::new(); num_partitions];
     let mut stats = vec![EncodedStats::default(); num_partitions];
+    let frees_batches = buffered.is_split();
+    let free = |batch: &RecordBatch| {
+        if frees_batches {
+            reservation.shrink(batch.get_array_memory_size().min(reservation.size()));
+        }
+    };
+    let spill_error = |e| DataFusionError::Execution(format!("{e:?}"));
+    let mut spilling = false;
 
     // One writer open at a time: each holds its own compression context.
     buffered.drain(|partition, batches| {
+        if spilling {
+            for batch in batches {
+                let batch = batch?;
+                spill_manager
+                    .spill(partition, &batch)
+                    .map_err(spill_error)?;
+                free(&batch);
+            }
+            return Ok(());
+        }
         let mut writer =
             StreamWriter::try_new_with_options(Vec::new(), schema, opts.clone())?;
-        let stat = &mut stats[partition];
+        let mut stat = EncodedStats::default();
         for batch in batches {
             let batch = batch?;
             stat.num_rows += batch.num_rows() as u64;
             stat.num_bytes += batch_used_bytes(&batch) as u64;
             stat.num_batches += 1;
             writer.write(&batch)?;
+            free(&batch);
         }
-        encoded[partition] = writer.into_inner()?;
+        let bytes = writer.into_inner()?;
+        if reservation.try_grow(bytes.capacity()).is_ok() {
+            encoded[partition] = bytes;
+            stats[partition] = stat;
+        } else {
+            spilling = true;
+            spill_manager
+                .spill_encoded(
+                    partition,
+                    &bytes,
+                    stat.num_batches,
+                    stat.num_rows,
+                    stat.num_bytes,
+                )
+                .map_err(spill_error)?;
+        }
         Ok(())
     })?;
+    reservation.resize(encoded.iter().map(Vec::capacity).sum());
 
     Ok(EncodedPartitions { encoded, stats })
 }
@@ -710,6 +751,22 @@ impl SortShuffleWriterExec {
                 }
             }
 
+            // Encode here, on this input's own task, so the interleave/IPC/
+            // compression cost stays parallel across the task's inputs.
+            let opts = create_write_options(compression_type)?;
+            let spilled_before = spill_manager.total_spilled_batches();
+            let EncodedPartitions { encoded, stats } = encode_buffered_partitions(
+                &mut buffered,
+                &schema,
+                &opts,
+                &reservation,
+                &mut spill_manager,
+            )?;
+            if spill_manager.total_spilled_batches() > spilled_before {
+                spill_events += 1;
+                spill_triggers.record(SpillTrigger::MemoryPool);
+            }
+
             // Finish spill writers before the coordinator reads them back while
             // building the task's consolidated file.
             spill_manager
@@ -763,12 +820,6 @@ impl SortShuffleWriterExec {
                     total_bytes_spilled
                 );
             }
-
-            // Encode here, on this input's own task, so the interleave/IPC/
-            // compression cost stays parallel across the task's inputs.
-            let opts = create_write_options(compression_type)?;
-            let EncodedPartitions { encoded, stats } =
-                encode_buffered_partitions(&mut buffered, &schema, &opts)?;
 
             Ok(InputPartitionOutput {
                 encoded,
@@ -2726,6 +2777,154 @@ mod tests {
         assert_eq!(refused.partitions, never_splits.partitions);
         assert_eq!(granted.sorted_rows(), sorted_by_key(&batches));
         Ok(())
+    }
+
+    #[test]
+    fn encoding_spills_the_partitions_the_pool_cannot_hold() -> Result<()> {
+        use datafusion::arrow::array::{AsArray, Int64Array};
+        use datafusion::arrow::datatypes::Int64Type;
+        use datafusion::execution::memory_pool::{GreedyMemoryPool, UnboundedMemoryPool};
+
+        // 4 partitions of 1000 rows each, in 1000-row batches: deferred, or
+        // split into one batch per partition.
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
+        let buffered = |split: bool| -> Result<BufferedBatches> {
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int64Array::from_iter_values(0..4000))],
+            )?;
+            let rows: Vec<Vec<u32>> = (0..4)
+                .map(|p| (p * 1000..(p + 1) * 1000).collect())
+                .collect();
+            let unbounded: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+            let budget = if split { usize::MAX } else { 0 };
+            let mut buffered = BufferedBatches::new(4, 1000, budget);
+            buffered.push_batch(
+                batch,
+                &rows,
+                &MemoryConsumer::new("push").register(&unbounded),
+            )?;
+            assert_eq!(buffered.is_split(), split);
+            Ok(buffered)
+        };
+
+        // Each partition's keys, read back from its in-memory bytes and its
+        // spill file, with (in-memory rows, spilled rows), plus the encoded
+        // buffers' capacities and the bytes left reserved, encoding within a
+        // pool of `pool_bytes` that already holds the buffered rows.
+        let encode = |split: bool, pool_bytes: usize| -> Result<_> {
+            let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(pool_bytes));
+            let reservation = MemoryConsumer::new("writer").register(&pool);
+            let mut buffered = buffered(split)?;
+            reservation.try_resize(buffered.memory_size())?;
+            let dir = TempDir::new()?;
+            let mut spill_manager = SpillManager::new(
+                dir.path().to_str().unwrap(),
+                &"job".into(),
+                1,
+                0,
+                0,
+                schema.clone(),
+                None,
+            )
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            let EncodedPartitions { encoded, stats } = encode_buffered_partitions(
+                &mut buffered,
+                &schema,
+                &create_write_options(None)?,
+                &reservation,
+                &mut spill_manager,
+            )?;
+            spill_manager
+                .finish_writers()
+                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+            let partitions: Vec<(Vec<i64>, (u64, u64))> = (0..4)
+                .map(|p| {
+                    let spilled = spill_manager
+                        .spill_path(p)
+                        .map(|path| std::fs::read(path).unwrap())
+                        .unwrap_or_default();
+                    let keys = [&spilled[..], &encoded[p][..]]
+                        .iter()
+                        .flat_map(|bytes| read_streams(bytes))
+                        .flat_map(|batch| {
+                            batch
+                                .column(0)
+                                .as_primitive::<Int64Type>()
+                                .values()
+                                .to_vec()
+                        })
+                        .collect();
+                    (
+                        keys,
+                        (stats[p].num_rows, spill_manager.partition_stats(p).1),
+                    )
+                })
+                .collect();
+            let capacities: Vec<usize> = encoded.iter().map(Vec::capacity).collect();
+            Ok((partitions, capacities, reservation.size()))
+        };
+        let keys = |p: i64| (p * 1000..(p + 1) * 1000).collect::<Vec<i64>>();
+        let all_encoded: Vec<_> = (0..4).map(|p| (keys(p), (1000, 0))).collect();
+        let only_first_encoded = vec![
+            (keys(0), (1000, 0)),
+            (keys(1), (0, 1000)),
+            (keys(2), (0, 1000)),
+            (keys(3), (0, 1000)),
+        ];
+
+        // With room for everything, every partition is encoded and only the
+        // encoded bytes stay reserved.
+        let (partitions, capacities, reserved) = encode(false, usize::MAX)?;
+        assert_eq!(partitions, all_encoded);
+        assert_eq!(reserved, capacities.iter().sum::<usize>());
+
+        // A deferred buffer holds its rows until the drain ends. With room
+        // for partition 0's bytes only, partition 1's encoded bytes and the
+        // rows of partitions 2 and 3 go to the spill files.
+        let deferred_bytes = buffered(false)?.memory_size();
+        assert_eq!(
+            encode(false, deferred_bytes + capacities[0])?,
+            (
+                only_first_encoded.clone(),
+                vec![capacities[0], 0, 0, 0],
+                capacities[0]
+            )
+        );
+
+        // A split buffer frees each batch once encoded, so partition 0 fits
+        // in the room its batch leaves plus its bytes. Partition 1's bytes
+        // outgrow its batch, so they spill.
+        let mut batch_bytes = vec![];
+        buffered(true)?.drain(|_, batches| {
+            batch_bytes.push(batches.map(|b| b.unwrap().get_array_memory_size()).sum());
+            Ok(())
+        })?;
+        assert!(capacities[1] > batch_bytes[1]);
+        let split_bytes = buffered(true)?.memory_size();
+        assert_eq!(
+            encode(true, split_bytes - batch_bytes[0] + capacities[0])?,
+            (
+                only_first_encoded,
+                vec![capacities[0], 0, 0, 0],
+                capacities[0]
+            )
+        );
+        Ok(())
+    }
+
+    /// Every batch of the Arrow IPC streams concatenated in `bytes`.
+    fn read_streams(bytes: &[u8]) -> Vec<RecordBatch> {
+        use datafusion::arrow::ipc::reader::StreamReader;
+
+        let mut cursor = std::io::Cursor::new(bytes);
+        let mut batches = vec![];
+        while (cursor.position() as usize) < bytes.len() {
+            let reader = StreamReader::try_new(&mut cursor, None).unwrap();
+            batches.extend(reader.map(|batch| batch.unwrap()));
+        }
+        batches
     }
 
     #[test]

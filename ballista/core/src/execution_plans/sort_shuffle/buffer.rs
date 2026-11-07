@@ -122,6 +122,13 @@ impl BufferedBatches {
         }
     }
 
+    /// Returns true if the buffer is split now. A split buffer's drain hands
+    /// over the batches it holds, so each is freed once its consumer drops
+    /// it; a deferred buffer's input batches live until the drain ends.
+    pub fn is_split(&self) -> bool {
+        matches!(self.mode, Mode::Split(_))
+    }
+
     /// Returns true if the buffer has switched to the split layout at any
     /// point, even if it has since gone back to deferred.
     pub fn has_split(&self) -> bool {
