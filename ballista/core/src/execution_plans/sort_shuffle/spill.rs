@@ -39,7 +39,7 @@ use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use datafusion::arrow::record_batch::RecordBatch;
 use log::debug;
 use std::collections::HashMap;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
@@ -163,13 +163,7 @@ impl SpillManager {
         partition_id: usize,
         batches: &mut dyn Iterator<Item = datafusion::error::Result<RecordBatch>>,
     ) -> Result<(u64, u64)> {
-        let path = self.spill_file_path(partition_id);
-        debug!("Spilling partition {partition_id} to {path:?}");
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(BallistaError::IoError)?;
+        let file = self.open_spill_file(partition_id)?;
         let (sink, stats) = write_ipc_stream(
             BufWriter::new(file),
             &self.schema,
@@ -178,12 +172,45 @@ impl SpillManager {
         )?;
         sink.into_inner()
             .map_err(|e| BallistaError::IoError(e.into_error()))?;
+        self.count_spill(partition_id, stats);
 
+        Ok((stats.num_batches, stats.num_bytes))
+    }
+
+    /// Appends `stream` to `partition_id`'s spill file, as [`Self::spill_batches`]
+    /// would for the rows it holds. `stream` must be one complete IPC stream
+    /// written by [`write_ipc_stream`] with this manager's schema and write
+    /// options, and `stats` its counts.
+    pub(super) fn spill_stream(
+        &mut self,
+        partition_id: usize,
+        stream: &[u8],
+        stats: EncodedStats,
+    ) -> Result<()> {
+        self.open_spill_file(partition_id)?
+            .write_all(stream)
+            .map_err(BallistaError::IoError)?;
+        self.count_spill(partition_id, stats);
+        Ok(())
+    }
+
+    /// Opens `partition_id`'s spill file for appending, creating it on the
+    /// partition's first spill.
+    fn open_spill_file(&self, partition_id: usize) -> Result<File> {
+        let path = self.spill_file_path(partition_id);
+        debug!("Spilling partition {partition_id} to {path:?}");
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(BallistaError::IoError)
+    }
+
+    /// Adds one spilled stream's counts to `partition_id` and the totals.
+    fn count_spill(&mut self, partition_id: usize, stats: EncodedStats) {
         *self.partition_counters.entry(partition_id).or_default() += stats;
         self.total_spilled_batches += stats.num_batches;
         self.total_bytes_spilled += stats.num_bytes;
-
-        Ok((stats.num_batches, stats.num_bytes))
     }
 
     /// Returns true if the partition has a spill file.
@@ -301,6 +328,53 @@ mod tests {
         let (_, bytes) =
             manager.spill_batches(partition_id, &mut std::iter::once(Ok(batch)))?;
         Ok(bytes)
+    }
+
+    #[test]
+    fn spill_stream_writes_what_spill_batches_would() -> Result<()> {
+        let temp_dir = TempDir::new().unwrap();
+        let compression = Some(CompressionType::ZSTD);
+        let manager = |input_partition| {
+            SpillManager::new(
+                temp_dir.path().to_str().unwrap(),
+                &"job1".into(),
+                1,
+                0,
+                input_partition,
+                int32_schema(),
+                compression,
+            )
+        };
+        let batches = || {
+            [int32_batch(&[1, 2, 3]), int32_batch(&[4, 5])]
+                .into_iter()
+                .map(Ok)
+        };
+
+        // Two spills each, so the second appends to the first.
+        let mut spilled = manager(0)?;
+        let mut streamed = manager(1)?;
+        for _ in 0..2 {
+            spilled.spill_batches(0, &mut batches())?;
+            let (stream, stats) = write_ipc_stream(
+                Vec::new(),
+                &int32_schema(),
+                &create_write_options(compression)?,
+                &mut batches(),
+            )?;
+            streamed.spill_stream(0, &stream, stats)?;
+        }
+
+        let written = |manager: &SpillManager| -> Result<_> {
+            Ok((
+                std::fs::read(manager.spill_path(0).unwrap())?,
+                manager.partition_stats(0),
+                manager.total_spilled_batches(),
+                manager.total_bytes_spilled(),
+            ))
+        };
+        assert_eq!(written(&streamed)?, written(&spilled)?);
+        Ok(())
     }
 
     #[test]
