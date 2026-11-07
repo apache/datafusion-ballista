@@ -57,7 +57,8 @@ pub(crate) fn two_by_two_input() -> Result<Arc<dyn ExecutionPlan>> {
 }
 
 /// Executes every output partition of `plan` on its own task and returns the
-/// collected batches of each, in partition order.
+/// collected batches of each, in partition order. An error of a partition is
+/// returned as its result; a panic in any task panics the caller.
 pub(crate) async fn drive_partition_results<P: ExecutionPlan + 'static>(
     plan: Arc<P>,
     task_ctx: Arc<TaskContext>,
