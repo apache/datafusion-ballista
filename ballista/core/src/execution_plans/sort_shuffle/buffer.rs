@@ -51,6 +51,7 @@ use datafusion::arrow::compute::{BatchCoalescer, take_record_batch};
 use datafusion::arrow::datatypes::{ByteViewType, DataType, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
+use datafusion::common::utils::memory::RecordBatchMemoryCounter;
 use datafusion::error::Result;
 use datafusion::execution::memory_pool::MemoryReservation;
 use std::sync::Arc;
@@ -546,8 +547,10 @@ impl SplitBuffer {
 #[derive(Debug)]
 struct DeferredBuffer {
     batches: Vec<RecordBatch>,
-    /// Total `get_array_memory_size` of `batches`.
-    batches_bytes: usize,
+    /// Counts each buffer of `batches` once, so zero-copy slices of one array
+    /// (as aggregates emit) are not charged once per slice. Never refunds,
+    /// which holds because `batches` only grows until `drain`.
+    batches_counter: RecordBatchMemoryCounter,
     /// One list per output partition.
     indices: Vec<Vec<(u32, u32)>>,
     /// Total allocated capacity of `indices`, in bytes.
@@ -562,7 +565,7 @@ impl DeferredBuffer {
     fn new(num_partitions: usize) -> Self {
         Self {
             batches: Vec::new(),
-            batches_bytes: 0,
+            batches_counter: RecordBatchMemoryCounter::new(),
             indices: vec![Vec::new(); num_partitions],
             indices_bytes: 0,
             rows: 0,
@@ -572,7 +575,7 @@ impl DeferredBuffer {
 
     /// Input batches plus the allocated capacity of the index lists.
     fn memory_size(&self) -> usize {
-        self.batches_bytes + self.indices_bytes
+        self.batches_counter.memory_usage() + self.indices_bytes
     }
 
     /// Buffers `batch`, adding to `used_bytes` if `measure`.
@@ -589,7 +592,7 @@ impl DeferredBuffer {
             self.indices_bytes += (partition_indices.capacity() - capacity_before)
                 * size_of::<(u32, u32)>();
         }
-        self.batches_bytes += batch.get_array_memory_size();
+        self.batches_counter.count_batch(&batch);
         self.rows += batch.num_rows();
         if measure {
             self.used_bytes += batch_used_bytes(&batch);
@@ -605,7 +608,7 @@ impl DeferredBuffer {
         batch_size: usize,
         mut f: impl FnMut(usize, &mut dyn Iterator<Item = Result<RecordBatch>>) -> Result<()>,
     ) -> Result<()> {
-        self.batches_bytes = 0;
+        self.batches_counter = RecordBatchMemoryCounter::new();
         self.indices_bytes = 0;
         self.rows = 0;
         self.used_bytes = 0;
@@ -631,6 +634,7 @@ mod tests {
         Int32Array, ListBuilder, StringBuilder, StringViewArray, StructArray,
     };
     use datafusion::arrow::datatypes::{Field, Schema};
+    use datafusion::common::utils::memory::get_record_batch_memory_size;
     use datafusion::execution::memory_pool::{
         GreedyMemoryPool, MemoryConsumer, MemoryPool, UnboundedMemoryPool,
     };
@@ -1141,27 +1145,53 @@ mod tests {
         assert_eq!(allocated, vec![1024 * 100; 40]);
     }
 
+    /// The index lists of a deferred buffer.
+    fn indices(bb: &BufferedBatches) -> &[Vec<(u32, u32)>] {
+        match &bb.mode {
+            Mode::Deciding(b) | Mode::Deferred { buffer: b, .. } => &b.indices,
+            Mode::Split(_) => panic!("expected the deferred layout"),
+        }
+    }
+
+    /// The allocated capacity of a deferred buffer's index lists, in bytes.
+    fn index_bytes(bb: &BufferedBatches) -> usize {
+        indices(bb)
+            .iter()
+            .map(|v| v.capacity() * size_of::<(u32, u32)>())
+            .sum()
+    }
+
+    #[test]
+    fn deferred_memory_size_counts_buffers_shared_by_slices_once() {
+        let whole = batch((0..8192).collect());
+        let whole_bytes = get_record_batch_memory_size(&whole);
+        let mut bb = BufferedBatches::new(1, 8, 0);
+        for i in 0..8 {
+            bb.push(whole.slice(i * 1024, 1024), &[vec![0]]).unwrap();
+        }
+        assert_eq!(
+            bb.memory_size(),
+            whole_bytes + index_bytes(&bb),
+            "eight slices of one array hold that array's buffers once"
+        );
+        drain(&mut bb);
+        assert_eq!(bb.memory_size(), 0);
+        bb.push(whole.slice(0, 1024), &[vec![0]]).unwrap();
+        assert_eq!(
+            bb.memory_size(),
+            whole_bytes + index_bytes(&bb),
+            "a drained buffer counts the shared buffers again"
+        );
+    }
+
     #[test]
     fn deferred_memory_size_counts_batches_and_index_capacity() {
-        fn indices(bb: &BufferedBatches) -> &[Vec<(u32, u32)>] {
-            match &bb.mode {
-                Mode::Deciding(b) | Mode::Deferred { buffer: b, .. } => &b.indices,
-                Mode::Split(_) => panic!("expected the deferred layout"),
-            }
-        }
-        fn index_bytes(bb: &BufferedBatches) -> usize {
-            indices(bb)
-                .iter()
-                .map(|v| v.capacity() * size_of::<(u32, u32)>())
-                .sum()
-        }
-
         // A zero budget keeps the buffer deferred.
         let mut bb = BufferedBatches::new(2, 8, 0);
         assert_eq!(bb.memory_size(), 0);
 
         let first = batch(vec![1, 2, 3]);
-        let mut batch_bytes = first.get_array_memory_size();
+        let mut batch_bytes = get_record_batch_memory_size(&first);
         bb.push(first, &[vec![0, 2], vec![1]]).unwrap();
         assert_eq!(bb.memory_size(), batch_bytes + index_bytes(&bb));
 
@@ -1169,7 +1199,7 @@ mod tests {
         // running total must follow a reallocation.
         let capacity_before = indices(&bb)[0].capacity();
         let second = batch((0..8).collect());
-        batch_bytes += second.get_array_memory_size();
+        batch_bytes += get_record_batch_memory_size(&second);
         bb.push(second, &[(0..8).collect(), vec![]]).unwrap();
         assert!(indices(&bb)[0].capacity() > capacity_before);
         assert_eq!(bb.memory_size(), batch_bytes + index_bytes(&bb));

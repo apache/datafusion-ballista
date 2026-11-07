@@ -2746,9 +2746,9 @@ mod tests {
     async fn stays_deferred_when_the_pool_refuses_the_switch() -> Result<()> {
         // Splitting 66000 rows over 8 partitions takes 10.8 MiB of partly
         // filled batches, within the budget a 1 GiB pool allows. A pool that
-        // grants only 16 MiB holds the deferred rows but not both layouts at
-        // once, so the input stays deferred and writes what a writer that
-        // never splits does.
+        // grants only 12 MiB holds the 4 MiB of deferred rows but not both
+        // layouts at once, so the input stays deferred and writes what a
+        // writer that never splits does.
         let batches = key_and_string_batches(3, 22000);
         let granted = write_and_read_partitions(
             batches.clone(),
@@ -2761,7 +2761,7 @@ mod tests {
             batches.clone(),
             8,
             256 << 20,
-            Some(overcommitted_pool(1 << 30, 16 << 20)),
+            Some(overcommitted_pool(1 << 30, 12 << 20)),
         )
         .await?;
         let never_splits = write_and_read_partitions_with(

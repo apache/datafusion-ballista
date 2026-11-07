@@ -42,7 +42,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-mod aqe;
+pub(crate) mod aqe;
 /// Extension points for adaptive query planning: rules of your own, and the
 /// stage boundaries they act on.
 pub mod adaptive {
