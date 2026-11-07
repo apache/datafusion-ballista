@@ -2382,20 +2382,20 @@ mod tests {
     }
 
     /// Writes `batches` as one input partition into `num_partitions` output
-    /// partitions, with a `memory_limit_per_task_bytes` budget and, if set, a
-    /// `FairSpillPool` of `pool_bytes`, and reads every partition back.
+    /// partitions, with a `memory_limit_per_task_bytes` budget and, if set,
+    /// `pool`, and reads every partition back.
     async fn write_and_read_partitions(
         batches: Vec<RecordBatch>,
         num_partitions: usize,
         memory_limit_per_task_bytes: usize,
-        pool_bytes: Option<usize>,
+        pool: Option<Arc<dyn MemoryPool>>,
     ) -> Result<LayoutRun> {
         write_and_read_partitions_with(
             batches,
             num_partitions,
             SortShuffleConfig::default()
                 .with_memory_limit_per_task_bytes(memory_limit_per_task_bytes),
-            pool_bytes,
+            pool,
         )
         .await
     }
@@ -2405,12 +2405,11 @@ mod tests {
         batches: Vec<RecordBatch>,
         num_partitions: usize,
         config: SortShuffleConfig,
-        pool_bytes: Option<usize>,
+        pool: Option<Arc<dyn MemoryPool>>,
     ) -> Result<LayoutRun> {
         use super::super::reader::stream_sort_shuffle_partition;
         use datafusion::arrow::array::{AsArray, StructArray};
         use datafusion::arrow::datatypes::UInt64Type;
-        use datafusion::execution::memory_pool::FairSpillPool;
         use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
         let schema = batches[0].schema();
@@ -2427,8 +2426,8 @@ mod tests {
             config,
         )?;
         let mut runtime = RuntimeEnvBuilder::new();
-        if let Some(pool_bytes) = pool_bytes {
-            runtime = runtime.with_memory_pool(Arc::new(FairSpillPool::new(pool_bytes)));
+        if let Some(pool) = pool {
+            runtime = runtime.with_memory_pool(pool);
         }
         let ctx = SessionContext::new_with_config_rt(
             datafusion::execution::config::SessionConfig::new(),
@@ -2570,16 +2569,20 @@ mod tests {
         // 8192-row batches, so the writer stays deferred and writes exactly
         // what a writer that never splits does, spills included.
         let batches = key_and_string_batches(20, 8192);
-        let run =
-            write_and_read_partitions(batches.clone(), 64, 256 << 20, Some(4 << 20))
-                .await?;
+        let run = write_and_read_partitions(
+            batches.clone(),
+            64,
+            256 << 20,
+            Some(fair_pool(4 << 20)),
+        )
+        .await?;
         let never_splits = write_and_read_partitions_with(
             batches.clone(),
             64,
             SortShuffleConfig::default()
                 .with_memory_limit_per_task_bytes(256 << 20)
                 .with_split_on_arrival_max_bytes(0),
-            Some(4 << 20),
+            Some(fair_pool(4 << 20)),
         )
         .await?;
 
@@ -2589,6 +2592,101 @@ mod tests {
             (never_splits.spill_count, &never_splits.partitions)
         );
         assert_eq!(run.sorted_rows(), sorted_by_key(&batches));
+        Ok(())
+    }
+
+    fn fair_pool(bytes: usize) -> Arc<dyn MemoryPool> {
+        Arc::new(datafusion::execution::memory_pool::FairSpillPool::new(
+            bytes,
+        ))
+    }
+
+    /// A pool that advertises `advertised` bytes but grants only `granted`,
+    /// as a pool looks to a task once other tasks have claimed memory since
+    /// the task measured it.
+    #[derive(Debug)]
+    struct OvercommittedPool {
+        advertised: usize,
+        granted: datafusion::execution::memory_pool::GreedyMemoryPool,
+    }
+
+    fn overcommitted_pool(advertised: usize, granted: usize) -> Arc<dyn MemoryPool> {
+        Arc::new(OvercommittedPool {
+            advertised,
+            granted: datafusion::execution::memory_pool::GreedyMemoryPool::new(granted),
+        })
+    }
+
+    impl std::fmt::Display for OvercommittedPool {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "OvercommittedPool")
+        }
+    }
+
+    impl MemoryPool for OvercommittedPool {
+        fn name(&self) -> &str {
+            "OvercommittedPool"
+        }
+
+        fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+            self.granted.grow(reservation, additional)
+        }
+
+        fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+            self.granted.shrink(reservation, shrink)
+        }
+
+        fn try_grow(
+            &self,
+            reservation: &MemoryReservation,
+            additional: usize,
+        ) -> Result<()> {
+            self.granted.try_grow(reservation, additional)
+        }
+
+        fn reserved(&self) -> usize {
+            self.granted.reserved()
+        }
+
+        fn memory_limit(&self) -> MemoryLimit {
+            MemoryLimit::Finite(self.advertised)
+        }
+    }
+
+    #[tokio::test]
+    async fn stays_deferred_when_the_pool_refuses_the_switch() -> Result<()> {
+        // Splitting 66000 rows over 8 partitions takes 10.8 MiB of partly
+        // filled batches, within the budget a 1 GiB pool allows. A pool that
+        // grants only 16 MiB holds the deferred rows but not both layouts at
+        // once, so the input stays deferred and writes what a writer that
+        // never splits does.
+        let batches = key_and_string_batches(3, 22000);
+        let granted = write_and_read_partitions(
+            batches.clone(),
+            8,
+            256 << 20,
+            Some(overcommitted_pool(1 << 30, 1 << 30)),
+        )
+        .await?;
+        let refused = write_and_read_partitions(
+            batches.clone(),
+            8,
+            256 << 20,
+            Some(overcommitted_pool(1 << 30, 16 << 20)),
+        )
+        .await?;
+        let never_splits = write_and_read_partitions_with(
+            batches.clone(),
+            8,
+            SortShuffleConfig::default().with_split_on_arrival_max_bytes(0),
+            None,
+        )
+        .await?;
+
+        assert_eq!((granted.split_inputs, granted.spill_count), (1, 0));
+        assert_eq!((refused.split_inputs, refused.spill_count), (0, 0));
+        assert_eq!(refused.partitions, never_splits.partitions);
+        assert_eq!(granted.sorted_rows(), sorted_by_key(&batches));
         Ok(())
     }
 
