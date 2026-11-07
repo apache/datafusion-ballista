@@ -97,11 +97,19 @@ impl BufferedBatches {
         self.num_partitions
     }
 
-    /// Returns true if rows are currently split into per-partition batches
-    /// as they arrive, false if they are gathered at write time.
+    /// Names the current layout.
     #[cfg(test)]
-    pub fn splits_on_arrival(&self) -> bool {
-        matches!(self.mode, Mode::Split(_))
+    fn layout(&self) -> &'static str {
+        match self.mode {
+            Mode::Deciding(_) => "deciding",
+            Mode::Split(_) => "split",
+            Mode::Deferred {
+                after_split: false, ..
+            } => "deferred",
+            Mode::Deferred {
+                after_split: true, ..
+            } => "deferred after split",
+        }
     }
 
     /// Returns true if the buffer has switched to the split layout at any
@@ -652,7 +660,7 @@ mod tests {
             &[vec![4, 1, 3], vec![], vec![5, 0, 2]],
         )
         .unwrap();
-        assert!(bb.splits_on_arrival());
+        assert_eq!(bb.layout(), "split");
         bb.push(ints(vec![6, 7]), &[vec![], vec![1], vec![0]])
             .unwrap();
         assert_eq!(
@@ -684,7 +692,7 @@ mod tests {
             &[vec![0, 1], vec![2, 3]],
         )
         .unwrap();
-        assert!(bb.splits_on_arrival());
+        assert_eq!(bb.layout(), "split");
         assert_eq!(
             drain(&mut bb),
             vec![
@@ -705,22 +713,22 @@ mod tests {
         let switch_bytes =
             deferred.memory_size() + 2 * 2 * ROW_BYTES + 2 * VIEW_BLOCK_BYTES;
 
-        for (pool_bytes, splits, reserved) in [
-            (switch_bytes, true, switch_bytes),
-            (switch_bytes - 1, false, 0),
+        for (pool_bytes, layout, reserved) in [
+            (switch_bytes, "split", switch_bytes),
+            (switch_bytes - 1, "deferred", 0),
         ] {
             let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(pool_bytes));
             let reservation = reservation(pool);
             let mut bb = BufferedBatches::new(2, 2, usize::MAX);
             bb.push_batch(input(), &rows, &reservation).unwrap();
             assert_eq!(
-                (bb.splits_on_arrival(), bb.has_split(), reservation.size()),
-                (splits, splits, reserved),
+                (bb.layout(), reservation.size()),
+                (layout, reserved),
                 "pool {pool_bytes}"
             );
             // A refused switch stays deferred for good.
             bb.push_batch(input(), &rows, &reservation).unwrap();
-            assert_eq!(bb.splits_on_arrival(), splits, "pool {pool_bytes}");
+            assert_eq!(bb.layout(), layout, "pool {pool_bytes}");
         }
     }
 
@@ -729,10 +737,10 @@ mod tests {
         let mut bb = BufferedBatches::new(1, 64, usize::MAX);
         bb.push(ints((0..64).collect()), &[(0..64).collect()])
             .unwrap();
-        assert!(bb.splits_on_arrival());
+        assert_eq!(bb.layout(), "split");
         assert_eq!(drain(&mut bb), vec![(0, ints((0..64).collect()))]);
         // Still split with nothing buffered: 64 four-byte ints reserved.
-        assert!(bb.splits_on_arrival());
+        assert_eq!(bb.layout(), "split");
         assert_eq!(bb.memory_size(), 64 * 4);
     }
 
@@ -776,14 +784,15 @@ mod tests {
         // 2 partitions of 2-row batches: 4 rows plus a string block per
         // partition.
         let fits = 2 * 2 * ROW_BYTES + 2 * VIEW_BLOCK_BYTES;
-        for (budget, splits) in [(fits, true), (fits - 1, false), (0, false)] {
+        for (budget, layout) in [(fits, "split"), (fits - 1, "deferred"), (0, "deferred")]
+        {
             let mut bb = BufferedBatches::new(2, 2, budget);
             bb.push(batch(vec![10, 20, 30, 40]), &[vec![0, 2], vec![3, 1]])
                 .unwrap();
-            assert_eq!(bb.splits_on_arrival(), splits, "budget {budget}");
+            assert_eq!(bb.layout(), layout, "budget {budget}");
             bb.push(batch(vec![50, 60, 70]), &[vec![0], vec![1, 2]])
                 .unwrap();
-            assert_eq!(bb.splits_on_arrival(), splits, "budget {budget}");
+            assert_eq!(bb.layout(), layout, "budget {budget}");
 
             // Either layout writes the same batches.
             assert_eq!(
@@ -804,7 +813,7 @@ mod tests {
         let mut bb = BufferedBatches::new(2, 2, 2 * 2 * 20);
         bb.push(inline_batch(vec![1, 2, 3, 4]), &[vec![0, 1], vec![2, 3]])
             .unwrap();
-        assert!(bb.splits_on_arrival());
+        assert_eq!(bb.layout(), "split");
         assert_eq!(
             drain(&mut bb),
             vec![(0, inline_batch(vec![1, 2])), (1, inline_batch(vec![3, 4]))]
@@ -817,7 +826,7 @@ mod tests {
         // 7 of the 8 rows that would fill a batch per partition.
         bb.push(batch((0..7).collect()), &[vec![0, 1, 2], vec![3, 4, 5, 6]])
             .unwrap();
-        assert!(!bb.splits_on_arrival());
+        assert_eq!(bb.layout(), "deciding");
         assert_eq!(
             drain(&mut bb),
             vec![(0, batch(vec![0, 1, 2])), (1, batch(vec![3, 4, 5, 6]))]
@@ -831,15 +840,9 @@ mod tests {
         let mut bb = BufferedBatches::new(2, 4, 3 * ROW_BYTES);
         bb.push(batch(vec![0, 1, 2]), &[vec![0], vec![1, 2]])
             .unwrap();
-        assert!(matches!(bb.mode, Mode::Deciding(_)));
+        assert_eq!(bb.layout(), "deciding");
         bb.push(batch(vec![3]), &[vec![0], vec![]]).unwrap();
-        assert!(matches!(
-            bb.mode,
-            Mode::Deferred {
-                after_split: false,
-                ..
-            }
-        ));
+        assert_eq!(bb.layout(), "deferred");
         assert_eq!(
             drain(&mut bb),
             vec![(0, batch(vec![0, 3])), (1, batch(vec![1, 2]))]
@@ -855,7 +858,7 @@ mod tests {
             &[vec![0, 1, 2], vec![3, 4, 5, 6, 7]],
         )
         .unwrap();
-        assert!(bb.splits_on_arrival());
+        assert_eq!(bb.layout(), "split");
         assert_eq!(
             drain(&mut bb),
             vec![
@@ -864,7 +867,7 @@ mod tests {
                 (1, batch(vec![7])),
             ]
         );
-        assert!(!bb.splits_on_arrival());
+        assert_eq!(bb.layout(), "deferred after split");
 
         // For good, however many rows arrive.
         bb.push(
@@ -872,7 +875,7 @@ mod tests {
             &[(0..8).collect(), (8..16).collect()],
         )
         .unwrap();
-        assert!(!bb.splits_on_arrival());
+        assert_eq!(bb.layout(), "deferred after split");
     }
 
     #[test]
@@ -880,7 +883,7 @@ mod tests {
         let mut bb = BufferedBatches::new(1, 2, usize::MAX);
         bb.push(ints((0..9).collect()), &[(0..9).collect()])
             .unwrap();
-        assert!(bb.splits_on_arrival());
+        assert_eq!(bb.layout(), "split");
         assert_eq!(
             drain(&mut bb),
             vec![
@@ -891,7 +894,7 @@ mod tests {
                 (0, ints(vec![8])),
             ]
         );
-        assert!(bb.splits_on_arrival());
+        assert_eq!(bb.layout(), "split");
     }
 
     #[test]
@@ -900,7 +903,7 @@ mod tests {
             let mut bb = BufferedBatches::new(2, 8, budget);
             let rest: Vec<u32> = (0..50).filter(|&r| r != 7).collect();
             bb.push(batch((0..50).collect()), &[vec![7], rest]).unwrap();
-            assert_eq!(bb.splits_on_arrival(), budget > 0);
+            assert_eq!(bb.layout(), if budget > 0 { "split" } else { "deferred" });
 
             // Row 7's batch keeps only its own 32-byte string.
             let (partition, row_7) = drain(&mut bb).remove(0);

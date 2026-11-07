@@ -2583,12 +2583,11 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(run.split_inputs, 0);
+        assert_eq!((run.split_inputs, run.spill_count), (0, 2));
         assert_eq!(
             (run.spill_count, &run.partitions),
             (never_splits.spill_count, &never_splits.partitions)
         );
-        assert_ne!(run.spill_count, 0, "expected the pool to force spills");
         assert_eq!(run.sorted_rows(), sorted_by_key(&batches));
         Ok(())
     }
