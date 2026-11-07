@@ -215,6 +215,50 @@ fn detect_pool(budget: MemoryBudget) -> ResolvedPool {
     }
 }
 
+/// Raises the process's soft open-file limit to its hard limit, capped at
+/// about a million descriptors.
+///
+/// A task holds a file per shuffle partition it reads or writes, plus spill
+/// files, so a stage with a few hundred partitions needs thousands of
+/// descriptors, and many systems start processes with a soft limit of 1024.
+///
+/// This changes process-wide state, so [`start_executor_process`] does not
+/// call it: the executor binary does, and an embedder that wants the same
+/// behaviour calls it before starting the executor.
+pub fn raise_open_file_limit() {
+    #[cfg(unix)]
+    {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit/setrlimit only read and write the struct passed in.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+            return;
+        }
+        let before = limit.rlim_cur;
+        // macOS rejects a soft limit above OPEN_MAX (<sys/syslimits.h>) even
+        // when the hard limit is unlimited. Elsewhere the cap keeps a
+        // container's billion-descriptor hard limit from making every
+        // close-all-descriptors loop in a child process crawl.
+        #[cfg(target_os = "macos")]
+        const MAX_SOFT_LIMIT: libc::rlim_t = 10240;
+        #[cfg(not(target_os = "macos"))]
+        const MAX_SOFT_LIMIT: libc::rlim_t = 1 << 20;
+        let target = limit.rlim_max.min(MAX_SOFT_LIMIT);
+        if target <= before {
+            return;
+        }
+        limit.rlim_cur = target;
+        // SAFETY: as above.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } == 0 {
+            info!("Raised the open file limit from {before} to {target}");
+        } else {
+            warn!("Could not raise the open file limit from {before} to {target}");
+        }
+    }
+}
+
 /// How many of a task's largest memory consumers a `ResourcesExhausted` error
 /// lists. Matches DataFusion's default for `RuntimeEnvBuilder::with_memory_limit`.
 const TOP_MEMORY_CONSUMERS: NonZeroUsize = NonZeroUsize::new(5).unwrap();
@@ -1932,5 +1976,28 @@ mod spill_limit_tests {
             &runtime.object_store_registry,
             &base.object_store_registry
         ));
+    }
+}
+
+#[cfg(test)]
+mod open_file_limit_tests {
+    #[cfg(unix)]
+    #[test]
+    fn raising_the_open_file_limit_never_lowers_it() {
+        fn soft_limit() -> libc::rlim_t {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: getrlimit only writes the struct passed in.
+            assert_eq!(
+                unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+                0
+            );
+            limit.rlim_cur
+        }
+        let before = soft_limit();
+        super::raise_open_file_limit();
+        assert!(soft_limit() >= before);
     }
 }
