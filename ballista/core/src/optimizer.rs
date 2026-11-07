@@ -25,6 +25,14 @@
 //! Ballista to execute it in a single task (see the discussion on
 //! <https://github.com/apache/datafusion-ballista/issues/2198>). The rewritten
 //! plan uses only ordinary joins and aggregates and distributes normally.
+//!
+//! [`SemiJoinPushdown`] moves semi and anti joins below the inner joins they
+//! were decorrelated above, so a subquery filters one join input instead of
+//! the joined result.
+
+mod semi_join_pushdown;
+
+pub use semi_join_pushdown::SemiJoinPushdown;
 
 use std::sync::Arc;
 
@@ -42,26 +50,37 @@ use datafusion::prelude::lit;
 
 use crate::config::BallistaConfig;
 
-/// Returns `existing` with Ballista's logical optimizer rules prepended.
+/// Returns `existing` with Ballista's logical optimizer rules added.
 ///
-/// [`NotInSubqueryRewrite`] must run before DataFusion's
+/// [`NotInSubqueryRewrite`] is prepended: it must run before DataFusion's
 /// `DecorrelatePredicateSubquery`, which would otherwise turn eligible `NOT IN`
-/// predicates into null-aware anti joins first. A rule with the same name in
+/// predicates into null-aware anti joins first. [`SemiJoinPushdown`] is
+/// appended, so it runs on the decorrelated joins. A rule with the same name in
 /// `existing` is dropped so repeated session upgrades stay idempotent.
 pub fn with_ballista_optimizer_rules(
     existing: &[Arc<dyn OptimizerRule + Send + Sync>],
 ) -> Vec<Arc<dyn OptimizerRule + Send + Sync>> {
-    let ballista_rule = NotInSubqueryRewrite::new();
+    let first: Arc<dyn OptimizerRule + Send + Sync> =
+        Arc::new(NotInSubqueryRewrite::new());
+    // Runs after DataFusion's rules in each pass, so it sees decorrelated
+    // semi joins whose filters have already been pushed down.
+    let last: Arc<dyn OptimizerRule + Send + Sync> = Arc::new(SemiJoinPushdown::new());
+    let names = [first.name().to_owned(), last.name().to_owned()];
     let mut rules: Vec<Arc<dyn OptimizerRule + Send + Sync>> =
-        Vec::with_capacity(existing.len() + 1);
-    let name = ballista_rule.name().to_owned();
-    rules.push(Arc::new(ballista_rule));
-    rules.extend(existing.iter().filter(|rule| rule.name() != name).cloned());
+        Vec::with_capacity(existing.len() + 2);
+    rules.push(first);
+    rules.extend(
+        existing
+            .iter()
+            .filter(|rule| !names.iter().any(|n| n == rule.name()))
+            .cloned(),
+    );
+    rules.push(last);
     rules
 }
 
 /// Returns DataFusion's default logical optimizer rules with Ballista's rules
-/// prepended. Used by every Ballista session builder.
+/// added. Used by every Ballista session builder.
 pub fn ballista_default_optimizer_rules() -> Vec<Arc<dyn OptimizerRule + Send + Sync>> {
     with_ballista_optimizer_rules(&datafusion::optimizer::Optimizer::default().rules)
 }

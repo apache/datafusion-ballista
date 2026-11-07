@@ -160,6 +160,11 @@ pub const BALLISTA_STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE: &str =
 pub const BALLISTA_NOT_IN_SUBQUERY_REWRITE: &str =
     "ballista.optimizer.not_in_subquery_rewrite";
 
+/// Configuration key controlling whether semi and anti joins are pushed below
+/// inner joins, projections and filters during logical optimization, so they
+/// filter one join input instead of the joined result. Enabled by default.
+pub const BALLISTA_SEMI_JOIN_PUSHDOWN: &str = "ballista.optimizer.semi_join_pushdown";
+
 /// Configuration key controlling whether scan files are pruned by statistics
 /// during planning and the surviving files are spread evenly over the scan's
 /// file groups. Enabled by default; set to `false` to leave file groups as
@@ -442,6 +447,15 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          optimization. The rewrite avoids DataFusion's null-aware hash join, \
                          which Ballista must otherwise execute in a single task. Set to false \
                          to keep the null-aware join and its single-task lowering.".to_string(),
+                         DataType::Boolean,
+                         Some("true".to_string())),
+        ConfigEntry::new(BALLISTA_SEMI_JOIN_PUSHDOWN.to_string(),
+                         "Pushes semi and anti joins (from IN, EXISTS and NOT EXISTS subqueries) \
+                         below inner joins, projections and filters during logical optimization, \
+                         onto the join input that holds their keys. The subquery then filters \
+                         that input before it is joined and shuffled, instead of filtering the \
+                         joined result. Set to false to leave semi and anti joins where subquery \
+                         decorrelation placed them.".to_string(),
                          DataType::Boolean,
                          Some("true".to_string())),
         ConfigEntry::new(BALLISTA_BALANCE_SCAN_FILE_GROUPS.to_string(),
@@ -1060,6 +1074,12 @@ impl BallistaConfig {
     /// optimization, avoiding the single-task null-aware hash join.
     pub fn not_in_subquery_rewrite_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_NOT_IN_SUBQUERY_REWRITE)
+    }
+
+    /// Whether semi and anti joins are pushed below inner joins, projections
+    /// and filters during logical optimization.
+    pub fn semi_join_pushdown_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SEMI_JOIN_PUSHDOWN)
     }
 
     /// Whether scan files are pruned by statistics during planning and the
