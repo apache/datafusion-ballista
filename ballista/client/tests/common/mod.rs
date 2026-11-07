@@ -438,8 +438,9 @@ pub fn write_parquet_file(path: &Path, batch: &RecordBatch) {
     writer.close().unwrap();
 }
 
-/// Runs `SET key = 'value'`.
+/// Runs `SET key = 'value'`, with any single quote in `value` escaped.
 pub async fn set_option(ctx: &SessionContext, key: &str, value: &str) {
+    let value = value.replace('\'', "''");
     ctx.sql(&format!("SET {key} = '{value}'"))
         .await
         .unwrap()
