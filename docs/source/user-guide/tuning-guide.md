@@ -274,6 +274,21 @@ sooner, or raise it to keep more data in memory and reduce spill I/O. Setting it
 to `0` removes the budget entirely and is safe only with a bounded memory pool
 (see the warning above).
 
+When memory allows, the writer instead splits each batch's rows by partition as
+it arrives, which is faster than gathering them at spill or write time but
+holds a partly filled batch for every output partition. It does so only if
+every column is a primitive, `Utf8View` or `BinaryView` type, and those
+batches fit within `split_on_arrival_max_bytes` (64 MiB by default), a
+quarter of the per-task budget and a quarter of the input's share of the pool's
+free memory. Raise it, together with the per-task budget, to let wider rows or
+more partitions split; set it to `0` to never split.
+
+Whatever `split_on_arrival_max_bytes` is set to, the partition sizes the writer
+reports to AQE, and its `spill_bytes` metric, count the bytes rows use rather
+than the memory allocated for them, so they can be smaller than in earlier
+releases. If you tuned `ballista.optimizer.broadcast_join_threshold_bytes`
+against the old sizes, check it again.
+
 The following session-level keys tune its behavior:
 
 <!-- BEGIN GENERATED CONFIG REFERENCE prefix=ballista.shuffle.sort_based. -->
@@ -283,6 +298,7 @@ The following session-level keys tune its behavior:
 | ------------------------------------------------------- | ------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ballista.shuffle.sort_based.batch_size                  | UInt64 | 8192      | Target batch size in rows for coalescing small batches in sort shuffle                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64 | 268435456 | Per-task buffered-bytes budget at which the sort shuffle writer spills its in-memory batches to disk. Counted independently of the runtime memory pool, so spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle memory per executor is approximately vcores * this value. Set to 0 to disable the per-task budget and rely solely on runtime memory-pool pressure to trigger spilling; this is safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory. |
+| ballista.shuffle.sort_based.split_on_arrival_max_bytes  | UInt64 | 67108864  | Most memory an input's partly filled batches may take for the sort shuffle writer to split rows by partition as they arrive, which is faster than gathering them at spill or write time. Applies only when every column is a primitive, Utf8View or BinaryView type. The writer also keeps it to a quarter of memory_limit_per_task_bytes and of the input's share of the pool's free memory, so raising it past 64 MiB needs a larger per-task budget too. Set to 0 to never split.                                          |
 
 <!-- END GENERATED CONFIG REFERENCE -->
 

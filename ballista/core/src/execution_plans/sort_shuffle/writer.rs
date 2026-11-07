@@ -36,7 +36,7 @@ use super::super::shuffle_writer::{
     ColumnStatsCollector, handoff_stream, sketched_columns, take_handoff,
 };
 use super::super::shuffle_writer_trait::ShuffleWriter;
-use super::buffer::BufferedBatches;
+use super::buffer::{BufferedBatches, batch_used_bytes, can_split};
 use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
 use super::spill::SpillManager;
@@ -54,7 +54,9 @@ use datafusion::common::internal_err;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
-use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
+use datafusion::execution::memory_pool::{
+    MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation,
+};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::utils::evaluate_expressions_to_arrays;
 use datafusion::physical_plan::metrics::{
@@ -89,8 +91,8 @@ struct InputPartitionOutput {
     in_memory_stats: Vec<EncodedStats>,
     spill_manager: SpillManager,
     schema: SchemaRef,
-    /// Kept alive so the pool keeps accounting for this input until the
-    /// consolidated write has consumed its buffers.
+    /// Holds `encoded`'s bytes in the pool until the consolidated write has
+    /// consumed them.
     _reservation: MemoryReservation,
 }
 
@@ -114,34 +116,75 @@ struct EncodedPartitions {
 ///
 /// This is the work that used to happen inside each input's own file write.
 /// Doing it here keeps it on the per-input task — parallel across inputs —
-/// and leaves the coordinator with nothing but concatenation. The raw
-/// batches are dropped as soon as the buffers are built, so peak memory
-/// trades uncompressed Arrow rows for smaller encoded bytes rather than
-/// holding both.
+/// and leaves the coordinator with nothing but concatenation.
+///
+/// `reservation`, which holds the buffered rows, grows by each partition's
+/// encoded bytes, and shrinks by each buffered batch the drain frees: a split
+/// buffer frees each once written, a deferred one only when the drain ends.
+/// Once the pool refuses a partition's bytes, they and every later
+/// partition's rows go to the spill files instead. Afterwards `reservation`
+/// holds just the encoded bytes.
 fn encode_buffered_partitions(
     buffered: &mut BufferedBatches,
     schema: &SchemaRef,
     opts: &datafusion::arrow::ipc::writer::IpcWriteOptions,
+    reservation: &MemoryReservation,
+    spill_manager: &mut SpillManager,
 ) -> Result<EncodedPartitions> {
     let num_partitions = buffered.num_partitions();
     let mut encoded = vec![Vec::new(); num_partitions];
     let mut stats = vec![EncodedStats::default(); num_partitions];
+    let frees_batches = buffered.is_split();
+    let free = |batch: &RecordBatch| {
+        if frees_batches {
+            reservation.shrink(batch.get_array_memory_size().min(reservation.size()));
+        }
+    };
+    let spill_error = |e| DataFusionError::Execution(format!("{e:?}"));
+    let mut spilling = false;
 
     // One writer open at a time: each holds its own compression context.
     buffered.drain(|partition, batches| {
+        if spilling {
+            for batch in batches {
+                let batch = batch?;
+                spill_manager
+                    .spill(partition, &batch)
+                    .map_err(spill_error)?;
+                free(&batch);
+            }
+            return Ok(());
+        }
         let mut writer =
             StreamWriter::try_new_with_options(Vec::new(), schema, opts.clone())?;
-        let stat = &mut stats[partition];
+        let mut stat = EncodedStats::default();
         for batch in batches {
             let batch = batch?;
             stat.num_rows += batch.num_rows() as u64;
-            stat.num_bytes += batch.get_array_memory_size() as u64;
+            stat.num_bytes += batch_used_bytes(&batch) as u64;
             stat.num_batches += 1;
             writer.write(&batch)?;
+            free(&batch);
         }
-        encoded[partition] = writer.into_inner()?;
+        let bytes = writer.into_inner()?;
+        if reservation.try_grow(bytes.capacity()).is_ok() {
+            encoded[partition] = bytes;
+            stats[partition] = stat;
+        } else {
+            spilling = true;
+            spill_manager
+                .spill_encoded(
+                    partition,
+                    &bytes,
+                    stat.num_batches,
+                    stat.num_rows,
+                    stat.num_bytes,
+                )
+                .map_err(spill_error)?;
+        }
         Ok(())
     })?;
+    reservation.resize(encoded.iter().map(Vec::capacity).sum());
 
     Ok(EncodedPartitions { encoded, stats })
 }
@@ -317,6 +360,10 @@ struct SortShuffleWriteMetrics {
     write_time: metrics::Time,
     /// Time spent partitioning input batches
     repart_time: metrics::Time,
+    /// Time spent copying input rows into the buffers
+    buffer_time: metrics::Time,
+    /// Input partitions that switched to splitting rows on arrival
+    split_inputs: metrics::Count,
     /// Time spent spilling to disk
     spill_time: metrics::Time,
     /// Number of input rows
@@ -416,6 +463,9 @@ impl SortShuffleWriteMetrics {
             write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
             repart_time: MetricBuilder::new(metrics)
                 .subset_time("repart_time", partition),
+            buffer_time: MetricBuilder::new(metrics)
+                .subset_time("buffer_time", partition),
+            split_inputs: MetricBuilder::new(metrics).counter("split_inputs", partition),
             spill_time: MetricBuilder::new(metrics).subset_time("spill_time", partition),
             input_rows: MetricBuilder::new(metrics).counter("input_rows", partition),
             output_rows: MetricBuilder::new(metrics).output_rows(partition),
@@ -583,6 +633,7 @@ impl SortShuffleWriterExec {
         let partitioning = self.shuffle_output_partitioning.clone();
         let task_id = self.task_id;
         let column_stats = self.column_stats.clone();
+        let input_partitions = self.input_partition_count();
 
         async move {
             let mut stream =
@@ -608,10 +659,20 @@ impl SortShuffleWriterExec {
             )
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
+            let split_budget = if can_split(&schema) {
+                split_on_arrival_budget(
+                    config.split_on_arrival_max_bytes,
+                    config.memory_limit_per_task_bytes,
+                    free_pool_memory(context.runtime_env().memory_pool.as_ref()),
+                    input_partitions,
+                )
+            } else {
+                0
+            };
             let mut buffered = BufferedBatches::new(
                 num_output_partitions,
-                schema.clone(),
                 config.batch_size,
+                split_budget,
             );
 
             let mut reservation =
@@ -646,7 +707,9 @@ impl SortShuffleWriterExec {
                 )?;
                 timer.done();
 
-                buffered.push_batch(input_batch, &per_partition_rows);
+                let timer = metrics.buffer_time.timer();
+                buffered.push_batch(input_batch, &per_partition_rows, &reservation)?;
+                timer.done();
                 let buffered_bytes = buffered.memory_size();
 
                 // Mirror the buffered bytes in the pool. A refused resize
@@ -688,6 +751,22 @@ impl SortShuffleWriterExec {
                 }
             }
 
+            // Encode here, on this input's own task, so the interleave/IPC/
+            // compression cost stays parallel across the task's inputs.
+            let opts = create_write_options(compression_type)?;
+            let spilled_before = spill_manager.total_spilled_batches();
+            let EncodedPartitions { encoded, stats } = encode_buffered_partitions(
+                &mut buffered,
+                &schema,
+                &opts,
+                &reservation,
+                &mut spill_manager,
+            )?;
+            if spill_manager.total_spilled_batches() > spilled_before {
+                spill_events += 1;
+                spill_triggers.record(SpillTrigger::MemoryPool);
+            }
+
             // Finish spill writers before the coordinator reads them back while
             // building the task's consolidated file.
             spill_manager
@@ -695,6 +774,9 @@ impl SortShuffleWriterExec {
                 .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
             metrics.spill_count.add(spill_events as usize);
+            if buffered.has_split() {
+                metrics.split_inputs.add(1);
+            }
             metrics
                 .spill_bytes
                 .add(spill_manager.total_bytes_spilled() as usize);
@@ -739,12 +821,6 @@ impl SortShuffleWriterExec {
                 );
             }
 
-            // Encode here, on this input's own task, so the interleave/IPC/
-            // compression cost stays parallel across the task's inputs.
-            let opts = create_write_options(compression_type)?;
-            let EncodedPartitions { encoded, stats } =
-                encode_buffered_partitions(&mut buffered, &schema, &opts)?;
-
             Ok(InputPartitionOutput {
                 encoded,
                 in_memory_stats: stats,
@@ -756,9 +832,46 @@ impl SortShuffleWriterExec {
     }
 }
 
-/// Spills *all* buffered partitions: appends each partition's buffered rows
-/// to that partition's spill file. After this call, `buffered.is_empty()` is
-/// true and `reservation.size() == 0`.
+/// Most memory one input's partly filled batches may take for it to split
+/// rows on arrival (see [`BufferedBatches`]), the smallest of:
+///
+/// - a quarter of `memory_limit_per_task_bytes`, when set;
+/// - a quarter of an even share of the pool's free memory between the task's
+///   `input_partitions`, when bounded;
+/// - `split_on_arrival_max_bytes`.
+///
+/// The quarters leave room for completed batches, so spills write full ones,
+/// and for the switch to split, which holds the buffered rows twice until
+/// they have moved. The pool must still grant the switch itself.
+fn split_on_arrival_budget(
+    split_on_arrival_max_bytes: usize,
+    memory_limit_per_task_bytes: usize,
+    pool_free: MemoryLimit,
+    input_partitions: usize,
+) -> usize {
+    let mut budget = split_on_arrival_max_bytes;
+    if memory_limit_per_task_bytes > 0 {
+        budget = budget.min(memory_limit_per_task_bytes / 4);
+    }
+    if let MemoryLimit::Finite(pool_bytes) = pool_free {
+        budget = budget.min(pool_bytes / input_partitions.max(1) / 4);
+    }
+    budget
+}
+
+/// The pool's limit less what is already reserved from it.
+fn free_pool_memory(pool: &dyn MemoryPool) -> MemoryLimit {
+    match pool.memory_limit() {
+        MemoryLimit::Finite(limit) => {
+            MemoryLimit::Finite(limit.saturating_sub(pool.reserved()))
+        }
+        limit => limit,
+    }
+}
+
+/// Spills *all* buffered partitions: appends each partition's buffered
+/// batches to that partition's spill file. After this call,
+/// `buffered.is_empty()` is true and `reservation.size() == 0`.
 ///
 /// Returns `(batches_written, bytes_written)` for this single spill event so
 /// the caller can log per-event diagnostics. A return of `(0, 0)` means there
@@ -2290,6 +2403,588 @@ mod tests {
             /* expect_spills */ true,
         )
         .await
+    }
+
+    /// What [`write_and_read_partitions`] observed.
+    #[derive(Debug)]
+    struct LayoutRun {
+        /// Each output partition's batches, as read back.
+        partitions: Vec<Vec<RecordBatch>>,
+        /// The reported partition stats' `num_bytes`, summed.
+        reported_num_bytes: u64,
+        split_inputs: usize,
+        spill_count: usize,
+    }
+
+    impl LayoutRun {
+        /// Every row read back, sorted by key, as one batch.
+        fn sorted_rows(&self) -> RecordBatch {
+            sorted_by_key(self.partitions.iter().flatten())
+        }
+    }
+
+    /// `batches` concatenated into one batch, sorted by their first column.
+    fn sorted_by_key<'a>(
+        batches: impl IntoIterator<Item = &'a RecordBatch>,
+    ) -> RecordBatch {
+        use datafusion::arrow::compute::{
+            concat_batches, sort_to_indices, take_record_batch,
+        };
+
+        let batches: Vec<&RecordBatch> = batches.into_iter().collect();
+        let all = concat_batches(&batches[0].schema(), batches).unwrap();
+        let order = sort_to_indices(all.column(0), None, None).unwrap();
+        take_record_batch(&all, &order).unwrap()
+    }
+
+    /// Writes `batches` as one input partition into `num_partitions` output
+    /// partitions, with a `memory_limit_per_task_bytes` budget and, if set,
+    /// `pool`, and reads every partition back.
+    async fn write_and_read_partitions(
+        batches: Vec<RecordBatch>,
+        num_partitions: usize,
+        memory_limit_per_task_bytes: usize,
+        pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<LayoutRun> {
+        write_and_read_partitions_with(
+            batches,
+            num_partitions,
+            SortShuffleConfig::default()
+                .with_memory_limit_per_task_bytes(memory_limit_per_task_bytes),
+            pool,
+        )
+        .await
+    }
+
+    /// [`write_and_read_partitions`] with the whole writer `config`.
+    async fn write_and_read_partitions_with(
+        batches: Vec<RecordBatch>,
+        num_partitions: usize,
+        config: SortShuffleConfig,
+        pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<LayoutRun> {
+        use super::super::reader::stream_sort_shuffle_partition;
+        use datafusion::arrow::array::{AsArray, StructArray};
+        use datafusion::arrow::datatypes::UInt64Type;
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+        let schema = batches[0].schema();
+        let source = MemorySourceConfig::try_new(&[batches], schema, None)?;
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(DataSourceExec::new(Arc::new(source)));
+        let work_dir = TempDir::new()?;
+        let writer = SortShuffleWriterExec::try_new(
+            "layout_job".into(),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_string(),
+            Partitioning::Hash(vec![Arc::new(Column::new("k", 0))], num_partitions),
+            config,
+        )?;
+        let mut runtime = RuntimeEnvBuilder::new();
+        if let Some(pool) = pool {
+            runtime = runtime.with_memory_pool(pool);
+        }
+        let ctx = SessionContext::new_with_config_rt(
+            datafusion::execution::config::SessionConfig::new(),
+            Arc::new(runtime.build()?),
+        );
+
+        let mut reported_num_bytes = 0;
+        for partition in 0..num_partitions {
+            let summaries: Vec<RecordBatch> = writer
+                .execute(partition, ctx.task_ctx())?
+                .try_collect()
+                .await?;
+            for summary in summaries {
+                let stats = summary
+                    .column_by_name("partition_stats")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StructArray>()
+                    .unwrap();
+                reported_num_bytes += stats
+                    .column_by_name("num_bytes")
+                    .unwrap()
+                    .as_primitive::<UInt64Type>()
+                    .values()
+                    .iter()
+                    .sum::<u64>();
+            }
+        }
+        let metric = |name: &str| {
+            writer
+                .metrics()
+                .and_then(|m| m.sum_by_name(name))
+                .map_or(0, |v| v.as_usize())
+        };
+
+        let data_path = work_dir.path().join("layout_job/1/0/data.arrow");
+        let index_path = data_path.with_extension("arrow.index");
+        let mut partitions = vec![];
+        for partition in 0..num_partitions {
+            let stream =
+                stream_sort_shuffle_partition(&data_path, &index_path, partition)
+                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            partitions.push(stream.try_collect().await?);
+        }
+        Ok(LayoutRun {
+            partitions,
+            reported_num_bytes,
+            split_inputs: metric("split_inputs"),
+            spill_count: metric("spill_count"),
+        })
+    }
+
+    /// `num_batches` batches of `rows_per_batch` rows: an `Int64` key and a
+    /// 21-byte `Utf8View` string per row.
+    fn key_and_string_batches(num_batches: i64, rows_per_batch: i64) -> Vec<RecordBatch> {
+        use datafusion::arrow::array::{Int64Array, StringViewArray};
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("s", DataType::Utf8View, false),
+        ]));
+        (0..num_batches)
+            .map(|b| {
+                let keys: Vec<i64> =
+                    (b * rows_per_batch..(b + 1) * rows_per_batch).collect();
+                let strings = keys.iter().map(|k| format!("value number {k:>8}"));
+                RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(Int64Array::from(keys.clone())),
+                        Arc::new(StringViewArray::from_iter_values(strings)),
+                    ],
+                )
+                .unwrap()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn split_and_deferred_layouts_write_the_same_partitions() -> Result<()> {
+        // 66000 rows over 8 partitions, enough to decide. Partly filled
+        // batches take 8 × 8192 × 45 bytes plus 8 string blocks, 10.8 MiB:
+        // within the default 64 MiB cap, so it splits, but over a quarter of
+        // 10 MiB, so it stays deferred. Neither spills.
+        let batches = key_and_string_batches(3, 22000);
+        let split =
+            write_and_read_partitions(batches.clone(), 8, 256 << 20, None).await?;
+        let deferred =
+            write_and_read_partitions(batches.clone(), 8, 10 << 20, None).await?;
+
+        assert_eq!((split.split_inputs, split.spill_count), (1, 0));
+        assert_eq!((deferred.split_inputs, deferred.spill_count), (0, 0));
+        assert_eq!(split.partitions, deferred.partitions);
+        assert_eq!(split.reported_num_bytes, deferred.reported_num_bytes);
+        assert_eq!(split.sorted_rows(), sorted_by_key(&batches));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn split_on_arrival_max_bytes_of_zero_never_splits() -> Result<()> {
+        // The same input splits under the default config.
+        let batches = key_and_string_batches(3, 22000);
+        let config = SortShuffleConfig::default().with_split_on_arrival_max_bytes(0);
+        let run =
+            write_and_read_partitions_with(batches.clone(), 8, config, None).await?;
+
+        assert_eq!((run.split_inputs, run.spill_count), (0, 0));
+        assert_eq!(run.sorted_rows(), sorted_by_key(&batches));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn columns_the_coalescer_slices_never_split() -> Result<()> {
+        use datafusion::arrow::compute::cast;
+
+        // The input that splits under the default config, with `Utf8`
+        // strings in place of `Utf8View`.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("s", DataType::Utf8, false),
+        ]));
+        let batches: Vec<RecordBatch> = key_and_string_batches(3, 22000)
+            .iter()
+            .map(|b| {
+                let strings = cast(b.column(1), &DataType::Utf8).unwrap();
+                RecordBatch::try_new(schema.clone(), vec![b.column(0).clone(), strings])
+                    .unwrap()
+            })
+            .collect();
+        let run = write_and_read_partitions(batches.clone(), 8, 256 << 20, None).await?;
+        let never_splits = write_and_read_partitions_with(
+            batches.clone(),
+            8,
+            SortShuffleConfig::default().with_split_on_arrival_max_bytes(0),
+            None,
+        )
+        .await?;
+
+        assert_eq!((run.split_inputs, run.spill_count), (0, 0));
+        assert_eq!(run.partitions, never_splits.partitions);
+        assert_eq!(run.sorted_rows(), sorted_by_key(&batches));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reported_num_bytes_exclude_spare_capacity() -> Result<()> {
+        // 66000 rows split over 8 partitions, each ending in a partly filled
+        // batch with room for 8192 rows; the spare room must not be reported.
+        let run = write_and_read_partitions(
+            key_and_string_batches(3, 22000),
+            8,
+            256 << 20,
+            None,
+        )
+        .await?;
+        assert_eq!(run.split_inputs, 1);
+
+        let read_back: usize = run
+            .partitions
+            .iter()
+            .flatten()
+            .map(super::super::buffer::batch_used_bytes)
+            .sum();
+        assert_eq!(read_back, 66000 * 45);
+        assert_eq!(run.reported_num_bytes, read_back as u64);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn small_memory_pool_keeps_the_deferred_layout() -> Result<()> {
+        // A 4 MiB pool: a quarter of it is far less than 64 partly filled
+        // 8192-row batches, so the writer stays deferred and writes exactly
+        // what a writer that never splits does, spills included.
+        let batches = key_and_string_batches(20, 8192);
+        let run = write_and_read_partitions(
+            batches.clone(),
+            64,
+            256 << 20,
+            Some(fair_pool(4 << 20)),
+        )
+        .await?;
+        let never_splits = write_and_read_partitions_with(
+            batches.clone(),
+            64,
+            SortShuffleConfig::default()
+                .with_memory_limit_per_task_bytes(256 << 20)
+                .with_split_on_arrival_max_bytes(0),
+            Some(fair_pool(4 << 20)),
+        )
+        .await?;
+
+        assert_eq!((run.split_inputs, run.spill_count), (0, 2));
+        assert_eq!(
+            (run.spill_count, &run.partitions),
+            (never_splits.spill_count, &never_splits.partitions)
+        );
+        assert_eq!(run.sorted_rows(), sorted_by_key(&batches));
+        Ok(())
+    }
+
+    fn fair_pool(bytes: usize) -> Arc<dyn MemoryPool> {
+        Arc::new(datafusion::execution::memory_pool::FairSpillPool::new(
+            bytes,
+        ))
+    }
+
+    /// A pool that advertises `advertised` bytes but grants only `granted`,
+    /// as a pool looks to a task once other tasks have claimed memory since
+    /// the task measured it.
+    #[derive(Debug)]
+    struct OvercommittedPool {
+        advertised: usize,
+        granted: datafusion::execution::memory_pool::GreedyMemoryPool,
+    }
+
+    fn overcommitted_pool(advertised: usize, granted: usize) -> Arc<dyn MemoryPool> {
+        Arc::new(OvercommittedPool {
+            advertised,
+            granted: datafusion::execution::memory_pool::GreedyMemoryPool::new(granted),
+        })
+    }
+
+    impl std::fmt::Display for OvercommittedPool {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "OvercommittedPool")
+        }
+    }
+
+    impl MemoryPool for OvercommittedPool {
+        fn name(&self) -> &str {
+            "OvercommittedPool"
+        }
+
+        fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+            self.granted.grow(reservation, additional)
+        }
+
+        fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+            self.granted.shrink(reservation, shrink)
+        }
+
+        fn try_grow(
+            &self,
+            reservation: &MemoryReservation,
+            additional: usize,
+        ) -> Result<()> {
+            self.granted.try_grow(reservation, additional)
+        }
+
+        fn reserved(&self) -> usize {
+            self.granted.reserved()
+        }
+
+        fn memory_limit(&self) -> MemoryLimit {
+            MemoryLimit::Finite(self.advertised)
+        }
+    }
+
+    #[tokio::test]
+    async fn stays_deferred_when_the_pool_refuses_the_switch() -> Result<()> {
+        // Splitting 66000 rows over 8 partitions takes 10.8 MiB of partly
+        // filled batches, within the budget a 1 GiB pool allows. A pool that
+        // grants only 12 MiB holds the 4 MiB of deferred rows but not both
+        // layouts at once, so the input stays deferred and writes what a
+        // writer that never splits does.
+        let batches = key_and_string_batches(3, 22000);
+        let granted = write_and_read_partitions(
+            batches.clone(),
+            8,
+            256 << 20,
+            Some(overcommitted_pool(1 << 30, 1 << 30)),
+        )
+        .await?;
+        let refused = write_and_read_partitions(
+            batches.clone(),
+            8,
+            256 << 20,
+            Some(overcommitted_pool(1 << 30, 12 << 20)),
+        )
+        .await?;
+        let never_splits = write_and_read_partitions_with(
+            batches.clone(),
+            8,
+            SortShuffleConfig::default().with_split_on_arrival_max_bytes(0),
+            None,
+        )
+        .await?;
+
+        assert_eq!((granted.split_inputs, granted.spill_count), (1, 0));
+        assert_eq!((refused.split_inputs, refused.spill_count), (0, 0));
+        assert_eq!(refused.partitions, never_splits.partitions);
+        assert_eq!(granted.sorted_rows(), sorted_by_key(&batches));
+        Ok(())
+    }
+
+    #[test]
+    fn encoding_spills_the_partitions_the_pool_cannot_hold() -> Result<()> {
+        use datafusion::arrow::array::{AsArray, Int64Array};
+        use datafusion::arrow::datatypes::Int64Type;
+        use datafusion::execution::memory_pool::{GreedyMemoryPool, UnboundedMemoryPool};
+
+        // 4 partitions of 1000 rows each, in 1000-row batches: deferred, or
+        // split into one batch per partition.
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
+        let buffered = |split: bool| -> Result<BufferedBatches> {
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int64Array::from_iter_values(0..4000))],
+            )?;
+            let rows: Vec<Vec<u32>> = (0..4)
+                .map(|p| (p * 1000..(p + 1) * 1000).collect())
+                .collect();
+            let unbounded: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+            let budget = if split { usize::MAX } else { 0 };
+            let mut buffered = BufferedBatches::new(4, 1000, budget);
+            buffered.push_batch(
+                batch,
+                &rows,
+                &MemoryConsumer::new("push").register(&unbounded),
+            )?;
+            assert_eq!(buffered.is_split(), split);
+            Ok(buffered)
+        };
+
+        // Each partition's keys, read back from its in-memory bytes and its
+        // spill file, with (in-memory rows, spilled rows), plus the encoded
+        // buffers' capacities and the bytes left reserved, encoding within a
+        // pool of `pool_bytes` that already holds the buffered rows.
+        let encode = |split: bool, pool_bytes: usize| -> Result<_> {
+            let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(pool_bytes));
+            let reservation = MemoryConsumer::new("writer").register(&pool);
+            let mut buffered = buffered(split)?;
+            reservation.try_resize(buffered.memory_size())?;
+            let dir = TempDir::new()?;
+            let mut spill_manager = SpillManager::new(
+                dir.path().to_str().unwrap(),
+                &"job".into(),
+                1,
+                0,
+                0,
+                schema.clone(),
+                None,
+            )
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            let EncodedPartitions { encoded, stats } = encode_buffered_partitions(
+                &mut buffered,
+                &schema,
+                &create_write_options(None)?,
+                &reservation,
+                &mut spill_manager,
+            )?;
+            spill_manager
+                .finish_writers()
+                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+            let partitions: Vec<(Vec<i64>, (u64, u64))> = (0..4)
+                .map(|p| {
+                    let spilled = spill_manager
+                        .spill_path(p)
+                        .map(|path| std::fs::read(path).unwrap())
+                        .unwrap_or_default();
+                    let keys = [&spilled[..], &encoded[p][..]]
+                        .iter()
+                        .flat_map(|bytes| read_streams(bytes))
+                        .flat_map(|batch| {
+                            batch
+                                .column(0)
+                                .as_primitive::<Int64Type>()
+                                .values()
+                                .to_vec()
+                        })
+                        .collect();
+                    (
+                        keys,
+                        (stats[p].num_rows, spill_manager.partition_stats(p).1),
+                    )
+                })
+                .collect();
+            let capacities: Vec<usize> = encoded.iter().map(Vec::capacity).collect();
+            Ok((partitions, capacities, reservation.size()))
+        };
+        let keys = |p: i64| (p * 1000..(p + 1) * 1000).collect::<Vec<i64>>();
+        let all_encoded: Vec<_> = (0..4).map(|p| (keys(p), (1000, 0))).collect();
+        let only_first_encoded = vec![
+            (keys(0), (1000, 0)),
+            (keys(1), (0, 1000)),
+            (keys(2), (0, 1000)),
+            (keys(3), (0, 1000)),
+        ];
+
+        // With room for everything, every partition is encoded and only the
+        // encoded bytes stay reserved.
+        let (partitions, capacities, reserved) = encode(false, usize::MAX)?;
+        assert_eq!(partitions, all_encoded);
+        assert_eq!(reserved, capacities.iter().sum::<usize>());
+
+        // A deferred buffer holds its rows until the drain ends. With room
+        // for partition 0's bytes only, partition 1's encoded bytes and the
+        // rows of partitions 2 and 3 go to the spill files.
+        let deferred_bytes = buffered(false)?.memory_size();
+        assert_eq!(
+            encode(false, deferred_bytes + capacities[0])?,
+            (
+                only_first_encoded.clone(),
+                vec![capacities[0], 0, 0, 0],
+                capacities[0]
+            )
+        );
+
+        // A split buffer frees each batch once encoded, so partition 0 fits
+        // in the room its batch leaves plus its bytes. Partition 1's bytes
+        // outgrow its batch, so they spill.
+        let mut batch_bytes = vec![];
+        buffered(true)?.drain(|_, batches| {
+            batch_bytes.push(batches.map(|b| b.unwrap().get_array_memory_size()).sum());
+            Ok(())
+        })?;
+        assert!(capacities[1] > batch_bytes[1]);
+        let split_bytes = buffered(true)?.memory_size();
+        assert_eq!(
+            encode(true, split_bytes - batch_bytes[0] + capacities[0])?,
+            (
+                only_first_encoded,
+                vec![capacities[0], 0, 0, 0],
+                capacities[0]
+            )
+        );
+        Ok(())
+    }
+
+    /// Every batch of the Arrow IPC streams concatenated in `bytes`.
+    fn read_streams(bytes: &[u8]) -> Vec<RecordBatch> {
+        use datafusion::arrow::ipc::reader::StreamReader;
+
+        let mut cursor = std::io::Cursor::new(bytes);
+        let mut batches = vec![];
+        while (cursor.position() as usize) < bytes.len() {
+            let reader = StreamReader::try_new(&mut cursor, None).unwrap();
+            batches.extend(reader.map(|batch| batch.unwrap()));
+        }
+        batches
+    }
+
+    #[test]
+    fn split_on_arrival_budget_counts_only_free_pool_memory() {
+        use datafusion::execution::memory_pool::{GreedyMemoryPool, UnboundedMemoryPool};
+
+        const MIB: usize = 1 << 20;
+        // One input, the 64 MiB cap, no per-task budget: only the pool term.
+        let budget = |pool: &dyn MemoryPool| {
+            split_on_arrival_budget(64 * MIB, 0, free_pool_memory(pool), 1)
+        };
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(200 * MIB));
+        assert_eq!(budget(pool.as_ref()), 50 * MIB);
+
+        // Another task holds 120 MiB, leaving a quarter of 80 MiB.
+        let other_task = MemoryConsumer::new("other task").register(&pool);
+        other_task.grow(120 * MIB);
+        assert_eq!(budget(pool.as_ref()), 20 * MIB);
+        other_task.grow(80 * MIB);
+        assert_eq!(budget(pool.as_ref()), 0);
+
+        assert_eq!(budget(&UnboundedMemoryPool::default()), 64 * MIB);
+    }
+
+    #[test]
+    fn split_on_arrival_budget_takes_the_tightest_term() {
+        const MIB: usize = 1 << 20;
+        for (max, task_budget, pool, inputs, expected) in [
+            // The 64 MiB cap: the default budget, and a disabled one.
+            (64 * MIB, 256 * MIB, MemoryLimit::Infinite, 12, 64 * MIB),
+            (64 * MIB, 0, MemoryLimit::Unknown, 12, 64 * MIB),
+            // A raised cap, still held to a quarter of the per-task budget.
+            (512 * MIB, 1024 * MIB, MemoryLimit::Infinite, 12, 256 * MIB),
+            (512 * MIB, 0, MemoryLimit::Infinite, 12, 512 * MIB),
+            // A cap of 0 never splits.
+            (0, 256 * MIB, MemoryLimit::Infinite, 12, 0),
+            // A quarter of a smaller per-input budget.
+            (64 * MIB, 8 * MIB, MemoryLimit::Infinite, 1, 2 * MIB),
+            // A quarter of an even share of the pool.
+            (
+                64 * MIB,
+                256 * MIB,
+                MemoryLimit::Finite(1200 * MIB),
+                12,
+                25 * MIB,
+            ),
+            (
+                64 * MIB,
+                256 * MIB,
+                MemoryLimit::Finite(64 * MIB),
+                0,
+                16 * MIB,
+            ),
+        ] {
+            assert_eq!(
+                split_on_arrival_budget(max, task_budget, pool, inputs),
+                expected,
+                "max {max}, task budget {task_budget}, {inputs} inputs"
+            );
+        }
     }
 
     #[tokio::test]

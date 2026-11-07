@@ -102,6 +102,11 @@ pub const BALLISTA_SHUFFLE_WRITER_CHANNEL_CAPACITY: &str =
 /// disable the per-task budget and spill only under memory-pool pressure.
 pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES: &str =
     "ballista.shuffle.sort_based.memory_limit_per_task_bytes";
+/// Configuration key for the most memory an input's partly filled batches may
+/// take for the sort shuffle writer to split rows by partition on arrival.
+/// Set to 0 to never split.
+pub const BALLISTA_SHUFFLE_SORT_BASED_SPLIT_ON_ARRIVAL_MAX_BYTES: &str =
+    "ballista.shuffle.sort_based.split_on_arrival_max_bytes";
 /// Configuration key for the byte-size threshold below which a hash join's
 /// smaller side is promoted to `CollectLeft` and lowered via the broadcast
 /// pattern in the distributed planner. It also caps null-aware anti joins with
@@ -382,6 +387,16 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          may run out of memory.".to_string(),
                          DataType::UInt64,
                          Some((256 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_SPLIT_ON_ARRIVAL_MAX_BYTES.to_string(),
+                         "Most memory an input's partly filled batches may take for the sort shuffle \
+                         writer to split rows by partition as they arrive, which is faster than \
+                         gathering them at spill or write time. Applies only when every column is a \
+                         primitive, Utf8View or BinaryView type. The writer also keeps it to a quarter of \
+                         memory_limit_per_task_bytes and of the input's share of the pool's free memory, so \
+                         raising it past 64 MiB needs a larger per-task budget too. Set to 0 to never \
+                         split.".to_string(),
+                         DataType::UInt64,
+                         Some((64 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_BROADCAST_JOIN_THRESHOLD_BYTES.to_string(),
                          "Byte-size threshold below which a hash join's smaller side is \
                           promoted to CollectLeft and lowered via the broadcast pattern. \
@@ -1015,6 +1030,12 @@ impl BallistaConfig {
     /// writer spills its in-memory batches to disk.
     pub fn shuffle_sort_based_memory_limit_per_task_bytes(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT_PER_TASK_BYTES)
+    }
+
+    /// Returns the most memory an input's partly filled batches may take for
+    /// the sort shuffle writer to split rows by partition on arrival.
+    pub fn shuffle_sort_based_split_on_arrival_max_bytes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_SPLIT_ON_ARRIVAL_MAX_BYTES)
     }
 
     /// Returns the byte-size threshold below which a hash join's smaller side

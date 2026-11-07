@@ -559,6 +559,11 @@ pub struct SortShuffleWriterExecNode {
     /// before this field existed decodes to the built-in default rather than 0.
     #[prost(uint64, optional, tag = "9")]
     pub memory_limit_per_task_bytes: ::core::option::Option<u64>,
+    /// Most memory an input's partly filled batches may take for the writer to
+    /// split rows by partition on arrival. A value of 0 never splits. Optional so
+    /// a plan produced before this field existed decodes to the built-in default.
+    #[prost(uint64, optional, tag = "10")]
+    pub split_on_arrival_max_bytes: ::core::option::Option<u64>,
 }
 /// Passthrough shuffle writer that emits the seekable Arrow IPC file format.
 /// Carries no output partitioning: like `ShuffleWriterExecNode`'s passthrough

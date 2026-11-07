@@ -23,6 +23,7 @@
 //! At finalization, the spill bytes are concatenated verbatim into the
 //! consolidated output file alongside the in-memory remainder.
 
+use super::buffer::batch_used_bytes;
 use crate::JobId;
 use crate::error::{BallistaError, Result};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -32,8 +33,8 @@ use datafusion::arrow::ipc::{CompressionType, writer::IpcWriteOptions};
 use datafusion::arrow::record_batch::RecordBatch;
 use log::debug;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::BufWriter;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 /// Manages spill files for sort-based shuffle.
@@ -109,8 +110,8 @@ impl SpillManager {
     /// Spills a single `batch` for `partition_id` to disk. The first call for
     /// a given `partition_id` creates the spill file; subsequent calls append.
     ///
-    /// Returns the number of bytes written (estimated from the batch's array
-    /// memory size).
+    /// Returns the bytes the batch's values take in memory
+    /// (`batch_used_bytes`), not the bytes written to disk.
     pub fn spill(&mut self, partition_id: usize, batch: &RecordBatch) -> Result<u64> {
         if batch.num_rows() == 0 {
             return Ok(0);
@@ -122,7 +123,7 @@ impl SpillManager {
                 "Creating spill file for partition {} at {:?}",
                 partition_id, spill_path
             );
-            let file = File::create(&spill_path).map_err(BallistaError::IoError)?;
+            let file = self.open_spill_file(partition_id)?;
             let buffered = BufWriter::new(file);
 
             let options =
@@ -136,7 +137,7 @@ impl SpillManager {
         }
 
         let writer = self.active_writers.get_mut(&partition_id).unwrap();
-        let bytes_written = batch.get_array_memory_size() as u64;
+        let bytes_written = batch_used_bytes(batch) as u64;
         writer.write(batch)?;
 
         let entry = self
@@ -151,6 +152,38 @@ impl SpillManager {
         self.total_bytes_spilled += bytes_written;
 
         Ok(bytes_written)
+    }
+
+    /// Appends `stream`, a complete Arrow IPC stream of `batches` batches and
+    /// `rows` rows whose values take `bytes` in memory, to `partition_id`'s
+    /// spill file, after finishing any stream already open in it.
+    pub fn spill_encoded(
+        &mut self,
+        partition_id: usize,
+        stream: &[u8],
+        batches: u64,
+        rows: u64,
+        bytes: u64,
+    ) -> Result<()> {
+        if let Some(mut writer) = self.active_writers.remove(&partition_id) {
+            writer.finish()?;
+        }
+        self.open_spill_file(partition_id)?
+            .write_all(stream)
+            .map_err(BallistaError::IoError)?;
+        self.spill_files
+            .insert(partition_id, self.spill_file_path(partition_id));
+
+        let entry = self
+            .partition_counters
+            .entry(partition_id)
+            .or_insert((0, 0, 0));
+        entry.0 += batches;
+        entry.1 += rows;
+        entry.2 += bytes;
+        self.total_spilled_batches += batches;
+        self.total_bytes_spilled += bytes;
+        Ok(())
     }
 
     /// Returns true if the partition has a spill file.
@@ -212,9 +245,9 @@ impl SpillManager {
     /// Returns `(batches, rows, bytes)` spilled for the given partition, or
     /// `(0, 0, 0)` if the partition never spilled.
     ///
-    /// The `bytes` value is the Arrow in-memory buffer size of each batch
-    /// at the time of the spill call (`RecordBatch::get_array_memory_size`).
-    /// It is **not** the compressed on-disk size.
+    /// The `bytes` value is what each batch's values take in memory
+    /// (`batch_used_bytes`), not counting unused capacity. It is **not** the
+    /// compressed on-disk size.
     pub fn partition_stats(&self, partition_id: usize) -> (u64, u64, u64) {
         self.partition_counters
             .get(&partition_id)
@@ -227,6 +260,18 @@ impl SpillManager {
     /// before this path is read by another process.
     pub fn spill_path(&self, partition_id: usize) -> Option<&Path> {
         self.spill_files.get(&partition_id).map(PathBuf::as_path)
+    }
+
+    /// Opens `partition_id`'s spill file for writing: appending if this
+    /// manager has already written a stream to it, otherwise created afresh.
+    fn open_spill_file(&self, partition_id: usize) -> Result<File> {
+        let path = self.spill_file_path(partition_id);
+        if self.spill_files.contains_key(&partition_id) {
+            OpenOptions::new().append(true).open(path)
+        } else {
+            File::create(path)
+        }
+        .map_err(BallistaError::IoError)
     }
 
     /// Returns the spill file path for a partition.
@@ -271,6 +316,55 @@ mod tests {
     fn create_test_batch(schema: &SchemaRef, values: Vec<i32>) -> RecordBatch {
         let array = Int32Array::from(values);
         RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap()
+    }
+
+    #[test]
+    fn spill_encoded_appends_a_stream_between_spilled_batches() -> Result<()> {
+        use datafusion::arrow::ipc::reader::StreamReader;
+
+        let temp_dir = TempDir::new().unwrap();
+        let schema = create_test_schema();
+        let mut manager = SpillManager::new(
+            temp_dir.path().to_str().unwrap(),
+            &"job1".into(),
+            1,
+            0,
+            0,
+            schema.clone(),
+            None,
+        )?;
+        let batch = |values| create_test_batch(&schema, values);
+
+        // A spilled batch, an encoded stream of two, then another spilled
+        // batch, all in partition 0's file.
+        manager.spill(0, &batch(vec![1, 2]))?;
+        let mut stream = StreamWriter::try_new(Vec::new(), &schema)?;
+        stream.write(&batch(vec![3]))?;
+        stream.write(&batch(vec![4, 5]))?;
+        manager.spill_encoded(0, &stream.into_inner()?, 2, 3, 12)?;
+        manager.spill(0, &batch(vec![6]))?;
+        manager.finish_writers()?;
+
+        let bytes = std::fs::read(manager.spill_path(0).unwrap()).unwrap();
+        let mut cursor = std::io::Cursor::new(&bytes[..]);
+        let mut read = vec![];
+        while (cursor.position() as usize) < bytes.len() {
+            read.extend(StreamReader::try_new(&mut cursor, None)?.map(|b| b.unwrap()));
+        }
+        assert_eq!(
+            read,
+            vec![
+                batch(vec![1, 2]),
+                batch(vec![3]),
+                batch(vec![4, 5]),
+                batch(vec![6])
+            ]
+        );
+        assert_eq!(
+            (manager.partition_stats(0), manager.total_spilled_batches()),
+            ((4, 6, 24), 4)
+        );
+        Ok(())
     }
 
     #[test]
