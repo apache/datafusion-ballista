@@ -57,10 +57,18 @@
 //! another row:
 //!
 //! - a `Projection` that outputs every referenced column as a plain column;
-//! - an inner join, onto the side that holds every referenced column;
+//! - an inner join, onto the side that holds every referenced column, unless
+//!   the other side is filtered;
 //! - a left (right) outer join, onto its left (right), preserved, side only.
 //!   Pushing into the null-supplying side would turn a dropped row into a
 //!   null-extended one.
+//!
+//! Both exceptions are about cost, not correctness. A join whose other input
+//! is filtered (`orders` with `o_orderstatus = 'F'` in TPC-H q21) can remove
+//! most rows itself, so a semi join moved below it probes rows the join would
+//! have dropped: q21's `EXISTS` and `NOT EXISTS` then run over all 379M
+//! `lineitem l1` rows at SF100 instead of the few joined ones, which doubles
+//! its run time. Spark makes this move unconditionally.
 //!
 //! It never moves below a `Filter`: that is sound too, but the filter is the
 //! cheaper of the two, so the semi join should see its output (TPC-H q4 probes
@@ -171,6 +179,36 @@ fn has_all(schema: &DFSchema, cols: &HashSet<Column>) -> bool {
     cols.iter().all(|c| schema.has_column(c))
 }
 
+/// Whether `plan` filters any of its inputs, so a join with it may remove
+/// rows: a `Filter` anywhere in it, a scan with pushed-down filters, or a
+/// semi or anti join.
+fn is_filtered(plan: &LogicalPlan) -> bool {
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+
+    let mut found = false;
+    plan.apply(|node| {
+        found = match node {
+            LogicalPlan::Filter(_) => true,
+            LogicalPlan::TableScan(scan) => !scan.filters.is_empty(),
+            LogicalPlan::Join(j) => matches!(
+                j.join_type,
+                JoinType::LeftSemi
+                    | JoinType::LeftAnti
+                    | JoinType::RightSemi
+                    | JoinType::RightAnti
+            ),
+            _ => false,
+        };
+        Ok(if found {
+            TreeNodeRecursion::Stop
+        } else {
+            TreeNodeRecursion::Continue
+        })
+    })
+    .expect("visiting a plan cannot fail");
+    found
+}
+
 /// Rebuilds `semi` with a new left input.
 fn semi_over(semi: &Join, left: Arc<LogicalPlan>) -> Result<Join> {
     Join::try_new(
@@ -191,13 +229,17 @@ fn push_one_level(
     semi: &Join,
     referenced: &HashSet<Column>,
 ) -> Result<Option<LogicalPlan>> {
-    step(semi, referenced, &mut |moved, _| {
+    step(semi, referenced, true, &mut |moved, _| {
         Ok(LogicalPlan::Join(moved))
     })
 }
 
 /// Sinks `semi` as far down its left input as it commutes, returning the
 /// rewritten plan and how many joins it moved below.
+///
+/// Unlike this rule's own pushdown it also moves below joins with a filtered
+/// input: the caller adds semi joins against small, selective dimensions,
+/// which are worth applying before any other join.
 pub(super) fn sink(semi: Join) -> Result<(LogicalPlan, usize)> {
     let referenced = left_referenced_columns(&semi);
     let mut joins_passed = 0;
@@ -210,7 +252,7 @@ fn sink_inner(
     referenced: &HashSet<Column>,
     joins_passed: &mut usize,
 ) -> Result<LogicalPlan> {
-    let moved = step(&semi, referenced, &mut |moved, through_join| {
+    let moved = step(&semi, referenced, false, &mut |moved, through_join| {
         if through_join {
             *joins_passed += 1;
         }
@@ -222,10 +264,12 @@ fn sink_inner(
 /// If `semi` commutes with the operator directly below it, rebuilds that
 /// operator with `semi` moved beneath it. `place` receives the moved semi join
 /// (and whether it moved below a join) and returns the plan to put in its
-/// position. Returns `None` when the operator below does not commute.
+/// position. Returns `None` when the operator below does not commute, or, with
+/// `avoid_filtered_joins`, when it is a join whose other input is filtered.
 fn step(
     semi: &Join,
     referenced: &HashSet<Column>,
+    avoid_filtered_joins: bool,
     place: &mut dyn FnMut(Join, bool) -> Result<LogicalPlan>,
 ) -> Result<Option<LogicalPlan>> {
     if referenced.is_empty() {
@@ -265,6 +309,11 @@ fn step(
                 JoinType::Right => (false, true),
                 _ => (false, false),
             };
+            // Moving below a join whose other input is filtered would make
+            // the semi join see rows that join could have removed first.
+            let to_left = to_left && !(avoid_filtered_joins && is_filtered(&inner.right));
+            let to_right =
+                to_right && !(avoid_filtered_joins && is_filtered(&inner.left));
             let (new_left, new_right) = if to_left
                 && has_all(inner.left.schema(), referenced)
             {
@@ -482,6 +531,34 @@ mod tests {
         assert!(
             line_of(&display, "LeftAnti Join") > line_of(&display, "Left Join"),
             "{display}"
+        );
+    }
+
+    #[test]
+    fn stays_above_a_join_with_a_filtered_input() {
+        let plan = LogicalPlanBuilder::from(scan("a", &["k", "v"]))
+            .join_on(
+                LogicalPlanBuilder::from(scan("b", &["k", "w"]))
+                    .filter(col("b.w").eq(lit(1)))
+                    .unwrap()
+                    .build()
+                    .unwrap(),
+                JoinType::Inner,
+                [col("a.k").eq(col("b.k"))],
+            )
+            .unwrap()
+            .join_on(
+                scan("s", &["x"]),
+                JoinType::LeftSemi,
+                [col("a.v").eq(col("s.x"))],
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let display = optimize(plan);
+        assert!(
+            line_of(&display, "LeftSemi Join") < line_of(&display, "Inner Join"),
+            "the filtered join must run first:\n{display}"
         );
     }
 
