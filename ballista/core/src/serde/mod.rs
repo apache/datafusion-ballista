@@ -1727,6 +1727,7 @@ struct FileFormatProto {
 mod test {
     use super::*;
     use crate::execution_plans::PartitionGroup;
+    use crate::execution_plans::test_util::int32_schema;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::Partitioning;
     use datafusion::physical_plan::expressions::col;
@@ -1798,7 +1799,7 @@ mod test {
             AsExecutionPlan, DefaultPhysicalExtensionCodec,
         };
 
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let schema = int32_schema();
         let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
         let filter = FilterExecBuilder::new(lit(true), input)
             .apply_projection(Some(vec![]))
@@ -1843,7 +1844,7 @@ mod test {
             AsExecutionPlan, DefaultPhysicalExtensionCodec,
         };
 
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let schema = int32_schema();
         let plan: Arc<dyn ExecutionPlan> =
             Arc::new(EmptyExec::new(schema).with_partitions(4));
         assert_eq!(
