@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::fetch::ResultFetch;
+use crate::rest::find_stage;
 use nix::fcntl::{Flock, FlockArg};
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
@@ -661,8 +662,14 @@ impl TestCluster {
         job_id: &str,
         stage_id: usize,
     ) -> Result<(), String> {
-        self.await_stage_task_state(job_id, stage_id, "Running")
-            .await
+        crate::rest::await_stage_task_state(
+            &self.client,
+            &self.rest_url(),
+            job_id,
+            stage_id,
+            "Running",
+        )
+        .await
     }
 
     /// Block until any task in any stage is Running.
@@ -681,8 +688,14 @@ impl TestCluster {
         job_id: &str,
         stage_id: usize,
     ) -> Result<(), String> {
-        self.await_stage_task_state(job_id, stage_id, "Successful")
-            .await
+        crate::rest::await_stage_task_state(
+            &self.client,
+            &self.rest_url(),
+            job_id,
+            stage_id,
+            "Successful",
+        )
+        .await
     }
 
     /// Block until every task in `stage_id` is Successful.
@@ -709,34 +722,6 @@ impl TestCluster {
                 return Err(format!("timed out waiting for stage {stage_id} to succeed"));
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
-    async fn await_stage_task_state(
-        &self,
-        job_id: &str,
-        stage_id: usize,
-        state: &str,
-    ) -> Result<(), String> {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            let stages = self.stages(job_id).await?;
-            if let Some(stage) = find_stage(&stages, stage_id)
-                && let Some(tasks) = stage.get("tasks").and_then(|t| t.as_array())
-            {
-                let hit = tasks
-                    .iter()
-                    .any(|t| t.get("status").and_then(|s| s.as_str()) == Some(state));
-                if hit {
-                    return Ok(());
-                }
-            }
-            if Instant::now() > deadline {
-                return Err(format!(
-                    "timed out waiting for a {state} task in stage {stage_id}"
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
         }
     }
 
@@ -914,12 +899,6 @@ impl TestCluster {
 }
 
 /// Stage ids come back from the REST API as strings.
-fn find_stage(stages: &serde_json::Value, stage_id: usize) -> Option<&serde_json::Value> {
-    stages.get("stages")?.as_array()?.iter().find(|s| {
-        s.get("stage_id").and_then(|v| v.as_str()) == Some(stage_id.to_string().as_str())
-    })
-}
-
 fn dir_has_entries(path: &Path) -> bool {
     std::fs::read_dir(path)
         .map(|mut entries| entries.next().is_some())
