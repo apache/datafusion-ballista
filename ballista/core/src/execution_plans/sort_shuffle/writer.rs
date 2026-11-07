@@ -688,12 +688,6 @@ impl SortShuffleWriterExec {
                 }
             }
 
-            // Finish spill writers before the coordinator reads them back while
-            // building the task's consolidated file.
-            spill_manager
-                .finish_writers()
-                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-
             metrics.spill_count.add(spill_events as usize);
             metrics
                 .spill_bytes
@@ -774,13 +768,11 @@ fn spill_all_partitions(
     let mut batches_written: u64 = 0;
     let mut bytes_written: u64 = 0;
     buffered.drain(|partition_id, batches| {
-        for batch in batches {
-            let written = spill_manager
-                .spill(partition_id, &batch?)
-                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-            batches_written += 1;
-            bytes_written += written;
-        }
+        let (batches, bytes) = spill_manager
+            .spill_batches(partition_id, batches)
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+        batches_written += batches;
+        bytes_written += bytes;
         Ok(())
     })?;
     reservation.free();
