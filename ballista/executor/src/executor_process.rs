@@ -215,6 +215,44 @@ fn detect_pool(budget: MemoryBudget) -> ResolvedPool {
     }
 }
 
+/// Raises the process's soft open-file limit to its hard limit.
+///
+/// A task holds a file per shuffle partition it reads or writes, plus spill
+/// files, so a stage with a few hundred partitions needs thousands of
+/// descriptors per executor. Many systems start processes with a soft limit
+/// of 1024 (with a hard limit far above it), which fails such tasks with
+/// "Too many open files". The JVM raises its soft limit to the hard limit at
+/// startup for the same reason, so Spark executors never see this.
+fn raise_open_file_limit() {
+    #[cfg(unix)]
+    {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit/setrlimit only read and write the struct passed in.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+            return;
+        }
+        let before = limit.rlim_cur;
+        // macOS rejects a soft limit above OPEN_MAX even when the hard limit
+        // is unlimited.
+        #[cfg(target_os = "macos")]
+        let target = limit.rlim_max.min(10240); // OPEN_MAX in <sys/syslimits.h>
+        #[cfg(not(target_os = "macos"))]
+        let target = limit.rlim_max;
+        if target <= before {
+            return;
+        }
+        limit.rlim_cur = target;
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } == 0 {
+            info!("Raised the open file limit from {before} to {target}");
+        } else {
+            warn!("Could not raise the open file limit from {before} to {target}");
+        }
+    }
+}
+
 /// How many of a task's largest memory consumers a `ResourcesExhausted` error
 /// lists. Matches DataFusion's default for `RuntimeEnvBuilder::with_memory_limit`.
 const TOP_MEMORY_CONSUMERS: NonZeroUsize = NonZeroUsize::new(5).unwrap();
@@ -512,6 +550,7 @@ async fn start_executor_process_inner(
     memory_metrics: Option<ExecutorMemoryMetrics>,
 ) -> ballista_core::error::Result<()> {
     opt.validate()?;
+    raise_open_file_limit();
 
     let addr = format!("{}:{}", opt.bind_host, opt.port);
     let address = addr.parse().map_err(|e: std::net::AddrParseError| {
