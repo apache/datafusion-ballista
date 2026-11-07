@@ -34,7 +34,9 @@ pub struct SortShuffleConfig {
     /// Most memory an input's partly filled batches may take for the writer
     /// to split rows by partition on arrival (default: 64 MiB). The budget is
     /// also held to a quarter of `memory_limit_per_task_bytes` and of the
-    /// input's share of the pool's free memory. A value of 0 never splits.
+    /// input's share of the pool's free memory. Only inputs whose columns are
+    /// all primitive, `Utf8View` or `BinaryView` types split. A value of 0
+    /// never splits.
     pub split_on_arrival_max_bytes: usize,
 }
 

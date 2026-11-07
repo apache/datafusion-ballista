@@ -379,7 +379,8 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_SPLIT_ON_ARRIVAL_MAX_BYTES.to_string(),
                          "Most memory an input's partly filled batches may take for the sort shuffle \
                          writer to split rows by partition as they arrive, which is faster than \
-                         gathering them at spill or write time. The writer also keeps it to a quarter of \
+                         gathering them at spill or write time. Applies only when every column is a \
+                         primitive, Utf8View or BinaryView type. The writer also keeps it to a quarter of \
                          memory_limit_per_task_bytes and of the input's share of the pool's free memory, so \
                          raising it past 64 MiB needs a larger per-task budget too. Set to 0 to never \
                          split.".to_string(),

@@ -36,7 +36,7 @@ use super::super::shuffle_writer::{
     ColumnStatsCollector, handoff_stream, sketched_columns, take_handoff,
 };
 use super::super::shuffle_writer_trait::ShuffleWriter;
-use super::buffer::{BufferedBatches, batch_used_bytes};
+use super::buffer::{BufferedBatches, batch_used_bytes, can_split};
 use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
 use super::spill::SpillManager;
@@ -618,15 +618,20 @@ impl SortShuffleWriterExec {
             )
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-            let mut buffered = BufferedBatches::new(
-                num_output_partitions,
-                config.batch_size,
+            let split_budget = if can_split(&schema) {
                 split_on_arrival_budget(
                     config.split_on_arrival_max_bytes,
                     config.memory_limit_per_task_bytes,
                     free_pool_memory(context.runtime_env().memory_pool.as_ref()),
                     input_partitions,
-                ),
+                )
+            } else {
+                0
+            };
+            let mut buffered = BufferedBatches::new(
+                num_output_partitions,
+                config.batch_size,
+                split_budget,
             );
 
             let mut reservation =
@@ -2535,6 +2540,39 @@ mod tests {
             write_and_read_partitions_with(batches.clone(), 8, config, None).await?;
 
         assert_eq!((run.split_inputs, run.spill_count), (0, 0));
+        assert_eq!(run.sorted_rows(), sorted_by_key(&batches));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn columns_the_coalescer_slices_never_split() -> Result<()> {
+        use datafusion::arrow::compute::cast;
+
+        // The input that splits under the default config, with `Utf8`
+        // strings in place of `Utf8View`.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("s", DataType::Utf8, false),
+        ]));
+        let batches: Vec<RecordBatch> = key_and_string_batches(3, 22000)
+            .iter()
+            .map(|b| {
+                let strings = cast(b.column(1), &DataType::Utf8).unwrap();
+                RecordBatch::try_new(schema.clone(), vec![b.column(0).clone(), strings])
+                    .unwrap()
+            })
+            .collect();
+        let run = write_and_read_partitions(batches.clone(), 8, 256 << 20, None).await?;
+        let never_splits = write_and_read_partitions_with(
+            batches.clone(),
+            8,
+            SortShuffleConfig::default().with_split_on_arrival_max_bytes(0),
+            None,
+        )
+        .await?;
+
+        assert_eq!((run.split_inputs, run.spill_count), (0, 0));
+        assert_eq!(run.partitions, never_splits.partitions);
         assert_eq!(run.sorted_rows(), sorted_by_key(&batches));
         Ok(())
     }

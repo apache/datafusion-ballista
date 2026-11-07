@@ -29,6 +29,10 @@
 //!   `batch_size`-row batch, plus a string block per view column with long
 //!   strings.
 //!
+//! Only schemas whose columns are all [`coalescer_copies`] types can split;
+//! the coalescer keeps slices of other columns and concatenates them later,
+//! which the split layout's cost model does not cover.
+//!
 //! Every buffer starts deferred. Once it has `num_partitions × batch_size`
 //! rows, it switches to split if the partly filled batches would fit in
 //! `split_budget_bytes` and the memory pool grants their memory, which stays
@@ -41,7 +45,7 @@
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use datafusion::arrow::array::{Array, ArrayRef, AsArray, OffsetSizeTrait, UInt32Array};
 use datafusion::arrow::compute::{BatchCoalescer, take_record_batch};
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::Result;
@@ -281,6 +285,23 @@ impl BufferedBatches {
             }
         }
     }
+}
+
+/// Whether a [`BatchCoalescer`] copies a `data_type` column's rows into the
+/// batch it builds: primitive and view types. It keeps slices of any other
+/// column, which hold on to the whole array they were sliced from.
+fn coalescer_copies(data_type: &DataType) -> bool {
+    data_type.is_primitive()
+        || matches!(data_type, DataType::Utf8View | DataType::BinaryView)
+}
+
+/// Whether rows of `schema` can be split on arrival: every column is a
+/// [`coalescer_copies`] type.
+pub(crate) fn can_split(schema: &Schema) -> bool {
+    schema
+        .fields()
+        .iter()
+        .all(|f| coalescer_copies(f.data_type()))
 }
 
 /// Largest string block a [`BatchCoalescer`] allocates per view column
@@ -778,6 +799,50 @@ mod tests {
             .map(|b| b.capacity())
             .collect();
         assert_eq!(blocks, vec![VIEW_BLOCK_BYTES]);
+    }
+
+    #[test]
+    fn only_primitive_and_view_columns_can_split() {
+        use datafusion::arrow::datatypes::TimeUnit;
+        let types = [
+            DataType::Int64,
+            DataType::Float64,
+            DataType::Decimal128(10, 2),
+            DataType::Date32,
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            DataType::Utf8View,
+            DataType::BinaryView,
+            DataType::Boolean,
+            DataType::Utf8,
+            DataType::LargeBinary,
+            DataType::FixedSizeBinary(16),
+            DataType::new_list(DataType::Int64, true),
+            DataType::Struct(vec![Field::new("a", DataType::Int64, true)].into()),
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8View)),
+            DataType::Null,
+        ];
+        let copied: Vec<(DataType, bool)> = types
+            .iter()
+            .map(|t| (t.clone(), coalescer_copies(t)))
+            .collect();
+        let expected: Vec<(DataType, bool)> = types
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.clone(), i < 7))
+            .collect();
+        assert_eq!(copied, expected);
+
+        let schema = |types: &[DataType]| {
+            Schema::new(
+                types
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| Field::new(format!("c{i}"), t.clone(), true))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert!(can_split(&schema(&[DataType::Int64, DataType::Utf8View])));
+        assert!(!can_split(&schema(&[DataType::Int64, DataType::Utf8])));
     }
 
     #[test]
