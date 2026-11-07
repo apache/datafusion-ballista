@@ -597,11 +597,12 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         .with_doc_default("(empty)"),
         ConfigEntry::new(
             BALLISTA_SHUFFLE_COMPRESSION_CODEC.to_string(),
-            "Compression codec specification \
-            used in the shuffle process. Possible values: \
-            none, lz4, zstd. Defaults to lz4 to preserve current behaviour".to_string(),
+            "Compression codec used for shuffle data written to disk and \
+            sent between executors. Possible values: none, lz4, zstd. \
+            zstd writes shuffle files about half the size of lz4 for little \
+            extra CPU, which matters most when shuffles cross the network".to_string(),
             DataType::Utf8,
-            Some("lz4".to_string()),
+            Some("zstd".to_string()),
         ),
         ConfigEntry::new(
             BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS.to_string(),
