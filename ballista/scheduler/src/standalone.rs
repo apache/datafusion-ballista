@@ -39,6 +39,7 @@ use log::info;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tonic::transport::server::TcpIncoming;
 
 /// Creates a standalone scheduler with default configuration.
 ///
@@ -122,9 +123,8 @@ pub async fn new_standalone_scheduler_with_builder(
     tokio::spawn(
         create_grpc_server(&GrpcServerConfig::default())
             .add_service(server)
-            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
-                listener,
-            )),
+            // tonic ignores the builder's `tcp_nodelay` on a pre-bound listener.
+            .serve_with_incoming(TcpIncoming::from(listener).with_nodelay(Some(true))),
     );
 
     Ok(addr)
