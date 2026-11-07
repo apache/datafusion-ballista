@@ -30,11 +30,8 @@
 //!
 //! Only schemas whose columns are all [`coalescer_copies`] types can split;
 //! the coalescer keeps slices of other columns and concatenates them later,
-//! which the split layout's cost model does not cover. Even a view column's
-//! strings are copied only if its rows use less than half of the input's
-//! string buffers; otherwise the coalescer keeps those buffers, so a
-//! completed batch that holds string bytes no view references is compacted,
-//! as the deferred gather compacts every batch.
+//! which the split layout's cost model does not cover. Each completed batch's
+//! view columns are sized to the strings they hold (see [`fit_view_columns`]).
 //!
 //! Every buffer starts deferred. Once it has `num_partitions × batch_size`
 //! rows, it switches to split if the partly filled batches would fit in
@@ -46,13 +43,17 @@
 //! not each write a small batch per partition.
 
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
-use datafusion::arrow::array::{Array, ArrayRef, AsArray, OffsetSizeTrait, UInt32Array};
+use datafusion::arrow::array::{
+    Array, ArrayRef, AsArray, GenericByteViewArray, OffsetSizeTrait, UInt32Array,
+};
+use datafusion::arrow::buffer::Buffer;
 use datafusion::arrow::compute::{BatchCoalescer, take_record_batch};
-use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
+use datafusion::arrow::datatypes::{ByteViewType, DataType, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::error::Result;
 use datafusion::execution::memory_pool::MemoryReservation;
+use std::sync::Arc;
 
 /// Rows buffered for every output partition of one input partition.
 #[derive(Debug)]
@@ -292,7 +293,7 @@ impl BufferedBatches {
 
 /// Whether a [`BatchCoalescer`] copies a `data_type` column's rows into the
 /// batch it builds: primitive and view types, though for views it may keep
-/// the input's string buffers instead (see [`compact_view_columns`]). It
+/// the input's string buffers instead (see [`fit_view_columns`]). It
 /// keeps slices of any other column, which hold on to the whole array they
 /// were sliced from.
 fn coalescer_copies(data_type: &DataType) -> bool {
@@ -364,7 +365,7 @@ pub(crate) fn used_bytes(array: &ArrayRef) -> usize {
         ),
         DataType::Map(..) => {
             let map = array.as_map();
-            let entries: ArrayRef = std::sync::Arc::new(map.entries().clone());
+            let entries: ArrayRef = Arc::new(map.entries().clone());
             list_used_bytes(map.value_offsets(), &entries, nulls)
         }
         _ => array
@@ -385,45 +386,38 @@ fn list_used_bytes<O: OffsetSizeTrait>(
     size_of_val(offsets) + nulls + used_bytes(&values.slice(start, end - start))
 }
 
-/// `batch` with every view column whose string buffers hold more bytes than
-/// its views reference rewritten by `gc()`.
+/// `batch` with each view column's strings in a buffer of their size, as the
+/// deferred gather leaves them.
 ///
-/// A [`BatchCoalescer`] copies a view column's strings only if the rows
-/// pushed use less than half of their string buffers; otherwise it keeps the
-/// buffers, unused bytes and all, and they would be spilled and written with
-/// the batch. Buffers it copied into hold exactly the bytes used, so only a
-/// batch that kept an input's buffers is copied again.
-fn compact_view_columns(
-    batch: RecordBatch,
-) -> std::result::Result<RecordBatch, ArrowError> {
-    let wasteful = |array: &ArrayRef| {
-        let held = match array.data_type() {
-            DataType::Utf8View => array.as_string_view().data_buffers(),
-            DataType::BinaryView => array.as_binary_view().data_buffers(),
-            _ => return false,
+/// A [`BatchCoalescer`] copies a view column's strings into blocks of up to
+/// 1 MiB, and a completed batch keeps its last block whole however little of
+/// it is filled. If the rows pushed used at least half of their input's
+/// string buffers, it keeps those buffers instead, shared and holding strings
+/// no view references. Either way `gc()` copies the strings out. Shrinking
+/// the block would be cheaper but leaves the allocator free to keep it whole:
+/// mimalloc keeps any block at least half used.
+fn fit_view_columns(batch: RecordBatch) -> std::result::Result<RecordBatch, ArrowError> {
+    let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+    let (schema, mut columns, _) = batch.into_parts();
+    for column in &mut columns {
+        let fitted = match column.data_type() {
+            DataType::Utf8View => gc_if_oversized(column.as_string_view()),
+            DataType::BinaryView => gc_if_oversized(column.as_binary_view()),
+            _ => None,
+        };
+        if let Some(fitted) = fitted {
+            *column = fitted;
         }
-        .iter()
-        .map(|b| b.len())
-        .sum::<usize>();
-        view_data_bytes(array).is_some_and(|used| held > used)
-    };
-    if !batch.columns().iter().any(wasteful) {
-        return Ok(batch);
     }
-    let columns = batch
-        .columns()
-        .iter()
-        .map(|array| -> ArrayRef {
-            if !wasteful(array) {
-                return array.clone();
-            }
-            match array.data_type() {
-                DataType::Utf8View => std::sync::Arc::new(array.as_string_view().gc()),
-                _ => std::sync::Arc::new(array.as_binary_view().gc()),
-            }
-        })
-        .collect();
-    RecordBatch::try_new(batch.schema(), columns)
+    RecordBatch::try_new_with_options(schema, columns, &options)
+}
+
+/// `array` with its strings copied by `gc()` into a buffer of their size, if
+/// its buffers allocate more than its views reference.
+fn gc_if_oversized<T: ByteViewType>(array: &GenericByteViewArray<T>) -> Option<ArrayRef> {
+    let allocated: usize = array.data_buffers().iter().map(Buffer::capacity).sum();
+    (allocated > array.total_buffer_bytes_used())
+        .then(|| Arc::new(array.gc()) as ArrayRef)
 }
 
 /// [`used_bytes`] summed over `batch`'s columns.
@@ -516,7 +510,7 @@ impl SplitBuffer {
     ) -> std::result::Result<(), ArrowError> {
         self.coalescers[partition].push_batch(batch)?;
         while let Some(done) = self.coalescers[partition].next_completed_batch() {
-            let done = compact_view_columns(done)?;
+            let done = fit_view_columns(done)?;
             self.completed_bytes += done.get_array_memory_size();
             self.completed[partition].push(done);
         }
@@ -533,7 +527,7 @@ impl SplitBuffer {
                 coalescer.finish_buffered_batch()?;
                 let mut batches = std::mem::take(completed);
                 while let Some(done) = coalescer.next_completed_batch() {
-                    batches.push(compact_view_columns(done)?);
+                    batches.push(fit_view_columns(done)?);
                 }
                 Ok(batches)
             })
@@ -633,7 +627,6 @@ mod tests {
     use datafusion::execution::memory_pool::{
         GreedyMemoryPool, MemoryConsumer, MemoryPool, UnboundedMemoryPool,
     };
-    use std::sync::Arc;
 
     /// A row of [`batch`]: a 4-byte int, a 16-byte view and a 32-byte string.
     const ROW_BYTES: usize = 4 + 16 + 32;
@@ -1101,6 +1094,44 @@ mod tests {
                 (1, batch(vec![23]), 32),
             ]
         );
+    }
+
+    #[test]
+    fn split_fits_the_string_blocks_it_copies_into() {
+        // Each partition gets a quarter of every batch, so the coalescer
+        // copies its strings, into blocks that grow far larger than a
+        // 1024-row batch of 100-byte strings needs.
+        let input = |b: i32| {
+            batch_with((1024 * b..1024 * (b + 1)).collect(), |v| {
+                format!("{v:<100}")
+            })
+        };
+        let rows: Vec<Vec<u32>> =
+            (0..4).map(|p| (p..1024).step_by(4).collect()).collect();
+        let run = |budget| {
+            let mut bb = BufferedBatches::new(4, 1024, budget);
+            for b in 0..40 {
+                bb.push(input(b), &rows).unwrap();
+            }
+            let layout = bb.layout();
+            let out: Vec<(usize, RecordBatch, usize)> = drain(&mut bb)
+                .into_iter()
+                .map(|(partition, batch)| {
+                    let strings = batch.column(1).as_string_view();
+                    let allocated =
+                        strings.data_buffers().iter().map(|b| b.capacity()).sum();
+                    (partition, batch, allocated)
+                })
+                .collect();
+            (layout, out)
+        };
+        let (split_layout, split) = run(usize::MAX);
+        let (deferred_layout, deferred) = run(0);
+        assert_eq!((split_layout, deferred_layout), ("split", "deferred"));
+        // Both layouts allocate only the 1024 strings of each batch.
+        assert_eq!(split, deferred);
+        let allocated: Vec<usize> = deferred.iter().map(|(_, _, a)| *a).collect();
+        assert_eq!(allocated, vec![1024 * 100; 40]);
     }
 
     #[test]
