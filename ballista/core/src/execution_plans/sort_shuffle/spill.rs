@@ -22,27 +22,34 @@
 //! because the per-task buffer budget was reached.
 //! At finalization, the spill bytes are concatenated verbatim into the
 //! consolidated output file alongside the in-memory remainder.
+//!
+//! Each spill event appends one complete Arrow IPC stream to each spilled
+//! partition's file and closes its writer, so a partition's spill file holds
+//! one stream per event and no writer outlives the event. Keeping a writer
+//! open per partition would hold a file descriptor and a compression context
+//! (about 0.3-0.7 MB each for zstd, outside the memory pool) for every output
+//! partition until the task finishes.
 
 use crate::JobId;
 use crate::error::{BallistaError, Result};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::ipc::{CompressionType, writer::IpcWriteOptions};
 use datafusion::arrow::record_batch::RecordBatch;
 use log::debug;
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 /// Manages spill files for sort-based shuffle.
 ///
 /// When partition buffers exceed memory limits, they are spilled to disk
-/// as Arrow IPC streams. Each output partition has at most one spill file
-/// that is appended to across multiple spill calls. During finalization,
-/// the spill file bytes are concatenated directly into the consolidated
-/// output file (no decode/re-encode round-trip).
+/// as Arrow IPC streams. Each output partition has at most one spill file,
+/// and each spill call appends one complete stream to it. During
+/// finalization, the spill file bytes are concatenated directly into the
+/// consolidated output file (no decode/re-encode round-trip); readers
+/// already cross concatenated streams.
 pub struct SpillManager {
     /// Base directory for spill files
     spill_dir: PathBuf,
@@ -50,8 +57,6 @@ pub struct SpillManager {
     schema: SchemaRef,
     /// Spill file path per output partition: partition_id -> spill_file_path
     spill_files: HashMap<usize, PathBuf>,
-    /// Active writers per partition, kept open for appending
-    active_writers: HashMap<usize, StreamWriter<BufWriter<File>>>,
     /// Compression codec for spill files
     compression: Option<CompressionType>,
     /// Total number of batches written across all spill files. One call to
@@ -98,7 +103,6 @@ impl SpillManager {
             spill_dir,
             schema,
             spill_files: HashMap::new(),
-            active_writers: HashMap::new(),
             compression,
             total_spilled_batches: 0,
             total_bytes_spilled: 0,
@@ -106,51 +110,82 @@ impl SpillManager {
         })
     }
 
-    /// Spills a single `batch` for `partition_id` to disk. The first call for
-    /// a given `partition_id` creates the spill file; subsequent calls append.
+    /// Spills `batches` for `partition_id` to disk as one complete IPC
+    /// stream appended to the partition's spill file, which the first call
+    /// for a given `partition_id` creates. The writer is finished and dropped
+    /// before returning.
+    ///
+    /// Returns `(batches, bytes)` written, with bytes estimated from each
+    /// batch's array memory size.
+    pub fn spill_batches(
+        &mut self,
+        partition_id: usize,
+        batches: &mut dyn Iterator<Item = datafusion::error::Result<RecordBatch>>,
+    ) -> Result<(u64, u64)> {
+        let spill_path = self.spill_file_path(partition_id);
+        let mut writer: Option<StreamWriter<BufWriter<std::fs::File>>> = None;
+        let mut event_batches: u64 = 0;
+        let mut event_bytes: u64 = 0;
+        for batch in batches {
+            let batch = batch?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            let writer = match &mut writer {
+                Some(writer) => writer,
+                None => {
+                    debug!("Spilling partition {} to {:?}", partition_id, spill_path);
+                    let file = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&spill_path)
+                        .map_err(BallistaError::IoError)?;
+                    let options = IpcWriteOptions::default()
+                        .try_with_compression(self.compression)?;
+                    writer.insert(StreamWriter::try_new_with_options(
+                        BufWriter::new(file),
+                        &self.schema,
+                        options,
+                    )?)
+                }
+            };
+            let bytes = batch.get_array_memory_size() as u64;
+            writer.write(&batch)?;
+
+            let entry = self
+                .partition_counters
+                .entry(partition_id)
+                .or_insert((0, 0, 0));
+            entry.0 += 1;
+            entry.1 += batch.num_rows() as u64;
+            entry.2 += bytes;
+            event_batches += 1;
+            event_bytes += bytes;
+        }
+        if let Some(mut writer) = writer {
+            writer.finish()?;
+            writer
+                .into_inner()?
+                .into_inner()
+                .map_err(|e| BallistaError::IoError(e.into_error()))?;
+            self.spill_files.insert(partition_id, spill_path);
+        }
+
+        self.total_spilled_batches += event_batches;
+        self.total_bytes_spilled += event_bytes;
+
+        Ok((event_batches, event_bytes))
+    }
+
+    /// Spills a single `batch` for `partition_id` to disk; see
+    /// [`Self::spill_batches`].
     ///
     /// Returns the number of bytes written (estimated from the batch's array
     /// memory size).
     pub fn spill(&mut self, partition_id: usize, batch: &RecordBatch) -> Result<u64> {
-        if batch.num_rows() == 0 {
-            return Ok(0);
-        }
-
-        if !self.active_writers.contains_key(&partition_id) {
-            let spill_path = self.spill_file_path(partition_id);
-            debug!(
-                "Creating spill file for partition {} at {:?}",
-                partition_id, spill_path
-            );
-            let file = File::create(&spill_path).map_err(BallistaError::IoError)?;
-            let buffered = BufWriter::new(file);
-
-            let options =
-                IpcWriteOptions::default().try_with_compression(self.compression)?;
-
-            let writer =
-                StreamWriter::try_new_with_options(buffered, &self.schema, options)?;
-
-            self.active_writers.insert(partition_id, writer);
-            self.spill_files.insert(partition_id, spill_path);
-        }
-
-        let writer = self.active_writers.get_mut(&partition_id).unwrap();
-        let bytes_written = batch.get_array_memory_size() as u64;
-        writer.write(batch)?;
-
-        let entry = self
-            .partition_counters
-            .entry(partition_id)
-            .or_insert((0, 0, 0));
-        entry.0 += 1;
-        entry.1 += batch.num_rows() as u64;
-        entry.2 += bytes_written;
-
-        self.total_spilled_batches += 1;
-        self.total_bytes_spilled += bytes_written;
-
-        Ok(bytes_written)
+        let (_, bytes) =
+            self.spill_batches(partition_id, &mut std::iter::once(Ok(batch.clone())))?;
+        Ok(bytes)
     }
 
     /// Returns true if the partition has a spill file.
@@ -158,37 +193,8 @@ impl SpillManager {
         self.spill_files.contains_key(&partition_id)
     }
 
-    /// Finishes all active writers so spill files can be read.
-    /// Must be called before `open_spill_reader`.
-    pub fn finish_writers(&mut self) -> Result<()> {
-        for (_, mut writer) in self.active_writers.drain() {
-            writer.finish()?;
-        }
-        Ok(())
-    }
-
-    /// Opens the spill file for a partition and returns a streaming
-    /// reader. `finish_writers` must be called before this method.
-    pub fn open_spill_reader(
-        &self,
-        partition_id: usize,
-    ) -> Result<Option<StreamReader<File>>> {
-        match self.spill_files.get(&partition_id) {
-            Some(spill_path) => {
-                let file = File::open(spill_path).map_err(BallistaError::IoError)?;
-                let reader = StreamReader::try_new(file, None)?;
-                Ok(Some(reader))
-            }
-            None => Ok(None),
-        }
-    }
-
     /// Cleans up all spill files.
     pub fn cleanup(&mut self) -> Result<()> {
-        // Finish any active writers first
-        for (_, mut writer) in self.active_writers.drain() {
-            let _ = writer.finish();
-        }
         if self.spill_dir.exists() {
             std::fs::remove_dir_all(&self.spill_dir).map_err(BallistaError::IoError)?;
         }
@@ -223,8 +229,7 @@ impl SpillManager {
     }
 
     /// Returns the path to a partition's spill file, or `None` if no batches
-    /// were ever spilled for that partition. `finish_writers` must be called
-    /// before this path is read by another process.
+    /// were ever spilled for that partition.
     pub fn spill_path(&self, partition_id: usize) -> Option<&Path> {
         self.spill_files.get(&partition_id).map(PathBuf::as_path)
     }
@@ -273,6 +278,30 @@ mod tests {
         RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap()
     }
 
+    /// Reads every batch of a partition's spill file, across the one stream
+    /// each spill event appended.
+    fn read_spill(
+        manager: &SpillManager,
+        partition_id: usize,
+    ) -> Result<Vec<RecordBatch>> {
+        use datafusion::arrow::ipc::reader::StreamReader;
+        use std::io::{Seek, SeekFrom};
+        let path = manager.spill_path(partition_id).unwrap();
+        let len = std::fs::metadata(path)?.len();
+        let mut batches = Vec::new();
+        let mut offset = 0;
+        while offset < len {
+            let mut file = std::fs::File::open(path)?;
+            file.seek(SeekFrom::Start(offset))?;
+            let mut reader = StreamReader::try_new(file, None)?;
+            for batch in reader.by_ref() {
+                batches.push(batch?);
+            }
+            offset = reader.get_mut().stream_position()?;
+        }
+        Ok(batches)
+    }
+
     #[test]
     fn test_spill_and_read() -> Result<()> {
         let temp_dir = TempDir::new().unwrap();
@@ -297,11 +326,7 @@ mod tests {
         assert!(!manager.has_spill_files(1));
         assert_eq!(manager.total_spilled_batches(), 2);
 
-        manager.finish_writers()?;
-
-        let reader = manager.open_spill_reader(0)?.unwrap();
-        let read_batches: Vec<_> =
-            reader.into_iter().collect::<std::result::Result<_, _>>()?;
+        let read_batches = read_spill(&manager, 0)?;
         assert_eq!(read_batches.len(), 2);
         assert_eq!(read_batches[0].num_rows(), 3);
         assert_eq!(read_batches[1].num_rows(), 2);
@@ -331,16 +356,8 @@ mod tests {
         assert!(manager.has_spill_files(1));
         assert_eq!(manager.total_spilled_batches(), 2);
 
-        manager.finish_writers()?;
-
-        let r0 = manager
-            .open_spill_reader(0)?
-            .unwrap()
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let r1 = manager
-            .open_spill_reader(1)?
-            .unwrap()
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let r0 = read_spill(&manager, 0)?;
+        let r1 = read_spill(&manager, 1)?;
         assert_eq!(r0.len(), 1);
         assert_eq!(r1.len(), 1);
 
