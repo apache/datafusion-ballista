@@ -52,7 +52,9 @@
 //! scan and to broadcast. A `l_returnflag = 'R'` filter on `lineitem` has the
 //! same shape as `n_name = 'FRANCE'` but is rejected on size. The semi join
 //! is only added when it moves below at least one join; directly above `a`
-//! it would just repeat the join it came from.
+//! it would just repeat the join it came from. It is removed again when the
+//! input it lands on is tiny (under 100K estimated rows, such as `nation`
+//! reduced by `region`), where it only adds a join.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -72,6 +74,10 @@ use log::debug;
 use super::SemiJoinPushdown;
 use super::semi_join_pushdown::sink;
 use crate::config::BallistaConfig;
+
+/// Estimated rows below which reducing the input a semi join lands on is not
+/// worth the extra join.
+const MIN_LANDING_ROWS: usize = 100_000;
 
 /// Alias prefix of the dimension copies this rule adds. Also how the rule
 /// recognises its own semi joins on later optimizer passes.
@@ -151,7 +157,64 @@ pub async fn apply_semi_join_reduction(
         Arc::new(SemiJoinReduction::new(Arc::new(small))),
         Arc::new(SemiJoinPushdown::new()),
     ];
-    Optimizer::with_rules(rules).optimize(optimized, state, |_, _| {})
+    let reduced = Optimizer::with_rules(rules).optimize(optimized, state, |_, _| {})?;
+
+    // A semi join that landed on a tiny input (such as `nation` reduced by
+    // `region`) saves nothing measurable and adds a join: remove it again.
+    let mut landings = Vec::new();
+    reduced.apply(|node| {
+        if let Some(input) = added_semi_join_input(node) {
+            landings.push(input.clone());
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    let mut pointless = HashSet::new();
+    for input in landings {
+        let key = dimension_key(&input);
+        if pointless.contains(&key) {
+            continue;
+        }
+        let physical = state
+            .query_planner()
+            .create_physical_plan(&input, state)
+            .await?;
+        let rows = StatisticsContext::new()
+            .compute(physical.as_ref(), &StatisticsArgs::new())?
+            .num_rows;
+        if rows.get_value().is_some_and(|r| *r <= MIN_LANDING_ROWS) {
+            pointless.insert(key);
+        }
+    }
+    if pointless.is_empty() {
+        return Ok(reduced);
+    }
+    let reduced = reduced
+        .transform_up(|node| match added_semi_join_input(&node) {
+            Some(input) if pointless.contains(&dimension_key(input)) => {
+                Ok(Transformed::yes(input.clone()))
+            }
+            _ => Ok(Transformed::no(node)),
+        })?
+        .data;
+    if reduced.exists(|node| Ok(added_semi_join_input(node).is_some()))? {
+        Ok(reduced)
+    } else {
+        Ok(plan.clone())
+    }
+}
+
+/// The left input of a semi join this rule added, or `None` for any other node.
+fn added_semi_join_input(node: &LogicalPlan) -> Option<&LogicalPlan> {
+    match node {
+        LogicalPlan::Join(j)
+            if j.join_type == JoinType::LeftSemi
+                && matches!(j.right.as_ref(), LogicalPlan::SubqueryAlias(a)
+                    if a.alias.table().starts_with(REDUCE_ALIAS)) =>
+        {
+            Some(j.left.as_ref())
+        }
+        _ => None,
+    }
 }
 
 /// The dimension side of every inner join that [`SemiJoinReduction`] could

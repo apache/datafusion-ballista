@@ -161,7 +161,7 @@ pub const BALLISTA_NOT_IN_SUBQUERY_REWRITE: &str =
     "ballista.optimizer.not_in_subquery_rewrite";
 
 /// Configuration key controlling whether semi and anti joins are pushed below
-/// inner joins, projections and filters during logical optimization, so they
+/// inner joins and projections during logical optimization, so they
 /// filter one join input instead of the joined result. Enabled by default.
 pub const BALLISTA_SEMI_JOIN_PUSHDOWN: &str = "ballista.optimizer.semi_join_pushdown";
 
@@ -457,7 +457,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          Some("true".to_string())),
         ConfigEntry::new(BALLISTA_SEMI_JOIN_PUSHDOWN.to_string(),
                          "Pushes semi and anti joins (from IN, EXISTS and NOT EXISTS subqueries) \
-                         below inner joins, projections and filters during logical optimization, \
+                         below inner joins and projections during logical optimization, \
                          onto the join input that holds their keys. The subquery then filters \
                          that input before it is joined and shuffled, instead of filtering the \
                          joined result. Set to false to leave semi and anti joins where subquery \
@@ -1091,8 +1091,8 @@ impl BallistaConfig {
         self.get_bool_setting(BALLISTA_NOT_IN_SUBQUERY_REWRITE)
     }
 
-    /// Whether semi and anti joins are pushed below inner joins, projections
-    /// and filters during logical optimization.
+    /// Whether semi and anti joins are pushed below inner joins and projections
+    /// during logical optimization.
     pub fn semi_join_pushdown_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_SEMI_JOIN_PUSHDOWN)
     }

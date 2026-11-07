@@ -57,11 +57,15 @@
 //! another row:
 //!
 //! - a `Projection` that outputs every referenced column as a plain column;
-//! - a `Filter`;
 //! - an inner join, onto the side that holds every referenced column;
 //! - a left (right) outer join, onto its left (right), preserved, side only.
 //!   Pushing into the null-supplying side would turn a dropped row into a
 //!   null-extended one.
+//!
+//! It never moves below a `Filter`: that is sound too, but the filter is the
+//! cheaper of the two, so the semi join should see its output (TPC-H q4 probes
+//! 5.7M filtered orders instead of all 150M). `PushDownFilter` would also move
+//! the filter back above it on the next pass.
 //!
 //! The rule runs after DataFusion's own rules in each optimizer pass, so it
 //! sees decorrelated joins with their filters already pushed down.
@@ -71,13 +75,13 @@ use std::sync::Arc;
 
 use datafusion::common::tree_node::Transformed;
 use datafusion::common::{Column, DFSchema, Result};
-use datafusion::logical_expr::{Expr, Filter, Join, JoinType, LogicalPlan, Projection};
+use datafusion::logical_expr::{Expr, Join, JoinType, LogicalPlan, Projection};
 use datafusion::optimizer::optimizer::ApplyOrder;
 use datafusion::optimizer::{OptimizerConfig, OptimizerRule};
 
 use crate::config::BallistaConfig;
 
-/// Pushes semi and anti joins below inner joins, projections and filters,
+/// Pushes semi and anti joins below inner joins and projections,
 /// onto the join input that holds every column they reference. See the
 /// [module documentation](self) for the rewrite and why it is sound.
 ///
@@ -248,16 +252,6 @@ fn step(
             let pushed = place(semi_over(semi, Arc::clone(&projection.input))?, false)?;
             Ok(Some(LogicalPlan::Projection(Projection::try_new(
                 projection.expr.clone(),
-                Arc::new(pushed),
-            )?)))
-        }
-        LogicalPlan::Filter(filter) => {
-            if filter.predicate.is_volatile() {
-                return Ok(None);
-            }
-            let pushed = place(semi_over(semi, Arc::clone(&filter.input))?, false)?;
-            Ok(Some(LogicalPlan::Filter(Filter::try_new(
-                filter.predicate.clone(),
                 Arc::new(pushed),
             )?)))
         }
@@ -488,6 +482,26 @@ mod tests {
         assert!(
             line_of(&display, "LeftAnti Join") > line_of(&display, "Left Join"),
             "{display}"
+        );
+    }
+
+    #[test]
+    fn stays_above_a_filter() {
+        let plan = LogicalPlanBuilder::from(scan("a", &["k", "v"]))
+            .filter(col("a.v").gt(lit(3)))
+            .unwrap()
+            .join_on(
+                scan("s", &["x"]),
+                JoinType::LeftSemi,
+                [col("a.k").eq(col("s.x"))],
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let display = optimize(plan);
+        assert!(
+            line_of(&display, "LeftSemi Join") < line_of(&display, "Filter: a.v"),
+            "the filter must run before the semi join:\n{display}"
         );
     }
 
