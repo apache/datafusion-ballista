@@ -1118,10 +1118,12 @@ mod tests {
             8
         );
         // Rebuilding with the same children keeps the widened count.
-        let rebuilt = Arc::clone(&undecided).with_new_children(vec![
-            Arc::clone(&undecided.left),
-            Arc::clone(&undecided.right),
-        ])?;
+        let rebuilt = Arc::clone(&undecided).replace_children(
+            vec![Arc::clone(&undecided.left), Arc::clone(&undecided.right)],
+            datafusion::physical_plan::ReplaceChildrenOptions::new(
+                datafusion::physical_plan::ChildrenPropertiesMode::Recompute,
+            ),
+        )?;
         assert_eq!(
             rebuilt.properties().output_partitioning().partition_count(),
             8
