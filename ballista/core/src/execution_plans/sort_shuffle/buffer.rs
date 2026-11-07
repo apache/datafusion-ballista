@@ -32,9 +32,11 @@
 //! Every buffer starts deferred. Once it has `num_partitions × batch_size`
 //! rows, it switches to split if the partly filled batches would fit in
 //! `split_budget_bytes` and the memory pool grants their memory, which stays
-//! reserved while the buffer is split. A split buffer drained while mostly
-//! partly filled, as happens under memory pressure, goes back to deferred for
-//! good, so later spills do not each write a small batch per partition.
+//! reserved while the buffer is split. A buffer drained before it decides
+//! stays deferred for good, since memory ran short before splitting could
+//! pay off. A split buffer drained while mostly partly filled, as happens
+//! under memory pressure, goes back to deferred for good, so later spills do
+//! not each write a small batch per partition.
 
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use datafusion::arrow::array::{Array, ArrayRef, AsArray, OffsetSizeTrait, UInt32Array};
@@ -240,12 +242,20 @@ impl BufferedBatches {
     /// Empties the buffer, calling `f` once per non-empty partition, in
     /// partition order, with an iterator over its output batches of at most
     /// `batch_size` rows, in arrival order. The buffer is emptied first, so if
-    /// `f` or a gather fails, the remaining rows are dropped. A split buffer
-    /// that was mostly partly filled goes back to the deferred layout for good.
+    /// `f` or a gather fails, the remaining rows are dropped. A buffer that
+    /// had not yet decided, or a split buffer that was mostly partly filled,
+    /// stays deferred for good.
     pub fn drain(
         &mut self,
         mut f: impl FnMut(usize, &mut dyn Iterator<Item = Result<RecordBatch>>) -> Result<()>,
     ) -> Result<()> {
+        if let Mode::Deciding(b) = &mut self.mode {
+            let buffer = std::mem::replace(b, DeferredBuffer::new(self.num_partitions));
+            self.mode = Mode::Deferred {
+                buffer,
+                after_split: false,
+            };
+        }
         match &mut self.mode {
             Mode::Deciding(b) | Mode::Deferred { buffer: b, .. } => {
                 b.drain(self.batch_size, f)
@@ -831,6 +841,27 @@ mod tests {
             drain(&mut bb),
             vec![(0, batch(vec![0, 1, 2])), (1, batch(vec![3, 4, 5, 6]))]
         );
+    }
+
+    #[test]
+    fn stays_deferred_after_draining_before_deciding() {
+        let mut bb = BufferedBatches::new(2, 4, usize::MAX);
+        bb.push(batch(vec![0, 1, 2]), &[vec![0, 2], vec![1]])
+            .unwrap();
+        assert_eq!(bb.layout(), "deciding");
+        assert_eq!(
+            drain(&mut bb),
+            vec![(0, batch(vec![0, 2])), (1, batch(vec![1]))]
+        );
+        assert_eq!(bb.layout(), "deferred");
+
+        // For good, however many rows arrive.
+        bb.push(
+            batch((0..16).collect()),
+            &[(0..8).collect(), (8..16).collect()],
+        )
+        .unwrap();
+        assert_eq!(bb.layout(), "deferred");
     }
 
     #[test]
