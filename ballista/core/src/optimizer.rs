@@ -28,11 +28,16 @@
 //!
 //! [`SemiJoinPushdown`] moves semi and anti joins below the inner joins they
 //! were decorrelated above, so a subquery filters one join input instead of
-//! the joined result.
+//! the joined result. [`SemiJoinReduction`] adds such a semi join for a join
+//! against a small, selectively filtered dimension table, so its filter
+//! applies before the joins in between; the scheduler runs it through
+//! [`apply_semi_join_reduction`] before physical planning.
 
 mod semi_join_pushdown;
+mod semi_join_reduction;
 
 pub use semi_join_pushdown::SemiJoinPushdown;
+pub use semi_join_reduction::{SemiJoinReduction, apply_semi_join_reduction};
 
 use std::sync::Arc;
 
@@ -55,7 +60,8 @@ use crate::config::BallistaConfig;
 /// [`NotInSubqueryRewrite`] is prepended: it must run before DataFusion's
 /// `DecorrelatePredicateSubquery`, which would otherwise turn eligible `NOT IN`
 /// predicates into null-aware anti joins first. [`SemiJoinPushdown`] is
-/// appended, so it runs on the decorrelated joins. A rule with the same name in
+/// appended, so it runs on the decorrelated joins. [`SemiJoinReduction`] needs
+/// table sizes and runs separately, through [`apply_semi_join_reduction`]. A rule with the same name in
 /// `existing` is dropped so repeated session upgrades stay idempotent.
 pub fn with_ballista_optimizer_rules(
     existing: &[Arc<dyn OptimizerRule + Send + Sync>],

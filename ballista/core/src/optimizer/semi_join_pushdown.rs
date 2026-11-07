@@ -145,7 +145,7 @@ fn is_pushable_semi_join(join: &Join) -> bool {
 }
 
 /// Columns of the semi join's left input that its keys and filter read.
-fn left_referenced_columns(join: &Join) -> HashSet<Column> {
+pub(super) fn left_referenced_columns(join: &Join) -> HashSet<Column> {
     let left_schema = join.left.schema();
     let mut cols: HashSet<Column> = HashSet::new();
     for (l, _) in &join.on {
@@ -168,8 +168,8 @@ fn has_all(schema: &DFSchema, cols: &HashSet<Column>) -> bool {
 }
 
 /// Rebuilds `semi` with a new left input.
-fn semi_over(semi: &Join, left: Arc<LogicalPlan>) -> Result<LogicalPlan> {
-    Ok(LogicalPlan::Join(Join::try_new(
+fn semi_over(semi: &Join, left: Arc<LogicalPlan>) -> Result<Join> {
+    Join::try_new(
         left,
         Arc::clone(&semi.right),
         semi.on.clone(),
@@ -178,7 +178,7 @@ fn semi_over(semi: &Join, left: Arc<LogicalPlan>) -> Result<LogicalPlan> {
         semi.join_constraint,
         semi.null_equality,
         semi.null_aware,
-    )?))
+    )
 }
 
 /// Moves `semi` one operator down its left input, or returns `None` when the
@@ -186,6 +186,43 @@ fn semi_over(semi: &Join, left: Arc<LogicalPlan>) -> Result<LogicalPlan> {
 fn push_one_level(
     semi: &Join,
     referenced: &HashSet<Column>,
+) -> Result<Option<LogicalPlan>> {
+    step(semi, referenced, &mut |moved, _| {
+        Ok(LogicalPlan::Join(moved))
+    })
+}
+
+/// Sinks `semi` as far down its left input as it commutes, returning the
+/// rewritten plan and how many joins it moved below.
+pub(super) fn sink(semi: Join) -> Result<(LogicalPlan, usize)> {
+    let referenced = left_referenced_columns(&semi);
+    let mut joins_passed = 0;
+    let plan = sink_inner(semi, &referenced, &mut joins_passed)?;
+    Ok((plan, joins_passed))
+}
+
+fn sink_inner(
+    semi: Join,
+    referenced: &HashSet<Column>,
+    joins_passed: &mut usize,
+) -> Result<LogicalPlan> {
+    let moved = step(&semi, referenced, &mut |moved, through_join| {
+        if through_join {
+            *joins_passed += 1;
+        }
+        sink_inner(moved, referenced, joins_passed)
+    })?;
+    Ok(moved.unwrap_or(LogicalPlan::Join(semi)))
+}
+
+/// If `semi` commutes with the operator directly below it, rebuilds that
+/// operator with `semi` moved beneath it. `place` receives the moved semi join
+/// (and whether it moved below a join) and returns the plan to put in its
+/// position. Returns `None` when the operator below does not commute.
+fn step(
+    semi: &Join,
+    referenced: &HashSet<Column>,
+    place: &mut dyn FnMut(Join, bool) -> Result<LogicalPlan>,
 ) -> Result<Option<LogicalPlan>> {
     if referenced.is_empty() {
         // An uncorrelated EXISTS keeps all or none of the rows; leave it.
@@ -208,7 +245,7 @@ fn push_one_level(
             {
                 return Ok(None);
             }
-            let pushed = semi_over(semi, Arc::clone(&projection.input))?;
+            let pushed = place(semi_over(semi, Arc::clone(&projection.input))?, false)?;
             Ok(Some(LogicalPlan::Projection(Projection::try_new(
                 projection.expr.clone(),
                 Arc::new(pushed),
@@ -218,7 +255,7 @@ fn push_one_level(
             if filter.predicate.is_volatile() {
                 return Ok(None);
             }
-            let pushed = semi_over(semi, Arc::clone(&filter.input))?;
+            let pushed = place(semi_over(semi, Arc::clone(&filter.input))?, false)?;
             Ok(Some(LogicalPlan::Filter(Filter::try_new(
                 filter.predicate.clone(),
                 Arc::new(pushed),
@@ -234,20 +271,21 @@ fn push_one_level(
                 JoinType::Right => (false, true),
                 _ => (false, false),
             };
-            let (new_left, new_right) =
-                if to_left && has_all(inner.left.schema(), referenced) {
-                    (
-                        Arc::new(semi_over(semi, Arc::clone(&inner.left))?),
-                        Arc::clone(&inner.right),
-                    )
-                } else if to_right && has_all(inner.right.schema(), referenced) {
-                    (
-                        Arc::clone(&inner.left),
-                        Arc::new(semi_over(semi, Arc::clone(&inner.right))?),
-                    )
-                } else {
-                    return Ok(None);
-                };
+            let (new_left, new_right) = if to_left
+                && has_all(inner.left.schema(), referenced)
+            {
+                (
+                    Arc::new(place(semi_over(semi, Arc::clone(&inner.left))?, true)?),
+                    Arc::clone(&inner.right),
+                )
+            } else if to_right && has_all(inner.right.schema(), referenced) {
+                (
+                    Arc::clone(&inner.left),
+                    Arc::new(place(semi_over(semi, Arc::clone(&inner.right))?, true)?),
+                )
+            } else {
+                return Ok(None);
+            };
             Ok(Some(LogicalPlan::Join(Join::try_new(
                 new_left,
                 new_right,
