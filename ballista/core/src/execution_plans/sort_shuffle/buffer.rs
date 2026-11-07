@@ -38,7 +38,7 @@
 
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use datafusion::arrow::array::{Array, ArrayRef, AsArray, OffsetSizeTrait, UInt32Array};
-use datafusion::arrow::compute::BatchCoalescer;
+use datafusion::arrow::compute::{BatchCoalescer, take_record_batch};
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -399,19 +399,27 @@ impl SplitBuffer {
         batch: &RecordBatch,
         per_partition_rows: &[Vec<u32>],
     ) -> std::result::Result<(), ArrowError> {
+        if let Some(partition) = per_partition_rows
+            .iter()
+            .position(|rows| rows.len() == batch.num_rows())
+        {
+            return self.push_partition(partition, batch.clone());
+        }
+        // One `take` groups the rows by partition, rather than one per
+        // partition, then each partition's slice is copied into its coalescer.
+        let mut indices = Vec::with_capacity(batch.num_rows());
+        for rows in per_partition_rows {
+            indices.extend_from_slice(rows);
+        }
+        let indices = UInt32Array::from(indices);
+        let grouped = take_record_batch(batch, &indices)?;
+        let mut offset = 0;
         for (partition, rows) in per_partition_rows.iter().enumerate() {
             if rows.is_empty() {
                 continue;
             }
-            if rows.len() == batch.num_rows() {
-                // Every row goes to this partition, in order.
-                self.coalescers[partition].push_batch(batch.clone())?;
-            } else {
-                let indices = UInt32Array::from_iter_values(rows.iter().copied());
-                self.coalescers[partition]
-                    .push_batch_with_indices(batch.clone(), &indices)?;
-            }
-            self.collect_completed(partition);
+            self.push_partition(partition, grouped.slice(offset, rows.len()))?;
+            offset += rows.len();
         }
         Ok(())
     }
@@ -632,6 +640,31 @@ mod tests {
         // 4 list offsets, then only the 6 strings the slice reaches: 7
         // string offsets and 12 string bytes.
         assert_eq!(used_bytes(&lists.slice(2, 3)), 4 * 4 + 7 * 4 + 12);
+    }
+
+    #[test]
+    fn split_slices_each_partitions_rows_from_one_take() {
+        // Partition 1 is empty, so partition 2's slice must start where
+        // partition 0's ends.
+        let mut bb = BufferedBatches::new(3, 2, usize::MAX);
+        bb.push(
+            ints((0..6).collect()),
+            &[vec![4, 1, 3], vec![], vec![5, 0, 2]],
+        )
+        .unwrap();
+        assert!(bb.splits_on_arrival());
+        bb.push(ints(vec![6, 7]), &[vec![], vec![1], vec![0]])
+            .unwrap();
+        assert_eq!(
+            drain(&mut bb),
+            vec![
+                (0, ints(vec![4, 1])),
+                (0, ints(vec![3])),
+                (1, ints(vec![7])),
+                (2, ints(vec![5, 0])),
+                (2, ints(vec![2, 6])),
+            ]
+        );
     }
 
     #[test]
