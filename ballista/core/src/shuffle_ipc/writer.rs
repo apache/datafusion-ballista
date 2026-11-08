@@ -36,9 +36,6 @@ use log::warn;
 use std::io::Write;
 use std::sync::Arc;
 
-/// zstd level for rewritten bodies, the same as arrow-ipc's default.
-const ZSTD_LEVEL: i32 = 3;
-
 /// How [`ShuffleStreamWriter`]s encode the batches of one schema, decided once
 /// so that writers opened for many partitions of the same schema share it.
 #[derive(Clone, Debug)]
@@ -206,7 +203,7 @@ impl<W: Write> LengthsWriter<W> {
             &options,
         );
         write_message(&mut writer, encoded, &options)?;
-        let compressor = zstd::bulk::Compressor::new(ZSTD_LEVEL)
+        let compressor = zstd::bulk::Compressor::new(SHUFFLE_ZSTD_COMPRESSION_LEVEL)
             .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
         Ok(Self {
             writer,
