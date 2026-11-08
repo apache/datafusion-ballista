@@ -66,6 +66,8 @@ suite run each; they differ only in `ballista.execution.mode` (and the
 push-staged scheduling that pipelined mode requires). The other columns are
 from separate runs.
 
+<!-- BEGIN GENERATED BENCHMARK RESULTS -->
+
 |     Query | Ballista staged (s) | Ballista pipelined (s) | DataFusion Distributed (s) | Spark 4.1.3 (s) | Spark 4.1.3 + Comet 1.1.0-rc2 (s) | Trino 483 (s) |
 | --------: | ------------------: | ---------------------: | -------------------------: | --------------: | --------------------------------: | ------------: |
 |         1 |               15.49 |                  13.59 |                       7.85 |           71.45 |                             10.66 |          5.32 |
@@ -91,6 +93,8 @@ from separate runs.
 |        21 |               67.92 |                  54.62 |                      39.06 |           98.04 |                             68.43 |         83.22 |
 |        22 |               10.52 |                   7.68 |                       5.51 |           16.90 |                              9.22 |          7.29 |
 | **Total** |          **530.70** |             **326.00** |                 **395.83** |      **898.17** |                        **455.09** |    **411.62** |
+
+<!-- END GENERATED BENCHMARK RESULTS -->
 
 **Staged** is the default: stages run one after another and exchange data
 through shuffle files, with adaptive query execution (AQE). **Pipelined**
@@ -134,6 +138,14 @@ DataFusion Distributed <datafusion-distributed>
 
 ## Recording a new result set
 
+- Results are stored as JSON in
+  [`benchmarks/cluster/published/tpch-sf1000`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster/published/tpch-sf1000),
+  one file per column of the table, in the format `run.py` writes plus a
+  `label` for the column heading. Copy a run's file over the column it
+  replaces, leaving out anything private such as image registry names, then
+  run `python3 benchmarks/cluster/publish.py`. It regenerates the table on
+  this page and the charts and speedups in the top-level README, so do not
+  edit them by hand.
 - Pin the **exact commit** the numbers came from, not a branch name.
 - Replace the version, environment, config, and results tables together — a
   row that mixes numbers from different commits silently misattributes a
@@ -141,7 +153,8 @@ DataFusion Distributed <datafusion-distributed>
 - Prefer a single continuous suite run: a long-lived executor deep into a
   suite is not in the same state as a freshly started one.
 - Report `FAIL` for a query that ran but did not produce an answer, and
-  `OOM` when the failure is a known memory exhaustion. See the tracker for
+  `OOM` when the failure is a known memory exhaustion (set the query's
+  `error` to `OOM` in the JSON). See the tracker for
   open issues found by benchmarking: [#1359][aqe],
   [#2025][q18], [#2063][aqe-hang].
 
