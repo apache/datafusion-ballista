@@ -494,7 +494,15 @@ impl BallistaClient {
             None => stream.boxed(),
         };
 
-        Ok(Box::pin(BlockDataStream::try_new(stream).await?))
+        // Reading the first block can fail because the connection broke, or
+        // because the bytes were unusable. Either way the remote data could
+        // not be read, which `as_fetch_failed` turns into a re-run of the
+        // stage that produced it. Failures after the first block are
+        // reported by the stream itself.
+        let stream = BlockDataStream::try_new(stream)
+            .await
+            .map_err(|error| BallistaError::GrpcActionError(error.to_string()))?;
+        Ok(Box::pin(stream))
     }
 }
 
@@ -758,7 +766,19 @@ mod tests {
 
     use tonic::{Code, Status};
 
+    use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
+    use arrow_flight::{
+        ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
+        HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
+    };
+    use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::{Request, Response, Streaming};
+
     use crate::client::{BallistaClient, BlockDataStream};
+    use crate::error::BallistaError;
+    use crate::serde::scheduler::{PartitionId, ShuffleLayout};
+    use crate::serving::BoxedFlightStream;
     use crate::utils::with_retry;
 
     #[tokio::test]
@@ -972,5 +992,130 @@ mod tests {
                 .await;
 
         assert_eq!(batches, result.unwrap())
+    }
+
+    /// A Flight server whose `do_action` answers with a body that fails
+    /// before it carries a single block, as when the executor serving it dies
+    /// mid-response.
+    struct BrokenBodyService;
+
+    #[tonic::async_trait]
+    impl FlightService for BrokenBodyService {
+        type DoActionStream = BoxedFlightStream<arrow_flight::Result>;
+        type DoExchangeStream = BoxedFlightStream<FlightData>;
+        type DoGetStream = BoxedFlightStream<FlightData>;
+        type DoPutStream = BoxedFlightStream<PutResult>;
+        type HandshakeStream = BoxedFlightStream<HandshakeResponse>;
+        type ListActionsStream = BoxedFlightStream<ActionType>;
+        type ListFlightsStream = BoxedFlightStream<FlightInfo>;
+
+        async fn handshake(
+            &self,
+            _: Request<Streaming<HandshakeRequest>>,
+        ) -> Result<Response<Self::HandshakeStream>, Status> {
+            Err(Status::unimplemented("handshake"))
+        }
+
+        async fn list_flights(
+            &self,
+            _: Request<Criteria>,
+        ) -> Result<Response<Self::ListFlightsStream>, Status> {
+            Err(Status::unimplemented("list_flights"))
+        }
+
+        async fn get_flight_info(
+            &self,
+            _: Request<FlightDescriptor>,
+        ) -> Result<Response<FlightInfo>, Status> {
+            Err(Status::unimplemented("get_flight_info"))
+        }
+
+        async fn poll_flight_info(
+            &self,
+            _: Request<FlightDescriptor>,
+        ) -> Result<Response<PollInfo>, Status> {
+            Err(Status::unimplemented("poll_flight_info"))
+        }
+
+        async fn get_schema(
+            &self,
+            _: Request<FlightDescriptor>,
+        ) -> Result<Response<SchemaResult>, Status> {
+            Err(Status::unimplemented("get_schema"))
+        }
+
+        async fn do_get(
+            &self,
+            _: Request<Ticket>,
+        ) -> Result<Response<Self::DoGetStream>, Status> {
+            Err(Status::unimplemented("do_get"))
+        }
+
+        async fn do_put(
+            &self,
+            _: Request<Streaming<FlightData>>,
+        ) -> Result<Response<Self::DoPutStream>, Status> {
+            Err(Status::unimplemented("do_put"))
+        }
+
+        async fn do_exchange(
+            &self,
+            _: Request<Streaming<FlightData>>,
+        ) -> Result<Response<Self::DoExchangeStream>, Status> {
+            Err(Status::unimplemented("do_exchange"))
+        }
+
+        async fn do_action(
+            &self,
+            _: Request<arrow_flight::Action>,
+        ) -> Result<Response<Self::DoActionStream>, Status> {
+            Ok(Response::new(Box::pin(futures::stream::iter([Err(
+                Status::unknown("stream closed because of a broken pipe"),
+            )]))))
+        }
+
+        async fn list_actions(
+            &self,
+            _: Request<Empty>,
+        ) -> Result<Response<Self::ListActionsStream>, Status> {
+            Err(Status::unimplemented("list_actions"))
+        }
+    }
+
+    #[tokio::test]
+    async fn block_body_failing_before_the_first_block_is_a_fetch_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(FlightServiceServer::new(BrokenBodyService))
+                .serve_with_incoming(TcpListenerStream::new(listener)),
+        );
+
+        let partition_id = PartitionId {
+            job_id: "job".into(),
+            stage_id: 2,
+            partition_id: 3,
+        };
+        let mut client = BallistaClient::new_for_test("127.0.0.1", port);
+        let result = client
+            .fetch_partition(
+                "executor_1",
+                &partition_id,
+                None,
+                ShuffleLayout::Passthrough,
+                false,
+            )
+            .await;
+
+        match result {
+            Err(BallistaError::FetchFailed(executor_id, stage_id, partition_id, _)) => {
+                assert_eq!(executor_id, "executor_1");
+                assert_eq!(stage_id, 2);
+                assert_eq!(partition_id, 3);
+            }
+            Err(other) => panic!("expected FetchFailed, got {other:?}"),
+            Ok(_) => panic!("expected an error"),
+        }
     }
 }
