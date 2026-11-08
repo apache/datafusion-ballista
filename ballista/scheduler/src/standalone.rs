@@ -38,6 +38,7 @@ use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::info;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tonic::transport::server::TcpIncoming;
 
@@ -120,11 +121,18 @@ pub async fn new_standalone_scheduler_with_builder(
     info!(
         "Ballista Scheduler v{BALLISTA_VERSION} (DataFusion v{DATAFUSION_VERSION}) listening on {addr:?}"
     );
+    let grpc_server_config = GrpcServerConfig::default();
+    let incoming = TcpIncoming::from(listener)
+        .with_nodelay(Some(true))
+        .with_keepalive(Some(Duration::from_secs(
+            grpc_server_config.tcp_keepalive_seconds,
+        )));
     tokio::spawn(
-        create_grpc_server(&GrpcServerConfig::default())
+        create_grpc_server(&grpc_server_config)
             .add_service(server)
-            // tonic ignores the builder's `tcp_nodelay` on a pre-bound listener.
-            .serve_with_incoming(TcpIncoming::from(listener).with_nodelay(Some(true))),
+            // tonic ignores the builder's `tcp_nodelay` and `tcp_keepalive` on a
+            // pre-bound listener, so they are set on the incoming stream.
+            .serve_with_incoming(incoming),
     );
 
     Ok(addr)

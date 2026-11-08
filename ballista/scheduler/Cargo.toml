@@ -98,6 +98,7 @@ prost = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
+socket2 = { version = "0.6", features = ["all"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true, features = ["router"] }
