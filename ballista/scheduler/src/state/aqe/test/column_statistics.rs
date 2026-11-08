@@ -69,15 +69,13 @@ async fn completed_stage_column_statistics_reach_its_exchange() {
         schema.clone(),
         sized_statistics(&schema, 1_000_000_000, 40 * 1024 * MB),
     );
-    let lp = ctx
-        .sql("SELECT dim.val FROM dim JOIN fact ON dim.id = fact.id")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
-    let mut planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into(), None)
-        .await
-        .unwrap();
+    let mut planner = AdaptivePlanner::from_logical_sql(
+        &ctx,
+        "SELECT dim.val FROM dim JOIN fact ON dim.id = fact.id",
+        None,
+    )
+    .await
+    .unwrap();
     let (stages, _) = planner.actionable_stages().unwrap();
     assert_eq!(1, stages.unwrap().len());
 

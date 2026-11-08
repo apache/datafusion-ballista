@@ -26,7 +26,7 @@ use datafusion::{
         datatypes::{DataType, Field, Schema},
     },
     datasource::MemTable,
-    execution::{SessionStateBuilder, config::SessionConfig, context::SessionContext},
+    execution::{config::SessionConfig, context::SessionContext},
 };
 use std::sync::Arc;
 
@@ -69,10 +69,7 @@ fn make_ctx(prefer_hash_join: bool) -> SessionContext {
         .set_bool("datafusion.optimizer.prefer_hash_join", prefer_hash_join)
         .with_target_partitions(4)
         .with_round_robin_repartition(false);
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_config(config)
-        .build();
-    SessionContext::new_with_state(state)
+    SessionContext::new_with_config(config)
 }
 
 /// A build budget comfortably above the mock shuffle partitions' 10 bytes, so
@@ -113,10 +110,7 @@ fn make_ctx_without_collect_left(max_build_partition_bytes: usize) -> SessionCon
         .with_ballista_broadcast_join_threshold_bytes(0)
         .with_target_partitions(4)
         .with_round_robin_repartition(false);
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_config(config)
-        .build();
-    SessionContext::new_with_state(state)
+    SessionContext::new_with_config(config)
 }
 
 fn register_2tables(ctx: &SessionContext) {
@@ -147,14 +141,12 @@ async fn test_hash_join_two_tables_coalesce() -> datafusion::common::Result<()> 
     let ctx = make_ctx(true);
     register_2tables(&ctx);
 
-    let lp = ctx
-        .sql("SELECT t1.id, t2.val FROM t1 JOIN t2 ON t1.id = t2.id")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
-
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into(), None).await?;
+    let planner = AdaptivePlanner::from_logical_sql(
+        &ctx,
+        "SELECT t1.id, t2.val FROM t1 JOIN t2 ON t1.id = t2.id",
+        None,
+    )
+    .await?;
     let plan = planner.current_plan();
     // TODO: we could probably push datasource to read single partition
     assert_plan!(plan, @ r"
@@ -178,14 +170,12 @@ async fn test_left_join_not_collected_left() -> datafusion::common::Result<()> {
     let ctx = make_ctx(true);
     register_2tables(&ctx);
 
-    let lp = ctx
-        .sql("SELECT t1.id, t2.val FROM t1 LEFT JOIN t2 ON t1.id = t2.id")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
-
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into(), None).await?;
+    let planner = AdaptivePlanner::from_logical_sql(
+        &ctx,
+        "SELECT t1.id, t2.val FROM t1 LEFT JOIN t2 ON t1.id = t2.id",
+        None,
+    )
+    .await?;
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
@@ -204,16 +194,12 @@ async fn test_hash_join_two_tables_repartition() -> datafusion::common::Result<(
     let ctx = make_ctx_without_collect_left(FITS_BUILD_BUDGET);
     register_2tables(&ctx);
 
-    let lp = ctx
-        .sql("SELECT t1.id, t2.val FROM t1 JOIN t2 ON t1.id = t2.id")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
-
-    let mut planner =
-        AdaptivePlanner::try_new(&ctx, &lp, "test_job".into(), None).await?;
-
+    let mut planner = AdaptivePlanner::from_logical_sql(
+        &ctx,
+        "SELECT t1.id, t2.val FROM t1 JOIN t2 ON t1.id = t2.id",
+        None,
+    )
+    .await?;
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
@@ -266,16 +252,12 @@ async fn test_sort_merge_join_two_tables_repartition() -> datafusion::common::Re
     let ctx = make_ctx_without_collect_left(REJECTS_BUILD_BUDGET);
     register_2tables(&ctx);
 
-    let lp = ctx
-        .sql("SELECT t1.id, t2.val FROM t1 JOIN t2 ON t1.id = t2.id")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
-
-    let mut planner =
-        AdaptivePlanner::try_new(&ctx, &lp, "test_job".into(), None).await?;
-
+    let mut planner = AdaptivePlanner::from_logical_sql(
+        &ctx,
+        "SELECT t1.id, t2.val FROM t1 JOIN t2 ON t1.id = t2.id",
+        None,
+    )
+    .await?;
     let plan = planner.current_plan();
     assert_plan!(plan, @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=3, stage_id=pending, stage_resolved=false
@@ -334,14 +316,12 @@ async fn test_hash_join_three_tables_collect_left() -> datafusion::common::Resul
     let ctx = make_ctx(true);
     register_3tables(&ctx);
 
-    let lp = ctx
-        .sql("SELECT t1.id FROM t1 JOIN t2 ON t1.id = t2.id JOIN t3 ON t1.id = t3.id")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
-    let mut planner =
-        AdaptivePlanner::try_new(&ctx, &lp, "test_job".into(), None).await?;
+    let mut planner = AdaptivePlanner::from_logical_sql(
+        &ctx,
+        "SELECT t1.id FROM t1 JOIN t2 ON t1.id = t2.id JOIN t3 ON t1.id = t3.id",
+        None,
+    )
+    .await?;
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"
@@ -427,13 +407,12 @@ async fn test_hash_join_three_tables_repartition() -> datafusion::common::Result
     let ctx = make_ctx_without_collect_left(FITS_BUILD_BUDGET);
     register_3tables(&ctx);
 
-    let lp = ctx
-        .sql("SELECT t1.id FROM t1 JOIN t2 ON t1.id = t2.id JOIN t3 ON t1.id = t3.id")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into(), None).await?;
+    let planner = AdaptivePlanner::from_logical_sql(
+        &ctx,
+        "SELECT t1.id FROM t1 JOIN t2 ON t1.id = t2.id JOIN t3 ON t1.id = t3.id",
+        None,
+    )
+    .await?;
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"
@@ -458,13 +437,12 @@ async fn test_sort_merge_join_three_tables_repartition() -> datafusion::common::
     let ctx = make_ctx_without_collect_left(REJECTS_BUILD_BUDGET);
     register_3tables(&ctx);
 
-    let lp = ctx
-        .sql("SELECT t1.id FROM t1 JOIN t2 ON t1.id = t2.id JOIN t3 ON t1.id = t3.id")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
-    let planner = AdaptivePlanner::try_new(&ctx, &lp, "test_job".into(), None).await?;
+    let planner = AdaptivePlanner::from_logical_sql(
+        &ctx,
+        "SELECT t1.id FROM t1 JOIN t2 ON t1.id = t2.id JOIN t3 ON t1.id = t3.id",
+        None,
+    )
+    .await?;
     let plan = planner.current_plan();
 
     assert_plan!(plan, @ r"

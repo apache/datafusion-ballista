@@ -684,57 +684,17 @@ mod tests {
     use super::*;
     use crate::config::SchedulerConfig;
     use crate::scheduler_server::timestamp_millis;
-    use crate::state::executor_manager::ExecutorManager;
-    use crate::state::task_manager::TaskLauncher;
-    use crate::test_utils::test_cluster_context;
+    use crate::test_utils::{
+        BlackholeTaskLauncher, RejectingTaskLauncher, aggregation_logical_plan,
+        register_virtual_executor, test_cluster_context,
+    };
     use ballista_core::config::BALLISTA_EXECUTION_MODE;
     use ballista_core::extension::SessionConfigExt;
     use ballista_core::serde::BallistaCodec;
-    use ballista_core::serde::protobuf::MultiTaskDefinition;
-    use ballista_core::serde::scheduler::{
-        ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
-        ExecutorSpecification,
-    };
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
     use datafusion::execution::context::SessionConfig;
-    use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{LogicalPlan, col};
-    use datafusion::test_util::scan_empty_with_partitions;
+
     use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
-
-    struct RejectOne {
-        reject: JobId,
-    }
-
-    #[async_trait::async_trait]
-    impl TaskLauncher for RejectOne {
-        async fn launch_tasks(
-            &self,
-            _executor: &ExecutorMetadata,
-            tasks: Vec<MultiTaskDefinition>,
-            _executor_manager: &ExecutorManager,
-        ) -> Result<HashSet<JobId>> {
-            Ok(tasks
-                .iter()
-                .map(|t| JobId::from(t.job_id.clone()))
-                .filter(|j| j == &self.reject)
-                .take(1)
-                .collect())
-        }
-    }
-
-    fn agg_plan() -> LogicalPlan {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .build()
-            .unwrap()
-    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn launch_tasks_isolates_single_rejected_job() -> Result<()> {
@@ -747,29 +707,10 @@ mod tests {
                 BallistaCodec::default(),
                 "localhost:50050".to_owned(),
                 Arc::new(SchedulerConfig::default()),
-                Arc::new(RejectOne {
-                    reject: bad_job.clone(),
-                }),
+                Arc::new(RejectingTaskLauncher::only(bad_job.clone())),
             );
 
-        let vcores = 8;
-        state
-            .executor_manager
-            .register_executor(
-                ExecutorMetadata {
-                    id: "executor-1".to_string(),
-                    host: String::default(),
-                    port: 0,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_vcores(vcores),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                ExecutorData {
-                    executor_id: "executor-1".to_string(),
-                    total_vcores: vcores,
-                    available_vcores: vcores,
-                },
-            )
+        register_virtual_executor(&state.executor_manager, "executor-1".to_string(), 8)
             .await?;
 
         let ctx = state
@@ -787,7 +728,7 @@ mod tests {
                     job_id,
                     "",
                     ctx.clone(),
-                    &agg_plan(),
+                    &aggregation_logical_plan(2),
                     timestamp_millis(),
                     None,
                 )
@@ -847,29 +788,10 @@ mod tests {
                 BallistaCodec::default(),
                 "localhost:50050".to_owned(),
                 Arc::new(SchedulerConfig::default()),
-                Arc::new(RejectOne {
-                    reject: JobId::from("no-such-job"),
-                }),
+                Arc::new(BlackholeTaskLauncher::default()),
             );
 
-        let vcores = 8;
-        state
-            .executor_manager
-            .register_executor(
-                ExecutorMetadata {
-                    id: "executor-1".to_string(),
-                    host: String::default(),
-                    port: 0,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_vcores(vcores),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                ExecutorData {
-                    executor_id: "executor-1".to_string(),
-                    total_vcores: vcores,
-                    available_vcores: vcores,
-                },
-            )
+        register_virtual_executor(&state.executor_manager, "executor-1".to_string(), 8)
             .await?;
 
         let ctx = state
@@ -886,7 +808,7 @@ mod tests {
                     job_id,
                     "",
                     ctx.clone(),
-                    &agg_plan(),
+                    &aggregation_logical_plan(2),
                     timestamp_millis(),
                     None,
                 )
@@ -951,29 +873,10 @@ mod tests {
                 BallistaCodec::default(),
                 "localhost:50050".to_owned(),
                 Arc::new(SchedulerConfig::default()),
-                Arc::new(RejectOne {
-                    reject: JobId::from("no-such-job"),
-                }),
+                Arc::new(BlackholeTaskLauncher::default()),
             );
 
-        let vcores = 8;
-        state
-            .executor_manager
-            .register_executor(
-                ExecutorMetadata {
-                    id: "executor-1".to_string(),
-                    host: String::default(),
-                    port: 0,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_vcores(vcores),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                ExecutorData {
-                    executor_id: "executor-1".to_string(),
-                    total_vcores: vcores,
-                    available_vcores: vcores,
-                },
-            )
+        register_virtual_executor(&state.executor_manager, "executor-1".to_string(), 8)
             .await?;
 
         let ctx = state
@@ -985,7 +888,14 @@ mod tests {
             .queue_job(&job_id, "", timestamp_millis())?;
         state
             .task_manager
-            .submit_job(&job_id, "", ctx, &agg_plan(), timestamp_millis(), None)
+            .submit_job(
+                &job_id,
+                "",
+                ctx,
+                &aggregation_logical_plan(2),
+                timestamp_millis(),
+                None,
+            )
             .await?;
 
         let bound = state
@@ -1034,29 +944,10 @@ mod tests {
                 BallistaCodec::default(),
                 "localhost:50050".to_owned(),
                 Arc::new(SchedulerConfig::default()),
-                Arc::new(RejectOne {
-                    reject: job.clone(),
-                }),
+                Arc::new(RejectingTaskLauncher::only(job.clone())),
             );
 
-        let vcores = 8;
-        state
-            .executor_manager
-            .register_executor(
-                ExecutorMetadata {
-                    id: "executor-1".to_string(),
-                    host: String::default(),
-                    port: 0,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_vcores(vcores),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                ExecutorData {
-                    executor_id: "executor-1".to_string(),
-                    total_vcores: vcores,
-                    available_vcores: vcores,
-                },
-            )
+        register_virtual_executor(&state.executor_manager, "executor-1".to_string(), 8)
             .await?;
 
         let config = SessionConfig::new_with_ballista()
@@ -1068,7 +959,14 @@ mod tests {
         state.task_manager.queue_job(&job, "", timestamp_millis())?;
         state
             .task_manager
-            .submit_job(&job, "", ctx, &agg_plan(), timestamp_millis(), None)
+            .submit_job(
+                &job,
+                "",
+                ctx,
+                &aggregation_logical_plan(2),
+                timestamp_millis(),
+                None,
+            )
             .await?;
 
         let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
