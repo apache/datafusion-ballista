@@ -221,28 +221,45 @@ fn spill_limit_for_free_space(free: u64) -> Option<u64> {
 
 /// Bytes available to unprivileged users on the filesystem holding `path`, or
 /// on the closest existing parent when `path` itself does not exist yet.
+/// `None` when no disk sysinfo lists holds it (sysinfo skips tmpfs and network
+/// filesystems by default), so such a work dir keeps DataFusion's default.
 fn free_disk_space(path: &str) -> Option<u64> {
-    #[cfg(unix)]
-    {
-        let existing = std::path::Path::new(path)
-            .ancestors()
-            .find(|p| p.exists())
-            .unwrap_or(std::path::Path::new("."));
-        let c_path = std::ffi::CString::new(existing.to_str()?).ok()?;
-        // SAFETY: statvfs only writes the struct passed in; c_path is a valid
-        // NUL-terminated string for the duration of the call.
-        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } != 0 {
-            return None;
-        }
-        #[allow(clippy::unnecessary_cast)]
-        Some((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        None
-    }
+    let existing = std::path::Path::new(path)
+        .ancestors()
+        .find(|p| p.exists())
+        .unwrap_or(std::path::Path::new("."));
+    let disks = Disks::new_with_refreshed_list();
+    disk_holding(&disks, existing).map(|disk| disk.available_space())
+}
+
+/// The listed disk whose filesystem holds `path`, matched by device id so
+/// symlinks and bind mounts resolve to the right filesystem, and an unlisted
+/// filesystem (for example tmpfs) is not mistaken for its parent mount.
+#[cfg(unix)]
+fn disk_holding<'a>(
+    disks: &'a Disks,
+    path: &std::path::Path,
+) -> Option<&'a sysinfo::Disk> {
+    use std::os::unix::fs::MetadataExt;
+    let dev = std::fs::metadata(path).ok()?.dev();
+    disks
+        .list()
+        .iter()
+        .find(|disk| std::fs::metadata(disk.mount_point()).is_ok_and(|m| m.dev() == dev))
+}
+
+/// The listed disk whose mount point is the longest prefix of `path`.
+#[cfg(not(unix))]
+fn disk_holding<'a>(
+    disks: &'a Disks,
+    path: &std::path::Path,
+) -> Option<&'a sysinfo::Disk> {
+    let path = std::path::absolute(path).ok()?;
+    disks
+        .list()
+        .iter()
+        .filter(|disk| path.starts_with(disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().as_os_str().len())
 }
 
 /// Resolve the pool decision, reading host/cgroup limits only when auto-sizing.
