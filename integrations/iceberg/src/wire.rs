@@ -57,9 +57,11 @@ pub(crate) fn block_on<T: Send + 'static>(
 /// but each can hold megabytes of metadata.
 const TABLE_CACHE_CAPACITY: usize = 16;
 
-/// Tables rebuilt by [`TableWire::load`], least recently used first, so each
-/// process rebuilds a version once. Metadata files never change, so entries
-/// can't go stale.
+/// Tables rebuilt by [`TableWire::load`], least recently used first. Metadata
+/// files never change, so entries can't go stale. Entries are keyed by the
+/// table's `FileIO` too, so a process rebuilds a version once only while its
+/// storage credentials stay the same: a catalog that vends new credentials on
+/// each load makes each query rebuild it.
 static TABLES: LazyLock<Mutex<VecDeque<(TableWire, Table)>>> =
     LazyLock::new(|| Mutex::new(VecDeque::new()));
 
