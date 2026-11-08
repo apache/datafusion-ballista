@@ -22,6 +22,7 @@ use crate::scheduler_server::{DefaultJobGenerator, JobIdGenerator, timestamp_mil
 use crate::state::execution_graph::TaskDescription;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::pipelined_graph::{PlacementDecision, plan_placement};
+use crate::state::scheduler_root::CacheBuild;
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
 use ballista_core::config::{BALLISTA_EXECUTION_MODE, ExecutionMode};
@@ -66,6 +67,7 @@ pub mod executor_manager;
 // resolve the module's intra-doc links from this module instead.
 pub mod pipelined_graph;
 pub(crate) mod pipelined_join_selection;
+pub mod scheduler_root;
 /// Session state management.
 pub mod session_manager;
 /// Per-task plan rewriter (restrict scan/shuffle-reader to task's slice).
@@ -603,15 +605,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             .ballista_config()
             .execution_mode()?
             == ExecutionMode::Pipelined;
-        // A cache build runs staged whatever the session's mode: a pipelined
-        // job streams its output and leaves no shuffle files to cache. Jobs
-        // reading the cache keep the session's mode.
-        let session_ctx = if pipelined && self.cache_linker.key_of(job_id).is_some() {
+        let session_ctx = if self.cache_linker.key_of(job_id).is_some() {
             let mut state = session_ctx.state();
-            state
-                .config_mut()
-                .options_mut()
-                .set(BALLISTA_EXECUTION_MODE, &ExecutionMode::Staged.to_string())?;
+            // A cache build runs staged whatever the session's mode: a
+            // pipelined job streams its output and leaves no shuffle files to
+            // cache. Jobs reading the cache keep the session's mode.
+            if pipelined {
+                state
+                    .config_mut()
+                    .options_mut()
+                    .set(BALLISTA_EXECUTION_MODE, &ExecutionMode::Staged.to_string())?;
+            }
+            state.config_mut().set_extension(Arc::new(CacheBuild));
             Arc::new(SessionContext::new_with_state(state))
         } else if pipelined && !self.config.is_push_staged_scheduling() {
             // A pipelined job must be placed all at once, which the scheduler
@@ -644,10 +649,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub(crate) async fn clean_up_successful_job(
         &self,
         job_id: JobId,
-        intermediate_stage_ids: Vec<u32>,
+        spent_stage_ids: Vec<u32>,
     ) {
         self.executor_manager
-            .clean_up_intermediate_job_data(job_id.clone(), intermediate_stage_ids);
+            .clean_up_spent_stage_data(job_id.clone(), spent_stage_ids);
         let pinned = match self.cache_state.pinned_stages().await {
             Ok(pinned) => pinned.iter().any(|(pinned_job, _)| pinned_job == &job_id),
             Err(e) => {

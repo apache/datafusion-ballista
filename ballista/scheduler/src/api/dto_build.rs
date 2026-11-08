@@ -45,6 +45,7 @@ use datafusion::execution::context::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::metrics::{MetricsSet, Time};
+use log::warn;
 use std::time::Duration;
 
 /// Build the `JobResponse` list entry served by `GET /api/jobs`.
@@ -92,11 +93,11 @@ pub fn graph_to_job_response(
 
     let physical_plan = match plan_format {
         PlanFormat::Default | PlanFormat::Metrics => {
-            displayable(job.physical_plan().as_ref())
+            displayable(job.displayed_plan().as_ref())
                 .indent(false)
                 .to_string()
         }
-        PlanFormat::Tree => displayable(job.physical_plan().as_ref())
+        PlanFormat::Tree => displayable(job.displayed_plan().as_ref())
             .tree_render()
             .to_string(),
     };
@@ -129,7 +130,7 @@ pub fn graph_to_query_stages(
     plan_format: PlanFormat,
     now: u128,
 ) -> QueryStagesResponse {
-    let stages = graph
+    let mut stages: Vec<QueryStageSummary> = graph
         .as_ref()
         .stages()
         .iter()
@@ -177,8 +178,53 @@ pub fn graph_to_query_stages(
             }
         })
         .collect();
+    stages.extend(scheduler_root_stage(graph, plan_format));
 
     QueryStagesResponse { stages }
+}
+
+/// The job's scheduler root, if it has one, as a stage with id `scheduler`
+/// after the job's own: it runs on the scheduler once they have all
+/// succeeded, so it has no tasks, and no metrics of its own. Its plan is the
+/// root over a read of the job's output, shown once the root has started, as
+/// until then an adaptive job has not planned the stage it reads.
+fn scheduler_root_stage(
+    graph: &ExecutionGraphBox,
+    plan_format: PlanFormat,
+) -> Option<QueryStageSummary> {
+    let root = graph.scheduler_root()?;
+    // A root that has not started waits on the job's stages, as an
+    // unresolved stage waits on its inputs; once started, it is as far along
+    // as the job.
+    let stage_status = match &graph.status().status {
+        _ if !root.is_started() => "Unresolved",
+        Some(Status::Successful(_)) => "Successful",
+        Some(Status::Failed(_)) => "Failed",
+        _ => "Running",
+    };
+    Some(QueryStageSummary {
+        stage_id: "scheduler".to_owned(),
+        stage_status: stage_status.to_owned(),
+        input_rows: 0,
+        output_rows: 0,
+        elapsed_compute: None,
+        stage_plan: root
+            .is_started()
+            .then(|| root.root().over_output(graph.output_locations()))
+            .and_then(|plan| match plan {
+                Ok(plan) => Some(render_stage_plan(plan.as_ref(), &[], plan_format)),
+                Err(e) => {
+                    warn!(
+                        "Job {}: cannot show its scheduler root: {e}",
+                        graph.job_id()
+                    );
+                    None
+                }
+            }),
+        task_duration_percentiles: None,
+        task_input_percentiles: None,
+        tasks: vec![],
+    })
 }
 
 /// Render one stage's plan in the requested format. `Metrics` overlays the
@@ -792,5 +838,39 @@ mod tests {
     #[test]
     fn test_job_elapsed_ms_end_before_start_saturates_to_zero() {
         assert_eq!(super::job_elapsed_ms(500, 100), 0);
+    }
+
+    #[tokio::test]
+    async fn should_list_the_scheduler_root_as_a_stage_after_the_jobs() {
+        let mut graph: ExecutionGraphBox = Box::new(
+            crate::test_utils::test_aggregation_plan(4)
+                .await
+                .with_scheduler_root(Some(
+                    crate::state::scheduler_root::test_root().await,
+                )),
+        );
+        let root_stage = |graph: &ExecutionGraphBox| {
+            let stages = graph_to_query_stages(graph, PlanFormat::Default, 0).stages;
+            serde_json::to_string(stages.last().unwrap()).unwrap()
+        };
+
+        assert_eq!(
+            root_stage(&graph),
+            r#"{"stage_id":"scheduler","stage_status":"Unresolved","input_rows":0,"output_rows":0,"elapsed_compute":null,"tasks":[]}"#
+        );
+
+        // Handed to the scheduler once the job's stages have succeeded.
+        crate::test_utils::drain_tasks(graph.as_mut()).unwrap();
+        assert_eq!(
+            root_stage(&graph),
+            r#"{"stage_id":"scheduler","stage_status":"Running","input_rows":0,"output_rows":0,"elapsed_compute":null,"stage_plan":"DataSinkExec: sink=MemoryTable (partitions=1)\n  ShuffleReaderExec: upstream_stage: 2, partitioning: UnknownPartitioning(1)\n","tasks":[]}"#
+        );
+
+        // The root has run, and the job succeeded with its output.
+        assert!(graph.succeed_with_inline_result(vec![]).unwrap());
+        assert_eq!(
+            root_stage(&graph),
+            r#"{"stage_id":"scheduler","stage_status":"Successful","input_rows":0,"output_rows":0,"elapsed_compute":null,"stage_plan":"DataSinkExec: sink=MemoryTable (partitions=1)\n  ShuffleReaderExec: upstream_stage: 2, partitioning: UnknownPartitioning(1)\n","tasks":[]}"#
+        );
     }
 }

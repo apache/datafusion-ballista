@@ -22,8 +22,9 @@ use crate::serde::protobuf::KeyValuePair;
 use crate::serde::scheduler::PartitionStats;
 
 use datafusion::arrow::array::{ArrayRef, AsArray, GenericByteViewArray};
-use datafusion::arrow::datatypes::ByteViewType;
+use datafusion::arrow::datatypes::{ByteViewType, SchemaRef};
 use datafusion::arrow::ipc::CompressionType;
+use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -48,6 +49,14 @@ use tokio::net::TcpSocket;
 use tonic::codegen::StdError;
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::{Channel, Endpoint, Error, Server};
+
+/// Decodes an Arrow IPC stream, returning its schema and batches.
+pub fn decode_ipc_stream(bytes: &[u8]) -> Result<(SchemaRef, Vec<RecordBatch>)> {
+    let reader = StreamReader::try_new(bytes, None)?;
+    let schema = reader.schema();
+    let batches = reader.collect::<std::result::Result<_, _>>()?;
+    Ok((schema, batches))
+}
 
 /// Retry an async operation up to `retries` times after its initial attempt.
 ///

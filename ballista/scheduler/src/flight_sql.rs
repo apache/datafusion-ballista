@@ -26,6 +26,7 @@ use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::{JobStatus, RunningJob, SuccessfulJob, job_status};
+use ballista_core::utils::decode_ipc_stream;
 use ballista_flight_sql::backend::{PipelinedOutput, QueryBackend, QueryResult};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::LogicalPlan;
@@ -96,6 +97,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryBackend
                                 .ballista_config()
                                 .pipelined_registration_timeout(),
                         }),
+                        batches: None,
+                    });
+                }
+                // The job's root ran on the scheduler, which returned its
+                // output whole.
+                Some(job_status::Status::Successful(SuccessfulJob {
+                    inline_result: Some(result),
+                    ..
+                })) => {
+                    let (schema, batches) = decode_ipc_stream(&result)?;
+                    return Ok(QueryResult {
+                        job_id: job_id.to_string(),
+                        schema,
+                        partitions: vec![],
+                        pipelined: None,
+                        batches: Some(batches),
                     });
                 }
                 Some(job_status::Status::Successful(SuccessfulJob {
@@ -108,6 +125,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryBackend
                         schema,
                         partitions: partition_location,
                         pipelined: None,
+                        batches: None,
                     });
                 }
                 Some(job_status::Status::Failed(failed)) => {

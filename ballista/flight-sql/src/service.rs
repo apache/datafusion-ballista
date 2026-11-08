@@ -245,6 +245,20 @@ impl<B: QueryBackend> BallistaFlightSqlService<B> {
             .await
             .map_err(query_failed)?;
 
+        if let Some(batches) = result.batches {
+            let handle = Uuid::new_v4().to_string();
+            self.store.insert_result(
+                handle.clone(),
+                LocalResult {
+                    session_id: session_id.to_string(),
+                    schema: result.schema.clone(),
+                    batches,
+                },
+            );
+            let endpoint = Self::endpoint(StatementHandle::Local(handle));
+            return build_flight_info(&result.schema, vec![endpoint], descriptor);
+        }
+
         if let Some(pipelined) = &result.pipelined {
             let handle = pipelined_handle(&result.schema, pipelined).map_err(|e| {
                 Status::internal(format!("invalid pipelined partition location: {e}"))

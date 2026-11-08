@@ -23,6 +23,7 @@ use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::aqe::adaptive_rules::AdaptiveRules;
+use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_graph::{
     ExecutionGraphBox, RunningTaskInfo, StaticExecutionGraph, TaskDescription,
@@ -34,6 +35,7 @@ use crate::state::pipelined_graph::PipelinedExecutionGraph;
 use crate::state::pipelined_join_selection::{
     PipelinedJoinSelection, create_pipelined_physical_plan,
 };
+use crate::state::scheduler_root::SchedulerRoot;
 use crate::state::task_builder::restrict_plan_to_partitions;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
@@ -317,6 +319,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 let physical_plan =
                     handle_explain_plan(job_id, &ctx, logical_plan, physical_plan)
                         .await?;
+                SchedulerRoot::refuse(&physical_plan, &ctx)?;
                 Box::new(PipelinedExecutionGraph::new(
                     &self.scheduler_id,
                     job_id,
@@ -330,6 +333,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 )?) as ExecutionGraphBox
             }
             SubmitPlan::Physical(physical_plan) if pipelined => {
+                SchedulerRoot::refuse(physical_plan, &ctx)?;
                 let session_config = Arc::new(ctx.copied_config());
                 let physical_plan = PipelinedJoinSelection::new()
                     .optimize(physical_plan.clone(), session_config.options())?;
@@ -345,80 +349,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     None,
                 )?) as ExecutionGraphBox
             }
-            SubmitPlan::Logical(logical_plan) => {
-                if session_config.ballista_adaptive_query_planner_enabled() {
-                    debug!("Using adaptive query planner (AQE) for job planning");
-                    Box::new(
-                        AdaptiveExecutionGraph::try_new(
-                            &self.scheduler_id,
-                            job_id,
-                            job_name,
-                            &ctx,
-                            logical_plan,
-                            queued_at,
-                            self.adaptive_rules.as_deref(),
-                        )
-                        .await?,
-                    ) as ExecutionGraphBox
-                } else {
-                    debug!("Using static query planner for job planning");
-                    let session_config = Arc::new(ctx.copied_config());
-
-                    let physical_plan =
-                        ctx.state().create_physical_plan(logical_plan).await?;
-                    let physical_plan = BalanceAndPruneFileGroups::new()
-                        .optimize(physical_plan, session_config.options())?;
-                    let physical_plan =
-                        handle_explain_plan(job_id, &ctx, logical_plan, physical_plan)
-                            .await?;
-
-                    Box::new(StaticExecutionGraph::new(
-                        &self.scheduler_id,
-                        job_id,
-                        job_name,
-                        &ctx.session_id(),
-                        physical_plan,
-                        queued_at,
-                        session_config,
-                        &mut planner,
-                        Some(logical_plan.display_indent().to_string()),
-                    )?) as ExecutionGraphBox
-                }
-            }
-            SubmitPlan::Physical(physical_plan) => {
-                if session_config.ballista_adaptive_query_planner_enabled() {
-                    debug!(
-                        "Using adaptive query planner (AQE) for physical-plan job submission"
-                    );
-                    Box::new(AdaptiveExecutionGraph::try_new_from_physical(
-                        &self.scheduler_id,
-                        job_id,
-                        job_name,
-                        &ctx,
-                        physical_plan.clone(),
-                        queued_at,
-                        self.adaptive_rules.as_deref(),
-                    )?) as ExecutionGraphBox
-                } else {
-                    debug!("Using static query planner for physical-plan job submission");
-                    let session_config = Arc::new(ctx.copied_config());
-
-                    Box::new(StaticExecutionGraph::new(
-                        &self.scheduler_id,
-                        job_id,
-                        job_name,
-                        &ctx.session_id(),
-                        physical_plan.clone(),
-                        queued_at,
-                        session_config,
-                        &mut planner,
-                        None,
-                    )?) as ExecutionGraphBox
-                }
+            plan => {
+                self.plan_job(job_id, job_name, &ctx, plan, queued_at)
+                    .await?
             }
         };
         let string_plan =
-            datafusion::physical_plan::displayable(graph.physical_plan().as_ref())
+            datafusion::physical_plan::displayable(graph.displayed_plan().as_ref())
                 .indent(false)
                 .to_string();
 
@@ -432,6 +369,74 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .insert(job_id.to_owned(), JobInfoCache::new(graph));
 
         Ok(())
+    }
+
+    /// Plans a job that runs stage by stage, with the static or the adaptive
+    /// planner. A job's root that runs on the scheduler is split off once
+    /// the plan is planned, before it is cut into stages.
+    async fn plan_job(
+        &self,
+        job_id: &JobId,
+        job_name: &str,
+        ctx: &SessionContext,
+        plan: &SubmitPlan,
+        queued_at: u64,
+    ) -> Result<ExecutionGraphBox> {
+        let session_config = Arc::new(ctx.copied_config());
+        let adaptive = session_config.ballista_adaptive_query_planner_enabled();
+        let rules = self.adaptive_rules.as_deref();
+        let logical_plan = match plan {
+            SubmitPlan::Logical(plan) => Some(plan.display_indent().to_string()),
+            SubmitPlan::Physical(_) => None,
+        };
+
+        if adaptive {
+            debug!("Using adaptive query planner (AQE) for job planning");
+            let mut prepared = match plan {
+                SubmitPlan::Logical(plan) => {
+                    AdaptivePlanner::prepare_logical(ctx, plan, job_id, rules).await?
+                }
+                SubmitPlan::Physical(plan) => {
+                    AdaptivePlanner::prepare_physical(ctx, plan.clone(), rules)?
+                }
+            };
+            let (plan, root) = SchedulerRoot::split(Arc::clone(&prepared.plan), ctx)?;
+            prepared.plan = plan;
+            let graph = AdaptiveExecutionGraph::try_new_prepared(
+                &self.scheduler_id,
+                job_id,
+                job_name,
+                ctx,
+                prepared,
+                logical_plan,
+                queued_at,
+            )?;
+            Ok(Box::new(graph.with_scheduler_root(root)))
+        } else {
+            debug!("Using static query planner for job planning");
+            let physical_plan = match plan {
+                SubmitPlan::Logical(plan) => {
+                    let physical_plan = ctx.state().create_physical_plan(plan).await?;
+                    let physical_plan = BalanceAndPruneFileGroups::new()
+                        .optimize(physical_plan, session_config.options())?;
+                    handle_explain_plan(job_id, ctx, plan, physical_plan).await?
+                }
+                SubmitPlan::Physical(plan) => plan.clone(),
+            };
+            let (physical_plan, root) = SchedulerRoot::split(physical_plan, ctx)?;
+            let graph = StaticExecutionGraph::new(
+                &self.scheduler_id,
+                job_id,
+                job_name,
+                &ctx.session_id(),
+                physical_plan,
+                queued_at,
+                session_config,
+                &mut DefaultDistributedPlanner::new(),
+                logical_plan,
+            )?;
+            Ok(Box::new(graph.with_scheduler_root(root)))
+        }
     }
 
     /// Submit a logical plan for distributed execution.
@@ -749,8 +754,47 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         save_result
     }
 
-    /// Move a job from Active to Success and return the ids of its intermediate
-    /// (non-final) stages so their shuffle data can be reclaimed immediately.
+    /// Runs a job's scheduler root over the job's output, and succeeds the
+    /// job with the root's output (see
+    /// [`crate::state::execution_graph::ExecutionGraph::succeed_with_inline_result`]).
+    ///
+    /// Returns false if the job is no longer running, as when cancelled:
+    /// having run nothing if it stopped before the root started, or
+    /// discarding the root's output if it stopped while the root ran.
+    pub(crate) async fn run_scheduler_root(&self, job_id: &JobId) -> Result<bool> {
+        let Some(graph) = self.get_active_execution_graph(job_id) else {
+            return Ok(false);
+        };
+        let (root, locations) = {
+            let graph = graph.read().await;
+            if !matches!(graph.status().status, Some(job_status::Status::Running(_))) {
+                return Ok(false);
+            }
+            let Some(pending) = graph.scheduler_root() else {
+                return Err(BallistaError::Internal(format!(
+                    "job {job_id} has no scheduler root to run"
+                )));
+            };
+            (pending.root().clone(), graph.output_locations())
+        };
+        // The job's stages are done, so a slow root, as a catalog commit
+        // waiting on its catalog, is the job's whole tail: log how long.
+        let started = std::time::Instant::now();
+        let result = root.run(locations).await;
+        info!(
+            "Job {job_id}: scheduler root {} {} in {:?}",
+            root.name(),
+            if result.is_ok() { "ran" } else { "failed" },
+            started.elapsed()
+        );
+        let result = result?;
+        graph.write().await.succeed_with_inline_result(result)
+    }
+
+    /// Move a job from Active to Success and return the ids of the stages no
+    /// one reads again, so their shuffle data can be reclaimed immediately:
+    /// its intermediate (non-final) stages, and its final stage too if its
+    /// result was returned inline.
     /// Returns an empty vec if the job is not found or not successful.
     ///
     /// Vcores the job held for its whole life (a pipelined job's reservation)
@@ -769,7 +813,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         debug!("Moving job {job_id} from Active to Success");
 
         if let Some(graph) = self.get_active_execution_graph(job_id) {
-            let (snapshot, intermediate_stage_ids, reservation) = {
+            let (snapshot, spent_stage_ids, reservation) = {
                 let mut graph = graph.write().await;
                 if !graph.is_successful() {
                     error!("Job {job_id} has not finished and cannot be completed");
@@ -780,7 +824,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     .map(|graph| graph.take_reservation())
                     .unwrap_or_default();
 
-                (graph.cloned(), graph.intermediate_stage_ids(), reservation)
+                (graph.cloned(), graph.spent_stage_ids(), reservation)
             };
 
             let release_result = if reservation.is_empty() {
@@ -791,7 +835,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let persist_result = self.persist_terminal_and_evict(job_id, &snapshot).await;
             persist_result?;
             release_result?;
-            Ok(intermediate_stage_ids)
+            Ok(spent_stage_ids)
         } else {
             warn!("Fail to find job {job_id} in the cache");
             Ok(vec![])

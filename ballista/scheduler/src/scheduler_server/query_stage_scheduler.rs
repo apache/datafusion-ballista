@@ -274,6 +274,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                 )
                 .await;
             }
+            QueryStageSchedulerEvent::RunSchedulerRoot { job_id, queued_at } => {
+                self.spawn_scheduler_root(job_id, queued_at, event_sender.clone());
+            }
             QueryStageSchedulerEvent::JobFinished {
                 job_id,
                 queued_at,
@@ -619,20 +622,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             }
             Ok(())
         };
-        let intermediate_stage_ids = match self
+        let spent_stage_ids = match self
             .state
             .task_manager
             .succeed_job(&job_id, release_reservation)
             .await
         {
-            Ok(intermediate_stage_ids) => intermediate_stage_ids,
+            Ok(spent_stage_ids) => spent_stage_ids,
             Err(e) => {
                 error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
                 vec![]
             }
         };
         self.state
-            .clean_up_successful_job(job_id, intermediate_stage_ids)
+            .clean_up_successful_job(job_id, spent_stage_ids)
             .await;
     }
 
@@ -743,6 +746,56 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             }
         }
         Ok(())
+    }
+
+    /// Runs the root of a job whose stages have all succeeded on a background
+    /// task, over the job's output. Posts `JobFinished` once the root has
+    /// succeeded, or `JobRunningFailed` if it failed.
+    fn spawn_scheduler_root(
+        &self,
+        job_id: JobId,
+        queued_at: u64,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+    ) {
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            let run = state.task_manager.run_scheduler_root(&job_id);
+            // The root runs user code, and a panic must fail the job rather
+            // than leave it running.
+            let ran =
+                AssertUnwindSafe(run)
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|payload| {
+                        Err(BallistaError::Internal(format!(
+                            "panicked: {}",
+                            panic_payload_message(payload)
+                        )))
+                    });
+            let event = match ran {
+                Ok(true) => QueryStageSchedulerEvent::JobFinished {
+                    job_id,
+                    queued_at,
+                    completed_at: timestamp_millis(),
+                },
+                // The job was cancelled while its root ran.
+                Ok(false) => return,
+                Err(e) => {
+                    let fail_message =
+                        format!("Error running the job's scheduler root: {e}");
+                    error!("Job {job_id}: {fail_message}");
+                    QueryStageSchedulerEvent::JobRunningFailed {
+                        job_id,
+                        fail_message,
+                        queued_at,
+                        failed_at: timestamp_millis(),
+                    }
+                }
+            };
+            if let Err(e) = event_sender.post_event(event).await {
+                error!("Fail to send event due to {e}");
+            }
+        });
     }
 
     async fn on_executor_lost(

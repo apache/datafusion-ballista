@@ -106,6 +106,14 @@ pub struct AdaptivePlanner {
     reusable_stages: HashMap<ReuseKey, Arc<dyn ExecutionPlan>>,
 }
 
+/// A job's physical plan, prepared for adaptive planning but not yet cut into
+/// stages, with the optimizer rules that will plan its stages.
+pub struct PreparedPlan {
+    /// The prepared plan.
+    pub plan: Arc<dyn ExecutionPlan>,
+    optimizers: Vec<PhysicalOptimizerRuleRef>,
+}
+
 impl Debug for AdaptivePlanner {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AdaptivePlanner")
@@ -148,8 +156,22 @@ impl AdaptivePlanner {
         })
     }
 
-    /// Creates a new `AdaptivePlanner` with default physical optimizer rules,
-    /// and an embedder's `rules` added to them (see [`AdaptiveRules`]).
+    /// Creates a new `AdaptivePlanner` over `logical_plan`: see
+    /// [`Self::prepare_logical`].
+    #[cfg(test)]
+    pub async fn try_new(
+        ctx: &SessionContext,
+        logical_plan: &LogicalPlan,
+        job_id: JobId,
+        rules: Option<&dyn AdaptiveRules>,
+    ) -> common::Result<Self> {
+        let prepared = Self::prepare_logical(ctx, logical_plan, &job_id, rules).await?;
+        Self::from_prepared(ctx, prepared, job_id)
+    }
+
+    /// Plans `logical_plan` for an `AdaptivePlanner` with the default
+    /// physical optimizer rules, and an embedder's `rules` added to them (see
+    /// [`AdaptiveRules`]). Build the planner with [`Self::from_prepared`].
     ///
     /// # Arguments
     ///
@@ -157,15 +179,12 @@ impl AdaptivePlanner {
     /// * `logical_plan` - The logical plan for the job.
     /// * `job_id` - The unique identifier for the job.
     /// * `rules` - Rules of the embedder's own, if any.
-    ///
-    /// # Returns
-    /// A new instance of `AdaptivePlanner` or an error if the initialization fails.
-    pub async fn try_new(
+    pub async fn prepare_logical(
         ctx: &SessionContext,
         logical_plan: &LogicalPlan,
-        job_id: JobId,
+        job_id: &JobId,
         rules: Option<&dyn AdaptiveRules>,
-    ) -> common::Result<Self> {
+    ) -> common::Result<PreparedPlan> {
         // session state with very limited set of optimizers.
         // this optimizer set will be executed only once, before
         // running standard set of optimizers, which will
@@ -190,28 +209,57 @@ impl AdaptivePlanner {
             .create_physical_plan(logical_plan)
             .await?;
 
-        let plan = handle_explain_plan(&job_id, ctx, logical_plan, plan)
+        let plan = handle_explain_plan(job_id, ctx, logical_plan, plan)
             .await
             .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
-        let state_builder = SessionStateBuilder::from(ctx.state());
-        Self::try_new_with_optimizers(
-            state_builder,
+        Ok(PreparedPlan {
             plan,
+            optimizers: Self::default_optimizers_with(
+                plan_id_generator,
+                replan_optimizers,
+            ),
+        })
+    }
+
+    /// Creates a new `AdaptivePlanner` over a prepared plan, planning its
+    /// first stages.
+    pub fn from_prepared(
+        ctx: &SessionContext,
+        prepared: PreparedPlan,
+        job_id: JobId,
+    ) -> common::Result<Self> {
+        Self::try_new_with_optimizers(
+            SessionStateBuilder::from(ctx.state()),
+            prepared.plan,
             job_id,
-            Self::default_optimizers_with(plan_id_generator, replan_optimizers),
+            prepared.optimizers,
         )
     }
 
-    /// Creates a new `AdaptivePlanner` over an already-built physical plan,
+    /// Creates a new `AdaptivePlanner` over an already-built physical plan:
+    /// see [`Self::prepare_physical`].
+    #[cfg(test)]
+    pub fn try_new_from_physical(
+        ctx: &SessionContext,
+        plan: Arc<dyn ExecutionPlan>,
+        job_id: JobId,
+        rules: Option<&dyn AdaptiveRules>,
+    ) -> common::Result<Self> {
+        let prepared = Self::prepare_physical(ctx, plan, rules)?;
+        Self::from_prepared(ctx, prepared, job_id)
+    }
+
+    /// Prepares an already-built physical plan for an `AdaptivePlanner`
     /// with the default physical optimizer rules, and an embedder's `rules`
-    /// added to them (see [`AdaptiveRules`]).
+    /// added to them (see [`AdaptiveRules`]). Build the planner with
+    /// [`Self::from_prepared`].
     ///
-    /// This is the physical-plan counterpart of [`Self::try_new`]: the
-    /// plan-preparation rules that `try_new` runs while planning the logical
-    /// plan are applied to `plan` once here, then the plan is handed to the
-    /// adaptive optimizer chain. There is no logical plan, so `EXPLAIN` is not
-    /// handled on this path.
+    /// This is the physical-plan counterpart of [`Self::prepare_logical`]:
+    /// the plan-preparation rules that `prepare_logical` runs while planning
+    /// the logical plan are applied to `plan` once here, then the plan is
+    /// handed to the adaptive optimizer chain. There is no logical plan, so
+    /// `EXPLAIN` is not handled on this path.
     ///
     /// The submitter placed the plan's hash repartitions deliberately, so they
     /// are pinned as stage boundaries ([`PinSubmittedShufflesRule`]) as the
@@ -223,14 +271,12 @@ impl AdaptivePlanner {
     ///
     /// * `ctx` - The session context
     /// * `plan` - The physical plan for the job.
-    /// * `job_id` - The unique identifier for the job.
     /// * `rules` - Rules of the embedder's own, if any.
-    pub fn try_new_from_physical(
+    pub fn prepare_physical(
         ctx: &SessionContext,
         plan: Arc<dyn ExecutionPlan>,
-        job_id: JobId,
         rules: Option<&dyn AdaptiveRules>,
-    ) -> common::Result<Self> {
+    ) -> common::Result<PreparedPlan> {
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
 
         let mut preparation_optimizers =
@@ -256,12 +302,13 @@ impl AdaptivePlanner {
             |_, _| {},
         )?;
 
-        Self::try_new_with_optimizers(
-            SessionStateBuilder::from(ctx.state()),
+        Ok(PreparedPlan {
             plan,
-            job_id,
-            Self::default_optimizers_with(plan_id_generator, replan_optimizers),
-        )
+            optimizers: Self::default_optimizers_with(
+                plan_id_generator,
+                replan_optimizers,
+            ),
+        })
     }
     /// Cancels a stage by its ID.
     ///

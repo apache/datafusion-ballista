@@ -121,6 +121,15 @@ pub enum QueryStageSchedulerEvent {
         /// Timestamp when the job failed.
         failed_at: u64,
     },
+    /// Every stage of a job has succeeded, and its root is to run on the
+    /// scheduler before the job finishes (see
+    /// [`SchedulerRoot`](crate::state::scheduler_root::SchedulerRoot)).
+    RunSchedulerRoot {
+        /// Unique job identifier.
+        job_id: JobId,
+        /// Timestamp when the job was queued.
+        queued_at: u64,
+    },
     /// A job has completed successfully.
     JobFinished {
         /// Unique job identifier.
@@ -177,6 +186,12 @@ impl Debug for QueryStageSchedulerEvent {
                 write!(
                     f,
                     "JobPlanningFailed : job_id={job_id}, fail_message={fail_message}, queued_at={queued_at}, failed_at={failed_at}.",
+                )
+            }
+            QueryStageSchedulerEvent::RunSchedulerRoot { job_id, queued_at } => {
+                write!(
+                    f,
+                    "RunSchedulerRoot : job_id={job_id}, queued_at={queued_at}."
                 )
             }
             QueryStageSchedulerEvent::JobFinished {

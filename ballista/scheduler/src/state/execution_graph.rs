@@ -59,6 +59,7 @@ use crate::state::execution_stage::{
     RunningStage, external_inputs, is_external_fetch_failure, reads_external_data_on,
 };
 use crate::state::pipelined_graph::PipelinedExecutionGraph;
+use crate::state::scheduler_root::{PendingRoot, SchedulerRoot};
 use crate::state::task_manager::UpdatedStages;
 
 /// Boxed [ExecutionGraph]
@@ -132,6 +133,34 @@ pub trait ExecutionGraph: Debug {
 
     /// Returns the physical plan as a string, if captured at submission time.
     fn physical_plan(&self) -> Arc<dyn ExecutionPlan>;
+
+    /// Returns the job's root that runs on the scheduler once every stage
+    /// has succeeded, if it has one. [`Self::physical_plan`] leaves it out.
+    fn scheduler_root(&self) -> Option<&PendingRoot> {
+        None
+    }
+
+    /// Returns the job's root that runs on the scheduler, if it has one.
+    fn scheduler_root_mut(&mut self) -> Option<&mut PendingRoot> {
+        None
+    }
+
+    /// Returns the plan to show for the job: [`Self::physical_plan`], under
+    /// the job's scheduler root if it has one.
+    fn displayed_plan(&self) -> Arc<dyn ExecutionPlan> {
+        let plan = self.physical_plan();
+        let Some(root) = self.scheduler_root() else {
+            return plan;
+        };
+        root.root().over(Arc::clone(&plan)).unwrap_or_else(|e| {
+            warn!(
+                "Job {}: showing its plan without its scheduler root, \
+                 which did not take the plan: {e}",
+                self.job_id()
+            );
+            plan
+        })
+    }
 
     /// Returns the timestamp when this job started execution.
     fn start_time(&self) -> u64;
@@ -265,8 +294,39 @@ pub trait ExecutionGraph: Debug {
     /// Returns an error if the job is not in a successful state.
     fn succeed_job(&mut self) -> Result<()>;
 
+    /// Succeeds a job whose scheduler root has run, with the root's output,
+    /// an Arrow IPC stream, as its whole result.
+    ///
+    /// Returns false, changing nothing, if the job has stopped running since
+    /// its root started, as when it is cancelled.
+    fn succeed_with_inline_result(&mut self, result: Vec<u8>) -> Result<bool> {
+        if !matches!(self.status().status, Some(Status::Running(_))) {
+            return Ok(false);
+        }
+        let Some(root) = self.scheduler_root_mut() else {
+            return Err(BallistaError::Internal(
+                "a job without a scheduler root cannot succeed with its output"
+                    .to_owned(),
+            ));
+        };
+        root.finish(result);
+        self.succeed_job()?;
+        Ok(true)
+    }
+
     /// Exposes executions stages and stage id's
     fn stages(&self) -> &HashMap<usize, ExecutionStage>;
+
+    /// Ids of the stages no one reads once the job has succeeded: its
+    /// intermediate stages, and its final stage too if its scheduler root
+    /// returned the result inline.
+    fn spent_stage_ids(&self) -> Vec<u32> {
+        if self.scheduler_root().is_some() {
+            self.stages().keys().map(|&id| id as u32).collect()
+        } else {
+            self.intermediate_stage_ids()
+        }
+    }
 
     /// Stage ids of all non-final (intermediate) stages — those whose
     /// `output_links` is non-empty. The final stage(s) are excluded.
@@ -315,6 +375,50 @@ pub trait ExecutionGraph: Debug {
     }
 }
 
+/// What follows once every stage of `graph`, queued at `queued_at`, has
+/// succeeded: the event to run the job's scheduler root, the first time
+/// only, as the job runs until its root has run; or, for a job without one,
+/// the job succeeding, and its `JobFinished` event.
+pub(crate) fn stages_succeeded(
+    graph: &mut dyn ExecutionGraph,
+    queued_at: u64,
+) -> Result<Option<QueryStageSchedulerEvent>> {
+    let job_id = graph.job_id().clone();
+    if let Some(root) = graph.scheduler_root_mut() {
+        return Ok(root.start(&job_id, queued_at));
+    }
+    debug!("Job {job_id} is success, finalizing job output ...");
+    graph.succeed_job()?;
+    Ok(Some(QueryStageSchedulerEvent::JobFinished {
+        job_id,
+        queued_at,
+        completed_at: timestamp_millis(),
+    }))
+}
+
+/// Takes the result of a successful job: its scheduler root's output, which
+/// is its whole result, so no client reads its final stage; or, for a job
+/// without one, where its final stage's partitions are to be fetched.
+pub(crate) fn take_job_result(
+    graph: &mut dyn ExecutionGraph,
+) -> Result<(
+    Vec<ballista_core::serde::protobuf::PartitionLocation>,
+    Option<Vec<u8>>,
+)> {
+    if let Some(result) = graph
+        .scheduler_root_mut()
+        .and_then(PendingRoot::take_result)
+    {
+        return Ok((vec![], Some(result)));
+    }
+    let locations = graph
+        .output_locations()
+        .into_iter()
+        .map(|location| location.try_into())
+        .collect::<Result<Vec<_>>>()?;
+    Ok((locations, None))
+}
+
 /// [ExecutionGraph] implementation which generates
 /// all stages on job submission time
 #[derive(Clone)]
@@ -348,6 +452,9 @@ pub struct StaticExecutionGraph {
     logical_plan: Option<String>,
     /// Physical plan as a human-readable string, captured at submission time.
     physical_plan: Arc<dyn ExecutionPlan>,
+    /// The job's root, if it runs on the scheduler once every stage has
+    /// succeeded.
+    scheduler_root: Option<PendingRoot>,
 }
 
 /// Information about a currently running task.
@@ -417,7 +524,15 @@ impl StaticExecutionGraph {
             session_config,
             logical_plan,
             physical_plan: plan,
+            scheduler_root: None,
         })
+    }
+
+    /// Sets the job's root that runs on the scheduler once every stage has
+    /// succeeded, if it has one.
+    pub(crate) fn with_scheduler_root(mut self, root: Option<SchedulerRoot>) -> Self {
+        self.scheduler_root = root.map(PendingRoot::new);
+        self
     }
 
     /// Processing stage status update after task status changing
@@ -474,14 +589,8 @@ impl StaticExecutionGraph {
                 failed_at: timestamp_millis(),
             });
         } else if self.is_successful() {
-            // If this ExecutionGraph is successful, finish it
-            debug!("Job {job_id} is success, finalizing job output ...");
-            self.succeed_job()?;
-            events.push(QueryStageSchedulerEvent::JobFinished {
-                job_id,
-                queued_at: self.queued_at,
-                completed_at: timestamp_millis(),
-            });
+            let queued_at = self.queued_at;
+            events.extend(stages_succeeded(self, queued_at)?);
         } else if has_resolved {
             events.push(QueryStageSchedulerEvent::JobUpdated(job_id))
         }
@@ -749,6 +858,14 @@ impl ExecutionGraph for StaticExecutionGraph {
 
     fn physical_plan(&self) -> Arc<dyn ExecutionPlan> {
         self.physical_plan.clone()
+    }
+
+    fn scheduler_root(&self) -> Option<&PendingRoot> {
+        self.scheduler_root.as_ref()
+    }
+
+    fn scheduler_root_mut(&mut self) -> Option<&mut PendingRoot> {
+        self.scheduler_root.as_mut()
     }
 
     fn start_time(&self) -> u64 {
@@ -1525,11 +1642,7 @@ impl ExecutionGraph for StaticExecutionGraph {
             )));
         }
 
-        let partition_location = self
-            .output_locations()
-            .into_iter()
-            .map(|l| l.try_into())
-            .collect::<Result<Vec<_>>>()?;
+        let (partition_location, inline_result) = take_job_result(self)?;
 
         self.end_time = timestamp_millis();
 
@@ -1543,6 +1656,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                 started_at: self.start_time,
                 ended_at: self.end_time,
                 pipelined_output_locations: vec![],
+                inline_result,
             })),
         };
 
@@ -1935,6 +2049,7 @@ mod test {
     use crate::state::execution_graph::StaticExecutionGraph;
     use crate::state::execution_stage::ExecutionStage;
     use crate::state::execution_stage::StageOutput;
+    use crate::state::scheduler_root::test_root;
     use crate::test_utils::{
         aggregation_logical_plan, drain_tasks, execution_failure, fail_plan_rewrites,
         fetch_partition_failure, graph_from_physical, mock_completed_task, mock_executor,
@@ -1950,7 +2065,7 @@ mod test {
         ExecutorMetadata, ExecutorSpecification, PartitionId, PartitionLocation,
         PartitionStats,
     };
-
+    use datafusion::physical_plan::displayable;
     use datafusion::physical_plan::union::UnionExec;
     use datafusion::physical_plan::{ExecutionPlan, Partitioning};
     use datafusion::prelude::{SessionConfig, SessionContext};
@@ -3362,5 +3477,40 @@ mod test {
             "stage 1 re-runs only for its own loss"
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_spend_every_stage_of_a_job_whose_result_is_inline() {
+        let spent = |graph: &StaticExecutionGraph| {
+            let mut ids = graph.spent_stage_ids();
+            ids.sort();
+            ids
+        };
+        // A client reads the final stage, 2.
+        let graph = test_aggregation_plan(4).await;
+        assert_eq!(spent(&graph), vec![1u32]);
+
+        let graph = graph.with_scheduler_root(Some(test_root().await));
+        assert_eq!(spent(&graph), vec![1u32, 2]);
+    }
+
+    #[tokio::test]
+    async fn should_show_a_job_plan_under_its_scheduler_root() {
+        let graph = test_aggregation_plan(4)
+            .await
+            .with_scheduler_root(Some(test_root().await));
+
+        let plan = displayable(graph.displayed_plan().as_ref())
+            .indent(false)
+            .to_string();
+
+        assert_eq!(
+            plan,
+            "DataSinkExec: sink=MemoryTable (partitions=1)\n  \
+               AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[sum(?table?.gmv)]\n    \
+                 RepartitionExec: partitioning=Hash([id@0], 4), input_partitions=2\n      \
+                   AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[sum(?table?.gmv)]\n        \
+                     EmptyExec\n"
+        );
     }
 }

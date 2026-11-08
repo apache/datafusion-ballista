@@ -29,6 +29,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
 use ballista_core::error::Result;
@@ -42,7 +43,8 @@ use datafusion::prelude::SessionContext;
 /// still sitting on the executors that produced them; the frontend turns each
 /// one into a `FlightEndpoint` whose ticket the client redeems with `DoGet`.
 /// A pipelined job (`ballista.execution.mode = pipelined`) instead streams its
-/// result while it runs, from `pipelined`.
+/// result while it runs, from `pipelined`, and a job whose root ran on the
+/// scheduler returns its result in `batches`.
 #[derive(Debug)]
 pub struct QueryResult {
     /// Scheduler-assigned id of the job that produced the result.
@@ -56,6 +58,10 @@ pub struct QueryResult {
     /// Set for a pipelined job, whose result is read while it runs instead of
     /// from `partitions`.
     pub pipelined: Option<PipelinedOutput>,
+    /// Set for a job whose root ran on the scheduler (see
+    /// `SessionConfigExt::with_ballista_scheduler_root`): its whole result,
+    /// with no `partitions` to fetch.
+    pub batches: Option<Vec<RecordBatch>>,
 }
 
 /// Where a running pipelined job serves its result.

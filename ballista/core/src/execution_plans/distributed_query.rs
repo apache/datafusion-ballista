@@ -30,7 +30,7 @@ use crate::serde::protobuf::{
 };
 use crate::serde::protobuf::{ExecutorMetadata, RunningJob, SuccessfulJob};
 use crate::serde::scheduler::PipelinedPartitionLocation;
-use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
+use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint, decode_ipc_stream};
 use crate::version;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -1015,6 +1015,7 @@ async fn execute_query_pull(
                 started_at,
                 ended_at,
                 partition_location,
+                inline_result,
                 ..
             })) => {
                 // Calculate job execution time (server-side execution)
@@ -1043,6 +1044,10 @@ async fn execute_query_pull(
                 let metric_total_time =
                     MetricBuilder::new(&metrics).gauge("total_query_time_ms", partition);
                 metric_total_time.set(total_ms as usize);
+
+                if let Some(result) = inline_result {
+                    break inline_batches(&job_id, &result);
+                }
 
                 // Note: data_transfer_time_ms is not set here because partition fetching
                 // happens lazily when the stream is consumed, not during execute_query.
@@ -1235,6 +1240,7 @@ async fn execute_query_push(
                 started_at,
                 ended_at,
                 partition_location,
+                inline_result,
                 ..
             })) => {
                 // Calculate job execution time (server-side execution)
@@ -1263,6 +1269,10 @@ async fn execute_query_push(
                 let metric_total_time =
                     MetricBuilder::new(&metrics).gauge("total_query_time_ms", partition);
                 metric_total_time.set(total_ms as usize);
+
+                if let Some(result) = inline_result {
+                    break inline_batches(&job_id, &result);
+                }
 
                 // Note: data_transfer_time_ms is not set here because partition fetching
                 // happens lazily when the stream is consumed, not during execute_query.
@@ -1334,6 +1344,18 @@ fn get_client_host_port(
         }
     }
 }
+/// The batches of a result the scheduler computed itself, see
+/// [`SuccessfulJob::inline_result`].
+fn inline_batches(
+    job_id: &JobId,
+    result: &[u8],
+) -> Result<BoxStream<'static, Result<RecordBatch>>> {
+    let (_, batches) = decode_ipc_stream(result).map_err(|e| {
+        DataFusionError::Execution(format!("Job {job_id} returned a bad result: {e}"))
+    })?;
+    Ok(futures::stream::iter(batches.into_iter().map(Ok)).boxed())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn fetch_partition(
     location: PartitionLocation,
