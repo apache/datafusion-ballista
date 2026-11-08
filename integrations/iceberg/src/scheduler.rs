@@ -31,6 +31,9 @@ pub trait SchedulerConfigExt {
     /// `catalogs` in each session, readied with [`register_iceberg`]. The
     /// scheduler plans queries from Flight SQL clients itself, so they can
     /// then query those catalogs.
+    ///
+    /// Call it once, with every catalog: a second call adds the codecs again,
+    /// and the scheduler's codecs no longer match the executors'.
     fn with_iceberg<N: Into<String>>(
         self,
         catalogs: impl IntoIterator<Item = (N, Arc<dyn CatalogProvider>)>,

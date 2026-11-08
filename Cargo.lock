@@ -1272,6 +1272,7 @@ dependencies = [
  "ballista-executor",
  "ballista-flight-sql",
  "ballista-history",
+ "blake3",
  "clap 4.6.7",
  "dashmap",
  "datafusion",

@@ -104,12 +104,12 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
             node.downcast_ref::<IcebergStaticTableProvider>()
         {
             ProviderWire {
-                table: TableWire::with_metadata(provider.table())?,
+                table: TableWire::new(provider.table())?,
                 snapshot_id: provider.snapshot_id(),
             }
         } else if let Some(pinned) = node.downcast_ref::<PinnedTable>() {
             ProviderWire {
-                table: TableWire::with_metadata(&pinned.table)?,
+                table: TableWire::new(&pinned.table)?,
                 snapshot_id: pinned.snapshot_id,
             }
         } else if node.is::<IcebergCatalogTableProvider>() {

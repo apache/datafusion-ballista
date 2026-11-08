@@ -23,7 +23,7 @@ use crate::{IcebergLogicalCodec, IcebergPhysicalCodec};
 
 /// Readies an [`ExecutorProcessConfig`] for Iceberg.
 pub trait ExecutorProcessConfigExt {
-    /// Adds the Iceberg codecs after any codecs already set.
+    /// Adds the Iceberg codecs after any codecs already set. Call it once.
     fn with_iceberg(self) -> Self;
 }
 

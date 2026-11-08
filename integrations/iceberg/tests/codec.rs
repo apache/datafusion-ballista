@@ -102,12 +102,10 @@ mod iceberg_nodes {
             logical_plan_to_bytes_with_extension_codec(&plan, codec.as_ref())
         };
 
-        let pinned = insert(&catalog, "(1, 'a')").await;
+        insert(&catalog, "(1, 'a')").await;
         let select = send("SELECT a.id, b.name FROM t a CROSS JOIN t b").await?;
         let insert_c = send("INSERT INTO t VALUES (3, 'c')").await?;
         insert(&catalog, "(2, 'b')").await;
-        // Decoding uses the metadata the client sent, not the file.
-        std::fs::remove_file(pinned.metadata_location().unwrap())?;
 
         let run = async |bytes: &[u8]| {
             let plan = logical_plan_from_bytes_with_extension_codec(

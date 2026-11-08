@@ -19,11 +19,11 @@
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex};
 
 use datafusion::common::{DataFusionError, exec_datafusion_err};
 use iceberg::io::FileIO;
-use iceberg::spec::{TableMetadata, TableMetadataRef};
+use iceberg::spec::TableMetadata;
 use iceberg::table::Table;
 use iceberg::{Runtime, TableIdent};
 use iceberg_datafusion::to_datafusion_error;
@@ -57,9 +57,11 @@ pub(crate) fn block_on<T: Send + 'static>(
 /// but each can hold megabytes of metadata.
 const TABLE_CACHE_CAPACITY: usize = 16;
 
-/// Tables rebuilt by [`TableWire::load`], least recently used first, so each
-/// process rebuilds a version once. Metadata files never change, so entries
-/// can't go stale.
+/// Tables rebuilt by [`TableWire::load`], least recently used first. Metadata
+/// files never change, so entries can't go stale. Entries are keyed by the
+/// table's `FileIO` too, so a process rebuilds a version once only while its
+/// storage credentials stay the same: a catalog that vends new credentials on
+/// each load makes each query rebuild it.
 static TABLES: LazyLock<Mutex<VecDeque<(TableWire, Table)>>> =
     LazyLock::new(|| Mutex::new(VecDeque::new()));
 
@@ -71,10 +73,6 @@ pub(crate) struct TableWire {
     metadata_location: String,
     file_io: serde_json::Value,
     readonly: bool,
-    /// The content of `metadata_location`, sent from the client so the
-    /// scheduler needn't read it; scans sent to executors leave it out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    metadata: Option<TableMetadataRef>,
 }
 
 impl fmt::Debug for TableWire {
@@ -102,27 +100,15 @@ impl TableWire {
                 .to_string(),
             file_io: serde_json::from_slice(&file_io).map_err(json_err)?,
             readonly: table.readonly(),
-            metadata: None,
-        })
-    }
-
-    /// Like [`TableWire::new`], also carrying the table's metadata.
-    pub(crate) fn with_metadata(table: &Table) -> Result<Self, DataFusionError> {
-        Ok(Self {
-            metadata: Some(table.metadata_ref()),
-            ..Self::new(table)?
         })
     }
 
     /// Rebuilds the table, or returns it from [`TABLES`].
-    pub(crate) fn load(mut self) -> Result<Table, DataFusionError> {
-        // Keyed without the metadata, which its location determines.
-        let metadata = self.metadata.take();
+    pub(crate) fn load(self) -> Result<Table, DataFusionError> {
         if let Some(table) = self.touch(&mut TABLES.lock().unwrap()) {
             return Ok(table);
         }
-        let table =
-            block_on(self.clone().read(metadata))?.map_err(to_datafusion_error)?;
+        let table = block_on(self.clone().read())?.map_err(to_datafusion_error)?;
         let mut tables = TABLES.lock().unwrap();
         // Another thread may have rebuilt it meanwhile.
         if let Some(table) = self.touch(&mut tables) {
@@ -143,14 +129,10 @@ impl TableWire {
         Some(table)
     }
 
-    async fn read(self, metadata: Option<TableMetadataRef>) -> iceberg::Result<Table> {
+    async fn read(self) -> iceberg::Result<Table> {
         let file_io = FileIO::deserialize_all(&serde_json::to_vec(&self.file_io)?)?;
-        let metadata = match metadata {
-            Some(metadata) => metadata,
-            None => Arc::new(
-                TableMetadata::read_from(&file_io, &self.metadata_location).await?,
-            ),
-        };
+        let metadata =
+            TableMetadata::read_from(&file_io, &self.metadata_location).await?;
         Table::builder()
             .metadata(metadata)
             .metadata_location(self.metadata_location)

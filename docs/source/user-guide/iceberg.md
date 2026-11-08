@@ -96,7 +96,9 @@ let config = ExecutorProcessConfig::default().with_iceberg();
 ```
 
 Both keep any codecs the config already has, and the scheduler keeps its
-session builder, mounting the catalogs on each session it builds. A client can
+session builder, mounting the catalogs on each session it builds. Call each
+once, passing the scheduler every catalog: a second call adds the codecs
+again, so the scheduler's would no longer match the executors'. A client can
 then run `SELECT * FROM rest.ns.t`. Tables are pinned the same way as on the
 client, while the scheduler plans the query.
 
@@ -116,9 +118,9 @@ Metadata files never change, so every node rebuilds exactly that version.
 - **A static table** is sent as the version it holds.
 - **A scan** is sent as the version the scheduler planned it against.
 
-Tables sent from the client also carry the metadata itself, so the scheduler
-needn't read the file. Scans sent to executors carry only the location, which
-keeps each task's plan small.
+Only the location is sent, not the metadata, so a plan's size doesn't grow
+with the table's history. Each node reads a version's metadata file when it
+first rebuilds it, and keeps up to 16 rebuilt versions.
 
 Only the node that plans a query talks to a catalog: the client, or the
 scheduler for SQL clients. Executors never need catalog configuration.
@@ -141,9 +143,10 @@ and executors must all set the same codecs in the same order.
 - **No metadata tables.** Tables such as `t$snapshots` can't be sent to the
   scheduler yet.
 - **One task per scan.** Iceberg scans do not split into partitions yet, so one
-  executor reads the whole table. Operators above the scan still run in
-  parallel. A scan reporting more than one partition fails to encode, rather
-  than being read in full by every task.
+  executor reads the whole table. Operators after the first shuffle still run
+  in parallel. A scan reporting more than one partition fails to encode.
+- **No encrypted tables.** A table with `encryption.key-id` set fails to load
+  on the scheduler and executors, which have no key management client.
 - **Storage credentials travel in plain text.** Each table's serialized
   `FileIO` includes them, so the links between client, scheduler and executors
   must be trusted.
