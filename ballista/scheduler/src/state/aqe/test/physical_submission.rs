@@ -24,7 +24,7 @@
 
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{
-    Embedder, Seen, coalesce_context, mock_batch, partitions_with_byte_sizes,
+    Embedder, Seen, coalesce_config, mock_batch, partitions_with_byte_sizes,
 };
 use crate::test_utils::PassThroughExec;
 use ballista_core::assert_plan;
@@ -35,10 +35,10 @@ use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-/// A coalesce-tuned session with partition coalescing switched on or off and
-/// the table `t` registered.
+/// A session over [`coalesce_config`] with partition coalescing switched on
+/// or off and the table `t` registered.
 fn physical_context(coalesce_enabled: bool) -> SessionContext {
-    let ctx = coalesce_context(8, coalesce_enabled);
+    let ctx = SessionContext::new_with_config(coalesce_config(8, coalesce_enabled));
     ctx.register_batch("t", mock_batch().unwrap()).unwrap();
     ctx
 }

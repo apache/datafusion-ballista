@@ -26,12 +26,12 @@
 
 use crate::state::aqe::planner::{AdaptivePlanner, AdaptiveStageInfo};
 use crate::state::aqe::test::{
-    coalesce_context, mock_batch, partitions_with_byte_sizes, register_partitioned_table,
+    coalesce_config, coalesce_context, mock_batch, partitions_with_byte_sizes,
+    register_partitioned_table,
 };
 use ballista_core::assert_plan;
-use ballista_core::extension::SessionConfigExt;
 use datafusion::common::ScalarValue;
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 
 /// Happy path: M=8 upstream partitions @ 50 bytes each, target=200.
@@ -263,12 +263,8 @@ async fn should_attach_coalesce_to_both_sides_of_hash_join()
 #[tokio::test]
 async fn should_attach_coalesce_to_both_sides_of_sort_merge_join()
 -> datafusion::error::Result<()> {
-    let config = SessionConfig::new_with_ballista()
-        .with_target_partitions(8)
-        .with_round_robin_repartition(false)
-        .with_ballista_coalesce_enabled(true)
-        .with_ballista_coalesce_target_partition_bytes(200)
-        .set_bool("datafusion.optimizer.prefer_hash_join", false);
+    let config =
+        coalesce_config(8, true).set_bool("datafusion.optimizer.prefer_hash_join", false);
 
     let ctx = SessionContext::new_with_config(config);
     register_partitioned_table(&ctx, "t1", 8)?;

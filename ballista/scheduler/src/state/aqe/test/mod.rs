@@ -300,19 +300,24 @@ pub(crate) fn unknown_statistics_exec(schema: &Schema) -> Arc<dyn ExecutionPlan>
     statistics_exec(Statistics::new_unknown(schema), schema)
 }
 
-/// A session context with the Ballista config extension installed and the
-/// coalesce-relevant knobs forced to specific values. The rule packs toward
-/// `target_partition_bytes` (200, for test scale), so a scenario traces from its
-/// inputs alone. Joins plan as sort-merge joins over hash-partitioned inputs.
-pub(crate) fn coalesce_context(
-    target_partitions: usize,
-    enabled: bool,
-) -> SessionContext {
-    let config = SessionConfig::new_with_ballista()
+/// A Ballista session config with the coalesce-relevant knobs forced to
+/// specific values. The rule packs toward `target_partition_bytes` (200, for
+/// test scale), so a scenario traces from its inputs alone.
+pub(crate) fn coalesce_config(target_partitions: usize, enabled: bool) -> SessionConfig {
+    SessionConfig::new_with_ballista()
         .with_target_partitions(target_partitions)
         .with_round_robin_repartition(false)
         .with_ballista_coalesce_enabled(enabled)
         .with_ballista_coalesce_target_partition_bytes(200)
+}
+
+/// A session over [`coalesce_config`] in which joins plan as sort-merge joins
+/// over hash-partitioned inputs.
+pub(crate) fn coalesce_context(
+    target_partitions: usize,
+    enabled: bool,
+) -> SessionContext {
+    let config = coalesce_config(target_partitions, enabled)
         .set_bool("datafusion.optimizer.prefer_hash_join", false)
         .set_u64(
             "datafusion.optimizer.hash_join_single_partition_threshold",
