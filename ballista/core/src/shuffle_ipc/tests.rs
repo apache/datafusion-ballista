@@ -25,7 +25,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::buffer::Buffer;
 use datafusion::arrow::datatypes::{DataType, Field, Int32Type, Schema, SchemaRef};
 use datafusion::arrow::ipc::reader::{StreamDecoder, StreamReader};
-use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
+use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use std::io::{Cursor, Read};
 use std::sync::Arc;
@@ -233,9 +233,9 @@ fn plain_streams_match_arrow_byte_for_byte() {
         Some(CompressionType::ZSTD),
     ];
     for codec in codecs {
-        let options = IpcWriteOptions::default()
-            .try_with_compression(codec)
-            .unwrap();
+        // The plain path writes what the rest of the shuffle does, so compare
+        // against the same options (zstd at the shuffle's level).
+        let options = crate::utils::create_write_options(codec).unwrap();
         let mut arrow =
             StreamWriter::try_new_with_options(Vec::new(), &schema, options).unwrap();
         for batch in &batches {

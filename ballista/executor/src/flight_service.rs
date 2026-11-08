@@ -46,6 +46,7 @@ use ballista_core::serde::scheduler::Action as BallistaAction;
 use ballista_core::serving::{
     BoxedFlightStream, ResultBackend, from_ballista_err, serve_do_get,
 };
+use ballista_core::utils::create_write_options;
 use datafusion::arrow::ipc::CompressionType;
 
 use arrow_flight::{
@@ -151,9 +152,8 @@ impl ResultBackend for LocalDiskBackend {
                         .open(&key, partition, timeout)
                         .await
                         .map_err(|e| Status::internal(e.to_string()))?;
-                    let options = IpcWriteOptions::default()
-                        .try_with_compression(opened.compression)
-                        .map_err(|e| from_arrow_err(&e))?;
+                    let options = create_write_options(opened.compression)
+                        .map_err(|e| Status::internal(e.to_string()))?;
                     let schema = opened.stream.schema();
                     let batches = opened
                         .stream

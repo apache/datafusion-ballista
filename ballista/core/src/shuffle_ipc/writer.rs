@@ -22,8 +22,10 @@ use super::{
     CONTINUATION_MARKER, OFFSETS_AS_LENGTHS_ZSTD, ShuffleCompression, frame_metadata,
     rebuild_batch_message,
 };
+use crate::utils::SHUFFLE_ZSTD_COMPRESSION_LEVEL;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::error::ArrowError;
+use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::root_as_message;
 use datafusion::arrow::ipc::writer::{
     DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions, StreamWriter,
@@ -58,7 +60,12 @@ impl ShuffleEncoding {
         schema: &Schema,
         compression: ShuffleCompression,
     ) -> Result<Self, ArrowError> {
-        let plain = IpcWriteOptions::default().try_with_compression(compression.codec)?;
+        let mut plain =
+            IpcWriteOptions::default().try_with_compression(compression.codec)?;
+        if compression.codec == Some(CompressionType::ZSTD) {
+            plain =
+                plain.try_with_compression_level(Some(SHUFFLE_ZSTD_COMPRESSION_LEVEL))?;
+        }
         let roles = if compression.uses_lengths() {
             offsets::buffer_roles(schema)
                 .filter(|roles| offsets::has_offsets(roles))
