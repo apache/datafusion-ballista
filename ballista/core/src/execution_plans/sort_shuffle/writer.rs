@@ -39,7 +39,7 @@ use super::super::shuffle_writer_trait::ShuffleWriter;
 use super::buffer::BufferedBatches;
 use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
-use super::spill::SpillManager;
+use super::spill::{EncodedStats, SpillManager, write_ipc_stream};
 use crate::JobId;
 use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
@@ -94,14 +94,6 @@ struct InputPartitionOutput {
     _reservation: MemoryReservation,
 }
 
-/// What one output partition's encoded rows amount to.
-#[derive(Clone, Copy, Default)]
-struct EncodedStats {
-    num_batches: u64,
-    num_rows: u64,
-    num_bytes: u64,
-}
-
 /// One input partition's rows, encoded into one IPC buffer per output
 /// partition, with the counts for each.
 struct EncodedPartitions {
@@ -129,17 +121,9 @@ fn encode_buffered_partitions(
 
     // One writer open at a time: each holds its own compression context.
     buffered.drain(|partition, batches| {
-        let mut writer =
-            StreamWriter::try_new_with_options(Vec::new(), schema, opts.clone())?;
-        let stat = &mut stats[partition];
-        for batch in batches {
-            let batch = batch?;
-            stat.num_rows += batch.num_rows() as u64;
-            stat.num_bytes += batch.get_array_memory_size() as u64;
-            stat.num_batches += 1;
-            writer.write(&batch)?;
-        }
-        encoded[partition] = writer.into_inner()?;
+        let (buf, stat) = write_ipc_stream(Vec::new(), schema, opts, batches)?;
+        encoded[partition] = buf;
+        stats[partition] = stat;
         Ok(())
     })?;
 
@@ -688,12 +672,6 @@ impl SortShuffleWriterExec {
                 }
             }
 
-            // Finish spill writers before the coordinator reads them back while
-            // building the task's consolidated file.
-            spill_manager
-                .finish_writers()
-                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-
             metrics.spill_count.add(spill_events as usize);
             metrics
                 .spill_bytes
@@ -774,13 +752,11 @@ fn spill_all_partitions(
     let mut batches_written: u64 = 0;
     let mut bytes_written: u64 = 0;
     buffered.drain(|partition_id, batches| {
-        for batch in batches {
-            let written = spill_manager
-                .spill(partition_id, &batch?)
-                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-            batches_written += 1;
-            bytes_written += written;
-        }
+        let (batches, bytes) = spill_manager
+            .spill_batches(partition_id, batches)
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+        batches_written += batches;
+        bytes_written += bytes;
         Ok(())
     })?;
     reservation.free();
@@ -860,7 +836,7 @@ fn write_task_consolidated(
                 // Same flush-then-bypass discipline as above: anything already
                 // buffered has to land before the raw copy appends to the file.
                 output.flush()?;
-                let mut spill_file = File::open(spill_path)?;
+                let mut spill_file = File::open(&spill_path)?;
                 std::io::copy(&mut spill_file, output.get_mut())?;
             }
             num_batches += spill_batches;
@@ -1847,6 +1823,27 @@ mod tests {
     /// reader crossing input boundaries inside a single range.
     #[tokio::test]
     async fn multiple_input_partitions_write_one_file() -> Result<()> {
+        multi_input_round_trip(1, SortShuffleConfig::default(), false).await
+    }
+
+    /// Every input spills several times and keeps an in-memory remainder, so
+    /// each output partition's range interleaves spill and encoded spans from
+    /// every input.
+    #[tokio::test]
+    async fn multiple_spilling_input_partitions_round_trip() -> Result<()> {
+        multi_input_round_trip(
+            7,
+            SortShuffleConfig::default().with_memory_limit_per_task_bytes(4 * 1024),
+            true,
+        )
+        .await
+    }
+
+    async fn multi_input_round_trip(
+        batches_per_input: usize,
+        config: SortShuffleConfig,
+        expect_spills: bool,
+    ) -> Result<()> {
         use super::super::reader::stream_sort_shuffle_partition;
         use datafusion::arrow::array::Int64Array;
         use datafusion::physical_plan::ExecutionPlanProperties;
@@ -1862,21 +1859,26 @@ mod tests {
         let num_partitions = 4;
 
         // One input partition per outer Vec, so the writer sees M = 3.
+        let rows_per_batch = rows_per_input / batches_per_input;
+        let rows_per_input = rows_per_batch * batches_per_input;
         let partitions: Vec<Vec<RecordBatch>> = (0..num_inputs)
             .map(|p| {
-                let start = (p * rows_per_input) as i64;
-                let keys: Vec<i64> = (start..start + rows_per_input as i64).collect();
-                let values: Vec<i64> = keys.iter().map(|k| k * 2).collect();
-                vec![
-                    RecordBatch::try_new(
-                        schema.clone(),
-                        vec![
-                            Arc::new(Int64Array::from(keys)),
-                            Arc::new(Int64Array::from(values)),
-                        ],
-                    )
-                    .unwrap(),
-                ]
+                (0..batches_per_input)
+                    .map(|b| {
+                        let start = (p * rows_per_input + b * rows_per_batch) as i64;
+                        let keys: Vec<i64> =
+                            (start..start + rows_per_batch as i64).collect();
+                        let values: Vec<i64> = keys.iter().map(|k| k * 2).collect();
+                        RecordBatch::try_new(
+                            schema.clone(),
+                            vec![
+                                Arc::new(Int64Array::from(keys)),
+                                Arc::new(Int64Array::from(values)),
+                            ],
+                        )
+                        .unwrap()
+                    })
+                    .collect()
             })
             .collect();
 
@@ -1895,7 +1897,7 @@ mod tests {
             input,
             work_dir.path().to_str().unwrap().to_string(),
             Partitioning::Hash(vec![Arc::new(Column::new("k", 0))], num_partitions),
-            SortShuffleConfig::default(),
+            config,
         )?
         .with_task_id(7);
 
@@ -1905,6 +1907,13 @@ mod tests {
             let mut stream = writer.execute(output_partition, ctx.task_ctx())?;
             while stream.next().await.is_some() {}
         }
+
+        let spills = writer
+            .metrics()
+            .and_then(|m| m.sum_by_name("spill_count"))
+            .map(|v| v.as_usize())
+            .unwrap_or(0);
+        assert_eq!(spills > 0, expect_spills, "unexpected spill count {spills}");
 
         // One directory named after the task id, holding one data file.
         let stage_dir = work_dir.path().join("multi_input_job").join("1");
@@ -1933,8 +1942,14 @@ mod tests {
                     .as_any()
                     .downcast_ref::<Int64Array>()
                     .unwrap();
-                for v in arr.values() {
-                    assert!(seen.insert(*v), "key {v} appeared twice across partitions");
+                let values = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                for (k, v) in arr.values().iter().zip(values.values()) {
+                    assert_eq!(*v, k * 2, "key {k} came back with the wrong value");
+                    assert!(seen.insert(*k), "key {k} appeared twice across partitions");
                 }
             }
         }

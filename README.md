@@ -149,7 +149,7 @@ Clients submit query plans to the scheduler over gRPC, or SQL over Arrow Flight 
 into stages and sends tasks to the executors, which report progress back. Executors exchange shuffle data with each
 other over Arrow Flight and return results to the client the same way.
 
-![Ballista Cluster Diagram](docs/source/contributors-guide/ballista_architecture.excalidraw.svg)
+![Ballista Cluster Diagram](docs/source/contributors-guide/ballista_architecture.svg)
 
 See the [architecture guide](docs/source/contributors-guide/architecture.md) for more details.
 
