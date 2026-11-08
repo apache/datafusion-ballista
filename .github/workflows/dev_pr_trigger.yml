@@ -42,4 +42,4 @@ jobs:
       - name: Hand off to dev_pr.yml
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: echo "Labels for pull request #$PR_NUMBER are applied by dev_pr.yml"
+        run: 'echo "Labels for pull request #$PR_NUMBER are applied by dev_pr.yml"'
