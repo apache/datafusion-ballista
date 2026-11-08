@@ -114,9 +114,9 @@ Metadata files never change, so every node rebuilds exactly that version.
 - **A static table** is sent as the version it holds.
 - **A scan** is sent as the version the scheduler planned it against.
 
-Tables sent from the client also carry the metadata itself, so the scheduler
-needn't read the file. Scans sent to executors carry only the location, which
-keeps each task's plan small.
+Only the location is sent, not the metadata, so a plan's size doesn't grow
+with the table's history. Each node reads a version's metadata file when it
+first rebuilds it, and keeps up to 16 rebuilt versions.
 
 Only the node that plans a query talks to a catalog: the client, or the
 scheduler for SQL clients. Executors never need catalog configuration.
