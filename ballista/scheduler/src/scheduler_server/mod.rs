@@ -310,6 +310,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
     /// Initializes the scheduler and starts background tasks.
     pub async fn init(&mut self) -> Result<()> {
+        // The event-log writer only warns when it cannot write, so fail here
+        // instead of running without the logs that were asked for.
+        #[cfg(feature = "rest-api")]
+        if let Some(dir) = &self.config.event_log_dir {
+            ballista_history::writer::check_log_dir(std::path::Path::new(dir))
+                .await
+                .map_err(|e| {
+                    BallistaError::Configuration(format!(
+                        "cannot write event logs to event_log_dir {dir}: {e}"
+                    ))
+                })?;
+        }
         self.state.init().await?;
         self.query_stage_event_loop.start()?;
         self.expire_dead_executors()?;
@@ -695,6 +707,7 @@ mod test {
         assert_job_failed, assert_job_successful, assert_no_event, assert_subscriber_saw,
         execution_failure, failing_task_runner, mock_completed_task,
         static_session_config, test_cluster_context, test_scheduler_server,
+        test_scheduler_server_uninit,
     };
 
     #[tokio::test]
@@ -1076,6 +1089,26 @@ mod test {
         assert_subscriber_saw(case, &mut rx, false).await;
 
         Ok(())
+    }
+
+    #[cfg(feature = "rest-api")]
+    #[tokio::test]
+    async fn init_fails_when_event_log_dir_is_not_writable() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        let event_log_dir = file.join("logs").to_string_lossy().into_owned();
+
+        let mut scheduler = test_scheduler_server_uninit(
+            test_cluster_context(),
+            SchedulerConfig {
+                event_log_dir: Some(event_log_dir.clone()),
+                ..Default::default()
+            },
+        );
+
+        let error = scheduler.init().await.unwrap_err().to_string();
+        assert!(error.contains(&event_log_dir), "unexpected error: {error}");
     }
 
     #[tokio::test]
