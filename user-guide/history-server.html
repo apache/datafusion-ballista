@@ -428,6 +428,8 @@ to:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>ballista-scheduler<span class="w"> </span>--event-log-dir<span class="w"> </span>/var/lib/ballista/history
 </pre></div>
 </div>
+<p>The scheduler creates the directory if it does not exist, and fails to start if
+it cannot write to it.</p>
 <p>Each <code class="docutils literal notranslate"><span class="pre">JobStart</span></code> event records the unique scheduler id for the scheduler that
 created it. If you do not set an id, the scheduler generates the same
 UUID-backed instance identity used for executor ids at startup; set <code class="docutils literal notranslate"><span class="pre">--id</span></code> when

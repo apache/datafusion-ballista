@@ -592,6 +592,15 @@ previous executor is removed from scheduler state.</p>
 renamed to <code class="docutils literal notranslate"><span class="pre">scheduler_endpoint</span></code> because they carry scheduler callback endpoints.
 The protobuf field number remains <code class="docutils literal notranslate"><span class="pre">2</span></code>.</p>
 </section>
+<section id="schedulerserver-init-fails-when-event-log-dir-is-not-writable">
+<h4><code class="docutils literal notranslate"><span class="pre">SchedulerServer::init</span></code> fails when <code class="docutils literal notranslate"><span class="pre">event_log_dir</span></code> is not writable<a class="headerlink" href="#schedulerserver-init-fails-when-event-log-dir-is-not-writable" title="Link to this heading">#</a></h4>
+<p>When <code class="docutils literal notranslate"><span class="pre">SchedulerConfig::event_log_dir</span></code> is set, <code class="docutils literal notranslate"><span class="pre">SchedulerServer::init</span></code> now
+creates the directory if needed and checks that it can write a file there. If
+it cannot, <code class="docutils literal notranslate"><span class="pre">init</span></code> returns a <code class="docutils literal notranslate"><span class="pre">BallistaError::Configuration</span></code> naming the directory,
+where before the scheduler started and only logged warnings while writing no
+event logs. The signature is unchanged, but embedders that call <code class="docutils literal notranslate"><span class="pre">init</span></code> with an
+unwritable <code class="docutils literal notranslate"><span class="pre">event_log_dir</span></code> now fail at startup.</p>
+</section>
 <section id="shuffle-fetch-addresses-byte-ranges-not-just-partitions">
 <h4>Shuffle fetch addresses byte ranges, not just partitions<a class="headerlink" href="#shuffle-fetch-addresses-byte-ranges-not-just-partitions" title="Link to this heading">#</a></h4>
 <p>The shuffle fetch action carried a bool saying whether the producer used the
@@ -758,6 +767,7 @@ struct.</p>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#schedulerconfig-now-carries-a-scheduler-identifier"><code class="docutils literal notranslate"><span class="pre">SchedulerConfig</span></code> now carries a scheduler identifier</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#schedulerserver-init-fails-when-event-log-dir-is-not-writable"><code class="docutils literal notranslate"><span class="pre">SchedulerServer::init</span></code> fails when <code class="docutils literal notranslate"><span class="pre">event_log_dir</span></code> is not writable</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-fetch-addresses-byte-ranges-not-just-partitions">Shuffle fetch addresses byte ranges, not just partitions</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-executor-as-task-status-signature-reshaped"><code class="docutils literal notranslate"><span class="pre">ballista_executor::as_task_status</span></code> signature reshaped</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sessionconfigext-and-ballistaconfig-changes">SessionConfigExt and BallistaConfig Changes</a></li>
