@@ -42,7 +42,7 @@ use ballista_core::error::Result;
 use ballista_core::flight_proxy_service::BallistaFlightProxyService;
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::protobuf::{
-    ExecutorMetadata, PartitionId, PartitionLocation, PipelinedPartitionLocation,
+    ExecutorEndpoint, PartitionId, PartitionLocation, PipelinedPartitionLocation,
 };
 use ballista_core::serde::scheduler::{
     Action as BallistaAction, ShuffleFileKind, ShuffleLayout,
@@ -101,13 +101,10 @@ impl QueryBackend for StubBackend {
     ) -> Result<QueryResult> {
         *self.executed.entry(JOB_ID.to_string()).or_insert(0) += 1;
 
-        let executor_meta = ExecutorMetadata {
+        let executor_meta = ExecutorEndpoint {
             id: "executor-1".to_string(),
             host: "executor-host".to_string(),
             port: 50051,
-            grpc_port: 50052,
-            specification: None,
-            os_info: None,
         };
         if self.pipelined {
             let pipelined_partitions = (0..PARTITIONS)
@@ -119,6 +116,7 @@ impl QueryBackend for StubBackend {
                     }),
                     task_id: partition_id + 10,
                     executor_meta: Some(executor_meta.clone()),
+                    executor_index: 0,
                 })
                 .collect();
             return Ok(QueryResult {
@@ -140,17 +138,15 @@ impl QueryBackend for StubBackend {
                     stage_id: 3,
                     partition_id,
                 }),
-                executor_meta: Some(ExecutorMetadata {
+                executor_meta: Some(ExecutorEndpoint {
                     id: "executor-1".to_string(),
                     host: "executor-host".to_string(),
                     port: 50051,
-                    grpc_port: 50052,
-                    specification: None,
-                    os_info: None,
                 }),
                 partition_stats: None,
                 file_id: None,
                 is_sort_shuffle: false,
+                executor_index: 0,
             })
             .collect();
 

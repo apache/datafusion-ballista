@@ -637,8 +637,7 @@ mod tests {
             PipelinedRegistry, PipelinedShuffleWriterExec,
         };
         use ballista_core::serde::scheduler::{
-            ExecutorMetadata, ExecutorOperatingSystemSpecification,
-            ExecutorSpecification, PartitionId, PipelinedPartitionLocation,
+            ExecutorEndpoint, PartitionId, PipelinedPartitionLocation,
         };
         use datafusion::arrow::array::Int32Array;
         use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -731,14 +730,11 @@ mod tests {
             let location = PipelinedPartitionLocation {
                 partition_id: PartitionId::new(&"job".into(), 1, 0),
                 task_id: 0,
-                executor_meta: ExecutorMetadata {
+                executor_meta: Arc::new(ExecutorEndpoint {
                     id: "executor".to_owned(),
                     host: "127.0.0.1".to_owned(),
                     port,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default(),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
+                }),
             };
             let idle_timeout = Duration::from_secs(60);
             let pool = make_pool(idle_timeout);

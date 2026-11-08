@@ -55,8 +55,7 @@ use crate::state::aqe::planner::{AdaptivePlanner, RunnableStages};
 use ballista_core::JobId;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+    ExecutorEndpoint, PartitionId, PartitionLocation, PartitionStats,
 };
 use datafusion::arrow::array::{Int32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -220,14 +219,12 @@ pub(crate) fn mock_partition_location(
             stage_id: 0,
             partition_id,
         },
-        executor_meta: ExecutorMetadata {
+        executor_meta: Arc::new(ExecutorEndpoint {
             id: "".to_string(),
             host: "".to_string(),
             port: 0,
-            grpc_port: 0,
-            specification: ExecutorSpecification::default().with_vcores(0),
-            os_info: ExecutorOperatingSystemSpecification::default(),
-        },
+        }),
+        // next few properties are needed
         partition_stats: PartitionStats::new(Some(num_rows), None, Some(num_bytes)),
         file_id: None,
         is_sort_shuffle: false,

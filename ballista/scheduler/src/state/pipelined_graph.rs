@@ -58,7 +58,8 @@ use ballista_core::serde::protobuf::{
     task_status,
 };
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, PartitionId, PartitionLocation, PipelinedPartitionLocation, TaskKey,
+    ExecutorEndpoint, ExecutorMetadata, PartitionId, PartitionLocation,
+    PipelinedPartitionLocation, TaskKey,
 };
 use datafusion::physical_plan::{ExecutionPlan, replace_children_if_necessary};
 use datafusion::prelude::SessionConfig;
@@ -434,6 +435,7 @@ impl PipelinedExecutionGraph {
                         self.job_id
                     ))
                 })?;
+                let executor_meta = Arc::new(ExecutorEndpoint::from(executor_meta));
                 for partition in compute_global_output_partition_ids(&plan, partitions) {
                     stage_outputs.entry(partition).or_default().push(
                         PipelinedPartitionLocation {
@@ -1210,6 +1212,36 @@ mod tests {
                 .output_links()
                 .is_empty()
         );
+    }
+
+    /// A hashing producer task serves every output partition, so a reader has
+    /// one location per task per partition. The locations of one task must
+    /// share its executor's address rather than each hold a copy of it.
+    #[tokio::test]
+    async fn locations_of_a_producer_task_share_their_executor() {
+        let mut graph = pipelined_join_graph().await;
+        let tasks = place(&mut graph);
+
+        let mut shared_with_an_earlier_location = 0;
+        for (_, task) in &tasks {
+            for reader in readers(&task.plan) {
+                let mut first_of_task: HashMap<usize, Arc<ExecutorEndpoint>> =
+                    HashMap::new();
+                for location in reader.partition.iter().flatten() {
+                    match first_of_task.get(&location.task_id) {
+                        Some(first) => {
+                            assert!(Arc::ptr_eq(first, &location.executor_meta));
+                            shared_with_an_earlier_location += 1;
+                        }
+                        None => {
+                            first_of_task
+                                .insert(location.task_id, location.executor_meta.clone());
+                        }
+                    }
+                }
+            }
+        }
+        assert!(shared_with_an_earlier_location > 0);
     }
 
     #[tokio::test]

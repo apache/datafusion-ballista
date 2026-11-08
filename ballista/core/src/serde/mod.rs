@@ -69,7 +69,12 @@ use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
     ballista_physical_plan_node::PhysicalPlanType,
 };
-use crate::serde::scheduler::PartitionLocation;
+use crate::serde::scheduler::from_proto::{
+    pipelined_reader_partitions_from_proto, reader_partitions_from_proto,
+};
+use crate::serde::scheduler::to_proto::{
+    pipelined_reader_partitions_to_proto, reader_partitions_to_proto,
+};
 use datafusion::arrow::compute::SortOptions;
 use datafusion::execution::FunctionRegistry;
 
@@ -717,22 +722,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             PhysicalPlanType::PipelinedShuffleReader(reader) => {
                 let stage_id = reader.stage_id as usize;
                 let schema: SchemaRef = Arc::new(convert_required!(reader.schema)?);
-                let partition = reader
-                    .partition
-                    .iter()
-                    .map(|p| {
-                        p.location
-                            .iter()
-                            .map(|l| {
-                                l.clone().try_into().map_err(|e| {
-                                    DataFusionError::Internal(format!(
-                                        "Fail to get pipelined partition location due to {e:?}"
-                                    ))
-                                })
-                            })
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .collect::<Result<Vec<_>, DataFusionError>>()?;
+                let partition = pipelined_reader_partitions_from_proto(
+                    &reader.partition,
+                    &reader.executors,
+                )
+                .map_err(location_error)?;
                 let exec = if reader.broadcast {
                     let locations = partition.into_iter().next().ok_or_else(|| {
                         proto_error(
@@ -761,22 +755,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 let stage_id = shuffle_reader.stage_id as usize;
                 let schema: SchemaRef =
                     Arc::new(convert_required!(shuffle_reader.schema)?);
-                let partition_location: Vec<Vec<PartitionLocation>> = shuffle_reader
-                    .partition
-                    .iter()
-                    .map(|p| {
-                        p.location
-                            .iter()
-                            .map(|l| {
-                                l.clone().try_into().map_err(|e| {
-                                    DataFusionError::Internal(format!(
-                                        "Fail to get partition location due to {e:?}"
-                                    ))
-                                })
-                            })
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .collect::<Result<Vec<_>, DataFusionError>>()?;
+                let partition_location = reader_partitions_from_proto(
+                    &shuffle_reader.partition,
+                    &shuffle_reader.executors,
+                )
+                .map_err(location_error)?;
                 let partitioning = parse_protobuf_partitioning(
                     shuffle_reader.partitioning.as_ref(),
                     &decode_ctx,
@@ -819,22 +802,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             PhysicalPlanType::RangeShuffleReader(range_reader) => {
                 let stage_id = range_reader.stage_id as usize;
                 let schema: SchemaRef = Arc::new(convert_required!(range_reader.schema)?);
-                let partition_location: Vec<Vec<PartitionLocation>> = range_reader
-                    .partition
-                    .iter()
-                    .map(|p| {
-                        p.location
-                            .iter()
-                            .map(|l| {
-                                l.clone().try_into().map_err(|e| {
-                                    DataFusionError::Internal(format!(
-                                        "Fail to get partition location due to {e:?}"
-                                    ))
-                                })
-                            })
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .collect::<Result<Vec<_>, DataFusionError>>()?;
+                let partition_location = reader_partitions_from_proto(
+                    &range_reader.partition,
+                    &range_reader.executors,
+                )
+                .map_err(location_error)?;
                 let merge_ordering_exprs = parse_physical_sort_exprs(
                     &range_reader.merge_ordering,
                     &decode_ctx,
@@ -1298,13 +1270,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             Ok(())
         } else if let Some(exec) = node.downcast_ref::<PipelinedShuffleReaderExec>() {
-            let partition = exec
-                .partition
-                .iter()
-                .map(|locations| protobuf::PipelinedReaderPartition {
-                    location: locations.iter().cloned().map(Into::into).collect(),
-                })
-                .collect();
+            let (partition, executors) =
+                pipelined_reader_partitions_to_proto(&exec.partition);
             let converter = DefaultPhysicalProtoConverter {};
             let partitioning = serialize_partitioning(
                 &exec.properties().partitioning,
@@ -1319,6 +1286,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         stage_id: exec.stage_id as u32,
                         partitioning: Some(partitioning),
                         broadcast: exec.broadcast,
+                        executors,
                     },
                 )),
             };
@@ -1331,21 +1299,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             Ok(())
         } else if let Some(exec) = node.downcast_ref::<ShuffleReaderExec>() {
             let stage_id = exec.stage_id as u32;
-            let mut partition = vec![];
-            for location in &exec.partition {
-                partition.push(protobuf::ShuffleReaderPartition {
-                    location: location
-                        .iter()
-                        .map(|l| {
-                            l.clone().try_into().map_err(|e| {
-                                DataFusionError::Internal(format!(
-                                    "Fail to get partition location due to {e:?}"
-                                ))
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                });
-            }
+            let (partition, executors) = reader_partitions_to_proto(&exec.partition);
             let converter = DefaultPhysicalProtoConverter {};
             let partitioning = serialize_partitioning(
                 &exec.properties().partitioning,
@@ -1362,6 +1316,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         broadcast: exec.broadcast,
                         upstream_partition_count: exec.upstream_partition_count as u32,
                         coalesce: exec.coalesce.as_ref().map(|c| c.into()),
+                        executors,
                     },
                 )),
             };
@@ -1374,21 +1329,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             Ok(())
         } else if let Some(exec) = node.downcast_ref::<RangeShuffleReaderExec>() {
             let stage_id = exec.stage_id as u32;
-            let mut partition = vec![];
-            for location in &exec.partition {
-                partition.push(protobuf::ShuffleReaderPartition {
-                    location: location
-                        .iter()
-                        .map(|l| {
-                            l.clone().try_into().map_err(|e| {
-                                DataFusionError::Internal(format!(
-                                    "Fail to get partition location due to {e:?}"
-                                ))
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                });
-            }
+            let (partition, executors) = reader_partitions_to_proto(&exec.partition);
             let converter = DefaultPhysicalProtoConverter {};
             let merge_ordering = serialize_physical_sort_exprs(
                 exec.merge_ordering().iter().cloned(),
@@ -1413,6 +1354,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                                 Ok::<_, DataFusionError>(protobuf::RangeBound { lo, hi })
                             })
                             .collect::<Result<Vec<_>, DataFusionError>>()?,
+                        executors,
                     },
                 )),
             };
@@ -1723,11 +1665,16 @@ struct FileFormatProto {
     pub blob: Vec<u8>,
 }
 
+fn location_error(error: BallistaError) -> DataFusionError {
+    DataFusionError::Internal(format!("Fail to get partition location due to {error:?}"))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::execution_plans::PartitionGroup;
     use crate::execution_plans::test_util::int32_schema;
+    use crate::serde::scheduler::{ExecutorEndpoint, PartitionLocation};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::Partitioning;
     use datafusion::physical_plan::expressions::col;
@@ -1909,21 +1856,15 @@ mod test {
         task_id: usize,
         partition: usize,
     ) -> crate::serde::scheduler::PipelinedPartitionLocation {
-        use crate::serde::scheduler::{
-            ExecutorMetadata, ExecutorOperatingSystemSpecification,
-            ExecutorSpecification, PartitionId, PipelinedPartitionLocation,
-        };
+        use crate::serde::scheduler::{PartitionId, PipelinedPartitionLocation};
         PipelinedPartitionLocation {
             partition_id: PartitionId::new(&"job".into(), 2, partition),
             task_id,
-            executor_meta: ExecutorMetadata {
+            executor_meta: Arc::new(ExecutorEndpoint {
                 id: format!("executor-{task_id}"),
                 host: "host".to_owned(),
                 port: 50051,
-                grpc_port: 50052,
-                specification: ExecutorSpecification::default(),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
+            }),
         }
     }
 
@@ -1939,6 +1880,273 @@ mod test {
         codec
             .try_decode(&buf, &inputs, &ctx, &DefaultPhysicalProtoConverter {})
             .unwrap()
+    }
+
+    /// The id, host and port of an executor, in that order.
+    type Address<'a> = (&'a str, &'a str, u16);
+
+    const EXECUTOR_A: Address = ("exec-a", "10.0.0.1", 7001);
+    const EXECUTOR_B: Address = ("exec-b", "10.0.0.2", 7002);
+
+    fn executor_on((id, host, port): Address) -> Arc<ExecutorEndpoint> {
+        Arc::new(ExecutorEndpoint {
+            id: id.to_owned(),
+            host: host.to_owned(),
+            port,
+        })
+    }
+
+    fn location_on(executor: Address, partition: usize) -> PartitionLocation {
+        use crate::serde::scheduler::{PartitionId, PartitionStats};
+        PartitionLocation {
+            map_partition_id: partition,
+            partition_id: PartitionId::new(&"job".into(), 1, partition),
+            executor_meta: executor_on(executor),
+            partition_stats: PartitionStats::default(),
+            file_id: None,
+            is_sort_shuffle: false,
+        }
+    }
+
+    /// Two reader partitions over four locations held by two executors.
+    fn locations_on_two_executors() -> Vec<Vec<PartitionLocation>> {
+        vec![
+            vec![location_on(EXECUTOR_A, 0), location_on(EXECUTOR_B, 1)],
+            vec![location_on(EXECUTOR_B, 2), location_on(EXECUTOR_A, 3)],
+        ]
+    }
+
+    fn pipelined_locations_on_two_executors()
+    -> Vec<Vec<crate::serde::scheduler::PipelinedPartitionLocation>> {
+        use crate::serde::scheduler::{PartitionId, PipelinedPartitionLocation};
+        let location = |executor, partition| PipelinedPartitionLocation {
+            partition_id: PartitionId::new(&"job".into(), 1, partition),
+            task_id: partition,
+            executor_meta: executor_on(executor),
+        };
+        vec![
+            vec![location(EXECUTOR_A, 0), location(EXECUTOR_B, 1)],
+            vec![location(EXECUTOR_B, 2), location(EXECUTOR_A, 3)],
+        ]
+    }
+
+    fn shuffle_reader_on_two_executors() -> Arc<dyn ExecutionPlan> {
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 2);
+        Arc::new(
+            ShuffleReaderExec::try_new(
+                1,
+                locations_on_two_executors(),
+                schema,
+                partitioning,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn range_reader_on_two_executors() -> Arc<dyn ExecutionPlan> {
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+
+        let schema = create_test_schema();
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr {
+            expr: col("id", schema.as_ref()).unwrap(),
+            options: SortOptions::default(),
+        }])
+        .unwrap();
+        Arc::new(
+            RangeShuffleReaderExec::try_new(
+                1,
+                locations_on_two_executors(),
+                schema,
+                ordering,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn pipelined_reader_on_two_executors() -> Arc<dyn ExecutionPlan> {
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 2);
+        Arc::new(
+            PipelinedShuffleReaderExec::try_new(
+                1,
+                pipelined_locations_on_two_executors(),
+                schema,
+                partitioning,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn address(executor: &ExecutorEndpoint) -> Address<'_> {
+        (&executor.id, &executor.host, executor.port)
+    }
+
+    fn readers_on_two_executors() -> [Arc<dyn ExecutionPlan>; 3] {
+        [
+            shuffle_reader_on_two_executors(),
+            range_reader_on_two_executors(),
+            pipelined_reader_on_two_executors(),
+        ]
+    }
+
+    /// The executor of every location of a reader, by partition.
+    fn reader_executors(
+        plan: &Arc<dyn ExecutionPlan>,
+    ) -> Vec<Vec<Arc<ExecutorEndpoint>>> {
+        fn collect<L>(
+            partitions: &[Vec<L>],
+            executor: impl Fn(&L) -> Arc<ExecutorEndpoint>,
+        ) -> Vec<Vec<Arc<ExecutorEndpoint>>> {
+            partitions
+                .iter()
+                .map(|locations| locations.iter().map(&executor).collect())
+                .collect()
+        }
+        if let Some(reader) = plan.downcast_ref::<ShuffleReaderExec>() {
+            collect(&reader.partition, |l| l.executor_meta.clone())
+        } else if let Some(reader) = plan.downcast_ref::<RangeShuffleReaderExec>() {
+            collect(&reader.partition, |l| l.executor_meta.clone())
+        } else if let Some(reader) = plan.downcast_ref::<PipelinedShuffleReaderExec>() {
+            collect(&reader.partition, |l| l.executor_meta.clone())
+        } else {
+            panic!("{} is not a reader", plan.name())
+        }
+    }
+
+    fn addresses(executors: &[Vec<Arc<ExecutorEndpoint>>]) -> Vec<Vec<Address<'_>>> {
+        executors
+            .iter()
+            .map(|partition| partition.iter().map(|e| address(e)).collect())
+            .collect()
+    }
+
+    fn encode_plan(plan: Arc<dyn ExecutionPlan>) -> Vec<u8> {
+        let mut encoded: Vec<u8> = vec![];
+        BallistaPhysicalExtensionCodec::default()
+            .try_encode(plan, &mut encoded, &DefaultPhysicalProtoConverter {})
+            .unwrap();
+        encoded
+    }
+
+    /// A stage can read thousands of locations from a handful of executors,
+    /// so a reader must write each executor's address once rather than once
+    /// per location. A gRPC message limit is what this overruns otherwise.
+    #[test]
+    fn readers_encode_each_executor_once() {
+        for plan in readers_on_two_executors() {
+            let name = plan.name().to_owned();
+            let encoded = encode_plan(plan);
+            for text in ["exec-a", "exec-b", "10.0.0.1", "10.0.0.2"] {
+                let occurrences = encoded
+                    .windows(text.len())
+                    .filter(|window| *window == text.as_bytes())
+                    .count();
+                assert_eq!(occurrences, 1, "`{text}` in the encoded {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn readers_keep_each_locations_executor() {
+        for plan in readers_on_two_executors() {
+            let decoded = reader_executors(&roundtrip_plan(plan.clone()));
+            assert_eq!(
+                addresses(&decoded),
+                [[EXECUTOR_A, EXECUTOR_B], [EXECUTOR_B, EXECUTOR_A]],
+                "{}",
+                plan.name()
+            );
+        }
+    }
+
+    /// A broadcast reader has every upstream location in its one partition.
+    #[test]
+    fn broadcast_reader_keeps_each_locations_executor() {
+        let reader = ShuffleReaderExec::try_new_broadcast(
+            1,
+            locations_on_two_executors().concat(),
+            create_test_schema(),
+            2,
+        )
+        .unwrap();
+        let decoded = reader_executors(&roundtrip_plan(Arc::new(reader)));
+        assert_eq!(
+            addresses(&decoded),
+            [[EXECUTOR_A, EXECUTOR_B, EXECUTOR_B, EXECUTOR_A]]
+        );
+    }
+
+    /// One decoded instance per executor, rather than one per location: this
+    /// is what keeps a reader's memory from growing with its location count.
+    #[test]
+    fn decoded_readers_share_each_executor() {
+        for plan in readers_on_two_executors() {
+            let executors = reader_executors(&roundtrip_plan(plan.clone()));
+            assert!(
+                Arc::ptr_eq(&executors[0][0], &executors[1][1]),
+                "two locations on one executor in {}",
+                plan.name()
+            );
+        }
+    }
+
+    /// The index comes off the wire, so a bad one must be reported rather
+    /// than panic on an executor.
+    #[test]
+    fn readers_reject_an_unknown_executor_index() {
+        for plan in readers_on_two_executors() {
+            let mut node =
+                protobuf::BallistaPhysicalPlanNode::decode(encode_plan(plan).as_slice())
+                    .unwrap();
+            match node.physical_plan_type.as_mut().unwrap() {
+                PhysicalPlanType::ShuffleReader(reader) => {
+                    reader.partition[0].location[0].executor_index = 42
+                }
+                PhysicalPlanType::RangeShuffleReader(reader) => {
+                    reader.partition[0].location[0].executor_index = 42
+                }
+                PhysicalPlanType::PipelinedShuffleReader(reader) => {
+                    reader.partition[0].location[0].executor_index = 42
+                }
+                other => panic!("not a reader: {other:?}"),
+            }
+
+            let ctx = SessionContext::new().task_ctx();
+            let error = BallistaPhysicalExtensionCodec::default()
+                .try_decode(
+                    &node.encode_to_vec(),
+                    &[],
+                    &ctx,
+                    &DefaultPhysicalProtoConverter {},
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("42"), "{error}");
+        }
+    }
+
+    /// Clients read a location's executor from the location itself, not from
+    /// a table in the job status.
+    #[test]
+    fn job_status_locations_carry_their_executor() {
+        let location: protobuf::PartitionLocation =
+            location_on(EXECUTOR_A, 0).try_into().unwrap();
+        assert_eq!(location.executor_meta.as_ref().unwrap().host, "10.0.0.1");
+        let decoded: PartitionLocation = location.try_into().unwrap();
+        assert_eq!(address(&decoded.executor_meta), EXECUTOR_A);
+
+        let location: protobuf::PipelinedPartitionLocation =
+            pipelined_locations_on_two_executors()
+                .remove(0)
+                .remove(1)
+                .into();
+        assert_eq!(location.executor_meta.as_ref().unwrap().host, "10.0.0.2");
+        let decoded: crate::serde::scheduler::PipelinedPartitionLocation =
+            location.try_into().unwrap();
+        assert_eq!(address(&decoded.executor_meta), EXECUTOR_B);
     }
 
     #[tokio::test]

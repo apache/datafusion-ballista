@@ -53,8 +53,7 @@ use crate::config::{
 use crate::execution_plans::{ChaosExec, compute_global_output_partition_ids};
 use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PipelinedPartitionLocation,
+    ExecutorEndpoint, PartitionId, PipelinedPartitionLocation,
 };
 
 const EXECUTOR: &str = "local";
@@ -118,14 +117,11 @@ fn location(task_id: usize, partition: usize) -> PipelinedPartitionLocation {
     PipelinedPartitionLocation {
         partition_id: PartitionId::new(&"job".into(), STAGE, partition),
         task_id,
-        executor_meta: ExecutorMetadata {
+        executor_meta: Arc::new(ExecutorEndpoint {
             id: EXECUTOR.to_owned(),
             host: "localhost".to_owned(),
             port: 0,
-            grpc_port: 0,
-            specification: ExecutorSpecification::default(),
-            os_info: ExecutorOperatingSystemSpecification::default(),
-        },
+        }),
     }
 }
 
@@ -538,9 +534,11 @@ async fn remote_streams_to_one_executor_share_one_connection() {
     );
     let remote = |task_id: usize, port: u16| {
         let mut location = location(task_id, 0);
-        location.executor_meta.id = format!("remote-{port}");
-        location.executor_meta.host = "127.0.0.1".to_owned();
-        location.executor_meta.port = port;
+        location.executor_meta = Arc::new(ExecutorEndpoint {
+            id: format!("remote-{port}"),
+            host: "127.0.0.1".to_owned(),
+            port,
+        });
         location
     };
     // 130 producer tasks on one executor and two on another: one connection
@@ -714,9 +712,11 @@ async fn resetting_listener(relay_to: Option<u16>) -> u16 {
 
 fn remote_location(port: u16) -> PipelinedPartitionLocation {
     let mut location = location(0, 0);
-    location.executor_meta.id = format!("remote-{port}");
-    location.executor_meta.host = "127.0.0.1".to_owned();
-    location.executor_meta.port = port;
+    location.executor_meta = Arc::new(ExecutorEndpoint {
+        id: format!("remote-{port}"),
+        host: "127.0.0.1".to_owned(),
+        port,
+    });
     location
 }
 
