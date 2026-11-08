@@ -1278,7 +1278,7 @@ mod test {
             panic!("{case}: expected job status to be failed but it was {status:?}");
         };
         assert!(
-            failed.error.contains("PanickingTableProvider just panics!"),
+            failed.error.contains("ExplodingTableProvider just panics!"),
             "{case}: unexpected error: {}",
             failed.error
         );

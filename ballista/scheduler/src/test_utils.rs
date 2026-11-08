@@ -108,7 +108,7 @@ impl TableProvider for ExplodingTableProvider {
             Self::Error => Err(DataFusionError::Plan(
                 "ExplodingTableProvider just throws an error!".to_owned(),
             )),
-            Self::Panic => panic!("PanickingTableProvider just panics!"),
+            Self::Panic => panic!("ExplodingTableProvider just panics!"),
         }
     }
 }
