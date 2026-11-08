@@ -138,11 +138,7 @@ impl QueryBackend for StubBackend {
                     stage_id: 3,
                     partition_id,
                 }),
-                executor_meta: Some(ExecutorEndpoint {
-                    id: "executor-1".to_string(),
-                    host: "executor-host".to_string(),
-                    port: 50051,
-                }),
+                executor_meta: Some(executor_meta.clone()),
                 partition_stats: None,
                 file_id: None,
                 is_sort_shuffle: false,

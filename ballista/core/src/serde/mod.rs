@@ -1673,8 +1673,10 @@ fn location_error(error: BallistaError) -> DataFusionError {
 mod test {
     use super::*;
     use crate::execution_plans::PartitionGroup;
-    use crate::execution_plans::test_util::int32_schema;
-    use crate::serde::scheduler::{ExecutorEndpoint, PartitionLocation};
+    use crate::execution_plans::test_util::{int32_schema, test_location};
+    use crate::serde::scheduler::{
+        ExecutorEndpoint, PartitionLocation, PipelinedPartitionLocation,
+    };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::Partitioning;
     use datafusion::physical_plan::expressions::col;
@@ -1855,10 +1857,13 @@ mod test {
     fn pipelined_location(
         task_id: usize,
         partition: usize,
-    ) -> crate::serde::scheduler::PipelinedPartitionLocation {
-        use crate::serde::scheduler::{PartitionId, PipelinedPartitionLocation};
+    ) -> PipelinedPartitionLocation {
         PipelinedPartitionLocation {
-            partition_id: PartitionId::new(&"job".into(), 2, partition),
+            partition_id: crate::serde::scheduler::PartitionId::new(
+                &"job".into(),
+                2,
+                partition,
+            ),
             task_id,
             executor_meta: Arc::new(ExecutorEndpoint {
                 id: format!("executor-{task_id}"),
@@ -1868,128 +1873,118 @@ mod test {
         }
     }
 
-    fn roundtrip_plan(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        let codec = BallistaPhysicalExtensionCodec::default();
-        let mut buf: Vec<u8> = vec![];
-        codec
-            .try_encode(plan.clone(), &mut buf, &DefaultPhysicalProtoConverter {})
+    fn encode_plan(plan: Arc<dyn ExecutionPlan>) -> Vec<u8> {
+        let mut encoded: Vec<u8> = vec![];
+        BallistaPhysicalExtensionCodec::default()
+            .try_encode(plan, &mut encoded, &DefaultPhysicalProtoConverter {})
             .unwrap();
-        let ctx = SessionContext::new().task_ctx();
-        let inputs: Vec<Arc<dyn ExecutionPlan>> =
-            plan.children().into_iter().cloned().collect();
-        codec
-            .try_decode(&buf, &inputs, &ctx, &DefaultPhysicalProtoConverter {})
-            .unwrap()
+        encoded
     }
 
-    /// The id, host and port of an executor, in that order.
-    type Address<'a> = (&'a str, &'a str, u16);
+    fn decode_plan(
+        encoded: &[u8],
+        inputs: &[Arc<dyn ExecutionPlan>],
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        let ctx = SessionContext::new().task_ctx();
+        BallistaPhysicalExtensionCodec::default().try_decode(
+            encoded,
+            inputs,
+            &ctx,
+            &DefaultPhysicalProtoConverter {},
+        )
+    }
 
-    const EXECUTOR_A: Address = ("exec-a", "10.0.0.1", 7001);
-    const EXECUTOR_B: Address = ("exec-b", "10.0.0.2", 7002);
+    fn roundtrip_plan(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        let inputs: Vec<Arc<dyn ExecutionPlan>> =
+            plan.children().into_iter().cloned().collect();
+        decode_plan(&encode_plan(plan), &inputs).unwrap()
+    }
 
-    fn executor_on((id, host, port): Address) -> Arc<ExecutorEndpoint> {
+    fn executor_a() -> Arc<ExecutorEndpoint> {
         Arc::new(ExecutorEndpoint {
-            id: id.to_owned(),
-            host: host.to_owned(),
-            port,
+            id: "exec-a".to_owned(),
+            host: "10.0.0.1".to_owned(),
+            port: 7001,
         })
     }
 
-    fn location_on(executor: Address, partition: usize) -> PartitionLocation {
-        use crate::serde::scheduler::{PartitionId, PartitionStats};
+    fn executor_b() -> Arc<ExecutorEndpoint> {
+        Arc::new(ExecutorEndpoint {
+            id: "exec-b".to_owned(),
+            host: "10.0.0.2".to_owned(),
+            port: 7002,
+        })
+    }
+
+    fn location_on(
+        executor: Arc<ExecutorEndpoint>,
+        partition: usize,
+    ) -> PartitionLocation {
         PartitionLocation {
-            map_partition_id: partition,
-            partition_id: PartitionId::new(&"job".into(), 1, partition),
-            executor_meta: executor_on(executor),
-            partition_stats: PartitionStats::default(),
-            file_id: None,
-            is_sort_shuffle: false,
+            executor_meta: executor,
+            ..test_location("job", 1, partition)
+        }
+    }
+
+    fn pipelined_location_on(
+        executor: Arc<ExecutorEndpoint>,
+        partition: usize,
+    ) -> PipelinedPartitionLocation {
+        PipelinedPartitionLocation {
+            executor_meta: executor,
+            ..pipelined_location(partition, partition)
         }
     }
 
     /// Two reader partitions over four locations held by two executors.
-    fn locations_on_two_executors() -> Vec<Vec<PartitionLocation>> {
+    fn on_two_executors<L>(
+        location: impl Fn(Arc<ExecutorEndpoint>, usize) -> L,
+    ) -> Vec<Vec<L>> {
         vec![
-            vec![location_on(EXECUTOR_A, 0), location_on(EXECUTOR_B, 1)],
-            vec![location_on(EXECUTOR_B, 2), location_on(EXECUTOR_A, 3)],
+            vec![location(executor_a(), 0), location(executor_b(), 1)],
+            vec![location(executor_b(), 2), location(executor_a(), 3)],
         ]
     }
 
-    fn pipelined_locations_on_two_executors()
-    -> Vec<Vec<crate::serde::scheduler::PipelinedPartitionLocation>> {
-        use crate::serde::scheduler::{PartitionId, PipelinedPartitionLocation};
-        let location = |executor, partition| PipelinedPartitionLocation {
-            partition_id: PartitionId::new(&"job".into(), 1, partition),
-            task_id: partition,
-            executor_meta: executor_on(executor),
-        };
-        vec![
-            vec![location(EXECUTOR_A, 0), location(EXECUTOR_B, 1)],
-            vec![location(EXECUTOR_B, 2), location(EXECUTOR_A, 3)],
-        ]
-    }
-
-    fn shuffle_reader_on_two_executors() -> Arc<dyn ExecutionPlan> {
-        let schema = create_test_schema();
-        let partitioning =
-            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 2);
-        Arc::new(
-            ShuffleReaderExec::try_new(
-                1,
-                locations_on_two_executors(),
-                schema,
-                partitioning,
-            )
-            .unwrap(),
-        )
-    }
-
-    fn range_reader_on_two_executors() -> Arc<dyn ExecutionPlan> {
-        use datafusion::arrow::compute::SortOptions;
+    fn readers_on_two_executors() -> [Arc<dyn ExecutionPlan>; 3] {
         use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 
         let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 2);
         let ordering = LexOrdering::new(vec![PhysicalSortExpr {
             expr: col("id", schema.as_ref()).unwrap(),
             options: SortOptions::default(),
         }])
         .unwrap();
-        Arc::new(
-            RangeShuffleReaderExec::try_new(
-                1,
-                locations_on_two_executors(),
-                schema,
-                ordering,
-            )
-            .unwrap(),
-        )
-    }
-
-    fn pipelined_reader_on_two_executors() -> Arc<dyn ExecutionPlan> {
-        let schema = create_test_schema();
-        let partitioning =
-            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 2);
-        Arc::new(
-            PipelinedShuffleReaderExec::try_new(
-                1,
-                pipelined_locations_on_two_executors(),
-                schema,
-                partitioning,
-            )
-            .unwrap(),
-        )
-    }
-
-    fn address(executor: &ExecutorEndpoint) -> Address<'_> {
-        (&executor.id, &executor.host, executor.port)
-    }
-
-    fn readers_on_two_executors() -> [Arc<dyn ExecutionPlan>; 3] {
         [
-            shuffle_reader_on_two_executors(),
-            range_reader_on_two_executors(),
-            pipelined_reader_on_two_executors(),
+            Arc::new(
+                ShuffleReaderExec::try_new(
+                    1,
+                    on_two_executors(location_on),
+                    schema.clone(),
+                    partitioning.clone(),
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                RangeShuffleReaderExec::try_new(
+                    1,
+                    on_two_executors(location_on),
+                    schema.clone(),
+                    ordering,
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                PipelinedShuffleReaderExec::try_new(
+                    1,
+                    on_two_executors(pipelined_location_on),
+                    schema,
+                    partitioning,
+                )
+                .unwrap(),
+            ),
         ]
     }
 
@@ -2017,21 +2012,6 @@ mod test {
         }
     }
 
-    fn addresses(executors: &[Vec<Arc<ExecutorEndpoint>>]) -> Vec<Vec<Address<'_>>> {
-        executors
-            .iter()
-            .map(|partition| partition.iter().map(|e| address(e)).collect())
-            .collect()
-    }
-
-    fn encode_plan(plan: Arc<dyn ExecutionPlan>) -> Vec<u8> {
-        let mut encoded: Vec<u8> = vec![];
-        BallistaPhysicalExtensionCodec::default()
-            .try_encode(plan, &mut encoded, &DefaultPhysicalProtoConverter {})
-            .unwrap();
-        encoded
-    }
-
     /// A stage can read thousands of locations from a handful of executors,
     /// so a reader must write each executor's address once rather than once
     /// per location. A gRPC message limit is what this overruns otherwise.
@@ -2052,11 +2032,11 @@ mod test {
 
     #[test]
     fn readers_keep_each_locations_executor() {
+        let (a, b) = (executor_a(), executor_b());
         for plan in readers_on_two_executors() {
-            let decoded = reader_executors(&roundtrip_plan(plan.clone()));
             assert_eq!(
-                addresses(&decoded),
-                [[EXECUTOR_A, EXECUTOR_B], [EXECUTOR_B, EXECUTOR_A]],
+                reader_executors(&roundtrip_plan(plan.clone())),
+                [[a.clone(), b.clone()], [b.clone(), a.clone()]],
                 "{}",
                 plan.name()
             );
@@ -2068,15 +2048,15 @@ mod test {
     fn broadcast_reader_keeps_each_locations_executor() {
         let reader = ShuffleReaderExec::try_new_broadcast(
             1,
-            locations_on_two_executors().concat(),
+            on_two_executors(location_on).concat(),
             create_test_schema(),
             2,
         )
         .unwrap();
-        let decoded = reader_executors(&roundtrip_plan(Arc::new(reader)));
+        let (a, b) = (executor_a(), executor_b());
         assert_eq!(
-            addresses(&decoded),
-            [[EXECUTOR_A, EXECUTOR_B, EXECUTOR_B, EXECUTOR_A]]
+            reader_executors(&roundtrip_plan(Arc::new(reader))),
+            [[a.clone(), b.clone(), b, a]]
         );
     }
 
@@ -2115,15 +2095,7 @@ mod test {
                 other => panic!("not a reader: {other:?}"),
             }
 
-            let ctx = SessionContext::new().task_ctx();
-            let error = BallistaPhysicalExtensionCodec::default()
-                .try_decode(
-                    &node.encode_to_vec(),
-                    &[],
-                    &ctx,
-                    &DefaultPhysicalProtoConverter {},
-                )
-                .unwrap_err();
+            let error = decode_plan(&node.encode_to_vec(), &[]).unwrap_err();
             assert!(error.to_string().contains("42"), "{error}");
         }
     }
@@ -2133,20 +2105,16 @@ mod test {
     #[test]
     fn job_status_locations_carry_their_executor() {
         let location: protobuf::PartitionLocation =
-            location_on(EXECUTOR_A, 0).try_into().unwrap();
+            location_on(executor_a(), 0).try_into().unwrap();
         assert_eq!(location.executor_meta.as_ref().unwrap().host, "10.0.0.1");
         let decoded: PartitionLocation = location.try_into().unwrap();
-        assert_eq!(address(&decoded.executor_meta), EXECUTOR_A);
+        assert_eq!(decoded.executor_meta, executor_a());
 
         let location: protobuf::PipelinedPartitionLocation =
-            pipelined_locations_on_two_executors()
-                .remove(0)
-                .remove(1)
-                .into();
+            pipelined_location_on(executor_b(), 1).into();
         assert_eq!(location.executor_meta.as_ref().unwrap().host, "10.0.0.2");
-        let decoded: crate::serde::scheduler::PipelinedPartitionLocation =
-            location.try_into().unwrap();
-        assert_eq!(address(&decoded.executor_meta), EXECUTOR_B);
+        let decoded: PipelinedPartitionLocation = location.try_into().unwrap();
+        assert_eq!(decoded.executor_meta, executor_b());
     }
 
     #[tokio::test]

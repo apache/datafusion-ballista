@@ -420,6 +420,13 @@ impl PipelinedExecutionGraph {
             )));
         }
 
+        let endpoints: HashMap<&str, Arc<ExecutorEndpoint>> = executors
+            .iter()
+            .map(|(id, metadata)| {
+                (id.as_str(), Arc::new(ExecutorEndpoint::from(metadata)))
+            })
+            .collect();
+
         // Where every producer task serves each of its output partitions.
         let mut outputs: HashMap<
             usize,
@@ -429,13 +436,12 @@ impl PipelinedExecutionGraph {
             let plan = self.stage(*stage_id)?.plan_arc();
             let stage_outputs = outputs.entry(*stage_id).or_default();
             for (task_id, (executor_id, partitions)) in tasks.iter().enumerate() {
-                let executor_meta = executors.get(executor_id).ok_or_else(|| {
+                let executor_meta = endpoints.get(executor_id.as_str()).ok_or_else(|| {
                     BallistaError::Internal(format!(
                         "no metadata for executor {executor_id} placed in pipelined job {}",
                         self.job_id
                     ))
                 })?;
-                let executor_meta = Arc::new(ExecutorEndpoint::from(executor_meta));
                 for partition in compute_global_output_partition_ids(&plan, partitions) {
                     stage_outputs.entry(partition).or_default().push(
                         PipelinedPartitionLocation {
@@ -1214,29 +1220,24 @@ mod tests {
         );
     }
 
-    /// A hashing producer task serves every output partition, so a reader has
-    /// one location per task per partition. The locations of one task must
-    /// share its executor's address rather than each hold a copy of it.
+    /// Readers have many locations on each of a few executors. All of those
+    /// must share the executor's address rather than each hold a copy of it.
     #[tokio::test]
-    async fn locations_of_a_producer_task_share_their_executor() {
+    async fn locations_on_one_executor_share_its_address() {
         let mut graph = pipelined_join_graph().await;
         let tasks = place(&mut graph);
 
+        let mut last_on_executor = HashMap::new();
         let mut shared_with_an_earlier_location = 0;
         for (_, task) in &tasks {
             for reader in readers(&task.plan) {
-                let mut first_of_task: HashMap<usize, Arc<ExecutorEndpoint>> =
-                    HashMap::new();
                 for location in reader.partition.iter().flatten() {
-                    match first_of_task.get(&location.task_id) {
-                        Some(first) => {
-                            assert!(Arc::ptr_eq(first, &location.executor_meta));
-                            shared_with_an_earlier_location += 1;
-                        }
-                        None => {
-                            first_of_task
-                                .insert(location.task_id, location.executor_meta.clone());
-                        }
+                    let executor = &location.executor_meta;
+                    if let Some(earlier) =
+                        last_on_executor.insert(executor.id.clone(), executor.clone())
+                    {
+                        assert!(Arc::ptr_eq(&earlier, executor));
+                        shared_with_an_earlier_location += 1;
                     }
                 }
             }

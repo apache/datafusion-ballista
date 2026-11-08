@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::common::hash_utils::RandomState;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use std::collections::HashMap;
@@ -154,17 +155,17 @@ fn location_fields(location: &PartitionLocation) -> protobuf::PartitionLocation 
 /// The executors of a reader node, each listed once.
 #[derive(Default)]
 struct ExecutorTable<'a> {
-    positions: HashMap<&'a ExecutorEndpoint, u32>,
+    // Looked up once per location, so a faster hasher than SipHash pays off.
+    positions: HashMap<&'a ExecutorEndpoint, u32, RandomState>,
     executors: Vec<protobuf::ExecutorEndpoint>,
 }
 
 impl<'a> ExecutorTable<'a> {
     /// The position of `executor` in the list, adding it if it is new.
     fn position(&mut self, executor: &'a ExecutorEndpoint) -> u32 {
-        let executors = &mut self.executors;
         *self.positions.entry(executor).or_insert_with(|| {
-            executors.push(executor.into());
-            (executors.len() - 1) as u32
+            self.executors.push(executor.into());
+            (self.executors.len() - 1) as u32
         })
     }
 }

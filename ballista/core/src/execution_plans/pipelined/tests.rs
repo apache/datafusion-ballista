@@ -532,14 +532,9 @@ async fn remote_streams_to_one_executor_share_one_connection() {
         resetting_listener(None).await,
         resetting_listener(None).await,
     );
-    let remote = |task_id: usize, port: u16| {
-        let mut location = location(task_id, 0);
-        location.executor_meta = Arc::new(ExecutorEndpoint {
-            id: format!("remote-{port}"),
-            host: "127.0.0.1".to_owned(),
-            port,
-        });
-        location
+    let remote = |task_id: usize, port: u16| PipelinedPartitionLocation {
+        task_id,
+        ..remote_location(port)
     };
     // 130 producer tasks on one executor and two on another: one connection
     // to each executor, however many streams it carries.
