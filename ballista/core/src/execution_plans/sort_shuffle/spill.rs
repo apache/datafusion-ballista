@@ -265,21 +265,10 @@ impl Drop for SpillManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::Int32Array;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use crate::execution_plans::test_util::{int32_batch, int32_schema};
     use datafusion::arrow::ipc::reader::StreamReader;
     use std::io::{Seek, SeekFrom};
-    use std::sync::Arc;
     use tempfile::TempDir;
-
-    fn create_test_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
-    }
-
-    fn create_test_batch(schema: &SchemaRef, values: Vec<i32>) -> RecordBatch {
-        let array = Int32Array::from(values);
-        RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap()
-    }
 
     /// Reads every batch of a partition's spill file, across the one stream
     /// each spill event appended.
@@ -317,7 +306,7 @@ mod tests {
     #[test]
     fn test_spill_and_read() -> Result<()> {
         let temp_dir = TempDir::new().unwrap();
-        let schema = create_test_schema();
+        let schema = int32_schema();
 
         let mut manager = SpillManager::new(
             temp_dir.path().to_str().unwrap(),
@@ -329,8 +318,8 @@ mod tests {
             Some(CompressionType::LZ4_FRAME),
         )?;
 
-        let b1 = create_test_batch(&schema, vec![1, 2, 3]);
-        let b2 = create_test_batch(&schema, vec![4, 5]);
+        let b1 = int32_batch(&[1, 2, 3]);
+        let b2 = int32_batch(&[4, 5]);
         assert!(spill_one(&mut manager, 0, b1)? > 0);
         assert!(spill_one(&mut manager, 0, b2)? > 0);
 
@@ -349,7 +338,7 @@ mod tests {
     #[test]
     fn test_multiple_partitions() -> Result<()> {
         let temp_dir = TempDir::new().unwrap();
-        let schema = create_test_schema();
+        let schema = int32_schema();
 
         let mut manager = SpillManager::new(
             temp_dir.path().to_str().unwrap(),
@@ -361,8 +350,8 @@ mod tests {
             Some(CompressionType::LZ4_FRAME),
         )?;
 
-        spill_one(&mut manager, 0, create_test_batch(&schema, vec![1, 2]))?;
-        spill_one(&mut manager, 1, create_test_batch(&schema, vec![3, 4]))?;
+        spill_one(&mut manager, 0, int32_batch(&[1, 2]))?;
+        spill_one(&mut manager, 1, int32_batch(&[3, 4]))?;
 
         assert!(manager.has_spill_files(0));
         assert!(manager.has_spill_files(1));
@@ -379,7 +368,7 @@ mod tests {
     #[test]
     fn test_per_partition_stats() -> Result<()> {
         let temp_dir = TempDir::new().unwrap();
-        let schema = create_test_schema();
+        let schema = int32_schema();
 
         let mut manager = SpillManager::new(
             temp_dir.path().to_str().unwrap(),
@@ -391,9 +380,9 @@ mod tests {
             Some(CompressionType::LZ4_FRAME),
         )?;
 
-        spill_one(&mut manager, 0, create_test_batch(&schema, vec![1, 2, 3]))?;
-        spill_one(&mut manager, 0, create_test_batch(&schema, vec![4, 5]))?;
-        spill_one(&mut manager, 1, create_test_batch(&schema, vec![6]))?;
+        spill_one(&mut manager, 0, int32_batch(&[1, 2, 3]))?;
+        spill_one(&mut manager, 0, int32_batch(&[4, 5]))?;
+        spill_one(&mut manager, 1, int32_batch(&[6]))?;
 
         let (b0, r0, bytes0) = manager.partition_stats(0);
         let (b1, r1, bytes1) = manager.partition_stats(1);
@@ -426,7 +415,7 @@ mod tests {
     #[test]
     fn test_cleanup() -> Result<()> {
         let temp_dir = TempDir::new().unwrap();
-        let schema = create_test_schema();
+        let schema = int32_schema();
 
         let mut manager = SpillManager::new(
             temp_dir.path().to_str().unwrap(),
@@ -438,7 +427,7 @@ mod tests {
             Some(CompressionType::LZ4_FRAME),
         )?;
 
-        spill_one(&mut manager, 0, create_test_batch(&schema, vec![1, 2]))?;
+        spill_one(&mut manager, 0, int32_batch(&[1, 2]))?;
 
         let spill_dir = manager.spill_dir.clone();
         assert!(spill_dir.exists());

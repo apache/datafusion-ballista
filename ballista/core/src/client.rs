@@ -748,6 +748,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU8, Ordering};
 
+    use crate::execution_plans::test_util::ipc_stream_bytes;
     use datafusion::arrow::{
         array::{DictionaryArray, Int32Array, RecordBatch},
         datatypes::Int32Type,
@@ -842,22 +843,10 @@ mod tests {
         vec![batch0, batch1]
     }
 
-    fn generate_ipc_stream(batches: &[RecordBatch]) -> Vec<u8> {
-        let mut result = vec![];
-        let mut writer =
-            StreamWriter::try_new(&mut result, &batches[0].schema()).unwrap();
-        for b in batches {
-            writer.write(b).unwrap();
-        }
-
-        writer.finish().unwrap();
-        result
-    }
-
     #[tokio::test]
     async fn should_process_chunked() {
         let batches = generate_batches();
-        let ipc_blob = generate_ipc_stream(&batches);
+        let ipc_blob = ipc_stream_bytes(&batches);
         let stream = futures::stream::iter(ipc_blob)
             .chunks(2)
             .map(|b| Ok(Bytes::from(b)));
@@ -875,7 +864,7 @@ mod tests {
     #[tokio::test]
     async fn should_process_single_message() {
         let batches = generate_batches();
-        let blob = generate_ipc_stream(&batches);
+        let blob = ipc_stream_bytes(&batches);
         let stream = futures::stream::iter(vec![Ok(Bytes::from(blob))]);
 
         let result: datafusion::error::Result<Vec<RecordBatch>> =
@@ -895,7 +884,7 @@ mod tests {
         // adopted rather than copied; block sizes that leave a partial schema
         // message still exercise the concatenating path in `try_new`.
         let batches = generate_batches();
-        let ipc_blob = generate_ipc_stream(&batches);
+        let ipc_blob = ipc_stream_bytes(&batches);
 
         for block_size in [8usize, 64, 512] {
             let stream = futures::stream::iter(ipc_blob.clone())
@@ -919,8 +908,8 @@ mod tests {
 
         // Two complete IPC streams concatenated, mirroring the sort-shuffle
         // block-IO payload `[schema-header stream][partition streams]`.
-        let mut blob = generate_ipc_stream(&batches[..1]);
-        blob.extend(generate_ipc_stream(&batches[1..]));
+        let mut blob = ipc_stream_bytes(&batches[..1]);
+        blob.extend(ipc_stream_bytes(&batches[1..]));
         let stream = futures::stream::iter(vec![Ok(Bytes::from(blob))]);
 
         let result: datafusion::error::Result<Vec<RecordBatch>> =
@@ -959,7 +948,7 @@ mod tests {
     #[should_panic = "Premature end of the stream while decoding schema"]
     async fn should_process_panic_if_not_correct_stream() {
         let batches = generate_batches();
-        let ipc_blob = generate_ipc_stream(&batches);
+        let ipc_blob = ipc_stream_bytes(&batches);
         let stream = futures::stream::iter(ipc_blob[..5].to_vec())
             .chunks(2)
             .map(|b| Ok(Bytes::from(b)));

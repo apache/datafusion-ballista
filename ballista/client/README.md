@@ -79,7 +79,7 @@ async fn main() -> datafusion::error::Result<()> {
 
 ## Starting a cluster
 
-![architecture](https://github.com/apache/datafusion-ballista/blob/main/docs/source/contributors-guide/ballista_architecture.excalidraw.svg?raw=true)
+![architecture](https://github.com/apache/datafusion-ballista/blob/main/docs/source/contributors-guide/ballista_architecture.svg?raw=true)
 
 A simple way to start a local cluster for testing purposes is to use cargo to install the scheduler and executor crates.
 

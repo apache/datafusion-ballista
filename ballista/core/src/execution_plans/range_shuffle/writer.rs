@@ -541,36 +541,16 @@ mod tests {
     use super::super::ipc_file::read_file_layout;
     use super::*;
     use crate::execution_plans::shuffle_reader::fetch_partition_local;
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId, PartitionLocation, PartitionStats,
-    };
+    use crate::execution_plans::test_util::{key_payload_batch, test_location};
+    use crate::serde::scheduler::PartitionLocation;
     use crate::utils::collect_stream;
-    use datafusion::arrow::array::{Int32Array, RecordBatch, StringArray};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::array::Int32Array;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::prelude::SessionContext;
     use tempfile::TempDir;
-
-    fn test_batch(keys: &[i32]) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int32, false),
-            Field::new("payload", DataType::Utf8, false),
-        ]));
-        let payload: Vec<String> = keys.iter().map(|k| format!("row-{k}")).collect();
-        RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Int32Array::from(keys.to_vec())),
-                Arc::new(StringArray::from(payload)),
-            ],
-        )
-        .unwrap()
-    }
 
     fn key_ordering() -> LexOrdering {
         LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(Column::new(
@@ -584,35 +564,19 @@ mod tests {
     /// unordered child is refused at construction.
     fn input_plan() -> Arc<dyn ExecutionPlan> {
         let partitions = vec![
-            vec![test_batch(&[1, 2]), test_batch(&[3, 4])],
-            vec![test_batch(&[5, 6]), test_batch(&[7, 8])],
+            vec![key_payload_batch(&[1, 2]), key_payload_batch(&[3, 4])],
+            vec![key_payload_batch(&[5, 6]), key_payload_batch(&[7, 8])],
         ];
         let schema = partitions[0][0].schema();
-        let source = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(&partitions, schema, None).unwrap(),
-        )));
+        let source = MemorySourceConfig::try_new_exec(&partitions, schema, None).unwrap();
         Arc::new(SortExec::new(key_ordering(), source).with_preserve_partitioning(true))
     }
 
     fn location(job: &str, stage_id: usize, partition: usize) -> PartitionLocation {
         PartitionLocation {
             map_partition_id: partition,
-            partition_id: PartitionId {
-                job_id: job.into(),
-                stage_id,
-                partition_id: partition,
-            },
-            executor_meta: ExecutorMetadata {
-                id: "test-executor".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default(),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
-            partition_stats: PartitionStats::default(),
             file_id: Some(0),
-            is_sort_shuffle: false,
+            ..test_location(job, stage_id, partition)
         }
     }
 

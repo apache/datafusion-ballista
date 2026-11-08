@@ -62,10 +62,11 @@ can be run as native binaries and are also available as Docker Images, which can
 [Docker Compose](https://datafusion.apache.org/ballista/user-guide/deployment/docker-compose.html) or
 [Kubernetes](https://datafusion.apache.org/ballista/user-guide/deployment/kubernetes.html).
 
-The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction
-between the executor(s) and the scheduler for fetching tasks and reporting task status.
+Clients submit query plans to the scheduler over gRPC, or SQL over Arrow Flight SQL. The scheduler breaks each query
+into stages and sends tasks to the executors, which report progress back. Executors exchange shuffle data with each
+other over Arrow Flight and return results to the client the same way.
 
-![Ballista Cluster Diagram](ballista_architecture.excalidraw.svg)
+![Ballista Cluster Diagram](ballista_architecture.svg)
 
 ### Scheduler
 
@@ -80,7 +81,7 @@ Its principal methods are:
 
 | Method                | Description                                                          |
 | --------------------- | -------------------------------------------------------------------- |
-| ExecuteQuery          | Submit a logical query plan or SQL query for execution               |
+| ExecuteQuery          | Submit a logical, Substrait or physical plan for execution           |
 | ExecuteQueryPush      | Same, but streams job status back to the client                      |
 | GetJobStatus          | Get the status of a submitted query                                  |
 | GetJobMetrics         | Get execution metrics for a submitted query                          |
@@ -90,15 +91,15 @@ Its principal methods are:
 | PollWork              | Pull-based executors ask for the next task                           |
 | UpdateTaskStatus      | Executors report task completion or failure                          |
 
-Jobs are submitted to the scheduler's gRPC service from a client context, either in the form of a logical query
-plan or a SQL string. The scheduler then creates an execution graph, which contains a physical plan broken down into
+Jobs are submitted to the scheduler's gRPC service from a client context, in the form of a logical, Substrait or
+physical plan. The scheduler then creates an execution graph, which contains a physical plan broken down into
 stages (pipelines) that can be scheduled independently. This process is explained in detail in the Distributed
 Query Scheduling section of this guide.
 
 ### Executor
 
-The executor processes connect to a scheduler and poll for tasks to perform. These tasks are physical plans in
-protocol buffer format. These physical plans are typically executed against multiple partitions of input data. Executors
+The executor processes connect to a scheduler and receive tasks to perform, either pushed by the scheduler (the
+default) or by polling for them. These tasks are physical plans in protocol buffer format. These physical plans are typically executed against multiple partitions of input data. Executors
 can execute multiple partitions of the same plan in parallel.
 
 ### Clients
