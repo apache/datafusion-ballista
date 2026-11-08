@@ -451,15 +451,17 @@ to build the Web TUI; see the <a class="reference internal" href="../user-guide/
 <section id="test-fixtures">
 <h3>Test fixtures<a class="headerlink" href="#test-fixtures" title="Link to this heading">#</a></h3>
 <p>Look for an existing fixture before writing one, and put a new one in the narrowest place that every test
-using it can reach. A crate’s own unit tests cannot use a helper crate that depends on that crate, because
-they would see two copies of it, so a fixture used only by one crate’s unit tests lives in that crate under
-<code class="docutils literal notranslate"><span class="pre">#[cfg(test)]</span></code>. Tests that need table data write it into a <code class="docutils literal notranslate"><span class="pre">tempfile::TempDir</span></code> rather than add files to the
-repository. Data that has to be checked in lives in the <code class="docutils literal notranslate"><span class="pre">testdata</span></code> directory of the crate that reads it.</p>
-<p>The shared fixtures are:</p>
+using it can reach:</p>
 <ul class="simple">
-<li><p>Integration tests of <code class="docutils literal notranslate"><span class="pre">ballista</span></code> (<code class="docutils literal notranslate"><span class="pre">ballista/client/tests</span></code>): <code class="docutils literal notranslate"><span class="pre">tests/common/mod.rs</span></code> has the cluster setup, the session state builders (<code class="docutils literal notranslate"><span class="pre">ballista_state</span></code>, <code class="docutils literal notranslate"><span class="pre">state_with_config</span></code>), the orders and customers tables (<code class="docutils literal notranslate"><span class="pre">orders_customers_context</span></code>, <code class="docutils literal notranslate"><span class="pre">ORDERS_QUERIES</span></code>), <code class="docutils literal notranslate"><span class="pre">register_alltypes</span></code> with the expected <code class="docutils literal notranslate"><span class="pre">alltypes_plain</span></code> results, and the <code class="docutils literal notranslate"><span class="pre">collect_text</span></code>, <code class="docutils literal notranslate"><span class="pre">collect_lines</span></code>, <code class="docutils literal notranslate"><span class="pre">set_option</span></code> and <code class="docutils literal notranslate"><span class="pre">assert_result_eq</span></code> helpers.</p></li>
-<li><p>Unit tests of <code class="docutils literal notranslate"><span class="pre">ballista-core</span></code> execution plans: <code class="docutils literal notranslate"><span class="pre">ballista/core/src/execution_plans/test_util.rs</span></code> has the writer inputs, the one-column and Int32 schemas and batches, <code class="docutils literal notranslate"><span class="pre">test_location</span></code> and the IPC stream writers, and <code class="docutils literal notranslate"><span class="pre">range_repartition_common::test_util</span></code> has the helpers of the range operators.</p></li>
+<li><p>Used by the tests of one module: in that module’s tests.</p></li>
+<li><p>Shared by the unit tests of several modules of a crate: in that crate’s <code class="docutils literal notranslate"><span class="pre">#[cfg(test)]</span></code> test utilities module.</p></li>
+<li><p>Shared by the integration tests of a crate: in that crate’s <code class="docutils literal notranslate"><span class="pre">tests/common/mod.rs</span></code>.</p></li>
+<li><p>Needed by other crates, such as the TPC-H table schemas: in <code class="docutils literal notranslate"><span class="pre">ballista_core::test_utils</span></code>.</p></li>
 </ul>
+<p>A crate’s own unit tests cannot use a helper crate that depends on that crate, because they would see two
+copies of it, so unit-test fixtures stay inside their crate.</p>
+<p>Tests that need table data write it into a <code class="docutils literal notranslate"><span class="pre">tempfile::TempDir</span></code> rather than add files to the repository. Data
+that has to be checked in lives in the <code class="docutils literal notranslate"><span class="pre">testdata</span></code> directory of the crate that reads it.</p>
 </section>
 <section id="tpc-h-plan-stability-golden-files">
 <h3>TPC-H plan-stability golden files<a class="headerlink" href="#tpc-h-plan-stability-golden-files" title="Link to this heading">#</a></h3>
