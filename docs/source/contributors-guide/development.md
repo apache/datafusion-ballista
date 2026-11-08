@@ -71,7 +71,7 @@ repository. Data that has to be checked in lives in the `testdata` directory of 
 The shared fixtures are:
 
 - Integration tests of `ballista` (`ballista/client/tests`): `tests/common/mod.rs` has the cluster setup, the session state builders (`ballista_state`, `state_with_config`), the orders and customers tables (`orders_customers_context`, `ORDERS_QUERIES`), `register_alltypes` with the expected `alltypes_plain` results, and the `collect_text`, `collect_lines`, `set_option` and `assert_result_eq` helpers.
-- Unit tests of the executor, history, result-service and `ballista-cli` crates have a `#[cfg(test)]` `test_util` module each (`ballista/executor/src/test_util.rs`, `ballista/history/src/test_util.rs`, `ballista/result-service/src/test_util.rs`, `ballista-cli/src/tui/domain/test_util.rs`). The chaos tests share `Fixture::connect` and `fixture::query` from `chaos-testing/src/fixture.rs`.
+- Unit tests of `ballista-core` execution plans: `ballista/core/src/execution_plans/test_util.rs` has the writer inputs, the one-column and Int32 schemas and batches, `test_location` and the IPC stream writers, and `range_repartition_common::test_util` has the helpers of the range operators.
 
 ### TPC-H plan-stability golden files
 
