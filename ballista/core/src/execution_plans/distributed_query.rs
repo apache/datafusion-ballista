@@ -1395,6 +1395,7 @@ mod test {
         execute_query_pull, execute_query_push, get_client_host_port,
         job_submission_request,
     };
+    use crate::execution_plans::test_util::int32_batch;
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
     use crate::serde::protobuf::scheduler_grpc_server::{
         SchedulerGrpc, SchedulerGrpcServer,
@@ -1686,17 +1687,6 @@ mod test {
         assert_eq!(scheduler.cancelled(), ["push-job"]);
     }
 
-    fn one_row_batch() -> datafusion::arrow::record_batch::RecordBatch {
-        use datafusion::arrow::array::Int32Array;
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        datafusion::arrow::record_batch::RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int32Array::from(vec![1]))],
-        )
-        .unwrap()
-    }
-
     /// A fetch that fails with `message`, then never yields again.
     fn failing_fetch(
         message: &str,
@@ -1734,7 +1724,8 @@ mod test {
         drop(tx);
         let batches = PipelinedResults::new(
             "job".into(),
-            futures::stream::iter(vec![Ok(one_row_batch()), Ok(one_row_batch())]).boxed(),
+            futures::stream::iter(vec![Ok(int32_batch(&[1])), Ok(int32_batch(&[1]))])
+                .boxed(),
             Some(rx),
             None,
         )
@@ -1814,7 +1805,7 @@ mod test {
 
         let finished = PipelinedResults::new(
             "finished".into(),
-            futures::stream::iter(vec![Ok(one_row_batch())]).boxed(),
+            futures::stream::iter(vec![Ok(int32_batch(&[1]))]).boxed(),
             None,
             Some(scheduler_client(url.clone()).await),
         );
@@ -1822,7 +1813,7 @@ mod test {
 
         let mut abandoned = PipelinedResults::new(
             "abandoned".into(),
-            futures::stream::iter(vec![Ok(one_row_batch())])
+            futures::stream::iter(vec![Ok(int32_batch(&[1]))])
                 .chain(futures::stream::pending())
                 .boxed(),
             None,

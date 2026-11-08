@@ -1520,6 +1520,7 @@ impl RecordBatchStream for CoalescedShuffleReaderStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_plans::test_util::{test_location, write_ipc_stream};
     use crate::execution_plans::{ShuffleWriterExec, create_shuffle_path};
     use crate::serde::scheduler::{
         ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
@@ -1528,11 +1529,9 @@ mod tests {
     use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::StatisticsArgs;
     use datafusion::physical_plan::common;
     use datafusion::physical_plan::statistics::StatisticsContext;
@@ -1558,27 +1557,12 @@ mod tests {
             .enumerate()
             .map(|(i, (&bytes, &rows))| {
                 vec![PartitionLocation {
-                    map_partition_id: 0,
-                    partition_id: PartitionId {
-                        job_id: job_id.into(),
-                        stage_id,
-                        partition_id: i,
-                    },
-                    executor_meta: ExecutorMetadata {
-                        id: "executor_1".to_string(),
-                        host: "executor_1".to_string(),
-                        port: 7070,
-                        grpc_port: 8080,
-                        specification: ExecutorSpecification::default().with_vcores(1),
-                        os_info: ExecutorOperatingSystemSpecification::default(),
-                    },
                     partition_stats: PartitionStats {
                         num_rows: Some(rows),
                         num_batches: None,
                         num_bytes: Some(bytes),
                     },
-                    file_id: None,
-                    is_sort_shuffle: false,
+                    ..test_location(job_id, stage_id, i)
                 }]
             })
             .collect()
@@ -1663,52 +1647,42 @@ mod tests {
 
         assert_eq!(result, exptected);
     }
-    #[tokio::test]
-    async fn test_stats_for_partition_statistics_no_specific_partition() -> Result<()> {
+    /// Four upstream partitions of stage 2 of `test_job_1`, each reporting `stats`.
+    fn four_partitions(stats: PartitionStats) -> Vec<PartitionLocation> {
+        (0..4)
+            .map(|partition_id| PartitionLocation {
+                partition_stats: stats,
+                ..test_location("test_job_1", 2, partition_id)
+            })
+            .collect()
+    }
+
+    /// A reader over two copies of [`four_partitions`] of stage 2, each
+    /// partition reporting one row over ten bytes.
+    fn four_partition_reader() -> Result<ShuffleReaderExec> {
         let schema = Schema::new(vec![
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),
             Field::new("c", DataType::Int32, false),
         ]);
+        let partitions = four_partitions(PartitionStats {
+            num_rows: Some(1),
+            num_batches: None,
+            num_bytes: Some(10),
+        });
 
-        let job_id = "test_job_1";
-        let input_stage_id = 2;
-        let mut partitions: Vec<PartitionLocation> = vec![];
-        for partition_id in 0..4 {
-            partitions.push(PartitionLocation {
-                map_partition_id: 0,
-                partition_id: PartitionId {
-                    job_id: job_id.into(),
-                    stage_id: input_stage_id,
-                    partition_id,
-                },
-                executor_meta: ExecutorMetadata {
-                    id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
-                    port: 7070,
-                    grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_vcores(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                partition_stats: PartitionStats {
-                    num_rows: Some(1),
-                    num_batches: None,
-                    num_bytes: Some(10),
-                },
-                file_id: None,
-                is_sort_shuffle: false,
-            })
-        }
-
-        let shuffle_reader_exec = ShuffleReaderExec::try_new(
-            input_stage_id,
+        ShuffleReaderExec::try_new(
+            2,
             vec![partitions.clone(), partitions],
             Arc::new(schema),
             Partitioning::UnknownPartitioning(4),
-        )?;
+        )
+    }
 
+    #[tokio::test]
+    async fn test_stats_for_partition_statistics_no_specific_partition() -> Result<()> {
         let stats = StatisticsContext::new()
-            .compute(&shuffle_reader_exec, &StatisticsArgs::new())?;
+            .compute(&four_partition_reader()?, &StatisticsArgs::new())?;
         assert_eq!(8, *stats.num_rows.get_value().unwrap());
         assert_eq!(80, *stats.total_byte_size.get_value().unwrap());
 
@@ -1717,50 +1691,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_stats_for_partition_statistics_specific_partition() -> Result<()> {
-        let schema = Schema::new(vec![
-            Field::new("a", DataType::Int32, false),
-            Field::new("b", DataType::Int32, false),
-            Field::new("c", DataType::Int32, false),
-        ]);
-
-        let job_id = "test_job_1";
-        let input_stage_id = 2;
-        let mut partitions: Vec<PartitionLocation> = vec![];
-        for partition_id in 0..4 {
-            partitions.push(PartitionLocation {
-                map_partition_id: 0,
-                partition_id: PartitionId {
-                    job_id: job_id.into(),
-                    stage_id: input_stage_id,
-                    partition_id,
-                },
-                executor_meta: ExecutorMetadata {
-                    id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
-                    port: 7070,
-                    grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_vcores(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                partition_stats: PartitionStats {
-                    num_rows: Some(1),
-                    num_batches: None,
-                    num_bytes: Some(10),
-                },
-                file_id: None,
-                is_sort_shuffle: false,
-            })
-        }
-
-        let shuffle_reader_exec = ShuffleReaderExec::try_new(
-            input_stage_id,
-            vec![partitions.clone(), partitions],
-            Arc::new(schema),
-            Partitioning::UnknownPartitioning(4),
-        )?;
-
         let stats = StatisticsContext::new().compute(
-            &shuffle_reader_exec,
+            &four_partition_reader()?,
             &StatisticsArgs::new().with_partition(Some(3)),
         )?;
         assert_eq!(2, *stats.num_rows.get_value().unwrap());
@@ -1772,50 +1704,8 @@ mod tests {
     #[tokio::test]
     async fn test_stats_for_partition_statistics_specific_partition_out_of_range()
     -> Result<()> {
-        let schema = Schema::new(vec![
-            Field::new("a", DataType::Int32, false),
-            Field::new("b", DataType::Int32, false),
-            Field::new("c", DataType::Int32, false),
-        ]);
-
-        let job_id = "test_job_1";
-        let input_stage_id = 2;
-        let mut partitions: Vec<PartitionLocation> = vec![];
-        for partition_id in 0..4 {
-            partitions.push(PartitionLocation {
-                map_partition_id: 0,
-                partition_id: PartitionId {
-                    job_id: job_id.into(),
-                    stage_id: input_stage_id,
-                    partition_id,
-                },
-                executor_meta: ExecutorMetadata {
-                    id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
-                    port: 7070,
-                    grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_vcores(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                partition_stats: PartitionStats {
-                    num_rows: Some(1),
-                    num_batches: None,
-                    num_bytes: Some(10),
-                },
-                file_id: None,
-                is_sort_shuffle: false,
-            })
-        }
-
-        let shuffle_reader_exec = ShuffleReaderExec::try_new(
-            input_stage_id,
-            vec![partitions.clone(), partitions],
-            Arc::new(schema),
-            Partitioning::UnknownPartitioning(4),
-        )?;
-
         let stats = StatisticsContext::new().compute(
-            &shuffle_reader_exec,
+            &four_partition_reader()?,
             &StatisticsArgs::new().with_partition(Some(4)),
         );
         assert!(stats.is_err());
@@ -1833,30 +1723,8 @@ mod tests {
             Field::new("c", DataType::Int32, false),
         ]);
 
-        let job_id = "test_job_1";
         let input_stage_id = 2;
-        let mut partitions: Vec<PartitionLocation> = vec![];
-        for partition_id in 0..4 {
-            partitions.push(PartitionLocation {
-                map_partition_id: 0,
-                partition_id: PartitionId {
-                    job_id: job_id.into(),
-                    stage_id: input_stage_id,
-                    partition_id,
-                },
-                executor_meta: ExecutorMetadata {
-                    id: "executor_1".to_string(),
-                    host: "executor_1".to_string(),
-                    port: 7070,
-                    grpc_port: 8080,
-                    specification: ExecutorSpecification::default().with_vcores(1),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                partition_stats: Default::default(),
-                file_id: None,
-                is_sort_shuffle: false,
-            })
-        }
+        let partitions = four_partitions(PartitionStats::default());
         let work_dir = TempDir::new().unwrap();
 
         let work_dir = work_dir.path().to_str().unwrap().to_owned();
@@ -1909,27 +1777,8 @@ mod tests {
             Field::new("c", DataType::Int32, false),
         ]);
 
-        let job_id = "test_job_metrics";
         let input_stage_id = 2;
-        let partition = PartitionLocation {
-            map_partition_id: 0,
-            partition_id: PartitionId {
-                job_id: job_id.into(),
-                stage_id: input_stage_id,
-                partition_id: 0,
-            },
-            executor_meta: ExecutorMetadata {
-                id: "executor_1".to_string(),
-                host: "executor_1".to_string(),
-                port: 7070,
-                grpc_port: 8080,
-                specification: ExecutorSpecification::default().with_vcores(1),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
-            partition_stats: Default::default(),
-            file_id: None,
-            is_sort_shuffle: false,
-        };
+        let partition = test_location("test_job_metrics", input_stage_id, 0);
         let work_dir = TempDir::new().unwrap();
         let work_dir = work_dir.path().to_str().unwrap().to_owned();
 
@@ -2170,11 +2019,7 @@ mod tests {
         for p in 0..n {
             let path =
                 create_shuffle_path(work_dir, &"job".into(), 1, p, None, false).unwrap();
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let mut writer =
-                StreamWriter::try_new(File::create(&path).unwrap(), &schema).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
+            write_ipc_stream(&path, std::slice::from_ref(&batch));
         }
         schema
     }
@@ -2215,13 +2060,11 @@ mod tests {
         let batch = create_test_batch();
         let partition = vec![batch.clone(), batch];
         let partitions = vec![partition.clone(), partition];
-        let memory_data_source = Arc::new(MemorySourceConfig::try_new(
+        Ok(MemorySourceConfig::try_new_exec(
             &partitions,
             create_test_schema(),
             None,
-        )?);
-
-        Ok(Arc::new(DataSourceExec::new(memory_data_source)))
+        )?)
     }
 
     fn create_test_batch() -> RecordBatch {
@@ -2421,23 +2264,8 @@ mod tests {
 
         let locs: Vec<PartitionLocation> = (0..3)
             .map(|partition_id| PartitionLocation {
-                map_partition_id: 0,
-                partition_id: PartitionId {
-                    job_id: "j".into(),
-                    stage_id: 7,
-                    partition_id,
-                },
-                executor_meta: ExecutorMetadata {
-                    id: format!("exec-{partition_id}"),
-                    host: "localhost".to_string(),
-                    port: 50051,
-                    grpc_port: 50052,
-                    specification: ExecutorSpecification::default(),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
                 partition_stats: PartitionStats::new(Some(100), Some(1), Some(1024)),
-                file_id: None,
-                is_sort_shuffle: false,
+                ..test_location("j", 7, partition_id)
             })
             .collect();
 
@@ -2569,12 +2397,8 @@ mod tests {
 #[cfg(test)]
 mod governor_tests {
     use super::*;
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId,
-    };
+    use crate::execution_plans::test_util::{int32_batch, int32_schema, test_location};
     use crate::utils;
-    use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 
@@ -2621,43 +2445,17 @@ mod governor_tests {
     }
 
     fn remote_location() -> PartitionLocation {
-        PartitionLocation {
-            map_partition_id: 0,
-            partition_id: PartitionId {
-                job_id: "test_job".into(),
-                stage_id: 3,
-                partition_id: 5,
-            },
-            executor_meta: ExecutorMetadata {
-                id: "executor_1".to_string(),
-                host: "executor_1".to_string(),
-                port: 7070,
-                grpc_port: 8080,
-                specification: ExecutorSpecification::default().with_vcores(1),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
-            partition_stats: Default::default(),
-            file_id: None,
-            is_sort_shuffle: false,
-        }
-    }
-
-    fn int_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
+        test_location("test_job", 3, 5)
     }
 
     fn int_batch(value: i32) -> RecordBatch {
-        RecordBatch::try_new(
-            int_schema(),
-            vec![Arc::new(Int32Array::from(vec![value; 1024]))],
-        )
-        .unwrap()
+        int32_batch(&[value; 1024])
     }
 
     fn batch_stream(
         batches: impl Stream<Item = Result<RecordBatch>> + Send + 'static,
     ) -> SendableRecordBatchStream {
-        Box::pin(RecordBatchStreamAdapter::new(int_schema(), batches))
+        Box::pin(RecordBatchStreamAdapter::new(int32_schema(), batches))
     }
 
     #[tokio::test]

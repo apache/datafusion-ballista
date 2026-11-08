@@ -39,6 +39,8 @@ mod shuffle_reader;
 mod shuffle_writer;
 mod shuffle_writer_trait;
 pub mod sort_shuffle;
+#[cfg(test)]
+pub(crate) mod test_util;
 mod unordered_range_repartition;
 mod unresolved_shuffle;
 pub mod window_state;

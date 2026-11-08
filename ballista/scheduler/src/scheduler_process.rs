@@ -258,11 +258,9 @@ pub async fn start_grpc_service_with_listener<
     let final_route =
         with_version_headers(merged).into_make_service_with_connect_info::<SocketAddr>();
 
-    // axum, unlike tonic's own server, leaves Nagle's algorithm on for the
-    // connections it accepts. A poll response is written as several small
-    // HTTP/2 frames, so with Nagle on the later frames wait for the client's
-    // delayed ACK: up to 40 ms per executor poll on Linux, which under pull
-    // scheduling is added to every task launch.
+    // axum, unlike tonic's server, leaves Nagle on, which delays the later
+    // HTTP/2 frames of each poll response behind the client's delayed ACK
+    // (~40 ms on Linux).
     let listener = listener.tap_io(|tcp| {
         if let Err(e) = tcp.set_nodelay(true) {
             warn!("Failed to set TCP_NODELAY on a scheduler connection: {e}");

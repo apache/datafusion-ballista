@@ -17,13 +17,48 @@
 
 mod common;
 
+use crate::common::state_with_config;
+use ballista::prelude::SessionConfigExt;
+use datafusion::assert_batches_eq;
+use datafusion::execution::SessionState;
+use datafusion::prelude::{SessionConfig, SessionContext};
+
+/// A session state whose Ballista job name is "Super Cool Ballista App".
+fn job_name_state() -> SessionState {
+    let session_config = SessionConfig::new_with_ballista()
+        .with_information_schema(true)
+        .with_ballista_job_name("Super Cool Ballista App");
+    state_with_config(session_config)
+}
+
+/// Asserts that `ctx` reports the job name of [`job_name_state`].
+async fn assert_job_name_setting(ctx: &SessionContext) -> datafusion::error::Result<()> {
+    let result = ctx
+        .sql("select name, value from information_schema.df_settings where name like 'ballista.job.name' order by name limit 1")
+        .await?
+        .collect()
+        .await?;
+
+    let expected = [
+        "+-------------------+-------------------------+",
+        "| name              | value                   |",
+        "+-------------------+-------------------------+",
+        "| ballista.job.name | Super Cool Ballista App |",
+        "+-------------------+-------------------------+",
+    ];
+
+    assert_batches_eq!(expected, &result);
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod remote {
-    use ballista::prelude::{SessionConfigExt, SessionContextExt};
+    use crate::common::{ALLTYPES_ID_GT_4, ALLTYPES_ID_GT_4_SQL, register_alltypes};
+    use crate::{assert_job_name_setting, job_name_state};
+    use ballista::prelude::SessionContextExt;
     use datafusion::{
-        assert_batches_eq,
-        execution::SessionStateBuilder,
-        prelude::{SessionConfig, SessionContext},
+        assert_batches_eq, execution::SessionStateBuilder, prelude::SessionContext,
     };
 
     #[tokio::test]
@@ -33,32 +68,12 @@ mod remote {
         let url = format!("df://{host}:{port}");
         let state = SessionStateBuilder::new().with_default_features().build();
 
-        let test_data = crate::common::example_test_data();
         let ctx: SessionContext = SessionContext::remote_with_state(&url, state).await?;
 
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
-        let result = ctx
-            .sql("select string_col, timestamp_col from test where id > 4")
-            .await?
-            .collect()
-            .await?;
-        let expected = [
-            "+------------+---------------------+",
-            "| string_col | timestamp_col       |",
-            "+------------+---------------------+",
-            "| 31         | 2009-03-01T00:01:00 |",
-            "| 30         | 2009-04-01T00:00:00 |",
-            "| 31         | 2009-04-01T00:01:00 |",
-            "+------------+---------------------+",
-        ];
-
-        assert_batches_eq!(expected, &result);
+        let result = ctx.sql(ALLTYPES_ID_GT_4_SQL).await?.collect().await?;
+        assert_batches_eq!(ALLTYPES_ID_GT_4, &result);
 
         Ok(())
     }
@@ -68,34 +83,10 @@ mod remote {
         let (host, port) = crate::common::setup_test_cluster().await;
         let url = format!("df://{host}:{port}");
 
-        let session_config = SessionConfig::new_with_ballista()
-            .with_information_schema(true)
-            .with_ballista_job_name("Super Cool Ballista App");
+        let ctx: SessionContext =
+            SessionContext::remote_with_state(&url, job_name_state()).await?;
 
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(session_config)
-            .build();
-
-        let ctx: SessionContext = SessionContext::remote_with_state(&url, state).await?;
-
-        let result = ctx
-            .sql("select name, value from information_schema.df_settings where name like 'ballista.job.name' order by name limit 1")
-            .await?
-            .collect()
-            .await?;
-
-        let expected = [
-            "+-------------------+-------------------------+",
-            "| name              | value                   |",
-            "+-------------------+-------------------------+",
-            "| ballista.job.name | Super Cool Ballista App |",
-            "+-------------------+-------------------------+",
-        ];
-
-        assert_batches_eq!(expected, &result);
-
-        Ok(())
+        assert_job_name_setting(&ctx).await
     }
 }
 
@@ -105,13 +96,14 @@ mod standalone {
 
     use std::sync::{Arc, atomic::AtomicBool};
 
+    use crate::common::{register_alltypes, state_with_config};
+    use crate::{assert_job_name_setting, job_name_state};
     use ballista::extension::{SessionConfigExt, SessionContextExt};
     use ballista_core::serde::BallistaPhysicalExtensionCodec;
     use datafusion::{
-        assert_batches_eq,
         catalog::Session,
         common::exec_err,
-        execution::{SessionStateBuilder, TaskContext, context::QueryPlanner},
+        execution::{TaskContext, context::QueryPlanner},
         logical_expr::LogicalPlan,
         physical_plan::ExecutionPlan,
         prelude::{SessionConfig, SessionContext},
@@ -123,34 +115,10 @@ mod standalone {
 
     #[tokio::test]
     async fn should_execute_sql_set_configs() -> datafusion::error::Result<()> {
-        let session_config = SessionConfig::new_with_ballista()
-            .with_information_schema(true)
-            .with_ballista_job_name("Super Cool Ballista App");
+        let ctx: SessionContext =
+            SessionContext::standalone_with_state(job_name_state()).await?;
 
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(session_config)
-            .build();
-
-        let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;
-
-        let result = ctx
-            .sql("select name, value from information_schema.df_settings where name like 'ballista.job.name' order by name limit 1")
-            .await?
-            .collect()
-            .await?;
-
-        let expected = [
-            "+-------------------+-------------------------+",
-            "| name              | value                   |",
-            "+-------------------+-------------------------+",
-            "| ballista.job.name | Super Cool Ballista App |",
-            "+-------------------+-------------------------+",
-        ];
-
-        assert_batches_eq!(expected, &result);
-
-        Ok(())
+        assert_job_name_setting(&ctx).await
     }
 
     // we testing if we can override default logical codec
@@ -158,26 +126,17 @@ mod standalone {
     // fail the query.
     #[tokio::test]
     async fn should_set_logical_codec() -> datafusion::error::Result<()> {
-        let test_data = crate::common::example_test_data();
         let codec = Arc::new(BadLogicalCodec::default());
 
         let session_config = SessionConfig::new_with_ballista()
             .with_information_schema(true)
             .with_ballista_logical_extension_codec(codec.clone());
 
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(session_config)
-            .build();
+        let state = state_with_config(session_config);
 
         let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;
 
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
         let write_dir = tempfile::tempdir().expect("temporary directory to be created");
         let write_dir_path = write_dir
@@ -200,25 +159,16 @@ mod standalone {
     // tests if we can correctly set physical codec
     #[tokio::test]
     async fn should_set_physical_codec() -> datafusion::error::Result<()> {
-        let test_data = crate::common::example_test_data();
         let physical_codec = Arc::new(MockPhysicalCodec::default());
         let session_config = SessionConfig::new_with_ballista()
             .with_information_schema(true)
             .with_ballista_physical_extension_codec(physical_codec.clone());
 
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(session_config)
-            .build();
+        let state = state_with_config(session_config);
 
         let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;
 
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
         let _result = ctx
             .sql("select string_col, timestamp_col from test where id > 4")
@@ -241,10 +191,7 @@ mod standalone {
             .with_information_schema(true)
             .with_ballista_query_planner(Arc::new(BadPlanner::default()));
 
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(session_config)
-            .build();
+        let state = state_with_config(session_config);
 
         let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;
 
@@ -255,10 +202,7 @@ mod standalone {
         let session_config =
             SessionConfig::new_with_ballista().with_information_schema(true);
 
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(session_config)
-            .build();
+        let state = state_with_config(session_config);
 
         let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;
 
