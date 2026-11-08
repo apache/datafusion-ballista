@@ -96,7 +96,9 @@ let config = ExecutorProcessConfig::default().with_iceberg();
 ```
 
 Both keep any codecs the config already has, and the scheduler keeps its
-session builder, mounting the catalogs on each session it builds. A client can
+session builder, mounting the catalogs on each session it builds. Call each
+once, passing the scheduler every catalog: a second call adds the codecs
+again, so the scheduler's would no longer match the executors'. A client can
 then run `SELECT * FROM rest.ns.t`. Tables are pinned the same way as on the
 client, while the scheduler plans the query.
 
