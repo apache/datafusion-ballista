@@ -43,10 +43,10 @@ use super::spill::SpillManager;
 use crate::JobId;
 use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
+use crate::shuffle_ipc::{ShuffleCompression, ShuffleEncoding, ShuffleStreamWriter};
 
 use crate::utils::create_write_options;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
@@ -121,7 +121,7 @@ struct EncodedPartitions {
 fn encode_buffered_partitions(
     buffered: &mut BufferedBatches,
     schema: &SchemaRef,
-    opts: &datafusion::arrow::ipc::writer::IpcWriteOptions,
+    encoding: &ShuffleEncoding,
 ) -> Result<EncodedPartitions> {
     let num_partitions = buffered.num_partitions();
     let mut encoded = vec![Vec::new(); num_partitions];
@@ -129,8 +129,7 @@ fn encode_buffered_partitions(
 
     // One writer open at a time: each holds its own compression context.
     buffered.drain(|partition, batches| {
-        let mut writer =
-            StreamWriter::try_new_with_options(Vec::new(), schema, opts.clone())?;
+        let mut writer = ShuffleStreamWriter::try_new(Vec::new(), schema, encoding)?;
         let stat = &mut stats[partition];
         for batch in batches {
             let batch = batch?;
@@ -589,7 +588,7 @@ impl SortShuffleWriterExec {
                 column_stats.count(plan.execute(input_partition, context.clone())?);
             let schema = stream.schema();
             let ballista_config = Arc::new(context.session_config().ballista_config());
-            let compression_type = ballista_config.shuffle_compression_codec()?;
+            let compression = ballista_config.shuffle_compression()?;
 
             let Partitioning::Hash(exprs, num_output_partitions) = partitioning else {
                 return Err(DataFusionError::Internal(
@@ -604,7 +603,7 @@ impl SortShuffleWriterExec {
                 task_id,
                 input_partition,
                 schema.clone(),
-                compression_type,
+                compression,
             )
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
@@ -735,9 +734,9 @@ impl SortShuffleWriterExec {
 
             // Encode here, on this input's own task, so the interleave/IPC/
             // compression cost stays parallel across the task's inputs.
-            let opts = create_write_options(compression_type)?;
+            let encoding = ShuffleEncoding::try_new(&schema, compression)?;
             let EncodedPartitions { encoded, stats } =
-                encode_buffered_partitions(&mut buffered, &schema, &opts)?;
+                encode_buffered_partitions(&mut buffered, &schema, &encoding)?;
 
             Ok(InputPartitionOutput {
                 encoded,
@@ -802,7 +801,7 @@ fn write_task_consolidated(
     file_id: usize,
     outputs: &mut [InputPartitionOutput],
     schema: &SchemaRef,
-    compression_type: Option<CompressionType>,
+    compression: ShuffleCompression,
 ) -> Result<FinalizeResult> {
     let num_partitions = outputs.first().map(|o| o.encoded.len()).unwrap_or(0);
     let mut index = ShuffleIndex::new(num_partitions);
@@ -822,7 +821,7 @@ fn write_task_consolidated(
     let file = File::create(&data_path)?;
     let mut output = BufWriter::new(file);
 
-    let opts = create_write_options(compression_type)?;
+    let opts = create_write_options(compression.codec)?;
 
     // Leading schema-header stream (schema message + EOS, no batches) so the
     // reader can recover the schema even when the requested partition is empty.
@@ -1117,14 +1116,11 @@ async fn run_coordinator(
     if first_error.is_none() && !outputs.is_empty() {
         let file_id = writer.task_id as u64;
         let schema = outputs[0].schema.clone();
-        let compression = ctx
-            .session_config()
-            .ballista_config()
-            .shuffle_compression_codec();
+        let compression = ctx.session_config().ballista_config().shuffle_compression();
 
         let write_metrics = SortShuffleWriteMetrics::new(0, &writer.metrics);
         let timer = write_metrics.write_time.timer();
-        let result = compression.and_then(|compression_type| {
+        let result = compression.and_then(|compression| {
             write_task_consolidated(
                 &writer.work_dir,
                 &writer.job_id,
@@ -1132,7 +1128,7 @@ async fn run_coordinator(
                 file_id as usize,
                 &mut outputs,
                 &schema,
-                compression_type,
+                compression,
             )
         });
         timer.done();

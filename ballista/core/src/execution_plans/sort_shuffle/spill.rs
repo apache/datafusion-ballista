@@ -32,9 +32,8 @@
 
 use crate::JobId;
 use crate::error::{BallistaError, Result};
+use crate::shuffle_ipc::{ShuffleCompression, ShuffleEncoding, ShuffleStreamWriter};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::ipc::writer::StreamWriter;
-use datafusion::arrow::ipc::{CompressionType, writer::IpcWriteOptions};
 use datafusion::arrow::record_batch::RecordBatch;
 use log::debug;
 use std::collections::HashMap;
@@ -57,8 +56,8 @@ pub struct SpillManager {
     schema: SchemaRef,
     /// Spill file path per output partition: partition_id -> spill_file_path
     spill_files: HashMap<usize, PathBuf>,
-    /// Compression codec for spill files
-    compression: Option<CompressionType>,
+    /// How spill streams are encoded and compressed
+    encoding: ShuffleEncoding,
     /// Total number of batches written across all spill files. One call to
     /// `spill_all_partitions` typically increments this multiple times (once
     /// per partition that had buffered rows).
@@ -78,7 +77,7 @@ impl SpillManager {
     /// * `stage_id` - Stage identifier
     /// * `input_partition` - Input partition number
     /// * `schema` - Schema shared by all spill writers
-    /// * `compression` - Compression codec for spill files
+    /// * `compression` - How spill files are compressed
     pub fn new(
         work_dir: &str,
         job_id: &JobId,
@@ -86,7 +85,7 @@ impl SpillManager {
         task_id: usize,
         input_partition: usize,
         schema: SchemaRef,
-        compression: Option<CompressionType>,
+        compression: ShuffleCompression,
     ) -> Result<Self> {
         // Spills live beside the task's data file, one directory per input
         // partition, so a task owns exactly one directory under the stage and
@@ -99,11 +98,12 @@ impl SpillManager {
 
         std::fs::create_dir_all(&spill_dir).map_err(BallistaError::IoError)?;
 
+        let encoding = ShuffleEncoding::try_new(&schema, compression)?;
         Ok(Self {
             spill_dir,
             schema,
             spill_files: HashMap::new(),
-            compression,
+            encoding,
             total_spilled_batches: 0,
             total_bytes_spilled: 0,
             partition_counters: HashMap::new(),
@@ -123,7 +123,7 @@ impl SpillManager {
         batches: &mut dyn Iterator<Item = datafusion::error::Result<RecordBatch>>,
     ) -> Result<(u64, u64)> {
         let spill_path = self.spill_file_path(partition_id);
-        let mut writer: Option<StreamWriter<BufWriter<std::fs::File>>> = None;
+        let mut writer: Option<ShuffleStreamWriter<BufWriter<std::fs::File>>> = None;
         let mut event_batches: u64 = 0;
         let mut event_bytes: u64 = 0;
         for batch in batches {
@@ -140,12 +140,10 @@ impl SpillManager {
                         .append(true)
                         .open(&spill_path)
                         .map_err(BallistaError::IoError)?;
-                    let options = IpcWriteOptions::default()
-                        .try_with_compression(self.compression)?;
-                    writer.insert(StreamWriter::try_new_with_options(
+                    writer.insert(ShuffleStreamWriter::try_new(
                         BufWriter::new(file),
                         &self.schema,
-                        options,
+                        &self.encoding,
                     )?)
                 }
             };
@@ -245,7 +243,7 @@ impl std::fmt::Debug for SpillManager {
         f.debug_struct("SpillManager")
             .field("spill_dir", &self.spill_dir)
             .field("spill_files", &self.spill_files)
-            .field("compression", &self.compression)
+            .field("encoding", &self.encoding)
             .field("total_spilled_batches", &self.total_spilled_batches)
             .field("total_bytes_spilled", &self.total_bytes_spilled)
             .finish()
@@ -266,6 +264,7 @@ mod tests {
     use super::*;
     use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::ipc::CompressionType;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -314,7 +313,7 @@ mod tests {
             0,
             0,
             schema.clone(),
-            Some(CompressionType::LZ4_FRAME),
+            ShuffleCompression::plain(Some(CompressionType::LZ4_FRAME)),
         )?;
 
         let b1 = create_test_batch(&schema, vec![1, 2, 3]);
@@ -346,7 +345,7 @@ mod tests {
             0,
             0,
             schema.clone(),
-            Some(CompressionType::LZ4_FRAME),
+            ShuffleCompression::plain(Some(CompressionType::LZ4_FRAME)),
         )?;
 
         manager.spill(0, &create_test_batch(&schema, vec![1, 2]))?;
@@ -376,7 +375,7 @@ mod tests {
             0,
             0,
             schema.clone(),
-            Some(CompressionType::LZ4_FRAME),
+            ShuffleCompression::plain(Some(CompressionType::LZ4_FRAME)),
         )?;
 
         manager.spill(0, &create_test_batch(&schema, vec![1, 2, 3]))?;
@@ -423,7 +422,7 @@ mod tests {
             0,
             0,
             schema.clone(),
-            Some(CompressionType::LZ4_FRAME),
+            ShuffleCompression::plain(Some(CompressionType::LZ4_FRAME)),
         )?;
 
         manager.spill(0, &create_test_batch(&schema, vec![1, 2]))?;

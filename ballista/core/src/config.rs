@@ -20,6 +20,7 @@
 
 use crate::error::{BallistaError, Result};
 use crate::execution_plans::DEFAULT_SHUFFLE_CHANNEL_CAPACITY;
+use crate::shuffle_ipc::ShuffleCompression;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::error::DataFusionError;
 use datafusion::{
@@ -210,6 +211,10 @@ pub const BALLISTA_CHAOS_EXECUTION_SEED: &str = "ballista.testing.chaos_executio
 /// Configuration key for the compression codec used in the shuffle write process
 /// Valid values are: none, lz4, zstd
 pub const BALLISTA_SHUFFLE_COMPRESSION_CODEC: &str = "ballista.shuffle.compression.codec";
+/// Configuration key controlling whether zstd shuffle writers store the offsets
+/// of variable-width columns as lengths before compressing.
+pub const BALLISTA_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS: &str =
+    "ballista.shuffle.compression.offsets_as_lengths";
 /// Configuration key controlling whether shuffle writers sketch the distinct
 /// counts of their hash-partitioning key columns for the adaptive planner.
 pub const BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS: &str =
@@ -566,6 +571,18 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             extra CPU, which matters most when shuffles cross the network".to_string(),
             DataType::Utf8,
             Some("zstd".to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS.to_string(),
+            "Experimental. With the zstd codec, store the offsets of string, \
+            binary, list and map columns as value lengths split into byte \
+            planes, and compress each batch's body as one zstd frame. Arrow's \
+            offsets are running sums, which compress poorly, so this makes \
+            shuffle data with such columns smaller. Has no effect with other \
+            codecs. Executors older than this setting cannot read shuffle data \
+            written with it".to_string(),
+            DataType::Boolean,
+            Some(true.to_string()),
         ),
         ConfigEntry::new(
             BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS.to_string(),
@@ -1082,6 +1099,17 @@ impl BallistaConfig {
     /// Returns whether the AQE parallel-window rule is enabled.
     pub fn parallel_window_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_PARALLEL_WINDOW_ENABLED)
+    }
+
+    /// Returns how shuffle writers compress the IPC streams they write.
+    pub fn shuffle_compression(
+        &self,
+    ) -> std::result::Result<ShuffleCompression, DataFusionError> {
+        Ok(ShuffleCompression {
+            codec: self.shuffle_compression_codec()?,
+            offsets_as_lengths: self
+                .get_bool_setting(BALLISTA_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS),
+        })
     }
 
     /// Returns compression codec that will be used during write stage of shuffle

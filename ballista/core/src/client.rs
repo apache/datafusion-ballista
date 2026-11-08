@@ -24,6 +24,7 @@ use crate::serde::scheduler::{
     Action, ByteRange, PartitionId, PipelinedPartitionLocation, ShuffleFileKind,
     ShuffleLayout,
 };
+use crate::shuffle_ipc::ShuffleBytesTranslator;
 use crate::utils::{create_grpc_client_endpoint, with_retry};
 use arrow_flight;
 use arrow_flight::Ticket;
@@ -43,7 +44,7 @@ use datafusion::error::Result;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
 use log::debug;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::error::Error as _;
 use std::sync::Arc;
 use std::{
@@ -583,6 +584,11 @@ fn new_decoder() -> StreamDecoder {
 pub struct BlockDataStream<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> {
     decoder: StreamDecoder,
     state_buffer: Buffer,
+    /// Turns blocks whose batches store offsets as lengths back into
+    /// standard IPC bytes before they reach `decoder`.
+    translator: ShuffleBytesTranslator,
+    /// Translated blocks waiting for `state_buffer` to drain.
+    translated: VecDeque<prost::bytes::Bytes>,
     ipc_stream: S,
     transmitted: usize,
     /// The schema of the data being streamed.
@@ -600,6 +606,9 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
         mut ipc_stream: S,
     ) -> std::result::Result<Self, DataFusionError> {
         let mut state_buffer = Buffer::default();
+        let mut translator = ShuffleBytesTranslator::new();
+        let mut translated = Vec::new();
+        let mut transmitted = 0;
 
         loop {
             if state_buffer.len() > MAXIMUM_SCHEMA_BUFFER_SIZE {
@@ -612,14 +621,20 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
 
             match ipc_stream.next().await {
                 Some(Ok(blob)) => {
-                    state_buffer = Self::append_block(state_buffer, blob);
+                    transmitted += blob.len();
+                    translator.push(blob, &mut translated)?;
+                    for block in translated.drain(..) {
+                        state_buffer = Self::append_block(state_buffer, block);
+                    }
 
                     match try_schema_from_ipc_buffer(state_buffer.as_slice()) {
                         Ok(schema) => {
                             return Ok(Self {
                                 decoder: new_decoder(),
-                                transmitted: state_buffer.len(),
+                                transmitted,
                                 state_buffer,
+                                translator,
+                                translated: VecDeque::new(),
                                 ipc_stream,
                                 schema: Arc::new(schema),
                             });
@@ -668,13 +683,31 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
         self.decoder.decode(&mut self.state_buffer)
     }
 
-    fn extend_bytes(&mut self, blob: prost::bytes::Bytes) {
+    fn extend_bytes(
+        &mut self,
+        blob: prost::bytes::Bytes,
+    ) -> std::result::Result<(), ArrowError> {
         //
         //TODO: do we want to limit maximum buffer size here as well?
         //
         self.transmitted += blob.len();
-        let pending = std::mem::take(&mut self.state_buffer);
-        self.state_buffer = Self::append_block(pending, blob);
+        let mut translated = Vec::new();
+        self.translator.push(blob, &mut translated)?;
+        self.translated.extend(translated);
+        Ok(())
+    }
+
+    /// Moves the next translated block into `state_buffer`, returning `false`
+    /// when none is waiting.
+    fn next_translated(&mut self) -> bool {
+        match self.translated.pop_front() {
+            Some(block) => {
+                let pending = std::mem::take(&mut self.state_buffer);
+                self.state_buffer = Self::append_block(pending, block);
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -708,9 +741,15 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Stream
                 }
             }
 
+            if self.next_translated() {
+                continue;
+            }
+
             match self.ipc_stream.poll_next_unpin(cx) {
                 std::task::Poll::Ready(Some(Ok(blob))) => {
-                    self.extend_bytes(blob);
+                    if let Err(e) = self.extend_bytes(blob) {
+                        return std::task::Poll::Ready(Some(Err(e.into())));
+                    }
                     continue;
                 }
                 std::task::Poll::Ready(Some(Err(e))) => {

@@ -51,6 +51,7 @@ clap = { workspace = true, optional = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-proto-common = { workspace = true }
+flatbuffers = "25"
 futures = { workspace = true }
 log = { workspace = true }
 lru = { version = "0.19", optional = true }
@@ -67,6 +68,7 @@ tonic-prost = { workspace = true }
 url = { workspace = true }
 utoipa = { workspace = true, optional = true }
 uuid = { workspace = true }
+zstd = "0.13"
 
 [dev-dependencies]
 tempfile = { workspace = true }

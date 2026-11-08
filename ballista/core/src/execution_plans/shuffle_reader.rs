@@ -28,6 +28,7 @@ use crate::execution_plans::sort_shuffle::{
 };
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::scheduler::{PartitionLocation, PartitionStats, ShuffleFileKind};
+use crate::shuffle_ipc::ShuffleIpcReader;
 use crate::utils::{GrpcClientConfig, with_retry};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
@@ -1356,14 +1357,14 @@ pub(crate) fn fetch_partition_local(
 
 fn fetch_partition_local_inner(
     path: &Path,
-) -> result::Result<StreamReader<BufReader<File>>, BallistaError> {
+) -> result::Result<StreamReader<ShuffleIpcReader<BufReader<File>>>, BallistaError> {
     let file = File::open(path).map_err(|e| {
         BallistaError::General(format!(
             "Failed to open partition file at {path:?}: {e:?}"
         ))
     })?;
     // TODO: make this configurable
-    let file = BufReader::with_capacity(256 * 1024, file);
+    let file = ShuffleIpcReader::new(BufReader::with_capacity(256 * 1024, file));
     // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
     let reader = unsafe {
         StreamReader::try_new(file, None)

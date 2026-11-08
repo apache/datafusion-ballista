@@ -26,6 +26,7 @@ use ballista_core::execution_plans::range_shuffle::{
 use ballista_core::serde::scheduler::{
     ByteRange, ShuffleFileKind, ShuffleLayout, TaskKey,
 };
+use ballista_core::shuffle_ipc::ShuffleIpcReader;
 use datafusion::arrow::ipc::reader::StreamReader;
 use std::convert::TryFrom;
 use std::fs::File;
@@ -254,7 +255,7 @@ impl ResultBackend for LocalDiskBackend {
                             ))
                         })
                         .map_err(|e| from_ballista_err(&e))?;
-                    let file = BufReader::new(file);
+                    let file = ShuffleIpcReader::new(BufReader::new(file));
                     // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
                     let reader = unsafe {
                         StreamReader::try_new(file, None)
