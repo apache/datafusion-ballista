@@ -39,7 +39,7 @@ use super::super::shuffle_writer_trait::ShuffleWriter;
 use super::buffer::BufferedBatches;
 use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
-use super::spill::SpillManager;
+use super::spill::{EncodedStats, SpillManager, write_ipc_stream};
 use crate::JobId;
 use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
@@ -94,14 +94,6 @@ struct InputPartitionOutput {
     _reservation: MemoryReservation,
 }
 
-/// What one output partition's encoded rows amount to.
-#[derive(Clone, Copy, Default)]
-struct EncodedStats {
-    num_batches: u64,
-    num_rows: u64,
-    num_bytes: u64,
-}
-
 /// One input partition's rows, encoded into one IPC buffer per output
 /// partition, with the counts for each.
 struct EncodedPartitions {
@@ -129,17 +121,9 @@ fn encode_buffered_partitions(
 
     // One writer open at a time: each holds its own compression context.
     buffered.drain(|partition, batches| {
-        let mut writer =
-            StreamWriter::try_new_with_options(Vec::new(), schema, opts.clone())?;
-        let stat = &mut stats[partition];
-        for batch in batches {
-            let batch = batch?;
-            stat.num_rows += batch.num_rows() as u64;
-            stat.num_bytes += batch.get_array_memory_size() as u64;
-            stat.num_batches += 1;
-            writer.write(&batch)?;
-        }
-        encoded[partition] = writer.into_inner()?;
+        let (buf, stat) = write_ipc_stream(Vec::new(), schema, opts, batches)?;
+        encoded[partition] = buf;
+        stats[partition] = stat;
         Ok(())
     })?;
 
@@ -852,7 +836,7 @@ fn write_task_consolidated(
                 // Same flush-then-bypass discipline as above: anything already
                 // buffered has to land before the raw copy appends to the file.
                 output.flush()?;
-                let mut spill_file = File::open(spill_path)?;
+                let mut spill_file = File::open(&spill_path)?;
                 std::io::copy(&mut spill_file, output.get_mut())?;
             }
             num_batches += spill_batches;
