@@ -734,8 +734,8 @@ explanation of the sort-based shuffle writer.</p>
 </tr>
 <tr class="row-even"><td><p>ballista.shuffle.compression.codec</p></td>
 <td><p>Utf8</p></td>
-<td><p>lz4</p></td>
-<td><p>Compression codec specification used in the shuffle process. Possible values: none, lz4, zstd. Defaults to lz4 to preserve current behaviour</p></td>
+<td><p>zstd</p></td>
+<td><p>Compression codec used for shuffle data written to disk and sent between executors. Possible values: none, lz4, zstd. zstd (level 1) writes shuffle files about half the size of lz4 for little extra CPU, which matters most when shuffles cross the network</p></td>
 </tr>
 <tr class="row-odd"><td><p>ballista.shuffle.force_remote_read</p></td>
 <td><p>Boolean</p></td>
