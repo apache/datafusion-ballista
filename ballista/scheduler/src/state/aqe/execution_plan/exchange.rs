@@ -361,6 +361,37 @@ impl ExchangeExec {
         exchange
     }
 
+    /// This exchange as another reader of `canonical`'s stage, for a subplan
+    /// that appears more than once in the job's plan. The stage runs once
+    /// and both read the same shuffle output.
+    ///
+    /// What the stage writes is taken from `canonical`: its input, its
+    /// partitioning, and the shared stage id, shuffle partitions, column
+    /// statistics and range routing. How each consumer reads that output is
+    /// its own: this exchange keeps its `plan_id` and inactive flag, and gets
+    /// fresh coalesce and skew-join slots, since each consuming stage decides
+    /// those for its own alignment group.
+    pub(crate) fn share_stage_of(&self, canonical: &ExchangeExec) -> Self {
+        Self::new_with_details(
+            canonical.input.clone(),
+            canonical.partitioning.clone(),
+            self.plan_id,
+            canonical.stage_id.clone(),
+            canonical.shuffle_partitions.clone(),
+            canonical.column_statistics.clone(),
+            Arc::new(Mutex::new(None)),
+            canonical.range_repartition_routing.clone(),
+            canonical.broadcast,
+            self.inactive_stage,
+        )
+    }
+
+    /// Identifies the stage state this exchange shares with its other
+    /// readers, for grouping exchanges by stage.
+    pub(crate) fn stage_handle(&self) -> *const () {
+        Arc::as_ptr(&self.stage_id) as *const ()
+    }
+
     /// The plan whose output this exchange shuffles.
     pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
         &self.input
@@ -813,5 +844,38 @@ mod column_statistics_tests {
             let stats = stats_of(plan.as_ref(), None);
             assert_eq!(null_count_of(&stats, 0), Precision::Exact(3));
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_stage_tests {
+    //! Two readers of one stage, as exchange reuse makes them.
+    use super::*;
+    use ballista_core::execution_plans::PartitionGroup;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_plan::empty::EmptyExec;
+
+    fn exchange(plan_id: usize) -> ExchangeExec {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        ExchangeExec::new(
+            Arc::new(EmptyExec::new(schema)),
+            Some(Partitioning::UnknownPartitioning(2)),
+            plan_id,
+        )
+    }
+
+    #[test]
+    fn each_reader_of_a_shared_stage_coalesces_on_its_own() {
+        let canonical = exchange(1);
+        let reader = exchange(2).share_stage_of(&canonical);
+
+        canonical.set_coalesce(Arc::new(CoalescePlan {
+            upstream_partition_count: 2,
+            groups: vec![PartitionGroup {
+                upstream_indices: vec![0, 1],
+            }],
+        }));
+
+        assert!(reader.coalesce().is_none());
     }
 }

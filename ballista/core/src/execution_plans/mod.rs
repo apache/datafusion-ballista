@@ -38,6 +38,8 @@ mod shuffle_reader;
 mod shuffle_writer;
 mod shuffle_writer_trait;
 pub mod sort_shuffle;
+#[cfg(test)]
+pub(crate) mod test_util;
 mod unordered_range_repartition;
 mod unresolved_shuffle;
 pub mod window_state;
@@ -47,8 +49,12 @@ use std::path::{Path, PathBuf};
 pub use buffer::{BufferExec, BufferMode};
 pub use chaos_exec::ChaosExec;
 use datafusion::common::exec_err;
-pub use distributed_explain_analyze::DistributedExplainAnalyzeExec;
-pub use distributed_query::{DistributedQueryExec, execute_physical_plan};
+pub use distributed_explain_analyze::{
+    DistributedExplainAnalyzeExec, format_metrics_as_record_batch,
+};
+pub use distributed_query::{
+    DistributedQueryExec, execute_physical_plan, execute_query_params,
+};
 pub use ordered_range_repartition::OrderedRangeRepartitionExec;
 pub use partitioned_bounded_window_agg::PartitionedBoundedWindowAggExec;
 pub use per_partition_filter::{PerPartitionFilterExec, range_partition_predicates};

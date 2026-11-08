@@ -87,6 +87,10 @@ pub const BALLISTA_CLIENT_IO_RETRY_WAIT_TIME_MS: &str =
     "ballista.client.io_retry_wait_time_ms";
 /// Enables adaptive query planning
 pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
+/// Lets the adaptive planner run a repeated subplan's stage once and have
+/// every consumer read the same shuffle output (Spark's `ReuseExchange`).
+pub const BALLISTA_REUSE_EXCHANGE_ENABLED: &str =
+    "ballista.planner.reuse_exchange.enabled";
 /// Configuration key for sort shuffle target batch size in rows.
 pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
@@ -353,6 +357,13 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          estimates. Set to false to use the static distributed planner.".to_string(),
                          DataType::Boolean,
                          Some(true.to_string())),
+        ConfigEntry::new(BALLISTA_REUSE_EXCHANGE_ENABLED.to_string(),
+                         "With adaptive query planning, runs the stage of a subplan that \
+                         appears more than once in a query, such as a common table \
+                         expression read twice, only once. Every reader of the subplan \
+                         reads the same shuffle output.".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
@@ -549,11 +560,12 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         .with_doc_default("(empty)"),
         ConfigEntry::new(
             BALLISTA_SHUFFLE_COMPRESSION_CODEC.to_string(),
-            "Compression codec specification \
-            used in the shuffle process. Possible values: \
-            none, lz4, zstd. Defaults to lz4 to preserve current behaviour".to_string(),
+            "Compression codec used for shuffle data written to disk and \
+            sent between executors. Possible values: none, lz4, zstd. \
+            zstd (level 1) writes shuffle files about half the size of lz4 for \
+            little extra CPU, which matters most when shuffles cross the network".to_string(),
             DataType::Utf8,
-            Some("lz4".to_string()),
+            Some("zstd".to_string()),
         ),
         ConfigEntry::new(
             BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS.to_string(),
@@ -964,6 +976,11 @@ impl BallistaConfig {
     /// Is Adaptive Query Planner enabled
     pub fn adaptive_query_planner_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_ADAPTIVE_PLANNER_ENABLED)
+    }
+
+    /// Whether the adaptive planner runs a repeated subplan's stage once.
+    pub fn reuse_exchange_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_REUSE_EXCHANGE_ENABLED)
     }
 
     /// Returns the target batch size for sort-based shuffle.
@@ -1636,5 +1653,10 @@ mod tests {
             .get(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
             .expect("entry is registered");
         assert_eq!(batch_size.doc_default(), Some("8192"));
+    }
+
+    #[test]
+    fn reuse_exchange_defaults_true() {
+        assert!(BallistaConfig::default().reuse_exchange_enabled());
     }
 }

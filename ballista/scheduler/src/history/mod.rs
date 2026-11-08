@@ -558,6 +558,7 @@ async fn get_state() -> Json<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::await_condition;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use ballista_api_types::dto::{QueryStageSummary, QueryStagesResponse};
@@ -1045,15 +1046,13 @@ mod tests {
 
         write_job_end_log(&dir.path().join("job-1.eventlog"), "job-1");
 
-        for _ in 0..200 {
-            if store.len() == 1 {
-                task.abort();
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let indexed = await_condition(Duration::from_millis(10), 200, || async {
+            Ok(store.len() == 1)
+        })
+        .await
+        .unwrap();
         task.abort();
-        panic!("the refresh task never indexed the new job");
+        assert!(indexed, "the refresh task never indexed the new job");
     }
 
     #[test]

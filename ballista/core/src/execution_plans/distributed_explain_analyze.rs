@@ -175,7 +175,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
         let query_exec = Arc::clone(&self.query_exec);
         let scheduler_url = self.scheduler_url.clone();
         let schema = Arc::clone(&self.schema);
-        let verbose = self.verbose;
         let stream_schema = Arc::clone(&self.schema);
         let session_config = ctx.session_config().clone();
 
@@ -201,7 +200,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedExplainAnalyzeExec
             })?;
             let job_metrics =
                 fetch_job_metrics(&scheduler_url, &job_id, session_config).await?;
-            format_metrics_as_record_batch(&job_metrics, &job_id, schema, verbose)
+            format_metrics_as_record_batch(&job_metrics, schema)
         });
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
@@ -306,11 +305,10 @@ pub(crate) fn format_job_plan(
         .map(|stages| stages.join("\n\n"))
 }
 
-fn format_metrics_as_record_batch(
+/// Renders `job_metrics` as the single row `EXPLAIN ANALYZE` returns.
+pub fn format_metrics_as_record_batch(
     job_metrics: &GetJobMetricsResult,
-    _job_id: &JobId,
     schema: SchemaRef,
-    _verbose: bool,
 ) -> Result<RecordBatch> {
     let plan = format_job_plan(job_metrics, true)?;
 
@@ -442,9 +440,7 @@ mod tests {
             ],
         };
 
-        let batch =
-            format_metrics_as_record_batch(&response, &"job-1".into(), schema, true)
-                .unwrap();
+        let batch = format_metrics_as_record_batch(&response, schema).unwrap();
 
         let plan_type = batch
             .column(0)

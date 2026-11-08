@@ -17,19 +17,20 @@
   under the License.
 -->
 
-# Comparing Ballista, Spark, Comet and Trino on Kubernetes
+# Comparing Ballista, Spark, Comet, Trino and DataFusion Distributed on Kubernetes
 
-These scripts run TPC-H (and, for Ballista and Spark, TPC-DS) on a Kubernetes
-cluster with one of four engines, the same way for each, so the results can be
-compared. They reproduce the setup behind the results on the
+These scripts run TPC-H (and, for Ballista, Spark and Comet, TPC-DS) on a
+Kubernetes cluster with one of five engines, the same way for each, so the
+results can be compared. They reproduce the setup behind the results on the
 [benchmarking page](../../docs/source/contributors-guide/benchmarking/index.md):
 
-| `--engine` | What runs                                                                                         |
-| ---------- | ------------------------------------------------------------------------------------------------- |
-| `ballista` | A scheduler, N executors, and the `tpch` or `tpcds` runner from `benchmarks/`, all from one image |
-| `spark`    | A driver Job running `spark/tpcbench.py` in client mode, which starts N executor pods             |
-| `comet`    | The same, with Apache DataFusion Comet on the classpath and the settings in `conf/comet.conf`     |
-| `trino`    | A coordinator, N workers, and a Job running `trino/run_queries.py` (TPC-H only)                   |
+| `--engine`               | What runs                                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------------------------- |
+| `ballista`               | A scheduler, N executors, and the `tpch` or `tpcds` runner from `benchmarks/`, all from one image |
+| `spark`                  | A driver Job running `spark/tpcbench.py` in client mode, which starts N executor pods             |
+| `comet`                  | The same, with Apache DataFusion Comet on the classpath and the settings in `conf/comet.conf`     |
+| `trino`                  | A coordinator, N workers, and a Job running `trino/run_queries.py` (TPC-H only)                   |
+| `datafusion-distributed` | A coordinator, N workers, and a Job running `datafusion-distributed/run_queries.py` (TPC-H only)  |
 
 Each run deploys a fresh cluster for one engine, runs the queries from a Job
 inside it, reads the results from the Job's log, writes them to `results/`, and
@@ -93,6 +94,19 @@ docker build -f comet.Dockerfile \
   -t <registry>/comet-bench:4.1.3-<version> .
 ```
 
+The DataFusion Distributed image builds the `worker` binary from the
+[datafusion-distributed](https://github.com/datafusion-contrib/datafusion-distributed)
+repository, at a branch, tag or commit you choose, after applying
+[`datafusion-distributed/worker-memory-limit.patch`](datafusion-distributed/worker-memory-limit.patch),
+which gives each pod the memory limit a Ballista executor gets (upstream's
+worker has none). The build context is the directory of the patch:
+
+```shell
+docker build -f benchmarks/cluster/docker/datafusion-distributed.Dockerfile \
+  --build-arg DFD_REF=main \
+  -t <registry>/datafusion-distributed-bench:main benchmarks/cluster/datafusion-distributed
+```
+
 Push them, and put their names in `cluster.toml`.
 
 ## Configuring
@@ -119,6 +133,7 @@ python3 run.py --engine ballista
 python3 run.py --engine spark
 python3 run.py --engine comet
 python3 run.py --engine trino
+python3 run.py --engine datafusion-distributed
 ```
 
 Each command prints how to follow the queries with `kubectl logs`, then a table
@@ -141,6 +156,9 @@ python3 run.py --engine ballista --ballista-config ballista.execution.mode=pipel
 # Ballista without the tables' partition columns
 python3 run.py --engine ballista --no-partition-cols
 
+# A DataFusion Distributed setting for the run (repeatable)
+python3 run.py --engine datafusion-distributed --dfd-config distributed.compression=zstd
+
 # Keep the cluster after the run to look at its logs; run.py prints how to delete it
 python3 run.py --engine spark --query 18 --keep
 ```
@@ -160,7 +178,12 @@ whole.
   unless given `--trino-analyze`, and without spilling unless given
   `--trino-spill`. See [Trino configuration](../../docs/source/contributors-guide/benchmarking/trino.md)
   for why its numbers are not directly comparable.
-- **Spark and Trino check the row count** of every TPC-H result at SF1000
+- **DataFusion Distributed** runs every query once untimed, then reports the mean
+  of 3 iterations, like Trino (`--no-warmup` turns the untimed run off). Its
+  workers exchange data in memory, like Trino's, and each pod has a memory pool
+  of 70% of its container, with spilling, like a Ballista executor. See
+  [DataFusion Distributed configuration](../../docs/source/contributors-guide/benchmarking/datafusion-distributed.md).
+- **Spark, Trino and DataFusion Distributed check the row count** of every TPC-H result at SF1000
   against [`tpch_expected_rows.py`](tpch_expected_rows.py), and fail a query that
   returns the wrong number of rows. `--no-check-rows` turns that off; other
   scale factors are not checked.
@@ -168,14 +191,19 @@ whole.
 The settings of each engine, and why, are on the
 [Ballista](../../docs/source/contributors-guide/benchmarking/ballista.md),
 [Spark](../../docs/source/contributors-guide/benchmarking/spark.md),
-[Spark + Comet](../../docs/source/contributors-guide/benchmarking/comet.md) and
-[Trino](../../docs/source/contributors-guide/benchmarking/trino.md) pages.
+[Spark + Comet](../../docs/source/contributors-guide/benchmarking/comet.md),
+[Trino](../../docs/source/contributors-guide/benchmarking/trino.md) and
+[DataFusion Distributed](../../docs/source/contributors-guide/benchmarking/datafusion-distributed.md)
+pages.
 
 ## Results
 
 Each run writes `results/<run>.json` and the runner's log next to it. The JSON
 holds the run's settings, the image, the Ballista commit (from the image), and
 per query the time of each iteration, their mean, the row count and any error.
+DataFusion Distributed runs also record the commit its workers were built from,
+and save each query's distributed plan, with the metrics of every node, in
+`results/<run>-plans/`.
 `compare.py` prints a Markdown table of several runs, like the one on the
 benchmarking page:
 
@@ -196,10 +224,12 @@ cd benchmarks/cluster
 python3 -m unittest -v test_run
 (cd spark && python3 -m unittest -v test_tpcbench)
 (cd trino && python3 -m unittest -v test_run_queries)
+(cd datafusion-distributed && python3 -m unittest -v test_run_queries)
 ```
 
 ## Limitations
 
 - The data must be in Amazon S3 (`s3://`).
-- Trino runs TPC-H only: its table definitions are in `trino/tpch_tables.py`.
+- Trino and DataFusion Distributed run TPC-H only: the table definitions both use
+  are in `trino/tpch_tables.py`.
 - Iceberg tables are not supported.
