@@ -56,6 +56,7 @@
 //! - No metadata tables such as `t$snapshots`.
 //! - A view, or a `DataFrame` or prepared statement reused across runs, reads
 //!   the version from when it was planned.
+//! - No encrypted tables.
 //! - Storage credentials travel in plain text.
 
 mod catalog;
