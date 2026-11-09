@@ -98,7 +98,7 @@ prost = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
-socket2 = { version = "0.6", features = ["all"] }
+socket2 = { version = "0.6" }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true, features = ["router"] }
@@ -117,6 +117,7 @@ path = "tests/tpch_plan_stability/main.rs"
 
 [dev-dependencies]
 ballista-executor = { path = "../executor", version = "55.0.0", default-features = false }
+socket2 = { version = "0.6", features = ["all"] }
 insta = { workspace = true }
 regex = "1"
 rstest = { workspace = true }

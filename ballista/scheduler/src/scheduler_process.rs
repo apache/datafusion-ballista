@@ -371,6 +371,8 @@ mod tests {
 
     /// Connections accepted by the scheduler get the same TCP keepalive as
     /// executor and result-service connections, and none when it is disabled.
+    /// `tcp_keepalive_time()` is not available on Windows in socket2 0.6.
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn configures_nodelay_and_keepalive_on_accepted_connections() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
