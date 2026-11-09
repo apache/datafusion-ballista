@@ -586,6 +586,26 @@ cannot re-run another job’s output, so a caller must fail them (the scheduler
 posts <code class="docutils literal notranslate"><span class="pre">JobRunningFailed</span></code>). A caller that only needs the tasks to cancel can take
 the first element.</p>
 </section>
+<section id="partition-locations-hold-an-executorendpoint">
+<h4>Partition locations hold an <code class="docutils literal notranslate"><span class="pre">ExecutorEndpoint</span></code><a class="headerlink" href="#partition-locations-hold-an-executorendpoint" title="Link to this heading">#</a></h4>
+<p>A partition location only has to say where to fetch from, so
+<code class="docutils literal notranslate"><span class="pre">PartitionLocation::executor_meta</span></code> and
+<code class="docutils literal notranslate"><span class="pre">PipelinedPartitionLocation::executor_meta</span></code> are now <code class="docutils literal notranslate"><span class="pre">Arc&lt;ExecutorEndpoint&gt;</span></code>, a
+new type with the executor’s <code class="docutils literal notranslate"><span class="pre">id</span></code>, <code class="docutils literal notranslate"><span class="pre">host</span></code> and <code class="docutils literal notranslate"><span class="pre">port</span></code>, shared between locations
+rather than copied into each one. <code class="docutils literal notranslate"><span class="pre">ExecutorMetadata</span></code> is unchanged, and is still
+what the scheduler records about a registered executor. To build an endpoint
+from one, use <code class="docutils literal notranslate"><span class="pre">Arc::new(ExecutorEndpoint::from(&amp;metadata))</span></code>. Code that read
+<code class="docutils literal notranslate"><span class="pre">grpc_port</span></code>, <code class="docutils literal notranslate"><span class="pre">specification</span></code> or <code class="docutils literal notranslate"><span class="pre">os_info</span></code> from a location should look up the
+<code class="docutils literal notranslate"><span class="pre">ExecutorMetadata</span></code> by <code class="docutils literal notranslate"><span class="pre">id</span></code> instead.</p>
+<p>Shuffle reader plan nodes now list each executor once and their locations refer
+to it by position. This changes the wire format between schedulers and
+executors, so <code class="docutils literal notranslate"><span class="pre">BALLISTA_PROTOCOL_VERSION</span></code> is now <code class="docutils literal notranslate"><span class="pre">4</span></code> and they must be upgraded
+together.</p>
+<p>In the protobuf definitions, the <code class="docutils literal notranslate"><span class="pre">ExecutorMetadata</span></code> message is renamed
+<code class="docutils literal notranslate"><span class="pre">ExecutorEndpoint</span></code> and loses <code class="docutils literal notranslate"><span class="pre">grpc_port</span></code>, <code class="docutils literal notranslate"><span class="pre">specification</span></code> and <code class="docutils literal notranslate"><span class="pre">os_info</span></code>. Job
+statuses still set <code class="docutils literal notranslate"><span class="pre">executor_meta</span></code> on every location, so clients that read its
+<code class="docutils literal notranslate"><span class="pre">id</span></code>, <code class="docutils literal notranslate"><span class="pre">host</span></code> or <code class="docutils literal notranslate"><span class="pre">port</span></code> do not need to change.</p>
+</section>
 </section>
 <section id="python-client-changes">
 <h3>Python client changes<a class="headerlink" href="#python-client-changes" title="Link to this heading">#</a></h3>
@@ -837,6 +857,7 @@ unchanged.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-shuffle-bufferedbatches-is-no-longer-public"><code class="docutils literal notranslate"><span class="pre">sort_shuffle::BufferedBatches</span></code> is no longer public</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#taskmanager-executor-lost-also-returns-jobs-that-lost-cached-data"><code class="docutils literal notranslate"><span class="pre">TaskManager::executor_lost</span></code> also returns jobs that lost cached data</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#partition-locations-hold-an-executorendpoint">Partition locations hold an <code class="docutils literal notranslate"><span class="pre">ExecutorEndpoint</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#python-client-changes">Python client changes</a><ul class="nav section-nav flex-column">
