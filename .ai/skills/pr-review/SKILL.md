@@ -26,7 +26,7 @@ description: Use when reviewing a pull request in the datafusion-ballista repo, 
 
 A full review of a Ballista pull request. The core is a line-level correctness review of
 the code. On top of that sit three Ballista-specific gates that a generic review misses:
-the contributor guides (including the user-persona registry), the public API surface, and
+the contributor guides, the public API surface, and
 benchmark evidence for changes to plan shape or execution.
 
 The correctness review (Steps 3 to 5) is the main job. The gates (Steps 6 to 8) are
