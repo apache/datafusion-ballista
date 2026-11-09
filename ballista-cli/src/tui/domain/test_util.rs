@@ -102,6 +102,7 @@ fn make_percentiles() -> Percentiles {
     }
 }
 
+/// A completed stage with no rows and no tasks.
 pub(crate) fn make_stage(id: &str) -> JobStageResponse {
     JobStageResponse {
         stage_id: id.to_string(),

@@ -36,7 +36,7 @@ pub(crate) fn job_start(job_id: &str) -> JobStart {
 }
 
 /// The summary of a completed one-stage job named `q1`.
-pub(crate) fn job_index(job_id: &str) -> JobIndex {
+fn job_index(job_id: &str) -> JobIndex {
     JobIndex {
         job_id: job_id.into(),
         job_name: "q1".into(),
