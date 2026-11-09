@@ -268,6 +268,16 @@ pub trait ExecutionGraph: Debug {
     /// Exposes executions stages and stage id's
     fn stages(&self) -> &HashMap<usize, ExecutionStage>;
 
+    /// Stage ids of the final stage(s), whose output is the job's result —
+    /// those whose `output_links` is empty.
+    fn final_stage_ids(&self) -> HashSet<usize> {
+        self.stages()
+            .iter()
+            .filter(|(_, stage)| stage.output_links().is_empty())
+            .map(|(stage_id, _)| *stage_id)
+            .collect()
+    }
+
     /// Stage ids of all non-final (intermediate) stages — those whose
     /// `output_links` is non-empty. The final stage(s) are excluded.
     fn intermediate_stage_ids(&self) -> Vec<u32> {

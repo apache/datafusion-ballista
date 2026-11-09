@@ -46,6 +46,7 @@ async fn run_to_success(sql: &str) -> Result<AdaptiveExecutionGraph> {
 
     while !graph.is_successful() {
         assert!(graph.intermediate_stage_ids().is_empty());
+        assert!(graph.final_stage_ids().is_empty());
         revive_graph_and_complete_next_stage(&mut graph)?;
     }
     assert!(matches!(
@@ -65,6 +66,7 @@ fn assert_intermediate_excludes_only_final_stage(graph: &AdaptiveExecutionGraph)
         .map(|location| location.partition_id.stage_id)
         .collect();
     assert_eq!(final_stage_ids.len(), 1);
+    assert_eq!(graph.final_stage_ids(), final_stage_ids);
 
     let mut expected: Vec<u32> = graph
         .stages()
