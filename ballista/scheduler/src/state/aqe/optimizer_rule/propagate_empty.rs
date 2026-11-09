@@ -21,7 +21,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::JoinType;
 use datafusion::common::ScalarValue;
 use datafusion::common::stats::Precision;
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::Transformed;
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{Column, Literal};
@@ -40,6 +40,9 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::statistics::StatisticsContext;
+use datafusion::physical_plan::{
+    ChildSatisfactionOptions, replace_children_if_necessary,
+};
 use std::sync::Arc;
 
 macro_rules! is_empty_exec {
@@ -231,6 +234,54 @@ impl PropagateEmptyExecRule {
             Ok(Transformed::no(plan))
         }
     }
+
+    /// Rewrites `plan` bottom-up with [`Self::transform`], except below a
+    /// parent that [`Self::transform`] keeps: there a child whose rewrite no
+    /// longer satisfies the parent's required input distribution stays as it
+    /// was, without the rewrites inside it.
+    ///
+    /// [`EmptyExec`] reports `UnknownPartitioning`, so it does not satisfy a
+    /// hash distribution that the exchange it replaced did. Under a parent
+    /// that requires one, such as a partitioned join or a window,
+    /// `EnsureRequirements` would add a hash repartition over the
+    /// [`EmptyExec`], and `DistributedExchangeRule` would turn that into a new
+    /// stage on every replan.
+    fn propagate(
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let originals: Vec<_> = plan.children().into_iter().cloned().collect();
+        if originals.is_empty() {
+            return Ok(Self::transform(plan)?.data);
+        }
+        let rewritten = originals
+            .iter()
+            .cloned()
+            .map(Self::propagate)
+            .collect::<datafusion::error::Result<Vec<_>>>()?;
+        let result = Self::transform(replace_children_if_necessary(plan, rewritten)?)?;
+        if result.transformed {
+            return Ok(result.data);
+        }
+        let plan = result.data;
+        let required = plan.input_distribution_requirements();
+        let satisfies = |index, child: &Arc<dyn ExecutionPlan>| {
+            let options = ChildSatisfactionOptions::new().with_allow_subset(true);
+            required
+                .child_satisfaction(index, child.as_ref(), options)
+                .map(|satisfaction| satisfaction.is_satisfied())
+        };
+        let children = originals
+            .into_iter()
+            .zip(plan.children().into_iter().cloned())
+            .enumerate()
+            .map(|(index, (original, rewritten))| {
+                let lost = satisfies(index, &original)? && !satisfies(index, &rewritten)?;
+                Ok(if lost { original } else { rewritten })
+            })
+            .collect::<datafusion::error::Result<Vec<_>>>()?;
+        // Returns `plan` itself when no child went back to its original.
+        replace_children_if_necessary(plan, children)
+    }
 }
 impl PhysicalOptimizerRule for PropagateEmptyExecRule {
     fn optimize(
@@ -246,7 +297,7 @@ impl PhysicalOptimizerRule for PropagateEmptyExecRule {
         if !bc.propagate_empty_enabled() {
             Ok(plan)
         } else {
-            Ok(plan.transform_up(Self::transform)?.data)
+            Self::propagate(plan)
         }
     }
 
