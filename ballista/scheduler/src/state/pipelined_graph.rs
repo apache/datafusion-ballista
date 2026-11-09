@@ -745,7 +745,7 @@ impl ExecutionGraph for PipelinedExecutionGraph {
             }
             match outcome {
                 Some(task_status::Status::Successful(_)) => {
-                    stage.update_task_metrics(task_id, metrics)?;
+                    stage.update_task_metrics(&self.job_id, task_id, metrics);
                 }
                 Some(task_status::Status::Failed(failed)) => {
                     failure.get_or_insert_with(|| {

@@ -1026,9 +1026,11 @@ impl ExecutionGraph for StaticExecutionGraph {
                             successful_task,
                         )) = status
                         {
-                            // update task metrics for successful task
-                            running_stage
-                                .update_task_metrics(task_id, operator_metrics)?;
+                            running_stage.update_task_metrics(
+                                &job_id,
+                                task_id,
+                                operator_metrics,
+                            );
 
                             let SuccessfulTask {
                                 partitions,
