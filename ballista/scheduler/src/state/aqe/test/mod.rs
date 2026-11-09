@@ -55,8 +55,7 @@ use crate::state::aqe::planner::{AdaptivePlanner, RunnableStages};
 use ballista_core::JobId;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+    ExecutorEndpoint, PartitionId, PartitionLocation, PartitionStats,
 };
 use datafusion::arrow::array::{Int32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -196,6 +195,15 @@ pub(crate) fn mock_partitions_with_statistics() -> Vec<Vec<PartitionLocation>> {
     mock_partitions_with_size(42, 10)
 }
 
+/// An executor for locations that a test never fetches from.
+pub(crate) fn unused_executor() -> Arc<ExecutorEndpoint> {
+    Arc::new(ExecutorEndpoint {
+        id: "".to_string(),
+        host: "".to_string(),
+        port: 0,
+    })
+}
+
 /// Shuffle output reporting `num_rows` rows over `num_bytes` bytes in a single
 /// partition. Tests that turn on the *value* of a measured size, rather than
 /// just its presence, pick their own figures.
@@ -220,14 +228,8 @@ pub(crate) fn mock_partition_location(
             stage_id: 0,
             partition_id,
         },
-        executor_meta: ExecutorMetadata {
-            id: "".to_string(),
-            host: "".to_string(),
-            port: 0,
-            grpc_port: 0,
-            specification: ExecutorSpecification::default().with_vcores(0),
-            os_info: ExecutorOperatingSystemSpecification::default(),
-        },
+        executor_meta: unused_executor(),
+        // next few properties are needed
         partition_stats: PartitionStats::new(Some(num_rows), None, Some(num_bytes)),
         file_id: None,
         is_sort_shuffle: false,

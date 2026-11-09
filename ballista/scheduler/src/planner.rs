@@ -1863,8 +1863,7 @@ order by
     {
         use ballista_core::execution_plans::ShuffleReaderExec;
         use ballista_core::serde::scheduler::{
-            ExecutorMetadata, ExecutorOperatingSystemSpecification,
-            ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
+            ExecutorEndpoint, PartitionId, PartitionLocation, PartitionStats,
         };
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
 
@@ -1880,14 +1879,11 @@ order by
                 stage_id: 42,
                 partition_id,
             },
-            executor_meta: ExecutorMetadata {
+            executor_meta: Arc::new(ExecutorEndpoint {
                 id: format!("exec-{partition_id}"),
                 host: "localhost".to_string(),
                 port: 50050,
-                grpc_port: 50051,
-                specification: ExecutorSpecification::default().with_vcores(1),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
+            }),
             partition_stats: PartitionStats::new(Some(10), None, Some(1)),
             file_id: None,
             is_sort_shuffle: false,

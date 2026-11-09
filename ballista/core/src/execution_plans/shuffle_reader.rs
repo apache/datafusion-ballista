@@ -1270,7 +1270,7 @@ async fn fetch_ranges_with(
 /// Report a transport failure as a fetch failure, which is what lets the
 /// scheduler retry the task rather than fail the query.
 fn as_fetch_failed(
-    metadata: &crate::serde::scheduler::ExecutorMetadata,
+    metadata: &crate::serde::scheduler::ExecutorEndpoint,
     partition_id: &crate::serde::scheduler::PartitionId,
     error: BallistaError,
 ) -> BallistaError {
@@ -1473,10 +1473,7 @@ mod tests {
     use super::*;
     use crate::execution_plans::test_util::{test_location, write_ipc_stream};
     use crate::execution_plans::{ShuffleWriterExec, create_shuffle_path};
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId,
-    };
+    use crate::serde::scheduler::{ExecutorEndpoint, PartitionId};
     use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -1987,14 +1984,11 @@ mod tests {
                     stage_id: 1,
                     partition_id,
                 },
-                executor_meta: ExecutorMetadata {
+                executor_meta: Arc::new(ExecutorEndpoint {
                     id: format!("exec{partition_id}"),
                     host: "localhost".to_string(),
                     port: 50051,
-                    grpc_port: 50052,
-                    specification: ExecutorSpecification::default().with_vcores(12),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
+                }),
                 partition_stats: Default::default(),
                 file_id,
                 is_sort_shuffle: false,
