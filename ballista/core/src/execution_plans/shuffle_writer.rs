@@ -1184,9 +1184,9 @@ pub(crate) async fn run_coordinator<F>(
     }
 }
 
-/// Wraps a handoff from [`WriterState::take_handoff`] in the metadata stream returned by
-/// `execute(N)`. The stream keeps the coordinator running until the
-/// summaries arrive or the stream is dropped.
+/// Wraps a handoff from [`WriterState::take_handoff`] in the metadata stream
+/// returned by `execute(N)`. The stream keeps the coordinator running until
+/// the summaries arrive or the stream is dropped.
 pub(crate) fn handoff_stream(
     name: &'static str,
     handoff: Handoff,
@@ -1624,6 +1624,47 @@ mod tests {
 
         let batches = drive_all_partitions(query_stage, task_ctx).await?;
         assert_eq!(2, batches.len());
+        Ok(())
+    }
+
+    /// The stream that spawned the coordinator may be dropped before the other
+    /// streams are taken. The coordinator sends every summary before it
+    /// finishes, so the later streams still receive theirs.
+    #[tokio::test]
+    async fn later_calls_succeed_after_the_first_stream_completed() -> Result<()> {
+        let task_ctx = SessionContext::new().task_ctx();
+        let work_dir = TempDir::new()?;
+        let query_stage = Arc::new(ShuffleWriterExec::try_new(
+            JobId::new("jobSequential"),
+            1,
+            two_by_two_input()?,
+            work_dir.path().to_str().unwrap().to_owned(),
+        )?);
+
+        let first = {
+            let mut stream = query_stage.execute(0, task_ctx.clone())?;
+            utils::collect_stream(&mut stream).await
+        }
+        .map_err(BallistaError::into_datafusion)?;
+        let coordinator = query_stage
+            .state
+            .lock()
+            .expect("the writer state is not poisoned")
+            .coordinator
+            .clone()
+            .expect("the first call spawned the coordinator");
+        assert_eq!(
+            0,
+            coordinator.strong_count(),
+            "the finished stream dropped its share"
+        );
+
+        let mut stream = query_stage.execute(1, task_ctx)?;
+        let second = utils::collect_stream(&mut stream)
+            .await
+            .map_err(BallistaError::into_datafusion)?;
+        assert_eq!(1, first.len());
+        assert_eq!(1, second.len());
         Ok(())
     }
 

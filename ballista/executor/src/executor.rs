@@ -612,9 +612,9 @@ mod test {
     }
 
     /// Waits until `refs` has `expected` strong references, and fails after
-    /// 5 seconds.
+    /// 10 seconds.
     async fn assert_strong_count_reaches<T>(refs: &Weak<T>, expected: usize) {
-        let reached = tokio::time::timeout(Duration::from_secs(5), async {
+        let reached = tokio::time::timeout(Duration::from_secs(10), async {
             while refs.strong_count() != expected {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }

@@ -541,6 +541,11 @@ async fn drive_shuffle_writer_stage(
     for n in 0..k {
         let plan = plan.clone();
         let ctx = context.clone();
+        // Dropping this task stops the writer's input. A writer that streams
+        // to disk on a blocking thread still finishes the file it is writing,
+        // so a cancelled Ballista task can leave a short but valid IPC file
+        // behind. Nothing reads it, because the task is reported as cancelled,
+        // and job data cleanup removes it with the rest of the job's directory.
         stream_futures.push(SpawnedTask::spawn(async move {
             let mut stream = plan.execute(n, ctx)?;
             let mut batches = Vec::new();
