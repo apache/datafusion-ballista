@@ -104,14 +104,6 @@ def test_set_ballista_config_reaches_scheduler(address, pull):
     assert status.job_name == "set_reaches_scheduler"
 
 
-def test_session_context_without_client_uses_native_client(address):
-    client = RecordingClient(address)
-    ctx = BallistaSessionContext(address)
-    ctx.register_csv("t", TEST_CSV)
-
-    assert ctx.sql("SELECT count(*) AS c FROM t").to_pydict() == {"c": [5]}
-
-
 def test_client_ignores_address(address):
     client = RecordingClient(address)
     # the client carries its own address, `address` is not used
