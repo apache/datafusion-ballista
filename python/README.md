@@ -118,6 +118,22 @@ pyarrow_batches = df.collect()
 
 See the [DataFusion Python documentation](https://datafusion.apache.org/python/) for more examples.
 
+### Python Cluster Client
+
+By default the native Rust client talks to the cluster. Pass a `BallistaClient`, a client written in
+Python, to customize how the cluster is reached, for example to add authentication metadata. It needs
+the `python-client` extra (`pip install "ballista[python-client]"`):
+
+```python
+from ballista import BallistaClient, BallistaSessionContext
+
+class AuthClient(BallistaClient):
+    def call_metadata(self):
+        return super().call_metadata() + [("authorization", "token")]
+
+ctx = BallistaSessionContext(client=AuthClient("df://localhost:50050"))
+```
+
 ## Jupyter Notebook Support
 
 PyBallista provides first-class Jupyter notebook support with SQL magic commands and rich HTML rendering.

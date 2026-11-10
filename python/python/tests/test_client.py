@@ -24,7 +24,7 @@ from ballista import (
     BallistaClient,
     BallistaJob,
     BallistaJobError,
-    BallistaPythonSessionContext,
+    BallistaSessionContext,
     setup_test_cluster,
 )
 from ballista import client as client_module
@@ -59,7 +59,7 @@ class RecordingClient(BallistaClient):
 
 def test_custom_client_runs_queries(address):
     client = RecordingClient(address)
-    ctx = BallistaPythonSessionContext(client=client)
+    ctx = BallistaSessionContext(client=client)
     ctx.register_csv("t", TEST_CSV)
 
     result = ctx.sql("SELECT sum(a) AS s FROM t").to_pydict()
@@ -75,7 +75,7 @@ def test_job_tracking_follows_client_pull(address, pull):
     client = RecordingClient(
         address, config={"ballista.client.pull": str(pull).lower()}
     )
-    ctx = BallistaPythonSessionContext(client=client)
+    ctx = BallistaSessionContext(client=client)
     ctx.register_csv("t", TEST_CSV)
 
     result = ctx.sql("SELECT a FROM t ORDER BY a").to_pydict()
@@ -93,7 +93,7 @@ def test_set_ballista_config_reaches_scheduler(address, pull):
     client = RecordingClient(
         address, config={"ballista.client.pull": str(pull).lower()}
     )
-    ctx = BallistaPythonSessionContext(client=client)
+    ctx = BallistaSessionContext(client=client)
     ctx.register_csv("t", TEST_CSV)
     ctx.sql("SET ballista.job.name = 'set_reaches_scheduler'").collect()
 
@@ -103,17 +103,43 @@ def test_set_ballista_config_reaches_scheduler(address, pull):
     assert status.job_name == "set_reaches_scheduler"
 
 
-def test_session_config_configures_default_client(address):
-    ctx = BallistaPythonSessionContext(address, config={"ballista.client.pull": False})
+def test_session_context_without_client_uses_native_client(address):
+    client = RecordingClient(address)
+    ctx = BallistaSessionContext(address)
     ctx.register_csv("t", TEST_CSV)
 
     assert ctx.sql("SELECT count(*) AS c FROM t").to_pydict() == {"c": [5]}
+    assert client.jobs == []
+
+
+def test_client_ignores_address(address):
+    client = RecordingClient(address)
+    # the client carries its own address, `address` is not used
+    ctx = BallistaSessionContext("df://unreachable:1", client=client)
+    ctx.register_csv("t", TEST_CSV)
+
+    assert ctx.sql("SELECT count(*) AS c FROM t").to_pydict() == {"c": [5]}
+    assert len(client.jobs) == 1
+
+
+def test_cluster_config_with_client(address):
+    client = RecordingClient(address)
+    with pytest.warns(DeprecationWarning, match="cluster_config"):
+        ctx = BallistaSessionContext(
+            client=client, cluster_config={"ballista.job.name": "cluster_config_job"}
+        )
+    ctx.register_csv("t", TEST_CSV)
+
+    assert ctx.sql("SELECT count(*) AS c FROM t").to_pydict() == {"c": [5]}
+    status = client.job_status(client.jobs[-1].job_id).status
+    assert status.job_name == "cluster_config_job"
 
 
 def test_job_failure_is_reported(address):
     # the test cluster runs pull-staged, which can not run pipelined jobs
-    ctx = BallistaPythonSessionContext(
-        address, config={"ballista.execution.mode": "pipelined"}
+    ctx = BallistaSessionContext(
+        config={"ballista.execution.mode": "pipelined"},
+        client=BallistaClient(address),
     )
     ctx.register_csv("t", TEST_CSV)
 

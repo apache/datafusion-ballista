@@ -21,12 +21,15 @@ from datafusion import (
     SessionContext,
 )
 import copy
-from typing import Dict, Optional, Union
+from typing import TYPE_CHECKING, Dict, Optional, Union
 import warnings
 
 from ._internal_ballista import BallistaConfigExtension
 from ._internal_ballista import ballista_datafusion_config_defaults
 from ._internal_ballista import with_ballista_query_planner
+
+if TYPE_CHECKING:
+    from .client import BallistaClient
 
 ConfigValue = Union[str, int, float, bool]
 
@@ -211,6 +214,7 @@ def BallistaSessionContext(
     ] = None,
     runtime: Optional[RuntimeEnvBuilder] = None,
     cluster_config: Optional[Dict[str, ConfigValue]] = None,
+    client: Optional["BallistaClient"] = None,
 ) -> SessionContext:
     """
     Create a DataFusion ``SessionContext`` that executes queries on a Ballista cluster.
@@ -220,8 +224,14 @@ def BallistaSessionContext(
     operations, ...) is available. Planning happens locally; physical plans are
     sent to the Ballista scheduler at ``address`` for distributed execution.
 
+    By default the native Rust client talks to the cluster. When ``client`` is
+    given, the communication with the cluster (job submission, status tracking
+    and fetching results over Arrow Flight) is done in Python by that
+    ``BallistaClient`` instead. Planning is the same for both.
+
     Args:
         address: Ballista scheduler URL. Defaults to ``"df://localhost:50050"``.
+            Ignored when ``client`` is given, the client has its own address.
         config: Session configuration, either a ``BallistaSessionConfig``, a
             ``SessionConfig`` or a dictionary of ``datafusion.*`` and
             ``ballista.*`` options with ``str``, ``int``, ``float`` or ``bool``
@@ -233,6 +243,10 @@ def BallistaSessionContext(
         cluster_config: Deprecated since 56.0.0 and will be removed in 57.0.0,
             use ``config``. Merged into ``config``, taking precedence on
             conflicts. Can not be used with ``BallistaSessionConfig``.
+        client: Python ``BallistaClient`` used to talk to the cluster instead
+            of the native Rust client. Subclass it to customize how the cluster
+            is reached, e.g. to add authentication metadata. Needs the
+            ``python-client`` extra.
 
     Returns:
         A ``SessionContext`` configured with the Ballista query planner.
@@ -289,10 +303,41 @@ def BallistaSessionContext(
         ...     "df://localhost:50050",
         ...     config=BallistaSessionConfig().with_target_partitions(32),
         ... )
+
+        Talk to the cluster through a Python client, here one that sends an
+        authentication header with every scheduler call:
+
+        >>> from ballista import BallistaClient
+        >>> class AuthClient(BallistaClient):
+        ...     def call_metadata(self):
+        ...         return super().call_metadata() + [("authorization", "token")]
+        >>> ctx = BallistaSessionContext(client=AuthClient("df://localhost:50050"))
     """
     if cluster_config is not None:
         config = _merge_cluster_config(config, cluster_config)
 
+    if client is None:
+        return BallistaRustSessionContext(address, config, runtime)
+
+    # imported on use, the Python client needs the `python-client` extra
+    from .client import BallistaPythonSessionContext
+
+    return BallistaPythonSessionContext(client, config, runtime)
+
+
+def BallistaRustSessionContext(
+    address: str = "df://localhost:50050",
+    config: Optional[
+        Union["BallistaSessionConfig", SessionConfig, Dict[str, ConfigValue]]
+    ] = None,
+    runtime: Optional[RuntimeEnvBuilder] = None,
+) -> SessionContext:
+    """
+    Create a ``SessionContext`` that talks to the cluster through the native
+    Rust client.
+
+    Internal, use ``BallistaSessionContext`` without ``client``.
+    """
     if not isinstance(config, BallistaSessionConfig):
         config = BallistaSessionConfig(config)
 
