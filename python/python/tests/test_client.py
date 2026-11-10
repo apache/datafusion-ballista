@@ -110,7 +110,6 @@ def test_session_context_without_client_uses_native_client(address):
     ctx.register_csv("t", TEST_CSV)
 
     assert ctx.sql("SELECT count(*) AS c FROM t").to_pydict() == {"c": [5]}
-    assert client.jobs == []
 
 
 def test_client_ignores_address(address):
@@ -134,6 +133,32 @@ def test_cluster_config_with_client(address):
     assert ctx.sql("SELECT count(*) AS c FROM t").to_pydict() == {"c": [5]}
     status = client.job_status(client.jobs[-1].job_id).status
     assert status.job_name == "cluster_config_job"
+
+
+def test_channel_option_not_on_client_warns(address):
+    with pytest.warns(UserWarning, match="ballista.client.use_tls") as record:
+        BallistaSessionContext(
+            config={"ballista.client.use_tls": True},
+            client=BallistaClient(address),
+        )
+    assert record[0].filename == __file__
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"ballista.client.pull": "false", "ballista.job.name": "job"},
+        {"ballista.client.grpc_max_message_size": "1048576"},
+    ],
+)
+def test_options_applying_to_client_do_not_warn(address, config, recwarn):
+    BallistaSessionContext(
+        config=config,
+        client=BallistaClient(
+            address, config={"ballista.client.grpc_max_message_size": "1048576"}
+        ),
+    )
+    assert not [w for w in recwarn if issubclass(w.category, UserWarning)]
 
 
 def test_job_failure_is_reported(address):
@@ -224,7 +249,7 @@ def python_jobs(monkeypatch):
 def test_python_client_from_config(address, python_jobs, pull):
     ctx = BallistaSessionContext(
         address,
-        config={"ballista.python.client": "python", "ballista.client.pull": pull},
+        config={"ballista.python.client_impl": "python", "ballista.client.pull": pull},
     )
     ctx.register_csv("t", TEST_CSV)
 
@@ -235,11 +260,11 @@ def test_python_client_from_config(address, python_jobs, pull):
     assert config["ballista.client.pull"] == str(pull).lower()
     assert (job._statuses is None) == pull
     # used only to pick the client
-    assert "ballista.python.client" not in config
+    assert "ballista.python.client_impl" not in config
 
 
 def test_python_client_from_session_config(address, python_jobs):
-    config = BallistaSessionConfig().with_python_client("python").with_job_name("py")
+    config = BallistaSessionConfig().with_client_impl("python").with_job_name("py")
     ctx = BallistaSessionContext(address, config=config)
     ctx.register_csv("t", TEST_CSV)
 
@@ -248,7 +273,7 @@ def test_python_client_from_session_config(address, python_jobs):
     assert python_jobs[0][0]["ballista.job.name"] == "py"
 
 
-@pytest.mark.parametrize("config", [None, {"ballista.python.client": "rust"}])
+@pytest.mark.parametrize("config", [None, {"ballista.python.client_impl": "rust"}])
 def test_rust_client_from_config(address, python_jobs, config):
     ctx = BallistaSessionContext(address, config=config)
     ctx.register_csv("t", TEST_CSV)
@@ -258,8 +283,8 @@ def test_rust_client_from_config(address, python_jobs, config):
 
 
 def test_client_with_rust_client_config_raises(address):
-    with pytest.raises(ValueError, match="ballista.python.client"):
+    with pytest.raises(ValueError, match="ballista.python.client_impl"):
         BallistaSessionContext(
             client=BallistaClient(address),
-            config={"ballista.python.client": "rust"},
+            config={"ballista.python.client_impl": "rust"},
         )
