@@ -732,62 +732,67 @@ explanation of the sort-based shuffle writer.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>ballista.shuffle.collect_distinct_counts</p></td>
+<tr class="row-even"><td><p>ballista.shuffle.cache_broadcast_reads</p></td>
+<td><p>Boolean</p></td>
+<td><p>true</p></td>
+<td><p>Lets the tasks on an executor share one fetch of each broadcast shuffle read (the build side of a broadcast hash join): the first task fetches and decodes it, the others reuse the batches. Without it every task fetches the whole build side, which at high partition counts multiplies the fetches by the number of tasks. Set to false to fetch per task.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.shuffle.collect_distinct_counts</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
 <td><p>Sketch the approximate distinct count of each hash-partitioning key column with HyperLogLog while writing shuffle output, so the adaptive planner can estimate join cardinalities downstream of the shuffle. Costs hashing every key value on the write path and one sketch per key column in each task’s status update (4 KiB with the default precision).</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.shuffle.collect_distinct_counts_precision</p></td>
+<tr class="row-even"><td><p>ballista.shuffle.collect_distinct_counts_precision</p></td>
 <td><p>UInt16</p></td>
 <td><p>12</p></td>
 <td><p>Precision of the HyperLogLog sketches that <code class="docutils literal notranslate"><span class="pre">ballista.shuffle.collect_distinct_counts</span></code> collects, from 4 to 16 (values outside that range are clamped). A sketch has 2^precision one-byte registers and a standard error of about 1.04 / 2^(precision / 2): 10 is 1 KiB and 3.3%, 12 is 4 KiB and 1.6%, 14 is 16 KiB and 0.8%. The scheduler keeps one sketch per key column for every task of a stage, so lower it for stages with many thousands of tasks.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.shuffle.compression.codec</p></td>
+<tr class="row-odd"><td><p>ballista.shuffle.compression.codec</p></td>
 <td><p>Utf8</p></td>
 <td><p>zstd</p></td>
 <td><p>Compression codec used for shuffle data written to disk and sent between executors. Possible values: none, lz4, zstd. zstd (level 1) writes shuffle files about half the size of lz4 for little extra CPU, which matters most when shuffles cross the network</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.shuffle.force_remote_read</p></td>
+<tr class="row-even"><td><p>ballista.shuffle.force_remote_read</p></td>
 <td><p>Boolean</p></td>
 <td><p>false</p></td>
 <td><p>Forces the shuffle reader to always read partitions via the Arrow Flight client, even when partitions are local to the node.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.shuffle.max_concurrent_read_requests</p></td>
+<tr class="row-odd"><td><p>ballista.shuffle.max_concurrent_read_requests</p></td>
 <td><p>UInt64</p></td>
 <td><p>64</p></td>
 <td><p>Maximum concurrent requests shuffle reader can process</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.shuffle.reader.default_block_size_bytes</p></td>
+<tr class="row-even"><td><p>ballista.shuffle.reader.default_block_size_bytes</p></td>
 <td><p>UInt64</p></td>
 <td><p>1048576</p></td>
 <td><p>Assumed per-partition byte size charged to the shuffle governor when partition stats carry no byte count.</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.shuffle.reader.max_blocks_in_flight_per_address</p></td>
+<tr class="row-odd"><td><p>ballista.shuffle.reader.max_blocks_in_flight_per_address</p></td>
 <td><p>UInt64</p></td>
 <td><p>128</p></td>
 <td><p>Reduce-side shuffle governor: maximum concurrent in-flight partition fetches to a single executor address.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.shuffle.reader.max_bytes_in_flight</p></td>
+<tr class="row-even"><td><p>ballista.shuffle.reader.max_bytes_in_flight</p></td>
 <td><p>UInt64</p></td>
 <td><p>50331648</p></td>
 <td><p>Reduce-side shuffle governor: maximum total in-flight bytes across concurrent remote partition fetches. Mirrors Spark’s spark.reducer.maxSizeInFlight. Values above 4 GiB are clamped to 4 GiB (u32 semaphore limit).</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.shuffle.remote_read_prefer_flight</p></td>
+<tr class="row-odd"><td><p>ballista.shuffle.remote_read_prefer_flight</p></td>
 <td><p>Boolean</p></td>
 <td><p>false</p></td>
 <td><p>Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.shuffle.sort_based.batch_size</p></td>
+<tr class="row-even"><td><p>ballista.shuffle.sort_based.batch_size</p></td>
 <td><p>UInt64</p></td>
 <td><p>8192</p></td>
 <td><p>Target batch size in rows for coalescing small batches in sort shuffle</p></td>
 </tr>
-<tr class="row-even"><td><p>ballista.shuffle.sort_based.memory_limit_per_task_bytes</p></td>
+<tr class="row-odd"><td><p>ballista.shuffle.sort_based.memory_limit_per_task_bytes</p></td>
 <td><p>UInt64</p></td>
 <td><p>268435456</p></td>
 <td><p>Per-task buffered-bytes budget at which the sort shuffle writer spills its in-memory batches to disk. Counted independently of the runtime memory pool, so spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle memory per executor is approximately vcores * this value. Set to 0 to disable the per-task budget and rely solely on runtime memory-pool pressure to trigger spilling; this is safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ballista.shuffle.writer_channel_capacity</p></td>
+<tr class="row-even"><td><p>ballista.shuffle.writer_channel_capacity</p></td>
 <td><p>UInt32</p></td>
 <td><p>8</p></td>
 <td><p>Bounded channel capacity for async-to-blocking I/O bridge in shuffle writer</p></td>
