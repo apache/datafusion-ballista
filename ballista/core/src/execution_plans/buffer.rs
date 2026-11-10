@@ -76,6 +76,7 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::utils::memory::RecordBatchMemoryCounter;
 use datafusion::common::{DataFusionError, Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -315,11 +316,15 @@ fn build_dam_stream(
         // `get_array_memory_size()` ever changed between calls.
         let mut buffered: VecDeque<(usize, RecordBatch)> = VecDeque::new();
         let mut dam_broken = false;
+        // Counts each buffer once across the buffered batches, so zero-copy
+        // slices of one large array (as aggregates emit) are not charged
+        // once per slice.
+        let mut counter = RecordBatchMemoryCounter::new();
 
         // Fill phase: read and buffer until pool pressure or end-of-stream.
         while let Some(batch) = input.next().await {
             let batch = batch?;
-            let size = batch.get_array_memory_size();
+            let size = counter.count_batch(&batch);
             match reservation.try_grow(size) {
                 Ok(_) => buffered.push_back((size, batch)),
                 Err(err) => {
@@ -479,10 +484,9 @@ mod tests {
     #[tokio::test]
     async fn dam_reservation_shrinks_incrementally_during_drain() -> Result<()> {
         let src_batches = batches(100, 5);
-        let sizes: Vec<usize> = src_batches
-            .iter()
-            .map(|b| b.get_array_memory_size())
-            .collect();
+        let mut counter = RecordBatchMemoryCounter::new();
+        let sizes: Vec<usize> =
+            src_batches.iter().map(|b| counter.count_batch(b)).collect();
         let total: usize = sizes.iter().sum();
 
         let src = memory_source(src_batches);
@@ -521,6 +525,47 @@ mod tests {
 
         assert!(stream.next().await.is_none(), "stream exhausted");
         assert_eq!(pool.reserved(), 0, "reservation released after stream end");
+        Ok(())
+    }
+
+    /// Zero-copy slices of one batch (as aggregates emit) share one
+    /// buffer, which the dam must charge once rather than once per slice.
+    #[tokio::test]
+    async fn dam_charges_buffer_shared_by_slices_once() -> Result<()> {
+        let whole = batches(10_000, 1).remove(0);
+        let whole_size = whole.get_array_memory_size();
+        let slices: Vec<RecordBatch> =
+            (0..10).map(|i| whole.slice(i * 1_000, 1_000)).collect();
+
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(10 * 1024 * 1024));
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(pool.clone())
+            .build_arc()
+            .expect("runtime");
+        let session = SessionContext::new_with_config_rt(SessionConfig::new(), runtime);
+
+        let dam: Arc<dyn ExecutionPlan> =
+            Arc::new(BufferExec::try_new(memory_source(slices), BufferMode::Dam)?);
+        let mut stream = dam.execute(0, session.task_ctx())?;
+
+        // The first pull buffers all ten slices, then releases the first
+        // slice's charge, which carried the shared buffer. The other nine
+        // slices add nothing; charging each with the whole buffer would
+        // leave 9 * whole_size reserved here.
+        let first = stream.next().await.expect("first batch")?;
+        assert_eq!(first.num_rows(), 1_000);
+        assert!(
+            pool.reserved() < whole_size,
+            "reserved {} after first drain, shared buffer is {whole_size}",
+            pool.reserved()
+        );
+
+        let mut rows = first.num_rows();
+        while let Some(batch) = stream.next().await {
+            rows += batch?.num_rows();
+        }
+        assert_eq!(rows, 10_000);
+        assert_eq!(pool.reserved(), 0);
         Ok(())
     }
 }
