@@ -583,6 +583,16 @@ standard DataFusion settings.</p>
 <td><p>true</p></td>
 <td><p>Rewrites uncorrelated NOT IN (subquery) filter predicates into a plain anti join plus a one-row count aggregate during logical optimization. The rewrite avoids DataFusion’s null-aware hash join, which Ballista must otherwise execute in a single task. Set to false to keep the null-aware join and its single-task lowering.</p></td>
 </tr>
+<tr class="row-even"><td><p>ballista.optimizer.semi_join_pushdown</p></td>
+<td><p>Boolean</p></td>
+<td><p>true</p></td>
+<td><p>Pushes semi and anti joins (from IN, EXISTS and NOT EXISTS subqueries) below inner joins and projections during logical optimization, onto the join input that holds their keys. The subquery then filters that input before it is joined and shuffled, instead of filtering the joined result. Set to false to leave semi and anti joins where subquery decorrelation placed them.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ballista.optimizer.semi_join_reduction</p></td>
+<td><p>Boolean</p></td>
+<td><p>true</p></td>
+<td><p>For an inner join against a dimension table filtered by equality, IN or LIKE predicates on literals (such as a nation or part type), also semi-joins the dimension with the table the join key comes from, below the other joins in between. The filter then removes rows before they are joined and shuffled, like Spark’s runtime filters. Only dimensions estimated at no more than ballista.optimizer.broadcast_join_threshold_rows rows are used (0 disables the reduction). Set to false to apply such filters only at the join that names them.</p></td>
+</tr>
 <tr class="row-even"><td><p>ballista.optimizer.stage_build_side</p></td>
 <td><p>Boolean</p></td>
 <td><p>true</p></td>
