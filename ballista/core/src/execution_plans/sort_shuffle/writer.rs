@@ -130,6 +130,7 @@ fn encode_buffered_partitions(
     // One writer open at a time: each holds its own compression context.
     buffered.drain(|partition, batches| {
         let (buf, stat) = write_ipc_stream(Vec::new(), schema, opts, batches)?;
+        // Not shrink_to_fit: under mimalloc it frees nothing but lowers capacity().
         if reservation.try_grow(buf.capacity()).is_ok() {
             encoded[partition] = buf;
             stats[partition] = stat;
@@ -1360,20 +1361,31 @@ fn compute_partition_indices(
 
 #[cfg(test)]
 mod tests {
+    use super::super::reader::stream_sort_shuffle_partition;
     use super::*;
     use crate::error::BallistaError;
     use crate::execution_plans::ChaosExec;
-    use crate::execution_plans::test_util::{drive_partition_results, two_by_two_input};
+    use crate::execution_plans::test_util::{
+        drive_partition_results, int32_batch, int32_schema, two_by_two_input,
+    };
     use crate::hll::HyperLogLog;
     use crate::serde::protobuf::SketchType;
-    use datafusion::arrow::array::{NullArray, StringArray, UInt32Array};
+    use datafusion::arrow::array::{Int64Array, NullArray, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::execution::memory_pool::{
+        FairSpillPool, GreedyMemoryPool, MemoryPool,
+    };
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion::physical_plan::ExecutionPlanProperties;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::expressions::Column;
+    use datafusion::physical_plan::metrics::Time;
+    use datafusion::physical_plan::repartition::BatchPartitioner;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use futures::TryStreamExt;
+    use std::collections::HashSet;
     use tempfile::TempDir;
 
     fn assert_shared_io_error(err: &BallistaError) {
@@ -1526,9 +1538,6 @@ mod tests {
 
     #[test]
     fn compute_partition_indices_distributes_rows_by_hash() {
-        use datafusion::arrow::array::{Int64Array, StringArray};
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
-
         let schema = Arc::new(Schema::new(vec![
             Field::new("k", DataType::Int64, false),
             Field::new("v", DataType::Utf8, false),
@@ -1688,6 +1697,57 @@ mod tests {
         Ok(())
     }
 
+    /// `run_round_trip`'s input: `num_batches` batches of `(k, v = 2k)`, with
+    /// `k` counting up from 0 across the batches.
+    fn round_trip_batches(
+        num_batches: usize,
+        rows_per_batch: usize,
+    ) -> (SchemaRef, Vec<RecordBatch>) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("v", DataType::Int64, false),
+        ]));
+        let batches = (0..num_batches)
+            .map(|b| {
+                let start = (b * rows_per_batch) as i64;
+                let keys: Vec<i64> = (start..start + rows_per_batch as i64).collect();
+                let values: Vec<i64> = keys.iter().map(|k| k * 2).collect();
+                RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(Int64Array::from(keys)),
+                        Arc::new(Int64Array::from(values)),
+                    ],
+                )
+                .unwrap()
+            })
+            .collect();
+        (schema, batches)
+    }
+
+    /// The bytes the writer's input loop buffers, and asks the pool for, by
+    /// the end of `run_round_trip`'s input.
+    fn round_trip_buffered_bytes(
+        num_batches: usize,
+        rows_per_batch: usize,
+        num_partitions: usize,
+    ) -> Result<usize> {
+        let (schema, batches) = round_trip_batches(num_batches, rows_per_batch);
+        let exprs: Vec<Arc<dyn PhysicalExpr>> = vec![Arc::new(Column::new("k", 0))];
+        let reducer = StrengthReducedU64::new(num_partitions as u64);
+        let mut buffered = BufferedBatches::new(
+            num_partitions,
+            schema,
+            SortShuffleConfig::default().batch_size,
+        );
+        let (mut hashes, mut rows) = (Vec::new(), Vec::new());
+        for batch in batches {
+            compute_partition_indices(&batch, &exprs, reducer, &mut hashes, &mut rows)?;
+            buffered.push_batch(batch, &rows);
+        }
+        Ok(buffered.memory_size())
+    }
+
     /// Shared helper for round-trip tests. Builds `num_batches` batches of
     /// `rows_per_batch` rows each with schema `(k: Int64, v: Int64)`, writes
     /// them through `SortShuffleWriterExec` into `num_partitions` output
@@ -1707,32 +1767,7 @@ mod tests {
         pool_bytes: usize,
         expect_spills: bool,
     ) -> Result<()> {
-        use super::super::reader::stream_sort_shuffle_partition;
-        use datafusion::arrow::array::Int64Array;
-        use datafusion::execution::memory_pool::FairSpillPool;
-        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-        use std::collections::HashSet;
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int64, false),
-            Field::new("v", DataType::Int64, false),
-        ]));
-
-        let batches: Vec<RecordBatch> = (0..num_batches)
-            .map(|b| {
-                let start = (b * rows_per_batch) as i64;
-                let keys: Vec<i64> = (start..start + rows_per_batch as i64).collect();
-                let values: Vec<i64> = keys.iter().map(|k| k * 2).collect();
-                RecordBatch::try_new(
-                    schema.clone(),
-                    vec![
-                        Arc::new(Int64Array::from(keys)),
-                        Arc::new(Int64Array::from(values)),
-                    ],
-                )
-                .unwrap()
-            })
-            .collect();
+        let (schema, batches) = round_trip_batches(num_batches, rows_per_batch);
         let partitions = vec![batches];
         let input: Arc<dyn ExecutionPlan> =
             MemorySourceConfig::try_new_exec(&partitions, schema.clone(), None)?;
@@ -1887,11 +1922,6 @@ mod tests {
         config: SortShuffleConfig,
         expect_spills: bool,
     ) -> Result<()> {
-        use super::super::reader::stream_sort_shuffle_partition;
-        use datafusion::arrow::array::Int64Array;
-        use datafusion::physical_plan::ExecutionPlanProperties;
-        use std::collections::HashSet;
-
         let schema = Arc::new(Schema::new(vec![
             Field::new("k", DataType::Int64, false),
             Field::new("v", DataType::Int64, false),
@@ -2290,12 +2320,25 @@ mod tests {
     async fn spills_when_the_pool_cannot_hold_the_encoded_output() -> Result<()> {
         // The batch and its row indices buffer 192 KiB, which a 193 KiB pool
         // holds, but not the encoded output as well, so only encoding spills.
+        // One input partition, so the writer may use the whole pool.
+        const POOL_BYTES: usize = 193 * 1024;
+
+        // A spill from the input loop would pass this test too, so check
+        // that the rows still fit, with the writer's own accounting. If they
+        // don't, the input loop is what spills, and this test no longer
+        // covers encoding: raise POOL_BYTES.
+        let buffered = round_trip_buffered_bytes(1, 8192, 4)?;
+        assert!(
+            buffered <= POOL_BYTES,
+            "the input loop would spill: {buffered} buffered bytes exceed the {POOL_BYTES} byte pool"
+        );
+
         run_round_trip(
             /* num_batches */ 1,
             /* rows_per_batch */ 8192,
             /* num_partitions */ 4,
             /* sort_shuffle_memory_limit_bytes */ BUDGET_NEVER_REACHED,
-            /* pool_bytes */ 193 * 1024,
+            /* pool_bytes */ POOL_BYTES,
             /* expect_spills */ true,
         )
         .await
@@ -2303,10 +2346,6 @@ mod tests {
 
     #[test]
     fn encoding_spills_the_partitions_the_pool_refuses() -> Result<()> {
-        use crate::execution_plans::test_util::{int32_batch, int32_schema};
-        use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
-        use datafusion::physical_plan::metrics::Time;
-
         // Partitions of 1000, 2000, 100 and 900 rows.
         let bounds = [0, 1000, 3000, 3100, 4000];
 
@@ -2374,9 +2413,6 @@ mod tests {
 
     #[tokio::test]
     async fn empty_partitions_round_trip() -> Result<()> {
-        use super::super::reader::stream_sort_shuffle_partition;
-        use datafusion::arrow::array::Int64Array;
-
         let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
         let total_rows = 256;
         let batch = RecordBatch::try_new(
@@ -2449,11 +2485,6 @@ mod tests {
     /// the sort-shuffle path has diverged.
     #[test]
     fn compute_partition_indices_matches_batch_partitioner() {
-        use datafusion::arrow::array::Int64Array;
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
-        use datafusion::physical_plan::metrics::Time;
-        use datafusion::physical_plan::repartition::BatchPartitioner;
-
         let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
         let values: Vec<i64> = (0..10).collect();
         let batch = RecordBatch::try_new(
