@@ -807,16 +807,29 @@ async fn start_executor_process_inner(
                         }
                     }
 
-                    match endpoint.connect().await {
-                        Ok(connection) => {
+                    // Bound each attempt by the overall deadline as well, so a
+                    // scheduler host that drops packets cannot hold the executor
+                    // past it for the whole gRPC connect timeout.
+                    match time::timeout_at(
+                        time::Instant::from_std(deadline),
+                        endpoint.connect(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(connection)) => {
                             info!("Connected to scheduler at {scheduler_url}");
                             x = Some(connection);
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             warn!(
                                 "Failed to connect to scheduler at {scheduler_url} ({e}); retrying ..."
                             );
                             tokio::time::sleep(time::Duration::from_millis(500)).await;
+                        }
+                        Err(_) => {
+                            warn!(
+                                "Connecting to scheduler at {scheduler_url} did not finish before the deadline"
+                            );
                         }
                     }
                 }
@@ -1466,6 +1479,53 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn scheduler_connect_timeout_bounds_a_hanging_connect() {
+        // Simulate a scheduler host that drops packets: a listener with a
+        // backlog of one whose accept queue is already full. Further SYNs are
+        // dropped, so a connect attempt to it hangs until the gRPC connect
+        // timeout (20s by default) unless the deadline bounds it.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listener = socket.listen(1).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut queued = Vec::new();
+        for _ in 0..8 {
+            match tokio::time::timeout(
+                Duration::from_millis(200),
+                tokio::net::TcpStream::connect(addr),
+            )
+            .await
+            {
+                Ok(Ok(stream)) => queued.push(stream),
+                _ => break,
+            }
+        }
+
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port: addr.port(),
+            scheduler_connect_timeout_seconds: 1,
+            ..ExecutorProcessConfig::default()
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::start_executor_process(config),
+        )
+        .await
+        .expect("a hanging connect ran past scheduler_connect_timeout_seconds");
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Timed out attempting to connect to scheduler"),
+            "unexpected error: {err}"
+        );
+        drop(queued);
+        drop(listener);
+    }
+
     #[test]
     fn default_executor_id_is_uuid() {
         let config = ExecutorProcessConfig::default();
@@ -1625,6 +1685,7 @@ mod tests {
 #[cfg(test)]
 mod memory_pool_tests {
     use super::*;
+    use crate::test_util::fresh_runtime_producer;
     use datafusion::execution::memory_pool::{
         GreedyMemoryPool, MemoryConsumer, MemoryLimit,
     };
@@ -1717,11 +1778,7 @@ mod memory_pool_tests {
         metrics.set_pool_size(Some(8192));
         let policy =
             observe_memory_pools(memory_pool_policy(8192, 8).unwrap(), metrics.clone());
-        let cache = DefaultSessionRuntimeCache::new(
-            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default()))),
-            policy,
-            2,
-        );
+        let cache = DefaultSessionRuntimeCache::new(fresh_runtime_producer(), policy, 2);
         let config = SessionConfig::new();
         let first = cache.produce_runtime("session", &config, 1).unwrap();
         let second = cache.produce_runtime("session", &config, 4).unwrap();

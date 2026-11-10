@@ -387,6 +387,7 @@ fn nearest_exchange_status(plan: &Arc<dyn ExecutionPlan>) -> ExchangeStatus {
 mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+    use crate::state::aqe::test::unknown_statistics_exec;
     use ballista_core::assert_plan;
     use ballista_core::execution_plans::{
         RuntimeStatsExec, UnorderedRangeRepartitionExec,
@@ -395,7 +396,6 @@ mod tests {
     use datafusion::arrow::compute::SortOptions;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::ScalarValue;
-    use datafusion::common::{ColumnStatistics, Statistics};
     use datafusion::config::ConfigOptions;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::logical_expr::Operator;
@@ -410,17 +410,14 @@ mod tests {
     use datafusion::physical_plan::filter::FilterExec;
     use datafusion::physical_plan::repartition::RepartitionExec;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
-    use datafusion::physical_plan::test::exec::StatisticsExec;
     use std::sync::Arc;
 
     fn leaf_exec() -> Arc<dyn ExecutionPlan> {
-        let schema = Schema::new(vec![Field::new("a", DataType::Int32, true)]);
-        let stats = Statistics {
-            num_rows: Default::default(),
-            total_byte_size: Default::default(),
-            column_statistics: vec![ColumnStatistics::new_unknown()],
-        };
-        Arc::new(StatisticsExec::new(stats, schema))
+        unknown_statistics_exec(&Schema::new(vec![Field::new(
+            "a",
+            DataType::Int32,
+            true,
+        )]))
     }
 
     fn config() -> ConfigOptions {
@@ -1059,13 +1056,11 @@ mod tests {
 
     fn float_leaf_exec() -> Arc<dyn ExecutionPlan> {
         // URRE routing today requires Float64 non-nullable.
-        let schema = Schema::new(vec![Field::new("v", DataType::Float64, false)]);
-        let stats = Statistics {
-            num_rows: Default::default(),
-            total_byte_size: Default::default(),
-            column_statistics: vec![ColumnStatistics::new_unknown()],
-        };
-        Arc::new(StatisticsExec::new(stats, schema))
+        unknown_statistics_exec(&Schema::new(vec![Field::new(
+            "v",
+            DataType::Float64,
+            false,
+        )]))
     }
 
     fn stats_over_urre_over_leaf() -> Arc<dyn ExecutionPlan> {
@@ -1243,15 +1238,7 @@ mod tests {
             Field::new("v", DataType::Float64, false),
             Field::new("tag", DataType::Float64, false),
         ]);
-        let stats = Statistics {
-            num_rows: Default::default(),
-            total_byte_size: Default::default(),
-            column_statistics: vec![
-                ColumnStatistics::new_unknown(),
-                ColumnStatistics::new_unknown(),
-            ],
-        };
-        let leaf: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(stats, schema));
+        let leaf = unknown_statistics_exec(&schema);
         let sort_expr = PhysicalSortExpr {
             expr: Arc::new(Column::new("v", 0)),
             options: SortOptions {

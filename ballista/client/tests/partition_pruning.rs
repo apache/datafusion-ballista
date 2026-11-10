@@ -27,17 +27,16 @@ mod common;
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod partition_pruning {
-    use std::fs::{self, File};
+    use std::fs;
     use std::path::Path;
     use std::sync::Arc;
 
-    use crate::common::{remote_context, standalone_context};
+    use crate::common::{remote_context, standalone_context, write_parquet_file};
     use datafusion::arrow::array::{ArrayRef, Int64Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::assert_batches_eq;
     use datafusion::error::Result;
-    use datafusion::parquet::arrow::ArrowWriter;
     use datafusion::prelude::{ParquetReadOptions, SessionContext};
     use rstest::rstest;
 
@@ -50,10 +49,7 @@ mod partition_pruning {
             let batch = RecordBatch::try_from_iter([("id", id), ("v", v)]).unwrap();
             let dir = root.join(format!("d={day}"));
             fs::create_dir_all(&dir).unwrap();
-            let file = File::create(dir.join("part-0.parquet")).unwrap();
-            let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
-            writer.write(&batch).unwrap();
-            writer.close().unwrap();
+            write_parquet_file(&dir.join("part-0.parquet"), &batch);
         }
         let poisoned = root.join("d=2024-01-03");
         fs::create_dir_all(&poisoned).unwrap();

@@ -724,10 +724,8 @@ mod tests {
     #[allow(deprecated)]
     async fn scheduler_state_reflects_server_configuration() {
         use crate::config::SchedulerConfig;
-        use crate::metrics::default_metrics_collector;
-        use crate::test_utils::test_cluster_context;
+        use crate::test_utils::{test_cluster_context, test_scheduler_server_uninit};
         use axum::response::IntoResponse;
-        use ballista_core::serde::BallistaCodec;
         use datafusion::DATAFUSION_VERSION;
         use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
@@ -737,13 +735,7 @@ mod tests {
             .with_enable_embedded_flight_proxy(true);
         let expected_scheduling_policy = config.scheduling_policy.to_string();
         let server: Arc<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            ));
+            Arc::new(test_scheduler_server_uninit(test_cluster_context(), config));
 
         let response = get_scheduler_state(State(server)).await.into_response();
         assert_eq!(response.status(), StatusCode::OK);
@@ -768,23 +760,14 @@ mod tests {
     mod get_webtui {
         use super::*;
         use crate::config::SchedulerConfig;
-        use crate::metrics::default_metrics_collector;
-        use crate::test_utils::test_cluster_context;
+        use crate::test_utils::{test_cluster_context, test_scheduler_server_uninit};
         use axum::response::IntoResponse;
-        use ballista_core::serde::BallistaCodec;
         use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
         fn test_scheduler(
             config: SchedulerConfig,
         ) -> Arc<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
-            let server = SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-            Arc::new(server)
+            Arc::new(test_scheduler_server_uninit(test_cluster_context(), config))
         }
 
         fn headers(pairs: &[(&str, &str)]) -> HeaderMap {

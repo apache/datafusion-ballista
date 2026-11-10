@@ -515,7 +515,7 @@ class BallistaJob:
         return None
 
     def _flight_client(
-        self, executor: ballista_pb2.ExecutorMetadata, proxy
+        self, executor: ballista_pb2.ExecutorEndpoint, proxy
     ) -> flight.FlightClient:
         host, port = proxy if proxy is not None else (executor.host, executor.port)
         key = (host, port)

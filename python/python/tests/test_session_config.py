@@ -225,7 +225,7 @@ _TYPED_SETTERS = [
         "ballista.shuffle.sort_based.memory_limit_per_task_bytes",
         "1024",
     ),
-    ("with_shuffle_compression_codec", "ballista.shuffle.compression.codec", "zstd"),
+    ("with_shuffle_compression_codec", "ballista.shuffle.compression.codec", "lz4"),
     (
         "with_grpc_client_initial_connection_window_size",
         "ballista.client.initial_connection_window_size",
