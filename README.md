@@ -202,16 +202,15 @@ Ballista uses Cargo features to enable optional functionality.
 
 ### ballista-scheduler
 
-| Feature                    | Default | Description                                                          |
-| -------------------------- | ------- | -------------------------------------------------------------------- |
-| `build-binary`             | Yes     | Builds the scheduler binary with CLI and logging                     |
-| `substrait`                | No      | Enables Substrait plan support                                       |
-| `flight-sql`               | No      | Enables the Arrow Flight SQL frontend for ADBC and JDBC clients      |
-| `prometheus-metrics`       | No      | Enables Prometheus metrics collection                                |
-| `graphviz-support`         | No      | Enables execution graph visualization                                |
-| `keda-scaler`              | No      | Kubernetes Event Driven Autoscaling integration                      |
-| `rest-api`                 | Yes     | Enables REST API endpoints, the OpenAPI spec, and the history server |
-| `disable-stage-plan-cache` | No      | Disables caching of stage execution plans                            |
+| Feature              | Default | Description                                                          |
+| -------------------- | ------- | -------------------------------------------------------------------- |
+| `build-binary`       | Yes     | Builds the scheduler binary with CLI and logging                     |
+| `substrait`          | No      | Enables Substrait plan support                                       |
+| `flight-sql`         | No      | Enables the Arrow Flight SQL frontend for ADBC and JDBC clients      |
+| `prometheus-metrics` | No      | Enables Prometheus metrics collection                                |
+| `graphviz-support`   | No      | Enables execution graph visualization                                |
+| `keda-scaler`        | No      | Kubernetes Event Driven Autoscaling integration                      |
+| `rest-api`           | Yes     | Enables REST API endpoints, the OpenAPI spec, and the history server |
 
 ### ballista-executor
 
