@@ -20,12 +20,12 @@ use crate::error::{BallistaError, Result};
 use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::scheduler::PartitionStats;
+use crate::shuffle_ipc::{ShuffleCompression, ShuffleEncoding, ShuffleStreamWriter};
 
 use datafusion::arrow::array::{ArrayRef, AsArray, GenericByteViewArray};
 use datafusion::arrow::datatypes::ByteViewType;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
-use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{SessionConfig, SessionState};
@@ -311,7 +311,7 @@ pub async fn write_stream_to_disk(
     path: &Path,
     disk_write_metric: &metrics::Time,
     channel_capacity: usize,
-    compression_type: Option<CompressionType>,
+    compression: ShuffleCompression,
 ) -> Result<PartitionStats> {
     let schema = stream.schema();
     let path_owned = path.to_owned();
@@ -325,10 +325,8 @@ pub async fn write_stream_to_disk(
             BallistaError::IoError(e)
         })?);
 
-        let options = create_write_options(compression_type)?;
-
-        let mut writer =
-            StreamWriter::try_new_with_options(file, schema.as_ref(), options)?;
+        let encoding = ShuffleEncoding::try_new(schema.as_ref(), compression)?;
+        let mut writer = ShuffleStreamWriter::try_new(file, schema.as_ref(), &encoding)?;
 
         while let Some(batch) = rx.blocking_recv() {
             let timer = write_metric.timer();
