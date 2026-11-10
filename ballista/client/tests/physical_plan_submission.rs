@@ -23,71 +23,14 @@ mod common;
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod physical_plan_submission_tests {
-    use crate::common::setup_test_cluster;
+    use crate::common::{setup_test_cluster, two_stage_physical_plan};
     use ballista_core::config::BallistaConfig;
     use ballista_core::execution_plans::execute_physical_plan;
     use ballista_core::extension::SessionConfigExt;
-    use datafusion::arrow::array::Int32Array;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::test_util::batches_to_sort_string;
-    use datafusion::datasource::MemTable;
-    use datafusion::physical_expr::expressions::Column;
-    use datafusion::physical_plan::repartition::RepartitionExec;
-    use datafusion::physical_plan::{self, ExecutionPlan, Partitioning};
-    use datafusion::prelude::{SessionConfig, SessionContext};
+    use datafusion::physical_plan;
+    use datafusion::prelude::SessionConfig;
     use datafusion_proto::protobuf::PhysicalPlanNode;
-    use std::sync::Arc;
-
-    /// Builds a two-partition `MemTable`-backed scan wrapped in a hash
-    /// `RepartitionExec`, i.e. a physical plan with a shuffle boundary that
-    /// `plan_query_stages` will split into two stages.
-    async fn build_physical_plan() -> (Arc<dyn ExecutionPlan>, SessionContext) {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("value", DataType::Int32, false),
-        ]));
-
-        let batch1 = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from(vec![1, 2, 3])),
-                Arc::new(Int32Array::from(vec![10, 20, 30])),
-            ],
-        )
-        .unwrap();
-        let batch2 = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from(vec![4, 5])),
-                Arc::new(Int32Array::from(vec![40, 50])),
-            ],
-        )
-        .unwrap();
-
-        let table = MemTable::try_new(schema, vec![vec![batch1], vec![batch2]]).unwrap();
-
-        let ctx = SessionContext::new();
-        ctx.register_table("t", Arc::new(table)).unwrap();
-
-        let scan = ctx
-            .table("t")
-            .await
-            .unwrap()
-            .create_physical_plan()
-            .await
-            .unwrap();
-
-        let repartitioned: Arc<dyn ExecutionPlan> = Arc::new(
-            RepartitionExec::try_new(
-                scan,
-                Partitioning::Hash(vec![Arc::new(Column::new("id", 0))], 4),
-            )
-            .unwrap(),
-        );
-
-        (repartitioned, ctx)
-    }
 
     /// Submits a hand-built physical plan (scan -> hash repartition) directly to
     /// a standalone Ballista cluster via the new physical-plan submission path,
@@ -99,7 +42,7 @@ mod physical_plan_submission_tests {
         let (host, port) = setup_test_cluster().await;
         let scheduler_url = format!("http://{host}:{port}");
 
-        let (plan, ctx) = build_physical_plan().await;
+        let (plan, ctx) = two_stage_physical_plan().await;
 
         let expected = physical_plan::collect(plan.clone(), ctx.task_ctx())
             .await

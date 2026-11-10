@@ -19,16 +19,16 @@ use crate::cache::CACHE_DATA_LOST;
 use crate::display::print_stage_metrics;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
-use crate::state::aqe::adaptive_rules::AdaptiveRules;
 use crate::state::aqe::execution_plan::{ExchangeExec, RangeRepartitionRouting};
-use crate::state::aqe::planner::{AdaptivePlanner, AdaptiveStageInfo};
+use crate::state::aqe::planner::{AdaptivePlanner, AdaptiveStageInfo, PreparedPlan};
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ResolvedStage, RunningTaskInfo,
-    StageOutput,
+    StageOutput, stages_succeeded, take_job_result,
 };
 use crate::state::execution_stage::{
     RunningStage, external_inputs, is_external_fetch_failure,
 };
+use crate::state::scheduler_root::{PendingRoot, SchedulerRoot};
 use crate::state::task_manager::UpdatedStages;
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
@@ -48,7 +48,6 @@ use ballista_core::serde::scheduler::{
 use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::context::SessionContext;
-use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::windows::WindowExpr;
 use datafusion::prelude::SessionConfig;
@@ -144,22 +143,23 @@ pub(crate) struct AdaptiveExecutionGraph {
     session_config: Arc<SessionConfig>,
     /// Logical plan as a human-readable string, captured at submission time.
     logical_plan: Option<String>,
+    /// The job's root, if it runs on the scheduler once every stage has
+    /// succeeded.
+    scheduler_root: Option<PendingRoot>,
 }
 
 impl AdaptiveExecutionGraph {
-    /// Creates a new `ExecutionGraph` from a physical execution plan.
-    ///
-    /// This will use the `DistributedPlanner` to break the plan into stages
-    /// and build the DAG structure needed for distributed execution.
+    /// Creates a new `ExecutionGraph` from a logical plan.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub async fn try_new(
         scheduler_id: &str,
         job_id: &JobId,
         job_name: &str,
         ctx: &SessionContext,
-        logical_plan: &LogicalPlan,
+        logical_plan: &datafusion::logical_expr::LogicalPlan,
         queued_at: u64,
-        rules: Option<&dyn AdaptiveRules>,
+        rules: Option<&dyn adaptive_rules::AdaptiveRules>,
     ) -> ballista_core::error::Result<Self> {
         let planner =
             AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone(), rules).await?;
@@ -176,35 +176,37 @@ impl AdaptiveExecutionGraph {
         )
     }
 
-    /// Creates a new `ExecutionGraph` from an already-built physical plan.
-    ///
-    /// The plan is prepared and staged by [`AdaptivePlanner::try_new_from_physical`];
-    /// the graph has no logical plan to display.
-    pub fn try_new_from_physical(
+    /// Creates a new `ExecutionGraph` from a plan prepared by
+    /// [`AdaptivePlanner::prepare_logical`] or
+    /// [`AdaptivePlanner::prepare_physical`]. `logical_plan` is the plan's
+    /// logical plan to display, if it had one.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn try_new_prepared(
         scheduler_id: &str,
         job_id: &JobId,
         job_name: &str,
         ctx: &SessionContext,
-        physical_plan: Arc<dyn ExecutionPlan>,
+        prepared: PreparedPlan,
+        logical_plan: Option<String>,
         queued_at: u64,
-        rules: Option<&dyn AdaptiveRules>,
     ) -> ballista_core::error::Result<Self> {
-        let planner = AdaptivePlanner::try_new_from_physical(
-            ctx,
-            physical_plan,
-            job_id.clone(),
-            rules,
-        )?;
-
+        let planner = AdaptivePlanner::from_prepared(ctx, prepared, job_id.clone())?;
         Self::try_new_with_planner(
             scheduler_id,
             job_id,
             job_name,
             ctx,
             planner,
-            None,
+            logical_plan,
             queued_at,
         )
+    }
+
+    /// Sets the job's root that runs on the scheduler once every stage has
+    /// succeeded, if it has one.
+    pub(crate) fn with_scheduler_root(mut self, root: Option<SchedulerRoot>) -> Self {
+        self.scheduler_root = root.map(PendingRoot::new);
+        self
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -269,6 +271,7 @@ impl AdaptiveExecutionGraph {
             failed_stage_attempts: HashMap::new(),
             session_config,
             logical_plan,
+            scheduler_root: None,
         })
     }
 }
@@ -348,14 +351,8 @@ impl AdaptiveExecutionGraph {
                 failed_at: timestamp_millis(),
             });
         } else if self.is_successful() {
-            // If this ExecutionGraph is successful, finish it
-            debug!("Job {job_id} is success, finalizing output partitions ...");
-            self.succeed_job()?;
-            events.push(QueryStageSchedulerEvent::JobFinished {
-                job_id,
-                queued_at: self.queued_at,
-                completed_at: timestamp_millis(),
-            });
+            let queued_at = self.queued_at;
+            events.extend(stages_succeeded(self, queued_at)?);
         } else if has_resolved {
             events.push(QueryStageSchedulerEvent::JobUpdated(job_id))
         }
@@ -841,6 +838,14 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     fn physical_plan(&self) -> Arc<dyn ExecutionPlan> {
         self.planner.plan.clone()
+    }
+
+    fn scheduler_root(&self) -> Option<&PendingRoot> {
+        self.scheduler_root.as_ref()
+    }
+
+    fn scheduler_root_mut(&mut self) -> Option<&mut PendingRoot> {
+        self.scheduler_root.as_mut()
     }
 
     fn start_time(&self) -> u64 {
@@ -1569,11 +1574,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             )));
         }
 
-        let partition_location = self
-            .output_locations()
-            .into_iter()
-            .map(|l| l.try_into())
-            .collect::<ballista_core::error::Result<Vec<_>>>()?;
+        let (partition_location, inline_result) = take_job_result(self)?;
 
         self.end_time = timestamp_millis();
 
@@ -1587,6 +1588,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                 started_at: self.start_time,
                 ended_at: self.end_time,
                 pipelined_output_locations: vec![],
+                inline_result,
             })),
         };
 

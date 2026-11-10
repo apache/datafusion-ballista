@@ -53,7 +53,7 @@ pub(crate) fn job_start_event(
         logical_plan: graph.logical_plan().map(|p| p.to_string()),
         // Same rendering the `get_job` handler uses for `PlanFormat::Default`.
         physical_plan: Some(
-            displayable(graph.physical_plan().as_ref())
+            displayable(graph.displayed_plan().as_ref())
                 .indent(false)
                 .to_string(),
         ),
@@ -376,7 +376,7 @@ mod tests {
         assert!(json.contains("\"submitted_at\":10"));
         assert!(json.contains("\"scheduler_id\":\"scheduler_id\""));
         // `job_start_event` renders the graph's pre-staging physical plan
-        // (`graph.physical_plan()`), unlike `job_end_event`'s embedded job
+        // (`graph.displayed_plan()`), unlike `job_end_event`'s embedded job
         // DTO which shows the plan reconstructed from stages.
         assert!(
             json.contains("HashJoinExec"),

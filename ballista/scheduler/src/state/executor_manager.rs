@@ -251,22 +251,23 @@ impl ExecutorManager {
         });
     }
 
-    /// Immediately reclaim intermediate-stage shuffle data for a successful job,
-    /// retaining the rest of the job dir (e.g. the final-stage output) for the
-    /// existing delayed whole-job cleanup. No-op if `remove_stage_ids` is empty.
+    /// Immediately reclaim the shuffle data of a successful job's spent stages
+    /// (see `ExecutionGraph::spent_stage_ids`), retaining the rest of the job
+    /// dir (e.g. the final-stage output a client reads) for the existing
+    /// delayed whole-job cleanup. No-op if `remove_stage_ids` is empty.
     ///
     /// Contract: call this AT MOST ONCE per job, passing the complete set of
-    /// intermediate stage ids. It is not designed for per-stage invocation.
+    /// spent stage ids. It is not designed for per-stage invocation.
     /// In poll-based scheduling the pending-cleanup value is a `Vec<u32>` keyed
     /// by job, and `HashMap::insert` REPLACES on key collision (it does not
-    /// merge). One intermediate call followed by the delayed whole-job cleanup
+    /// merge). One spent-stage call followed by the delayed whole-job cleanup
     /// (empty `remove_stage_ids`) is correct: the empty/whole-job entry
     /// supersedes and removes the entire job dir. But two DISTINCT partial calls
     /// for the same job before the executor polls would drop the earlier stage
     /// ids. Do not "fix" this by merging/extending: an empty vec means "remove
     /// the whole job dir", so extending could never represent whole-job
     /// supersession.
-    pub(crate) fn clean_up_intermediate_job_data(
+    pub(crate) fn clean_up_spent_stage_data(
         &self,
         job_id: JobId,
         remove_stage_ids: Vec<u32>,

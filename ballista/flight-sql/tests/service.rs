@@ -127,6 +127,7 @@ impl QueryBackend for StubBackend {
                     partitions: pipelined_partitions,
                     registration_timeout: Duration::from_secs(7),
                 }),
+                batches: None,
             });
         }
 
@@ -151,6 +152,7 @@ impl QueryBackend for StubBackend {
             schema: Arc::new(plan.schema().as_arrow().clone()),
             partitions,
             pipelined: None,
+            batches: None,
         })
     }
 }

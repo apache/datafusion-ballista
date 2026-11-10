@@ -20,6 +20,7 @@
 
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
 use ballista_core::config::BALLISTA_STANDALONE_PARALLELISM;
@@ -28,10 +29,16 @@ use ballista_core::serde::{
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
 use ballista_scheduler::SessionBuilder;
+use datafusion::arrow::array::Int32Array;
+use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
+use datafusion::datasource::MemTable;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::parquet::arrow::ArrowWriter;
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::prelude::{CsvReadOptions, SessionConfig, SessionContext};
 use tempfile::TempDir;
 
@@ -129,30 +136,8 @@ pub async fn setup_test_cluster() -> (String, u16) {
 
 /// starts a ballista cluster for integration tests
 pub async fn setup_test_cluster_with_state(session_state: SessionState) -> (String, u16) {
-    let config = SessionConfig::new_with_ballista();
-
-    let addr = ballista_scheduler::standalone::new_standalone_scheduler_from_state(
-        &session_state,
-    )
-    .await
-    .expect("scheduler to be created");
-
-    let host = "localhost".to_string();
-
-    let scheduler =
-        connect_to_scheduler(format!("http://{}:{}", host, addr.port())).await;
-
-    ballista_executor::new_standalone_executor_from_state(
-        scheduler,
-        config.ballista_standalone_parallelism(),
-        &session_state,
-    )
-    .await
-    .expect("executor to be created");
-
-    log::info!("test scheduler created at: {}:{}", host, addr.port());
-
-    (host, addr.port())
+    let vcores = SessionConfig::new_with_ballista().ballista_standalone_parallelism();
+    setup_test_cluster_with_split_state(&session_state, &session_state, 1, vcores).await
 }
 
 /// Starts a scheduler and `executors` executors of `vcores` vcores each, all
@@ -162,8 +147,22 @@ pub async fn setup_test_cluster_with_executors(
     executors: usize,
     vcores: usize,
 ) -> (String, u16) {
+    setup_test_cluster_with_split_state(session_state, session_state, executors, vcores)
+        .await
+}
+
+/// Starts a scheduler from `scheduler_state` and `executors` executors of
+/// `vcores` vcores each from `executor_state`, all in this process. A test
+/// can give the executors less than the scheduler, such as a codec that
+/// cannot decode an operator the scheduler is to run itself.
+pub async fn setup_test_cluster_with_split_state(
+    scheduler_state: &SessionState,
+    executor_state: &SessionState,
+    executors: usize,
+    vcores: usize,
+) -> (String, u16) {
     let addr = ballista_scheduler::standalone::new_standalone_scheduler_from_state(
-        session_state,
+        scheduler_state,
     )
     .await
     .expect("scheduler to be created");
@@ -176,7 +175,7 @@ pub async fn setup_test_cluster_with_executors(
         ballista_executor::new_standalone_executor_from_state(
             scheduler,
             vcores,
-            session_state,
+            executor_state,
         )
         .await
         .expect("executor to be created");
@@ -253,6 +252,56 @@ async fn connect_to_scheduler(
             Ok(scheduler) => break scheduler,
         }
     }
+}
+
+/// Builds a two-partition `MemTable`-backed scan wrapped in a hash
+/// `RepartitionExec`, i.e. a physical plan with a shuffle boundary that
+/// `plan_query_stages` will split into two stages.
+pub async fn two_stage_physical_plan() -> (Arc<dyn ExecutionPlan>, SessionContext) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("value", DataType::Int32, false),
+    ]));
+
+    let batch1 = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(Int32Array::from(vec![10, 20, 30])),
+        ],
+    )
+    .unwrap();
+    let batch2 = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![4, 5])),
+            Arc::new(Int32Array::from(vec![40, 50])),
+        ],
+    )
+    .unwrap();
+
+    let table = MemTable::try_new(schema, vec![vec![batch1], vec![batch2]]).unwrap();
+
+    let ctx = SessionContext::new();
+    ctx.register_table("t", Arc::new(table)).unwrap();
+
+    let scan = ctx
+        .table("t")
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+
+    let repartitioned: Arc<dyn ExecutionPlan> = Arc::new(
+        RepartitionExec::try_new(
+            scan,
+            Partitioning::Hash(vec![Arc::new(Column::new("id", 0))], 4),
+        )
+        .unwrap(),
+    );
+
+    (repartitioned, ctx)
 }
 
 pub async fn standalone_context() -> SessionContext {

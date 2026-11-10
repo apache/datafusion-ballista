@@ -22,6 +22,7 @@
 #![cfg(feature = "flight-sql")]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use arrow_flight::sql::client::FlightSqlServiceClient;
@@ -41,8 +42,12 @@ use ballista_scheduler::metrics::default_metrics_collector;
 use ballista_scheduler::scheduler_process::start_grpc_service_with_listener;
 use ballista_scheduler::scheduler_server::SchedulerServer;
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::execution::SessionStateBuilder;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use futures::TryStreamExt;
@@ -56,6 +61,12 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// Boots a scheduler serving Flight SQL plus one executor, and returns the
 /// scheduler's URL.
 async fn start_cluster() -> Result<String> {
+    start_cluster_with(default_config_producer()).await
+}
+
+/// [`start_cluster`], with sessions on the scheduler that start from
+/// `session_config`.
+async fn start_cluster_with(session_config: SessionConfig) -> Result<String> {
     let config = SchedulerConfig::default()
         .with_scheduler_policy(TaskSchedulingPolicy::PullStaged)
         .with_flight_sql(true);
@@ -63,7 +74,7 @@ async fn start_cluster() -> Result<String> {
     let cluster = BallistaCluster::new_memory(
         "localhost:50050",
         Arc::new(default_session_builder),
-        Arc::new(default_config_producer),
+        Arc::new(move || session_config.clone()),
     );
 
     let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
@@ -401,4 +412,71 @@ async fn catalog_queries_are_answered_without_distributing_them() -> Result {
     }
 
     Ok(())
+}
+
+/// A job whose root runs on the scheduler returns its result inline, which
+/// the frontend serves itself: here the projection that names a count the
+/// executors made.
+#[tokio::test]
+async fn flight_sql_serves_a_result_computed_on_the_scheduler() -> Result {
+    // How many roots the scheduler split off to run itself.
+    let roots = Arc::new(AtomicUsize::new(0));
+    let picked = Arc::clone(&roots);
+    let session_config = default_config_producer().with_ballista_scheduler_root(
+        Arc::new(move |plan: &dyn ExecutionPlan| {
+            let count = plan.is::<ProjectionExec>()
+                && plan.children()[0]
+                    .downcast_ref::<AggregateExec>()
+                    .is_some_and(|aggregate| *aggregate.mode() == AggregateMode::Final);
+            if count {
+                picked.fetch_add(1, Ordering::SeqCst);
+            }
+            count
+        }),
+    );
+    let url = start_cluster_with(session_config).await?;
+    let (mut client, _csv) = client_with_people(&url).await?;
+
+    let info = client
+        .execute("SELECT count(*) AS people FROM people".to_string(), None)
+        .await?;
+    let advertised = info.clone().try_decode_schema()?;
+    let endpoints = info.endpoint.len();
+    let counted = collect(&mut client, info).await?;
+    let served = format!(
+        "{endpoints} endpoint, advertising {}, serving {}:\n{}",
+        describe(&advertised),
+        describe(&counted[0].schema()),
+        pretty_format_batches(&counted)?
+    );
+
+    assert_eq!(
+        served,
+        "1 endpoint, advertising people: Int64, serving people: Int64:\n\
+         +--------+\n\
+         | people |\n\
+         +--------+\n\
+         | 3      |\n\
+         +--------+"
+    );
+    assert_eq!(roots.load(Ordering::SeqCst), 1);
+
+    Ok(())
+}
+
+/// A schema's fields in short, nullability included.
+fn describe(schema: &Schema) -> String {
+    schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let nullable = if field.is_nullable() {
+                " (nullable)"
+            } else {
+                ""
+            };
+            format!("{}: {}{nullable}", field.name(), field.data_type())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }

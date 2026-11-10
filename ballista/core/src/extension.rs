@@ -44,6 +44,7 @@ use datafusion::functions_nested::all_default_nested_functions;
 use datafusion::functions_window::all_default_window_functions;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::logical_expr::{Extension, LogicalPlan, UserDefinedLogicalNodeCore};
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::Expr;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -61,6 +62,11 @@ use uuid::Uuid;
 /// Type alias for the endpoint override function used in gRPC client configuration
 pub type EndpointOverrideFn =
     Arc<dyn Fn(Endpoint) -> Result<Endpoint, Box<dyn Error + Send + Sync>> + Send + Sync>;
+
+/// Picks the operator at the root of a job's plan that runs on the scheduler,
+/// once the rest of the job has succeeded. See
+/// [SessionConfigExt::with_ballista_scheduler_root].
+pub type SchedulerRootPredicate = Arc<dyn Fn(&dyn ExecutionPlan) -> bool + Send + Sync>;
 
 /// Returns scalar functions for Ballista (DataFusion defaults)
 pub fn ballista_scalar_functions() -> Vec<Arc<ScalarUDF>> {
@@ -306,6 +312,56 @@ pub trait SessionConfigExt {
     fn ballista_skew_join_small_partition_factor(&self) -> f64;
     /// Sets the tail-merge factor for the skew-join sub-shard bin-packer.
     fn with_ballista_skew_join_small_partition_factor(self, factor: f64) -> Self;
+
+    /// Runs a job's root operator on the scheduler when `predicate` matches
+    /// it, the way Spark runs a write's commit on the driver.
+    ///
+    /// A table format ends a write with one commit: the writer tasks each
+    /// report the files they wrote, and the commit publishes them all at once.
+    /// Run as a task, that commit needs the catalog on every executor and must
+    /// survive being retried. Run here, it runs once, on the scheduler, after
+    /// every stage has succeeded:
+    ///
+    /// 1. When a job's root matches, the scheduler removes it from the plan,
+    ///    and the root's single input runs on the executors as usual.
+    /// 2. Once that succeeds, the scheduler reads the input's output and runs
+    ///    the root on it. The job is reported running until the root is done,
+    ///    and failed if the root fails.
+    /// 3. The root's output is the job's result, returned to the client
+    ///    inline rather than read from the executors.
+    ///
+    /// The root's output is the job's whole result, returned in the job's
+    /// status, so the root should be one with a small output, like a commit,
+    /// whose result is a summary of a few hundred bytes however much was
+    /// written. A predicate that picks a root returning rows instead fails
+    /// the job as soon as the root's output is more than a client accepts in
+    /// one message (`ballista.client.grpc_max_message_size`).
+    ///
+    /// The root's input streams through the scheduler too, so it should be
+    /// small, as the writers' reports of the files they wrote are, rather
+    /// than the rows they wrote. And the root runs on the scheduler's
+    /// runtime, which schedules every job, so it should wait on I/O, as a
+    /// catalog commit does, rather than compute.
+    ///
+    /// Only the job's root is matched, so a root that wraps the commit runs
+    /// it on an executor as usual: `EXPLAIN ANALYZE INSERT ...`, whose root
+    /// is the `AnalyzeExec` that measures the insert, commits as a task.
+    ///
+    /// The job fails, too, if the root fails, or if an executor holding the
+    /// root's input is lost while the root runs: the input is not rerun.
+    /// A job cancelled while its root runs may still see the root finish.
+    ///
+    /// A job whose root matches is refused if it runs pipelined, as it
+    /// streams its result while it runs and could only run the root as a
+    /// task, or if it builds a `DataFrame::cache()`, as the cache would hold
+    /// the root's input rather than the job's result.
+    ///
+    /// The scheduler plans jobs, so this is set on the scheduler's session
+    /// config, for example through its config producer.
+    fn with_ballista_scheduler_root(self, predicate: SchedulerRootPredicate) -> Self;
+
+    /// Returns the predicate set by [Self::with_ballista_scheduler_root].
+    fn ballista_scheduler_root(&self) -> Option<SchedulerRootPredicate>;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -583,6 +639,15 @@ impl SessionConfigExt for SessionConfig {
         self.get_extension::<BallistaConfigGrpcEndpoint>()
     }
 
+    fn with_ballista_scheduler_root(self, predicate: SchedulerRootPredicate) -> Self {
+        self.with_extension(Arc::new(BallistaSchedulerRoot(predicate)))
+    }
+
+    fn ballista_scheduler_root(&self) -> Option<SchedulerRootPredicate> {
+        self.get_extension::<BallistaSchedulerRoot>()
+            .map(|root| root.0.clone())
+    }
+
     ballista_config_option!(
         usize,
         standalone_parallelism,
@@ -828,6 +893,10 @@ impl SessionConfigHelperExt for SessionConfig {
             .set_bool("datafusion.optimizer.enable_dynamic_filter_pushdown", false)
     }
 }
+
+/// [SessionConfig] extension holding the predicate set by
+/// [SessionConfigExt::with_ballista_scheduler_root].
+struct BallistaSchedulerRoot(SchedulerRootPredicate);
 
 /// Wrapper for [SessionConfig] extension
 /// holding [LogicalExtensionCodec] if overridden

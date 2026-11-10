@@ -1972,6 +1972,11 @@ pub struct SuccessfulJob {
     /// polling client has seen the job running; the client can still read it.
     #[prost(message, repeated, tag = "5")]
     pub pipelined_output_locations: ::prost::alloc::vec::Vec<PipelinedPartitionLocation>,
+    /// The output of a job's scheduler root (see
+    /// `SessionConfigExt::with_ballista_scheduler_root`) as an Arrow IPC stream.
+    /// When set, it is the job's whole result and `partition_location` is empty.
+    #[prost(bytes = "vec", optional, tag = "6")]
+    pub inline_result: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[allow(clippy::all)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

@@ -959,6 +959,7 @@ impl ExecutionGraph for PipelinedExecutionGraph {
                 started_at: self.start_time,
                 ended_at: self.end_time,
                 pipelined_output_locations,
+                inline_result: None,
             })),
         };
         Ok(())

@@ -16,7 +16,7 @@
 // under the License.
 
 use ballista_core::error::{BallistaError, Result};
-use ballista_core::extension::SessionConfigExt;
+use ballista_core::extension::{SchedulerRootPredicate, SessionConfigExt};
 use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::catalog::Session;
 use std::collections::{HashMap, HashSet};
@@ -742,6 +742,45 @@ impl SchedulerTest {
         Ok(job_id)
     }
 
+    /// Submits an already-built physical plan as a job and returns its ID.
+    pub async fn submit_physical(
+        &mut self,
+        job_name: &str,
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<JobId> {
+        let ctx = self.ctx().await?;
+        self.scheduler
+            .submit_physical_plan(job_name, ctx, plan, None)
+            .await
+    }
+
+    /// Runs the root of every job whose root `predicate` picks on the
+    /// scheduler (see `SessionConfigExt::with_ballista_scheduler_root`).
+    pub fn set_scheduler_root(&mut self, predicate: SchedulerRootPredicate) {
+        self.session_config = self
+            .session_config
+            .clone()
+            .with_ballista_scheduler_root(predicate);
+    }
+
+    /// Applies, in the background, every task status the executors report
+    /// from now on, instead of one per [`Self::tick`].
+    pub fn apply_task_statuses(&mut self) {
+        let Some(mut receiver) = self.status_receiver.take() else {
+            // Already applying them.
+            return;
+        };
+        let scheduler = self.scheduler.clone();
+        tokio::spawn(async move {
+            while let Some((executor_id, status)) = receiver.recv().await {
+                scheduler
+                    .update_task_status(&executor_id, status)
+                    .await
+                    .unwrap();
+            }
+        });
+    }
+
     /// Posts a scheduler event to the event loop.
     pub async fn post_scheduler_event(
         &self,
@@ -854,17 +893,7 @@ impl SchedulerTest {
             .submit_job(job_name, ctx, plan, subscriber)
             .await?;
 
-        if let Some(mut receiver) = self.status_receiver.take() {
-            let scheduler_clone = self.scheduler.clone();
-            tokio::spawn(async move {
-                while let Some((executor_id, status)) = receiver.recv().await {
-                    scheduler_clone
-                        .update_task_status(&executor_id, status)
-                        .await
-                        .unwrap();
-                }
-            });
-        }
+        self.apply_task_statuses();
 
         let final_status: Result<JobStatus> = loop {
             let status = self
