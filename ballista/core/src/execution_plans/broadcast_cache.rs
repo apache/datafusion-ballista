@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn keys_depend_on_the_locations() {
-        use crate::serde::scheduler::{ExecutorMetadata, PartitionId, PartitionStats};
+        use crate::serde::scheduler::{ExecutorEndpoint, PartitionId, PartitionStats};
         let loc = |map: usize| PartitionLocation {
             map_partition_id: map,
             partition_id: PartitionId {
@@ -363,14 +363,11 @@ mod tests {
                 stage_id: 1,
                 partition_id: 0,
             },
-            executor_meta: ExecutorMetadata {
+            executor_meta: Arc::new(ExecutorEndpoint {
                 id: "e".to_string(),
                 host: "h".to_string(),
                 port: 1,
-                grpc_port: 2,
-                specification: Default::default(),
-                os_info: Default::default(),
-            },
+            }),
             partition_stats: PartitionStats::default(),
             file_id: None,
             is_sort_shuffle: true,
