@@ -507,7 +507,7 @@ mod tests {
         CoalescePlan, PartitionGroup, RangeBound, ShuffleReaderExec,
     };
     use ballista_core::serde::scheduler::{
-        ExecutorMetadata, PartitionId, PartitionLocation,
+        ExecutorEndpoint, PartitionId, PartitionLocation,
     };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_expr::Partitioning;
@@ -520,14 +520,11 @@ mod tests {
                 stage_id: 0,
                 partition_id: partition,
             },
-            executor_meta: ExecutorMetadata {
+            executor_meta: Arc::new(ExecutorEndpoint {
                 id: "1".to_string(),
                 host: "1.1.1.1".to_string(),
                 port: 0,
-                grpc_port: 0,
-                specification: Default::default(),
-                os_info: Default::default(),
-            },
+            }),
             partition_stats: Default::default(),
             file_id: None,
             is_sort_shuffle: false,

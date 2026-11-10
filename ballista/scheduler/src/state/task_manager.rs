@@ -304,6 +304,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let pipelined = session_config.ballista_config().execution_mode()?
             == ballista_core::config::ExecutionMode::Pipelined;
 
+        // Semi join reduction needs the size of each candidate dimension, so it
+        // runs here, before planning, rather than as an optimizer rule.
+        let reduced_plan;
+        let plan = match plan {
+            SubmitPlan::Logical(logical_plan) => {
+                reduced_plan = SubmitPlan::Logical(
+                    ballista_core::optimizer::apply_semi_join_reduction(
+                        &session_state,
+                        logical_plan,
+                    )
+                    .await?,
+                );
+                &reduced_plan
+            }
+            SubmitPlan::Physical(_) => plan,
+        };
+
         let mut graph = match plan {
             // A pipelined job plans with the static planner whatever the AQE
             // setting: AQE plans a stage only once the stages it reads have

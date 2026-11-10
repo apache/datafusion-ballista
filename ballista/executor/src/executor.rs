@@ -365,11 +365,14 @@ impl Executor {
     }
 
     /// Forgets the pipelined outputs of `job_id`, or of just `stage_ids` when
-    /// given, once the scheduler has cleaned the job up.
+    /// given, once the scheduler has cleaned the job up. Removing the whole job
+    /// also drops the state the execution engine keeps for it, such as cached
+    /// broadcast reads.
     pub fn remove_pipelined_job_data(&self, job_id: &JobId, stage_ids: &[u32]) {
         if stage_ids.is_empty() {
             self.pipelined_registry.remove_job(job_id);
             self.pipelined_runtimes.lock().remove(job_id.as_str());
+            self.execution_engine.remove_job(job_id.as_str());
         } else {
             for stage_id in stage_ids {
                 self.pipelined_registry
@@ -391,12 +394,12 @@ mod test {
     use crate::runtime_cache::{
         DefaultSessionRuntimeCache, MemoryPoolPolicy, SessionRuntimeCache,
     };
+    use crate::test_util::{fresh_runtime_producer, test_executor};
     use ballista_core::RuntimeProducer;
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::ShuffleWriterExec;
-    use ballista_core::serde::protobuf::{ExecutorRegistration, ShuffleWritePartition};
+    use ballista_core::serde::protobuf::ShuffleWritePartition;
     use ballista_core::serde::scheduler::TaskKey;
-    use ballista_core::utils::default_config_producer;
     use datafusion::arrow::datatypes::{Schema, SchemaRef};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::tree_node::TreeNodeRecursion;
@@ -533,23 +536,12 @@ mod test {
     /// Builds an executor over `work_dir`, along with the session context whose
     /// runtime its tasks run on.
     fn never_ending_executor(work_dir: &str) -> (Arc<Executor>, SessionContext) {
-        let executor_registration = ExecutorRegistration {
-            id: "executor".to_string(),
-            ..Default::default()
-        };
-        let config_producer = Arc::new(default_config_producer);
         let ctx = SessionContext::new();
         let runtime_env = ctx.runtime_env().clone();
         let runtime_producer: RuntimeProducer =
             Arc::new(move |_| Ok(runtime_env.clone()));
 
-        let executor = Arc::new(Executor::new_basic(
-            executor_registration,
-            work_dir,
-            runtime_producer,
-            config_producer,
-            2,
-        ));
+        let executor = Arc::new(test_executor(work_dir, runtime_producer, 2));
 
         (executor, ctx)
     }
@@ -610,13 +602,14 @@ mod test {
 
     #[tokio::test]
     async fn test_task_cancellation() {
-        let work_dir = TempDir::new().unwrap().path().to_str().unwrap().to_string();
-        let (executor, ctx) = never_ending_executor(&work_dir);
+        let temp_dir = TempDir::new().unwrap();
+        let work_dir = temp_dir.path().to_str().unwrap();
+        let (executor, ctx) = never_ending_executor(work_dir);
 
         let receiver = spawn_never_ending_task(
             &executor,
             &ctx,
-            &work_dir,
+            work_dir,
             TaskKey {
                 job_id: "job-id".into(),
                 stage_id: 1,
@@ -646,13 +639,14 @@ mod test {
 
     #[tokio::test]
     async fn test_tasks_drained_waits_for_last_task() {
-        let work_dir = TempDir::new().unwrap().path().to_str().unwrap().to_string();
-        let (executor, ctx) = never_ending_executor(&work_dir);
+        let temp_dir = TempDir::new().unwrap();
+        let work_dir = temp_dir.path().to_str().unwrap();
+        let (executor, ctx) = never_ending_executor(work_dir);
 
         let first = spawn_never_ending_task(
             &executor,
             &ctx,
-            &work_dir,
+            work_dir,
             TaskKey {
                 job_id: "job-id".into(),
                 stage_id: 1,
@@ -662,7 +656,7 @@ mod test {
         let second = spawn_never_ending_task(
             &executor,
             &ctx,
-            &work_dir,
+            work_dir,
             TaskKey {
                 job_id: "job-id".into(),
                 stage_id: 1,
@@ -708,29 +702,16 @@ mod test {
 
     #[test]
     fn produce_runtime_for_session_shares_read_side_state() {
-        let executor_registration = ExecutorRegistration {
-            id: "executor".to_string(),
-            ..Default::default()
-        };
-        let config_producer = Arc::new(default_config_producer);
-
         // A base producer that builds a fresh env each call, plus an identity
         // pool policy, so shared read-side state is observable via ptr equality.
-        let base_producer: RuntimeProducer =
-            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
+        let base_producer = fresh_runtime_producer();
         let identity: MemoryPoolPolicy = Arc::new(|base, _, _| Ok(base));
         let cache: Arc<dyn SessionRuntimeCache> = Arc::new(
             DefaultSessionRuntimeCache::new(base_producer.clone(), identity, 4),
         );
 
-        let executor = Executor::new_basic(
-            executor_registration,
-            "/tmp",
-            base_producer,
-            config_producer,
-            2,
-        )
-        .with_session_runtime_cache(Some(cache));
+        let executor = test_executor("/tmp", base_producer, 2)
+            .with_session_runtime_cache(Some(cache));
 
         let cfg = SessionConfig::new();
         let e1 = executor.produce_runtime_for_session("s1", &cfg, 1).unwrap();
@@ -743,22 +724,8 @@ mod test {
 
     #[test]
     fn produce_runtime_for_session_falls_back_without_cache() {
-        let executor_registration = ExecutorRegistration {
-            id: "executor".to_string(),
-            ..Default::default()
-        };
-        let config_producer = Arc::new(default_config_producer);
-        let base_producer: RuntimeProducer =
-            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
-
         // No cache attached: each call builds a fresh env.
-        let executor = Executor::new_basic(
-            executor_registration,
-            "/tmp",
-            base_producer,
-            config_producer,
-            2,
-        );
+        let executor = test_executor("/tmp", fresh_runtime_producer(), 2);
 
         let cfg = SessionConfig::new();
         let e1 = executor.produce_runtime_for_session("s1", &cfg, 1).unwrap();
@@ -768,13 +735,7 @@ mod test {
 
     #[test]
     fn pipelined_tasks_of_a_job_share_one_runtime_sized_by_its_reservation() {
-        let executor_registration = ExecutorRegistration {
-            id: "executor".to_string(),
-            ..Default::default()
-        };
-        let config_producer = Arc::new(default_config_producer);
-        let base_producer: RuntimeProducer =
-            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
+        let base_producer = fresh_runtime_producer();
         // Records the vcores each new pool is sized for.
         let sized: Arc<std::sync::Mutex<Vec<u32>>> = Default::default();
         let recorder = sized.clone();
@@ -785,14 +746,8 @@ mod test {
         let cache: Arc<dyn SessionRuntimeCache> = Arc::new(
             DefaultSessionRuntimeCache::new(base_producer.clone(), policy, 4),
         );
-        let executor = Executor::new_basic(
-            executor_registration,
-            "/tmp",
-            base_producer,
-            config_producer,
-            4,
-        )
-        .with_session_runtime_cache(Some(cache));
+        let executor = test_executor("/tmp", base_producer, 4)
+            .with_session_runtime_cache(Some(cache));
 
         let cfg = SessionConfig::new();
         let first = executor
