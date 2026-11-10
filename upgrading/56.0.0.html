@@ -606,6 +606,12 @@ together.</p>
 statuses still set <code class="docutils literal notranslate"><span class="pre">executor_meta</span></code> on every location, so clients that read its
 <code class="docutils literal notranslate"><span class="pre">id</span></code>, <code class="docutils literal notranslate"><span class="pre">host</span></code> or <code class="docutils literal notranslate"><span class="pre">port</span></code> do not need to change.</p>
 </section>
+<section id="the-disable-stage-plan-cache-feature-of-ballista-scheduler-is-removed">
+<h4>The <code class="docutils literal notranslate"><span class="pre">disable-stage-plan-cache</span></code> feature of <code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code> is removed<a class="headerlink" href="#the-disable-stage-plan-cache-feature-of-ballista-scheduler-is-removed" title="Link to this heading">#</a></h4>
+<p>The scheduler stopped caching encoded stage plans in 55.0.0 and now encodes
+each task’s plan separately, so the feature had no effect. Remove it from the
+<code class="docutils literal notranslate"><span class="pre">features</span></code> list of your <code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code> dependency. Behavior is unchanged.</p>
+</section>
 </section>
 <section id="python-client-changes">
 <h3>Python client changes<a class="headerlink" href="#python-client-changes" title="Link to this heading">#</a></h3>
@@ -879,6 +885,7 @@ unchanged.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-shuffle-bufferedbatches-is-no-longer-public"><code class="docutils literal notranslate"><span class="pre">sort_shuffle::BufferedBatches</span></code> is no longer public</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#taskmanager-executor-lost-also-returns-jobs-that-lost-cached-data"><code class="docutils literal notranslate"><span class="pre">TaskManager::executor_lost</span></code> also returns jobs that lost cached data</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#partition-locations-hold-an-executorendpoint">Partition locations hold an <code class="docutils literal notranslate"><span class="pre">ExecutorEndpoint</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-disable-stage-plan-cache-feature-of-ballista-scheduler-is-removed">The <code class="docutils literal notranslate"><span class="pre">disable-stage-plan-cache</span></code> feature of <code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code> is removed</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#python-client-changes">Python client changes</a><ul class="nav section-nav flex-column">
