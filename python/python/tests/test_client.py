@@ -24,7 +24,8 @@ from ballista import (
     BallistaClient,
     BallistaJob,
     BallistaJobError,
-    BallistaPythonSessionContext,
+    BallistaSessionConfig,
+    BallistaSessionContext,
     setup_test_cluster,
 )
 from ballista import client as client_module
@@ -59,7 +60,7 @@ class RecordingClient(BallistaClient):
 
 def test_custom_client_runs_queries(address):
     client = RecordingClient(address)
-    ctx = BallistaPythonSessionContext(client=client)
+    ctx = BallistaSessionContext(client=client)
     ctx.register_csv("t", TEST_CSV)
 
     result = ctx.sql("SELECT sum(a) AS s FROM t").to_pydict()
@@ -75,7 +76,7 @@ def test_job_tracking_follows_client_pull(address, pull):
     client = RecordingClient(
         address, config={"ballista.client.pull": str(pull).lower()}
     )
-    ctx = BallistaPythonSessionContext(client=client)
+    ctx = BallistaSessionContext(client=client)
     ctx.register_csv("t", TEST_CSV)
 
     result = ctx.sql("SELECT a FROM t ORDER BY a").to_pydict()
@@ -93,7 +94,7 @@ def test_set_ballista_config_reaches_scheduler(address, pull):
     client = RecordingClient(
         address, config={"ballista.client.pull": str(pull).lower()}
     )
-    ctx = BallistaPythonSessionContext(client=client)
+    ctx = BallistaSessionContext(client=client)
     ctx.register_csv("t", TEST_CSV)
     ctx.sql("SET ballista.job.name = 'set_reaches_scheduler'").collect()
 
@@ -103,17 +104,60 @@ def test_set_ballista_config_reaches_scheduler(address, pull):
     assert status.job_name == "set_reaches_scheduler"
 
 
-def test_session_config_configures_default_client(address):
-    ctx = BallistaPythonSessionContext(address, config={"ballista.client.pull": False})
+def test_client_ignores_address(address):
+    client = RecordingClient(address)
+    # the client carries its own address, `address` is not used
+    ctx = BallistaSessionContext("df://unreachable:1", client=client)
     ctx.register_csv("t", TEST_CSV)
 
     assert ctx.sql("SELECT count(*) AS c FROM t").to_pydict() == {"c": [5]}
+    assert len(client.jobs) == 1
+
+
+def test_cluster_config_with_client(address):
+    client = RecordingClient(address)
+    with pytest.warns(DeprecationWarning, match="cluster_config"):
+        ctx = BallistaSessionContext(
+            client=client, cluster_config={"ballista.job.name": "cluster_config_job"}
+        )
+    ctx.register_csv("t", TEST_CSV)
+
+    assert ctx.sql("SELECT count(*) AS c FROM t").to_pydict() == {"c": [5]}
+    status = client.job_status(client.jobs[-1].job_id).status
+    assert status.job_name == "cluster_config_job"
+
+
+def test_channel_option_not_on_client_warns(address):
+    with pytest.warns(UserWarning, match="ballista.client.use_tls") as record:
+        BallistaSessionContext(
+            config={"ballista.client.use_tls": True},
+            client=BallistaClient(address),
+        )
+    assert record[0].filename == __file__
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"ballista.client.pull": "false", "ballista.job.name": "job"},
+        {"ballista.client.grpc_max_message_size": "1048576"},
+    ],
+)
+def test_options_applying_to_client_do_not_warn(address, config, recwarn):
+    BallistaSessionContext(
+        config=config,
+        client=BallistaClient(
+            address, config={"ballista.client.grpc_max_message_size": "1048576"}
+        ),
+    )
+    assert not [w for w in recwarn if issubclass(w.category, UserWarning)]
 
 
 def test_job_failure_is_reported(address):
     # the test cluster runs pull-staged, which can not run pipelined jobs
-    ctx = BallistaPythonSessionContext(
-        address, config={"ballista.execution.mode": "pipelined"}
+    ctx = BallistaSessionContext(
+        config={"ballista.execution.mode": "pipelined"},
+        client=BallistaClient(address),
     )
     ctx.register_csv("t", TEST_CSV)
 
@@ -176,3 +220,63 @@ def test_incompatible_versions(client, scheduler):
 def test_invalid_address():
     with pytest.raises(ValueError, match="hostname"):
         BallistaClient("localhost")
+
+
+@pytest.fixture
+def python_jobs(monkeypatch):
+    """Jobs run by any ``BallistaClient``, with the client configs."""
+    jobs = []
+    execute = client_module.BallistaClient.execute
+
+    def recording_execute(self, params, schema):
+        job = execute(self, params, schema)
+        jobs.append((self.config, job))
+        return job
+
+    monkeypatch.setattr(client_module.BallistaClient, "execute", recording_execute)
+    return jobs
+
+
+@pytest.mark.parametrize("pull", [True, False])
+def test_python_client_from_config(address, python_jobs, pull):
+    ctx = BallistaSessionContext(
+        address,
+        config={"ballista.python.client_impl": "python", "ballista.client.pull": pull},
+    )
+    ctx.register_csv("t", TEST_CSV)
+
+    assert ctx.sql("SELECT count(*) AS c FROM t").to_pydict() == {"c": [5]}
+    assert len(python_jobs) == 1
+    config, job = python_jobs[0]
+    # ballista.* options of the config reach the client
+    assert config["ballista.client.pull"] == str(pull).lower()
+    assert (job._statuses is None) == pull
+    # used only to pick the client
+    assert "ballista.python.client_impl" not in config
+
+
+def test_python_client_from_session_config(address, python_jobs):
+    config = BallistaSessionConfig().with_client_impl("python").with_job_name("py")
+    ctx = BallistaSessionContext(address, config=config)
+    ctx.register_csv("t", TEST_CSV)
+
+    assert ctx.sql("SELECT count(*) AS c FROM t").to_pydict() == {"c": [5]}
+    assert len(python_jobs) == 1
+    assert python_jobs[0][0]["ballista.job.name"] == "py"
+
+
+@pytest.mark.parametrize("config", [None, {"ballista.python.client_impl": "rust"}])
+def test_rust_client_from_config(address, python_jobs, config):
+    ctx = BallistaSessionContext(address, config=config)
+    ctx.register_csv("t", TEST_CSV)
+
+    assert ctx.sql("SELECT count(*) AS c FROM t").to_pydict() == {"c": [5]}
+    assert python_jobs == []
+
+
+def test_client_with_rust_client_config_raises(address):
+    with pytest.raises(ValueError, match="ballista.python.client_impl"):
+        BallistaSessionContext(
+            client=BallistaClient(address),
+            config={"ballista.python.client_impl": "rust"},
+        )
