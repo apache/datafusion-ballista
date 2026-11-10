@@ -89,7 +89,8 @@ For documentation or more examples, please refer to the [Ballista User Guide][us
 
 - **Adaptive query execution**, on by default, re-optimizes the remaining plan from runtime statistics: join selection,
   broadcast joins, empty-stage elimination and exchange reuse, with opt-in skew-join splitting and partition coalescing
-- **Two execution modes**: fault-tolerant staged execution by default, and low-latency pipelined execution (experimental)
+- **Two execution modes** that share one cluster: fault-tolerant staged execution by default, for batch and ETL jobs,
+  and low-latency pipelined execution (experimental), for interactive queries
 - **Memory-bounded executors** with an auto-sized pool by default, and spilling to disk
 - **Sort-based and hash shuffle** with configurable compression
 - **Multi-partition tasks** that share memory and broadcast state across a stage's partitions
@@ -142,6 +143,24 @@ See the [architecture guide](docs/source/contributors-guide/architecture.md) for
 Ballista supports two execution modes, selected with `ballista.execution.mode`. Staged execution, the default, runs a job one stage at a time, the way [Apache Spark](https://spark.apache.org) does: each stage writes its output to shuffle files, and a failed task is simply re-run from them, which suits long-running jobs and busy shared clusters.
 
 Pipelined execution (experimental) runs a job the way [Trino](https://trino.io) does: every task is scheduled at once and stages stream record batches to each other over Arrow Flight, with no intermediate data written to disk, so results reach the client sooner, at the cost of a failed task failing the whole job. It suits short, latency-sensitive queries on clusters with room for the whole job. See the [Pipelined Execution Guide](docs/source/user-guide/pipelined-execution.md) for details.
+
+## One Engine for ETL and Interactive Queries
+
+A lakehouse aims to merge the data warehouse and the ETL platform, but it is often still served by two kinds of engine:
+a batch engine for long ETL jobs, built to survive task failures, and an interactive engine for short analytical
+queries, built for low latency. Ballista's two execution modes let one engine serve both, from the same scheduler and
+executors. Long ETL jobs run staged, where a failed task is re-run from shuffle files. Short analytical queries run
+pipelined, where results stream to the client as they are produced. A session picks its mode and can change it between
+queries, so the same SQL and DataFrame code serves either workload.
+
+Sharing one pool of executors can also take less capacity than running two clusters. Batch and interactive load are
+often uncorrelated, so the capacity one leaves idle is available to the other, and the pool can be sized for the peak
+of the combined load rather than for the sum of two separate peaks.
+
+Sharing a cluster this way is still early. Pipelined execution is experimental, and the scheduler does not prioritize
+one job over another, so on a busy cluster an interactive query can wait for vcores that batch jobs hold, as the
+[limitations](docs/source/user-guide/pipelined-execution.md#limitations) of pipelined execution describe. Prioritizing
+interactive queries over batch jobs in the scheduler is what a shared cluster still needs.
 
 ## Getting Started
 
