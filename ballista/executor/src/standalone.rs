@@ -38,6 +38,7 @@ use ballista_core::{
 use ballista_core::{ConfigProducer, RuntimeProducer};
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use log::info;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -117,9 +118,13 @@ pub async fn new_standalone_executor_from_builder(
     // A push-staged executor serves the scheduler's task launches on a gRPC
     // port of its own. Bind it now and keep it bound until the server takes it
     // over, so no other port-0 bind in this process can be handed the same
-    // number in between.
+    // number in between. Bind it on the Flight listener's address: the
+    // scheduler dials it by the `localhost` name the executor registers, and
+    // a listener on the other address family (127.0.0.1 next to a scheduler
+    // on ::1) can be handed the scheduler's own port number, so the
+    // scheduler's launches would reach the scheduler instead.
     let grpc_listener = if push_staged {
-        Some(TcpListener::bind("127.0.0.1:0").await?)
+        Some(TcpListener::bind(SocketAddr::new(address.ip(), 0)).await?)
     } else {
         None
     };
@@ -173,7 +178,7 @@ pub async fn new_standalone_executor_from_builder(
 
     if let Some(grpc_listener) = grpc_listener {
         let process_config = crate::executor_process::ExecutorProcessConfig {
-            bind_host: "127.0.0.1".to_owned(),
+            bind_host: address.ip().to_string(),
             port: address.port(),
             grpc_port,
             vcores,
@@ -191,7 +196,8 @@ pub async fn new_standalone_executor_from_builder(
                 process_config.grpc_server_config.tcp_keepalive_seconds,
             )));
         info!(
-            "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on 127.0.0.1:{grpc_port}"
+            "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {}",
+            SocketAddr::new(address.ip(), grpc_port)
         );
         crate::executor_server::startup_with_incoming(
             scheduler,
