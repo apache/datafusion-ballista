@@ -452,6 +452,28 @@ where
     }
 }
 
+/// Converts a TCP keepalive interval in seconds to the idle time passed to
+/// tonic and `socket2`. A value of 0 disables keepalive.
+pub fn tcp_keepalive(seconds: u64) -> Option<Duration> {
+    (seconds > 0).then(|| Duration::from_secs(seconds))
+}
+
+/// Wraps a pre-bound listener so tonic applies the same TCP_NODELAY and
+/// keepalive that [`create_grpc_server`] would set.
+///
+/// tonic ignores the builder's `tcp_nodelay` and `tcp_keepalive` when serving
+/// from a pre-bound listener, so call sites that already have a `TcpListener`
+/// (for example the standalone scheduler) should use this instead of
+/// configuring `TcpIncoming` themselves.
+pub fn tcp_incoming_from_listener(
+    listener: tokio::net::TcpListener,
+    config: &GrpcServerConfig,
+) -> TcpIncoming {
+    TcpIncoming::from(listener)
+        .with_nodelay(Some(true))
+        .with_keepalive(tcp_keepalive(config.tcp_keepalive_seconds))
+}
+
 /// Creates a gRPC server builder with the specified configuration.
 pub fn create_grpc_server(config: &GrpcServerConfig) -> Server {
     Server::builder()
@@ -465,7 +487,7 @@ pub fn create_grpc_server(config: &GrpcServerConfig) -> Server {
         .max_concurrent_streams(None)
         // Disable Nagle's Algorithm since we don't want packets to wait
         .tcp_nodelay(true)
-        .tcp_keepalive(Some(Duration::from_secs(config.tcp_keepalive_seconds)))
+        .tcp_keepalive(tcp_keepalive(config.tcp_keepalive_seconds))
         .http2_keepalive_interval(Some(Duration::from_secs(
             config.http2_keepalive_interval_seconds,
         )))
@@ -507,9 +529,7 @@ pub fn create_grpc_server_incoming(
     socket.set_reuseaddr(true)?;
     socket.bind(addr)?;
     let listener = socket.listen(config.listen_backlog)?;
-    Ok(TcpIncoming::from(listener)
-        .with_nodelay(Some(true))
-        .with_keepalive(Some(Duration::from_secs(config.tcp_keepalive_seconds))))
+    Ok(tcp_incoming_from_listener(listener, config))
 }
 
 /// Recursively collects metrics from an execution plan and all its children.
@@ -1005,6 +1025,12 @@ mod tests {
     fn test_create_grpc_client_endpoint_invalid_url() {
         let result = create_grpc_client_endpoint("not a valid url", None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tcp_keepalive_zero_disables() {
+        assert_eq!(tcp_keepalive(0), None);
+        assert_eq!(tcp_keepalive(3600), Some(Duration::from_secs(3600)));
     }
 
     /// The point of binding up front is that the port is reachable before

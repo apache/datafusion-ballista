@@ -24,7 +24,7 @@ use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
     GrpcServerConfig, create_grpc_server, default_config_producer,
-    default_session_builder,
+    default_session_builder, tcp_incoming_from_listener,
 };
 use ballista_core::{
     BALLISTA_VERSION, error::Result,
@@ -38,9 +38,7 @@ use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::info;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::net::TcpListener;
-use tonic::transport::server::TcpIncoming;
 
 /// Creates a standalone scheduler with default configuration.
 ///
@@ -122,11 +120,7 @@ pub async fn new_standalone_scheduler_with_builder(
         "Ballista Scheduler v{BALLISTA_VERSION} (DataFusion v{DATAFUSION_VERSION}) listening on {addr:?}"
     );
     let grpc_server_config = GrpcServerConfig::default();
-    let incoming = TcpIncoming::from(listener)
-        .with_nodelay(Some(true))
-        .with_keepalive(Some(Duration::from_secs(
-            grpc_server_config.tcp_keepalive_seconds,
-        )));
+    let incoming = tcp_incoming_from_listener(listener, &grpc_server_config);
     tokio::spawn(
         create_grpc_server(&grpc_server_config)
             .add_service(server)

@@ -37,7 +37,7 @@ use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
-use ballista_core::utils::{serve_until_shutdown, wait_until_idle};
+use ballista_core::utils::{serve_until_shutdown, tcp_keepalive, wait_until_idle};
 use datafusion::DATAFUSION_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -264,12 +264,6 @@ pub async fn start_grpc_service_with_listener<
         .with_graceful_shutdown(async move { shutdown.recv().await })
         .await
         .map_err(BallistaError::from)
-}
-
-/// Converts a keepalive setting in seconds into the idle time passed to
-/// [`configure_connection`], where 0 disables TCP keepalive.
-fn tcp_keepalive(seconds: u64) -> Option<Duration> {
-    (seconds > 0).then(|| Duration::from_secs(seconds))
 }
 
 /// Applies the socket options that tonic's server sets on every accepted
