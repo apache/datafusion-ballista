@@ -745,7 +745,13 @@ impl ExecutionGraph for PipelinedExecutionGraph {
             }
             match outcome {
                 Some(task_status::Status::Successful(_)) => {
-                    stage.update_task_metrics(&self.job_id, task_id, metrics);
+                    // A task whose metrics can't be merged still succeeded.
+                    if let Err(e) = stage.update_task_metrics(task_id, metrics) {
+                        warn!(
+                            "Ignoring the metrics of task {task_id} in stage {stage_id} of pipelined job {}: {e}",
+                            self.job_id
+                        );
+                    }
                 }
                 Some(task_status::Status::Failed(failed)) => {
                     failure.get_or_insert_with(|| {

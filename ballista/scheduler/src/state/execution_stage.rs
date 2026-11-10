@@ -33,7 +33,6 @@ use datafusion::prelude::SessionConfig;
 use log::{debug, warn};
 
 use crate::cache::is_external_stage_id;
-use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
     PipelinedShuffleWriterExec, RangeShuffleWriterExec, ShuffleReaderExec,
@@ -1000,32 +999,8 @@ impl RunningStage {
             }));
     }
 
-    /// Merges a successful task's metrics into the stage's, or logs a warning
-    /// and leaves the stage's metrics as they were if they cannot be merged.
-    ///
-    /// Metrics only feed the plan display and the REST API, so a task whose
-    /// metrics cannot be merged still succeeded. That happens, for example,
-    /// when restricting the task's plan to its partitions changed which of
-    /// its operators report metrics. Failing the task's status update instead
-    /// would leave the stage unfinished, and the job would hang.
+    /// update and upsert the task metrics to the stage metrics
     pub fn update_task_metrics(
-        &mut self,
-        job_id: &JobId,
-        task_id: usize,
-        metrics: Vec<OperatorMetricsSet>,
-    ) {
-        if let Err(e) = self.try_update_task_metrics(task_id, metrics) {
-            warn!(
-                "Ignoring the metrics of task {task_id} in stage {} of job {job_id}: {e}",
-                self.stage_id
-            );
-        }
-    }
-
-    /// Merges the task's metrics into the stage's, replacing any it reported
-    /// before. Fails if the task reported a different number of operator
-    /// metric sets than the stage has.
-    fn try_update_task_metrics(
         &mut self,
         task_id: usize,
         metrics: Vec<OperatorMetricsSet>,
@@ -1969,7 +1944,7 @@ mod tests {
         append_running_task(&mut stage, 2, "executor-1", vec![2]);
 
         stage
-            .try_update_task_metrics(0, vec![make_operator_metrics_set(100, 10)])
+            .update_task_metrics(0, vec![make_operator_metrics_set(100, 10)])
             .unwrap();
 
         let metrics = stage.stage_metrics.as_ref().unwrap();
@@ -1988,10 +1963,10 @@ mod tests {
         assert_eq!(aggregated.elapsed_compute().unwrap(), 10);
 
         stage
-            .try_update_task_metrics(1, vec![make_operator_metrics_set(200, 20)])
+            .update_task_metrics(1, vec![make_operator_metrics_set(200, 20)])
             .unwrap();
         stage
-            .try_update_task_metrics(2, vec![make_operator_metrics_set(300, 30)])
+            .update_task_metrics(2, vec![make_operator_metrics_set(300, 30)])
             .unwrap();
 
         let metrics = stage.stage_metrics.as_ref().unwrap();
@@ -2010,7 +1985,7 @@ mod tests {
         assert_eq!(aggregated.elapsed_compute().unwrap(), 60);
 
         stage
-            .try_update_task_metrics(1, vec![make_operator_metrics_set(250, 25)])
+            .update_task_metrics(1, vec![make_operator_metrics_set(250, 25)])
             .unwrap();
 
         let metrics = stage.stage_metrics.as_ref().unwrap();
@@ -2037,30 +2012,6 @@ mod tests {
         assert_eq!(aggregated.elapsed_compute().unwrap(), 65);
     }
 
-    /// A task reporting a different number of operator metric sets than the
-    /// stage has is left out of the stage's metrics, without an error.
-    #[test]
-    fn test_update_task_metrics_ignores_mismatched_metrics_count() {
-        let mut stage = make_running_stage(2);
-        append_running_task(&mut stage, 0, "executor-1", vec![0]);
-        append_running_task(&mut stage, 1, "executor-1", vec![1]);
-        let job_id = "job".into();
-
-        stage.update_task_metrics(&job_id, 0, vec![make_operator_metrics_set(100, 10)]);
-        stage.update_task_metrics(
-            &job_id,
-            1,
-            vec![
-                make_operator_metrics_set(200, 20),
-                make_operator_metrics_set(300, 30),
-            ],
-        );
-
-        let metrics = stage.stage_metrics.as_ref().unwrap();
-        assert_eq!(metrics.len(), 1);
-        assert_eq!(metrics[0].aggregate_by_name().output_rows(), Some(100));
-    }
-
     /// A task that covers multiple global partitions must file each partition's
     /// metric separately, using the task's `global_input_partition_ids` to map
     /// the executor's local partition index onto the global partition id.
@@ -2072,7 +2023,7 @@ mod tests {
         append_running_task(&mut stage, 0, "executor-1", vec![3, 7, 5, 1]);
 
         stage
-            .try_update_task_metrics(
+            .update_task_metrics(
                 0,
                 vec![OperatorMetricsSet {
                     metrics: vec![
@@ -2128,7 +2079,7 @@ mod tests {
         // Re-report from the same task — snapshots for its four partitions are
         // replaced, not appended.
         stage
-            .try_update_task_metrics(
+            .update_task_metrics(
                 0,
                 vec![OperatorMetricsSet {
                     metrics: vec![OperatorMetric {
@@ -2172,7 +2123,7 @@ mod tests {
         // Represents e.g. a build-side ShuffleReader below a CoalescePartitions
         // reading upstream partition 8 of 16.
         stage
-            .try_update_task_metrics(
+            .update_task_metrics(
                 0,
                 vec![OperatorMetricsSet {
                     metrics: vec![OperatorMetric {

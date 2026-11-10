@@ -1026,11 +1026,17 @@ impl ExecutionGraph for StaticExecutionGraph {
                             successful_task,
                         )) = status
                         {
-                            running_stage.update_task_metrics(
-                                &job_id,
-                                task_id,
-                                operator_metrics,
-                            );
+                            // Metrics only feed the plan display and the REST
+                            // API. A task whose metrics can't be merged still
+                            // succeeded, and failing here would drop its status
+                            // and leave the stage, and the job, unfinished.
+                            if let Err(e) = running_stage
+                                .update_task_metrics(task_id, operator_metrics)
+                            {
+                                warn!(
+                                    "Ignoring the metrics of task {task_id} in stage {stage_id} of job {job_id}: {e}"
+                                );
+                            }
 
                             let SuccessfulTask {
                                 partitions,
