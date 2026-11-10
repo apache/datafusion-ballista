@@ -58,7 +58,8 @@ use ballista_core::serde::protobuf::{
     task_status,
 };
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, PartitionId, PartitionLocation, PipelinedPartitionLocation, TaskKey,
+    ExecutorEndpoint, ExecutorMetadata, PartitionId, PartitionLocation,
+    PipelinedPartitionLocation, TaskKey,
 };
 use datafusion::physical_plan::{ExecutionPlan, replace_children_if_necessary};
 use datafusion::prelude::SessionConfig;
@@ -419,6 +420,13 @@ impl PipelinedExecutionGraph {
             )));
         }
 
+        let endpoints: HashMap<&str, Arc<ExecutorEndpoint>> = executors
+            .iter()
+            .map(|(id, metadata)| {
+                (id.as_str(), Arc::new(ExecutorEndpoint::from(metadata)))
+            })
+            .collect();
+
         // Where every producer task serves each of its output partitions.
         let mut outputs: HashMap<
             usize,
@@ -428,7 +436,7 @@ impl PipelinedExecutionGraph {
             let plan = self.stage(*stage_id)?.plan_arc();
             let stage_outputs = outputs.entry(*stage_id).or_default();
             for (task_id, (executor_id, partitions)) in tasks.iter().enumerate() {
-                let executor_meta = executors.get(executor_id).ok_or_else(|| {
+                let executor_meta = endpoints.get(executor_id.as_str()).ok_or_else(|| {
                     BallistaError::Internal(format!(
                         "no metadata for executor {executor_id} placed in pipelined job {}",
                         self.job_id
@@ -737,7 +745,13 @@ impl ExecutionGraph for PipelinedExecutionGraph {
             }
             match outcome {
                 Some(task_status::Status::Successful(_)) => {
-                    stage.update_task_metrics(task_id, metrics)?;
+                    // A task whose metrics can't be merged still succeeded.
+                    if let Err(e) = stage.update_task_metrics(task_id, metrics) {
+                        warn!(
+                            "Ignoring the metrics of task {task_id} in stage {stage_id} of pipelined job {}: {e}",
+                            self.job_id
+                        );
+                    }
                 }
                 Some(task_status::Status::Failed(failed)) => {
                     failure.get_or_insert_with(|| {
@@ -1210,6 +1224,31 @@ mod tests {
                 .output_links()
                 .is_empty()
         );
+    }
+
+    /// Readers have many locations on each of a few executors. All of those
+    /// must share the executor's address rather than each hold a copy of it.
+    #[tokio::test]
+    async fn locations_on_one_executor_share_its_address() {
+        let mut graph = pipelined_join_graph().await;
+        let tasks = place(&mut graph);
+
+        let mut last_on_executor = HashMap::new();
+        let mut shared_with_an_earlier_location = 0;
+        for (_, task) in &tasks {
+            for reader in readers(&task.plan) {
+                for location in reader.partition.iter().flatten() {
+                    let executor = &location.executor_meta;
+                    if let Some(earlier) =
+                        last_on_executor.insert(executor.id.clone(), executor.clone())
+                    {
+                        assert!(Arc::ptr_eq(&earlier, executor));
+                        shared_with_an_earlier_location += 1;
+                    }
+                }
+            }
+        }
+        assert!(shared_with_an_earlier_location > 0);
     }
 
     #[tokio::test]

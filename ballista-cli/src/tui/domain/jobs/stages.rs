@@ -325,41 +325,7 @@ mod tests {
         JobStageResponse, JobStagesPopup, JobStagesResponse, StageTaskResponse,
         StageTaskStatus, StagesGraph,
     };
-    use ballista_api_types::dto::Percentiles;
-
-    fn make_percentiles() -> Percentiles {
-        Percentiles {
-            min: 0,
-            max: 100,
-            median: 50,
-            p25: 25,
-            p75: 75,
-        }
-    }
-
-    fn make_stage(id: &str) -> JobStageResponse {
-        JobStageResponse {
-            stage_id: id.to_string(),
-            stage_status: "Completed".to_string(),
-            stage_plan: None,
-            input_rows: 0,
-            output_rows: 0,
-            elapsed_compute: Some("1ns".to_string()),
-            task_duration_percentiles: Some(make_percentiles()),
-            task_input_percentiles: Some(make_percentiles()),
-            tasks: Vec::new(),
-        }
-    }
-
-    fn make_stages_response(n: usize) -> JobStagesResponse {
-        JobStagesResponse {
-            stages: (0..n).map(|i| make_stage(&i.to_string())).collect(),
-        }
-    }
-
-    fn make_popup(n: usize) -> JobStagesPopup {
-        JobStagesPopup::new("job1".to_string(), make_stages_response(n))
-    }
+    use crate::tui::domain::test_util::{make_popup, make_stage};
 
     fn make_stages_graph(n_stages: usize) -> StagesGraph {
         StagesGraph {

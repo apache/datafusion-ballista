@@ -265,45 +265,7 @@ impl ExecutorsData {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_executor(
-        host: &str,
-        port: u16,
-        id: &str,
-        vcores: u32,
-        proc_physical_memory_usage: u64,
-        peak_physical_memory_usage: u64,
-        last_seen: Option<u64>,
-    ) -> Executor {
-        Executor {
-            host: host.to_string(),
-            port,
-            id: id.to_string(),
-            last_seen,
-            specification: Specification { vcores },
-            metrics: vec![
-                Metric {
-                    typ: "proc_physical_memory".to_string(),
-                    value: proc_physical_memory_usage,
-                },
-                Metric {
-                    typ: "peak_physical_memory".to_string(),
-                    value: peak_physical_memory_usage,
-                },
-            ],
-            os_info: OsInfo {
-                kernel_ver: "5.15".to_string(),
-                num_disks: 1,
-                open_files_limit: 1024,
-                os_ver: "Ubuntu 22.04".to_string(),
-                os_ver_long: "Ubuntu 22.04.1 LTS".to_string(),
-                physical_cores: 4,
-                system_name: "Linux".to_string(),
-                total_available_disk_space: 50_000_000_000,
-                total_disk_space: 100_000_000_000,
-            },
-        }
-    }
+    use crate::tui::domain::test_util::make_executor;
 
     fn make_executors_data(
         executors: Vec<Executor>,

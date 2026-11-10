@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::common::hash_utils::RandomState;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
+use std::collections::HashMap;
 use std::convert::TryInto;
 
 use crate::error::BallistaError;
@@ -25,7 +27,7 @@ use crate::serde::protobuf::{self, NamedPruningMetrics, NamedRatio};
 use datafusion_proto::protobuf as datafusion_protobuf;
 
 use crate::serde::scheduler::{
-    Action, ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
+    Action, ExecutorData, ExecutorEndpoint, ExecutorOperatingSystemSpecification,
     ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
     PipelinedPartitionLocation,
 };
@@ -108,10 +110,21 @@ impl Into<protobuf::PartitionId> for PartitionId {
 impl Into<protobuf::PipelinedPartitionLocation> for PipelinedPartitionLocation {
     fn into(self) -> protobuf::PipelinedPartitionLocation {
         protobuf::PipelinedPartitionLocation {
-            partition_id: Some(self.partition_id.into()),
-            task_id: self.task_id as u32,
-            executor_meta: Some(self.executor_meta.into()),
+            executor_meta: Some(self.executor_meta.as_ref().into()),
+            ..pipelined_location_fields(&self)
         }
+    }
+}
+
+/// The fields of a location other than its executor.
+fn pipelined_location_fields(
+    location: &PipelinedPartitionLocation,
+) -> protobuf::PipelinedPartitionLocation {
+    protobuf::PipelinedPartitionLocation {
+        partition_id: Some(location.partition_id.clone().into()),
+        task_id: location.task_id as u32,
+        executor_meta: None,
+        executor_index: 0,
     }
 }
 
@@ -120,14 +133,90 @@ impl TryInto<protobuf::PartitionLocation> for PartitionLocation {
 
     fn try_into(self) -> Result<protobuf::PartitionLocation, Self::Error> {
         Ok(protobuf::PartitionLocation {
-            map_partition_id: self.map_partition_id as u32,
-            partition_id: Some(self.partition_id.into()),
-            executor_meta: Some(self.executor_meta.into()),
-            partition_stats: Some(self.partition_stats.into()),
-            file_id: self.file_id,
-            is_sort_shuffle: self.is_sort_shuffle,
+            executor_meta: Some(self.executor_meta.as_ref().into()),
+            ..location_fields(&self)
         })
     }
+}
+
+/// The fields of a location other than its executor.
+fn location_fields(location: &PartitionLocation) -> protobuf::PartitionLocation {
+    protobuf::PartitionLocation {
+        map_partition_id: location.map_partition_id as u32,
+        partition_id: Some(location.partition_id.clone().into()),
+        executor_meta: None,
+        partition_stats: Some(location.partition_stats.into()),
+        file_id: location.file_id,
+        is_sort_shuffle: location.is_sort_shuffle,
+        executor_index: 0,
+    }
+}
+
+/// The executors of a reader node, each listed once.
+#[derive(Default)]
+struct ExecutorTable<'a> {
+    // Looked up once per location, so a faster hasher than SipHash pays off.
+    positions: HashMap<&'a ExecutorEndpoint, u32, RandomState>,
+    executors: Vec<protobuf::ExecutorEndpoint>,
+}
+
+impl<'a> ExecutorTable<'a> {
+    /// The position of `executor` in the list, adding it if it is new.
+    fn position(&mut self, executor: &'a ExecutorEndpoint) -> u32 {
+        *self.positions.entry(executor).or_insert_with(|| {
+            self.executors.push(executor.into());
+            (self.executors.len() - 1) as u32
+        })
+    }
+}
+
+/// Encodes the partitions of a reader node, returning them and its executors.
+///
+/// An executor can hold thousands of a node's locations, so the node lists it
+/// once and the locations refer to it by position in that list.
+pub(crate) fn reader_partitions_to_proto(
+    partitions: &[Vec<PartitionLocation>],
+) -> (
+    Vec<protobuf::ShuffleReaderPartition>,
+    Vec<protobuf::ExecutorEndpoint>,
+) {
+    let mut table = ExecutorTable::default();
+    let partitions = partitions
+        .iter()
+        .map(|locations| protobuf::ShuffleReaderPartition {
+            location: locations
+                .iter()
+                .map(|location| protobuf::PartitionLocation {
+                    executor_index: table.position(&location.executor_meta),
+                    ..location_fields(location)
+                })
+                .collect(),
+        })
+        .collect();
+    (partitions, table.executors)
+}
+
+/// [`reader_partitions_to_proto`] for a pipelined reader node.
+pub(crate) fn pipelined_reader_partitions_to_proto(
+    partitions: &[Vec<PipelinedPartitionLocation>],
+) -> (
+    Vec<protobuf::PipelinedReaderPartition>,
+    Vec<protobuf::ExecutorEndpoint>,
+) {
+    let mut table = ExecutorTable::default();
+    let partitions = partitions
+        .iter()
+        .map(|locations| protobuf::PipelinedReaderPartition {
+            location: locations
+                .iter()
+                .map(|location| protobuf::PipelinedPartitionLocation {
+                    executor_index: table.position(&location.executor_meta),
+                    ..pipelined_location_fields(location)
+                })
+                .collect(),
+        })
+        .collect();
+    (partitions, table.executors)
 }
 
 #[allow(clippy::from_over_into)]
@@ -282,16 +371,12 @@ impl TryInto<protobuf::OperatorMetricsSet> for MetricsSet {
     }
 }
 
-#[allow(clippy::from_over_into)]
-impl Into<protobuf::ExecutorMetadata> for ExecutorMetadata {
-    fn into(self) -> protobuf::ExecutorMetadata {
-        protobuf::ExecutorMetadata {
-            id: self.id,
-            host: self.host,
-            port: self.port as u32,
-            grpc_port: self.grpc_port as u32,
-            specification: Some(self.specification.into()),
-            os_info: Some(self.os_info.into()),
+impl From<&ExecutorEndpoint> for protobuf::ExecutorEndpoint {
+    fn from(endpoint: &ExecutorEndpoint) -> Self {
+        Self {
+            id: endpoint.id.clone(),
+            host: endpoint.host.clone(),
+            port: endpoint.port as u32,
         }
     }
 }

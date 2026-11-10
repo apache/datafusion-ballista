@@ -18,6 +18,7 @@
 //! This module contains execution plans that are needed to distribute DataFusion's execution plans into
 //! several Ballista executors.
 
+pub mod broadcast_cache;
 mod buffer;
 mod chaos_exec;
 mod distributed_explain_analyze;
