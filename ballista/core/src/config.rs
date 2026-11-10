@@ -43,6 +43,10 @@ pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
 /// Configuration key to force remote reads even for local partitions.
 pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
     "ballista.shuffle.force_remote_read";
+/// Configuration key controlling whether the tasks of a stage running on the
+/// same executor share one fetch of each broadcast read. Enabled by default.
+pub const BALLISTA_SHUFFLE_CACHE_BROADCAST_READS: &str =
+    "ballista.shuffle.cache_broadcast_reads";
 /// Configuration key to prefer Flight protocol for remote shuffle reads.
 pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
     "ballista.shuffle.remote_read_prefer_flight";
@@ -318,6 +322,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Forces the shuffle reader to always read partitions via the Arrow Flight client, even when partitions are local to the node.".to_string(),
                          DataType::Boolean,
                          Some((false).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_CACHE_BROADCAST_READS.to_string(),
+                         "Lets the tasks on an executor share one fetch of each broadcast shuffle read (the build side of a broadcast hash join): the first task fetches and decodes it, the others reuse the batches. Without it every task fetches the whole build side, which at high partition counts multiplies the fetches by the number of tasks. Set to false to fetch per task.".to_string(),
+                         DataType::Boolean,
+                         Some((true).to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT.to_string(),
                          "Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization".to_string(),
                          DataType::Boolean,
@@ -995,6 +1003,11 @@ impl BallistaConfig {
     /// Use only when necessary, like in tests
     pub fn shuffle_reader_force_remote_read(&self) -> bool {
         self.get_bool_setting(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ)
+    }
+
+    /// Whether the tasks on an executor share one fetch of each broadcast read.
+    pub fn shuffle_cache_broadcast_reads(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SHUFFLE_CACHE_BROADCAST_READS)
     }
     /// Forces the shuffle reader to prefer flight protocol over block protocol
     /// to read remote shuffle partition.
