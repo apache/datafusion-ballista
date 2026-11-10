@@ -229,6 +229,14 @@ def BallistaSessionContext(
     and fetching results over Arrow Flight) is done in Python by that
     ``BallistaClient`` instead. Planning is the same for both.
 
+    The Python client can also be chosen without creating it, by setting
+    ``ballista.python.client`` to ``"python"`` in ``config`` (``"rust"``, the
+    default, keeps the native client). A ``BallistaClient`` is then created
+    for ``address``, with the ``ballista.*`` options set in ``config``, which
+    take precedence over ``SET`` statements of the session.
+    ``ballista.python.client`` is used only to pick the client, it is not
+    sent to the cluster. It can not be read from a ``SessionConfig``.
+
     Args:
         address: Ballista scheduler URL. Defaults to ``"df://localhost:50050"``.
             Ignored when ``client`` is given, the client has its own address.
@@ -254,7 +262,9 @@ def BallistaSessionContext(
     Raises:
         ValueError: If a ``config`` key does not start with ``datafusion.`` or
             ``ballista.``, or is an unknown ``ballista.*`` key, or if
-            ``cluster_config`` is used with ``BallistaSessionConfig``.
+            ``cluster_config`` is used with ``BallistaSessionConfig``, or if
+            ``client`` is given with ``ballista.python.client`` set to
+            ``"rust"``, or ``ballista.python.client`` has an invalid value.
 
     Examples:
         Connect to a scheduler and run SQL:
@@ -312,16 +322,35 @@ def BallistaSessionContext(
         ...     def call_metadata(self):
         ...         return super().call_metadata() + [("authorization", "token")]
         >>> ctx = BallistaSessionContext(client=AuthClient("df://localhost:50050"))
+
+        Use the Python client, configured from ``config``:
+
+        >>> ctx = BallistaSessionContext(
+        ...     "df://localhost:50050",
+        ...     config={
+        ...         "ballista.python.client": "python",
+        ...         "ballista.client.use_tls": True,
+        ...     },
+        ... )
     """
     if cluster_config is not None:
         config = _merge_cluster_config(config, cluster_config)
+    if not isinstance(config, BallistaSessionConfig):
+        config = BallistaSessionConfig(config)
 
-    if client is None:
+    if client is not None and config._python_client == "rust":
+        raise ValueError(
+            f"`client` can not be used with `{PYTHON_CLIENT_KEY}` set to `rust`"
+        )
+
+    if client is None and config._python_client != "python":
         return BallistaRustSessionContext(address, config, runtime)
 
     # imported on use, the Python client needs the `python-client` extra
-    from .client import BallistaPythonSessionContext
+    from .client import BallistaClient, BallistaPythonSessionContext
 
+    if client is None:
+        client = BallistaClient(address, config=config._ballista_overrides())
     return BallistaPythonSessionContext(client, config, runtime)
 
 
@@ -364,6 +393,12 @@ _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS: Dict[str, bool] = {
     "datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery": True,
     "datafusion.optimizer.enable_dynamic_filter_pushdown": True,
 }
+
+
+# Python only option picking the cluster client, see `BallistaSessionContext`.
+# It is kept out of `BallistaConfigExtension`, so it never reaches Rust.
+PYTHON_CLIENT_KEY = "ballista.python.client"
+_PYTHON_CLIENT_VALUES = ("rust", "python")
 
 
 def _config_value_to_str(value: ConfigValue) -> str:
@@ -415,6 +450,8 @@ class BallistaSessionConfig:
         self._base: Optional[SessionConfig] = None
         self._datafusion_options: Dict[str, str] = {}
         self._ballista_settings: Dict[str, str] = {}
+        # `ballista.python.client`, `None` if not set
+        self._python_client: Optional[str] = None
 
         if isinstance(config, SessionConfig):
             self._base = config
@@ -431,7 +468,15 @@ class BallistaSessionConfig:
                 ``ballista.*`` key.
         """
         value = _config_value_to_str(value)
-        if key.startswith("ballista."):
+        if key == PYTHON_CLIENT_KEY:
+            kind = value.strip().lower()
+            if kind not in _PYTHON_CLIENT_VALUES:
+                raise ValueError(
+                    f"invalid value of {PYTHON_CLIENT_KEY}: {value}, "
+                    "expected `rust` or `python`"
+                )
+            self._python_client = kind
+        elif key.startswith("ballista."):
             # validates the key, values are not validated by ballista
             BallistaConfigExtension({key: value})
             self._ballista_settings[key] = value
@@ -596,6 +641,17 @@ class BallistaSessionConfig:
         )
 
     # client
+
+    def with_python_client(self, kind: str) -> "BallistaSessionConfig":
+        """
+        Talk to the cluster through the ``"python"`` ``BallistaClient`` or the
+        native ``"rust"`` client (default), see ``BallistaSessionContext``.
+        """
+        return self.set(PYTHON_CLIENT_KEY, kind)
+
+    def _ballista_overrides(self) -> Dict[str, str]:
+        """``ballista.*`` options set explicitly, without Ballista defaults."""
+        return dict(self._ballista_settings)
 
     def with_client_pull(self, enabled: bool) -> "BallistaSessionConfig":
         """Use pull (``True``) or push job tracking strategy."""

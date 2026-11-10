@@ -336,8 +336,33 @@ _TYPED_SETTERS = [
 
 def test_typed_setters_are_all_tested():
     setters = {name for name in dir(BallistaSessionConfig) if name.startswith("with_")}
+    # picks the client, it is not a setting, see `test_with_python_client`
+    setters.discard("with_python_client")
 
     assert setters == {method for method, _, _ in _TYPED_SETTERS}
+
+
+@pytest.mark.parametrize("kind", ["python", "rust", "Python"])
+def test_with_python_client(kind):
+    config = BallistaSessionConfig()
+    assert config.with_python_client(kind) is config
+
+    assert config._python_client == kind.lower()
+    # kept out of BallistaConfigExtension, which rejects unknown keys
+    assert "ballista.python.client" not in _settings(config.build())
+    assert config._ballista_overrides() == {}
+
+
+def test_python_client_in_dict():
+    config = BallistaSessionConfig({"ballista.python.client": "python"})
+
+    assert config._python_client == "python"
+    assert "ballista.python.client" not in _settings(config.build())
+
+
+def test_python_client_rejects_invalid_value():
+    with pytest.raises(ValueError, match="ballista.python.client"):
+        BallistaSessionConfig({"ballista.python.client": "java"})
 
 
 @pytest.mark.parametrize("method, key, value", _TYPED_SETTERS)

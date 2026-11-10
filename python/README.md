@@ -120,9 +120,22 @@ See the [DataFusion Python documentation](https://datafusion.apache.org/python/)
 
 ### Python Cluster Client
 
-By default the native Rust client talks to the cluster. Pass a `BallistaClient`, a client written in
-Python, to customize how the cluster is reached, for example to add authentication metadata. It needs
-the `python-client` extra (`pip install "ballista[python-client]"`):
+By default the native Rust client talks to the cluster. A client written in Python, `BallistaClient`,
+can be used instead. It needs the `python-client` extra (`pip install "ballista[python-client]"`).
+Set `ballista.python.client` to `python` to use it, configured with the `ballista.*` options of `config`
+(`ballista.python.client` is not sent to the cluster):
+
+```python
+from ballista import BallistaSessionContext
+
+ctx = BallistaSessionContext(
+    "df://localhost:50050",
+    config={"ballista.python.client": "python", "ballista.client.use_tls": True},
+)
+```
+
+Pass a `BallistaClient` to customize how the cluster is reached, for example to add authentication
+metadata:
 
 ```python
 from ballista import BallistaClient, BallistaSessionContext
