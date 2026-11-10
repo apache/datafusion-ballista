@@ -146,11 +146,12 @@ Pipelined execution (experimental) runs a job the way [Trino](https://trino.io) 
 
 ## One Engine for ETL and Interactive Queries
 
-A lakehouse aims to merge the data warehouse and the ETL platform, but it is often still served by two engines: Spark
-for batch ETL and Trino for interactive analytics. Ballista's two execution modes let one engine serve both, from the
-same scheduler and executors. Long ETL jobs run staged, where a failed task is re-run from shuffle files. Short
-analytical queries run pipelined, where results stream to the client as they are produced. A session picks its mode and
-can change it between queries, so the same SQL and DataFrame code serves either workload.
+A lakehouse aims to merge the data warehouse and the ETL platform, but it is often still served by two kinds of engine:
+a batch engine for long ETL jobs, built to survive task failures, and an interactive engine for short analytical
+queries, built for low latency. Ballista's two execution modes let one engine serve both, from the same scheduler and
+executors. Long ETL jobs run staged, where a failed task is re-run from shuffle files. Short analytical queries run
+pipelined, where results stream to the client as they are produced. A session picks its mode and can change it between
+queries, so the same SQL and DataFrame code serves either workload.
 
 Sharing one pool of executors can also take less capacity than running two clusters. Batch and interactive load are
 often uncorrelated, so the capacity one leaves idle is available to the other, and the pool can be sized for the peak
