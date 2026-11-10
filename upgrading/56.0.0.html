@@ -567,6 +567,35 @@ early, so a straggler partition leaves them idle. Set
 <code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code> to a positive value to dispatch
 smaller tasks, which release their vcores sooner.</p>
 </section>
+<section id="stages-split-between-tasks-fail-on-a-leaf-the-scheduler-cannot-restrict">
+<h4>Stages split between tasks fail on a leaf the scheduler cannot restrict<a class="headerlink" href="#stages-split-between-tasks-fail-on-a-leaf-the-scheduler-cannot-restrict" title="Link to this heading">#</a></h4>
+<p>When a stage is split between tasks, each task gets a plan restricted to its
+own partitions. A leaf the scheduler did not know how to restrict used to be
+left as it was, so a task that ran partitions 4 and 5 of it ran its partitions 0
+and 1, and the stage returned some partitions twice and others not at all, with
+no error.</p>
+<p>The scheduler now fails the job instead. Such a leaf is accepted only in a task
+that runs all of its partitions, in order, so a retry of part of a stage can
+fail a job too. Plans made of Ballista’s own leaves (shuffle readers, file and
+in-memory scans, <code class="docutils literal notranslate"><span class="pre">PlaceholderRowExec</span></code>, <code class="docutils literal notranslate"><span class="pre">EmptyExec</span></code>) are unaffected, as are
+leaves read whole below a <code class="docutils literal notranslate"><span class="pre">CoalescePartitionsExec</span></code> or on a join’s build side. A
+<code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code> over any other source used to log a warning and run, and is
+now refused when its stage is split unless a resolver restricts it.</p>
+<p>Whether a stage is split depends on how many task slots are free when it is
+scheduled, and on whether part of it is retried, so a query that holds such a
+leaf can pass on an idle or small cluster and fail on a busy one. To test a plan
+that holds nodes of your own, set <code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code>
+to a small value, which splits every stage with more partitions than that.</p>
+<p>Only leaves are checked. An interior node the scheduler does not know is left as
+it was while its children are restricted, because the scheduler cannot tell one
+that holds data per partition from one that does not, such as a <code class="docutils literal notranslate"><span class="pre">FilterExec</span></code>. An
+interior node of your own that holds data per partition still returns wrong
+results in a split stage unless a resolver restricts it.</p>
+<p>The error names the node and what to implement. Under push-staged scheduling
+the job’s status says only that a task could not be prepared; the reason is in
+the scheduler’s log. To make nodes of your own restrictable, see
+<a class="reference internal" href="../user-guide/extending-components.html#custom-physical-plan-nodes"><span class="std std-ref">Custom Physical Plan Nodes</span></a>.</p>
+</section>
 </section>
 <section id="api-changes">
 <h3>API changes<a class="headerlink" href="#api-changes" title="Link to this heading">#</a></h3>
@@ -585,6 +614,27 @@ executor, with when each was queued. Their graphs are not reset, because they
 cannot re-run another job’s output, so a caller must fail them (the scheduler
 posts <code class="docutils literal notranslate"><span class="pre">JobRunningFailed</span></code>). A caller that only needs the tasks to cancel can take
 the first element.</p>
+</section>
+<section id="partitionsliceable-covers-any-node-and-embedders-can-register-their-own">
+<h4><code class="docutils literal notranslate"><span class="pre">PartitionSliceable</span></code> covers any node, and embedders can register their own<a class="headerlink" href="#partitionsliceable-covers-any-node-and-embedders-can-register-their-own" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">ballista_core::execution_plans::plan_algebra::PartitionSliceable</span></code> is no longer
+limited to nodes with one child. <code class="docutils literal notranslate"><span class="pre">slice_to_partitions(child,</span> <span class="pre">partitions)</span></code> is now
+<code class="docutils literal notranslate"><span class="pre">restrict_to_partitions(children,</span> <span class="pre">partitions)</span></code>, which receives all of the node’s
+children and also applies to leaves. Implementations of your own need the new
+signature; <code class="docutils literal notranslate"><span class="pre">plan_algebra::single_child</span></code> unwraps the one child of a single-input
+node.</p>
+<p>Nodes of your own are made known to the scheduler with
+<code class="docutils literal notranslate"><span class="pre">SchedulerConfig::with_partition_sliceable_resolver</span></code>, which takes an
+implementation of the new <code class="docutils literal notranslate"><span class="pre">plan_algebra::PartitionSliceableResolver</span></code> trait and
+is consulted after Ballista’s own list. The resolver restricts the node itself,
+given its restricted children and the task’s partitions, so it also covers
+nodes that cannot implement <code class="docutils literal notranslate"><span class="pre">PartitionSliceable</span></code>, such as a <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code>.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">SchedulerConfig</span></code> gains a <code class="docutils literal notranslate"><span class="pre">partition_sliceable_resolver</span></code> field, so a struct
+literal that doesn’t end in <code class="docutils literal notranslate"><span class="pre">..Default::default()</span></code> needs to set it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">task_builder::restrict_plan_to_partitions</span></code> takes a third argument,
+<code class="docutils literal notranslate"><span class="pre">Option&lt;&amp;dyn</span> <span class="pre">PartitionSliceableResolver&gt;</span></code>. Pass <code class="docutils literal notranslate"><span class="pre">None</span></code> for none.</p></li>
+</ul>
 </section>
 <section id="partition-locations-hold-an-executorendpoint">
 <h4>Partition locations hold an <code class="docutils literal notranslate"><span class="pre">ExecutorEndpoint</span></code><a class="headerlink" href="#partition-locations-hold-an-executorendpoint" title="Link to this heading">#</a></h4>
@@ -879,11 +929,13 @@ unchanged.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#containers-stop-on-sigterm">Containers stop on SIGTERM</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#undecodable-fetch-tickets-are-rejected-as-invalidargument">Undecodable fetch tickets are rejected as <code class="docutils literal notranslate"><span class="pre">InvalidArgument</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#pull-staged-executors-no-longer-run-more-partitions-than-they-have-vcores">Pull-staged executors no longer run more partitions than they have vcores</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#stages-split-between-tasks-fail-on-a-leaf-the-scheduler-cannot-restrict">Stages split between tasks fail on a leaf the scheduler cannot restrict</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-shuffle-bufferedbatches-is-no-longer-public"><code class="docutils literal notranslate"><span class="pre">sort_shuffle::BufferedBatches</span></code> is no longer public</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#taskmanager-executor-lost-also-returns-jobs-that-lost-cached-data"><code class="docutils literal notranslate"><span class="pre">TaskManager::executor_lost</span></code> also returns jobs that lost cached data</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#partitionsliceable-covers-any-node-and-embedders-can-register-their-own"><code class="docutils literal notranslate"><span class="pre">PartitionSliceable</span></code> covers any node, and embedders can register their own</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#partition-locations-hold-an-executorendpoint">Partition locations hold an <code class="docutils literal notranslate"><span class="pre">ExecutorEndpoint</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-disable-stage-plan-cache-feature-of-ballista-scheduler-is-removed">The <code class="docutils literal notranslate"><span class="pre">disable-stage-plan-cache</span></code> feature of <code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code> is removed</a></li>
 </ul>
