@@ -25,6 +25,20 @@
 //! Ballista to execute it in a single task (see the discussion on
 //! <https://github.com/apache/datafusion-ballista/issues/2198>). The rewritten
 //! plan uses only ordinary joins and aggregates and distributes normally.
+//!
+//! [`SemiJoinPushdown`](crate::optimizer::SemiJoinPushdown) moves semi and anti joins below the inner joins they
+//! were decorrelated above, so a subquery filters one join input instead of
+//! the joined result. [`SemiJoinReduction`](crate::optimizer::SemiJoinReduction) adds such a semi join for a join
+//! against a small, selectively filtered dimension table, so its filter
+//! applies before the joins in between; the scheduler runs it through
+//! [`apply_semi_join_reduction`](crate::optimizer::apply_semi_join_reduction)
+//! before physical planning.
+
+mod semi_join_pushdown;
+mod semi_join_reduction;
+
+pub use semi_join_pushdown::SemiJoinPushdown;
+pub use semi_join_reduction::{SemiJoinReduction, apply_semi_join_reduction};
 
 use std::sync::Arc;
 
@@ -42,26 +56,39 @@ use datafusion::prelude::lit;
 
 use crate::config::BallistaConfig;
 
-/// Returns `existing` with Ballista's logical optimizer rules prepended.
+/// Returns `existing` with Ballista's logical optimizer rules added.
 ///
-/// [`NotInSubqueryRewrite`] must run before DataFusion's
+/// [`NotInSubqueryRewrite`] is prepended: it must run before DataFusion's
 /// `DecorrelatePredicateSubquery`, which would otherwise turn eligible `NOT IN`
-/// predicates into null-aware anti joins first. A rule with the same name in
-/// `existing` is dropped so repeated session upgrades stay idempotent.
+/// predicates into null-aware anti joins first. [`SemiJoinPushdown`] is
+/// appended, so it runs on the decorrelated joins. [`SemiJoinReduction`] needs
+/// table sizes and runs separately, through [`apply_semi_join_reduction`]. A
+/// rule with the same name in `existing` is dropped so repeated session
+/// upgrades stay idempotent.
 pub fn with_ballista_optimizer_rules(
     existing: &[Arc<dyn OptimizerRule + Send + Sync>],
 ) -> Vec<Arc<dyn OptimizerRule + Send + Sync>> {
-    let ballista_rule = NotInSubqueryRewrite::new();
+    let first: Arc<dyn OptimizerRule + Send + Sync> =
+        Arc::new(NotInSubqueryRewrite::new());
+    // Runs after DataFusion's rules in each pass, so it sees decorrelated
+    // semi joins whose filters have already been pushed down.
+    let last: Arc<dyn OptimizerRule + Send + Sync> = Arc::new(SemiJoinPushdown::new());
+    let names = [first.name().to_owned(), last.name().to_owned()];
     let mut rules: Vec<Arc<dyn OptimizerRule + Send + Sync>> =
-        Vec::with_capacity(existing.len() + 1);
-    let name = ballista_rule.name().to_owned();
-    rules.push(Arc::new(ballista_rule));
-    rules.extend(existing.iter().filter(|rule| rule.name() != name).cloned());
+        Vec::with_capacity(existing.len() + 2);
+    rules.push(first);
+    rules.extend(
+        existing
+            .iter()
+            .filter(|rule| !names.iter().any(|n| n == rule.name()))
+            .cloned(),
+    );
+    rules.push(last);
     rules
 }
 
 /// Returns DataFusion's default logical optimizer rules with Ballista's rules
-/// prepended. Used by every Ballista session builder.
+/// added. Used by every Ballista session builder.
 pub fn ballista_default_optimizer_rules() -> Vec<Arc<dyn OptimizerRule + Send + Sync>> {
     with_ballista_optimizer_rules(&datafusion::optimizer::Optimizer::default().rules)
 }
@@ -292,7 +319,7 @@ mod tests {
     use datafusion::logical_expr::builder::LogicalTableSource;
     use datafusion::logical_expr::{Expr, LogicalPlan, LogicalPlanBuilder};
     use datafusion::optimizer::Optimizer;
-    use datafusion::prelude::{SessionConfig, col, lit, not_in_subquery};
+    use datafusion::prelude::{SessionConfig, SessionContext, col, lit, not_in_subquery};
 
     use super::NotInSubqueryRewrite;
     use crate::config::{BALLISTA_NOT_IN_SUBQUERY_REWRITE, BallistaConfig};
@@ -329,6 +356,48 @@ mod tests {
             .unwrap()
             .build()
             .unwrap()
+    }
+
+    /// TPC-H q18's shape through the rules every Ballista session installs:
+    /// the `IN` subquery filters `orders` before it is joined to `lineitem`.
+    #[tokio::test]
+    async fn session_rules_push_an_in_subquery_below_the_join() {
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(
+                SessionConfig::new().with_option_extension(BallistaConfig::default()),
+            )
+            .with_optimizer_rules(super::ballista_default_optimizer_rules())
+            .build();
+        let ctx = SessionContext::new_with_state(state);
+        for ddl in [
+            "CREATE TABLE orders (o_orderkey INT, o_custkey INT)",
+            "CREATE TABLE lineitem (l_orderkey INT, l_quantity INT)",
+        ] {
+            ctx.sql(ddl).await.unwrap();
+        }
+        let plan = ctx
+            .sql(
+                "SELECT o_custkey, l_quantity FROM orders \
+                 JOIN lineitem ON o_orderkey = l_orderkey \
+                 WHERE o_orderkey IN (SELECT l_orderkey FROM lineitem \
+                                      GROUP BY l_orderkey HAVING sum(l_quantity) > 300)",
+            )
+            .await
+            .unwrap()
+            .into_optimized_plan()
+            .unwrap();
+        let display = format!("{}", plan.display_indent());
+        let line_of = |needle: &str| {
+            display
+                .lines()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} not found in:\n{display}"))
+        };
+        assert!(
+            line_of("Inner Join") < line_of("LeftSemi Join"),
+            "the semi join must sit below the inner join:\n{display}"
+        );
     }
 
     #[test]
