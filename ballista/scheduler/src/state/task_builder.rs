@@ -74,7 +74,7 @@ use std::sync::Arc;
 pub fn restrict_plan_to_partitions(
     plan: Arc<dyn ExecutionPlan>,
     partitions: &[usize],
-    resolver: Option<&PartitionSliceableResolver>,
+    resolver: Option<&dyn PartitionSliceableResolver>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     restrict(plan, partitions, /* under_collect */ false, resolver)
 }
@@ -116,7 +116,7 @@ fn restrict(
     plan: Arc<dyn ExecutionPlan>,
     partitions: &[usize],
     under_collect: bool,
-    resolver: Option<&PartitionSliceableResolver>,
+    resolver: Option<&dyn PartitionSliceableResolver>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     // Leaves: apply the algebraic partition-projection when we're not
     // under a collapse. Under collapse, leaves keep their full upstream —
@@ -159,7 +159,9 @@ fn restrict(
         Some(sliceable) => {
             Some(sliceable.restrict_to_partitions(children.clone(), partitions))
         }
-        None => resolver.and_then(|resolve| resolve(&plan, children.clone(), partitions)),
+        None => resolver.and_then(|resolver| {
+            resolver.restrict_to_partitions(&plan, children.clone(), partitions)
+        }),
     };
     if let Some(restricted) = restricted {
         return checked_restriction(plan.name(), restricted?, partitions);
@@ -179,7 +181,7 @@ fn restrict_children(
     plan: &Arc<dyn ExecutionPlan>,
     partitions: &[usize],
     under_collect: bool,
-    resolver: Option<&PartitionSliceableResolver>,
+    resolver: Option<&dyn PartitionSliceableResolver>,
 ) -> Result<Vec<Arc<dyn ExecutionPlan>>> {
     let per_child = child_scopes(plan, under_collect);
     plan.children()
@@ -229,7 +231,7 @@ fn ensure_leaf_runs_whole(
         "cannot restrict `{described}` to partitions {partitions:?} of its {count}: \
          the scheduler does not know how to restrict a `{name}`, and left alone it \
          would number its partitions from zero in every task. A node of your own \
-         be restricted by `SchedulerConfig::partition_sliceable_resolver`, for instance \
+         can be restricted by `SchedulerConfig::partition_sliceable_resolver`, for instance \
          by implementing `PartitionSliceable` and calling it from there."
     )
 }
@@ -864,7 +866,9 @@ mod tests {
 
     // --- Nodes the scheduler does not know: `PayloadExec` stands in for one ---
 
-    use crate::test_utils::payload::{PayloadExec, payload_resolver, payloads_of};
+    use crate::test_utils::payload::{
+        PayloadExec, fn_resolver, payload_resolver, payloads_of,
+    };
     use ballista_core::execution_plans::plan_algebra::PartitionSliceableResolver;
     use std::sync::Mutex;
 
@@ -886,7 +890,7 @@ mod tests {
         let leaf = PayloadExec::leaf(&["p0", "p1", "p2", "p3"]);
 
         let restricted =
-            restrict_plan_to_partitions(leaf, &[1, 3], Some(&resolver)).unwrap();
+            restrict_plan_to_partitions(leaf, &[1, 3], Some(resolver.as_ref())).unwrap();
 
         assert_eq!(payloads_of(&restricted), ["p1", "p3"]);
         assert_eq!(partition_count(&restricted), 2);
@@ -897,8 +901,8 @@ mod tests {
     /// resolver building a replacement.
     #[test]
     fn resolver_restricts_a_node_without_partition_sliceable() {
-        let resolver: PartitionSliceableResolver =
-            Arc::new(|plan, children, partitions| {
+        let resolver: Arc<dyn PartitionSliceableResolver> =
+            fn_resolver(|plan, children, partitions| {
                 assert!(children.is_empty());
                 plan.is::<PayloadExec>().then(|| {
                     Ok(Arc::new(
@@ -909,7 +913,7 @@ mod tests {
         let leaf = PayloadExec::leaf(&["p0", "p1", "p2", "p3"]);
 
         let restricted =
-            restrict_plan_to_partitions(leaf, &[1, 3], Some(&resolver)).unwrap();
+            restrict_plan_to_partitions(leaf, &[1, 3], Some(resolver.as_ref())).unwrap();
 
         assert!(restricted.is::<EmptyExec>());
         assert_eq!(partition_count(&restricted), 2);
@@ -939,17 +943,24 @@ mod tests {
         let error = restrict_plan_to_partitions(leaf, &[1], None)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("PayloadExec"), "{error}");
-        assert!(error.contains("[1]"), "{error}");
-        assert!(error.contains("PartitionSliceable"), "{error}");
+        assert_eq!(
+            error,
+            "Error during planning: cannot restrict \
+             `PayloadExec: payloads=[\"p0\", \"p1\"]` to partitions [1] of its 2: \
+             the scheduler does not know how to restrict a `PayloadExec`, and left \
+             alone it would number its partitions from zero in every task. A node \
+             of your own can be restricted by \
+             `SchedulerConfig::partition_sliceable_resolver`, for instance by \
+             implementing `PartitionSliceable` and calling it from there."
+        );
     }
 
     #[test]
     fn the_resolver_is_asked_only_after_the_built_in_list() {
         let asked = Arc::new(Mutex::new(vec![]));
         let record = asked.clone();
-        let resolver: PartitionSliceableResolver =
-            Arc::new(move |plan, _children, _partitions| {
+        let resolver: Arc<dyn PartitionSliceableResolver> =
+            fn_resolver(move |plan, _children, _partitions| {
                 record.lock().unwrap().push(plan.name().to_string());
                 None
             });
@@ -957,12 +968,12 @@ mod tests {
         // `ShuffleReaderExec` below it is a leaf the scheduler restricts itself.
         let (plan, _) = range_filter_over_reader();
 
-        restrict_plan_to_partitions(plan, &[1, 3], Some(&resolver)).unwrap();
+        restrict_plan_to_partitions(plan, &[1, 3], Some(resolver.as_ref())).unwrap();
         assert!(asked.lock().unwrap().is_empty());
 
         // A node it does not know is put to the resolver.
         let leaf = PayloadExec::leaf(&["p0"]);
-        restrict_plan_to_partitions(leaf, &[0], Some(&resolver)).unwrap();
+        restrict_plan_to_partitions(leaf, &[0], Some(resolver.as_ref())).unwrap();
         assert_eq!(*asked.lock().unwrap(), ["PayloadExec"]);
     }
 
@@ -976,7 +987,7 @@ mod tests {
         );
 
         let restricted =
-            restrict_plan_to_partitions(node, &[1, 3], Some(&resolver)).unwrap();
+            restrict_plan_to_partitions(node, &[1, 3], Some(resolver.as_ref())).unwrap();
 
         assert_eq!(payloads_of(&restricted), ["p1", "p3"]);
         let inputs = restricted.children();
@@ -993,7 +1004,7 @@ mod tests {
             ])));
 
         let restricted =
-            restrict_plan_to_partitions(plan, &[1], Some(&resolver)).unwrap();
+            restrict_plan_to_partitions(plan, &[1], Some(resolver.as_ref())).unwrap();
 
         assert_eq!(
             payloads_of(restricted.children()[0]),
@@ -1016,14 +1027,14 @@ mod tests {
 
         // Partition 2 is the second branch's partition 0.
         let restricted =
-            restrict_plan_to_partitions(union(), &[2], Some(&resolver)).unwrap();
+            restrict_plan_to_partitions(union(), &[2], Some(resolver.as_ref())).unwrap();
         let branches = restricted.children();
         assert_eq!(partition_count(branches[0]), 0);
         assert_eq!(payloads_of(branches[1]), ["p0"]);
 
         // And partition 0 is the first branch's, which leaves the second none.
         let restricted =
-            restrict_plan_to_partitions(union(), &[0], Some(&resolver)).unwrap();
+            restrict_plan_to_partitions(union(), &[0], Some(resolver.as_ref())).unwrap();
         let branches = restricted.children();
         assert_eq!(group_files(branches[0]), ["file0.parquet"]);
         assert_eq!(partition_count(branches[1]), 0);
@@ -1037,7 +1048,7 @@ mod tests {
         let resolver = payload_resolver();
         let leaf = PayloadExec::forgets_to_restrict(&["p0", "p1", "p2", "p3"]);
 
-        let error = restrict_plan_to_partitions(leaf, &[1, 3], Some(&resolver))
+        let error = restrict_plan_to_partitions(leaf, &[1, 3], Some(resolver.as_ref()))
             .unwrap_err()
             .to_string();
 

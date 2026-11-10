@@ -448,7 +448,7 @@ pub struct SchedulerConfig {
     /// stage split between tasks that holds such a leaf fails the job. Unlike
     /// the `override_*` fields it adds to Ballista's own list rather than
     /// replacing it. See [`PartitionSliceableResolver`].
-    pub partition_sliceable_resolver: Option<PartitionSliceableResolver>,
+    pub partition_sliceable_resolver: Option<Arc<dyn PartitionSliceableResolver>>,
     /// Rules of your own that adaptive query planning runs, for plans with
     /// `ExecutionPlan` nodes of your own. Unlike the `override_*` fields it
     /// adds to Ballista's rules rather than replacing them. Only the adaptive
@@ -856,7 +856,7 @@ impl SchedulerConfig {
     /// Sets [`Self::partition_sliceable_resolver`].
     pub fn with_partition_sliceable_resolver(
         mut self,
-        resolver: PartitionSliceableResolver,
+        resolver: Arc<dyn PartitionSliceableResolver>,
     ) -> Self {
         self.partition_sliceable_resolver = Some(resolver);
         self

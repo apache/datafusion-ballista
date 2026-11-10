@@ -1774,11 +1774,54 @@ pub mod payload {
     }
 
     /// A resolver that finds a [`PayloadExec`].
-    pub fn payload_resolver() -> PartitionSliceableResolver {
-        Arc::new(|plan, children, partitions| {
+    pub fn payload_resolver() -> Arc<dyn PartitionSliceableResolver> {
+        fn_resolver(|plan, children, partitions| {
             plan.downcast_ref::<PayloadExec>()
                 .map(|op| op.restrict_to_partitions(children, partitions))
         })
+    }
+
+    /// A [`PartitionSliceableResolver`] that calls `resolve`.
+    pub fn fn_resolver<F>(resolve: F) -> Arc<dyn PartitionSliceableResolver>
+    where
+        F: Fn(
+                &Arc<dyn ExecutionPlan>,
+                Vec<Arc<dyn ExecutionPlan>>,
+                &[usize],
+            ) -> Option<Result<Arc<dyn ExecutionPlan>>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Arc::new(FnResolver(resolve))
+    }
+
+    struct FnResolver<F>(F);
+
+    impl<F> std::fmt::Debug for FnResolver<F> {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            f.write_str("FnResolver")
+        }
+    }
+
+    impl<F> PartitionSliceableResolver for FnResolver<F>
+    where
+        F: Fn(
+                &Arc<dyn ExecutionPlan>,
+                Vec<Arc<dyn ExecutionPlan>>,
+                &[usize],
+            ) -> Option<Result<Arc<dyn ExecutionPlan>>>
+            + Send
+            + Sync,
+    {
+        fn restrict_to_partitions(
+            &self,
+            plan: &Arc<dyn ExecutionPlan>,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+            partitions: &[usize],
+        ) -> Option<Result<Arc<dyn ExecutionPlan>>> {
+            (self.0)(plan, children, partitions)
+        }
     }
 
     /// Carries a leaf [`PayloadExec`] and leaves the rest to Ballista's codec.

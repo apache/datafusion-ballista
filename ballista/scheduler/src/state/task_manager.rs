@@ -158,7 +158,7 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     stage_max_failures: usize,
     /// Resolver for nodes Ballista does not know. See
     /// [`SchedulerConfig::partition_sliceable_resolver`].
-    partition_sliceable_resolver: Option<PartitionSliceableResolver>,
+    partition_sliceable_resolver: Option<Arc<dyn PartitionSliceableResolver>>,
     /// See [`SchedulerConfig::adaptive_rules`].
     adaptive_rules: Option<Arc<dyn AdaptiveRules>>,
 }
@@ -1023,7 +1023,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let restricted = restrict_plan_to_partitions(
                 task.plan.clone(),
                 &task.global_input_partition_ids,
-                self.partition_sliceable_resolver.as_ref(),
+                self.partition_sliceable_resolver.as_deref(),
             )?;
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(
@@ -1145,7 +1145,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let restricted = restrict_plan_to_partitions(
                 task.plan.clone(),
                 &task.global_input_partition_ids,
-                self.partition_sliceable_resolver.as_ref(),
+                self.partition_sliceable_resolver.as_deref(),
             )?;
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(restricted, codec)?;
