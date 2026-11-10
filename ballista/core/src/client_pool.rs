@@ -55,8 +55,8 @@ pub trait BallistaClientPool: Send + Sync + Debug {
     ///
     /// Unlike [`acquire`](Self::acquire), nothing is checked out: any number
     /// of callers hold the connection at once and multiplex their streams
-    /// over it, and it stays open until one of them
-    /// [discards](SharedClient::discard) it. This is what the pipelined
+    /// over it. A pool may retire it after an idle timeout or when one of
+    /// them [discards](SharedClient::discard) it. This is what the pipelined
     /// reader uses, so that an executor keeps one connection to each other
     /// executor instead of one per stream.
     ///
@@ -88,7 +88,7 @@ pub trait BallistaClientPool: Send + Sync + Debug {
 ///
 /// Returned by [`BallistaClientPool::shared`]. Clients taken from it share
 /// the connection, so dropping them does not close it; the pool keeps it
-/// until it is [discarded](Self::discard).
+/// until it is [discarded](Self::discard) or the pool retires it.
 pub struct SharedClient {
     client: BallistaClient,
     discarded: AtomicBool,

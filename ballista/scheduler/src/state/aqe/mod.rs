@@ -42,7 +42,9 @@ use ballista_core::serde::protobuf::{
     FailedJob, FailedTask, JobStatus, ResultLost, RunningJob, SuccessfulJob, TaskStatus,
     job_status, task_status,
 };
-use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
+use ballista_core::serde::scheduler::{
+    ExecutorEndpoint, ExecutorMetadata, PartitionLocation,
+};
 use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::context::SessionContext;
@@ -909,6 +911,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         max_stage_failures: usize,
     ) -> ballista_core::error::Result<Vec<QueryStageSchedulerEvent>> {
         let job_id = self.job_id().to_owned();
+        // The locations this update reports share one copy of the address.
+        let endpoint = Arc::new(ExecutorEndpoint::from(executor));
 
         // First of all, classify the statuses by stages
         let mut job_task_statuses: HashMap<usize, Vec<TaskStatus>> = HashMap::new();
@@ -1107,9 +1111,17 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             successful_task,
                         )) = status
                         {
-                            // update task metrics for successful task
-                            running_stage
-                                .update_task_metrics(task_id, operator_metrics)?;
+                            // Metrics only feed the plan display and the REST
+                            // API. A task whose metrics can't be merged still
+                            // succeeded, and failing here would drop its status
+                            // and leave the stage, and the job, unfinished.
+                            if let Err(e) = running_stage
+                                .update_task_metrics(task_id, operator_metrics)
+                            {
+                                warn!(
+                                    "Ignoring the metrics of task {task_id} in stage {stage_id} of job {job_id}: {e}"
+                                );
+                            }
 
                             let ballista_core::serde::protobuf::SuccessfulTask {
                                 partitions,
@@ -1131,7 +1143,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
                             locations.append(
                                 &mut crate::state::execution_graph::partition_to_location(
-                                    &job_id, task_id, stage_id, executor, partitions,
+                                    &job_id, task_id, stage_id, &endpoint, partitions,
                                 ),
                             );
                         } else {
@@ -1375,6 +1387,28 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     fn output_locations(&self) -> Vec<PartitionLocation> {
         self.output_locations.clone()
+    }
+
+    /// The default implementation treats a stage with no `output_links` as
+    /// final. Adaptive stages are created without output links, so it would
+    /// report every stage as final and no intermediate shuffle data would be
+    /// reclaimed when the job succeeds. Here a stage is final when the job's
+    /// `output_locations` point at it. Until those are set, nothing is
+    /// reported, so a final stage is never returned.
+    fn intermediate_stage_ids(&self) -> Vec<u32> {
+        if self.output_locations.is_empty() {
+            return vec![];
+        }
+        let final_stage_ids: HashSet<usize> = self
+            .output_locations
+            .iter()
+            .map(|location| location.partition_id.stage_id)
+            .collect();
+        self.stages
+            .keys()
+            .filter(|stage_id| !final_stage_ids.contains(stage_id))
+            .map(|stage_id| *stage_id as u32)
+            .collect()
     }
 
     /// Reset running and successful stages on a given executor

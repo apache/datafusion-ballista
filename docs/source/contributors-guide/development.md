@@ -63,15 +63,18 @@ cargo test
 ### Test fixtures
 
 Look for an existing fixture before writing one, and put a new one in the narrowest place that every test
-using it can reach. A crate's own unit tests cannot use a helper crate that depends on that crate, because
-they would see two copies of it, so a fixture used only by one crate's unit tests lives in that crate under
-`#[cfg(test)]`. Tests that need table data write it into a `tempfile::TempDir` rather than add files to the
-repository. Data that has to be checked in lives in the `testdata` directory of the crate that reads it.
+using it can reach:
 
-The shared fixtures are:
+- Used by the tests of one module: in that module's tests.
+- Shared by the unit tests of several modules of a crate: in that crate's `#[cfg(test)]` test utilities module.
+- Shared by the integration tests of a crate: in that crate's `tests/common/mod.rs`.
+- Needed by other crates, such as the TPC-H table schemas: in `ballista_core::test_utils`.
 
-- Integration tests of `ballista` (`ballista/client/tests`): `tests/common/mod.rs` has the cluster setup, the session state builders (`ballista_state`, `state_with_config`), the orders and customers tables (`orders_customers_context`, `ORDERS_QUERIES`), `register_alltypes` with the expected `alltypes_plain` results, and the `collect_text`, `collect_lines`, `set_option` and `assert_result_eq` helpers.
-- Unit tests of `ballista-core` execution plans: `ballista/core/src/execution_plans/test_util.rs` has the writer inputs, the one-column and Int32 schemas and batches, `test_location` and the IPC stream writers, and `range_repartition_common::test_util` has the helpers of the range operators.
+A crate's own unit tests cannot use a helper crate that depends on that crate, because they would see two
+copies of it, so unit-test fixtures stay inside their crate.
+
+Tests that need table data write it into a `tempfile::TempDir` rather than add files to the repository. Data
+that has to be checked in lives in the `testdata` directory of the crate that reads it.
 
 ### TPC-H plan-stability golden files
 

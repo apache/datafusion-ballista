@@ -408,8 +408,7 @@ mod tests {
     use super::*;
     use ballista_core::JobId;
     use ballista_core::serde::scheduler::{
-        ExecutorMetadata, ExecutorSpecification, PartitionId, PartitionLocation,
-        PartitionStats,
+        ExecutorEndpoint, PartitionId, PartitionLocation, PartitionStats,
     };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
@@ -420,15 +419,12 @@ mod tests {
         Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
     }
 
-    fn executor(id: &str) -> ExecutorMetadata {
-        ExecutorMetadata {
+    fn executor(id: &str) -> Arc<ExecutorEndpoint> {
+        Arc::new(ExecutorEndpoint {
             id: id.to_string(),
             host: "localhost".to_string(),
             port: 50051,
-            grpc_port: 50052,
-            specification: ExecutorSpecification::default(),
-            os_info: Default::default(),
-        }
+        })
     }
 
     fn location(

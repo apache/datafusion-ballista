@@ -303,6 +303,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let pipelined = session_config.ballista_config().execution_mode()?
             == ballista_core::config::ExecutionMode::Pipelined;
 
+        // Semi join reduction needs the size of each candidate dimension, so it
+        // runs here, before planning, rather than as an optimizer rule.
+        let reduced_plan;
+        let plan = match plan {
+            SubmitPlan::Logical(logical_plan) => {
+                reduced_plan = SubmitPlan::Logical(
+                    ballista_core::optimizer::apply_semi_join_reduction(
+                        &session_state,
+                        logical_plan,
+                    )
+                    .await?,
+                );
+                &reduced_plan
+            }
+            SubmitPlan::Physical(_) => plan,
+        };
+
         let mut graph = match plan {
             // A pipelined job plans with the static planner whatever the AQE
             // setting: AQE plans a stage only once the stages it reads have
@@ -1321,8 +1338,8 @@ mod tests {
     use crate::cluster::JobStateEventStream;
     use crate::cluster::memory::InMemoryJobState;
     use crate::test_utils::{
-        mock_completed_task, mock_executor, test_aggregation_plan,
-        test_aggregation_plan_with_job_id,
+        drain_tasks_with_executor, join_aggregate_sort_logical_plan, mock_completed_task,
+        mock_executor, test_aggregation_plan, test_aggregation_plan_with_job_id,
     };
     use ballista_core::serde::protobuf::job_status::Status;
     use ballista_core::serde::protobuf::task_status;
@@ -1503,14 +1520,7 @@ mod tests {
             // contains Running until terminal persistence updates it.
             let mut graph = active_graph.write().await;
             let executor = mock_executor("executor-1".to_string());
-            while let Some(task) = graph.pop_next_task(&executor.id)? {
-                graph.update_task_status(
-                    &executor,
-                    vec![mock_completed_task(task, &executor.id)],
-                    1,
-                    1,
-                )?;
-            }
+            drain_tasks_with_executor(graph.as_mut(), &executor)?;
             graph.succeed_job()?;
         }
 
@@ -1522,11 +1532,6 @@ mod tests {
         use crate::cluster::bind_task_bias;
         use crate::state::execution_graph::ExecutionGraph;
         use ballista_core::serde::protobuf::AvailableVcores;
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
-        use datafusion::functions_aggregate::sum::sum;
-        use datafusion::logical_expr::SortExpr;
-        use datafusion::prelude::{JoinType, col};
-        use datafusion::test_util::scan_empty_with_partitions;
 
         let mut config = SessionConfig::new().with_target_partitions(2);
         config
@@ -1534,18 +1539,7 @@ mod tests {
             .optimizer
             .enable_round_robin_repartition = false;
         let ctx = SessionContext::new_with_config(config);
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-        let left = scan_empty_with_partitions(Some("left"), &schema, None, 2)?;
-        let right =
-            scan_empty_with_partitions(Some("right"), &schema, None, 2)?.build()?;
-        let plan = left
-            .join(right, JoinType::Inner, (vec!["id"], vec!["id"]), None)?
-            .aggregate(vec![col("left.id")], vec![sum(col("left.gmv"))])?
-            .sort(vec![SortExpr::new(col("id"), false, false)])?
-            .build()?;
+        let plan = join_aggregate_sort_logical_plan();
         let job_id: JobId = "retired-task-refund".into();
         let mut graph = AdaptiveExecutionGraph::try_new(
             "scheduler",
@@ -1751,10 +1745,9 @@ mod tests {
     /// nothing else would release it.
     #[tokio::test]
     async fn failed_terminal_save_still_releases_a_pipelined_reservation() -> Result<()> {
-        use crate::planner::DefaultDistributedPlanner;
         use crate::state::execution_graph::ExecutionGraph;
         use crate::state::pipelined_graph::{PlacementDecision, plan_placement};
-        use crate::test_utils::test_join_plan;
+        use crate::test_utils::{pipelined_graph_from_physical, test_join_plan};
         use ballista_core::serde::protobuf::AvailableVcores;
 
         let state = Arc::new(BlockingJobState::new());
@@ -1768,17 +1761,10 @@ mod tests {
             Arc::new(SchedulerConfig::default()),
         );
 
-        let mut graph = PipelinedExecutionGraph::new(
-            "localhost:50050",
-            &"job".into(),
-            "",
-            "session",
+        let mut graph = pipelined_graph_from_physical(
             test_join_plan(4).await.physical_plan(),
-            0,
-            Arc::new(SessionConfig::new_with_ballista()),
-            &mut DefaultDistributedPlanner::new(),
-            None,
-        )?;
+            SessionConfig::new_with_ballista(),
+        );
         let available: Vec<AvailableVcores> = ["a", "b"]
             .into_iter()
             .map(|id| AvailableVcores {
