@@ -181,6 +181,9 @@ impl BroadcastReadCache {
                     Ok::<_, datafusion::error::DataFusionError>(Arc::new(batches))
                 })
                 .await?;
+            // Measured from when a task last got the batches, so a slow fetch
+            // does not make its entry look idle as soon as it finishes.
+            *entry.last_used.lock().unwrap() = Instant::now();
             Ok::<_, datafusion::error::DataFusionError>(futures::stream::iter(
                 batches.iter().cloned().map(Ok).collect::<Vec<_>>(),
             ))
@@ -198,7 +201,7 @@ impl BroadcastReadCache {
         entries.retain(|k, e| {
             k == key || now - *e.last_used.lock().unwrap() < self.idle_ttl
         });
-        let entry = entries
+        entries
             .entry(key.clone())
             .or_insert_with(|| {
                 Arc::new(Entry {
@@ -206,9 +209,7 @@ impl BroadcastReadCache {
                     last_used: Mutex::new(now),
                 })
             })
-            .clone();
-        *entry.last_used.lock().unwrap() = now;
-        entry
+            .clone()
     }
 }
 
@@ -325,9 +326,36 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn a_slow_fetch_is_not_idle_when_it_finishes() -> Result<()> {
+        let cache = Arc::new(BroadcastReadCache::new(Duration::from_millis(50), 1 << 30));
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let counter = fetches.clone();
+        let slow = cache.stream(key("j", 1), schema(), move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let batch = RecordBatch::try_new(
+                schema(),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )?;
+            Ok(Box::pin(RecordBatchStreamAdapter::new(
+                schema(),
+                futures::stream::once(async move {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Ok(batch)
+                }),
+            )) as SendableRecordBatchStream)
+        });
+        assert_eq!(rows(slow).await?, 3);
+        // Another read sweeps idle entries, which must not include this one.
+        rows(cache.stream(key("j", 2), schema(), source(fetches.clone()))).await?;
+        rows(cache.stream(key("j", 1), schema(), source(fetches.clone()))).await?;
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
     #[test]
     fn keys_depend_on_the_locations() {
-        use crate::serde::scheduler::{ExecutorMetadata, PartitionId, PartitionStats};
+        use crate::serde::scheduler::{ExecutorEndpoint, PartitionId, PartitionStats};
         let loc = |map: usize| PartitionLocation {
             map_partition_id: map,
             partition_id: PartitionId {
@@ -335,14 +363,11 @@ mod tests {
                 stage_id: 1,
                 partition_id: 0,
             },
-            executor_meta: ExecutorMetadata {
+            executor_meta: Arc::new(ExecutorEndpoint {
                 id: "e".to_string(),
                 host: "h".to_string(),
                 port: 1,
-                grpc_port: 2,
-                specification: Default::default(),
-                os_info: Default::default(),
-            },
+            }),
             partition_stats: PartitionStats::default(),
             file_id: None,
             is_sort_shuffle: true,

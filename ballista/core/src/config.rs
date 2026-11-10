@@ -477,8 +477,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          or LIKE predicates on literals (such as a nation or part type), also \
                          semi-joins the dimension with the table the join key comes from, below \
                          the other joins in between. The filter then removes rows before they \
-                         are joined and shuffled, like Spark's runtime filters. Set to false to \
-                         apply such filters only at the join that names them.".to_string(),
+                         are joined and shuffled, like Spark's runtime filters. Only dimensions \
+                         estimated at no more than ballista.optimizer.broadcast_join_threshold_rows \
+                         rows are used (0 disables the reduction). Set to false to apply such \
+                         filters only at the join that names them.".to_string(),
                          DataType::Boolean,
                          Some("true".to_string())),
         ConfigEntry::new(BALLISTA_BALANCE_SCAN_FILE_GROUPS.to_string(),

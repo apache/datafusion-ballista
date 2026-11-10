@@ -446,6 +446,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    use crate::state::aqe::test::statistics_exec;
+    use crate::state::aqe::test::stats_table::estimated_statistics;
     use ballista_core::assert_plan;
     use ballista_core::config::BallistaConfig;
     use datafusion::physical_plan::empty::EmptyExec;
@@ -462,6 +464,13 @@ mod tests {
         },
         physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner},
     };
+
+    /// A single nullable `Int32` column named `name` whose size is an estimate of
+    /// `bytes`.
+    fn stats_exec(name: &str, bytes: usize) -> Arc<dyn ExecutionPlan> {
+        let schema = Schema::new(vec![Field::new(name, DataType::Int32, true)]);
+        statistics_exec(estimated_statistics(&schema, bytes / 4, bytes), &schema)
+    }
 
     fn key_partitioning(name: &str, schema: &Schema) -> Partitioning {
         Partitioning::Hash(
@@ -781,28 +790,13 @@ mod tests {
     fn null_aware_anti_join_is_not_swapped_by_aqe() {
         use datafusion::physical_expr::expressions::Column;
         use datafusion::{
-            arrow::datatypes::{DataType, Field, Schema},
-            common::{
-                ColumnStatistics, JoinType, NullEquality, Statistics, stats::Precision,
-            },
+            common::{JoinType, NullEquality},
             physical_plan::{
                 Partitioning,
                 joins::{HashJoinExec, PartitionMode},
                 repartition::RepartitionExec,
-                test::exec::StatisticsExec,
             },
         };
-
-        fn stats_exec(name: &str, bytes: usize) -> Arc<dyn ExecutionPlan> {
-            Arc::new(StatisticsExec::new(
-                Statistics {
-                    num_rows: Precision::Inexact(bytes / 4),
-                    total_byte_size: Precision::Inexact(bytes),
-                    column_statistics: vec![ColumnStatistics::new_unknown()],
-                },
-                Schema::new(vec![Field::new(name, DataType::Int32, true)]),
-            ))
-        }
 
         // A normal join would swap these inputs to build from the smaller right
         // side. Doing that to a null-aware LeftAnti creates an invalid
@@ -851,26 +845,9 @@ mod tests {
     fn null_aware_anti_join_rejects_known_oversized_build_side_in_aqe() {
         use datafusion::physical_expr::expressions::Column;
         use datafusion::{
-            arrow::datatypes::{DataType, Field, Schema},
-            common::{
-                ColumnStatistics, JoinType, NullEquality, Statistics, stats::Precision,
-            },
-            physical_plan::{
-                joins::{HashJoinExec, PartitionMode},
-                test::exec::StatisticsExec,
-            },
+            common::{JoinType, NullEquality},
+            physical_plan::joins::{HashJoinExec, PartitionMode},
         };
-
-        fn stats_exec(name: &str, bytes: usize) -> Arc<dyn ExecutionPlan> {
-            Arc::new(StatisticsExec::new(
-                Statistics {
-                    num_rows: Precision::Inexact(bytes / 4),
-                    total_byte_size: Precision::Inexact(bytes),
-                    column_statistics: vec![ColumnStatistics::new_unknown()],
-                },
-                Schema::new(vec![Field::new(name, DataType::Int32, true)]),
-            ))
-        }
 
         // Over `broadcast_join_threshold_bytes`, whose default is 128 MB.
         let join = HashJoinExec::try_new(

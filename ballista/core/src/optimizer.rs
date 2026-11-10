@@ -26,12 +26,13 @@
 //! <https://github.com/apache/datafusion-ballista/issues/2198>). The rewritten
 //! plan uses only ordinary joins and aggregates and distributes normally.
 //!
-//! [`SemiJoinPushdown`] moves semi and anti joins below the inner joins they
+//! [`SemiJoinPushdown`](crate::optimizer::SemiJoinPushdown) moves semi and anti joins below the inner joins they
 //! were decorrelated above, so a subquery filters one join input instead of
-//! the joined result. [`SemiJoinReduction`] adds such a semi join for a join
+//! the joined result. [`SemiJoinReduction`](crate::optimizer::SemiJoinReduction) adds such a semi join for a join
 //! against a small, selectively filtered dimension table, so its filter
 //! applies before the joins in between; the scheduler runs it through
-//! [`apply_semi_join_reduction`] before physical planning.
+//! [`apply_semi_join_reduction`](crate::optimizer::apply_semi_join_reduction)
+//! before physical planning.
 
 mod semi_join_pushdown;
 mod semi_join_reduction;
@@ -61,8 +62,9 @@ use crate::config::BallistaConfig;
 /// `DecorrelatePredicateSubquery`, which would otherwise turn eligible `NOT IN`
 /// predicates into null-aware anti joins first. [`SemiJoinPushdown`] is
 /// appended, so it runs on the decorrelated joins. [`SemiJoinReduction`] needs
-/// table sizes and runs separately, through [`apply_semi_join_reduction`]. A rule with the same name in
-/// `existing` is dropped so repeated session upgrades stay idempotent.
+/// table sizes and runs separately, through [`apply_semi_join_reduction`]. A
+/// rule with the same name in `existing` is dropped so repeated session
+/// upgrades stay idempotent.
 pub fn with_ballista_optimizer_rules(
     existing: &[Arc<dyn OptimizerRule + Send + Sync>],
 ) -> Vec<Arc<dyn OptimizerRule + Send + Sync>> {
@@ -317,7 +319,7 @@ mod tests {
     use datafusion::logical_expr::builder::LogicalTableSource;
     use datafusion::logical_expr::{Expr, LogicalPlan, LogicalPlanBuilder};
     use datafusion::optimizer::Optimizer;
-    use datafusion::prelude::{SessionConfig, col, lit, not_in_subquery};
+    use datafusion::prelude::{SessionConfig, SessionContext, col, lit, not_in_subquery};
 
     use super::NotInSubqueryRewrite;
     use crate::config::{BALLISTA_NOT_IN_SUBQUERY_REWRITE, BallistaConfig};
@@ -354,6 +356,163 @@ mod tests {
             .unwrap()
             .build()
             .unwrap()
+    }
+
+    /// TPC-H q18's shape through the rules every Ballista session installs:
+    /// the `IN` subquery filters `orders` before it is joined to `lineitem`.
+    #[tokio::test]
+    async fn session_rules_push_an_in_subquery_below_the_join() {
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(
+                SessionConfig::new().with_option_extension(BallistaConfig::default()),
+            )
+            .with_optimizer_rules(super::ballista_default_optimizer_rules())
+            .build();
+        let ctx = SessionContext::new_with_state(state);
+        for ddl in [
+            "CREATE TABLE orders (o_orderkey INT, o_custkey INT)",
+            "CREATE TABLE lineitem (l_orderkey INT, l_quantity INT)",
+        ] {
+            ctx.sql(ddl).await.unwrap();
+        }
+        let plan = ctx
+            .sql(
+                "SELECT o_custkey, l_quantity FROM orders \
+                 JOIN lineitem ON o_orderkey = l_orderkey \
+                 WHERE o_orderkey IN (SELECT l_orderkey FROM lineitem \
+                                      GROUP BY l_orderkey HAVING sum(l_quantity) > 300)",
+            )
+            .await
+            .unwrap()
+            .into_optimized_plan()
+            .unwrap();
+        let display = format!("{}", plan.display_indent());
+        let expected = [
+            "Projection: orders.o_custkey, lineitem.l_quantity",
+            "  Inner Join: orders.o_orderkey = lineitem.l_orderkey",
+            "    LeftSemi Join: orders.o_orderkey = __correlated_sq_1.l_orderkey",
+            "      TableScan: orders projection=[o_orderkey, o_custkey]",
+            "      SubqueryAlias: __correlated_sq_1",
+            "        Projection: lineitem.l_orderkey",
+            "          Filter: sum(lineitem.l_quantity) > Int64(300)",
+            "            Aggregate: groupBy=[[lineitem.l_orderkey]], aggr=[[sum(CAST(lineitem.l_quantity AS Int64))]]",
+            "              TableScan: lineitem projection=[l_orderkey, l_quantity]",
+            "    TableScan: lineitem projection=[l_orderkey, l_quantity]",
+        ]
+        .join("\n");
+        assert_eq!(
+            display, expected,
+            "the semi join must sit below the inner join:\n{display}"
+        );
+    }
+
+    /// A session with every Ballista rule, `semi_join_pushdown` on or off,
+    /// and small tables with NULL keys and duplicate join matches.
+    async fn semi_join_session(pushdown: bool) -> SessionContext {
+        use datafusion::config::ExtensionOptions;
+
+        let mut config = BallistaConfig::default();
+        config
+            .set(
+                crate::config::BALLISTA_SEMI_JOIN_PUSHDOWN
+                    .strip_prefix("ballista.")
+                    .unwrap(),
+                &pushdown.to_string(),
+            )
+            .unwrap();
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(SessionConfig::new().with_option_extension(config))
+            .with_optimizer_rules(super::ballista_default_optimizer_rules())
+            .build();
+        let ctx = SessionContext::new_with_state(state);
+        for ddl in [
+            "CREATE TABLE o AS SELECT * FROM (VALUES \
+             (1, 10), (2, 20), (3, NULL), (4, 40), (5, 50)) AS t(k, c)",
+            "CREATE TABLE l AS SELECT * FROM (VALUES \
+             (1, 100), (1, 101), (2, 200), (3, 300), (4, 400), (NULL, 500)) AS t(k, q)",
+            "CREATE TABLE s AS SELECT * FROM (VALUES \
+             (10, 1), (40, 500), (NULL, 2), (60, 200)) AS t(c, d)",
+        ] {
+            ctx.sql(ddl).await.unwrap().collect().await.unwrap();
+        }
+        ctx
+    }
+
+    async fn sorted_rows(ctx: &SessionContext, sql: &str) -> (Vec<String>, String) {
+        let df = ctx.sql(sql).await.unwrap();
+        let plan = format!(
+            "{}",
+            df.clone().into_optimized_plan().unwrap().display_indent()
+        );
+        let batches = df.collect().await.unwrap();
+        let mut rows: Vec<String> =
+            datafusion::arrow::util::pretty::pretty_format_batches(&batches)
+                .unwrap()
+                .to_string()
+                .lines()
+                .skip(3)
+                .filter(|l| !l.starts_with('+'))
+                .map(str::to_string)
+                .collect();
+        rows.sort();
+        (rows, plan)
+    }
+
+    /// `IN`, `EXISTS` and `NOT EXISTS` over joins, with NULL keys on both the
+    /// outer and the subquery side, return the same rows with the rule on and
+    /// off. The bool says whether the rule is expected to move the semi join
+    /// below the `o`/`l` join.
+    #[tokio::test]
+    async fn semi_join_pushdown_preserves_results() {
+        let on = semi_join_session(true).await;
+        let off = semi_join_session(false).await;
+        let join = "SELECT o.k, o.c, l.q FROM o JOIN l ON o.k = l.k";
+        let left_join = "SELECT o.k, o.c, l.q FROM o LEFT JOIN l ON o.k = l.k";
+        let cases = [
+            (format!("{join} WHERE o.c IN (SELECT c FROM s)"), true),
+            (
+                format!("{join} WHERE EXISTS (SELECT 1 FROM s WHERE s.c = o.c)"),
+                true,
+            ),
+            (
+                format!("{join} WHERE NOT EXISTS (SELECT 1 FROM s WHERE s.c = o.c)"),
+                true,
+            ),
+            (
+                format!("{left_join} WHERE NOT EXISTS (SELECT 1 FROM s WHERE s.c = o.c)"),
+                true,
+            ),
+            // The anti join reads the null-supplying side, so it must stay.
+            (
+                format!("{left_join} WHERE NOT EXISTS (SELECT 1 FROM s WHERE s.d = l.q)"),
+                false,
+            ),
+            // The correlated filter reads both join sides, so it must stay.
+            (
+                format!(
+                    "{join} WHERE EXISTS (SELECT 1 FROM s WHERE s.c = o.c AND s.d < l.q)"
+                ),
+                false,
+            ),
+        ];
+        for (sql, pushed) in cases {
+            let (rows_on, plan_on) = sorted_rows(&on, &sql).await;
+            let (rows_off, plan_off) = sorted_rows(&off, &sql).await;
+            assert_eq!(
+                rows_on, rows_off,
+                "{sql}\nwith the rule:\n{plan_on}\nwithout:\n{plan_off}"
+            );
+            let below_join = |plan: &str| {
+                let line =
+                    |pred: &dyn Fn(&str) -> bool| plan.lines().position(pred).unwrap();
+                line(&|l| l.contains("LeftSemi Join") || l.contains("LeftAnti Join"))
+                    > line(&|l| l.contains("Join: o.k = l.k"))
+            };
+            assert!(!below_join(&plan_off), "{sql}\n{plan_off}");
+            assert_eq!(below_join(&plan_on), pushed, "{sql}\n{plan_on}");
+        }
     }
 
     #[test]

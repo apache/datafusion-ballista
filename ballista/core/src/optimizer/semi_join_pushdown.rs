@@ -15,65 +15,53 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Pushes semi and anti joins below the joins, projections and filters that
-//! sit between them and the input their keys come from.
+//! Pushes semi and anti joins below the joins and projections that sit between
+//! them and the input their keys come from.
 //!
 //! DataFusion decorrelates `IN`, `EXISTS` and `NOT EXISTS` subqueries into
 //! semi and anti joins placed directly above the `FROM` clause's join tree, so
-//! the subquery filters the joined result. TPC-H q18 is the standard example:
+//! the subquery filters the joined result. In TPC-H q18 the subquery keeps
+//! 6,400 orders, but only after `orders` has been joined to `lineitem`:
 //!
 //! ```text
 //! LeftSemi Join: orders.o_orderkey = __correlated_sq_1.l_orderkey
-//!   Projection: ...
-//!     Inner Join: orders.o_orderkey = lineitem.l_orderkey
-//!       Projection: ...
-//!         Inner Join: customer.c_custkey = orders.o_custkey
-//!           TableScan: customer
-//!           TableScan: orders
-//!       TableScan: lineitem
-//!   SubqueryAlias: __correlated_sq_1 (6,400 order keys at SF100)
+//!   Inner Join: orders.o_orderkey = lineitem.l_orderkey
+//!     TableScan: orders
+//!     TableScan: lineitem
+//!   SubqueryAlias: __correlated_sq_1
 //! ```
 //!
-//! The 600M-row `orders ⋈ lineitem` result is joined, shuffled and probed
-//! before the subquery removes all but 6,400 orders. The semi join only reads
-//! `orders.o_orderkey`, so it can filter `orders` before any join:
+//! The semi join only reads `orders.o_orderkey`, so this rule moves it onto
+//! `orders`, before the join:
 //!
 //! ```text
-//! Projection: ...
-//!   Inner Join: orders.o_orderkey = lineitem.l_orderkey
-//!     Projection: ...
-//!       Inner Join: customer.c_custkey = orders.o_custkey
-//!         TableScan: customer
-//!         LeftSemi Join: orders.o_orderkey = __correlated_sq_1.l_orderkey
-//!           TableScan: orders
-//!           SubqueryAlias: __correlated_sq_1
-//!     TableScan: lineitem
+//! Inner Join: orders.o_orderkey = lineitem.l_orderkey
+//!   LeftSemi Join: orders.o_orderkey = __correlated_sq_1.l_orderkey
+//!     TableScan: orders
+//!     SubqueryAlias: __correlated_sq_1
+//!   TableScan: lineitem
 //! ```
 //!
-//! This is Spark's `PushDownLeftSemiAntiJoin` / `PushLeftSemiLeftAntiThroughJoin`.
-//! A semi or anti join keeps or drops each row of its left input based only on
-//! that row's values, so it commutes with any operator that passes the
-//! referenced columns through unchanged and never makes a row depend on
-//! another row:
+//! This is Spark's `PushDownLeftSemiAntiJoin`. A semi or anti join keeps or
+//! drops each row of its left input based only on that row's values, so it
+//! commutes with any operator that passes the referenced columns through
+//! unchanged and never makes a row depend on another row:
 //!
-//! - a `Projection` that outputs every referenced column as a plain column;
+//! - a `Projection` that outputs every referenced column as a plain column
+//!   and has no volatile expression;
 //! - an inner join, onto the side that holds every referenced column, unless
 //!   the other side is filtered;
 //! - a left (right) outer join, onto its left (right), preserved, side only.
 //!   Pushing into the null-supplying side would turn a dropped row into a
 //!   null-extended one.
 //!
-//! Both exceptions are about cost, not correctness. A join whose other input
-//! is filtered (`orders` with `o_orderstatus = 'F'` in TPC-H q21) can remove
-//! most rows itself, so a semi join moved below it probes rows the join would
-//! have dropped: q21's `EXISTS` and `NOT EXISTS` then run over all 379M
-//! `lineitem l1` rows at SF100 instead of the few joined ones, which doubles
-//! its run time. Spark makes this move unconditionally.
-//!
-//! It never moves below a `Filter`: that is sound too, but the filter is the
-//! cheaper of the two, so the semi join should see its output (TPC-H q4 probes
-//! 5.7M filtered orders instead of all 150M). `PushDownFilter` would also move
-//! the filter back above it on the next pass.
+//! It deliberately stops at two places where the move is sound but slower. A
+//! `Filter` is the cheaper of the two operators, so the semi join should see
+//! its output (TPC-H q4). An inner join whose other input is filtered can
+//! remove most rows itself, so a semi join moved below it probes rows the join
+//! would have dropped (TPC-H q21's `EXISTS` and `NOT EXISTS`; Spark makes this
+//! move unconditionally). `PushDownFilter` would also move a filter back above
+//! the semi join on the next pass.
 //!
 //! The rule runs after DataFusion's own rules in each optimizer pass, so it
 //! sees decorrelated joins with their filters already pushed down.
@@ -81,7 +69,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use datafusion::common::tree_node::Transformed;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{Column, DFSchema, Result};
 use datafusion::logical_expr::{Expr, Join, JoinType, LogicalPlan, Projection};
 use datafusion::optimizer::optimizer::ApplyOrder;
@@ -91,7 +79,7 @@ use crate::config::BallistaConfig;
 
 /// Pushes semi and anti joins below inner joins and projections,
 /// onto the join input that holds every column they reference. See the
-/// [module documentation](self) for the rewrite and why it is sound.
+/// module documentation for the rewrite and why it is sound.
 ///
 /// Enabled by default and controlled by the
 /// `ballista.optimizer.semi_join_pushdown` configuration key.
@@ -125,6 +113,13 @@ impl OptimizerRule for SemiJoinPushdown {
         plan: LogicalPlan,
         config: &dyn OptimizerConfig,
     ) -> Result<Transformed<LogicalPlan>> {
+        // Cheap node checks first: this runs on every node of every pass.
+        let LogicalPlan::Join(join) = plan else {
+            return Ok(Transformed::no(plan));
+        };
+        if !is_pushable_semi_join(&join) {
+            return Ok(Transformed::no(LogicalPlan::Join(join)));
+        }
         let enabled = config
             .options()
             .extensions
@@ -132,12 +127,6 @@ impl OptimizerRule for SemiJoinPushdown {
             .map(|c| c.semi_join_pushdown_enabled())
             .unwrap_or_else(|| BallistaConfig::default().semi_join_pushdown_enabled());
         if !enabled {
-            return Ok(Transformed::no(plan));
-        }
-        let LogicalPlan::Join(join) = plan else {
-            return Ok(Transformed::no(plan));
-        };
-        if !is_pushable_semi_join(&join) {
             return Ok(Transformed::no(LogicalPlan::Join(join)));
         }
         let referenced = left_referenced_columns(&join);
@@ -149,11 +138,24 @@ impl OptimizerRule for SemiJoinPushdown {
 }
 
 /// A left semi or anti join whose keep/drop decision depends only on the
-/// left row. Null-aware anti joins (`NOT IN`) also depend only on the left row
-/// and the whole subquery, but they are left alone: Ballista executes them in
-/// a single task and the `NotInSubqueryRewrite` rule handles them.
+/// left row, over an operator this rule can move it below. Null-aware anti
+/// joins (`NOT IN`) also depend only on the left row and the whole subquery,
+/// but they are left alone: Ballista executes them in a single task and the
+/// `NotInSubqueryRewrite` rule handles them. A volatile key or filter is not
+/// a function of the left row alone, so it must be evaluated on the rows the
+/// query asked for, not once per row of the input it would move onto.
 fn is_pushable_semi_join(join: &Join) -> bool {
-    matches!(join.join_type, JoinType::LeftSemi | JoinType::LeftAnti) && !join.null_aware
+    matches!(join.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+        && !join.null_aware
+        && !join
+            .on
+            .iter()
+            .any(|(l, r)| l.is_volatile() || r.is_volatile())
+        && !join.filter.as_ref().is_some_and(|f| f.is_volatile())
+        && matches!(
+            join.left.as_ref(),
+            LogicalPlan::Projection(_) | LogicalPlan::Join(_)
+        )
 }
 
 /// Columns of the semi join's left input that its keys and filter read.
@@ -181,13 +183,11 @@ fn has_all(schema: &DFSchema, cols: &HashSet<Column>) -> bool {
 
 /// Whether `plan` filters any of its inputs, so a join with it may remove
 /// rows: a `Filter` anywhere in it, a scan with pushed-down filters, or a
-/// semi or anti join.
-fn is_filtered(plan: &LogicalPlan) -> bool {
-    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-
-    let mut found = false;
-    plan.apply(|node| {
-        found = match node {
+/// semi or anti join. Logical plans carry no statistics, so this syntactic test
+/// stands in for "the other input is selective".
+fn is_filtered(plan: &LogicalPlan) -> Result<bool> {
+    plan.exists(|node| {
+        Ok(match node {
             LogicalPlan::Filter(_) => true,
             LogicalPlan::TableScan(scan) => !scan.filters.is_empty(),
             LogicalPlan::Join(j) => matches!(
@@ -198,29 +198,31 @@ fn is_filtered(plan: &LogicalPlan) -> bool {
                     | JoinType::RightAnti
             ),
             _ => false,
-        };
-        Ok(if found {
-            TreeNodeRecursion::Stop
-        } else {
-            TreeNodeRecursion::Continue
         })
     })
-    .expect("visiting a plan cannot fail");
-    found
+}
+
+/// Rebuilds `join` with new inputs.
+pub(super) fn with_inputs(
+    join: &Join,
+    left: Arc<LogicalPlan>,
+    right: Arc<LogicalPlan>,
+) -> Result<Join> {
+    Join::try_new(
+        left,
+        right,
+        join.on.clone(),
+        join.filter.clone(),
+        join.join_type,
+        join.join_constraint,
+        join.null_equality,
+        join.null_aware,
+    )
 }
 
 /// Rebuilds `semi` with a new left input.
 fn semi_over(semi: &Join, left: Arc<LogicalPlan>) -> Result<Join> {
-    Join::try_new(
-        left,
-        Arc::clone(&semi.right),
-        semi.on.clone(),
-        semi.filter.clone(),
-        semi.join_type,
-        semi.join_constraint,
-        semi.null_equality,
-        semi.null_aware,
-    )
+    with_inputs(semi, left, Arc::clone(&semi.right))
 }
 
 /// Moves `semi` one operator down its left input, or returns `None` when the
@@ -265,7 +267,8 @@ fn sink_inner(
 /// operator with `semi` moved beneath it. `place` receives the moved semi join
 /// (and whether it moved below a join) and returns the plan to put in its
 /// position. Returns `None` when the operator below does not commute, or, with
-/// `avoid_filtered_joins`, when it is a join whose other input is filtered.
+/// `avoid_filtered_joins`, when it is an inner join whose other input is
+/// filtered.
 fn step(
     semi: &Join,
     referenced: &HashSet<Column>,
@@ -278,6 +281,11 @@ fn step(
     }
     match semi.left.as_ref() {
         LogicalPlan::Projection(projection) => {
+            // A volatile expression must be evaluated on the rows the query
+            // asked for, not on the fewer that survive the semi join.
+            if projection.expr.iter().any(|e| e.is_volatile()) {
+                return Ok(None);
+            }
             // Every referenced column must be passed through unchanged, so
             // the name the semi join uses means the same value below.
             let passthrough: HashSet<&Column> = projection
@@ -309,19 +317,23 @@ fn step(
                 JoinType::Right => (false, true),
                 _ => (false, false),
             };
-            // Moving below a join whose other input is filtered would make
-            // the semi join see rows that join could have removed first.
-            let to_left = to_left && !(avoid_filtered_joins && is_filtered(&inner.right));
-            let to_right =
-                to_right && !(avoid_filtered_joins && is_filtered(&inner.left));
+            // Moving below an inner join whose other input is filtered would
+            // make the semi join see rows that join could have removed first.
+            // An outer join keeps every row of its preserved side, so there
+            // is nothing to wait for.
+            let inner_join = avoid_filtered_joins && inner.join_type == JoinType::Inner;
             let (new_left, new_right) = if to_left
                 && has_all(inner.left.schema(), referenced)
+                && !(inner_join && is_filtered(&inner.right)?)
             {
                 (
                     Arc::new(place(semi_over(semi, Arc::clone(&inner.left))?, true)?),
                     Arc::clone(&inner.right),
                 )
-            } else if to_right && has_all(inner.right.schema(), referenced) {
+            } else if to_right
+                && has_all(inner.right.schema(), referenced)
+                && !(inner_join && is_filtered(&inner.left)?)
+            {
                 (
                     Arc::clone(&inner.left),
                     Arc::new(place(semi_over(semi, Arc::clone(&inner.right))?, true)?),
@@ -329,15 +341,8 @@ fn step(
             } else {
                 return Ok(None);
             };
-            Ok(Some(LogicalPlan::Join(Join::try_new(
-                new_left,
-                new_right,
-                inner.on.clone(),
-                inner.filter.clone(),
-                inner.join_type,
-                inner.join_constraint,
-                inner.null_equality,
-                inner.null_aware,
+            Ok(Some(LogicalPlan::Join(with_inputs(
+                inner, new_left, new_right,
             )?)))
         }
         _ => Ok(None),
@@ -354,7 +359,7 @@ mod tests {
     use datafusion::logical_expr::builder::LogicalTableSource;
     use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
     use datafusion::optimizer::Optimizer;
-    use datafusion::prelude::{SessionConfig, col, lit};
+    use datafusion::prelude::{SessionConfig, col, lit, random};
 
     use super::SemiJoinPushdown;
     use crate::config::{BALLISTA_SEMI_JOIN_PUSHDOWN, BallistaConfig};
@@ -534,8 +539,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn stays_above_a_join_with_a_filtered_input() {
+    /// `a <join_type> filtered(b)`, semi-joined with `s` on `a.v`.
+    fn semi_over_join_with_filtered_input(join_type: JoinType) -> String {
         let plan = LogicalPlanBuilder::from(scan("a", &["k", "v"]))
             .join_on(
                 LogicalPlanBuilder::from(scan("b", &["k", "w"]))
@@ -543,7 +548,7 @@ mod tests {
                     .unwrap()
                     .build()
                     .unwrap(),
-                JoinType::Inner,
+                join_type,
                 [col("a.k").eq(col("b.k"))],
             )
             .unwrap()
@@ -555,10 +560,24 @@ mod tests {
             .unwrap()
             .build()
             .unwrap();
-        let display = optimize(plan);
+        optimize(plan)
+    }
+
+    #[test]
+    fn stays_above_an_inner_join_with_a_filtered_input() {
+        let display = semi_over_join_with_filtered_input(JoinType::Inner);
         assert!(
             line_of(&display, "LeftSemi Join") < line_of(&display, "Inner Join"),
             "the filtered join must run first:\n{display}"
+        );
+    }
+
+    #[test]
+    fn pushes_below_an_outer_join_with_a_filtered_input() {
+        let display = semi_over_join_with_filtered_input(JoinType::Left);
+        assert!(
+            line_of(&display, "LeftSemi Join") > line_of(&display, "Left Join"),
+            "an outer join keeps its preserved rows, so nothing is lost by going first:\n{display}"
         );
     }
 
@@ -598,6 +617,53 @@ mod tests {
         let display = optimize(plan);
         assert!(
             line_of(&display, "LeftSemi Join") < line_of(&display, "Projection"),
+            "{display}"
+        );
+    }
+
+    #[test]
+    fn keeps_projection_with_a_volatile_expression() {
+        let plan = LogicalPlanBuilder::from(scan("a", &["k", "v"]))
+            .project(vec![col("a.k"), random().alias("r")])
+            .unwrap()
+            .join_on(
+                scan("s", &["x"]),
+                JoinType::LeftSemi,
+                [col("a.k").eq(col("s.x"))],
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let display = optimize(plan);
+        assert!(
+            line_of(&display, "LeftSemi Join") < line_of(&display, "Projection"),
+            "{display}"
+        );
+    }
+
+    #[test]
+    fn keeps_semi_join_with_a_volatile_filter() {
+        // EXISTS (... WHERE s.x = a.v AND random() < 0.5): moving onto `a`
+        // would draw one number per `a` row instead of one per joined row.
+        let plan = LogicalPlanBuilder::from(scan("a", &["k", "v"]))
+            .join_on(
+                scan("b", &["k", "w"]),
+                JoinType::Inner,
+                [col("a.k").eq(col("b.k"))],
+            )
+            .unwrap()
+            .join_on(
+                scan("s", &["x"]),
+                JoinType::LeftSemi,
+                [col("a.v").eq(col("s.x")), random().lt(lit(0.5))],
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let display = optimize(plan);
+        assert!(display.contains("random()"), "{display}");
+        assert!(
+            line_of(&display, "LeftSemi Join") < line_of(&display, "Inner Join"),
             "{display}"
         );
     }

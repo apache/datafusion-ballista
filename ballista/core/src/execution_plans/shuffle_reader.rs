@@ -62,6 +62,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::result;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -519,11 +520,28 @@ impl ExecutionPlan for ShuffleReaderExec {
                 &self.partition[0],
             );
             let reader = self.clone();
-            return Ok(
-                cache.stream(key, self.schema.clone(), move || reader.fetch(0, context))
-            );
+            let fetched = Arc::new(AtomicBool::new(false));
+            let fetcher = Arc::clone(&fetched);
+            let stream = cache.stream(key, self.schema.clone(), move || {
+                fetcher.store(true, Ordering::Relaxed);
+                reader.fetch(0, context)
+            });
+            // The task that fetched records its output rows in `fetch`. A
+            // task served from the cache records them here, so every task's
+            // reader reports the rows it produced.
+            let baseline = BaselineMetrics::new(&self.metrics, partition);
+            let stream = stream.inspect_ok(move |batch| {
+                if !fetched.load(Ordering::Relaxed) {
+                    baseline.record_output(batch.num_rows());
+                }
+            });
+            Ok(Box::pin(RecordBatchStreamAdapter::new(
+                self.schema.clone(),
+                stream,
+            )))
+        } else {
+            self.fetch(partition, context)
         }
-        self.fetch(partition, context)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -1319,7 +1337,7 @@ async fn fetch_ranges_with(
 /// Report a transport failure as a fetch failure, which is what lets the
 /// scheduler retry the task rather than fail the query.
 fn as_fetch_failed(
-    metadata: &crate::serde::scheduler::ExecutorMetadata,
+    metadata: &crate::serde::scheduler::ExecutorEndpoint,
     partition_id: &crate::serde::scheduler::PartitionId,
     error: BallistaError,
 ) -> BallistaError {
@@ -1522,10 +1540,7 @@ mod tests {
     use super::*;
     use crate::execution_plans::test_util::{test_location, write_ipc_stream};
     use crate::execution_plans::{ShuffleWriterExec, create_shuffle_path};
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId,
-    };
+    use crate::serde::scheduler::{ExecutorEndpoint, PartitionId};
     use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -1937,6 +1952,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn broadcast_cache_hits_record_output_rows() -> Result<()> {
+        let tmp_dir = tempdir().unwrap();
+        let work_dir = tmp_dir.path().to_string_lossy().to_string();
+        let partition_num = 3usize;
+        let schema = Arc::new(write_local_shuffle_files(tmp_dir.path(), partition_num));
+        let cache = Arc::new(BroadcastReadCache::default());
+        let ctx = SessionContext::new_with_config(SessionConfig::new_with_ballista());
+
+        // Two tasks of the joining stage, each with its own plan: the first
+        // fetches the broadcast read and the second is served from the cache.
+        let mut output_rows = vec![];
+        for _ in 0..2 {
+            let reader = ShuffleReaderExec::try_new_broadcast(
+                1,
+                get_test_partition_locations(partition_num, None),
+                schema.clone(),
+                partition_num,
+            )?
+            .with_work_dir(work_dir.clone())
+            .with_broadcast_cache(cache.clone());
+            let batches = common::collect(reader.execute(0, ctx.task_ctx())?).await?;
+            assert_eq!(
+                batches.iter().map(|b| b.num_rows()).sum::<usize>(),
+                partition_num
+            );
+            output_rows.push(reader.metrics().unwrap().output_rows());
+        }
+        assert_eq!(output_rows, vec![Some(partition_num), Some(partition_num)]);
+        assert_eq!(cache.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn send_fetch_partitions_records_local_metrics() {
         let tmp_dir = tempdir().unwrap();
         let work_dir = tmp_dir.path();
@@ -2036,14 +2084,11 @@ mod tests {
                     stage_id: 1,
                     partition_id,
                 },
-                executor_meta: ExecutorMetadata {
+                executor_meta: Arc::new(ExecutorEndpoint {
                     id: format!("exec{partition_id}"),
                     host: "localhost".to_string(),
                     port: 50051,
-                    grpc_port: 50052,
-                    specification: ExecutorSpecification::default().with_vcores(12),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
+                }),
                 partition_stats: Default::default(),
                 file_id,
                 is_sort_shuffle: false,
