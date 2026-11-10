@@ -141,10 +141,17 @@ impl OptimizerRule for SemiJoinPushdown {
 /// left row, over an operator this rule can move it below. Null-aware anti
 /// joins (`NOT IN`) also depend only on the left row and the whole subquery,
 /// but they are left alone: Ballista executes them in a single task and the
-/// `NotInSubqueryRewrite` rule handles them.
+/// `NotInSubqueryRewrite` rule handles them. A volatile key or filter is not
+/// a function of the left row alone, so it must be evaluated on the rows the
+/// query asked for, not once per row of the input it would move onto.
 fn is_pushable_semi_join(join: &Join) -> bool {
     matches!(join.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
         && !join.null_aware
+        && !join
+            .on
+            .iter()
+            .any(|(l, r)| l.is_volatile() || r.is_volatile())
+        && !join.filter.as_ref().is_some_and(|f| f.is_volatile())
         && matches!(
             join.left.as_ref(),
             LogicalPlan::Projection(_) | LogicalPlan::Join(_)
@@ -630,6 +637,33 @@ mod tests {
         let display = optimize(plan);
         assert!(
             line_of(&display, "LeftSemi Join") < line_of(&display, "Projection"),
+            "{display}"
+        );
+    }
+
+    #[test]
+    fn keeps_semi_join_with_a_volatile_filter() {
+        // EXISTS (... WHERE s.x = a.v AND random() < 0.5): moving onto `a`
+        // would draw one number per `a` row instead of one per joined row.
+        let plan = LogicalPlanBuilder::from(scan("a", &["k", "v"]))
+            .join_on(
+                scan("b", &["k", "w"]),
+                JoinType::Inner,
+                [col("a.k").eq(col("b.k"))],
+            )
+            .unwrap()
+            .join_on(
+                scan("s", &["x"]),
+                JoinType::LeftSemi,
+                [col("a.v").eq(col("s.x")), random().lt(lit(0.5))],
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let display = optimize(plan);
+        assert!(display.contains("random()"), "{display}");
+        assert!(
+            line_of(&display, "LeftSemi Join") < line_of(&display, "Inner Join"),
             "{display}"
         );
     }
