@@ -34,6 +34,7 @@ use ballista_core::{JobId, utils};
 use datafusion::arrow::array::{
     Array, StringArray, StructArray, UInt32Array, UInt64Array,
 };
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
@@ -538,6 +539,8 @@ impl QueryStageExecutor for PipelinedQueryStageExec {
 /// collect metadata batches from each, and turn them back into
 /// `Vec<ShuffleWritePartition>`. All K streams must be driven concurrently
 /// so the writer's internal coordinator sees every oneshot receiver taken.
+/// A cancelled task drops the returned future. That aborts the K tasks,
+/// drops their streams and stops the writer's coordinator.
 ///
 /// `is_sort_shuffle` is stamped onto every summary produced from the batches
 /// — the metadata schema doesn't carry the flag (it's a handoff-only shape),
@@ -554,7 +557,12 @@ async fn drive_shuffle_writer_stage(
     for n in 0..k {
         let plan = plan.clone();
         let ctx = context.clone();
-        stream_futures.push(tokio::spawn(async move {
+        // Dropping this task stops the writer's input. A writer that streams
+        // to disk on a blocking thread still finishes the file it is writing,
+        // so a cancelled Ballista task can leave a short but valid IPC file
+        // behind. Nothing reads it, because the task is reported as cancelled,
+        // and job data cleanup removes it with the rest of the job's directory.
+        stream_futures.push(SpawnedTask::spawn(async move {
             let mut stream = plan.execute(n, ctx)?;
             let mut batches = Vec::new();
             while let Some(batch) = stream.try_next().await? {

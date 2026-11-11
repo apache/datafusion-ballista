@@ -418,14 +418,17 @@ mod test {
     use futures::task::{ArcWake, waker_ref};
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Weak};
     use std::task::{Context, Poll};
     use std::time::Duration;
     use tempfile::TempDir;
 
     /// A RecordBatchStream that will never terminate
-    struct NeverendingRecordBatchStream;
+    struct NeverendingRecordBatchStream {
+        /// Keeps the operator's `refs` count up while this stream is alive.
+        _refs: Arc<()>,
+    }
 
     #[derive(Default)]
     struct WakeCounter(AtomicUsize);
@@ -457,11 +460,15 @@ mod test {
     #[derive(Debug)]
     pub struct NeverendingOperator {
         properties: Arc<PlanProperties>,
+        /// This operator and every stream it opens hold a clone of this `Arc`.
+        /// A test watches it through a `Weak`.
+        refs: Arc<()>,
     }
 
     impl NeverendingOperator {
         fn new() -> Self {
             NeverendingOperator {
+                refs: Arc::default(),
                 properties: Arc::new(PlanProperties::new(
                     datafusion::physical_expr::EquivalenceProperties::new(Arc::new(
                         Schema::empty(),
@@ -526,7 +533,9 @@ mod test {
             _partition: usize,
             _context: Arc<TaskContext>,
         ) -> datafusion::common::Result<SendableRecordBatchStream> {
-            Ok(Box::pin(NeverendingRecordBatchStream))
+            Ok(Box::pin(NeverendingRecordBatchStream {
+                _refs: self.refs.clone(),
+            }))
         }
     }
 
@@ -548,17 +557,20 @@ mod test {
 
     /// Spawns a task that never yields a batch on a separate fiber. The returned
     /// channel fires once `execute_query_stage` has unwound, which is after it has
-    /// removed its own abort handle.
+    /// removed its own abort handle. The returned `Weak` counts the task's input
+    /// operator and every stream opened from it.
     fn spawn_never_ending_task(
         executor: &Arc<Executor>,
         ctx: &SessionContext,
         work_dir: &str,
         key: TaskKey,
-    ) -> tokio::sync::oneshot::Receiver<TaskOutcome> {
+    ) -> (tokio::sync::oneshot::Receiver<TaskOutcome>, Weak<()>) {
+        let input = NeverendingOperator::new();
+        let input_refs = Arc::downgrade(&input.refs);
         let shuffle_write = ShuffleWriterExec::try_new(
             key.job_id.clone(),
             key.stage_id,
-            Arc::new(NeverendingOperator::new()),
+            Arc::new(input),
             work_dir.to_string(),
         )
         .expect("creating shuffle writer");
@@ -575,7 +587,7 @@ mod test {
             sender.send(task_result).expect("sending result");
         });
 
-        receiver
+        (receiver, input_refs)
     }
 
     /// A task is only registered once it starts executing, so poll until the
@@ -589,6 +601,22 @@ mod test {
             }
         }
         assert_eq!(executor.active_task_count(), expected);
+    }
+
+    /// Waits until `refs` has `expected` strong references, and fails after
+    /// 10 seconds.
+    async fn assert_strong_count_reaches<T>(refs: &Weak<T>, expected: usize) {
+        let reached = tokio::time::timeout(Duration::from_secs(10), async {
+            while refs.strong_count() != expected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            reached.is_ok(),
+            "expected {expected} strong references, got {}",
+            refs.strong_count()
+        );
     }
 
     /// Awaits a cancelled task's unwind and asserts it reported failure.
@@ -606,7 +634,7 @@ mod test {
         let work_dir = temp_dir.path().to_str().unwrap();
         let (executor, ctx) = never_ending_executor(work_dir);
 
-        let receiver = spawn_never_ending_task(
+        let (receiver, input_refs) = spawn_never_ending_task(
             &executor,
             &ctx,
             work_dir,
@@ -617,6 +645,8 @@ mod test {
             },
         );
         await_active_task_count(&executor, 1).await;
+        // The operator and the one stream the shuffle write opened from it.
+        assert_strong_count_reaches(&input_refs, 2).await;
 
         let wake_counter = Arc::new(WakeCounter::default());
         let waker = waker_ref(&wake_counter);
@@ -632,6 +662,9 @@ mod test {
         assert_eq!(executor.active_task_count(), 1);
 
         await_cancelled_task(receiver).await;
+        // A cancelled task used to keep its shuffle write running and holding
+        // the input stream after the task had already reported failure.
+        assert_strong_count_reaches(&input_refs, 0).await;
 
         assert_eq!(wake_counter.0.load(Ordering::SeqCst), 1);
         assert_eq!(tasks_drained.as_mut().poll(&mut context), Poll::Ready(()));
@@ -643,7 +676,7 @@ mod test {
         let work_dir = temp_dir.path().to_str().unwrap();
         let (executor, ctx) = never_ending_executor(work_dir);
 
-        let first = spawn_never_ending_task(
+        let (first, _) = spawn_never_ending_task(
             &executor,
             &ctx,
             work_dir,
@@ -653,7 +686,7 @@ mod test {
                 task_id: 0,
             },
         );
-        let second = spawn_never_ending_task(
+        let (second, _) = spawn_never_ending_task(
             &executor,
             &ctx,
             work_dir,
