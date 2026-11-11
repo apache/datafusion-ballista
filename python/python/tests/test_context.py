@@ -18,8 +18,15 @@
 import gzip
 import json
 import shutil
+import warnings
 
-from ballista import BallistaConfigExtension, BallistaSessionContext, setup_test_cluster
+from ballista import (
+    BallistaClient,
+    BallistaConfigExtension,
+    BallistaSessionConfig,
+    BallistaSessionContext,
+    setup_test_cluster,
+)
 from datafusion import (
     Accumulator,
     CsvReadOptions,
@@ -73,10 +80,14 @@ def cluster():
     return setup_test_cluster()
 
 
-@pytest.fixture
-def ctx(cluster):
+@pytest.fixture(params=["native", "python"])
+def ctx(cluster, request):
+    """Context using the native Rust client or the Python ``BallistaClient``."""
     (address, port) = cluster
-    return BallistaSessionContext(address=f"df://{address}:{port}")
+    address = f"df://{address}:{port}"
+    if request.param == "native":
+        return BallistaSessionContext(address=address)
+    return BallistaSessionContext(client=BallistaClient(address))
 
 
 def to_table(df) -> pa.Table:
@@ -187,15 +198,102 @@ def test_custom_session_config(cluster):
     assert result.to_pydict() == {"c": [8]}
 
 
-def test_cluster_config(cluster):
+def test_dict_config(cluster):
     (address, port) = cluster
     ctx = BallistaSessionContext(
         address=f"df://{address}:{port}",
-        cluster_config={"datafusion.execution.batch_size": 2},
+        config={
+            "datafusion.execution.batch_size": 2,
+            "ballista.job.name": "test_job",
+        },
     )
     ctx.register_parquet("t", TEST_PARQUET)
     result = to_table(ctx.sql("SELECT count(*) AS c FROM t"))
     assert result.to_pydict() == {"c": [8]}
+
+
+def test_ballista_session_config(cluster):
+    (address, port) = cluster
+    config = (
+        BallistaSessionConfig()
+        .with_job_name("test_job")
+        .set("datafusion.execution.batch_size", 2)
+    )
+    ctx = BallistaSessionContext(address=f"df://{address}:{port}", config=config)
+    ctx.register_parquet("t", TEST_PARQUET)
+    result = to_table(ctx.sql("SELECT count(*) AS c FROM t"))
+    assert result.to_pydict() == {"c": [8]}
+
+
+def test_with_target_partitions(cluster):
+    (address, port) = cluster
+    config = BallistaSessionConfig().with_target_partitions(3)
+    ctx = BallistaSessionContext(address=f"df://{address}:{port}", config=config)
+    ctx.register_parquet("t", TEST_PARQUET)
+    result = to_table(
+        ctx.sql("EXPLAIN ANALYZE SELECT bool_col, count(*) FROM t GROUP BY bool_col")
+    )
+
+    plan = "\n".join(result.column("plan").to_pylist())
+    # final aggregation stage runs with configured number of partitions
+    assert "SuccessfulStage[stage_id=1, partitions=3]" in plan
+
+
+# TODO: remove in 57.0.0, with `cluster_config` argument
+
+
+def test_cluster_config(cluster):
+    (address, port) = cluster
+    with pytest.warns(DeprecationWarning, match="cluster_config") as record:
+        ctx = BallistaSessionContext(
+            address=f"df://{address}:{port}",
+            cluster_config={"datafusion.execution.batch_size": 2},
+        )
+    # warning points at the caller, otherwise python hides it in scripts
+    assert record[0].filename == __file__
+
+    ctx.register_parquet("t", TEST_PARQUET)
+    result = to_table(ctx.sql("SELECT count(*) AS c FROM t"))
+    assert result.to_pydict() == {"c": [8]}
+
+
+def test_cluster_config_reaches_cluster(cluster):
+    (address, port) = cluster
+    with pytest.warns(DeprecationWarning):
+        ctx = BallistaSessionContext(
+            address=f"df://{address}:{port}",
+            cluster_config={"datafusion.execution.target_partitions": 3},
+        )
+    ctx.register_parquet("t", TEST_PARQUET)
+    result = to_table(
+        ctx.sql("EXPLAIN ANALYZE SELECT bool_col, count(*) FROM t GROUP BY bool_col")
+    )
+
+    plan = "\n".join(result.column("plan").to_pylist())
+    assert "SuccessfulStage[stage_id=1, partitions=3]" in plan
+
+
+def test_cluster_config_with_session_config(cluster):
+    (address, port) = cluster
+    with pytest.warns(DeprecationWarning):
+        ctx = BallistaSessionContext(
+            address=f"df://{address}:{port}",
+            config=SessionConfig().with_batch_size(2),
+            cluster_config={"ballista.job.name": "test_job"},
+        )
+    ctx.register_parquet("t", TEST_PARQUET)
+    result = to_table(ctx.sql("SELECT count(*) AS c FROM t"))
+    assert result.to_pydict() == {"c": [8]}
+
+
+def test_no_deprecation_warning_without_cluster_config(cluster):
+    (address, port) = cluster
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        BallistaSessionContext(
+            address=f"df://{address}:{port}",
+            config={"ballista.job.name": "test_job"},
+        )
 
 
 def test_sql_explain_analyze(ctx):
@@ -207,6 +305,37 @@ def test_sql_explain_analyze(ctx):
     assert result.column_names == ["plan_type", "plan"]
     plan = "\n".join(result.column("plan").to_pylist())
     assert "output_rows" in plan
+
+
+NOT_IN_QUERY = "SELECT a FROM t WHERE a NOT IN (SELECT b FROM s)"
+
+
+def register_not_in_tables(ctx, tmp_path):
+    pq.write_table(pa.table({"a": [1, 2, 3, 4, None]}), tmp_path / "t.parquet")
+    pq.write_table(pa.table({"b": [2, 4]}), tmp_path / "s.parquet")
+    ctx.register_parquet("t", str(tmp_path / "t.parquet"))
+    ctx.register_parquet("s", str(tmp_path / "s.parquet"))
+    ctx.sql("SET datafusion.optimizer.prefer_hash_join = true").collect()
+
+
+def test_not_in_subquery(ctx, tmp_path):
+    register_not_in_tables(ctx, tmp_path)
+    result = to_table(ctx.sql(NOT_IN_QUERY))
+    assert sorted(result.column("a").to_pylist()) == [1, 3]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="The Python client optimizes plans with datafusion-python, which "
+    "can not install Ballista's NOT IN rewrite (a logical optimizer rule), so "
+    "NOT IN reaches the scheduler as a null-aware anti join and runs as a "
+    "single task.",
+)
+def test_not_in_subquery_avoids_null_aware_join(ctx, tmp_path):
+    register_not_in_tables(ctx, tmp_path)
+    result = to_table(ctx.sql(f"EXPLAIN ANALYZE {NOT_IN_QUERY}"))
+    plan = "\n".join(result.column("plan").to_pylist())
+    assert "null_aware" not in plan, plan
 
 
 def test_dataframe_explain_analyze(ctx, capsys):
@@ -430,6 +559,25 @@ def test_register_record_batches(ctx):
     assert result.to_pydict() == {"s": [15]}
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="BallistaCacheFactory is not installed on python sessions, cache() "
+    "falls back to an in-memory table which cannot be serialized",
+)
+@pytest.mark.parametrize("cache_noop", [True, False])
+def test_dataframe_cache(cluster, cache_noop):
+    (address, port) = cluster
+    ctx = BallistaSessionContext(
+        address=f"df://{address}:{port}",
+        config=BallistaSessionConfig().with_cache_noop(cache_noop),
+    )
+    cached = ctx.read_csv(TEST_CSV, has_header=True).cache()
+    assert sorted_pydict(to_table(cached)) == {"a": EXPECTED_A, "b": EXPECTED_B}
+
+    result = to_table(cached.filter(col("a") > lit(3)))
+    assert sorted_pydict(result) == {"a": [4, 5], "b": [-5, -6]}
+
+
 #
 # udfs
 #
@@ -498,7 +646,7 @@ def test_udf_join_key(cluster):
     # force a partitioned hash join, so both sides shuffle on the udf key
     ctx = BallistaSessionContext(
         address=f"df://{address}:{port}",
-        cluster_config={
+        config={
             "datafusion.optimizer.hash_join_single_partition_threshold": 0,
             "datafusion.optimizer.hash_join_single_partition_threshold_rows": 0,
         },

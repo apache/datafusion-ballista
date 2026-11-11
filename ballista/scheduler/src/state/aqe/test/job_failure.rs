@@ -20,18 +20,13 @@
 use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::execution_stage::ExecutionStage;
-use crate::test_utils::mock_executor;
+use crate::test_utils::{join_aggregate_sort_logical_plan, mock_executor};
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::{
     FailedTask, JobStatus, ShuffleWritePartition, SuccessfulTask, failed_task,
     job_status, task_status,
 };
-use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::execution::context::{SessionConfig, SessionContext};
-use datafusion::functions_aggregate::sum::sum;
-use datafusion::logical_expr::SortExpr;
-use datafusion::prelude::{JoinType, col};
-use datafusion::test_util::scan_empty_with_partitions;
 
 /// Builds an adaptive graph for a join (two concurrent leaf stages).
 async fn test_join_plan(partition: usize) -> AdaptiveExecutionGraph {
@@ -42,26 +37,7 @@ async fn test_join_plan(partition: usize) -> AdaptiveExecutionGraph {
         .enable_round_robin_repartition = false;
     let ctx = SessionContext::new_with_config(config);
 
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
-        Field::new("gmv", DataType::UInt64, false),
-    ]);
-
-    let left_plan = scan_empty_with_partitions(Some("left"), &schema, None, 2).unwrap();
-    let right_plan = scan_empty_with_partitions(Some("right"), &schema, None, 2)
-        .unwrap()
-        .build()
-        .unwrap();
-    let sort_expr = SortExpr::new(col("id"), false, false);
-    let logical_plan = left_plan
-        .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
-        .unwrap()
-        .aggregate(vec![col("left.id")], vec![sum(col("left.gmv"))])
-        .unwrap()
-        .sort(vec![sort_expr])
-        .unwrap()
-        .build()
-        .unwrap();
+    let logical_plan = join_aggregate_sort_logical_plan();
 
     AdaptiveExecutionGraph::try_new(
         "localhost:50050",
@@ -70,6 +46,7 @@ async fn test_join_plan(partition: usize) -> AdaptiveExecutionGraph {
         &ctx,
         &logical_plan,
         0,
+        None,
     )
     .await
     .unwrap()
@@ -203,6 +180,7 @@ async fn test_replan_cancelled_stage_is_retired_and_late_task_discarded() -> Res
                 runtime_stats: vec![],
                 window_state: vec![],
                 task_column_stats: vec![],
+                runtime_filters: vec![],
             })),
         };
         graph.update_task_status(&executor, vec![status], 4, 4)?;
@@ -242,6 +220,7 @@ async fn test_replan_cancelled_stage_is_retired_and_late_task_discarded() -> Res
             runtime_stats: vec![],
             window_state: vec![],
             task_column_stats: vec![],
+            runtime_filters: vec![],
         })),
     };
     graph

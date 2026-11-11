@@ -17,6 +17,7 @@
 
 use crate::codec;
 use crate::ffi_planner_workaround::decode_file_formats_locally;
+use crate::python_query_exec::{PythonClient, PythonClientQueryPlanner};
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::planner::BallistaQueryPlanner;
 use datafusion::catalog::Session;
@@ -71,7 +72,7 @@ impl PyBallistaExtension {
         py: Python<'py>,
         session_ctx: Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        ballista_extension_components(py, session_ctx)
+        ballista_extension_components(py, session_ctx, None)
     }
 
     /// Phase two of `SessionContext.with_extensions`: contribute the Ballista
@@ -91,6 +92,67 @@ impl PyBallistaExtension {
             self.address.clone(),
             self.config_overrides.clone(),
         )
+    }
+}
+
+/// Counterpart of [PyBallistaExtension] which talks to the cluster through a
+/// Python client, see `ballista.client.BallistaClient`, instead of the
+/// native Rust client.
+#[pyclass(
+    name = "BallistaPythonClientExtension",
+    module = "ballista._internal_ballista",
+    skip_from_py_object
+)]
+pub(crate) struct PyBallistaPythonClientExtension {
+    client: Arc<PythonClient>,
+}
+
+#[pymethods]
+impl PyBallistaPythonClientExtension {
+    #[new]
+    fn new(client: Py<PyAny>) -> Self {
+        Self {
+            client: Arc::new(PythonClient::new(client)),
+        }
+    }
+
+    /// Phase one of `SessionContext.with_extensions`, see
+    /// [PyBallistaExtension]. The physical codec decodes distributed plans
+    /// as plans using this extension's client.
+    fn __datafusion_session_components__<'py>(
+        &self,
+        py: Python<'py>,
+        session_ctx: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        ballista_extension_components(py, session_ctx, Some(Arc::clone(&self.client)))
+    }
+
+    /// Phase two of `SessionContext.with_extensions`, see [PyBallistaExtension].
+    fn __datafusion_session_planner__<'py>(
+        &self,
+        py: Python<'py>,
+        session_ctx: Bound<'py, PyAny>,
+        _fallback: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyCapsule>> {
+        let logical_codec = PyBallistaLogicalExtensionCodec::new(session_ctx.clone())?;
+        let physical_codec = ballista_physical_ffi_codec(
+            session_ctx,
+            Arc::clone(&logical_codec.logical_codec),
+            Some(Arc::clone(&self.client)),
+        )?;
+        let planner: Arc<dyn QueryPlanner + Send + Sync> =
+            Arc::new(PythonClientQueryPlanner::new(
+                Arc::clone(&self.client),
+                logical_codec.logical_codec,
+            ));
+        let ffi = FFI_QueryPlanner::new_with_ffi_codecs(
+            planner,
+            logical_codec.ffi_logical_codec,
+            physical_codec,
+        );
+        let ffi = decode_file_formats_locally(ffi);
+
+        PyCapsule::new_with_value(py, ffi, cr"datafusion_query_planner")
     }
 }
 
@@ -164,7 +226,7 @@ impl PyBallistaPhysicalExtensionCodec {
         logical_codec_object: Py<PyAny>,
     ) -> PyResult<Self> {
         let ffi_physical_codec =
-            ballista_physical_ffi_codec(session_ctx.clone(), logical_codec)?;
+            ballista_physical_ffi_codec(session_ctx.clone(), logical_codec, None)?;
 
         Ok(Self {
             ffi_physical_codec,
@@ -236,6 +298,7 @@ impl PyBallistaQueryPlanner {
         let fallback_physical_codec = ballista_physical_ffi_codec(
             session_ctx.clone(),
             Arc::clone(&logical_codec.logical_codec),
+            None,
         )?;
         Self::from_codecs(
             address,
@@ -361,17 +424,20 @@ pub(crate) fn ballista_datafusion_config_defaults() -> HashMap<String, String> {
 fn ballista_extension_components<'py>(
     py: Python<'py>,
     session_ctx: Bound<'py, PyAny>,
+    client: Option<Arc<PythonClient>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let mut logical_codec = PyBallistaLogicalExtensionCodec::new(session_ctx.clone())?;
     let logical_native = Arc::clone(&logical_codec.logical_codec);
     logical_codec._session_ctx = None;
     let logical_codec = Py::new(py, logical_codec)?;
 
-    let mut physical_codec = PyBallistaPhysicalExtensionCodec::from_logical_codec(
-        session_ctx,
-        logical_native,
-        logical_codec.clone_ref(py).into_any(),
-    )?;
+    let ffi_physical_codec =
+        ballista_physical_ffi_codec(session_ctx.clone(), logical_native, client)?;
+    let mut physical_codec = PyBallistaPhysicalExtensionCodec {
+        ffi_physical_codec,
+        _session_ctx: Some(session_ctx.unbind()),
+        _logical_codec: logical_codec.clone_ref(py).into_any(),
+    };
     physical_codec._session_ctx = None;
     let physical_codec = Py::new(py, physical_codec)?;
 
@@ -397,32 +463,12 @@ fn ballista_extension_planner<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (session_ctx, address, config_overrides=None))]
 pub(crate) fn with_ballista_query_planner(
     py: Python<'_>,
     session_ctx: Bound<'_, PyAny>,
     address: String,
-    config_overrides: Option<HashMap<String, String>>,
 ) -> PyResult<Py<PyAny>> {
-    let mut ballista_overrides = HashMap::new();
-    if let Some(overrides) = config_overrides {
-        for (key, value) in overrides {
-            if key.starts_with("datafusion.") {
-                apply_datafusion_override(&session_ctx, &key, &value)?;
-            } else if key.starts_with("ballista.") {
-                ballista_overrides.insert(key, value);
-            } else {
-                return Err(PyValueError::new_err(format!(
-                    "configuration key must start with 'datafusion.' or 'ballista.': {key}"
-                )));
-            }
-        }
-    }
-
-    let extension = Py::new(
-        py,
-        PyBallistaExtension::new(address, Some(ballista_overrides)),
-    )?;
+    let extension = Py::new(py, PyBallistaExtension::new(address, None))?;
     Ok(session_ctx
         .call_method1("with_extensions", (extension.bind(py),))?
         .unbind())
@@ -431,37 +477,23 @@ pub(crate) fn with_ballista_query_planner(
 fn ballista_physical_ffi_codec(
     session_ctx: Bound<'_, PyAny>,
     logical_codec: Arc<dyn LogicalExtensionCodec>,
+    client: Option<Arc<PythonClient>>,
 ) -> PyResult<FFI_PhysicalExtensionCodec> {
-    let physical_codec: Arc<dyn PhysicalExtensionCodec> =
-        Arc::new(codec::PyBallistaPhysicalExtensionCodec::new(logical_codec));
+    let physical_codec: Arc<dyn PhysicalExtensionCodec> = match client {
+        Some(client) => {
+            Arc::new(codec::PyBallistaPhysicalExtensionCodec::with_python_client(
+                logical_codec,
+                client,
+            ))
+        }
+        None => Arc::new(codec::PyBallistaPhysicalExtensionCodec::new(logical_codec)),
+    };
     let task_ctx_provider = ffi_task_ctx_provider_from_python(session_ctx)?;
     Ok(FFI_PhysicalExtensionCodec::new(
         physical_codec,
         Some(tokio_runtime_handle()),
         task_ctx_provider,
     ))
-}
-
-fn apply_datafusion_override(
-    session_ctx: &Bound<'_, PyAny>,
-    key: &str,
-    value: &str,
-) -> PyResult<()> {
-    if !key
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_'))
-    {
-        return Err(PyValueError::new_err(format!(
-            "invalid DataFusion configuration key: {key}"
-        )));
-    }
-
-    // SET mutates the shared session state. The contexts derived below retain
-    // that state, including registered tables and functions.
-    let escaped_value = value.replace('\'', "''");
-    let statement = format!("SET {key} = '{escaped_value}'");
-    session_ctx.call_method1("sql", (statement,))?;
-    Ok(())
 }
 
 fn parse_scheduler_url(address: &str) -> Result<String> {

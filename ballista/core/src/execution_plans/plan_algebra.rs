@@ -25,9 +25,10 @@
 //! conservative is the safety net: unrecognized node → property assumed
 //! false → caller falls back to the safer path.
 
+use std::fmt::Debug;
 use std::sync::Arc;
 
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::{Result, plan_err};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -36,7 +37,8 @@ use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 
 use crate::execution_plans::{
     BufferExec, PrefixMergeExec, RangeFilterExec, RangeShuffleWriterExec,
-    RuntimeStatsExec, ShuffleWriterExec, SortShuffleWriterExec,
+    RuntimeFilterApplyExec, RuntimeFilterBuildExec, RuntimeStatsExec, ShuffleWriterExec,
+    SortShuffleWriterExec,
 };
 
 /// Whitelisted ops preserve the routing key's row set, values, and
@@ -44,6 +46,7 @@ use crate::execution_plans::{
 pub fn preserves_distribution(plan: &dyn ExecutionPlan) -> bool {
     // Buffered batches replayed verbatim.
     plan.downcast_ref::<BufferExec>().is_some()
+        || plan.is::<RuntimeFilterBuildExec>()
         // Per-partition sort: rows reorder within a partition, row set
         // and counts unchanged. `preserve_partitioning=false` collapses
         // N→1 (like SortPreservingMergeExec), so gate on the flag.
@@ -68,20 +71,27 @@ pub fn preserves_partitioning(plan: &dyn ExecutionPlan) -> bool {
     preserves_distribution(plan)
         // Drops rows, but per-partition — no rows migrate.
         || plan.downcast_ref::<FilterExec>().is_some()
+        || plan.is::<RuntimeFilterApplyExec>()
         // Rewrites columns; partition boundaries untouched.
         || plan.downcast_ref::<ProjectionExec>().is_some()
         // Stats tap; no data mutation.
         || plan.downcast_ref::<RuntimeStatsExec>().is_some()
 }
 
-/// Operators carrying data indexed by *global* input partition, which the
-/// scheduler must slice when it restricts a stage plan to one task's
-/// partition subset.
+/// Operators carrying data indexed by *global* partition, which the scheduler
+/// must slice when it restricts a stage plan to one task's partition subset.
+/// A leaf that owns a partition-indexed source qualifies too.
 ///
 /// The executor still never learns its task's global identity — slicing is
 /// how that stays true. After restriction an operator holds a vec covering
 /// exactly the partitions its task will run, in local order, so `execute(k)`
 /// indexes it directly.
+///
+/// Partition `i` of the node must read partition `i` of each child that is
+/// restricted, so a node that maps partitions to children differently, as
+/// `UnionExec` does, cannot use this hook. The restricted node is serialized
+/// with the scheduler's physical extension codec, so what it carries per
+/// partition must survive that round trip.
 ///
 /// Implement this next to the fields being sliced. The alternative — the
 /// scheduler's task builder knowing each operator's internals — means adding
@@ -91,25 +101,34 @@ pub fn preserves_partitioning(plan: &dyn ExecutionPlan) -> bool {
 /// Like the whitelists above, this exists because `ExecutionPlan` has no
 /// "restrict yourself to a subset of input partitions" method. A defaulted
 /// upstream one would let each operator answer for itself and retire
-/// [`as_partition_sliceable`].
+/// [`as_partition_sliceable`] and [`PartitionSliceableResolver`].
 pub trait PartitionSliceable: ExecutionPlan {
-    /// Rebuild over `child` — already restricted to `partitions` — carrying
-    /// only the entries for `partitions`, in that order.
+    /// Rebuild over `children`, carrying only the entries for `partitions`, in
+    /// that order.
+    ///
+    /// The result must have exactly `partitions.len()` output partitions; the
+    /// scheduler rejects any other count. `partitions` is empty for a branch of
+    /// a `UnionExec` that belongs to other tasks: return a node with no
+    /// partitions.
     ///
     /// # Arguments
     ///
-    /// * `child` - this operator's single input, already restricted
-    /// * `partitions` - global input partition indices this task will run
-    fn slice_to_partitions(
+    /// * `children` - this operator's inputs, restricted to `partitions` except
+    ///   any declared
+    ///   [`SinglePartition`](datafusion::physical_expr::Distribution::SinglePartition),
+    ///   which arrive whole; empty for a leaf
+    /// * `partitions` - global partition indices this task will run
+    fn restrict_to_partitions(
         &self,
-        child: Arc<dyn ExecutionPlan>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
         partitions: &[usize],
     ) -> Result<Arc<dyn ExecutionPlan>>;
 }
 
 /// Hand-maintained whitelist of [`PartitionSliceable`] operators, for the
 /// same reason as the property whitelists above: `dyn ExecutionPlan` can't
-/// be downcast to an arbitrary trait.
+/// be downcast to an arbitrary trait. Operators defined outside this crate are
+/// found through a [`PartitionSliceableResolver`].
 pub fn as_partition_sliceable(
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Option<&dyn PartitionSliceable> {
@@ -120,6 +139,63 @@ pub fn as_partition_sliceable(
         return Some(op);
     }
     None
+}
+
+/// Restricts nodes that [`as_partition_sliceable`] does not list to a task's
+/// partitions, so the scheduler can restrict `ExecutionPlan` nodes of your own,
+/// including ones you cannot implement [`PartitionSliceable`] on, such as a
+/// `DataSourceExec` over a `DataSource` of your own. Set it with
+/// `SchedulerConfig::with_partition_sliceable_resolver`.
+///
+/// It is asked after the built-in list, and never about a node that is read
+/// whole: one below a collapse, or declared `SinglePartition` by its parent. It
+/// is called for most nodes of every task's plan as tasks are launched, so keep
+/// the `None` path cheap.
+///
+/// This is a stopgap for an `ExecutionPlan` method that would let each node
+/// restrict itself; see [`PartitionSliceable`].
+pub trait PartitionSliceableResolver: Debug + Send + Sync {
+    /// Restrict `plan` to `partitions`, or return `None` for a node this
+    /// resolver does not know.
+    ///
+    /// The restricted node is `plan` rebuilt over `children` with exactly
+    /// `partitions.len()` output partitions; any other count is an error. For a
+    /// node of your own, that is typically a `downcast_ref` to your type
+    /// followed by a call to its [`PartitionSliceable::restrict_to_partitions`].
+    ///
+    /// # Arguments
+    ///
+    /// * `plan` - the node to restrict
+    /// * `children` - its children, already restricted as
+    ///   [`PartitionSliceable::restrict_to_partitions`] receives them
+    /// * `partitions` - global partition indices the task runs
+    fn restrict_to_partitions(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        partitions: &[usize],
+    ) -> Option<Result<Arc<dyn ExecutionPlan>>>;
+}
+
+/// Unwraps the only child that a single-input operator's
+/// [`restrict_to_partitions`](PartitionSliceable::restrict_to_partitions)
+/// receives.
+///
+/// # Arguments
+///
+/// * `owner` - operator name, for the error message
+/// * `children` - the children `restrict_to_partitions` received
+pub fn single_child(
+    owner: &str,
+    children: Vec<Arc<dyn ExecutionPlan>>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    match <[_; 1]>::try_from(children) {
+        Ok([child]) => Ok(child),
+        Err(children) => plan_err!(
+            "{owner}: expected 1 child to restrict, got {}",
+            children.len()
+        ),
+    }
 }
 
 /// Take `values[global]` for each global partition index, in task-local
@@ -140,13 +216,12 @@ pub fn slice_by_global_partition<T: Clone>(
 ) -> Result<Vec<T>> {
     partitions
         .iter()
-        .map(|&global| {
-            values.get(global).cloned().ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "{owner}: partition index {global} out of bounds ({} {what})",
-                    values.len()
-                ))
-            })
+        .map(|&global| match values.get(global) {
+            Some(value) => Ok(value.clone()),
+            None => plan_err!(
+                "{owner}: partition index {global} out of bounds ({} {what})",
+                values.len()
+            ),
         })
         .collect()
 }

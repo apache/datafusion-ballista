@@ -350,10 +350,9 @@ pub fn range_partition_predicates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_plans::test_util::partitioned_source;
     use datafusion::arrow::array::Int64Array;
-    use datafusion::arrow::datatypes::{Field, Schema};
-    use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::arrow::datatypes::Schema;
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
     use datafusion::physical_plan::repartition::RepartitionExec;
@@ -363,27 +362,6 @@ mod tests {
     use datafusion::prelude::SessionContext;
     use datafusion::scalar::ScalarValue;
     use futures::TryStreamExt;
-
-    fn one_col_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]))
-    }
-
-    /// Memory source with `partitions` partitions, each carrying a single
-    /// batch of `[start .. start + rows_per)` where `start = k * rows_per`.
-    fn partitioned_source(partitions: usize, rows_per: usize) -> Arc<dyn ExecutionPlan> {
-        let schema = one_col_schema();
-        let mut per_partition: Vec<Vec<RecordBatch>> = Vec::with_capacity(partitions);
-        for k in 0..partitions {
-            let start = (k * rows_per) as i64;
-            let arr = Int64Array::from_iter_values(start..start + rows_per as i64);
-            let batch =
-                RecordBatch::try_new(schema.clone(), vec![Arc::new(arr)]).unwrap();
-            per_partition.push(vec![batch]);
-        }
-        let src =
-            MemorySourceConfig::try_new(&per_partition, schema, None).expect("mem src");
-        Arc::new(DataSourceExec::new(Arc::new(src)))
-    }
 
     /// Predicate `v >= lo AND v < hi` against column `v`.
     fn range_pred(lo: i64, hi: i64) -> Arc<dyn PhysicalExpr> {

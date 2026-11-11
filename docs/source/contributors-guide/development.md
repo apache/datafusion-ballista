@@ -60,6 +60,22 @@ cargo build --release
 cargo test
 ```
 
+### Test fixtures
+
+Look for an existing fixture before writing one, and put a new one in the narrowest place that every test
+using it can reach:
+
+- Used by the tests of one module: in that module's tests.
+- Shared by the unit tests of several modules of a crate: in that crate's `#[cfg(test)]` test utilities module.
+- Shared by the integration tests of a crate: in that crate's `tests/common/mod.rs`.
+- Needed by other crates, such as the TPC-H table schemas: in `ballista_core::test_utils`.
+
+A crate's own unit tests cannot use a helper crate that depends on that crate, because they would see two
+copies of it, so unit-test fixtures stay inside their crate.
+
+Tests that need table data write it into a `tempfile::TempDir` rather than add files to the repository. Data
+that has to be checked in lives in the `testdata` directory of the crate that reads it.
+
 ### TPC-H plan-stability golden files
 
 The `tpch_plan_stability` test suite in the `ballista-scheduler` crate guards the shape of the
@@ -234,6 +250,37 @@ DataFusion, so it is released separately from the Rust crates. See the
 The remaining release steps are described in the
 [release process](https://github.com/apache/datafusion-ballista/blob/main/dev/release/README.md).
 
+## Backporting to a release branch
+
+Each release branch, such as `branch-55`, also makes minor and patch releases, so a fix or a
+backward-compatible feature that has merged to `main` can reach users before the next major version.
+See [Versioning and Compatibility](../user-guide/versioning.md) for what can be released this way.
+
+A merged change can be backported if all of these hold:
+
+- It does not need an entry in the [upgrade guide](#upgrade-notes). It does not break a public API,
+  rename or remove a configuration key or CLI flag, or change a default that alters query plans or
+  results.
+- It does not carry the `api-change` label.
+- It does not change `BALLISTA_PROTOCOL_VERSION`, and it does not change the wire format in a way that
+  an older scheduler, executor or client would misread. PRs that change the wire format carry the
+  `proto-change` label, so check those against this rule.
+
+Backport a change when it merges, not in a batch before a release. Conflicts are cheapest to resolve
+while the code is fresh, and `main` moves further from the release branch every week. The author of a
+change is best placed to backport it, and a reviewer can ask for a backport.
+
+1. Create a branch from the release branch, for example
+   `git switch --no-track -c backport-2062 apache/branch-55`.
+2. Cherry-pick the commit from `main` with `git cherry-pick -x <commit>`, which records the original
+   commit in the message.
+3. Open a PR against the release branch. Title it with the original title, the branch in brackets and
+   the original PR number, and copy the labels from the original PR. The `54.1.0` release, for example,
+   included
+   `fix: [branch-54] keep EmptyExec partition count intact across stage serialization (backport of #2062)`.
+
+A backport goes through the same review and CI as any other PR.
+
 ## Upgrade notes
 
 When a change breaks a public API, renames or removes a configuration key or CLI
@@ -242,3 +289,11 @@ wire/serialization format, add an entry describing the change and the required
 action to the current unreleased page under
 [`docs/source/upgrading/`](../upgrading/index.rst). This keeps the upgrade guide
 complete for the next release.
+
+Add the `api-change` label to the PR as well when the change breaks a public API. A change that needs
+an upgrade note cannot be released in a minor or patch release, so this also decides whether it can be
+[backported to a release branch](#backporting-to-a-release-branch).
+
+Add the `proto-change` label when the change alters the wire or serialization format, for example by
+editing a `.proto` file. Such a change can still be backported if older components can safely ignore it,
+such as a new field that they never read.

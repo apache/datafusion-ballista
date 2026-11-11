@@ -21,8 +21,8 @@
 
 How the TPC-H SF1000 results on the [benchmarking page](index.md) were
 collected: cluster, data, and queries. Per-engine settings are on the
-[Ballista](ballista.md), [Spark](spark.md), [Spark + Comet](comet.md) and
-[Trino](trino.md) pages.
+[Ballista](ballista.md), [Spark](spark.md), [Spark + Comet](comet.md),
+[Trino](trino.md) and [DataFusion Distributed](datafusion-distributed.md) pages.
 
 ## Cluster
 
@@ -42,9 +42,11 @@ collected: cluster, data, and queries. Per-engine settings are on the
 - **Worker pod (Trino):** x86_64, 8 vCPU, 64 GiB memory (the image's
   default JVM heap of 80 %, about 51 GiB), no spill volume. A separate
   coordinator pod plans and schedules but does not scan data.
+- **Worker pod (DataFusion Distributed):** x86_64, 8 vCPU, 64 GiB memory, plus a
+  200 GiB `gp3` PVC for spill files. A separate coordinator pod (8 vCPU,
+  32 GiB) plans each query and runs its last stage.
 - **Driver (Spark and Spark + Comet):** runs the queries through a Spark
-  benchmark harness that is not in this repository yet. See
-  [Spark](spark.md).
+  benchmark harness. See [Spark](spark.md).
 - **Client pod (Ballista):** the `tpch` Rust benchmark runner from
   [`benchmarks/`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks)
   in this repo (`cargo run --release --bin tpch -- benchmark ballista ...`),
@@ -89,7 +91,10 @@ Spark on the same cluster has always used this pattern via
 The SQLBench-H phrasing of the 22 TPC-H queries from
 [apache/datafusion-benchmarks](https://github.com/apache/datafusion-benchmarks).
 
-The Spark harness uses the same queries with the same substitution
-parameters. The only differences are in wording: it writes some dates as
-arithmetic (for example `date '1998-12-01' - interval '90' day` instead of
-`date '1998-09-02'`), and it phrases Q15 as a CTE instead of a view.
+The harness that collected the Spark, Spark + Comet, and Trino results uses
+the same queries with the same substitution parameters. The only differences
+are in wording: it writes some dates as arithmetic (for example
+`date '1998-12-01' - interval '90' day` instead of `date '1998-09-02'`), and it
+phrases Q15 as a CTE instead of a view. The scripts in
+[`benchmarks/cluster`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster)
+run the queries in this repository on every engine.

@@ -41,13 +41,13 @@ use crate::JobId;
 use crate::error::BallistaError;
 use crate::execution_plans::create_shuffle_path;
 use crate::execution_plans::shuffle_writer::{
-    ShuffleWriteMetrics, WriterState, collect_window_state_operators, handoff_stream,
-    run_coordinator, take_handoff,
+    ColumnStatsCollector, ShuffleWriteMetrics, WriterState,
+    collect_window_state_operators, handoff_stream, run_coordinator, take_handoff,
 };
 use crate::execution_plans::shuffle_writer_trait::ShuffleWriter;
 use crate::execution_plans::{ObservedWindowState, PartitionedBoundedWindowAggExec};
 use crate::extension::SessionConfigExt;
-use crate::serde::protobuf::ShuffleWritePartition;
+use crate::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
 
 use super::index::{KeyCollector, index_path, index_schema, write_index_file};
 use super::ipc_file::write_stream_to_ipc_file;
@@ -109,6 +109,8 @@ pub struct RangeShuffleWriterExec {
     /// clone produced by `with_new_children` participates in the same
     /// coordinator.
     state: Arc<Mutex<WriterState>>,
+    /// Statistics of the rows this task wrote, shared with clones.
+    column_stats: ColumnStatsCollector,
 }
 
 impl Clone for RangeShuffleWriterExec {
@@ -123,6 +125,7 @@ impl Clone for RangeShuffleWriterExec {
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
             state: self.state.clone(),
+            column_stats: self.column_stats.clone(),
         }
     }
 }
@@ -184,6 +187,7 @@ impl RangeShuffleWriterExec {
                 initialized: false,
                 handoffs: (0..output_partition_count).map(|_| None).collect(),
             })),
+            column_stats: ColumnStatsCollector::default(),
         })
     }
 
@@ -197,6 +201,20 @@ impl RangeShuffleWriterExec {
     /// Task id (append-order slot within the stage) this writer is bound to.
     pub fn task_id(&self) -> usize {
         self.task_id
+    }
+
+    /// Per-column null counts over all rows this task wrote, one per column
+    /// of the output schema. Empty until the task has written.
+    pub fn column_null_counts(&self) -> Vec<u64> {
+        self.column_stats.null_counts()
+    }
+
+    /// Per-column statistics over all rows this task wrote, as reported to
+    /// the scheduler: a null count for every column. Range partitioning has
+    /// no hash keys, so no column is sketched. Empty until the task has
+    /// written.
+    pub fn column_stats(&self) -> Vec<TaskColumnStats> {
+        self.column_stats.task_column_stats()
     }
 
     /// Drain every window-state collector in this stage, keyed by the global
@@ -251,12 +269,19 @@ impl RangeShuffleWriterExec {
         let task_id = self.task_id;
         let plan = self.plan.clone();
         let metrics = self.metrics.clone();
+        let column_stats = self.column_stats.clone();
 
         async move {
             let now = Instant::now();
             let config = context.session_config().ballista_config();
             let compression_type = config.shuffle_compression_codec()?;
             let channel_capacity = config.shuffle_writer_channel_capacity();
+            // Range partitioning has no hash keys, so nothing is sketched.
+            column_stats.reset(
+                plan.schema().fields().len(),
+                &[],
+                crate::hll::DEFAULT_PRECISION,
+            );
 
             let num_partitions =
                 plan.properties().output_partitioning().partition_count();
@@ -284,7 +309,8 @@ impl RangeShuffleWriterExec {
 
                 debug!("Writing range shuffle results to {path:?}");
 
-                let stream = plan.execute(global_partition, context.clone())?;
+                let stream =
+                    column_stats.count(plan.execute(global_partition, context.clone())?);
                 let index_schema = index_schema.clone();
                 let ordering = self.ordering.clone();
                 handles.spawn(async move {
@@ -515,36 +541,16 @@ mod tests {
     use super::super::ipc_file::read_file_layout;
     use super::*;
     use crate::execution_plans::shuffle_reader::fetch_partition_local;
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId, PartitionLocation, PartitionStats,
-    };
+    use crate::execution_plans::test_util::{key_payload_batch, test_location};
+    use crate::serde::scheduler::PartitionLocation;
     use crate::utils::collect_stream;
-    use datafusion::arrow::array::{Int32Array, RecordBatch, StringArray};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::array::Int32Array;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::prelude::SessionContext;
     use tempfile::TempDir;
-
-    fn test_batch(keys: &[i32]) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int32, false),
-            Field::new("payload", DataType::Utf8, false),
-        ]));
-        let payload: Vec<String> = keys.iter().map(|k| format!("row-{k}")).collect();
-        RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Int32Array::from(keys.to_vec())),
-                Arc::new(StringArray::from(payload)),
-            ],
-        )
-        .unwrap()
-    }
 
     fn key_ordering() -> LexOrdering {
         LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(Column::new(
@@ -558,35 +564,19 @@ mod tests {
     /// unordered child is refused at construction.
     fn input_plan() -> Arc<dyn ExecutionPlan> {
         let partitions = vec![
-            vec![test_batch(&[1, 2]), test_batch(&[3, 4])],
-            vec![test_batch(&[5, 6]), test_batch(&[7, 8])],
+            vec![key_payload_batch(&[1, 2]), key_payload_batch(&[3, 4])],
+            vec![key_payload_batch(&[5, 6]), key_payload_batch(&[7, 8])],
         ];
         let schema = partitions[0][0].schema();
-        let source = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(&partitions, schema, None).unwrap(),
-        )));
+        let source = MemorySourceConfig::try_new_exec(&partitions, schema, None).unwrap();
         Arc::new(SortExec::new(key_ordering(), source).with_preserve_partitioning(true))
     }
 
     fn location(job: &str, stage_id: usize, partition: usize) -> PartitionLocation {
         PartitionLocation {
             map_partition_id: partition,
-            partition_id: PartitionId {
-                job_id: job.into(),
-                stage_id,
-                partition_id: partition,
-            },
-            executor_meta: ExecutorMetadata {
-                id: "test-executor".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default(),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
-            partition_stats: PartitionStats::default(),
             file_id: Some(0),
-            is_sort_shuffle: false,
+            ..test_location(job, stage_id, partition)
         }
     }
 
@@ -606,6 +596,27 @@ mod tests {
         for handle in handles {
             handle.await.unwrap();
         }
+    }
+
+    // A written column with no nulls reports an exact zero, so the scheduler
+    // can tell it from a column that was never counted.
+    #[tokio::test]
+    async fn reports_a_null_count_per_written_column() {
+        let work_dir = TempDir::new().unwrap();
+        let writer = Arc::new(
+            RangeShuffleWriterExec::try_new(
+                JobId::new("job"),
+                1,
+                input_plan(),
+                work_dir.path().to_str().unwrap().to_owned(),
+            )
+            .unwrap(),
+        );
+        assert!(writer.column_null_counts().is_empty());
+
+        drive(writer.clone(), SessionContext::new().task_ctx()).await;
+
+        assert_eq!(writer.column_null_counts(), vec![0, 0]);
     }
 
     /// The writer's output has to come back through the reader that will

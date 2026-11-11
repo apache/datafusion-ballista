@@ -20,12 +20,16 @@ from datafusion import (
     SessionConfig,
     SessionContext,
 )
-from typing import Dict, Optional, Union
+import copy
+from typing import TYPE_CHECKING, Dict, Literal, Optional, Union
 import warnings
 
 from ._internal_ballista import BallistaConfigExtension
 from ._internal_ballista import ballista_datafusion_config_defaults
 from ._internal_ballista import with_ballista_query_planner
+
+if TYPE_CHECKING:
+    from .client import BallistaClient
 
 ConfigValue = Union[str, int, float, bool]
 
@@ -204,10 +208,13 @@ class ExecutionPlanVisualization:
 
 
 def BallistaSessionContext(
-    address: str,
-    config: Optional[Union[SessionConfig, Dict[str, str]]] = None,
+    address: str = "df://localhost:50050",
+    config: Optional[
+        Union["BallistaSessionConfig", SessionConfig, Dict[str, ConfigValue]]
+    ] = None,
     runtime: Optional[RuntimeEnvBuilder] = None,
     cluster_config: Optional[Dict[str, ConfigValue]] = None,
+    client: Optional["BallistaClient"] = None,
 ) -> SessionContext:
     """
     Create a DataFusion ``SessionContext`` that executes queries on a Ballista cluster.
@@ -217,22 +224,55 @@ def BallistaSessionContext(
     operations, ...) is available. Planning happens locally; physical plans are
     sent to the Ballista scheduler at ``address`` for distributed execution.
 
+    By default the native Rust client talks to the cluster. When ``client`` is
+    given, the communication with the cluster (job submission, status tracking
+    and fetching results over Arrow Flight) is done in Python by that
+    ``BallistaClient`` instead. Planning is the same for both.
+
+    The Python client can also be chosen without creating it, by setting
+    ``ballista.python.client_impl`` to ``"python"`` in ``config`` (``"rust"``, the
+    default, keeps the native client). A ``BallistaClient`` is then created
+    for ``address``, with the ``ballista.*`` options set in ``config``, which
+    take precedence over ``SET`` statements of the session.
+    ``ballista.python.client_impl`` is used only to pick the client, it is not
+    sent to the cluster. It can not be read from a ``SessionConfig``.
+    It can not be changed with ``SET`` either, which fails with an unknown
+    key error.
+
     Args:
-        address: Ballista scheduler URL, for example ``"df://localhost:50050"``.
-        config: Local session configuration, either a ``SessionConfig`` or a
-            dictionary of ``datafusion.*`` options. DataFusion options which
-            Ballista does not support are overridden with Ballista defaults.
+        address: Ballista scheduler URL. Defaults to ``"df://localhost:50050"``.
+            Ignored when ``client`` is given, the client has its own address.
+        config: Session configuration, either a ``BallistaSessionConfig``, a
+            ``SessionConfig`` or a dictionary of ``datafusion.*`` and
+            ``ballista.*`` options with ``str``, ``int``, ``float`` or ``bool``
+            values. It is used for local planning and propagated to the
+            scheduler-side session. DataFusion options which Ballista does not
+            support are overridden with Ballista defaults, see
+            ``BallistaSessionConfig``.
         runtime: Optional runtime environment used by the local session.
-        cluster_config: Options applied to the local session and propagated to
-            the scheduler-side session. Keys must start with ``datafusion.`` or
-            ``ballista.``; values may be ``str``, ``int``, ``float`` or ``bool``.
+        cluster_config: Deprecated since 56.0.0 and will be removed in 57.0.0,
+            use ``config``. Merged into ``config``, taking precedence on
+            conflicts. Can not be used with ``BallistaSessionConfig``.
+        client: Python ``BallistaClient`` used to talk to the cluster instead
+            of the native Rust client. Subclass it to customize how the cluster
+            is reached, e.g. to add authentication metadata. Needs the
+            ``python-client`` extra. The client connects to the scheduler
+            with the ``ballista.client.use_tls``,
+            ``ballista.client.grpc_max_message_size`` and
+            ``ballista.client.grpc_http2_keepalive_interval_seconds`` options
+            of its own config, a ``UserWarning`` is raised if ``config`` sets
+            them to other values. Other ``ballista.*`` options of ``config``
+            apply to its queries.
 
     Returns:
         A ``SessionContext`` configured with the Ballista query planner.
 
     Raises:
-        ValueError: If a ``cluster_config`` key does not start with
-            ``datafusion.`` or ``ballista.``.
+        ValueError: If a ``config`` key does not start with ``datafusion.`` or
+            ``ballista.``, or is an unknown ``ballista.*`` key, or if
+            ``cluster_config`` is used with ``BallistaSessionConfig``, or if
+            ``client`` is given with ``ballista.python.client_impl`` set to
+            ``"rust"``, or ``ballista.python.client_impl`` has an invalid value.
 
     Examples:
         Connect to a scheduler and run SQL:
@@ -248,46 +288,133 @@ def BallistaSessionContext(
         >>> df = ctx.read_parquet("./testdata/test.parquet")
         >>> batches = df.filter(col("id") > lit(4)).limit(5).collect()
 
-        Configure settings which should reach the cluster:
+        Configure session settings with a dictionary:
 
         >>> ctx = BallistaSessionContext(
         ...     "df://localhost:50050",
-        ...     cluster_config={
+        ...     config={
         ...         "datafusion.execution.target_partitions": 16,
-        ...         "datafusion.execution.batch_size": 8192,
+        ...         "ballista.job.name": "daily report",
         ...     },
         ... )
 
         Configure Ballista specific settings, such as job name shown in the
-        scheduler UI, or adaptive query planning:
+        scheduler UI, or adaptive query planning, with ``BallistaSessionConfig``:
+
+        >>> from ballista import BallistaSessionConfig
+        >>> ctx = BallistaSessionContext(
+        ...     "df://localhost:50050",
+        ...     config=BallistaSessionConfig()
+        ...     .with_job_name("daily report")
+        ...     .with_adaptive_query_planner(True)
+        ...     .with_broadcast_join_threshold_bytes(10 * 1024 * 1024)
+        ...     .set("datafusion.execution.batch_size", 8192),
+        ... )
+
+        Set the number of partitions to match cluster capacity
+        (``executors * vcores_per_executor``). Ballista defaults
+        ``datafusion.execution.target_partitions`` to ``16``, a value set in a
+        passed ``SessionConfig`` is overridden, so use
+        ``with_target_partitions`` or a dict instead:
 
         >>> ctx = BallistaSessionContext(
         ...     "df://localhost:50050",
-        ...     cluster_config={
-        ...         "ballista.job.name": "daily report",
-        ...         "ballista.planner.adaptive.enabled": True,
-        ...         "ballista.optimizer.broadcast_join_threshold_bytes": 10 * 1024 * 1024,
+        ...     config=BallistaSessionConfig().with_target_partitions(32),
+        ... )
+
+        Talk to the cluster through a Python client, here one that sends an
+        authentication header with every scheduler call:
+
+        >>> from ballista import BallistaClient
+        >>> class AuthClient(BallistaClient):
+        ...     def call_metadata(self):
+        ...         return super().call_metadata() + [("authorization", "token")]
+        >>> ctx = BallistaSessionContext(client=AuthClient("df://localhost:50050"))
+
+        Use the Python client, configured from ``config``:
+
+        >>> ctx = BallistaSessionContext(
+        ...     "df://localhost:50050",
+        ...     config={
+        ...         "ballista.python.client_impl": "python",
+        ...         "ballista.client.use_tls": True,
         ...     },
         ... )
-
-        Configure the local session only:
-
-        >>> from datafusion import SessionConfig
-        >>> ctx = BallistaSessionContext(
-        ...     "df://localhost:50050",
-        ...     config=SessionConfig().with_information_schema(True),
-        ... )
     """
-    cluster_config = _normalize_cluster_config(cluster_config)
-    config = _produce_valid_config(config, cluster_config)
+    if cluster_config is not None:
+        config = _merge_cluster_config(config, cluster_config)
+    if not isinstance(config, BallistaSessionConfig):
+        config = BallistaSessionConfig(config)
 
-    source_ctx = SessionContext(config, runtime)
-    configured_ctx = with_ballista_query_planner(
-        source_ctx,
-        address,
-        cluster_config,
-    )
-    return configured_ctx
+    if client is not None and config._client_impl == "rust":
+        raise ValueError(
+            f"`client` can not be used with `{CLIENT_IMPL_KEY}` set to `rust`"
+        )
+
+    if client is None and config._client_impl != "python":
+        return BallistaRustSessionContext(address, config, runtime)
+
+    # imported on use, the Python client needs the `python-client` extra
+    from .client import BallistaClient, BallistaPythonSessionContext
+
+    if client is None:
+        client = BallistaClient(address, config=config._ballista_overrides())
+    else:
+        _warn_ignored_channel_options(config, client)
+    return BallistaPythonSessionContext(client, config, runtime)
+
+
+# options a ``BallistaClient`` reads once, from its own config, when it creates
+# the scheduler channel; other ``ballista.*`` options are resolved per query
+_CHANNEL_OPTIONS = (
+    "ballista.client.use_tls",
+    "ballista.client.grpc_max_message_size",
+    "ballista.client.grpc_http2_keepalive_interval_seconds",
+)
+
+
+def _warn_ignored_channel_options(config: "BallistaSessionConfig", client) -> None:
+    client_config = getattr(client, "config", None)
+    if client_config is None:
+        return
+    overrides = config._ballista_overrides()
+    for key in _CHANNEL_OPTIONS:
+        if key not in overrides:
+            continue
+        value = overrides[key]
+        client_value = client_config.get(key)
+        if client_value is not None and (
+            client_value.strip().lower() == value.strip().lower()
+        ):
+            continue
+        # stacklevel points at the caller of `BallistaSessionContext`
+        warnings.warn(
+            f"`{key}` = `{value}` in `config` does not apply to the scheduler "
+            f"connection of the given `client`, which uses `{client_value}`, "
+            "set it in the client's `config` instead",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+def BallistaRustSessionContext(
+    address: str = "df://localhost:50050",
+    config: Optional[
+        Union["BallistaSessionConfig", SessionConfig, Dict[str, ConfigValue]]
+    ] = None,
+    runtime: Optional[RuntimeEnvBuilder] = None,
+) -> SessionContext:
+    """
+    Create a ``SessionContext`` that talks to the cluster through the native
+    Rust client.
+
+    Internal, use ``BallistaSessionContext`` without ``client``.
+    """
+    if not isinstance(config, BallistaSessionConfig):
+        config = BallistaSessionConfig(config)
+
+    source_ctx = SessionContext(config.build(), runtime)
+    return with_ballista_query_planner(source_ctx, address)
 
 
 # DataFusion options overridden by Ballista, mirrors
@@ -311,6 +438,12 @@ _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS: Dict[str, bool] = {
 }
 
 
+# Python only option picking the cluster client, see `BallistaSessionContext`.
+# It is kept out of `BallistaConfigExtension`, so it never reaches Rust.
+CLIENT_IMPL_KEY = "ballista.python.client_impl"
+_CLIENT_IMPL_VALUES = ("rust", "python")
+
+
 def _config_value_to_str(value: ConfigValue) -> str:
     # `str(True)` is "True", config parsers expect lowercase
     if isinstance(value, bool):
@@ -318,44 +451,398 @@ def _config_value_to_str(value: ConfigValue) -> str:
     return str(value)
 
 
-def _normalize_cluster_config(
-    cluster_config: Optional[Dict[str, ConfigValue]],
-) -> Optional[Dict[str, str]]:
-    if cluster_config is None:
-        return None
-    return {str(k): _config_value_to_str(v) for k, v in cluster_config.items()}
+class BallistaSessionConfig:
+    """
+    Builder for a Ballista-ready DataFusion ``SessionConfig``.
 
+    Mirrors Rust ``BallistaConfig``: typed ``with_*`` setters for Ballista
+    options, plus ``set`` for any ``datafusion.*`` or ``ballista.*`` option.
+    ``build`` produces a ``SessionConfig`` with Ballista defaults applied and
+    ``BallistaConfigExtension`` registered.
 
-def _produce_valid_config(
-    config: Optional[Union[SessionConfig, Dict[str, str]]] = None,
-    cluster_config: Optional[Dict[str, ConfigValue]] = None,
-) -> SessionConfig:
-    cluster_config = _normalize_cluster_config(cluster_config)
+    DataFusion options which Ballista overrides are set to Ballista defaults:
+    restricted options are always overridden, non-restricted options are kept
+    only when set with ``set`` or a dict.
+    Options inside a passed ``SessionConfig`` can not be inspected, so all of
+    them are overridden with Ballista defaults.
 
-    ballista_settings = {
-        k: v for k, v in (cluster_config or {}).items() if k.startswith("ballista.")
-    }
+    For example ``datafusion.execution.target_partitions`` defaults to ``16``,
+    change it with ``with_target_partitions``, ``set`` or a dict, not with
+    ``SessionConfig.with_target_partitions``.
 
-    # options explicitly set by the user, only known when config is a dict
-    user_options = config if isinstance(config, dict) else {}
+    Args:
+        config: Initial configuration, either a ``SessionConfig`` or a dictionary
+            of ``datafusion.*`` and ``ballista.*`` options.
 
-    if config is None:
-        config = SessionConfig()
-    elif isinstance(config, dict):
-        config = SessionConfig(config)
+    Examples:
+        >>> from ballista import BallistaSessionConfig
+        >>> config = (
+        ...     BallistaSessionConfig({"datafusion.execution.batch_size": 8192})
+        ...     .with_target_partitions(32)
+        ...     .with_job_name("daily report")
+        ...     .with_adaptive_query_planner(True)
+        ...     .set("ballista.shuffle.compression.codec", "zstd")
+        ...     .build()
+        ... )
+    """
 
-    for key, value in ballista_datafusion_config_defaults().items():
-        if (
-            key.startswith("datafusion.")
-            and key in _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS
-        ):
-            restricted = _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS[key]
-            # keep user value for options which are not restricted
-            if not restricted and key in user_options:
-                continue
-            config = config.set(key, value)
+    def __init__(
+        self,
+        config: Optional[Union[SessionConfig, Dict[str, ConfigValue]]] = None,
+    ):
+        self._base: Optional[SessionConfig] = None
+        self._datafusion_options: Dict[str, str] = {}
+        self._ballista_settings: Dict[str, str] = {}
+        # `ballista.python.client_impl`, `None` if not set
+        self._client_impl: Optional[str] = None
+
+        if isinstance(config, SessionConfig):
+            self._base = config
+        elif config is not None:
+            for key, value in config.items():
+                self.set(key, value)
+
+    def set(self, key: str, value: ConfigValue) -> "BallistaSessionConfig":
+        """
+        Set a ``datafusion.*`` or ``ballista.*`` option.
+
+        Raises:
+            ValueError: If the key has an unsupported prefix, or is an unknown
+                ``ballista.*`` key.
+        """
+        value = _config_value_to_str(value)
+        if key == CLIENT_IMPL_KEY:
+            kind = value.strip().lower()
+            if kind not in _CLIENT_IMPL_VALUES:
+                raise ValueError(
+                    f"invalid value of {CLIENT_IMPL_KEY}: {value}, "
+                    "expected `rust` or `python`"
+                )
+            self._client_impl = kind
         elif key.startswith("ballista."):
-            ballista_settings.setdefault(key, value)
+            # validates the key, values are not validated by ballista
+            BallistaConfigExtension({key: value})
+            self._ballista_settings[key] = value
+        elif key.startswith("datafusion."):
+            self._datafusion_options[key] = value
+        else:
+            raise ValueError(
+                f"unsupported configuration key: {key}, "
+                "expected `datafusion.` or `ballista.` prefix"
+            )
+        return self
 
-    config = config.with_extension(BallistaConfigExtension(ballista_settings))
-    return config
+    def build(self) -> SessionConfig:
+        """Produce a ``SessionConfig`` with ``BallistaConfigExtension`` registered."""
+        # SessionConfig setters modify it in place, do not change user's config
+        config = copy.copy(self._base) if self._base is not None else SessionConfig()
+        for key, value in self._datafusion_options.items():
+            config = config.set(key, value)
+
+        ballista_settings = dict(self._ballista_settings)
+        for key, value in ballista_datafusion_config_defaults().items():
+            if (
+                key.startswith("datafusion.")
+                and key in _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS
+            ):
+                restricted = _BALLISTA_RESTRICTED_DATAFUSION_OPTIONS[key]
+                # keep user value for options which are not restricted
+                if not restricted and key in self._datafusion_options:
+                    continue
+                config = config.set(key, value)
+            elif key.startswith("ballista."):
+                ballista_settings.setdefault(key, value)
+
+        return config.with_extension(BallistaConfigExtension(ballista_settings))
+
+    def _ballista_overrides(self) -> Dict[str, str]:
+        """``ballista.*`` options set explicitly, without Ballista defaults."""
+        return dict(self._ballista_settings)
+
+    # datafusion
+
+    def with_target_partitions(self, target_partitions: int) -> "BallistaSessionConfig":
+        """Number of partitions for query execution, overrides Ballista default."""
+        return self.set("datafusion.execution.target_partitions", target_partitions)
+
+    # job
+
+    def with_job_name(self, job_name: str) -> "BallistaSessionConfig":
+        """Job name displayed in the scheduler UI."""
+        return self.set("ballista.job.name", job_name)
+
+    def with_standalone_parallelism(self, parallelism: int) -> "BallistaSessionConfig":
+        """Parallelism of the standalone cluster."""
+        return self.set("ballista.standalone.parallelism", parallelism)
+
+    def with_cache_noop(self, enabled: bool) -> "BallistaSessionConfig":
+        """Disable the default cache extension node."""
+        return self.set("ballista.cache.noop", enabled)
+
+    # shuffle reader
+
+    def with_shuffle_reader_maximum_concurrent_requests(
+        self, max_requests: int
+    ) -> "BallistaSessionConfig":
+        """Maximum concurrent shuffle read requests."""
+        return self.set("ballista.shuffle.max_concurrent_read_requests", max_requests)
+
+    def with_shuffle_reader_force_remote_read(
+        self, enabled: bool
+    ) -> "BallistaSessionConfig":
+        """Force remote reads even for local partitions."""
+        return self.set("ballista.shuffle.force_remote_read", enabled)
+
+    def with_shuffle_reader_remote_prefer_flight(
+        self, enabled: bool
+    ) -> "BallistaSessionConfig":
+        """Prefer Flight protocol for remote shuffle reads."""
+        return self.set("ballista.shuffle.remote_read_prefer_flight", enabled)
+
+    def with_shuffle_reader_max_bytes_in_flight(
+        self, max_bytes: int
+    ) -> "BallistaSessionConfig":
+        """Reduce-side in-flight bytes budget."""
+        return self.set("ballista.shuffle.reader.max_bytes_in_flight", max_bytes)
+
+    def with_shuffle_reader_max_blocks_in_flight_per_address(
+        self, max_blocks: int
+    ) -> "BallistaSessionConfig":
+        """Per-address in-flight block cap."""
+        return self.set(
+            "ballista.shuffle.reader.max_blocks_in_flight_per_address", max_blocks
+        )
+
+    def with_shuffle_reader_default_block_size_bytes(
+        self, block_size: int
+    ) -> "BallistaSessionConfig":
+        """Assumed block size when partition statistics lack a byte count."""
+        return self.set("ballista.shuffle.reader.default_block_size_bytes", block_size)
+
+    # shuffle writer
+
+    def with_shuffle_sort_based_batch_size(
+        self, batch_size: int
+    ) -> "BallistaSessionConfig":
+        """Sort shuffle target batch size in rows."""
+        return self.set("ballista.shuffle.sort_based.batch_size", batch_size)
+
+    def with_shuffle_writer_channel_capacity(
+        self, capacity: int
+    ) -> "BallistaSessionConfig":
+        """Shuffle writer bounded-channel capacity."""
+        return self.set("ballista.shuffle.writer_channel_capacity", capacity)
+
+    def with_shuffle_sort_based_memory_limit_per_task_bytes(
+        self, limit_bytes: int
+    ) -> "BallistaSessionConfig":
+        """Per-task buffered bytes at which the sort shuffle writer spills, ``0`` disables."""
+        return self.set(
+            "ballista.shuffle.sort_based.memory_limit_per_task_bytes", limit_bytes
+        )
+
+    def with_shuffle_compression_codec(self, codec: str) -> "BallistaSessionConfig":
+        """Shuffle compression codec: ``none``, ``lz4`` or ``zstd``."""
+        return self.set("ballista.shuffle.compression.codec", codec)
+
+    # grpc client
+
+    def with_grpc_client_initial_connection_window_size(
+        self, size: int
+    ) -> "BallistaSessionConfig":
+        """HTTP/2 initial connection-level flow-control window."""
+        return self.set("ballista.client.initial_connection_window_size", size)
+
+    def with_grpc_client_initial_stream_window_size(
+        self, size: int
+    ) -> "BallistaSessionConfig":
+        """HTTP/2 initial stream-level flow-control window."""
+        return self.set("ballista.client.initial_stream_window_size", size)
+
+    def with_grpc_client_max_message_size(self, size: int) -> "BallistaSessionConfig":
+        """Maximum gRPC message size."""
+        return self.set("ballista.client.grpc_max_message_size", size)
+
+    def with_grpc_client_connect_timeout_seconds(
+        self, seconds: int
+    ) -> "BallistaSessionConfig":
+        """gRPC client connection timeout in seconds."""
+        return self.set("ballista.client.grpc_connect_timeout_seconds", seconds)
+
+    def with_grpc_client_timeout_seconds(self, seconds: int) -> "BallistaSessionConfig":
+        """gRPC client request timeout in seconds."""
+        return self.set("ballista.client.grpc_timeout_seconds", seconds)
+
+    def with_grpc_client_tcp_keepalive_seconds(
+        self, seconds: int
+    ) -> "BallistaSessionConfig":
+        """TCP keep-alive interval for gRPC clients in seconds."""
+        return self.set("ballista.client.grpc_tcp_keepalive_seconds", seconds)
+
+    def with_grpc_client_http2_keepalive_interval_seconds(
+        self, seconds: int
+    ) -> "BallistaSessionConfig":
+        """HTTP/2 keep-alive interval for gRPC clients in seconds."""
+        return self.set(
+            "ballista.client.grpc_http2_keepalive_interval_seconds", seconds
+        )
+
+    # client
+
+    def with_client_impl(
+        self, kind: Literal["rust", "python"]
+    ) -> "BallistaSessionConfig":
+        """
+        Talk to the cluster through the ``"python"`` ``BallistaClient`` or the
+        native ``"rust"`` client (default), see ``BallistaSessionContext``.
+        """
+        return self.set(CLIENT_IMPL_KEY, kind)
+
+    def with_client_pull(self, enabled: bool) -> "BallistaSessionConfig":
+        """Use pull (``True``) or push job tracking strategy."""
+        return self.set("ballista.client.pull", enabled)
+
+    def with_use_tls(self, enabled: bool) -> "BallistaSessionConfig":
+        """Use TLS connection to the cluster."""
+        return self.set("ballista.client.use_tls", enabled)
+
+    def with_io_retries_times(self, retries: int) -> "BallistaSessionConfig":
+        """Number of retries for client IO operations."""
+        return self.set("ballista.client.io_retries_times", retries)
+
+    def with_io_retry_wait_time_ms(self, wait_ms: int) -> "BallistaSessionConfig":
+        """Wait time in milliseconds between client IO retries."""
+        return self.set("ballista.client.io_retry_wait_time_ms", wait_ms)
+
+    # planner
+
+    def with_adaptive_query_planner(self, enabled: bool) -> "BallistaSessionConfig":
+        """Enable adaptive query planning."""
+        return self.set("ballista.planner.adaptive.enabled", enabled)
+
+    def with_adaptive_join_enabled(self, enabled: bool) -> "BallistaSessionConfig":
+        """Enable the AQE dynamic join selection rule."""
+        return self.set("ballista.planner.adaptive_join.enabled", enabled)
+
+    def with_coalesce_enabled(self, enabled: bool) -> "BallistaSessionConfig":
+        """Enable the AQE coalesce shuffle partitions rule."""
+        return self.set("ballista.planner.coalesce.enabled", enabled)
+
+    def with_coalesce_target_partition_bytes(
+        self, target_bytes: int
+    ) -> "BallistaSessionConfig":
+        """Target post-coalesce partition size in bytes."""
+        return self.set(
+            "ballista.planner.coalesce.target_partition_bytes", target_bytes
+        )
+
+    def with_coalesce_small_partition_factor(
+        self, factor: float
+    ) -> "BallistaSessionConfig":
+        """Small partition merge factor."""
+        return self.set("ballista.planner.coalesce.small_partition_factor", factor)
+
+    def with_coalesce_merged_partition_factor(
+        self, factor: float
+    ) -> "BallistaSessionConfig":
+        """Merged partition early-flush factor."""
+        return self.set("ballista.planner.coalesce.merged_partition_factor", factor)
+
+    def with_propagate_empty_enabled(self, enabled: bool) -> "BallistaSessionConfig":
+        """Enable the AQE propagate empty exec rule."""
+        return self.set("ballista.planner.propagate_empty.enabled", enabled)
+
+    def with_parallel_window_enabled(self, enabled: bool) -> "BallistaSessionConfig":
+        """Enable the AQE parallel window rule."""
+        return self.set("ballista.planner.parallel_window.enabled", enabled)
+
+    # optimizer
+
+    def with_broadcast_join_threshold_bytes(
+        self, threshold_bytes: int
+    ) -> "BallistaSessionConfig":
+        """Byte threshold below which a join side is broadcast, ``0`` disables."""
+        return self.set(
+            "ballista.optimizer.broadcast_join_threshold_bytes", threshold_bytes
+        )
+
+    def with_broadcast_join_threshold_rows(
+        self, threshold_rows: int
+    ) -> "BallistaSessionConfig":
+        """Row threshold below which a join side is broadcast, ``0`` disables."""
+        return self.set(
+            "ballista.optimizer.broadcast_join_threshold_rows", threshold_rows
+        )
+
+    def with_hash_join_max_build_partition_bytes(
+        self, max_bytes: int
+    ) -> "BallistaSessionConfig":
+        """Maximum hash join build partition bytes under AQE, ``0`` disables."""
+        return self.set(
+            "ballista.optimizer.hash_join_max_build_partition_bytes", max_bytes
+        )
+
+    def with_stage_build_side(self, enabled: bool) -> "BallistaSessionConfig":
+        """Stage a join's build side as its own shuffle under AQE."""
+        return self.set("ballista.optimizer.stage_build_side", enabled)
+
+    def with_stage_build_side_min_probe_ratio(
+        self, ratio: int
+    ) -> "BallistaSessionConfig":
+        """Minimal probe to build side ratio for staging the build side."""
+        return self.set("ballista.optimizer.stage_build_side_min_probe_ratio", ratio)
+
+    def with_stage_build_side_max_estimate_multiple(
+        self, multiple: int
+    ) -> "BallistaSessionConfig":
+        """Maximal estimated build side multiple of broadcast threshold to stage."""
+        return self.set(
+            "ballista.optimizer.stage_build_side_max_estimate_multiple", multiple
+        )
+
+    def with_not_in_subquery_rewrite(self, enabled: bool) -> "BallistaSessionConfig":
+        """Rewrite uncorrelated ``NOT IN (subquery)`` into an anti join."""
+        return self.set("ballista.optimizer.not_in_subquery_rewrite", enabled)
+
+    def with_balance_scan_file_groups(self, enabled: bool) -> "BallistaSessionConfig":
+        """Prune scan files by statistics and balance scan file groups."""
+        return self.set("ballista.optimizer.balance_scan_file_groups", enabled)
+
+    # scheduler
+
+    def with_max_partitions_per_task(
+        self, max_partitions: int
+    ) -> "BallistaSessionConfig":
+        """Scheduler per-task partition slice cap."""
+        return self.set("ballista.scheduler.max_partitions_per_task", max_partitions)
+
+    def with_share_file_statistics_cache(
+        self, enabled: bool
+    ) -> "BallistaSessionConfig":
+        """Plan jobs with the scheduler-wide file statistics cache."""
+        return self.set("ballista.scheduler.share_file_statistics_cache", enabled)
+
+
+# TODO: remove with `cluster_config` argument in 57.0.0
+def _merge_cluster_config(
+    config: Optional[
+        Union[BallistaSessionConfig, SessionConfig, Dict[str, ConfigValue]]
+    ],
+    cluster_config: Dict[str, ConfigValue],
+) -> BallistaSessionConfig:
+    # stacklevel points at the caller of `BallistaSessionContext`, python shows
+    # `DeprecationWarning` by default only if it is attributed to `__main__`
+    warnings.warn(
+        "`cluster_config` is deprecated and will be removed in 57.0.0, use `config`",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    if isinstance(config, BallistaSessionConfig):
+        raise ValueError(
+            "`cluster_config` can not be used with `BallistaSessionConfig`, "
+            "set the options on `BallistaSessionConfig` instead"
+        )
+    merged = BallistaSessionConfig(config)
+    for key, value in cluster_config.items():
+        merged.set(key, value)
+    return merged

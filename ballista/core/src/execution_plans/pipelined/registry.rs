@@ -662,18 +662,9 @@ fn replay_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_plans::test_util::{int32_batch, int32_schema};
     use datafusion::arrow::array::Int32Array;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use futures::TryStreamExt;
-
-    fn schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
-    }
-
-    fn batch(values: &[i32]) -> RecordBatch {
-        RecordBatch::try_new(schema(), vec![Arc::new(Int32Array::from(values.to_vec()))])
-            .unwrap()
-    }
 
     fn job() -> JobId {
         "job".into()
@@ -709,8 +700,14 @@ mod tests {
         capacity: usize,
         claim_timeout: Duration,
     ) -> (Arc<ProducerOutputs>, PartitionSink) {
-        let (outputs, mut sinks) =
-            ProducerOutputs::new(schema(), [0], false, capacity, None, claim_timeout);
+        let (outputs, mut sinks) = ProducerOutputs::new(
+            int32_schema(),
+            [0],
+            false,
+            capacity,
+            None,
+            claim_timeout,
+        );
         (outputs, sinks.remove(0))
     }
 
@@ -718,7 +715,7 @@ mod tests {
     /// with its sink.
     fn broadcast() -> (Arc<ProducerOutputs>, PartitionSink) {
         let (outputs, mut sinks) =
-            ProducerOutputs::new(schema(), [0], true, 1, None, WAIT);
+            ProducerOutputs::new(int32_schema(), [0], true, 1, None, WAIT);
         (outputs, sinks.remove(0))
     }
 
@@ -736,11 +733,11 @@ mod tests {
         tokio::task::yield_now().await;
 
         let (outputs, mut sinks) =
-            ProducerOutputs::new(schema(), [3], false, 2, None, WAIT);
+            ProducerOutputs::new(int32_schema(), [3], false, 2, None, WAIT);
         registry.register(key(0), outputs).unwrap();
         let sink = sinks.remove(0);
-        assert!(sink.send(batch(&[1, 2])).await.unwrap());
-        assert!(sink.send(batch(&[3])).await.unwrap());
+        assert!(sink.send(int32_batch(&[1, 2])).await.unwrap());
+        assert!(sink.send(int32_batch(&[3])).await.unwrap());
         sink.finish().await.unwrap();
 
         let batches = consumer.await.unwrap().unwrap();
@@ -757,7 +754,7 @@ mod tests {
         assert!(err.to_string().contains("registered twice"), "{err}");
 
         let stream = registry.open(&key(0), 0, WAIT).await.unwrap().stream;
-        assert!(sink.send(batch(&[1])).await.unwrap());
+        assert!(sink.send(int32_batch(&[1])).await.unwrap());
         sink.finish().await.unwrap();
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
         assert_eq!(values(&batches), vec![1]);
@@ -769,10 +766,11 @@ mod tests {
         let (outputs, sink) = queue(1, WAIT);
         registry.register(key(0), outputs).unwrap();
 
-        assert!(sink.send(batch(&[1])).await.unwrap());
+        assert!(sink.send(int32_batch(&[1])).await.unwrap());
         // The queue holds one batch, so the second send waits for a reader.
         let blocked =
-            tokio::time::timeout(Duration::from_millis(50), sink.send(batch(&[2]))).await;
+            tokio::time::timeout(Duration::from_millis(50), sink.send(int32_batch(&[2])))
+                .await;
         assert!(blocked.is_err(), "send should wait for the consumer");
 
         let mut stream = registry.open(&key(0), 0, WAIT).await.unwrap().stream;
@@ -787,7 +785,7 @@ mod tests {
         let registry = PipelinedRegistry::new("local");
         let (outputs, sink) = queue(4, WAIT);
         registry.register(key(0), outputs.clone()).unwrap();
-        assert!(sink.send(batch(&[1])).await.unwrap());
+        assert!(sink.send(int32_batch(&[1])).await.unwrap());
         outputs.fail(&DataFusionError::Execution("disk on fire".to_owned()));
         drop(sink);
 
@@ -824,8 +822,8 @@ mod tests {
         registry.register(key(0), outputs).unwrap();
 
         let early = registry.open(&key(0), 0, WAIT).await.unwrap().stream;
-        assert!(sink.send(batch(&[1, 2])).await.unwrap());
-        assert!(sink.send(batch(&[3])).await.unwrap());
+        assert!(sink.send(int32_batch(&[1, 2])).await.unwrap());
+        assert!(sink.send(int32_batch(&[3])).await.unwrap());
         sink.finish().await.unwrap();
         let late = registry.open(&key(0), 0, WAIT).await.unwrap().stream;
 
@@ -916,12 +914,12 @@ mod tests {
         let registry = PipelinedRegistry::new("local");
         let (outputs, sink) = queue(1, WAIT);
         registry.register(key(0), outputs.clone()).unwrap();
-        assert!(sink.send(batch(&[1])).await.unwrap());
+        assert!(sink.send(int32_batch(&[1])).await.unwrap());
         registry.remove_job(&job());
         // The producer still holds `outputs`, as the writer does for the life
         // of its task, so the queue must be closed rather than merely
         // dropped by the registry.
-        assert!(!sink.send(batch(&[2])).await.unwrap());
+        assert!(!sink.send(int32_batch(&[2])).await.unwrap());
         drop(outputs);
     }
 
@@ -931,8 +929,8 @@ mod tests {
         let (outputs, sink) = queue(1, Duration::from_millis(20));
         registry.register(key(0), outputs).unwrap();
         // Room in the queue: sending does not need a consumer yet.
-        assert!(sink.send(batch(&[1])).await.unwrap());
-        let err = sink.send(batch(&[2])).await.unwrap_err();
+        assert!(sink.send(int32_batch(&[1])).await.unwrap());
+        let err = sink.send(int32_batch(&[2])).await.unwrap_err();
         assert!(err.to_string().contains("no consumer opened"), "{err}");
         let err = sink.finish().await.unwrap_err();
         assert!(err.to_string().contains("no consumer opened"), "{err}");
@@ -944,18 +942,20 @@ mod tests {
         let (outputs, sink) = queue(1, Duration::from_millis(20));
         registry.register(key(0), outputs).unwrap();
         let mut stream = registry.open(&key(0), 0, WAIT).await.unwrap().stream;
-        assert!(sink.send(batch(&[1])).await.unwrap());
+        assert!(sink.send(int32_batch(&[1])).await.unwrap());
 
         // A slow consumer is backpressure, not a missing one.
-        let blocked =
-            tokio::time::timeout(Duration::from_millis(100), sink.send(batch(&[2])))
-                .await;
+        let blocked = tokio::time::timeout(
+            Duration::from_millis(100),
+            sink.send(int32_batch(&[2])),
+        )
+        .await;
         assert!(blocked.is_err(), "send should still be waiting");
         assert_eq!(
             values(&[stream.try_next().await.unwrap().unwrap()]),
             vec![1]
         );
-        assert!(sink.send(batch(&[2])).await.unwrap());
+        assert!(sink.send(int32_batch(&[2])).await.unwrap());
     }
 
     #[tokio::test]

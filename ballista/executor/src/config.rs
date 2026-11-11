@@ -226,21 +226,24 @@ pub struct Config {
     )]
     pub memory_pool_fraction: f64,
     /// Maximum disk space spill files may use, per session runtime (shared by
-    /// that session's tasks). When unset, DataFusion's default (100 GB)
-    /// applies. Accepts the same values as `--memory-pool-size`.
+    /// that session's tasks). When unset, defaults to the larger of the work
+    /// dir filesystem's free space at startup and DataFusion's 100 GB default.
+    /// Accepts the same values as `--memory-pool-size`.
     #[arg(
         long,
         value_parser = parse_memory_pool_size,
-        help = "Max disk space for spill files per session runtime (e.g. \"1TB\"). Unset = DataFusion default (100GB)."
+        help = "Max disk space for spill files per session runtime (e.g. \"1TB\"). Unset = the larger of the work dir's free space at startup and DataFusion's 100GB default."
     )]
     pub max_temp_directory_size: Option<u64>,
-    /// Maximum number of sessions whose shared runtime state (object-store
-    /// clients, Parquet footer cache) is retained on the executor (LRU). `0`
-    /// disables caching.
+    /// Maximum number of (session, config fingerprint) entries whose shared
+    /// runtime state (object-store clients, Parquet footer cache) is retained
+    /// on the executor (LRU). A session that changes its extension config
+    /// mid-session uses one entry per distinct fingerprint. `0` disables
+    /// caching.
     #[arg(
         long,
         default_value_t = 16,
-        help = "Max number of sessions whose shared runtime state (object-store clients, Parquet footer cache) is retained on the executor (LRU). 0 disables caching."
+        help = "Max number of (session, config fingerprint) entries whose shared runtime state (object-store clients, Parquet footer cache) is retained on the executor (LRU). A session that changes its extension config mid-session uses one entry per distinct fingerprint. 0 disables caching."
     )]
     pub session_runtime_cache_capacity: usize,
     /// Number of seconds an established client connection is cached while idle

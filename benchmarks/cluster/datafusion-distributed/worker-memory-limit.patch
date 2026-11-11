@@ -1,0 +1,52 @@
+diff --git a/benchmarks/remote-worker/src/main.rs b/benchmarks/remote-worker/src/main.rs
+index a50896b..de0ced3 100644
+--- a/benchmarks/remote-worker/src/main.rs
++++ b/benchmarks/remote-worker/src/main.rs
+@@ -6,7 +6,8 @@ use datafusion::common::instant::Instant;
+ use datafusion::common::runtime::SpawnedTask;
+ use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+ use datafusion::execution::SessionStateBuilder;
+-use datafusion::execution::runtime_env::RuntimeEnv;
++use datafusion::execution::memory_pool::FairSpillPool;
++use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
+ use datafusion::object_store::aws::AmazonS3Builder;
+ use datafusion::physical_plan::metrics::MetricsSet;
+ use datafusion::physical_plan::{ExecutionPlan, execute_stream};
+@@ -91,7 +92,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
+             .with_bucket_name(s3_url.host().unwrap().to_string())
+             .build()?,
+     );
+-    let runtime_env = Arc::new(RuntimeEnv::default());
++    let runtime_env = runtime_env_from_env()?;
+     runtime_env.register_object_store(&s3_url, s3);
+ 
+     let worker = Worker::from_session_builder(move |ctx: WorkerQueryContext| async move {
+@@ -356,6 +357,28 @@ fn err(s: impl Display) -> (StatusCode, String) {
+     (StatusCode::INTERNAL_SERVER_ERROR, s.to_string())
+ }
+ 
++/// Not upstream: benchmarks/cluster in apache/datafusion-ballista adds this so the
++/// benchmark can give each pod the memory limit Ballista's executors get.
++/// MEMORY_POOL_BYTES sizes a FairSpillPool shared by everything the process runs,
++/// and SPILL_DIR is where operators that go past their share spill to. Unset, the
++/// runtime is upstream's: no memory limit, spills in the OS temp directory.
++fn runtime_env_from_env() -> Result<Arc<RuntimeEnv>, Box<dyn Error>> {
++    let mut builder = RuntimeEnvBuilder::new();
++    match std::env::var("MEMORY_POOL_BYTES").ok().filter(|v| !v.is_empty()) {
++        Some(bytes) => {
++            let bytes: usize = bytes.parse()?;
++            info!("Memory pool: FairSpillPool of {bytes} bytes");
++            builder = builder.with_memory_pool(Arc::new(FairSpillPool::new(bytes)));
++        }
++        None => info!("Memory pool: unbounded"),
++    }
++    if let Some(dir) = std::env::var("SPILL_DIR").ok().filter(|v| !v.is_empty()) {
++        info!("Spill directory: {dir}");
++        builder = builder.with_temp_file_path(dir);
++    }
++    Ok(builder.build_arc()?)
++}
++
+ async fn get_self_url() -> Result<Url, Box<dyn Error>> {
+     let pod_ip = std::env::var("POD_IP")
+         .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "POD_IP is not set"))?;

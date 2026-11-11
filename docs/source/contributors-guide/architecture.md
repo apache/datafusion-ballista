@@ -62,10 +62,11 @@ can be run as native binaries and are also available as Docker Images, which can
 [Docker Compose](https://datafusion.apache.org/ballista/user-guide/deployment/docker-compose.html) or
 [Kubernetes](https://datafusion.apache.org/ballista/user-guide/deployment/kubernetes.html).
 
-The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction
-between the executor(s) and the scheduler for fetching tasks and reporting task status.
+Clients submit query plans to the scheduler over gRPC, or SQL over Arrow Flight SQL. The scheduler breaks each query
+into stages and sends tasks to the executors, which report progress back. Executors exchange shuffle data with each
+other over Arrow Flight and return results to the client the same way.
 
-![Ballista Cluster Diagram](ballista_architecture.excalidraw.svg)
+![Ballista Cluster Diagram](ballista_architecture.svg)
 
 ### Scheduler
 
@@ -80,7 +81,7 @@ Its principal methods are:
 
 | Method                | Description                                                          |
 | --------------------- | -------------------------------------------------------------------- |
-| ExecuteQuery          | Submit a logical query plan or SQL query for execution               |
+| ExecuteQuery          | Submit a logical, Substrait or physical plan for execution           |
 | ExecuteQueryPush      | Same, but streams job status back to the client                      |
 | GetJobStatus          | Get the status of a submitted query                                  |
 | GetJobMetrics         | Get execution metrics for a submitted query                          |
@@ -90,15 +91,15 @@ Its principal methods are:
 | PollWork              | Pull-based executors ask for the next task                           |
 | UpdateTaskStatus      | Executors report task completion or failure                          |
 
-Jobs are submitted to the scheduler's gRPC service from a client context, either in the form of a logical query
-plan or a SQL string. The scheduler then creates an execution graph, which contains a physical plan broken down into
+Jobs are submitted to the scheduler's gRPC service from a client context, in the form of a logical, Substrait or
+physical plan. The scheduler then creates an execution graph, which contains a physical plan broken down into
 stages (pipelines) that can be scheduled independently. This process is explained in detail in the Distributed
 Query Scheduling section of this guide.
 
 ### Executor
 
-The executor processes connect to a scheduler and poll for tasks to perform. These tasks are physical plans in
-protocol buffer format. These physical plans are typically executed against multiple partitions of input data. Executors
+The executor processes connect to a scheduler and receive tasks to perform, either pushed by the scheduler (the
+default) or by polling for them. These tasks are physical plans in protocol buffer format. These physical plans are typically executed against multiple partitions of input data. Executors
 can execute multiple partitions of the same plan in parallel.
 
 ### Clients
@@ -210,7 +211,7 @@ Each executor will re-partition the output of the stage it is running so that it
 stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the [ShuffleWriterExec]
 and [ShuffleReaderExec] operators.
 
-The shuffle is _blocking_: a stage materializes its output to local storage, and today a downstream stage waits
+The shuffle is _staged_: a stage materializes its output to local storage, and today a downstream stage waits
 for the whole upstream stage to complete before it starts. Waiting on the whole stage is a property of the current
 scheduler rather than of the design — the output of a finished task is readable as soon as its files are closed,
 so a downstream stage could in principle start on partial input when the cluster has capacity to spare. See
@@ -267,6 +268,15 @@ There are two implementations, selected by configuration when a job is submitted
 
 Keeping the two graphs side by side lets the adaptive implementation mature without destabilizing the static
 path.
+
+The same selection applies to a job submitted as an already-built physical plan. The adaptive planner then
+skips logical planning and `EXPLAIN` handling, pins the plan's hash repartitions as stage boundaries
+(`PinSubmittedShufflesRule`, since the submitter placed them deliberately and DataFusion would otherwise
+re-derive them from operator requirements), and runs the same optimizer rules. The rules match DataFusion
+and Ballista operators by type and leave any other operator in place. An extension operator must declare
+what it needs from its input through `required_input_distribution`, as DataFusion re-derives
+`CoalescePartitionsExec` from that, and partition coalescing is skipped for a stage whose shuffles feed an
+operator the rule does not know.
 
 ### How re-optimization works
 

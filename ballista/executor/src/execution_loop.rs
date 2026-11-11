@@ -203,6 +203,7 @@ where
                     let job_id = cleanup.job_id.clone().into();
                     let work_dir = executor.work_dir.clone();
                     let remove_stage_ids = cleanup.remove_stage_ids.clone();
+                    executor.remove_pipelined_job_data(&job_id, &remove_stage_ids);
 
                     // In poll-based cleanup, removing job data is fire-and-forget.
                     // Failures here do not affect task execution and are only logged.
@@ -461,6 +462,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             .ok();
         let runtime_stats = query_stage_exec.collect_runtime_stats_reports();
         let column_stats = query_stage_exec.collect_column_stats();
+        let runtime_filters = query_stage_exec.collect_runtime_filter_reports();
         // Collect only when the task otherwise succeeded: a failed task's
         // partial state is meaningless, and its own error is the useful one.
         // A collection failure fails the task — these are load-bearing for the
@@ -496,6 +498,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
                 runtime_stats,
                 window_state,
                 column_stats,
+                runtime_filters,
             },
         ));
 
@@ -535,8 +538,8 @@ mod tests {
     use crate::executor::Executor;
     use crate::health::ExecutorHealth;
     use crate::metrics::LoggingMetricsCollector;
+    use crate::test_util::fresh_runtime_producer;
     use ballista_core::JobId;
-    use ballista_core::RuntimeProducer;
     use ballista_core::registry::BallistaFunctionRegistry;
     use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
@@ -558,7 +561,6 @@ mod tests {
     use datafusion::arrow::datatypes::Schema;
     use datafusion::error::Result;
     use datafusion::execution::context::TaskContext;
-    use datafusion::execution::runtime_env::RuntimeEnv;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::metrics::MetricsSet;
@@ -759,8 +761,6 @@ mod tests {
         expected_free: usize,
     ) {
         let engine = BlockingEngine::default();
-        let runtime_producer: RuntimeProducer =
-            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
         let executor = Arc::new(Executor::new(
             ExecutorRegistration {
                 id: "executor".to_string(),
@@ -772,7 +772,7 @@ mod tests {
                 ..Default::default()
             },
             "",
-            runtime_producer,
+            fresh_runtime_producer(),
             Arc::new(default_config_producer),
             Arc::new(BallistaFunctionRegistry::default()),
             Arc::new(LoggingMetricsCollector::default()),

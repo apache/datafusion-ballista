@@ -28,6 +28,8 @@
 use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
 use crate::scheduler_server::JobIdGenerator;
+use crate::state::adaptive::AdaptiveRules;
+use ballista_core::execution_plans::plan_algebra::PartitionSliceableResolver;
 use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::{
     ConfigProducer, JobId, config::TaskSchedulingPolicy, ids::new_instance_id,
@@ -439,6 +441,20 @@ pub struct SchedulerConfig {
     pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
     /// Override function for customizing gRPC client endpoints before they are used
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
+    /// Restricts `ExecutionPlan` nodes of your own that hold data per
+    /// partition to a task's partitions, using
+    /// [`PartitionSliceable`](ballista_core::execution_plans::plan_algebra::PartitionSliceable)
+    /// or by building the restricted node itself. Without it, a
+    /// stage split between tasks that holds such a leaf fails the job. Unlike
+    /// the `override_*` fields it adds to Ballista's own list rather than
+    /// replacing it. See [`PartitionSliceableResolver`].
+    pub partition_sliceable_resolver: Option<Arc<dyn PartitionSliceableResolver>>,
+    /// Rules of your own that adaptive query planning runs, for plans with
+    /// `ExecutionPlan` nodes of your own. Unlike the `override_*` fields it
+    /// adds to Ballista's rules rather than replacing them. Only the adaptive
+    /// planner (`ballista.planner.adaptive.enabled`) runs them. See
+    /// [`AdaptiveRules`].
+    pub adaptive_rules: Option<Arc<dyn AdaptiveRules>>,
     /// Whether to use TLS when connecting to executors (for flight proxy)
     pub use_tls: bool,
     /// Minimum number of registered executors before /readyz returns 200. It
@@ -523,6 +539,8 @@ impl Default for SchedulerConfig {
             override_logical_codec: None,
             override_physical_codec: None,
             override_create_grpc_client_endpoint: None,
+            partition_sliceable_resolver: None,
+            adaptive_rules: None,
             use_tls: false,
             min_ready_executors: 1,
             task_max_failures: 4,
@@ -835,6 +853,21 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets [`Self::partition_sliceable_resolver`].
+    pub fn with_partition_sliceable_resolver(
+        mut self,
+        resolver: Arc<dyn PartitionSliceableResolver>,
+    ) -> Self {
+        self.partition_sliceable_resolver = Some(resolver);
+        self
+    }
+
+    /// Sets [`Self::adaptive_rules`].
+    pub fn with_adaptive_rules(mut self, rules: Arc<dyn AdaptiveRules>) -> Self {
+        self.adaptive_rules = Some(rules);
+        self
+    }
+
     /// Sets the directory to write per-job event logs to.
     pub fn with_event_log_dir(mut self, event_log_dir: Option<String>) -> Self {
         self.event_log_dir = event_log_dir;
@@ -980,6 +1013,8 @@ impl TryFrom<Config> for SchedulerConfig {
             override_physical_codec: None,
             override_session_builder: None,
             override_create_grpc_client_endpoint: None,
+            partition_sliceable_resolver: None,
+            adaptive_rules: None,
             use_tls: false,
             min_ready_executors: opt.min_ready_executors,
             task_max_failures: opt.task_max_failures,

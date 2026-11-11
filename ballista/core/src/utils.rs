@@ -34,7 +34,7 @@ use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, metrics};
 use futures::StreamExt;
-use log::{error, info};
+use log::{error, info, warn};
 use std::any::Any;
 use std::borrow::Cow;
 use std::future::Future;
@@ -48,6 +48,39 @@ use tokio::net::TcpSocket;
 use tonic::codegen::StdError;
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::{Channel, Endpoint, Error, Server};
+
+/// Retry an async operation up to `retries` times after its initial attempt.
+///
+/// The caller decides which errors are transient. Non-retriable errors are
+/// returned immediately, and `wait_ms` is applied only before a retry.
+pub(crate) async fn with_retry<T, E, F, Fut>(
+    retries: u8,
+    wait_ms: u64,
+    should_retry: impl Fn(&E) -> bool,
+    mut f: F,
+) -> std::result::Result<T, E>
+where
+    E: std::fmt::Debug,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = std::result::Result<T, E>>,
+{
+    let mut attempt = 0;
+    loop {
+        match f().await {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt < retries && should_retry(&error) => {
+                attempt += 1;
+                warn!(
+                    "retrying operation (attempt {attempt}/{retries}) after error: {error:?}"
+                );
+                if wait_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
 
 /// Configuration for gRPC client connections.
 ///
@@ -199,15 +232,29 @@ pub fn default_config_producer() -> SessionConfig {
     SessionConfig::new_with_ballista()
 }
 
-/// Creates [IpcWriteOptions] using the compression codec configured in the BallistaConfig
+/// zstd level used for shuffle data.
+///
+/// Level 1 keeps nearly all of zstd's size reduction over lz4 for much less
+/// CPU than arrow's default of 3. Writing 60M TPC-H lineitem rows into 200
+/// sort shuffle partitions produced 2.55 GB at level 1 against 2.50 GB at
+/// level 3 (lz4: 4.29 GB), and wrote 7-10% faster.
+pub const SHUFFLE_ZSTD_COMPRESSION_LEVEL: i32 = 1;
+
+/// Creates [IpcWriteOptions] using the compression codec configured in the
+/// BallistaConfig. zstd uses [`SHUFFLE_ZSTD_COMPRESSION_LEVEL`].
 pub fn create_write_options(
     compression_type: Option<CompressionType>,
 ) -> std::result::Result<IpcWriteOptions, DataFusionError> {
-    IpcWriteOptions::default()
-        .try_with_compression(compression_type)
-        .map_err(|err| {
-            DataFusionError::Internal(format!("Failed to set compression codec: {err}"))
-        })
+    let options = IpcWriteOptions::default().try_with_compression(compression_type);
+    let options = match compression_type {
+        Some(CompressionType::ZSTD) => options.and_then(|o| {
+            o.try_with_compression_level(Some(SHUFFLE_ZSTD_COMPRESSION_LEVEL))
+        }),
+        _ => options,
+    };
+    options.map_err(|err| {
+        DataFusionError::Internal(format!("Failed to set compression codec: {err}"))
+    })
 }
 
 /// Compacts `Utf8View` / `BinaryView` columns whose data buffers hold more

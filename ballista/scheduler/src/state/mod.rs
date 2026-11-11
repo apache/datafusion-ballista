@@ -21,12 +21,16 @@ use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::scheduler_server::{DefaultJobGenerator, JobIdGenerator, timestamp_millis};
 use crate::state::execution_graph::TaskDescription;
 use crate::state::executor_manager::ExecutorManager;
+use crate::state::pipelined_graph::{PlacementDecision, plan_placement};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
+use ballista_core::config::{BALLISTA_EXECUTION_MODE, ExecutionMode};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
+use ballista_core::execution_plans::PipelinedShuffleWriterExec;
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaCodec;
-use ballista_core::serde::protobuf::TaskStatus;
+use ballista_core::serde::protobuf::{TaskStatus, job_status};
 use ballista_core::{JobId, JobStatusSubscriber};
 use datafusion::execution::context::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -38,7 +42,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-mod aqe;
+pub(crate) mod aqe;
+/// Extension points for adaptive query planning: rules of your own, and the
+/// stage boundaries they act on.
+pub mod adaptive {
+    pub use super::aqe::adaptive_rules::{AdaptiveRule, AdaptiveRules};
+    pub use super::aqe::execution_plan::ExchangeExec;
+}
 /// Links the jobs behind a `DataFrame::cache()` query so none of them blocks.
 pub(crate) mod cache_linker;
 /// Cross-job registry of materialized `DataFrame::cache()` results.
@@ -52,8 +62,9 @@ pub mod execution_graph_dot;
 pub mod execution_stage;
 /// Executor registration and management.
 pub mod executor_manager;
-// Nothing plans pipelined jobs yet, so only the tests use this module.
-#[allow(dead_code)]
+// Documented in the module itself: outer docs here would make rustdoc
+// resolve the module's intra-doc links from this module instead.
+pub mod pipelined_graph;
 pub(crate) mod pipelined_join_selection;
 /// Session state management.
 pub mod session_manager;
@@ -97,6 +108,15 @@ pub fn encode_protobuf<T: Message + Default>(msg: &T) -> Result<Vec<u8>> {
         ))
     })?;
     Ok(value)
+}
+
+/// Whether a bound task holds vcores of its own, to be handed back when it
+/// finishes or fails to launch. A pipelined task does not: its job reserved
+/// the vcores, and releases them when the job ends.
+fn holds_vcores(task: &TaskDescription) -> bool {
+    task.plan
+        .downcast_ref::<PipelinedShuffleWriterExec>()
+        .is_none()
 }
 
 /// Shared state for the Ballista scheduler.
@@ -213,10 +233,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         &self,
         sender: EventSender<QueryStageSchedulerEvent>,
     ) -> Result<()> {
-        let schedulable_tasks = self
-            .executor_manager
-            .bind_schedulable_tasks(self.task_manager.get_running_job_cache())
-            .await?;
+        // Pipelined jobs go first: each needs all of its vcores at once, and
+        // stage-by-stage binding would otherwise take them piecemeal.
+        let mut schedulable_tasks = self.bind_pipelined_jobs(&sender).await?;
+        schedulable_tasks.extend(
+            self.executor_manager
+                .bind_schedulable_tasks(self.task_manager.get_running_job_cache())
+                .await?,
+        );
         if schedulable_tasks.is_empty() {
             debug!("No schedulable tasks found to be launched");
             return Ok(());
@@ -272,6 +296,126 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         });
 
         Ok(())
+    }
+
+    /// Places every task of each running pipelined job that fits in the free
+    /// vcores, returning the tasks to launch.
+    ///
+    /// The placement is planned under the job's read lock, the vcores are
+    /// reserved all at once, and the placement is committed under the job's
+    /// write lock, so the job lock and the vcore lock are never held
+    /// together. A job that does not fit yet waits for a later round.
+    async fn bind_pipelined_jobs(
+        &self,
+        sender: &EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<Vec<BoundTask>> {
+        let running_jobs = self.task_manager.get_running_job_cache();
+        let mut bound = vec![];
+        let mut candidates = None;
+        for (job_id, job_info) in running_jobs.iter() {
+            // An error ends the pass, but the jobs it already placed still get
+            // their tasks launched: they hold their vcores, and wait for them.
+            let result: Result<()> = async {
+                let Some(job_status::Status::Running(running)) = &job_info.status else {
+                    return Ok(());
+                };
+                let queued_at = running.queued_at;
+                let (requirements, max_partitions_per_task) = {
+                    let graph = job_info.execution_graph.read().await;
+                    let Some(pipelined) = graph.as_pipelined() else {
+                        return Ok(());
+                    };
+                    let Some(requirements) = pipelined.placement_requirements() else {
+                        return Ok(());
+                    };
+                    (requirements, pipelined.max_partitions_per_task())
+                };
+                if candidates.is_none() {
+                    candidates =
+                        Some(self.executor_manager.placement_candidates().await?);
+                }
+                let Some((executors, available)) = &candidates else {
+                    return Ok(());
+                };
+                let total_vcores = executors
+                    .values()
+                    .map(|metadata| metadata.specification.vcores as usize)
+                    .sum();
+                let PlacementDecision::Fits(placement) = plan_placement(
+                    &requirements,
+                    available,
+                    total_vcores,
+                    max_partitions_per_task,
+                ) else {
+                    debug!("Pipelined job {job_id} does not fit in the free vcores yet");
+                    return Ok(());
+                };
+                if !self
+                    .executor_manager
+                    .reserve_vcores(&placement.reservation)
+                    .await?
+                {
+                    debug!("Free vcores changed while placing pipelined job {job_id}");
+                    candidates = None;
+                    return Ok(());
+                }
+                // Free vcores are lower now; look again for the next job.
+                let Some((executors, _)) = candidates.take() else {
+                    return Ok(());
+                };
+                let placed = {
+                    let mut graph = job_info.execution_graph.write().await;
+                    match graph.as_pipelined_mut() {
+                        Some(pipelined) if pipelined.awaits_placement() => {
+                            pipelined.place(&placement, &executors).map(Some)
+                        }
+                        _ => Ok(None),
+                    }
+                };
+                match placed {
+                    Ok(None) => {
+                        // Ended since its placement was planned, so nothing
+                        // else will release these.
+                        debug!("Pipelined job {job_id} ended while being placed");
+                        self.executor_manager
+                            .unbind_tasks(placement.reservation)
+                            .await?;
+                    }
+                    Ok(Some(tasks)) => {
+                        bound.extend(tasks);
+                        // Publishes the final stage's locations to the client,
+                        // which reads them while the job runs.
+                        sender
+                            .post_event(QueryStageSchedulerEvent::JobUpdated(
+                                job_id.clone(),
+                            ))
+                            .await?;
+                    }
+                    Err(e) => {
+                        self.executor_manager
+                            .unbind_tasks(placement.reservation)
+                            .await?;
+                        sender
+                            .post_event(QueryStageSchedulerEvent::JobRunningFailed {
+                                job_id: job_id.clone(),
+                                fail_message: format!(
+                                    "Failed to place pipelined job {job_id}: {e}"
+                                ),
+                                queued_at,
+                                failed_at: timestamp_millis(),
+                            })
+                            .await?;
+                    }
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                error!("Stopped placing pipelined jobs at job {job_id}: {e}");
+                break;
+            }
+        }
+        Ok(bound)
     }
 
     /// Remove an executor.
@@ -465,6 +609,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Result<()> {
         let start = Instant::now();
 
+        let pipelined = session_ctx
+            .state()
+            .config()
+            .ballista_config()
+            .execution_mode()?
+            == ExecutionMode::Pipelined;
+        // A cache build runs staged whatever the session's mode: a pipelined
+        // job streams its output and leaves no shuffle files to cache. Jobs
+        // reading the cache keep the session's mode.
+        let session_ctx = if pipelined && self.cache_linker.key_of(job_id).is_some() {
+            let mut state = session_ctx.state();
+            state
+                .config_mut()
+                .options_mut()
+                .set(BALLISTA_EXECUTION_MODE, &ExecutionMode::Staged.to_string())?;
+            Arc::new(SessionContext::new_with_state(state))
+        } else if pipelined && !self.config.is_push_staged_scheduling() {
+            // A pipelined job must be placed all at once, which the scheduler
+            // can only do when it pushes tasks to executors.
+            return Err(BallistaError::General(
+                "ballista.execution.mode = pipelined requires push-staged scheduling, \
+                 but this scheduler runs pull-staged (start it with \
+                 --scheduler-policy push-staged)"
+                    .to_owned(),
+            ));
+        } else {
+            session_ctx
+        };
+
         self.task_manager
             .submit_plan(job_id, job_name, session_ctx, plan, queued_at, subscriber)
             .await?;
@@ -524,55 +697,23 @@ mod tests {
     use crate::config::SchedulerConfig;
     use crate::scheduler_server::timestamp_millis;
     use crate::state::executor_manager::ExecutorManager;
-    use crate::state::task_manager::TaskLauncher;
-    use crate::test_utils::test_cluster_context;
+    use crate::test_utils::payload::{
+        PayloadCodec, PayloadExec, payload_resolver, payloads_of,
+    };
+    use crate::test_utils::{
+        BlackholeTaskLauncher, RejectingTaskLauncher, aggregation_logical_plan,
+        mock_executor, register_virtual_executor, test_cluster_context,
+    };
+    use ballista_core::config::BALLISTA_EXECUTION_MODE;
     use ballista_core::extension::SessionConfigExt;
-    use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::MultiTaskDefinition;
     use ballista_core::serde::scheduler::{
-        ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
-        ExecutorSpecification,
+        ExecutorData, ExecutorMetadata, ExecutorSpecification,
     };
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use ballista_core::serde::{BallistaCodec, BallistaLogicalExtensionCodec};
     use datafusion::execution::context::SessionConfig;
-    use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{LogicalPlan, col};
-    use datafusion::test_util::scan_empty_with_partitions;
+
     use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
-
-    struct RejectOne {
-        reject: JobId,
-    }
-
-    #[async_trait::async_trait]
-    impl TaskLauncher for RejectOne {
-        async fn launch_tasks(
-            &self,
-            _executor: &ExecutorMetadata,
-            tasks: Vec<MultiTaskDefinition>,
-            _executor_manager: &ExecutorManager,
-        ) -> Result<HashSet<JobId>> {
-            Ok(tasks
-                .iter()
-                .map(|t| JobId::from(t.job_id.clone()))
-                .filter(|j| j == &self.reject)
-                .take(1)
-                .collect())
-        }
-    }
-
-    fn agg_plan() -> LogicalPlan {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .build()
-            .unwrap()
-    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn launch_tasks_isolates_single_rejected_job() -> Result<()> {
@@ -585,29 +726,10 @@ mod tests {
                 BallistaCodec::default(),
                 "localhost:50050".to_owned(),
                 Arc::new(SchedulerConfig::default()),
-                Arc::new(RejectOne {
-                    reject: bad_job.clone(),
-                }),
+                Arc::new(RejectingTaskLauncher::only(bad_job.clone())),
             );
 
-        let vcores = 8;
-        state
-            .executor_manager
-            .register_executor(
-                ExecutorMetadata {
-                    id: "executor-1".to_string(),
-                    host: String::default(),
-                    port: 0,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_vcores(vcores),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                ExecutorData {
-                    executor_id: "executor-1".to_string(),
-                    total_vcores: vcores,
-                    available_vcores: vcores,
-                },
-            )
+        register_virtual_executor(&state.executor_manager, "executor-1".to_string(), 8)
             .await?;
 
         let ctx = state
@@ -625,7 +747,7 @@ mod tests {
                     job_id,
                     "",
                     ctx.clone(),
-                    &agg_plan(),
+                    &aggregation_logical_plan(2),
                     timestamp_millis(),
                     None,
                 )
@@ -685,29 +807,10 @@ mod tests {
                 BallistaCodec::default(),
                 "localhost:50050".to_owned(),
                 Arc::new(SchedulerConfig::default()),
-                Arc::new(RejectOne {
-                    reject: JobId::from("no-such-job"),
-                }),
+                Arc::new(BlackholeTaskLauncher::default()),
             );
 
-        let vcores = 8;
-        state
-            .executor_manager
-            .register_executor(
-                ExecutorMetadata {
-                    id: "executor-1".to_string(),
-                    host: String::default(),
-                    port: 0,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_vcores(vcores),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                ExecutorData {
-                    executor_id: "executor-1".to_string(),
-                    total_vcores: vcores,
-                    available_vcores: vcores,
-                },
-            )
+        register_virtual_executor(&state.executor_manager, "executor-1".to_string(), 8)
             .await?;
 
         let ctx = state
@@ -724,7 +827,7 @@ mod tests {
                     job_id,
                     "",
                     ctx.clone(),
-                    &agg_plan(),
+                    &aggregation_logical_plan(2),
                     timestamp_millis(),
                     None,
                 )
@@ -789,29 +892,10 @@ mod tests {
                 BallistaCodec::default(),
                 "localhost:50050".to_owned(),
                 Arc::new(SchedulerConfig::default()),
-                Arc::new(RejectOne {
-                    reject: JobId::from("no-such-job"),
-                }),
+                Arc::new(BlackholeTaskLauncher::default()),
             );
 
-        let vcores = 8;
-        state
-            .executor_manager
-            .register_executor(
-                ExecutorMetadata {
-                    id: "executor-1".to_string(),
-                    host: String::default(),
-                    port: 0,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_vcores(vcores),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                ExecutorData {
-                    executor_id: "executor-1".to_string(),
-                    total_vcores: vcores,
-                    available_vcores: vcores,
-                },
-            )
+        register_virtual_executor(&state.executor_manager, "executor-1".to_string(), 8)
             .await?;
 
         let ctx = state
@@ -823,7 +907,14 @@ mod tests {
             .queue_job(&job_id, "", timestamp_millis())?;
         state
             .task_manager
-            .submit_job(&job_id, "", ctx, &agg_plan(), timestamp_millis(), None)
+            .submit_job(
+                &job_id,
+                "",
+                ctx,
+                &aggregation_logical_plan(2),
+                timestamp_millis(),
+                None,
+            )
             .await?;
 
         let bound = state
@@ -872,6 +963,224 @@ mod tests {
             available_after > 0,
             "unlaunched tasks should return to pending after a metadata miss, got {available_after}"
         );
+
+        Ok(())
+    }
+
+    /// Keeps the task definitions it is handed, and rejects none.
+    #[derive(Default)]
+    struct CapturingLauncher {
+        launched: std::sync::Mutex<Vec<MultiTaskDefinition>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskLauncher for CapturingLauncher {
+        async fn launch_tasks(
+            &self,
+            _executor: &ExecutorMetadata,
+            tasks: Vec<MultiTaskDefinition>,
+            _executor_manager: &ExecutorManager,
+        ) -> Result<HashSet<JobId>> {
+            self.launched.lock().unwrap().extend(tasks);
+            Ok(HashSet::new())
+        }
+    }
+
+    /// Submits a job of one four-partition `PayloadExec` and binds it to two
+    /// executors of two vcores each, which splits its stage into two tasks.
+    async fn bind_split_payload_stage(
+        config: SchedulerConfig,
+        launcher: Arc<CapturingLauncher>,
+    ) -> Result<(
+        SchedulerState<LogicalPlanNode, PhysicalPlanNode>,
+        JobId,
+        Vec<BoundTask>,
+    )> {
+        let job_id = JobId::from("job-payload");
+        let codec = BallistaCodec::new(
+            Arc::new(BallistaLogicalExtensionCodec::default()),
+            Arc::new(PayloadCodec::default()),
+        );
+        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerState::new_with_task_launcher(
+                test_cluster_context(),
+                codec,
+                "localhost:50050".to_owned(),
+                Arc::new(config),
+                launcher,
+            );
+
+        for executor in ["executor-1", "executor-2"] {
+            let metadata = ExecutorMetadata {
+                specification: ExecutorSpecification::default().with_vcores(2),
+                ..mock_executor(executor.to_string())
+            };
+            let data = ExecutorData {
+                executor_id: executor.to_string(),
+                total_vcores: 2,
+                available_vcores: 2,
+            };
+            state
+                .executor_manager
+                .register_executor(metadata, data)
+                .await?;
+        }
+
+        let ctx = state
+            .session_manager
+            .create_or_update_session("session", &SessionConfig::new_with_ballista())
+            .await?;
+        state
+            .task_manager
+            .queue_job(&job_id, "", timestamp_millis())?;
+        state
+            .task_manager
+            .submit_physical_plan(
+                &job_id,
+                "",
+                ctx,
+                PayloadExec::leaf(&["p0", "p1", "p2", "p3"]),
+                timestamp_millis(),
+                None,
+            )
+            .await?;
+
+        let bound = state
+            .executor_manager
+            .bind_schedulable_tasks(state.task_manager.get_running_job_cache())
+            .await?;
+        let mut slices: Vec<_> = bound
+            .iter()
+            .map(|(_, task)| task.global_input_partition_ids.clone())
+            .collect();
+        slices.sort();
+        assert_eq!(slices, [[0, 1], [2, 3]], "the stage is split in two");
+
+        // As `revive_offers` does between binding and launching.
+        state.task_manager.record_task_reservations(&bound);
+
+        Ok((state, job_id, bound))
+    }
+
+    /// Launches `bound`, returning the vcores refunded and the jobs failed.
+    async fn launch(
+        state: &SchedulerState<LogicalPlanNode, PhysicalPlanNode>,
+        bound: Vec<BoundTask>,
+    ) -> Result<(u32, HashSet<JobId>)> {
+        let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
+        let sender = EventSender::new(tx_event);
+        let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
+        Ok((unassigned_slots.iter().map(|(_, n)| *n).sum(), failed_jobs))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_fails_a_job_whose_split_stage_holds_a_leaf_nobody_can_restrict()
+    -> Result<()> {
+        let launcher = Arc::new(CapturingLauncher::default());
+        let (state, job_id, bound) =
+            bind_split_payload_stage(SchedulerConfig::default(), launcher.clone())
+                .await?;
+        let vcores: u32 = bound.iter().map(|(_, task)| task.vcores_consumed).sum();
+
+        let (freed, failed_jobs) = launch(&state, bound).await?;
+
+        assert_eq!(failed_jobs, HashSet::from([job_id]));
+        assert_eq!(freed, vcores, "the tasks' vcores are refunded");
+        assert!(launcher.launched.lock().unwrap().is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_restricts_the_leaf_through_the_configured_resolver()
+    -> Result<()> {
+        let launcher = Arc::new(CapturingLauncher::default());
+        let config = SchedulerConfig::default()
+            .with_partition_sliceable_resolver(payload_resolver());
+        let (state, _job_id, bound) =
+            bind_split_payload_stage(config, launcher.clone()).await?;
+
+        let (freed, failed_jobs) = launch(&state, bound).await?;
+
+        assert!(failed_jobs.is_empty());
+        assert_eq!(freed, 0, "every task was launched, so no slot is refunded");
+
+        // Decode what the executors would, with the codec the scheduler used.
+        let task_ctx = SessionContext::new().task_ctx();
+        let mut shipped: Vec<Vec<String>> = launcher
+            .launched
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|definition| {
+                let plan = PhysicalPlanNode::try_decode(&definition.plan)
+                    .and_then(|node| {
+                        node.try_into_physical_plan(
+                            &task_ctx,
+                            state.codec.physical_extension_codec(),
+                        )
+                    })
+                    .expect("the executor can decode the plan");
+                // The writer's input can come wrapped in a `CooperativeExec`.
+                let mut input = plan.children()[0];
+                while input.name() == "CooperativeExec" {
+                    input = input.children()[0];
+                }
+                payloads_of(input)
+            })
+            .collect();
+        shipped.sort();
+        assert_eq!(shipped, [["p0", "p1"], ["p2", "p3"]]);
+
+        Ok(())
+    }
+
+    /// A pipelined task holds no vcores of its own, so an executor rejecting
+    /// it hands none back: the vcores belong to the job's reservation, which
+    /// is released when the job fails.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rejected_pipelined_tasks_are_not_refunded_task_by_task() -> Result<()> {
+        let job = JobId::from("job-pipelined");
+        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerState::new_with_task_launcher(
+                test_cluster_context(),
+                BallistaCodec::default(),
+                "localhost:50050".to_owned(),
+                Arc::new(SchedulerConfig::default()),
+                Arc::new(RejectingTaskLauncher::only(job.clone())),
+            );
+
+        register_virtual_executor(&state.executor_manager, "executor-1".to_string(), 8)
+            .await?;
+
+        let config = SessionConfig::new_with_ballista()
+            .set_str(BALLISTA_EXECUTION_MODE, "pipelined");
+        let ctx = state
+            .session_manager
+            .create_or_update_session("session", &config)
+            .await?;
+        state.task_manager.queue_job(&job, "", timestamp_millis())?;
+        state
+            .task_manager
+            .submit_job(
+                &job,
+                "",
+                ctx,
+                &aggregation_logical_plan(2),
+                timestamp_millis(),
+                None,
+            )
+            .await?;
+
+        let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
+        let sender = EventSender::new(tx_event);
+        let bound = state.bind_pipelined_jobs(&sender).await?;
+        assert!(!bound.is_empty());
+
+        let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
+        assert_eq!(failed_jobs, HashSet::from([job]));
+        let freed: u32 = unassigned_slots.iter().map(|(_, n)| *n).sum();
+        assert_eq!(freed, 0);
 
         Ok(())
     }

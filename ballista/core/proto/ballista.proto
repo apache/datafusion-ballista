@@ -65,7 +65,30 @@ message BallistaPhysicalPlanNode {
     DistributedExplainAnalyzeExecNode distributed_explain_analyze = 17;
     PipelinedShuffleWriterExecNode pipelined_shuffle_writer = 18;
     PipelinedShuffleReaderExecNode pipelined_shuffle_reader = 19;
+    RuntimeFilterExecNode runtime_filter = 20;
   }
+}
+
+// Build taps and probe filters share the expression/id wire contract. A missing
+// payload on an apply node means pass-through (timeout or unsupported producer).
+message RuntimeFilterExecNode {
+  uint64 filter_id = 1;
+  datafusion.PhysicalExprNode key = 2;
+  bool build = 3;
+  RuntimeFilterPayload payload = 4;
+}
+
+// Version 2 uses DataFusion batch hashing with seed 0, a fixed 8 KiB Bloom
+// filter, an optional IN hash set, and MinMax bounds. Merge is a union.
+message RuntimeFilterPayload {
+  uint64 filter_id = 1;
+  uint32 version = 2;
+  bytes bloom = 3;
+  bool has_null = 4;
+  bool has_in_set = 5;
+  repeated fixed64 in_hashes = 6;
+  datafusion_common.ScalarValue min = 7;
+  datafusion_common.ScalarValue max = 8;
 }
 
 // Root of a stage in a pipelined job. Instead of writing shuffle files, it
@@ -96,6 +119,8 @@ message PipelinedShuffleReaderExecNode {
   // A single logical output partition that streams every partition of every
   // producer task.
   bool broadcast = 5;
+  // The executors the locations in `partition` refer to by `executor_index`.
+  repeated ExecutorEndpoint executors = 6;
 }
 
 message PipelinedReaderPartition {
@@ -109,7 +134,11 @@ message PipelinedPartitionLocation {
   PartitionId partition_id = 1;
   // The producer task within its stage.
   uint32 task_id = 2;
-  ExecutorMetadata executor_meta = 3;
+  // The executor, when this location is reported in a job status. Unset inside
+  // a reader node, where `executor_index` identifies it.
+  ExecutorEndpoint executor_meta = 3;
+  // Inside a reader node, the position of the executor in its `executors`.
+  uint32 executor_index = 4;
 }
 
 message DistributedQueryExecNode {
@@ -413,6 +442,8 @@ message ShuffleReaderExecNode {
   uint32 upstream_partition_count = 6;
   // Optional coalesce metadata. Absent means "no coalesce" (legacy one-to-one read behavior).
   optional CoalescePlan coalesce = 7;
+  // The executors the locations in `partition` refer to by `executor_index`.
+  repeated ExecutorEndpoint executors = 8;
 }
 
 message ShuffleReaderPartition {
@@ -437,6 +468,8 @@ message RangeShuffleReaderExecNode {
   // the reader skip the parts of an indexed source that cannot hold a row the
   // partition wants; the consuming RangeFilterExec still does the exact trim.
   repeated RangeBound bounds = 6;
+  // The executors the locations in `partition` refer to by `executor_index`.
+  repeated ExecutorEndpoint executors = 7;
 }
 
 // CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
@@ -668,10 +701,14 @@ message PartitionLocation {
   uint32 map_partition_id = 1;
   // partition_id of the shuffle, a composition of(job_id + map_stage_id + partition_id).
   PartitionId partition_id = 2;
-  ExecutorMetadata executor_meta = 3;
+  // The executor, when this location is reported in a job status. Unset inside
+  // a reader node, where `executor_index` identifies it.
+  ExecutorEndpoint executor_meta = 3;
   PartitionStats partition_stats = 4;
   optional uint64 file_id = 6;
   bool is_sort_shuffle = 7;
+  // Inside a reader node, the position of the executor in its `executors`.
+  uint32 executor_index = 8;
 
   // reserved after removing deprecated `path`.
   reserved 5;
@@ -781,14 +818,16 @@ message OperatorMetric {
   optional uint32 partition = 16;
 }
 
-// Used by scheduler
-message ExecutorMetadata {
+// Where a reader fetches a partition from: only what a fetch needs, since a
+// plan can refer to an executor from thousands of partition locations.
+message ExecutorEndpoint {
   string id = 1;
   string host = 2;
   uint32 port = 3;
-  uint32 grpc_port = 4;
-  ExecutorSpecification specification = 5;
-  ExecutorOperatingSystemSpecification os_info = 6;
+
+  // reserved after narrowing `ExecutorMetadata` down to this message.
+  reserved 4, 5, 6;
+  reserved "grpc_port", "specification", "os_info";
 }
 
 
@@ -968,6 +1007,7 @@ message SuccessfulTask {
   // keeps the completion message fixed-size regardless of aggregate.
   repeated WindowStateReport window_state = 4;
   repeated TaskColumnStats task_column_stats = 5;
+  repeated RuntimeFilterPayload runtime_filters = 6;
 }
 
 // One finalized window-aggregate state from a task's
@@ -1291,6 +1331,10 @@ message SuccessfulJob {
   uint64 queued_at = 2;
   uint64 started_at = 3;
   uint64 ended_at = 4;
+  // For a pipelined job: where its final stage served each output partition,
+  // the same as in its running status. A small result can finish before a
+  // polling client has seen the job running; the client can still read it.
+  repeated PipelinedPartitionLocation pipelined_output_locations = 5;
 }
 
 message QueuedJob {
@@ -1302,6 +1346,10 @@ message RunningJob {
   uint64 queued_at = 1;
   uint64 started_at = 2;
   string scheduler = 3;
+  // Set for a pipelined job once its tasks are placed: where the final stage
+  // serves each output partition. The client streams these while the job is
+  // still running, since the final stage cannot finish until it is drained.
+  repeated PipelinedPartitionLocation pipelined_output_locations = 4;
 }
 
 message FailedJob {

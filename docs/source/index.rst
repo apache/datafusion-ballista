@@ -54,8 +54,10 @@ Table of content
 
    user-guide/configs
    user-guide/tuning-guide
+   user-guide/pipelined-execution
    user-guide/metrics
    user-guide/faq
+   user-guide/versioning
    user-guide/extending-components
    user-guide/extensions-example
 
@@ -85,6 +87,14 @@ Table of content
    contributors-guide/development
    contributors-guide/benchmarking/index
    Source code <https://github.com/apache/datafusion-ballista/>
+
+.. _toc.about:
+
+.. toctree::
+   :maxdepth: 1
+   :caption: About
+
+   Comparison with DataFusion Distributed <about/datafusion-distributed-comparison>
 
 .. _toc.community:
 

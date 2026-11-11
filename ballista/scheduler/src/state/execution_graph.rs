@@ -30,8 +30,8 @@ use log::{debug, error, info, warn};
 use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
-    RangeShuffleWriterExec, ShuffleWriter, ShuffleWriterExec, SortShuffleWriterExec,
-    UnresolvedShuffleExec,
+    PipelinedShuffleWriterExec, RangeShuffleWriterExec, ShuffleWriter, ShuffleWriterExec,
+    SortShuffleWriterExec, UnresolvedShuffleExec,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
@@ -42,7 +42,8 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, PartitionId, PartitionLocation, PartitionStats, TaskKey,
+    ExecutorEndpoint, ExecutorMetadata, PartitionId, PartitionLocation, PartitionStats,
+    TaskKey,
 };
 
 use crate::display::print_stage_metrics;
@@ -58,6 +59,7 @@ pub(crate) use crate::state::execution_stage::{
 use crate::state::execution_stage::{
     RunningStage, external_inputs, is_external_fetch_failure, reads_external_data_on,
 };
+use crate::state::pipelined_graph::PipelinedExecutionGraph;
 use crate::state::task_manager::UpdatedStages;
 
 /// Boxed [ExecutionGraph]
@@ -315,6 +317,17 @@ pub trait ExecutionGraph: Debug {
 
     /// Clones execution graph
     fn cloned(&self) -> ExecutionGraphBox;
+
+    /// The graph as a pipelined job's, which places every task at once, or
+    /// `None` for a graph that schedules stage by stage.
+    fn as_pipelined(&self) -> Option<&PipelinedExecutionGraph> {
+        None
+    }
+
+    /// Mutable form of [`Self::as_pipelined`].
+    fn as_pipelined_mut(&mut self) -> Option<&mut PipelinedExecutionGraph> {
+        None
+    }
 }
 
 /// Reset a still-Running task_info slot so its partitions return to pending.
@@ -428,6 +441,7 @@ impl StaticExecutionGraph {
                     queued_at,
                     started_at,
                     scheduler: scheduler_id.to_string(),
+                    pipelined_output_locations: vec![],
                 })),
             },
             queued_at,
@@ -841,6 +855,8 @@ impl ExecutionGraph for StaticExecutionGraph {
         max_stage_failures: usize,
     ) -> Result<Vec<QueryStageSchedulerEvent>> {
         let job_id = self.job_id().to_owned();
+        // The locations this update reports share one copy of the address.
+        let endpoint = Arc::new(ExecutorEndpoint::from(executor));
         // First of all, classify the statuses by stages
         let mut job_task_statuses: HashMap<usize, Vec<TaskStatus>> = HashMap::new();
         for task_status in task_statuses {
@@ -1045,9 +1061,17 @@ impl ExecutionGraph for StaticExecutionGraph {
                             successful_task,
                         )) = status
                         {
-                            // update task metrics for successful task
-                            running_stage
-                                .update_task_metrics(task_id, operator_metrics)?;
+                            // Metrics only feed the plan display and the REST
+                            // API. A task whose metrics can't be merged still
+                            // succeeded, and failing here would drop its status
+                            // and leave the stage, and the job, unfinished.
+                            if let Err(e) = running_stage
+                                .update_task_metrics(task_id, operator_metrics)
+                            {
+                                warn!(
+                                    "Ignoring the metrics of task {task_id} in stage {stage_id} of job {job_id}: {e}"
+                                );
+                            }
 
                             let SuccessfulTask {
                                 partitions,
@@ -1061,7 +1085,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                                 .append_window_state_reports(task_id, window_state);
 
                             locations.append(&mut partition_to_location(
-                                &job_id, task_id, stage_id, executor, partitions,
+                                &job_id, task_id, stage_id, &endpoint, partitions,
                             ));
                         } else {
                             warn!(
@@ -1568,6 +1592,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                 queued_at: self.queued_at,
                 started_at: self.start_time,
                 ended_at: self.end_time,
+                pipelined_output_locations: vec![],
             })),
         };
 
@@ -1814,6 +1839,10 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
             self.current_stage_id = shuffle_write.stage_id();
         } else if let Some(shuffle_write) = plan.downcast_ref::<SortShuffleWriterExec>() {
             self.current_stage_id = shuffle_write.stage_id();
+        } else if let Some(shuffle_write) =
+            plan.downcast_ref::<PipelinedShuffleWriterExec>()
+        {
+            self.current_stage_id = shuffle_write.stage_id();
         } else if let Some(unresolved_shuffle) =
             plan.downcast_ref::<UnresolvedShuffleExec>()
         {
@@ -1914,7 +1943,7 @@ pub(crate) fn partition_to_location(
     job_id: &JobId,
     map_partition_id: usize,
     stage_id: usize,
-    executor: &ExecutorMetadata,
+    executor: &Arc<ExecutorEndpoint>,
     shuffles: Vec<ShuffleWritePartition>,
 ) -> Vec<PartitionLocation> {
     shuffles
@@ -1946,28 +1975,20 @@ mod test {
     use crate::scheduler_server::event::QueryStageSchedulerEvent;
     use ballista_core::error::{BallistaError, Result};
     use ballista_core::serde::protobuf::{
-        self, ExecutionError, FailedTask, FetchPartitionError, IoError, JobStatus,
-        TaskKilled, failed_task, job_status, task_status,
-    };
-    use datafusion::common::tree_node::TreeNodeRecursion;
-    use datafusion::common::{DataFusionError, Result as DataFusionResult};
-    use datafusion::execution::TaskContext;
-    use datafusion::physical_expr::PhysicalExpr;
-    use datafusion::physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
-        SendableRecordBatchStream,
+        self, FailedTask, IoError, JobStatus, TaskKilled, failed_task, job_status,
+        task_status,
     };
 
     use crate::cache::CACHE_DATA_LOST;
     use crate::cache::{EXTERNAL_STAGE_ID_BASE, is_external_stage_id};
-    use crate::planner::DefaultDistributedPlanner;
     use crate::state::execution_graph::ExecutionGraph;
     use crate::state::execution_graph::StaticExecutionGraph;
     use crate::state::execution_stage::ExecutionStage;
     use crate::state::execution_stage::StageOutput;
     use crate::test_utils::{
-        mock_completed_task, mock_executor, mock_failed_task,
-        revive_graph_and_complete_next_stage,
+        aggregation_logical_plan, drain_tasks, execution_failure, fail_plan_rewrites,
+        fetch_partition_failure, graph_from_physical, mock_completed_task, mock_executor,
+        mock_failed_task, revive_graph_and_complete_next_stage,
         revive_graph_and_complete_next_stage_with_executor, test_aggregation_plan,
         test_coalesce_plan, test_join_plan, test_two_aggregations_plan,
         test_union_all_plan, test_union_plan,
@@ -1976,79 +1997,12 @@ mod test {
     use ballista_core::execution_plans::ShuffleReaderExec;
     use ballista_core::extension::SessionConfigExt;
     use ballista_core::serde::scheduler::{
-        ExecutorMetadata, ExecutorSpecification, PartitionId, PartitionLocation,
-        PartitionStats,
+        ExecutorEndpoint, PartitionId, PartitionLocation, PartitionStats,
     };
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::col;
-    use datafusion::physical_plan::Partitioning;
+
     use datafusion::physical_plan::union::UnionExec;
+    use datafusion::physical_plan::{ExecutionPlan, Partitioning};
     use datafusion::prelude::{SessionConfig, SessionContext};
-    use datafusion::test_util::scan_empty_with_partitions;
-
-    #[derive(Debug)]
-    struct FailingPlanRewriteExec {
-        input: Arc<dyn ExecutionPlan>,
-    }
-
-    impl DisplayAs for FailingPlanRewriteExec {
-        fn fmt_as(
-            &self,
-            _t: DisplayFormatType,
-            f: &mut std::fmt::Formatter,
-        ) -> std::fmt::Result {
-            write!(f, "FailingPlanRewriteExec")
-        }
-    }
-
-    impl ExecutionPlan for FailingPlanRewriteExec {
-        fn name(&self) -> &str {
-            "FailingPlanRewriteExec"
-        }
-
-        fn properties(&self) -> &Arc<PlanProperties> {
-            self.input.properties()
-        }
-
-        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-            vec![&self.input]
-        }
-
-        fn apply_expressions(
-            &self,
-            _f: &mut dyn FnMut(
-                &Arc<dyn PhysicalExpr>,
-            ) -> DataFusionResult<TreeNodeRecursion>,
-        ) -> DataFusionResult<TreeNodeRecursion> {
-            Ok(TreeNodeRecursion::Continue)
-        }
-
-        fn with_new_children(
-            self: Arc<Self>,
-            _children: Vec<Arc<dyn ExecutionPlan>>,
-        ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-            Err(DataFusionError::Internal(
-                "forced plan rewrite failure".to_owned(),
-            ))
-        }
-
-        fn execute(
-            &self,
-            partition: usize,
-            context: Arc<TaskContext>,
-        ) -> DataFusionResult<SendableRecordBatchStream> {
-            self.input.execute(partition, context)
-        }
-    }
-
-    fn fail_plan_rewrites(plan: &mut Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        let failing_plan: Arc<dyn ExecutionPlan> = Arc::new(FailingPlanRewriteExec {
-            input: Arc::clone(plan),
-        });
-        *plan = Arc::clone(&failing_plan);
-        failing_plan
-    }
 
     #[tokio::test]
     async fn test_intermediate_stage_ids() {
@@ -2298,6 +2252,49 @@ mod test {
 
         for location in outputs {
             assert_eq!(location.executor_meta.host, "localhost2".to_owned());
+        }
+
+        Ok(())
+    }
+
+    /// A completed stage leaves one location per task per output partition.
+    /// All those from one status update must share the executor's address
+    /// rather than each hold a copy of it.
+    #[tokio::test]
+    async fn locations_from_one_status_update_share_their_executor() -> Result<()> {
+        let executor = mock_executor("executor-id1".to_string());
+        let mut graph = test_aggregation_plan(4).await;
+        graph.revive();
+
+        let mut statuses = vec![];
+        while let Some(task) = graph.pop_next_task(&executor.id)? {
+            statuses.push(mock_completed_task(task, &executor.id));
+        }
+        graph.update_task_status(&executor, statuses, 1, 1)?;
+
+        let ExecutionStage::Resolved(reader) = &graph.stages()[&2] else {
+            panic!("the stage reading the completed stage should be resolved");
+        };
+        let locations: Vec<_> = reader.inputs[&1]
+            .partition_locations
+            .values()
+            .flatten()
+            .collect();
+        // The fixture scans two partitions: two tasks, four outputs each.
+        assert_eq!(locations.len(), 8);
+        assert_eq!(
+            *locations[0].executor_meta,
+            ExecutorEndpoint {
+                id: "executor-id1".to_string(),
+                host: "localhost2".to_string(),
+                port: 8080,
+            }
+        );
+        for location in &locations {
+            assert!(Arc::ptr_eq(
+                &location.executor_meta,
+                &locations[0].executor_meta
+            ));
         }
 
         Ok(())
@@ -2689,17 +2686,8 @@ mod test {
         assert_eq!(agg_graph.available_tasks(), 4);
 
         // 3rd task in Stage 2 update comes very late due to runtime execution error.
-        let task_status = mock_failed_task(
-            task.unwrap(),
-            FailedTask {
-                error: "ExecutionError".to_string(),
-                retryable: false,
-                count_to_failures: false,
-                failed_reason: Some(failed_task::FailedReason::ExecutionError(
-                    ExecutionError {},
-                )),
-            },
-        );
+        let task_status =
+            mock_failed_task(task.unwrap(), execution_failure("ExecutionError"));
 
         // This long delayed failed task should not failure the stage/job and should not trigger any query stage events
         let query_stage_events =
@@ -2853,20 +2841,7 @@ mod test {
             if let Some(task) = agg_graph.pop_next_task(&executor3.id)? {
                 let task_status = mock_failed_task(
                     task,
-                    FailedTask {
-                        error: "FetchPartitionError".to_string(),
-                        retryable: false,
-                        count_to_failures: false,
-                        failed_reason: Some(
-                            failed_task::FailedReason::FetchPartitionError(
-                                FetchPartitionError {
-                                    executor_id: executor2.id.clone(),
-                                    map_stage_id: 2,
-                                    map_partition_id: part,
-                                },
-                            ),
-                        ),
-                    },
+                    fetch_partition_failure(&executor2.id, 2, part),
                 );
                 many_fetch_failure_status.push(task_status);
             }
@@ -2900,20 +2875,7 @@ mod test {
             if let Some(task1) = agg_graph.pop_next_task(&executor2.id)? {
                 let task_status1 = mock_failed_task(
                     task1.clone(),
-                    FailedTask {
-                        error: "FetchPartitionError".to_string(),
-                        retryable: false,
-                        count_to_failures: false,
-                        failed_reason: Some(
-                            failed_task::FailedReason::FetchPartitionError(
-                                FetchPartitionError {
-                                    executor_id: executor1.id.clone(),
-                                    map_stage_id: 1,
-                                    map_partition_id: 0,
-                                },
-                            ),
-                        ),
-                    },
+                    fetch_partition_failure(&executor1.id, 1, 0),
                 );
 
                 let stage_events =
@@ -3000,21 +2962,8 @@ mod test {
         let task_5 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
 
         // Stage 3, 1st task failed due to FetchPartitionError(executor2)
-        let task_status_1 = mock_failed_task(
-            task_1,
-            FailedTask {
-                error: "FetchPartitionError".to_string(),
-                retryable: false,
-                count_to_failures: false,
-                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
-                    FetchPartitionError {
-                        executor_id: executor2.id.clone(),
-                        map_stage_id: 2,
-                        map_partition_id: 0,
-                    },
-                )),
-            },
-        );
+        let task_status_1 =
+            mock_failed_task(task_1, fetch_partition_failure(&executor2.id, 2, 0));
         agg_graph.update_task_status(&executor3, vec![task_status_1], 4, 4)?;
 
         // The Running stage is Stage 2 now
@@ -3024,21 +2973,8 @@ mod test {
         assert_eq!(agg_graph.available_tasks(), 5);
 
         // Stage 3, 2nd task failed due to FetchPartitionError(executor2)
-        let task_status_2 = mock_failed_task(
-            task_2,
-            FailedTask {
-                error: "FetchPartitionError".to_string(),
-                retryable: false,
-                count_to_failures: false,
-                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
-                    FetchPartitionError {
-                        executor_id: executor2.id.clone(),
-                        map_stage_id: 2,
-                        map_partition_id: 1,
-                    },
-                )),
-            },
-        );
+        let task_status_2 =
+            mock_failed_task(task_2, fetch_partition_failure(&executor2.id, 2, 1));
         // This task update should be ignored
         agg_graph.update_task_status(&executor3, vec![task_status_2], 4, 4)?;
         let running_stage = agg_graph.running_stages();
@@ -3047,21 +2983,8 @@ mod test {
         assert_eq!(agg_graph.available_tasks(), 5);
 
         // Stage 3, 3rd task failed due to FetchPartitionError(executor1)
-        let task_status_3 = mock_failed_task(
-            task_3,
-            FailedTask {
-                error: "FetchPartitionError".to_string(),
-                retryable: false,
-                count_to_failures: false,
-                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
-                    FetchPartitionError {
-                        executor_id: executor1.id.clone(),
-                        map_stage_id: 2,
-                        map_partition_id: 1,
-                    },
-                )),
-            },
-        );
+        let task_status_3 =
+            mock_failed_task(task_3, fetch_partition_failure(&executor1.id, 2, 1));
         // This task update should be handled because it has a different failure reason
         agg_graph.update_task_status(&executor3, vec![task_status_3], 4, 4)?;
         // Running stage is still Stage 2, but available tasks changed to 7
@@ -3081,21 +3004,8 @@ mod test {
         assert_eq!(agg_graph.available_tasks(), 3);
 
         // Stage 3, 4th task failed due to FetchPartitionError(executor1)
-        let task_status_4 = mock_failed_task(
-            task_4,
-            FailedTask {
-                error: "FetchPartitionError".to_string(),
-                retryable: false,
-                count_to_failures: false,
-                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
-                    FetchPartitionError {
-                        executor_id: executor1.id.clone(),
-                        map_stage_id: 2,
-                        map_partition_id: 1,
-                    },
-                )),
-            },
-        );
+        let task_status_4 =
+            mock_failed_task(task_4, fetch_partition_failure(&executor1.id, 2, 1));
         // This task update should be ignored because the same failure reason is already handled
         agg_graph.update_task_status(&executor3, vec![task_status_4], 4, 4)?;
         let running_stage = agg_graph.running_stages();
@@ -3115,21 +3025,8 @@ mod test {
         // Stage 3, the very long delayed 5th task failed due to FetchPartitionError(executor3)
         // Although the failure reason is new, but this task should be ignored
         // Because its map stage's new attempt is finished and this stage's new attempt is running
-        let task_status_5 = mock_failed_task(
-            task_5,
-            FailedTask {
-                error: "FetchPartitionError".to_string(),
-                retryable: false,
-                count_to_failures: false,
-                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
-                    FetchPartitionError {
-                        executor_id: executor3.id.clone(),
-                        map_stage_id: 2,
-                        map_partition_id: 1,
-                    },
-                )),
-            },
-        );
+        let task_status_5 =
+            mock_failed_task(task_5, fetch_partition_failure(&executor3.id, 2, 1));
         agg_graph.update_task_status(&executor3, vec![task_status_5], 4, 4)?;
         // Stage 3's new attempt is running
         let running_stage = agg_graph.running_stages();
@@ -3190,21 +3087,8 @@ mod test {
         let task_2 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
 
         // Stage 3, 1st task failed due to FetchPartitionError(executor2)
-        let task_status_1 = mock_failed_task(
-            task_1,
-            FailedTask {
-                error: "FetchPartitionError".to_string(),
-                retryable: false,
-                count_to_failures: false,
-                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
-                    FetchPartitionError {
-                        executor_id: executor2.id.clone(),
-                        map_stage_id: 2,
-                        map_partition_id: 0,
-                    },
-                )),
-            },
-        );
+        let task_status_1 =
+            mock_failed_task(task_1, fetch_partition_failure(&executor2.id, 2, 0));
         agg_graph.update_task_status(&executor3, vec![task_status_1], 4, 4)?;
 
         // The Running stage is Stage 2 now
@@ -3222,21 +3106,8 @@ mod test {
         }
 
         // Stage 3, 2nd task failed due to FetchPartitionError(executor1)
-        let task_status_2 = mock_failed_task(
-            task_2,
-            FailedTask {
-                error: "FetchPartitionError".to_string(),
-                retryable: false,
-                count_to_failures: false,
-                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
-                    FetchPartitionError {
-                        executor_id: executor1.id.clone(),
-                        map_stage_id: 2,
-                        map_partition_id: 1,
-                    },
-                )),
-            },
-        );
+        let task_status_2 =
+            mock_failed_task(task_2, fetch_partition_failure(&executor1.id, 2, 1));
         task_status_vec.push(task_status_2);
 
         // TaskStatus of Stage 2 come together with Stage 3 delayed FetchFailure update.
@@ -3285,21 +3156,8 @@ mod test {
         // Run Stage 3
         // 1rd task in the Stage 3, failed due to FetchPartitionError(executor1)
         if let Some(task1) = agg_graph.pop_next_task(&executor3.id)? {
-            let task_status1 = mock_failed_task(
-                task1,
-                FailedTask {
-                    error: "FetchPartitionError".to_string(),
-                    retryable: false,
-                    count_to_failures: false,
-                    failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
-                        FetchPartitionError {
-                            executor_id: executor1.id.clone(),
-                            map_stage_id: 2,
-                            map_partition_id: 0,
-                        },
-                    )),
-                },
-            );
+            let task_status1 =
+                mock_failed_task(task1, fetch_partition_failure(&executor1.id, 2, 0));
 
             let _stage_events =
                 agg_graph.update_task_status(&executor3, vec![task_status1], 4, 4)?;
@@ -3312,21 +3170,8 @@ mod test {
 
         // 1rd task in the Stage 2's new attempt, failed due to FetchPartitionError(executor1)
         if let Some(task1) = agg_graph.pop_next_task(&executor3.id)? {
-            let task_status1 = mock_failed_task(
-                task1,
-                FailedTask {
-                    error: "FetchPartitionError".to_string(),
-                    retryable: false,
-                    count_to_failures: false,
-                    failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
-                        FetchPartitionError {
-                            executor_id: executor1.id.clone(),
-                            map_stage_id: 1,
-                            map_partition_id: 0,
-                        },
-                    )),
-                },
-            );
+            let task_status1 =
+                mock_failed_task(task1, fetch_partition_failure(&executor1.id, 1, 0));
             let _stage_events =
                 agg_graph.update_task_status(&executor3, vec![task_status1], 4, 4)?;
         }
@@ -3368,35 +3213,12 @@ mod test {
 
         // 2nd task in the Stage 2, failed due to FetchPartitionError
         let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
-        let task_status2 = mock_failed_task(
-            task2,
-            FailedTask {
-                error: "FetchPartitionError".to_string(),
-                retryable: false,
-                count_to_failures: false,
-                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
-                    FetchPartitionError {
-                        executor_id: executor1.id.clone(),
-                        map_stage_id: 1,
-                        map_partition_id: 0,
-                    },
-                )),
-            },
-        );
+        let task_status2 =
+            mock_failed_task(task2, fetch_partition_failure(&executor1.id, 1, 0));
 
         // 3rd task in the Stage 2, failed due to ExecutionError
         let task3 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
-        let task_status3 = mock_failed_task(
-            task3,
-            FailedTask {
-                error: "ExecutionError".to_string(),
-                retryable: false,
-                count_to_failures: false,
-                failed_reason: Some(failed_task::FailedReason::ExecutionError(
-                    ExecutionError {},
-                )),
-            },
-        );
+        let task_status3 = mock_failed_task(task3, execution_failure("ExecutionError"));
 
         let stage_events = agg_graph.update_task_status(
             &executor2,
@@ -3455,16 +3277,6 @@ mod test {
         keys
     }
 
-    fn drain_tasks(graph: &mut dyn ExecutionGraph) -> Result<()> {
-        let executor = mock_executor("executor-id1".to_string());
-        while let Some(task) = graph.pop_next_task(&executor.id)? {
-            let task_status = mock_completed_task(task, &executor.id);
-            graph.update_task_status(&executor, vec![task_status], 1, 1)?;
-        }
-
-        Ok(())
-    }
-
     /// A cache's location: partition `partition` of the build job's stage
     /// `stage`, on `executor`.
     fn external_location(
@@ -3475,14 +3287,11 @@ mod test {
         PartitionLocation {
             map_partition_id: partition,
             partition_id: PartitionId::new(&JobId::new("cache-job"), stage, partition),
-            executor_meta: ExecutorMetadata {
+            executor_meta: Arc::new(ExecutorEndpoint {
                 id: executor.to_owned(),
                 host: "localhost".to_owned(),
                 port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default(),
-                os_info: Default::default(),
-            },
+            }),
             partition_stats: PartitionStats::default(),
             file_id: Some(0),
             is_sort_shuffle: false,
@@ -3499,9 +3308,7 @@ mod test {
     async fn losing_own_shuffle_output_restores_the_cache_reader() -> Result<()> {
         /// The own input's stage id, which the cache's build stage shares.
         const OWN_INPUT: usize = 2;
-        fn cache_reader_of(
-            plan: &Arc<dyn super::ExecutionPlan>,
-        ) -> Option<&ShuffleReaderExec> {
+        fn cache_reader_of(plan: &Arc<dyn ExecutionPlan>) -> Option<&ShuffleReaderExec> {
             plan.downcast_ref::<ShuffleReaderExec>()
                 .filter(|reader| is_external_stage_id(reader.stage_id))
                 .or_else(|| plan.children().into_iter().find_map(cache_reader_of))
@@ -3510,13 +3317,7 @@ mod test {
         let ctx = SessionContext::new_with_config(
             SessionConfig::new().with_target_partitions(2),
         );
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-        let logical = scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)?
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])?
-            .build()?;
+        let logical = aggregation_logical_plan(2);
         let aggregate = ctx
             .state()
             .create_physical_plan(&ctx.state().optimize(&logical)?)
@@ -3528,17 +3329,7 @@ mod test {
             Partitioning::UnknownPartitioning(1),
         )?;
         let plan = UnionExec::try_new(vec![aggregate, Arc::new(reader)])?;
-        let mut graph = StaticExecutionGraph::new(
-            "localhost:50050",
-            &JobId::new("job"),
-            "",
-            "session",
-            plan,
-            0,
-            Arc::new(SessionConfig::new_with_ballista()),
-            &mut DefaultDistributedPlanner::new(),
-            None,
-        )?;
+        let mut graph = graph_from_physical(plan, SessionConfig::new_with_ballista());
         let (reading, own_input) = graph
             .stages
             .iter()

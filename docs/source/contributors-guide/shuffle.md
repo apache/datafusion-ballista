@@ -19,7 +19,7 @@
 
 # Shuffle Design
 
-Ballista uses a **blocking shuffle**: a query stage runs to completion and
+Ballista uses a **staged shuffle**: a query stage runs to completion and
 materializes its output to local storage before any downstream stage starts. This
 is the same model Apache Spark uses, and it is deliberately different from the
 **pipelined shuffle** used by engines such as [Apache Flink],
@@ -71,7 +71,7 @@ that one fact.
 
 ### Producers and consumers never compete for vcores
 
-Each executor advertises a fixed number of vcores. Under a blocking
+Each executor advertises a fixed number of vcores. Under a staged
 shuffle, a stage's tasks hold vcores only while that stage runs, so a stage with
 1000 tasks executes perfectly well on a cluster with 32 vcores — the scheduler
 simply feeds tasks in as vcores free up.
@@ -85,7 +85,7 @@ the whole pipeline region, provision workers on demand, or fall back to
 materialization under pressure.
 
 Ballista's ability to run a query far wider than the cluster is a direct
-consequence of blocking.
+consequence of staging.
 
 ### Failures cost a task, not a query
 
@@ -125,7 +125,7 @@ and one that never does.
 
 ### The filesystem absorbs producer/consumer skew
 
-In a blocking shuffle, the buffer between stages is the disk. A producer never
+In a staged shuffle, the buffer between stages is the disk. A producer never
 waits for a consumer: it writes its output, reports, and releases its vcores. That
 decoupling is what lets the sort-based writer bound its own memory by spilling
 and still guarantee forward progress.
@@ -134,7 +134,7 @@ In a pipelined shuffle, the buffer is memory plus network, and backpressure is
 end-to-end. A slow consumer stalls its producer, which holds its vcores and its
 working set while stalled. Shuffles far larger than cluster memory — the case
 Ballista is built for — need either a spill path or a remote shuffle service to
-stay safe, which is most of the blocking machinery reintroduced.
+stay safe, which is most of the staged machinery reintroduced.
 
 Note that Ballista does apply backpressure on the _read_ side: the shuffle
 governor (`ballista.shuffle.reader.max_bytes_in_flight` and
@@ -220,13 +220,13 @@ The trade-off is real, and it is worth stating plainly.
   RAM-backed filesystem and never touch one — but the space has to exist
   somewhere, and today that somewhere is attached to the executor rather than
   to a shuffle service.
-- **No path to streaming.** A blocking barrier cannot express an unbounded
+- **No path to streaming.** A staged barrier cannot express an unbounded
   input. Any future support for continuous queries would need a different
   exchange model.
 
 ## Choosing a model
 
-| Workload                                          | Blocking (Ballista)  | Pipelined                            |
+| Workload                                          | Staged (Ballista)    | Pipelined                            |
 | ------------------------------------------------- | -------------------- | ------------------------------------ |
 | Interactive queries, seconds, small intermediates | Slower               | Faster                               |
 | Large batch and ETL, intermediates exceeding RAM  | Designed for it      | Needs spill or a shuffle service     |

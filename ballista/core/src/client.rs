@@ -24,7 +24,7 @@ use crate::serde::scheduler::{
     Action, ByteRange, PartitionId, PipelinedPartitionLocation, ShuffleFileKind,
     ShuffleLayout,
 };
-use crate::utils::create_grpc_client_endpoint;
+use crate::utils::{create_grpc_client_endpoint, with_retry};
 use arrow_flight;
 use arrow_flight::Ticket;
 use arrow_flight::utils::flight_data_to_arrow_batch;
@@ -42,7 +42,7 @@ use datafusion::error::DataFusionError;
 use datafusion::error::Result;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
-use log::{debug, warn};
+use log::debug;
 use std::collections::HashMap;
 use std::error::Error as _;
 use std::sync::Arc;
@@ -50,6 +50,7 @@ use std::{
     convert::TryFrom,
     task::{Context, Poll},
 };
+use tonic::transport::Channel;
 use tonic::{Code, Status, Streaming};
 
 /// Whether `status` reports that the connection failed, rather than an
@@ -70,6 +71,7 @@ fn is_transport_failure(status: &Status) -> bool {
 }
 
 /// A `do_get` that produced no stream.
+#[derive(Debug)]
 struct DoGetError {
     /// Whether the server had answered the request before it failed. A
     /// failure before that is the connection's; one after it is the server's,
@@ -89,6 +91,12 @@ pub struct BallistaClient {
 }
 
 impl BallistaClient {
+    fn retry_budget(&self) -> u8 {
+        // The setting counts total attempts. Zero may be configured directly
+        // or produced by the current u16-to-u8 config conversion.
+        self.io_retries_times.saturating_sub(1)
+    }
+
     /// Create a new BallistaClient to connect to the executor listening on the specified
     /// host and port
     #[allow(clippy::too_many_arguments)]
@@ -324,15 +332,14 @@ impl BallistaClient {
 
     /// Sends one `do_get` for `ticket` and reads the schema message that
     /// starts its response, returning the stream of record batches after it.
-    async fn do_get_stream(
-        &mut self,
+    async fn do_get_stream_with_client(
+        mut flight_client: FlightServiceClient<Channel>,
         ticket: Vec<u8>,
     ) -> std::result::Result<SendableRecordBatchStream, DoGetError> {
         let request = tonic::Request::new(Ticket {
             ticket: ticket.into(),
         });
-        let mut stream = self
-            .flight_client
+        let mut stream = flight_client
             .do_get(request)
             .await
             .map_err(|status| DoGetError {
@@ -356,6 +363,13 @@ impl BallistaClient {
                 "Did not receive schema batch from flight server",
             ))),
         }
+    }
+
+    async fn do_get_stream(
+        &mut self,
+        ticket: Vec<u8>,
+    ) -> std::result::Result<SendableRecordBatchStream, DoGetError> {
+        Self::do_get_stream_with_client(self.flight_client.clone(), ticket).await
     }
 
     /// Report a transport failure as a partition fetch failure, which is what
@@ -398,35 +412,15 @@ impl BallistaClient {
         action: &Action,
     ) -> BResult<SendableRecordBatchStream> {
         let buf = encode_protobuf(action.to_owned())?;
-
-        let io_retries_times = self.io_retries_times;
-        let io_retry_wait_time_ms = self.io_retry_wait_time_ms;
-        for i in 0..io_retries_times {
-            if i > 0 {
-                warn!(
-                    "Remote shuffle read fail, retry {i} times, sleep {io_retry_wait_time_ms} ms."
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    io_retry_wait_time_ms,
-                ))
-                .await;
-            }
-
-            match self.do_get_stream(buf.clone()).await {
-                Ok(stream) => return Ok(stream),
-                Err(DoGetError { status, .. }) => {
-                    // IO related error like connection timeout, reset... will warp with Code::Unknown
-                    // This means IO related error will retry.
-                    if i == io_retries_times - 1 || status.code() != Code::Unknown {
-                        return Err(BallistaError::GrpcActionError(format!(
-                            "{status:?}"
-                        )));
-                    }
-                    // retry request
-                }
-            }
-        }
-        unreachable!("Did not receive schema batch from flight server");
+        let flight_client = self.flight_client.clone();
+        with_retry(
+            self.retry_budget(),
+            self.io_retry_wait_time_ms,
+            |error: &DoGetError| error.status.code() == Code::Unknown,
+            || Self::do_get_stream_with_client(flight_client.clone(), buf.clone()),
+        )
+        .await
+        .map_err(|error| BallistaError::GrpcActionError(format!("{:?}", error.status)))
     }
 
     /// Executes the specified action and retrieves the results from the remote executor
@@ -455,68 +449,60 @@ impl BallistaClient {
         header: Option<Vec<u8>>,
     ) -> BResult<SendableRecordBatchStream> {
         let buf = encode_protobuf(action.to_owned())?;
-
-        let io_retries_times = self.io_retries_times;
-        let io_retry_wait_time_ms = self.io_retry_wait_time_ms;
-        for i in 0..io_retries_times {
-            if i > 0 {
-                warn!(
-                    "Remote shuffle read fail, retry {i} times, sleep {io_retry_wait_time_ms} ms."
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    io_retry_wait_time_ms,
-                ))
-                .await;
-            }
-
-            let request = tonic::Request::new(arrow_flight::Action {
-                body: buf.clone().into(),
-                r#type: "IO_BLOCK_TRANSPORT".to_string(),
-            });
-            let result = self.flight_client.do_action(request).await;
-            let res = match result {
-                Ok(res) => res,
-                Err(ref err) => {
-                    // IO related error like connection timeout, reset... will warp with Code::Unknown
-                    // This means IO related error will retry.
-                    if i == io_retries_times - 1 || err.code() != Code::Unknown {
-                        return BallistaError::GrpcActionError(format!(
-                            "{:?}",
-                            result.unwrap_err()
-                        ))
-                        .into();
-                    }
-                    // retry request
-                    continue;
+        let flight_client = self.flight_client.clone();
+        let res = with_retry(
+            self.retry_budget(),
+            self.io_retry_wait_time_ms,
+            |status: &Status| status.code() == Code::Unknown,
+            || {
+                let mut client = flight_client.clone();
+                let body = buf.clone().into();
+                async move {
+                    client
+                        .do_action(tonic::Request::new(arrow_flight::Action {
+                            body,
+                            r#type: "IO_BLOCK_TRANSPORT".to_string(),
+                        }))
+                        .await
                 }
-            };
+            },
+        )
+        .await
+        .map_err(|error| BallistaError::GrpcActionError(format!("{error:?}")))?;
 
-            let stream = res.into_inner();
-            let stream = stream.map(|m| {
-                m.map(|b| b.body).map_err(|e| {
-                    DataFusionError::ArrowError(
-                        Box::new(ArrowError::IpcError(e.to_string())),
-                        None,
-                    )
-                })
-            });
+        let stream = res.into_inner();
+        let stream = stream.map(|m| {
+            m.map(|b| b.body).map_err(|e| {
+                DataFusionError::ArrowError(
+                    Box::new(ArrowError::IpcError(e.to_string())),
+                    None,
+                )
+            })
+        });
 
-            // A caller fetching byte ranges gets batch messages with no schema
-            // ahead of them, because the schema is not in the bytes it asked
-            // for. It supplies the header it already knows.
-            let stream =
-                match header.clone() {
-                    Some(header) => futures::stream::once(async move {
-                        Ok(prost::bytes::Bytes::from(header))
-                    })
-                    .chain(stream)
-                    .boxed(),
-                    None => stream.boxed(),
-                };
+        // A caller fetching byte ranges gets batch messages with no schema
+        // ahead of them, because the schema is not in the bytes it asked
+        // for. It supplies the header it already knows.
+        let stream = match header {
+            Some(header) => {
+                futures::stream::once(
+                    async move { Ok(prost::bytes::Bytes::from(header)) },
+                )
+                .chain(stream)
+                .boxed()
+            }
+            None => stream.boxed(),
+        };
 
-            return Ok(Box::pin(BlockDataStream::try_new(stream).await?));
-        }
-        unreachable!("Did not receive schema batch from flight server");
+        // Reading the first block can fail because the connection broke, or
+        // because the bytes were unusable. Either way the remote data could
+        // not be read, which `as_fetch_failed` turns into a re-run of the
+        // stage that produced it. Failures after the first block are
+        // reported by the stream itself.
+        let stream = BlockDataStream::try_new(stream)
+            .await
+            .map_err(|error| BallistaError::GrpcActionError(error.to_string()))?;
+        Ok(Box::pin(stream))
     }
 }
 
@@ -768,7 +754,9 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> RecordBatchStream
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU8, Ordering};
 
+    use crate::execution_plans::test_util::ipc_stream_bytes;
     use datafusion::arrow::{
         array::{DictionaryArray, Int32Array, RecordBatch},
         datatypes::Int32Type,
@@ -777,7 +765,66 @@ mod tests {
     use futures::{StreamExt, TryStreamExt};
     use prost::bytes::Bytes;
 
-    use crate::client::BlockDataStream;
+    use tonic::{Code, Status};
+
+    use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
+    use arrow_flight::{
+        ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
+        HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
+    };
+    use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::{Request, Response, Streaming};
+
+    use crate::client::{BallistaClient, BlockDataStream};
+    use crate::error::BallistaError;
+    use crate::serde::scheduler::{PartitionId, ShuffleLayout};
+    use crate::serving::BoxedFlightStream;
+    use crate::utils::with_retry;
+
+    #[tokio::test]
+    async fn zero_configured_attempts_still_runs_once() {
+        let mut client = BallistaClient::new_for_test("localhost", 1);
+        client.io_retries_times = 0;
+        let calls = AtomicU8::new(0);
+
+        let error = with_retry(
+            client.retry_budget(),
+            0,
+            |status: &Status| status.code() == Code::Unknown,
+            || {
+                let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                async move { Err::<(), _>(Status::unknown(format!("bad-{call}"))) }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(error.message(), "bad-1");
+    }
+
+    #[tokio::test]
+    async fn configured_attempts_return_the_last_error() {
+        let mut client = BallistaClient::new_for_test("localhost", 1);
+        client.io_retries_times = 3;
+        let calls = AtomicU8::new(0);
+
+        let error = with_retry(
+            client.retry_budget(),
+            0,
+            |status: &Status| status.code() == Code::Unknown,
+            || {
+                let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                async move { Err::<(), _>(Status::unknown(format!("bad-{call}"))) }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(error.message(), "bad-3");
+    }
 
     fn generate_batches() -> Vec<RecordBatch> {
         let batch0 = RecordBatch::try_from_iter([
@@ -816,22 +863,10 @@ mod tests {
         vec![batch0, batch1]
     }
 
-    fn generate_ipc_stream(batches: &[RecordBatch]) -> Vec<u8> {
-        let mut result = vec![];
-        let mut writer =
-            StreamWriter::try_new(&mut result, &batches[0].schema()).unwrap();
-        for b in batches {
-            writer.write(b).unwrap();
-        }
-
-        writer.finish().unwrap();
-        result
-    }
-
     #[tokio::test]
     async fn should_process_chunked() {
         let batches = generate_batches();
-        let ipc_blob = generate_ipc_stream(&batches);
+        let ipc_blob = ipc_stream_bytes(&batches);
         let stream = futures::stream::iter(ipc_blob)
             .chunks(2)
             .map(|b| Ok(Bytes::from(b)));
@@ -849,7 +884,7 @@ mod tests {
     #[tokio::test]
     async fn should_process_single_message() {
         let batches = generate_batches();
-        let blob = generate_ipc_stream(&batches);
+        let blob = ipc_stream_bytes(&batches);
         let stream = futures::stream::iter(vec![Ok(Bytes::from(blob))]);
 
         let result: datafusion::error::Result<Vec<RecordBatch>> =
@@ -869,7 +904,7 @@ mod tests {
         // adopted rather than copied; block sizes that leave a partial schema
         // message still exercise the concatenating path in `try_new`.
         let batches = generate_batches();
-        let ipc_blob = generate_ipc_stream(&batches);
+        let ipc_blob = ipc_stream_bytes(&batches);
 
         for block_size in [8usize, 64, 512] {
             let stream = futures::stream::iter(ipc_blob.clone())
@@ -893,8 +928,8 @@ mod tests {
 
         // Two complete IPC streams concatenated, mirroring the sort-shuffle
         // block-IO payload `[schema-header stream][partition streams]`.
-        let mut blob = generate_ipc_stream(&batches[..1]);
-        blob.extend(generate_ipc_stream(&batches[1..]));
+        let mut blob = ipc_stream_bytes(&batches[..1]);
+        blob.extend(ipc_stream_bytes(&batches[1..]));
         let stream = futures::stream::iter(vec![Ok(Bytes::from(blob))]);
 
         let result: datafusion::error::Result<Vec<RecordBatch>> =
@@ -933,7 +968,7 @@ mod tests {
     #[should_panic = "Premature end of the stream while decoding schema"]
     async fn should_process_panic_if_not_correct_stream() {
         let batches = generate_batches();
-        let ipc_blob = generate_ipc_stream(&batches);
+        let ipc_blob = ipc_stream_bytes(&batches);
         let stream = futures::stream::iter(ipc_blob[..5].to_vec())
             .chunks(2)
             .map(|b| Ok(Bytes::from(b)));
@@ -946,5 +981,130 @@ mod tests {
                 .await;
 
         assert_eq!(batches, result.unwrap())
+    }
+
+    /// A Flight server whose `do_action` answers with a body that fails
+    /// before it carries a single block, as when the executor serving it dies
+    /// mid-response.
+    struct BrokenBodyService;
+
+    #[tonic::async_trait]
+    impl FlightService for BrokenBodyService {
+        type DoActionStream = BoxedFlightStream<arrow_flight::Result>;
+        type DoExchangeStream = BoxedFlightStream<FlightData>;
+        type DoGetStream = BoxedFlightStream<FlightData>;
+        type DoPutStream = BoxedFlightStream<PutResult>;
+        type HandshakeStream = BoxedFlightStream<HandshakeResponse>;
+        type ListActionsStream = BoxedFlightStream<ActionType>;
+        type ListFlightsStream = BoxedFlightStream<FlightInfo>;
+
+        async fn handshake(
+            &self,
+            _: Request<Streaming<HandshakeRequest>>,
+        ) -> Result<Response<Self::HandshakeStream>, Status> {
+            Err(Status::unimplemented("handshake"))
+        }
+
+        async fn list_flights(
+            &self,
+            _: Request<Criteria>,
+        ) -> Result<Response<Self::ListFlightsStream>, Status> {
+            Err(Status::unimplemented("list_flights"))
+        }
+
+        async fn get_flight_info(
+            &self,
+            _: Request<FlightDescriptor>,
+        ) -> Result<Response<FlightInfo>, Status> {
+            Err(Status::unimplemented("get_flight_info"))
+        }
+
+        async fn poll_flight_info(
+            &self,
+            _: Request<FlightDescriptor>,
+        ) -> Result<Response<PollInfo>, Status> {
+            Err(Status::unimplemented("poll_flight_info"))
+        }
+
+        async fn get_schema(
+            &self,
+            _: Request<FlightDescriptor>,
+        ) -> Result<Response<SchemaResult>, Status> {
+            Err(Status::unimplemented("get_schema"))
+        }
+
+        async fn do_get(
+            &self,
+            _: Request<Ticket>,
+        ) -> Result<Response<Self::DoGetStream>, Status> {
+            Err(Status::unimplemented("do_get"))
+        }
+
+        async fn do_put(
+            &self,
+            _: Request<Streaming<FlightData>>,
+        ) -> Result<Response<Self::DoPutStream>, Status> {
+            Err(Status::unimplemented("do_put"))
+        }
+
+        async fn do_exchange(
+            &self,
+            _: Request<Streaming<FlightData>>,
+        ) -> Result<Response<Self::DoExchangeStream>, Status> {
+            Err(Status::unimplemented("do_exchange"))
+        }
+
+        async fn do_action(
+            &self,
+            _: Request<arrow_flight::Action>,
+        ) -> Result<Response<Self::DoActionStream>, Status> {
+            Ok(Response::new(Box::pin(futures::stream::iter([Err(
+                Status::unknown("stream closed because of a broken pipe"),
+            )]))))
+        }
+
+        async fn list_actions(
+            &self,
+            _: Request<Empty>,
+        ) -> Result<Response<Self::ListActionsStream>, Status> {
+            Err(Status::unimplemented("list_actions"))
+        }
+    }
+
+    #[tokio::test]
+    async fn block_body_failing_before_the_first_block_is_a_fetch_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(FlightServiceServer::new(BrokenBodyService))
+                .serve_with_incoming(TcpListenerStream::new(listener)),
+        );
+
+        let partition_id = PartitionId {
+            job_id: "job".into(),
+            stage_id: 2,
+            partition_id: 3,
+        };
+        let mut client = BallistaClient::new_for_test("127.0.0.1", port);
+        let result = client
+            .fetch_partition(
+                "executor_1",
+                &partition_id,
+                None,
+                ShuffleLayout::Passthrough,
+                false,
+            )
+            .await;
+
+        match result {
+            Err(BallistaError::FetchFailed(executor_id, stage_id, partition_id, _)) => {
+                assert_eq!(executor_id, "executor_1");
+                assert_eq!(stage_id, 2);
+                assert_eq!(partition_id, 3);
+            }
+            Err(other) => panic!("expected FetchFailed, got {other:?}"),
+            Ok(_) => panic!("expected an error"),
+        }
     }
 }

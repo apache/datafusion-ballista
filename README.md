@@ -19,75 +19,99 @@
 
 # Ballista: Making DataFusion Applications Distributed
 
+[![Crates.io][crates-badge]][crates-url]
+[![PyPI][pypi-badge]][pypi-url]
 [![Apache licensed][license-badge]][license-url]
+[![Commit activity][activity-badge]][activity-url]
 
+[crates-badge]: https://img.shields.io/crates/v/ballista.svg
+[crates-url]: https://crates.io/crates/ballista
+[pypi-badge]: https://img.shields.io/pypi/v/ballista.svg
+[pypi-url]: https://pypi.org/project/ballista/
 [license-badge]: https://img.shields.io/badge/license-Apache%20v2-blue.svg
 [license-url]: https://github.com/apache/datafusion-ballista/blob/main/LICENSE.txt
+[activity-badge]: https://img.shields.io/github/commit-activity/m/apache/datafusion-ballista
+[activity-url]: https://github.com/apache/datafusion-ballista/commits/main
 
-<img src="docs/source/_static/images/ballista-logo.png" width="512" alt="logo"/>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/source/_static/images/ballista_white.png">
+  <img src="docs/source/_static/images/ballista-logo.png" width="512" alt="logo"/>
+</picture>
 
 Ballista is a distributed query execution engine that enhances [Apache DataFusion](https://github.com/apache/datafusion)
 by enabling the parallelized execution of workloads across multiple nodes in a distributed environment.
 
-Existing DataFusion application:
+It is also a lighter, Rust-native alternative to [Apache Spark](https://spark.apache.org), keeping the same execution
+model of stages, shuffles and adaptive query execution.
 
-```rust
-use datafusion::prelude::*;
+An existing DataFusion application can be distributed with a few lines of code changed:
 
-#[tokio::main]
-async fn main() -> datafusion::error::Result<()> {
-    let ctx = SessionContext::new();
+```diff
++use ballista::prelude::*;
+ use datafusion::prelude::*;
 
-    // register the table
-    ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new())
-        .await?;
+ #[tokio::main]
+ async fn main() -> datafusion::error::Result<()> {
+-    let ctx = SessionContext::new();
++    // create SessionContext with ballista support
++    // standalone context will start all required
++    // ballista infrastructure in the background as well
++    let ctx = SessionContext::standalone().await?;
 
-    // create a plan to run a SQL query
-    let df = ctx
-        .sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100")
-        .await?;
+     // register the table
+     ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new())
+         .await?;
 
-    // execute and print results
-    df.show().await?;
-    Ok(())
-}
-```
+     // create a plan to run a SQL query
+     let df = ctx
+         .sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100")
+         .await?;
 
-can be distributed with few lines of code changed:
-
-> [!IMPORTANT]  
-> There is a gap between DataFusion and Ballista, which may bring incompatibilities. The community is actively working
-> to close the gap
-
-```rust
-use ballista::prelude::*;
-use datafusion::prelude::*;
-
-#[tokio::main]
-async fn main() -> datafusion::error::Result<()> {
-    // create SessionContext with ballista support
-    // standalone context will start all required
-    // ballista infrastructure in the background as well
-    let ctx = SessionContext::standalone().await?;
-
-    // everything else remains the same
-
-    // register the table
-    ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new())
-        .await?;
-
-    // create a plan to run a SQL query
-    let df = ctx
-        .sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100")
-        .await?;
-
-    // execute and print results
-    df.show().await?;
-    Ok(())
-}
+     // execute and print results
+     df.show().await?;
+     Ok(())
+ }
 ```
 
 For documentation or more examples, please refer to the [Ballista User Guide][user-guide].
+
+## Features
+
+### Query interfaces
+
+- **SQL and DataFrames** from Rust and Python, using DataFusion's APIs
+- **Arrow Flight SQL**, so ADBC and JDBC drivers and BI tools can query a cluster without linking Ballista
+- **SQL CLI** with a built-in terminal UI
+- **Substrait and physical plans** accepted alongside logical plans
+- **`DataFrame.cache()`** keeps intermediate results on the executors for reuse within a session (opt-in)
+
+### Execution
+
+- **Adaptive query execution**, on by default, re-optimizes the remaining plan from runtime statistics: join selection,
+  broadcast joins, empty-stage elimination and exchange reuse, with opt-in skew-join splitting and partition coalescing
+- **Two execution modes** that share one cluster: fault-tolerant staged execution by default, for batch and ETL jobs,
+  and low-latency pipelined execution (experimental), for interactive queries
+- **Memory-bounded executors** with an auto-sized pool by default, and spilling to disk
+- **Sort-based and hash shuffle** with configurable compression
+- **Multi-partition tasks** that share memory and broadcast state across a stage's partitions
+- **Parallel window functions** over range shuffles (opt-in)
+
+### Operations
+
+- **Deployment** as native binaries or Docker images, with Docker Compose and Kubernetes guides and optional KEDA
+  autoscaling
+- **Fault tolerance**: failed tasks are retried, and work lost with an executor is re-run
+- **Graceful shutdown** and Kubernetes health probes
+- **Observability**: a browser-based Web TUI, a terminal UI, a REST API with an OpenAPI spec, Prometheus metrics, and a
+  history server for completed jobs
+- **Result service** for clients outside the cluster network
+- **Data access** to Parquet, CSV and JSON on S3-compatible object stores, HTTP and local filesystems
+
+### Extensibility
+
+- **Reusable components**: embed the scheduler and executor crates in your own engine
+- **Extension points** for custom operators and codecs, functions, object stores, session configuration and adaptive
+  optimizer rules
 
 ## Who is Ballista for
 
@@ -106,12 +130,37 @@ can be run as native binaries and are also available as Docker Images, which can
 [Docker Compose](https://datafusion.apache.org/ballista/user-guide/deployment/docker-compose.html) or
 [Kubernetes](https://datafusion.apache.org/ballista/user-guide/deployment/kubernetes.html).
 
-The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction
-between the executor(s) and the scheduler for fetching tasks and reporting task status.
+Clients submit query plans to the scheduler over gRPC, or SQL over Arrow Flight SQL. The scheduler breaks each query
+into stages and sends tasks to the executors, which report progress back. Executors exchange shuffle data with each
+other over Arrow Flight and return results to the client the same way.
 
-![Ballista Cluster Diagram](docs/source/contributors-guide/ballista_architecture.excalidraw.svg)
+![Ballista Cluster Diagram](docs/source/contributors-guide/ballista_architecture.svg)
 
 See the [architecture guide](docs/source/contributors-guide/architecture.md) for more details.
+
+## Execution Modes
+
+Ballista supports two execution modes, selected with `ballista.execution.mode`. Staged execution, the default, runs a job one stage at a time, the way [Apache Spark](https://spark.apache.org) does: each stage writes its output to shuffle files, and a failed task is simply re-run from them, which suits long-running jobs and busy shared clusters.
+
+Pipelined execution (experimental) runs a job the way [Trino](https://trino.io) does: every task is scheduled at once and stages stream record batches to each other over Arrow Flight, with no intermediate data written to disk, so results reach the client sooner, at the cost of a failed task failing the whole job. It suits short, latency-sensitive queries on clusters with room for the whole job. See the [Pipelined Execution Guide](docs/source/user-guide/pipelined-execution.md) for details.
+
+## One Engine for ETL and Interactive Queries
+
+A lakehouse aims to merge the data warehouse and the ETL platform, but it is often still served by two kinds of engine:
+a batch engine for long ETL jobs, built to survive task failures, and an interactive engine for short analytical
+queries, built for low latency. Ballista's two execution modes let one engine serve both, from the same scheduler and
+executors. Long ETL jobs run staged, where a failed task is re-run from shuffle files. Short analytical queries run
+pipelined, where results stream to the client as they are produced. A session picks its mode and can change it between
+queries, so the same SQL and DataFrame code serves either workload.
+
+Sharing one pool of executors can also take less capacity than running two clusters. Batch and interactive load are
+often uncorrelated, so the capacity one leaves idle is available to the other, and the pool can be sized for the peak
+of the combined load rather than for the sum of two separate peaks.
+
+Sharing a cluster this way is still early. Pipelined execution is experimental, and the scheduler does not prioritize
+one job over another, so on a busy cluster an interactive query can wait for vcores that batch jobs hold, as the
+[limitations](docs/source/user-guide/pipelined-execution.md#limitations) of pipelined execution describe. Prioritizing
+interactive queries over batch jobs in the scheduler is what a shared cluster still needs.
 
 ## Getting Started
 
@@ -128,9 +177,32 @@ When the scheduler HTTP endpoint is available, opening the scheduler address in 
 
 For more information, including how to run the Web TUI locally, see the [Ballista CLI documentation](https://datafusion.apache.org/ballista/user-guide/cli.html).
 
+## Project Status
+
+Ballista is part of the [Apache DataFusion](https://datafusion.apache.org) project at the Apache Software Foundation.
+It ships about every two months alongside DataFusion. [Adopters](docs/source/community/adopters.md) include Spice AI and
+Coralogix.
+
+Changes are tested on real clusters before they merge:
+
+- The merge queue runs TPC-H (SF10) and TPC-DS (SF1) queries on a multi-process cluster and compares the results with
+  single-process DataFusion, including runs with multi-partition tasks and, for TPC-H, pipelined mode.
+- A fault-injection suite kills executors mid-query, with AQE on and off, and checks that the results are still
+  correct. It runs on every code change, and its Kubernetes scenarios also run nightly.
+- Upgrade guides cover breaking changes between releases, and clients get a clear error when their major version
+  doesn't match the scheduler's.
+
+Ballista supports a wide range of SQL, including CTEs, joins and subqueries, and can execute complex queries at scale,
+but there is still a gap between DataFusion and Ballista, which may bring incompatibilities. The community is actively
+working to close it. Refer to the [DataFusion SQL Reference](https://datafusion.apache.org/user-guide/sql/index.html)
+for more information on supported SQL.
+
 ## Cargo Features
 
-Ballista uses Cargo features to enable optional functionality. Below are the available features for each crate.
+Ballista uses Cargo features to enable optional functionality.
+
+<details>
+<summary>Cargo features for each crate</summary>
 
 ### ballista (client)
 
@@ -149,15 +221,15 @@ Ballista uses Cargo features to enable optional functionality. Below are the ava
 
 ### ballista-scheduler
 
-| Feature                    | Default | Description                                                          |
-| -------------------------- | ------- | -------------------------------------------------------------------- |
-| `build-binary`             | Yes     | Builds the scheduler binary with CLI and logging                     |
-| `substrait`                | No      | Enables Substrait plan support                                       |
-| `prometheus-metrics`       | No      | Enables Prometheus metrics collection                                |
-| `graphviz-support`         | No      | Enables execution graph visualization                                |
-| `keda-scaler`              | No      | Kubernetes Event Driven Autoscaling integration                      |
-| `rest-api`                 | Yes     | Enables REST API endpoints, the OpenAPI spec, and the history server |
-| `disable-stage-plan-cache` | No      | Disables caching of stage execution plans                            |
+| Feature              | Default | Description                                                          |
+| -------------------- | ------- | -------------------------------------------------------------------- |
+| `build-binary`       | Yes     | Builds the scheduler binary with CLI and logging                     |
+| `substrait`          | No      | Enables Substrait plan support                                       |
+| `flight-sql`         | No      | Enables the Arrow Flight SQL frontend for ADBC and JDBC clients      |
+| `prometheus-metrics` | No      | Enables Prometheus metrics collection                                |
+| `graphviz-support`   | No      | Enables execution graph visualization                                |
+| `keda-scaler`        | No      | Kubernetes Event Driven Autoscaling integration                      |
+| `rest-api`           | Yes     | Enables REST API endpoints, the OpenAPI spec, and the history server |
 
 ### ballista-executor
 
@@ -187,13 +259,7 @@ cargo build -p ballista
 cargo build -p ballista-scheduler --features substrait
 ```
 
-## Project Status
-
-Ballista supports a wide range of SQL, including CTEs, Joins, and subqueries and can execute complex queries at scale,
-but still there is a gap between DataFusion and Ballista which we want to bridge in near future.
-
-Refer to the [DataFusion SQL Reference](https://datafusion.apache.org/user-guide/sql/index.html) for more
-information on supported SQL.
+</details>
 
 ## Contribution Guide
 

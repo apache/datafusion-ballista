@@ -44,7 +44,7 @@ pub const BALLISTA_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// instead (see [`crate::version`]), so a change that also reaches clients,
 /// such as the shuffle fetch they use to read results, must keep working for
 /// older clients of the same major version.
-pub const BALLISTA_PROTOCOL_VERSION: u32 = 3;
+pub const BALLISTA_PROTOCOL_VERSION: u32 = 4;
 
 /// Prints the current Ballista version to stdout.
 pub fn print_version() {
@@ -83,6 +83,8 @@ pub mod execution_plans;
 pub mod extension;
 /// Arrow Flight service which proxies partition fetches to executors.
 pub mod flight_proxy_service;
+/// HyperLogLog distinct-count sketch for shuffle output columns.
+pub mod hll;
 /// Strongly-typed string identifiers (job ids, job names, ...).
 pub mod ids;
 /// KLL quantile sketch (Karnin-Lang-Liberty), generic over `Ord` items.
@@ -119,6 +121,15 @@ pub mod version;
 /// [SessionConfig] or some of its config extension
 ///
 /// It is intended to be used with executor configuration
+///
+/// Note for embedders relying on the executor's default session runtime
+/// cache: shared base envs are keyed by (session id, fingerprint of the
+/// session config's *extension* entries, excluding the `ballista`
+/// extension). Built-in `datafusion.*` options do not feed the key, so a
+/// producer that reads `datafusion.*` or `ballista.*` options at build
+/// time keeps the values seen by the session's first task for the whole
+/// session (until the entry ages out of the LRU). Only extension options
+/// such as `s3.*` rekey the cache.
 ///
 pub type RuntimeProducer = Arc<
     dyn Fn(&SessionConfig) -> datafusion::error::Result<Arc<RuntimeEnv>> + Send + Sync,

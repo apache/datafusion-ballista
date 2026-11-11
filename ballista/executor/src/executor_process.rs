@@ -41,12 +41,14 @@ use tokio::task::JoinHandle;
 use tokio::{fs, time};
 use tonic::transport::Channel;
 
+use datafusion::execution::disk_manager::DEFAULT_MAX_TEMP_DIRECTORY_SIZE;
 use datafusion::execution::memory_pool::{FairSpillPool, MemoryPool, TrackConsumersPool};
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::prelude::SessionConfig;
 
 use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
+use ballista_core::execution_plans::PipelinedRegistry;
 use ballista_core::extension::{EndpointOverrideFn, SessionConfigExt};
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::{
@@ -197,6 +199,69 @@ fn read_host_total_memory() -> Option<u64> {
     (total > 0).then_some(total)
 }
 
+/// DataFusion caps spill files at 100 GB per runtime unless told otherwise.
+/// An executor's work dir is usually a volume of its own, so when no limit is
+/// configured, let spills use the space free on it at startup (never less
+/// than DataFusion's default). Large joins and sorts at TPC-H SF1000 spill
+/// more than 100 GB per executor and would otherwise fail with "The used disk
+/// space during the spilling process has exceeded the allowable limit".
+fn default_spill_limit(work_dir: &str) -> Option<u64> {
+    let Some(free) = free_disk_space(work_dir) else {
+        warn!(
+            "Could not read the free space of {work_dir}; spill files stay limited to DataFusion's default"
+        );
+        return None;
+    };
+    spill_limit_for_free_space(free)
+}
+
+fn spill_limit_for_free_space(free: u64) -> Option<u64> {
+    (free > DEFAULT_MAX_TEMP_DIRECTORY_SIZE).then_some(free)
+}
+
+/// Bytes available to unprivileged users on the filesystem holding `path`, or
+/// on the closest existing parent when `path` itself does not exist yet.
+/// `None` when no disk sysinfo lists holds it (sysinfo skips tmpfs and network
+/// filesystems by default), so such a work dir keeps DataFusion's default.
+fn free_disk_space(path: &str) -> Option<u64> {
+    let existing = std::path::Path::new(path)
+        .ancestors()
+        .find(|p| p.exists())
+        .unwrap_or(std::path::Path::new("."));
+    let disks = Disks::new_with_refreshed_list();
+    disk_holding(&disks, existing).map(|disk| disk.available_space())
+}
+
+/// The listed disk whose filesystem holds `path`, matched by device id so
+/// symlinks and bind mounts resolve to the right filesystem, and an unlisted
+/// filesystem (for example tmpfs) is not mistaken for its parent mount.
+#[cfg(unix)]
+fn disk_holding<'a>(
+    disks: &'a Disks,
+    path: &std::path::Path,
+) -> Option<&'a sysinfo::Disk> {
+    use std::os::unix::fs::MetadataExt;
+    let dev = std::fs::metadata(path).ok()?.dev();
+    disks
+        .list()
+        .iter()
+        .find(|disk| std::fs::metadata(disk.mount_point()).is_ok_and(|m| m.dev() == dev))
+}
+
+/// The listed disk whose mount point is the longest prefix of `path`.
+#[cfg(not(unix))]
+fn disk_holding<'a>(
+    disks: &'a Disks,
+    path: &std::path::Path,
+) -> Option<&'a sysinfo::Disk> {
+    let path = std::path::absolute(path).ok()?;
+    disks
+        .list()
+        .iter()
+        .filter(|disk| path.starts_with(disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().as_os_str().len())
+}
+
 /// Resolve the pool decision, reading host/cgroup limits only when auto-sizing.
 fn detect_pool(budget: MemoryBudget) -> ResolvedPool {
     match budget {
@@ -211,6 +276,50 @@ fn detect_pool(budget: MemoryBudget) -> ResolvedPool {
             read_cgroup_memory_limit(Path::new("/sys/fs/cgroup")),
         ),
         other => resolve_pool(other, None, None),
+    }
+}
+
+/// Raises the process's soft open-file limit to its hard limit, capped at
+/// about a million descriptors.
+///
+/// A task holds a file per shuffle partition it reads or writes, plus spill
+/// files, so a stage with a few hundred partitions needs thousands of
+/// descriptors, and many systems start processes with a soft limit of 1024.
+///
+/// This changes process-wide state, so [`start_executor_process`] does not
+/// call it: the executor binary does, and an embedder that wants the same
+/// behaviour calls it before starting the executor.
+pub fn raise_open_file_limit() {
+    #[cfg(unix)]
+    {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit/setrlimit only read and write the struct passed in.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+            return;
+        }
+        let before = limit.rlim_cur;
+        // macOS rejects a soft limit above OPEN_MAX (<sys/syslimits.h>) even
+        // when the hard limit is unlimited. Elsewhere the cap keeps a
+        // container's billion-descriptor hard limit from making every
+        // close-all-descriptors loop in a child process crawl.
+        #[cfg(target_os = "macos")]
+        const MAX_SOFT_LIMIT: libc::rlim_t = 10240;
+        #[cfg(not(target_os = "macos"))]
+        const MAX_SOFT_LIMIT: libc::rlim_t = 1 << 20;
+        let target = limit.rlim_max.min(MAX_SOFT_LIMIT);
+        if target <= before {
+            return;
+        }
+        limit.rlim_cur = target;
+        // SAFETY: as above.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } == 0 {
+            info!("Raised the open file limit from {before} to {target}");
+        } else {
+            warn!("Could not raise the open file limit from {before} to {target}");
+        }
     }
 }
 
@@ -373,12 +482,15 @@ pub struct ExecutorProcessConfig {
     pub memory_pool_fraction: f64,
     /// Maximum disk space spill files may use, applied to every runtime the
     /// executor produces (including one from `override_runtime_producer`), so
-    /// per session runtime. When `None`, DataFusion's default limit applies.
+    /// per session runtime. When `None`, the space free on the work dir's
+    /// filesystem at startup (at least DataFusion's 100 GB default) applies.
     pub max_temp_directory_size: Option<u64>,
-    /// Maximum number of sessions whose shared base runtime env is retained on
-    /// the executor (LRU). Sharing reuses object-store clients and the Parquet
-    /// footer cache across a session's tasks and queries. `0` disables caching
-    /// and builds a fresh runtime per task.
+    /// Maximum number of (session, config fingerprint) entries whose shared
+    /// base runtime env is retained on the executor (LRU). Sharing reuses
+    /// object-store clients and the Parquet footer cache across a session's
+    /// tasks and queries; a session that changes its extension config
+    /// mid-session uses one entry per distinct fingerprint. `0` disables
+    /// caching and builds a fresh runtime per task.
     pub session_runtime_cache_capacity: usize,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
@@ -565,7 +677,10 @@ async fn start_executor_process_inner(
                 Ok(Arc::new(runtime_env))
             })
         });
-    let base_runtime_producer = match opt.max_temp_directory_size {
+    let spill_limit = opt
+        .max_temp_directory_size
+        .or_else(|| default_spill_limit(&work_dir));
+    let base_runtime_producer = match spill_limit {
         Some(size) => {
             info!("Executor spill disk limit: {}", bytesize::ByteSize::b(size));
             with_max_temp_directory_size(base_runtime_producer, size)
@@ -715,11 +830,9 @@ async fn start_executor_process_inner(
         // this feature was added to support docker-compose so that we can have the executor
         // wait for the scheduler to start, or at least run for 10 seconds before failing so
         // that docker-compose's restart policy will restart the container.
-        let start_time = Instant::now().elapsed().as_secs();
+        let deadline = Instant::now() + Duration::from_secs(connect_timeout);
         let mut x = None;
-        while x.is_none()
-            && Instant::now().elapsed().as_secs() - start_time < connect_timeout
-        {
+        while x.is_none() && Instant::now() < deadline {
             match create_grpc_client_endpoint(scheduler_url.clone(), Some(&grpc_config)) {
                 Ok(mut endpoint) => {
                     if let Some(ref override_fn) =
@@ -738,16 +851,29 @@ async fn start_executor_process_inner(
                         }
                     }
 
-                    match endpoint.connect().await {
-                        Ok(connection) => {
+                    // Bound each attempt by the overall deadline as well, so a
+                    // scheduler host that drops packets cannot hold the executor
+                    // past it for the whole gRPC connect timeout.
+                    match time::timeout_at(
+                        time::Instant::from_std(deadline),
+                        endpoint.connect(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(connection)) => {
                             info!("Connected to scheduler at {scheduler_url}");
                             x = Some(connection);
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             warn!(
                                 "Failed to connect to scheduler at {scheduler_url} ({e}); retrying ..."
                             );
                             tokio::time::sleep(time::Duration::from_millis(500)).await;
+                        }
+                        Err(_) => {
+                            warn!(
+                                "Connecting to scheduler at {scheduler_url} did not finish before the deadline"
+                            );
                         }
                     }
                 }
@@ -871,6 +997,7 @@ async fn start_executor_process_inner(
             info!("Starting built-in arrow flight service");
             flight_server_task(
                 flight_work_dir,
+                executor.pipelined_registry().clone(),
                 address,
                 shutdown,
                 opt.grpc_max_encoding_message_size as usize,
@@ -988,6 +1115,7 @@ async fn start_executor_process_inner(
 // Arrow flight service
 async fn flight_server_task(
     work_dir: String,
+    pipelined_registry: Arc<PipelinedRegistry>,
     address: SocketAddr,
     mut grpc_shutdown: Shutdown,
     max_encoding_message_size: usize,
@@ -1007,9 +1135,12 @@ async fn flight_server_task(
 
         let server_future = create_grpc_server(&grpc_server_config)
             .add_service(
-                FlightServiceServer::new(BallistaFlightService::new(work_dir))
-                    .max_decoding_message_size(max_decoding_message_size)
-                    .max_encoding_message_size(max_encoding_message_size),
+                FlightServiceServer::new(
+                    BallistaFlightService::new(work_dir)
+                        .with_pipelined_registry(pipelined_registry),
+                )
+                .max_decoding_message_size(max_decoding_message_size)
+                .max_encoding_message_size(max_encoding_message_size),
             )
             .serve_with_incoming_shutdown(incoming, grpc_shutdown.recv());
 
@@ -1362,6 +1493,83 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn scheduler_connect_timeout_is_honoured() {
+        // Reserve a port and release it, so nothing listens there.
+        let scheduler_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port,
+            scheduler_connect_timeout_seconds: 1,
+            ..ExecutorProcessConfig::default()
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::start_executor_process(config),
+        )
+        .await
+        .expect("executor kept retrying past scheduler_connect_timeout_seconds");
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Timed out attempting to connect to scheduler"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_connect_timeout_bounds_a_hanging_connect() {
+        // Simulate a scheduler host that drops packets: a listener with a
+        // backlog of one whose accept queue is already full. Further SYNs are
+        // dropped, so a connect attempt to it hangs until the gRPC connect
+        // timeout (20s by default) unless the deadline bounds it.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listener = socket.listen(1).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut queued = Vec::new();
+        for _ in 0..8 {
+            match tokio::time::timeout(
+                Duration::from_millis(200),
+                tokio::net::TcpStream::connect(addr),
+            )
+            .await
+            {
+                Ok(Ok(stream)) => queued.push(stream),
+                _ => break,
+            }
+        }
+
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port: addr.port(),
+            scheduler_connect_timeout_seconds: 1,
+            ..ExecutorProcessConfig::default()
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::start_executor_process(config),
+        )
+        .await
+        .expect("a hanging connect ran past scheduler_connect_timeout_seconds");
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Timed out attempting to connect to scheduler"),
+            "unexpected error: {err}"
+        );
+        drop(queued);
+        drop(listener);
+    }
+
     #[test]
     fn default_executor_id_is_uuid() {
         let config = ExecutorProcessConfig::default();
@@ -1521,12 +1729,36 @@ mod tests {
 #[cfg(test)]
 mod memory_pool_tests {
     use super::*;
+    use crate::test_util::fresh_runtime_producer;
     use datafusion::execution::memory_pool::{
         GreedyMemoryPool, MemoryConsumer, MemoryLimit,
     };
     use datafusion::execution::object_store::DefaultObjectStoreRegistry;
     use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
     use std::sync::Arc;
+
+    #[cfg(unix)]
+    #[test]
+    fn free_disk_space_reads_the_work_dir_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let free = super::free_disk_space(dir.path().to_str().unwrap());
+        assert!(free.is_some(), "{free:?}");
+        // A work dir that does not exist yet is measured on its parent.
+        let missing = dir.path().join("not/created/yet");
+        assert!(super::free_disk_space(missing.to_str().unwrap()).is_some());
+    }
+
+    #[test]
+    fn spill_limit_is_never_below_datafusions_default() {
+        use super::spill_limit_for_free_space;
+        assert_eq!(
+            spill_limit_for_free_space(DEFAULT_MAX_TEMP_DIRECTORY_SIZE),
+            None
+        );
+        assert_eq!(spill_limit_for_free_space(1), None);
+        let tb = 1024 * 1024 * 1024 * 1024;
+        assert_eq!(spill_limit_for_free_space(tb), Some(tb));
+    }
 
     #[test]
     fn observes_per_task_pools_without_changing_their_limits() {
@@ -1590,11 +1822,7 @@ mod memory_pool_tests {
         metrics.set_pool_size(Some(8192));
         let policy =
             observe_memory_pools(memory_pool_policy(8192, 8).unwrap(), metrics.clone());
-        let cache = DefaultSessionRuntimeCache::new(
-            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default()))),
-            policy,
-            2,
-        );
+        let cache = DefaultSessionRuntimeCache::new(fresh_runtime_producer(), policy, 2);
         let config = SessionConfig::new();
         let first = cache.produce_runtime("session", &config, 1).unwrap();
         let second = cache.produce_runtime("session", &config, 4).unwrap();
@@ -1842,7 +2070,6 @@ mod memory_pool_tests {
 #[cfg(test)]
 mod spill_limit_tests {
     use super::*;
-    use datafusion::execution::disk_manager::DEFAULT_MAX_TEMP_DIRECTORY_SIZE;
 
     #[test]
     fn applies_spill_limit_to_custom_runtime_producer() {
@@ -1896,5 +2123,28 @@ mod spill_limit_tests {
             &runtime.object_store_registry,
             &base.object_store_registry
         ));
+    }
+}
+
+#[cfg(test)]
+mod open_file_limit_tests {
+    #[cfg(unix)]
+    #[test]
+    fn raising_the_open_file_limit_never_lowers_it() {
+        fn soft_limit() -> libc::rlim_t {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: getrlimit only writes the struct passed in.
+            assert_eq!(
+                unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+                0
+            );
+            limit.rlim_cur
+        }
+        let before = soft_limit();
+        super::raise_open_file_limit();
+        assert!(soft_limit() >= before);
     }
 }
