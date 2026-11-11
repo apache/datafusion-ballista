@@ -21,7 +21,7 @@
 
 TPC-H **SF1000** results on Kubernetes for Ballista in its default staged mode
 and in the opt-in pipelined mode, **DataFusion Distributed**, vanilla
-**Spark 4.1.3**, **Spark 4.1.3 with Apache DataFusion Comet 1.1.0-rc2** and
+**Spark 4.1.3**, **Spark 4.1.3 with Apache DataFusion Comet 1.1.0** and
 **Trino 483**, all on the same cluster shape. The Trino and DataFusion
 Distributed columns are not apples-to-apples comparisons (see
 [Trino configuration](trino.md) and
@@ -48,7 +48,7 @@ Distributed columns are not apples-to-apples comparisons (see
 | Ballista               | [`d9872080`](https://github.com/apache/datafusion-ballista/commit/d98720804369917151052e1c280a1dae711817fb), Cargo pkg `55.0.0`, DataFusion `55.2.0`                                                                   |
 | DataFusion Distributed | [`90350275`](https://github.com/datafusion-contrib/datafusion-distributed/commit/903502750b99839515aa8af9982f84f9c8c2ee5f), DataFusion `55`, with the memory-limit patch                                               |
 | Spark                  | `4.1.3` (`apache/spark:4.1.3` image, vanilla, no acceleration plugin)                                                                                                                                                  |
-| Comet                  | [Apache DataFusion Comet](https://github.com/apache/datafusion-comet) `1.1.0-rc2` ([`992c806a`](https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa)) on the same Spark `4.1.3` |
+| Comet                  | [Apache DataFusion Comet](https://github.com/apache/datafusion-comet) `1.1.0` ([`992c806a`](https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa)) on the same Spark `4.1.3`     |
 | Trino                  | `483` (`trinodb/trino:483` image, Hive connector)                                                                                                                                                                      |
 
 ## Results
@@ -68,31 +68,31 @@ from separate runs.
 
 <!-- BEGIN GENERATED BENCHMARK RESULTS -->
 
-|     Query | Ballista staged (s) | Ballista pipelined (s) | DataFusion Distributed (s) | Spark 4.1.3 (s) | Spark 4.1.3 + Comet 1.1.0-rc2 (s) | Trino 483 (s) |
-| --------: | ------------------: | ---------------------: | -------------------------: | --------------: | --------------------------------: | ------------: |
-|         1 |               14.59 |                  12.19 |                       7.85 |           71.45 |                             10.66 |          5.32 |
-|         2 |               31.83 |                  13.32 |                      21.29 |           37.98 |                             21.66 |         15.34 |
-|         3 |               17.32 |                   7.97 |                       8.85 |           30.61 |                             16.05 |         13.47 |
-|         4 |               11.39 |                   5.54 |                       6.10 |           23.86 |                              8.11 |          8.01 |
-|         5 |               34.79 |                  17.39 |                      18.89 |           57.39 |                             38.32 |         25.98 |
-|         6 |                1.90 |                   1.29 |                       1.47 |            1.73 |                              0.99 |          0.84 |
-|         7 |               17.22 |                   8.27 |                      19.31 |           25.34 |                             16.60 |         16.19 |
-|         8 |               16.57 |                  18.20 |                      23.87 |           58.17 |                             46.04 |         30.93 |
-|         9 |               34.09 |                  29.99 |                      35.92 |           74.90 |                             55.78 |         41.71 |
-|        10 |               39.89 |                  21.85 |                      19.93 |           35.31 |                             21.31 |         20.41 |
-|        11 |                9.62 |                   3.12 |                       7.47 |           31.66 |                             14.79 |          5.73 |
-|        12 |                7.65 |                   3.52 |                       4.40 |           13.24 |                              5.33 |          4.40 |
-|        13 |                9.93 |                   6.44 |                       6.38 |           22.73 |                             11.31 |         10.56 |
-|        14 |                6.83 |                   1.40 |                       2.53 |            7.25 |                              2.50 |          1.66 |
-|        15 |               13.13 |                   6.83 |                       7.68 |           22.45 |                             11.85 |          8.30 |
-|        16 |               12.15 |                   5.37 |                      76.41 |           24.34 |                              8.94 |          6.98 |
-|        17 |               21.81 |                  17.80 |                      22.06 |           81.36 |                             25.14 |         24.76 |
-|        18 |               35.10 |                  28.98 |                      34.84 |          134.11 |                             46.42 |         66.00 |
-|        19 |                8.84 |                   7.67 |                       8.26 |           13.27 |                              9.07 |          5.93 |
-|        20 |               14.50 |                   6.44 |                      17.77 |           16.08 |                              6.57 |          8.57 |
-|        21 |               35.71 |                  32.09 |                      39.06 |           98.04 |                             68.43 |         83.22 |
-|        22 |               10.16 |                   5.22 |                       5.51 |           16.90 |                              9.22 |          7.29 |
-| **Total** |          **405.00** |             **260.90** |                 **395.83** |      **898.17** |                        **455.09** |    **411.62** |
+|     Query | Ballista staged (s) | Ballista pipelined (s) | DataFusion Distributed (s) | Spark 4.1.3 (s) | Spark 4.1.3 + Comet 1.1.0 (s) | Trino 483 (s) |
+| --------: | ------------------: | ---------------------: | -------------------------: | --------------: | ----------------------------: | ------------: |
+|         1 |               14.59 |                  12.19 |                       7.85 |           71.45 |                         10.66 |          5.32 |
+|         2 |               31.83 |                  13.32 |                      21.29 |           37.98 |                         21.66 |         15.34 |
+|         3 |               17.32 |                   7.97 |                       8.85 |           30.61 |                         16.05 |         13.47 |
+|         4 |               11.39 |                   5.54 |                       6.10 |           23.86 |                          8.11 |          8.01 |
+|         5 |               34.79 |                  17.39 |                      18.89 |           57.39 |                         38.32 |         25.98 |
+|         6 |                1.90 |                   1.29 |                       1.47 |            1.73 |                          0.99 |          0.84 |
+|         7 |               17.22 |                   8.27 |                      19.31 |           25.34 |                         16.60 |         16.19 |
+|         8 |               16.57 |                  18.20 |                      23.87 |           58.17 |                         46.04 |         30.93 |
+|         9 |               34.09 |                  29.99 |                      35.92 |           74.90 |                         55.78 |         41.71 |
+|        10 |               39.89 |                  21.85 |                      19.93 |           35.31 |                         21.31 |         20.41 |
+|        11 |                9.62 |                   3.12 |                       7.47 |           31.66 |                         14.79 |          5.73 |
+|        12 |                7.65 |                   3.52 |                       4.40 |           13.24 |                          5.33 |          4.40 |
+|        13 |                9.93 |                   6.44 |                       6.38 |           22.73 |                         11.31 |         10.56 |
+|        14 |                6.83 |                   1.40 |                       2.53 |            7.25 |                          2.50 |          1.66 |
+|        15 |               13.13 |                   6.83 |                       7.68 |           22.45 |                         11.85 |          8.30 |
+|        16 |               12.15 |                   5.37 |                      76.41 |           24.34 |                          8.94 |          6.98 |
+|        17 |               21.81 |                  17.80 |                      22.06 |           81.36 |                         25.14 |         24.76 |
+|        18 |               35.10 |                  28.98 |                      34.84 |          134.11 |                         46.42 |         66.00 |
+|        19 |                8.84 |                   7.67 |                       8.26 |           13.27 |                          9.07 |          5.93 |
+|        20 |               14.50 |                   6.44 |                      17.77 |           16.08 |                          6.57 |          8.57 |
+|        21 |               35.71 |                  32.09 |                      39.06 |           98.04 |                         68.43 |         83.22 |
+|        22 |               10.16 |                   5.22 |                       5.51 |           16.90 |                          9.22 |          7.29 |
+| **Total** |          **405.00** |             **260.90** |                 **395.83** |      **898.17** |                    **455.09** |    **411.62** |
 
 <!-- END GENERATED BENCHMARK RESULTS -->
 
