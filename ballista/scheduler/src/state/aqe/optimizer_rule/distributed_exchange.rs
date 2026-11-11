@@ -179,7 +179,7 @@ impl DistributedExchangeRule {
     }
 }
 
-/// A join whose output depends on every probe partition seen in one process.
+/// Whether `plan` is a join that must see every probe partition in one task.
 fn probe_needs_one_task(plan: &Arc<dyn ExecutionPlan>) -> bool {
     if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() {
         hash_join.null_aware && *hash_join.partition_mode() == PartitionMode::CollectLeft
@@ -490,7 +490,6 @@ mod tests {
     #[test]
     fn nested_loop_join_coalesces_probe_only_when_it_emits_build_rows() {
         use datafusion::common::JoinType;
-        use datafusion::physical_plan::joins::NestedLoopJoinExec;
 
         let join = |join_type| {
             let join = NestedLoopJoinExec::try_new(

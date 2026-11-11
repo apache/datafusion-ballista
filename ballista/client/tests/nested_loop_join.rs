@@ -34,20 +34,23 @@ mod nested_loop_join {
         "SELECT a.o_id, b.o_id FROM (SELECT * FROM orders WHERE o_id < 3) a \
          FULL JOIN (SELECT * FROM orders WHERE o_id < 3) b ON b.o_id + 1 < a.o_id \
          ORDER BY 1, 2",
+        // One `b` row per file, so each `a` row matches in every task.
         "SELECT o_id FROM orders a WHERE o_id % 100 = 7 AND EXISTS \
-         (SELECT 1 FROM orders b WHERE b.o_id < a.o_id AND b.o_id % 250 = 3) ORDER BY 1",
+         (SELECT 1 FROM orders b WHERE b.o_id < a.o_id AND b.o_id % 250 = 3) \
+         ORDER BY 1",
         "SELECT o_id FROM orders a WHERE o_id < 3 OR EXISTS \
-         (SELECT 1 FROM orders b WHERE b.o_id < a.o_id AND b.o_id < 2 AND a.o_id > 900) ORDER BY 1",
+         (SELECT 1 FROM orders b WHERE b.o_id < a.o_id AND b.o_id < 2 \
+         AND a.o_id > 997) ORDER BY 1",
         "SELECT o_id FROM orders a WHERE o_id < 3 AND NOT EXISTS \
          (SELECT 1 FROM orders b WHERE b.o_id < a.o_id AND b.o_id < 2) ORDER BY 1",
-        // A hash repartition above the join, so its stage is planned again.
+        // An aggregate above the join, so `EnsureRequirements` reruns over its stage.
         "SELECT a.o_cust, count(*) FROM orders a LEFT JOIN orders b \
          ON b.o_id < a.o_id AND b.o_id < 2 WHERE a.o_id < 300 \
          GROUP BY a.o_cust ORDER BY 1",
     ];
 
     #[tokio::test]
-    async fn nested_loop_join_emits_build_rows_once() {
+    async fn emits_build_rows_once() {
         let dir = orders_customers_dir();
         let df_ctx = datafusion_context();
         register_orders_customers(&df_ctx, dir.path()).await;
