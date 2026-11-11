@@ -34,8 +34,9 @@ use crate::state::task_manager::TaskLauncher;
 
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    FailedTask, JobStatus, MultiTaskDefinition, ShuffleWritePartition, SuccessfulTask,
-    TaskId, TaskStatus, task_status,
+    ExecutionError, ExecutorRegistration, FailedTask, FetchPartitionError, JobStatus,
+    MultiTaskDefinition, ShuffleWritePartition, SuccessfulTask, TaskId, TaskStatus,
+    failed_task, task_status,
 };
 use ballista_core::serde::scheduler::{
     ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
@@ -65,24 +66,26 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionStage, StaticExecutionGraph, TaskDescription,
 };
-use ballista_core::test_utils::tpch::tpch_schema;
+use crate::state::pipelined_graph::PipelinedExecutionGraph;
+use ballista_core::test_utils::tpch::{TPCH_TABLES, tpch_schema};
 use ballista_core::utils::{default_config_producer, default_session_builder};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 
-/// List of TPC-H benchmark table names.
-pub const TPCH_TABLES: &[&str] = &[
-    "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
-];
-
 const TEST_SCHEDULER_ENDPOINT: &str = "localhost:50050";
 
 /// Sometimes we need to construct logical plans that will produce errors
 /// when we try and create physical plan. A scan using `ExplodingTableProvider`
-/// will do the trick
+/// will do the trick: it returns an error or, for planning that fails by
+/// panicking rather than by returning an error, panics.
 #[derive(Debug)]
-pub struct ExplodingTableProvider;
+pub enum ExplodingTableProvider {
+    /// The scan returns an error.
+    Error,
+    /// The scan panics.
+    Panic,
+}
 
 #[async_trait::async_trait]
 impl TableProvider for ExplodingTableProvider {
@@ -101,35 +104,12 @@ impl TableProvider for ExplodingTableProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        Err(DataFusionError::Plan(
-            "ExplodingTableProvider just throws an error!".to_owned(),
-        ))
-    }
-}
-
-/// A table whose scan panics, for planning that fails by panicking rather than
-/// by returning an error.
-#[derive(Debug)]
-pub struct PanickingTableProvider;
-
-#[async_trait::async_trait]
-impl TableProvider for PanickingTableProvider {
-    fn schema(&self) -> SchemaRef {
-        Arc::new(Schema::empty())
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::Base
-    }
-
-    async fn scan(
-        &self,
-        _ctx: &dyn Session,
-        _projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
-        _limit: Option<usize>,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        panic!("PanickingTableProvider just panics!")
+        match self {
+            Self::Error => Err(DataFusionError::Plan(
+                "ExplodingTableProvider just throws an error!".to_owned(),
+            )),
+            Self::Panic => panic!("ExplodingTableProvider just panics!"),
+        }
     }
 }
 
@@ -163,6 +143,47 @@ pub fn test_cluster_context() -> BallistaCluster {
         Arc::new(default_session_builder),
         Arc::new(default_config_producer),
     )
+}
+
+/// Creates and initialises a scheduler server on `cluster`, reporting to the
+/// default metrics collector.
+pub async fn test_scheduler_server(
+    cluster: BallistaCluster,
+    config: SchedulerConfig,
+) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
+    let mut scheduler = test_scheduler_server_uninit(cluster, config);
+    scheduler.init().await?;
+    Ok(scheduler)
+}
+
+/// Creates a scheduler server on `cluster`, reporting to the default metrics
+/// collector, without initialising it.
+pub fn test_scheduler_server_uninit(
+    cluster: BallistaCluster,
+    config: SchedulerConfig,
+) -> SchedulerServer<LogicalPlanNode, PhysicalPlanNode> {
+    SchedulerServer::new(
+        TEST_SCHEDULER_ENDPOINT.to_owned(),
+        cluster,
+        BallistaCodec::default(),
+        Arc::new(config),
+        crate::metrics::default_metrics_collector()
+            .expect("the default metrics collector"),
+    )
+}
+
+/// The registration of a two-vcore executor called `id` at
+/// `http://localhost:8080` with no ports, whose protocol version is `version`.
+pub fn executor_registration(id: &str, version: u32) -> ExecutorRegistration {
+    ExecutorRegistration {
+        id: id.to_owned(),
+        host: Some("http://localhost:8080".to_owned()),
+        port: 0,
+        grpc_port: 0,
+        specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
+        os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
+        ballista_protocol_version: version,
+    }
 }
 
 /// Creates a DataFusion session context with TPC-H tables registered from the given path.
@@ -217,44 +238,133 @@ where
 /// Returns a default task runner that marks all tasks as successful.
 pub fn default_task_runner() -> impl TaskRunner {
     TaskRunnerFn::new(|executor_id: String, task: MultiTaskDefinition| {
-        let mut statuses = vec![];
-
-        let partitions = 1;
-        let partitions: Vec<ShuffleWritePartition> = (0..partitions)
-            .map(|i| ShuffleWritePartition {
-                partition_id: i as u64,
-                num_batches: 1,
-                num_rows: 1,
-                num_bytes: 1,
-                file_id: None,
-                is_sort_shuffle: false,
+        task.task_ids
+            .iter()
+            .map(|TaskId { task_id, .. }| {
+                successful_task_status(
+                    &task.job_id,
+                    task.stage_id,
+                    task.stage_attempt_num,
+                    *task_id,
+                    &executor_id,
+                    1,
+                    timestamp_millis(),
+                )
             })
-            .collect();
-
-        for TaskId { task_id, .. } in task.task_ids {
-            let timestamp = timestamp_millis();
-            statuses.push(TaskStatus {
-                task_id,
-                job_id: task.job_id.clone(),
-                stage_id: task.stage_id,
-                stage_attempt_num: task.stage_attempt_num,
-                launch_time: timestamp,
-                start_exec_time: timestamp,
-                end_exec_time: timestamp,
-                metrics: vec![],
-                status: Some(task_status::Status::Successful(SuccessfulTask {
-                    executor_id: executor_id.clone(),
-                    partitions: partitions.clone(),
-                    runtime_stats: vec![],
-                    task_column_stats: vec![],
-                    runtime_filters: vec![],
-                    window_state: vec![],
-                })),
-            });
-        }
-
-        statuses
+            .collect()
     })
+}
+
+/// A task runner that fails every task with the failure `failure` makes from
+/// the id of the executor that runs it.
+pub fn failing_task_runner(
+    failure: impl Fn(&str) -> FailedTask + Send + Sync + 'static,
+) -> Arc<dyn TaskRunner> {
+    Arc::new(TaskRunnerFn::new(
+        move |executor_id: String, task: MultiTaskDefinition| {
+            failed_statuses(task, failure(&executor_id))
+        },
+    ))
+}
+
+/// The output partitions `0..n` of a task, each with one batch of one row.
+fn shuffle_write_partitions(n: usize) -> Vec<ShuffleWritePartition> {
+    (0..n)
+        .map(|partition_id| ShuffleWritePartition {
+            partition_id: partition_id as u64,
+            num_batches: 1,
+            num_rows: 1,
+            num_bytes: 1,
+            file_id: None,
+            is_sort_shuffle: false,
+        })
+        .collect()
+}
+
+/// The status of a task that succeeded on `executor_id` after writing
+/// `partitions` output partitions, with `timestamp` as its launch, start and
+/// end time.
+pub fn successful_task_status(
+    job_id: &str,
+    stage_id: u32,
+    stage_attempt_num: u32,
+    task_id: u32,
+    executor_id: &str,
+    partitions: usize,
+    timestamp: u64,
+) -> TaskStatus {
+    TaskStatus {
+        task_id,
+        job_id: job_id.to_owned(),
+        stage_id,
+        stage_attempt_num,
+        launch_time: timestamp,
+        start_exec_time: timestamp,
+        end_exec_time: timestamp,
+        metrics: vec![],
+        status: Some(task_status::Status::Successful(SuccessfulTask {
+            executor_id: executor_id.to_owned(),
+            partitions: shuffle_write_partitions(partitions),
+            runtime_stats: vec![],
+            task_column_stats: vec![],
+            runtime_filters: vec![],
+            window_state: vec![],
+        })),
+    }
+}
+
+/// A failure of the task's own execution that is neither retried nor counted
+/// towards the failure limit.
+pub fn execution_failure(error: &str) -> FailedTask {
+    FailedTask {
+        error: error.to_owned(),
+        retryable: false,
+        count_to_failures: false,
+        failed_reason: Some(failed_task::FailedReason::ExecutionError(ExecutionError {})),
+    }
+}
+
+/// A failure to fetch partition `map_partition_id` of stage `map_stage_id`
+/// from `executor_id`, which makes the scheduler rerun that map stage.
+pub fn fetch_partition_failure(
+    executor_id: &str,
+    map_stage_id: u32,
+    map_partition_id: u32,
+) -> FailedTask {
+    FailedTask {
+        error: "FetchPartitionError".to_owned(),
+        retryable: false,
+        count_to_failures: false,
+        failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+            FetchPartitionError {
+                executor_id: executor_id.to_owned(),
+                map_stage_id,
+                map_partition_id,
+            },
+        )),
+    }
+}
+
+/// One failed status carrying `failure` for each task of `task`.
+pub fn failed_statuses(
+    task: MultiTaskDefinition,
+    failure: FailedTask,
+) -> Vec<TaskStatus> {
+    let timestamp = timestamp_millis();
+    task.task_ids
+        .iter()
+        .map(|TaskId { task_id, .. }| TaskStatus {
+            task_id: *task_id,
+            job_id: task.job_id.clone(),
+            stage_id: task.stage_id,
+            stage_attempt_num: task.stage_attempt_num,
+            launch_time: timestamp,
+            start_exec_time: timestamp,
+            end_exec_time: timestamp,
+            metrics: vec![],
+            status: Some(task_status::Status::Failed(failure.clone())),
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -333,12 +443,24 @@ impl TaskLauncher for VirtualTaskLauncher {
     }
 }
 
-/// Launcher that reports every job in the batch as rejected via the
-/// `failed_jobs` channel, simulating an executor that cannot decode/validate
-/// the task (see issue #1908). The RPC itself succeeds; the jobs are failed
-/// individually rather than the whole batch.
+/// Launcher that reports jobs in the batch as rejected via the `failed_jobs`
+/// channel, simulating an executor that cannot decode/validate the task (see
+/// issue #1908). The RPC itself succeeds; the jobs are failed individually
+/// rather than the whole batch.
+///
+/// By default every job in the batch is rejected. [`RejectingTaskLauncher::only`]
+/// rejects the tasks of a single job and lets the others through.
 #[derive(Default)]
-pub struct RejectingTaskLauncher {}
+pub struct RejectingTaskLauncher {
+    only: Option<JobId>,
+}
+
+impl RejectingTaskLauncher {
+    /// Rejects only the tasks of `job_id`.
+    pub fn only(job_id: JobId) -> Self {
+        Self { only: Some(job_id) }
+    }
+}
 
 #[async_trait::async_trait]
 impl TaskLauncher for RejectingTaskLauncher {
@@ -351,6 +473,7 @@ impl TaskLauncher for RejectingTaskLauncher {
         Ok(tasks
             .iter()
             .map(|t| JobId::from(t.job_id.clone()))
+            .filter(|job_id| self.only.as_ref().is_none_or(|only| only == job_id))
             .collect())
     }
 }
@@ -363,8 +486,9 @@ pub struct SchedulerTest {
     unreachable_executors: Arc<Mutex<HashSet<String>>>,
 }
 
-async fn register_virtual_executor(
-    scheduler: &SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
+/// Registers an executor with `vcores` free vcores, host `""` and no ports.
+pub(crate) async fn register_virtual_executor(
+    executor_manager: &ExecutorManager,
     executor_id: String,
     vcores: u32,
 ) -> Result<()> {
@@ -381,11 +505,18 @@ async fn register_virtual_executor(
         total_vcores: vcores,
         available_vcores: vcores,
     };
-    scheduler
-        .state
-        .executor_manager
+    executor_manager
         .register_executor(metadata, executor_data)
         .await
+}
+
+/// A Ballista session configuration with `target_partitions` partitions that
+/// plans with the static planner. Tests that assert the stage and partition
+/// layout of the static planner use it rather than follow the default.
+pub fn static_session_config(target_partitions: usize) -> SessionConfig {
+    SessionConfig::new_with_ballista()
+        .with_target_partitions(target_partitions)
+        .with_ballista_adaptive_query_planner(false)
 }
 
 impl SchedulerTest {
@@ -397,15 +528,54 @@ impl SchedulerTest {
         vcores_per_executor: usize,
         runner: Option<Arc<dyn TaskRunner>>,
     ) -> Result<Self> {
+        Self::build(
+            config,
+            metrics_collector,
+            num_executors,
+            vcores_per_executor,
+            runner,
+            None,
+        )
+        .await
+    }
+
+    /// Like [`SchedulerTest::new`] but injects a custom [`TaskLauncher`]. The
+    /// launcher does not report task statuses back, so
+    /// [`SchedulerTest::tick`] has nothing to receive.
+    pub async fn new_with_launcher(
+        config: SchedulerConfig,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+        num_executors: usize,
+        task_slots_per_executor: usize,
+        runner: Option<Arc<dyn TaskRunner>>,
+        launcher: Arc<dyn TaskLauncher>,
+    ) -> Result<Self> {
+        Self::build(
+            config,
+            metrics_collector,
+            num_executors,
+            task_slots_per_executor,
+            runner,
+            Some(launcher),
+        )
+        .await
+    }
+
+    async fn build(
+        config: SchedulerConfig,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+        num_executors: usize,
+        vcores_per_executor: usize,
+        runner: Option<Arc<dyn TaskRunner>>,
+        launcher: Option<Arc<dyn TaskLauncher>>,
+    ) -> Result<Self> {
         let cluster = BallistaCluster::new_from_config(&config).await?;
 
         // These tests assert the static planner's stage and partition layout,
         // so pin it rather than follow the (now adaptive) default. AQE has its
         // own coverage in the TPC-DS suite.
         let session_config = if num_executors > 0 && vcores_per_executor > 0 {
-            SessionConfig::new_with_ballista()
-                .with_target_partitions(num_executors * vcores_per_executor)
-                .with_ballista_adaptive_query_planner(false)
+            static_session_config(num_executors * vcores_per_executor)
         } else {
             SessionConfig::new_with_ballista().with_ballista_adaptive_query_planner(false)
         };
@@ -428,73 +598,17 @@ impl SchedulerTest {
 
         let unreachable_executors: Arc<Mutex<HashSet<String>>> = Arc::default();
 
-        let launcher = VirtualTaskLauncher {
-            sender: status_sender,
-            executors: executors.clone(),
-            unreachable: unreachable_executors.clone(),
-        };
-
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new_with_task_launcher(
-                "localhost:50050".to_owned(),
-                cluster,
-                BallistaCodec::default(),
-                Arc::new(config),
-                metrics_collector,
-                Arc::new(launcher),
-            );
-        scheduler.init().await?;
-
-        for (executor_id, VirtualExecutor { vcores, .. }) in executors {
-            register_virtual_executor(&scheduler, executor_id, vcores as u32).await?;
-        }
-
-        Ok(Self {
-            scheduler,
-            session_config,
-            status_receiver: Some(status_receiver),
-            unreachable_executors,
-        })
-    }
-
-    /// Like [`SchedulerTest::new`] but injects a custom [`TaskLauncher`].
-    pub async fn new_with_launcher(
-        config: SchedulerConfig,
-        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
-        num_executors: usize,
-        task_slots_per_executor: usize,
-        runner: Option<Arc<dyn TaskRunner>>,
-        launcher: Arc<dyn TaskLauncher>,
-    ) -> Result<Self> {
-        let cluster = BallistaCluster::new_from_config(&config).await?;
-
-        let session_config = if num_executors > 0 && task_slots_per_executor > 0 {
-            SessionConfig::new_with_ballista()
-                .with_target_partitions(num_executors * task_slots_per_executor)
-        } else {
-            SessionConfig::new_with_ballista()
-        };
-
-        let runner = runner.unwrap_or_else(|| Arc::new(default_task_runner()));
-
-        let executors: HashMap<String, VirtualExecutor> = (0..num_executors)
-            .map(|i| {
-                let id = format!("virtual-executor-{i}");
-                let executor = VirtualExecutor {
-                    executor_id: id.clone(),
-                    vcores: task_slots_per_executor,
-                    runner: runner.clone(),
-                };
-                (id, executor)
+        let launcher = launcher.unwrap_or_else(|| {
+            Arc::new(VirtualTaskLauncher {
+                sender: status_sender,
+                executors: executors.clone(),
+                unreachable: unreachable_executors.clone(),
             })
-            .collect();
-
-        // This launcher does not report task statuses back, so no receiver is needed.
-        let (_status_sender, status_receiver) = channel(1000);
+        });
 
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new_with_task_launcher(
-                "localhost:50050".to_owned(),
+                TEST_SCHEDULER_ENDPOINT.to_owned(),
                 cluster,
                 BallistaCodec::default(),
                 Arc::new(config),
@@ -504,34 +618,19 @@ impl SchedulerTest {
         scheduler.init().await?;
 
         for (executor_id, VirtualExecutor { vcores, .. }) in executors {
-            let metadata = ExecutorMetadata {
-                id: executor_id.clone(),
-                host: String::default(),
-                port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default()
-                    .with_vcores(vcores as u32),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            };
-
-            let executor_data = ExecutorData {
+            register_virtual_executor(
+                &scheduler.state.executor_manager,
                 executor_id,
-                total_vcores: vcores as u32,
-                available_vcores: vcores as u32,
-            };
-
-            scheduler
-                .state
-                .executor_manager
-                .register_executor(metadata, executor_data)
-                .await?;
+                vcores as u32,
+            )
+            .await?;
         }
 
         Ok(Self {
             scheduler,
             session_config,
             status_receiver: Some(status_receiver),
-            unreachable_executors: Arc::default(),
+            unreachable_executors,
         })
     }
 
@@ -583,6 +682,32 @@ impl SchedulerTest {
         Ok(available.iter().map(|a| a.vcores).sum())
     }
 
+    /// Waits for up to five seconds until the free vcores satisfy `pred`, and
+    /// returns whether they did.
+    pub async fn await_free_vcores(&self, pred: impl Fn(u32) -> bool) -> Result<bool> {
+        await_condition(Duration::from_millis(20), 250, || async {
+            Ok(pred(self.free_vcores().await?))
+        })
+        .await
+    }
+
+    /// Waits for up to five seconds until the status of `job_id` satisfies
+    /// `pred`, and returns whether it did.
+    pub async fn await_job_status(
+        &self,
+        job_id: &JobId,
+        pred: impl Fn(&Status) -> bool,
+    ) -> Result<bool> {
+        await_condition(Duration::from_millis(20), 250, || async {
+            Ok(self
+                .job_status(job_id)
+                .await?
+                .and_then(|job| job.status)
+                .is_some_and(|status| pred(&status)))
+        })
+        .await
+    }
+
     /// Returns the number of running jobs.
     pub fn running_job_number(&self) -> usize {
         self.scheduler.running_job_number()
@@ -610,12 +735,7 @@ impl SchedulerTest {
     /// Submits a job and returns its ID.
     pub async fn submit(&mut self, job_name: &str, plan: &LogicalPlan) -> Result<JobId> {
         println!("{:?}", self.session_config);
-        let ctx = self
-            .scheduler
-            .state
-            .session_manager
-            .create_or_update_session("session_id", &self.session_config)
-            .await?;
+        let ctx = self.ctx().await?;
 
         let job_id = self.scheduler.submit_job(job_name, ctx, plan, None).await?;
 
@@ -679,7 +799,12 @@ impl SchedulerTest {
     /// Registers `executor_id` again with `vcores` free vcores, as an executor
     /// removed while still alive does on its next heartbeat.
     pub async fn register_executor(&self, executor_id: &str, vcores: u32) -> Result<()> {
-        register_virtual_executor(&self.scheduler, executor_id.to_owned(), vcores).await
+        register_virtual_executor(
+            &self.scheduler.state.executor_manager,
+            executor_id.to_owned(),
+            vcores,
+        )
+        .await
     }
 
     /// Makes every subsequent task launch onto `executor_id` fail, as if the
@@ -701,7 +826,12 @@ impl SchedulerTest {
             .await
     }
 
-    /// Returns job status and job_id
+    /// Submits a job and waits for it to finish. Returns job status and job_id.
+    ///
+    /// The first call hands the task status updates over to a background task
+    /// that applies them to the scheduler, so later calls on the same harness
+    /// run further jobs. [`SchedulerTest::tick`] cannot be used on a harness
+    /// that has been run.
     pub async fn run(
         &mut self,
         job_name: &str,
@@ -709,6 +839,7 @@ impl SchedulerTest {
     ) -> Result<(JobStatus, JobId)> {
         self.run_with_subscriber(job_name, plan, None).await
     }
+
     /// Returns job status and job_id, with provided subscriber
     pub async fn run_with_subscriber(
         &mut self,
@@ -716,29 +847,24 @@ impl SchedulerTest {
         plan: &LogicalPlan,
         subscriber: Option<JobStatusSubscriber>,
     ) -> Result<(JobStatus, JobId)> {
-        let ctx = self
-            .scheduler
-            .state
-            .session_manager
-            .create_or_update_session("session_id", &self.session_config)
-            .await?;
+        let ctx = self.ctx().await?;
 
         let job_id = self
             .scheduler
             .submit_job(job_name, ctx, plan, subscriber)
             .await?;
 
-        let mut receiver = self.status_receiver.take().unwrap();
-
-        let scheduler_clone = self.scheduler.clone();
-        tokio::spawn(async move {
-            while let Some((executor_id, status)) = receiver.recv().await {
-                scheduler_clone
-                    .update_task_status(&executor_id, status)
-                    .await
-                    .unwrap();
-            }
-        });
+        if let Some(mut receiver) = self.status_receiver.take() {
+            let scheduler_clone = self.scheduler.clone();
+            tokio::spawn(async move {
+                while let Some((executor_id, status)) = receiver.recv().await {
+                    scheduler_clone
+                        .update_task_status(&executor_id, status)
+                        .await
+                        .unwrap();
+                }
+            });
+        }
 
         let final_status: Result<JobStatus> = loop {
             let status = self
@@ -849,54 +975,120 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
     }
 }
 
-/// Asserts that a submitted event was recorded for the job.
-pub fn assert_submitted_event(job_id: &JobId, collector: &TestMetricsCollector) {
-    let found = collector
-        .job_events(job_id)
-        .iter()
-        .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
-
-    assert!(found, "Expected submitted event for job {job_id}");
+/// The kind of a [`MetricEvent`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetricEventKind {
+    /// A job was submitted.
+    Submitted,
+    /// A job completed.
+    Completed,
+    /// A job was cancelled.
+    Cancelled,
+    /// A job failed.
+    Failed,
 }
 
-/// Asserts that no submitted event was recorded for the job.
-pub fn assert_no_submitted_event(job_id: &JobId, collector: &TestMetricsCollector) {
-    let found = collector
-        .job_events(job_id)
-        .iter()
-        .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
-
-    assert!(!found, "Expected no submitted event for job {job_id}");
+impl MetricEvent {
+    /// Returns the kind of this event.
+    pub fn kind(&self) -> MetricEventKind {
+        match self {
+            MetricEvent::Submitted(..) => MetricEventKind::Submitted,
+            MetricEvent::Completed(..) => MetricEventKind::Completed,
+            MetricEvent::Cancelled(..) => MetricEventKind::Cancelled,
+            MetricEvent::Failed(..) => MetricEventKind::Failed,
+        }
+    }
 }
 
-/// Asserts that a completed event was recorded for the job.
-pub fn assert_completed_event(job_id: &JobId, collector: &TestMetricsCollector) {
+/// Asserts that an event of `kind` was recorded for the job. `case` names the
+/// scenario in the failure message.
+pub fn assert_event(
+    case: &str,
+    job_id: &JobId,
+    collector: &TestMetricsCollector,
+    kind: MetricEventKind,
+) {
     let found = collector
         .job_events(job_id)
         .iter()
-        .any(|ev| matches!(ev, MetricEvent::Completed(_, _, _)));
+        .any(|ev| ev.kind() == kind);
 
-    assert!(found, "{}", "Expected completed event for job {job_id}");
+    assert!(found, "{case}: expected a {kind:?} event for job {job_id}");
 }
 
-/// Asserts that a cancelled event was recorded for the job.
-pub fn assert_cancelled_event(job_id: &JobId, collector: &TestMetricsCollector) {
+/// Asserts that no event of `kind` was recorded for the job. `case` names the
+/// scenario in the failure message.
+pub fn assert_no_event(
+    case: &str,
+    job_id: &JobId,
+    collector: &TestMetricsCollector,
+    kind: MetricEventKind,
+) {
     let found = collector
         .job_events(job_id)
         .iter()
-        .any(|ev| matches!(ev, MetricEvent::Cancelled(_)));
+        .any(|ev| ev.kind() == kind);
 
-    assert!(found, "{}", "Expected cancelled event for job {job_id}");
+    assert!(
+        !found,
+        "{case}: expected no {kind:?} event for job {job_id}"
+    );
 }
 
-/// Asserts that a failed event was recorded for the job.
-pub fn assert_failed_event(job_id: &JobId, collector: &TestMetricsCollector) {
-    let found = collector
-        .job_events(job_id)
-        .iter()
-        .any(|ev| matches!(ev, MetricEvent::Failed(_, _, _)));
+/// Asserts that the job failed. `case` names the scenario in the failure
+/// message.
+pub fn assert_job_failed(case: &str, status: &JobStatus) {
+    assert!(
+        matches!(status.status, Some(Status::Failed(_))),
+        "{case}: expected job status to be failed but it was {status:?}"
+    );
+}
 
-    assert!(found, "Expected failed event for job {job_id}");
+/// Asserts that the job succeeded and returns its result. `case` names the
+/// scenario in the failure message.
+pub fn assert_job_successful<'a>(
+    case: &str,
+    status: &'a JobStatus,
+) -> &'a protobuf::SuccessfulJob {
+    match &status.status {
+        Some(Status::Successful(successful)) => successful,
+        other => panic!("{case}: expected success status but found {other:?}"),
+    }
+}
+
+/// Drains the statuses delivered to a job subscriber and asserts that they
+/// include the job's terminal status and none of the opposite outcome: a
+/// successful job when `success` is true, a failed one otherwise. `case` names
+/// the scenario in the failure message.
+pub async fn assert_subscriber_saw(
+    case: &str,
+    subscriber: &mut Receiver<JobStatus>,
+    success: bool,
+) {
+    let mut buffer = vec![];
+    subscriber.recv_many(&mut buffer, 16).await;
+    assert!(!buffer.is_empty(), "{case}: the subscriber saw no status");
+
+    let saw = |wanted_success: bool| {
+        buffer.iter().any(|s| match s.status {
+            Some(Status::Successful(_)) => wanted_success,
+            Some(Status::Failed(_)) => !wanted_success,
+            _ => false,
+        })
+    };
+    let (expected, other) = if success {
+        ("successful", "failed")
+    } else {
+        ("failed", "successful")
+    };
+    assert!(
+        saw(success),
+        "{case}: the subscriber saw no {expected} status in {buffer:?}"
+    );
+    assert!(
+        !saw(!success),
+        "{case}: the subscriber saw a {other} status in {buffer:?}"
+    );
 }
 
 /// Revives the execution graph and completes all tasks in the next stage.
@@ -940,6 +1132,128 @@ pub fn revive_graph_and_complete_next_stage_with_executor(
     Ok(num_available_tasks)
 }
 
+/// Completes every task the graph hands out, one executor "executor-id1"
+/// reporting them all, until no task is available.
+pub fn drain_tasks(graph: &mut dyn ExecutionGraph) -> Result<()> {
+    let executor = mock_executor("executor-id1".to_string());
+    drain_tasks_with_executor(graph, &executor)
+}
+
+/// Completes every task the graph hands out to `executor` until no task is
+/// available.
+pub fn drain_tasks_with_executor(
+    graph: &mut dyn ExecutionGraph,
+    executor: &ExecutorMetadata,
+) -> Result<()> {
+    while let Some(task) = graph.pop_next_task(&executor.id)? {
+        let task_status = mock_completed_task(task, &executor.id);
+        graph.update_task_status(executor, vec![task_status], 1, 1)?;
+    }
+
+    Ok(())
+}
+
+/// The logical plan of `SELECT id, sum(gmv) FROM t GROUP BY id`, over a scan
+/// of `partitions` partitions of `(id Utf8, gmv UInt64)`.
+///
+/// DataFusion's optimizer only inserts a repartition when the scan has more
+/// than one partition (https://github.com/apache/datafusion/pull/11875).
+pub fn aggregation_logical_plan(partitions: usize) -> LogicalPlan {
+    scan_empty_with_partitions(None, &id_gmv_schema(), Some(vec![0, 1]), partitions)
+        .unwrap()
+        .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+        .unwrap()
+        .build()
+        .unwrap()
+}
+
+/// The `(id Utf8, gmv UInt64)` schema of the aggregation and join plans.
+pub(crate) fn id_gmv_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("gmv", DataType::UInt64, false),
+    ])
+}
+
+/// A DataFusion session with `partition` target partitions.
+fn test_session(partition: usize) -> SessionContext {
+    SessionContext::new_with_config(
+        SessionConfig::new().with_target_partitions(partition),
+    )
+}
+
+/// Builds a static execution graph of the physical `plan` for the job "job".
+pub fn graph_from_physical(
+    plan: Arc<dyn ExecutionPlan>,
+    session_config: impl Into<Arc<SessionConfig>>,
+) -> StaticExecutionGraph {
+    static_graph(plan, &"job".into(), session_config.into())
+}
+
+/// Builds a pipelined execution graph of the physical `plan` for the job "job".
+pub fn pipelined_graph_from_physical(
+    plan: Arc<dyn ExecutionPlan>,
+    session_config: impl Into<Arc<SessionConfig>>,
+) -> PipelinedExecutionGraph {
+    PipelinedExecutionGraph::new(
+        TEST_SCHEDULER_ENDPOINT,
+        &"job".into(),
+        "",
+        "session",
+        plan,
+        0,
+        session_config.into(),
+        &mut DefaultDistributedPlanner::new(),
+        None,
+    )
+    .unwrap()
+}
+
+fn static_graph(
+    plan: Arc<dyn ExecutionPlan>,
+    job_id: &JobId,
+    session_config: Arc<SessionConfig>,
+) -> StaticExecutionGraph {
+    StaticExecutionGraph::new(
+        TEST_SCHEDULER_ENDPOINT,
+        job_id,
+        "",
+        "session",
+        plan,
+        0,
+        session_config,
+        &mut DefaultDistributedPlanner::new(),
+        None,
+    )
+    .unwrap()
+}
+
+/// Optimizes and plans `logical_plan` with `ctx` and builds a static
+/// execution graph of it.
+async fn graph_from_logical(
+    ctx: &SessionContext,
+    logical_plan: &LogicalPlan,
+    job_id: &JobId,
+    session_config: Arc<SessionConfig>,
+) -> StaticExecutionGraph {
+    let session_state = ctx.state();
+    let optimized_plan = session_state.optimize(logical_plan).unwrap();
+    let plan = session_state
+        .create_physical_plan(&optimized_plan)
+        .await
+        .unwrap();
+
+    println!(
+        "{}",
+        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
+    );
+    let graph = static_graph(plan, job_id, session_config);
+
+    println!("{graph:?}");
+
+    graph
+}
+
 /// Creates a test execution graph with a simple aggregation plan.
 pub async fn test_aggregation_plan(partition: usize) -> StaticExecutionGraph {
     test_aggregation_plan_with_job_id(partition, &"job".into()).await
@@ -967,55 +1281,17 @@ pub async fn test_aggregation_plan_with_config(
     job_id: &JobId,
     session_config: Arc<SessionConfig>,
 ) -> StaticExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
-
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
-        Field::new("gmv", DataType::UInt64, false),
-    ]);
-
-    // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
-    let logical_plan = scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
-        .unwrap()
-        .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-        .unwrap()
-        .build()
-        .unwrap();
-
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-
-    println!(
-        "{}",
-        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
-    );
-    let mut planner = DefaultDistributedPlanner::new();
-    StaticExecutionGraph::new(
-        "localhost:50050",
+    graph_from_logical(
+        &test_session(partition),
+        &aggregation_logical_plan(2),
         job_id,
-        "",
-        "session",
-        plan,
-        0,
         session_config,
-        &mut planner,
-        None,
     )
-    .unwrap()
+    .await
 }
 
 /// Creates a test execution graph with two nested aggregations.
 pub async fn test_two_aggregations_plan(partition: usize) -> StaticExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
-
     let schema = Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
         Field::new("name", DataType::Utf8, false),
@@ -1032,72 +1308,61 @@ pub async fn test_two_aggregations_plan(partition: usize) -> StaticExecutionGrap
         .build()
         .unwrap();
 
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-
-    println!(
-        "{}",
-        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
-    );
-    let mut planner = DefaultDistributedPlanner::new();
-
-    StaticExecutionGraph::new(
-        "localhost:50050",
+    graph_from_logical(
+        &test_session(partition),
+        &logical_plan,
         &"job".into(),
-        "",
-        "session",
-        plan,
-        0,
         Arc::new(SessionConfig::new_with_ballista()),
-        &mut planner,
-        None,
     )
-    .unwrap()
+    .await
 }
 
 /// Creates a test execution graph with a coalesce (limit) operation.
 pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
-
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
-        Field::new("gmv", DataType::UInt64, false),
-    ]);
-
     // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
-    let logical_plan = scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
-        .unwrap()
-        .limit(0, Some(1))
+    let logical_plan =
+        scan_empty_with_partitions(None, &id_gmv_schema(), Some(vec![0, 1]), 2)
+            .unwrap()
+            .limit(0, Some(1))
+            .unwrap()
+            .build()
+            .unwrap();
+
+    graph_from_logical(
+        &test_session(partition),
+        &logical_plan,
+        &"job".into(),
+        Arc::new(SessionConfig::new_with_ballista()),
+    )
+    .await
+}
+
+/// The logical plan of an inner join of two scans, `left` and `right`, on
+/// `id`, followed by `sum(left.gmv)` grouped by `left.id` and a sort on `id`
+/// (descending, nulls last). Both scans have two partitions of `(id Utf8, gmv
+/// UInt64)`.
+///
+/// The scans have more than one partition because of
+/// <https://github.com/apache/datafusion/issues/12611>.
+pub fn join_aggregate_sort_logical_plan() -> LogicalPlan {
+    let schema = id_gmv_schema();
+
+    let left_plan = scan_empty_with_partitions(Some("left"), &schema, None, 2).unwrap();
+
+    let right_plan = scan_empty_with_partitions(Some("right"), &schema, None, 2)
         .unwrap()
         .build()
         .unwrap();
 
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-    let mut planner = DefaultDistributedPlanner::new();
-
-    StaticExecutionGraph::new(
-        "localhost:50050",
-        &"job".into(),
-        "",
-        "session",
-        plan,
-        0,
-        Arc::new(SessionConfig::new_with_ballista()),
-        &mut planner,
-        None,
-    )
-    .unwrap()
+    left_plan
+        .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
+        .unwrap()
+        .aggregate(vec![col("left.id")], vec![sum(col("left.gmv"))])
+        .unwrap()
+        .sort(vec![SortExpr::new(col("id"), false, false)])
+        .unwrap()
+        .build()
+        .unwrap()
 }
 
 /// Creates a test execution graph with a join operation.
@@ -1107,148 +1372,42 @@ pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
         .options_mut()
         .optimizer
         .enable_round_robin_repartition = false;
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
+    let ctx = SessionContext::new_with_config(config);
 
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
-        Field::new("gmv", DataType::UInt64, false),
-    ]);
-
-    // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
-    let left_plan = scan_empty_with_partitions(Some("left"), &schema, None, 2).unwrap();
-
-    let right_plan = scan_empty_with_partitions(Some("right"), &schema, None, 2)
-        .unwrap()
-        .build()
-        .unwrap();
-
-    let sort_expr = SortExpr::new(col("id"), false, false);
-
-    let logical_plan = left_plan
-        .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
-        .unwrap()
-        .aggregate(vec![col("left.id")], vec![sum(col("left.gmv"))])
-        .unwrap()
-        .sort(vec![sort_expr])
-        .unwrap()
-        .build()
-        .unwrap();
-
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-
-    println!(
-        "{}",
-        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
-    );
-    let mut planner = DefaultDistributedPlanner::new();
-    let graph = StaticExecutionGraph::new(
-        "localhost:50050",
+    graph_from_logical(
+        &ctx,
+        &join_aggregate_sort_logical_plan(),
         &"job".into(),
-        "",
-        "session",
-        plan,
-        0,
         Arc::new(SessionConfig::new_with_ballista()),
-        &mut planner,
-        None,
     )
-    .unwrap();
-
-    println!("{graph:?}");
-
-    graph
+    .await
 }
 
 /// Creates a test execution graph with a UNION ALL operation.
 pub async fn test_union_all_plan(partition: usize) -> StaticExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
-
-    let logical_plan = ctx
-        .sql("SELECT 1 as NUMBER union all SELECT 1 as NUMBER;")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
-
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-
-    println!(
-        "{}",
-        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
-    );
-    let mut planner = DefaultDistributedPlanner::new();
-    let graph = StaticExecutionGraph::new(
-        "localhost:50050",
-        &"job".into(),
-        "",
-        "session",
-        plan,
-        0,
-        Arc::new(SessionConfig::new_with_ballista()),
-        &mut planner,
-        None,
+    test_sql_plan(
+        partition,
+        "SELECT 1 as NUMBER union all SELECT 1 as NUMBER;",
     )
-    .unwrap();
-
-    println!("{graph:?}");
-
-    graph
+    .await
 }
 
 /// Creates a test execution graph with a UNION (distinct) operation.
 pub async fn test_union_plan(partition: usize) -> StaticExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::new_with_config(config));
-    let session_state = ctx.state();
+    test_sql_plan(partition, "SELECT 1 as NUMBER union SELECT 1 as NUMBER;").await
+}
 
-    let logical_plan = ctx
-        .sql("SELECT 1 as NUMBER union SELECT 1 as NUMBER;")
-        .await
-        .unwrap()
-        .into_optimized_plan()
-        .unwrap();
+async fn test_sql_plan(partition: usize, sql: &str) -> StaticExecutionGraph {
+    let ctx = test_session(partition);
+    let logical_plan = ctx.sql(sql).await.unwrap().into_optimized_plan().unwrap();
 
-    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
-
-    let plan = session_state
-        .create_physical_plan(&optimized_plan)
-        .await
-        .unwrap();
-
-    println!(
-        "{}",
-        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
-    );
-    let mut planner = DefaultDistributedPlanner::new();
-    let graph = StaticExecutionGraph::new(
-        "localhost:50050",
+    graph_from_logical(
+        &ctx,
+        &logical_plan,
         &"job".into(),
-        "",
-        "session",
-        plan,
-        0,
         Arc::new(SessionConfig::new_with_ballista()),
-        &mut planner,
-        None,
     )
-    .unwrap();
-
-    println!("{graph:?}");
-
-    graph
+    .await
 }
 
 /// Creates a mock executor metadata with the given ID.
@@ -1265,60 +1424,19 @@ pub fn mock_executor(executor_id: String) -> ExecutorMetadata {
 
 /// Creates a mock successful task status for the given task.
 pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStatus {
-    let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
-
-    let num_partitions = task.get_output_partition_number();
-
-    for partition_id in 0..num_partitions {
-        partitions.push(protobuf::ShuffleWritePartition {
-            partition_id: partition_id as u64,
-            num_batches: 1,
-            num_rows: 1,
-            num_bytes: 1,
-            file_id: None,
-            is_sort_shuffle: false,
-        })
-    }
-
-    // Complete the task
-    protobuf::TaskStatus {
-        task_id: task.key.task_id as u32,
-        job_id: task.key.job_id.clone().into(),
-        stage_id: task.key.stage_id as u32,
-        stage_attempt_num: task.stage_attempt_num as u32,
-        launch_time: 0,
-        start_exec_time: 0,
-        end_exec_time: 0,
-        metrics: vec![],
-        status: Some(task_status::Status::Successful(protobuf::SuccessfulTask {
-            executor_id: executor_id.to_owned(),
-            partitions,
-            runtime_stats: vec![],
-            task_column_stats: vec![],
-            runtime_filters: vec![],
-            window_state: vec![],
-        })),
-    }
+    successful_task_status(
+        task.key.job_id.as_str(),
+        task.key.stage_id as u32,
+        task.stage_attempt_num as u32,
+        task.key.task_id as u32,
+        executor_id,
+        task.get_output_partition_number(),
+        0,
+    )
 }
 
 /// Creates a mock failed task status for the given task.
 pub fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskStatus {
-    let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
-
-    let num_partitions = task.get_output_partition_number();
-
-    for partition_id in 0..num_partitions {
-        partitions.push(protobuf::ShuffleWritePartition {
-            partition_id: partition_id as u64,
-            num_batches: 1,
-            num_rows: 1,
-            num_bytes: 1,
-            file_id: None,
-            is_sort_shuffle: false,
-        })
-    }
-
-    // Fail the task
     protobuf::TaskStatus {
         task_id: task.key.task_id as u32,
         job_id: task.key.job_id.clone().into(),
@@ -1359,26 +1477,59 @@ pub fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
     DataSourceExec::from_data_source(builder.build())
 }
 
-/// Wraps a plan and fails every attempt to rewrite its children, so tests can
-/// force the plan rewrites done by stage transitions (resolve, rollback) to fail.
+/// An operator that passes its input through unchanged: its properties are the
+/// input's, its only child is the input, and it executes by executing the
+/// input. It declares nothing about what it needs from the input, like an
+/// opaque fragment a planner cannot see into.
+///
+/// `name` is what the operator is called in plans and displays as, so that
+/// plan snapshots can tell the stand-ins apart. When `rewrite_fails` is set,
+/// `with_new_children` returns an error, which forces a failure in the plan
+/// rewrites done by stage transitions (resolve, rollback). Otherwise it
+/// rebuilds the operator over the new child.
 #[derive(Debug)]
-pub struct FailingPlanRewriteExec {
+pub struct PassThroughExec {
+    name: String,
     input: Arc<dyn ExecutionPlan>,
+    rewrite_fails: bool,
 }
 
-impl DisplayAs for FailingPlanRewriteExec {
+impl PassThroughExec {
+    /// Creates an operator called `name` over `input` that accepts new children.
+    pub fn new(name: impl Into<String>, input: Arc<dyn ExecutionPlan>) -> Self {
+        Self {
+            name: name.into(),
+            input,
+            rewrite_fails: false,
+        }
+    }
+
+    /// Creates an operator called `name` over `input` whose `with_new_children`
+    /// fails.
+    pub fn failing_rewrites(
+        name: impl Into<String>,
+        input: Arc<dyn ExecutionPlan>,
+    ) -> Self {
+        Self {
+            rewrite_fails: true,
+            ..Self::new(name, input)
+        }
+    }
+}
+
+impl DisplayAs for PassThroughExec {
     fn fmt_as(
         &self,
         _t: DisplayFormatType,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
-        write!(f, "FailingPlanRewriteExec")
+        write!(f, "{}", self.name)
     }
 }
 
-impl ExecutionPlan for FailingPlanRewriteExec {
+impl ExecutionPlan for PassThroughExec {
     fn name(&self) -> &str {
-        "FailingPlanRewriteExec"
+        &self.name
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -1400,11 +1551,18 @@ impl ExecutionPlan for FailingPlanRewriteExec {
 
     fn with_new_children(
         self: Arc<Self>,
-        _children: Vec<Arc<dyn ExecutionPlan>>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        Err(DataFusionError::Internal(
-            "forced plan rewrite failure".to_owned(),
-        ))
+        if self.rewrite_fails {
+            return Err(DataFusionError::Internal(
+                "forced plan rewrite failure".to_owned(),
+            ));
+        }
+        Ok(Arc::new(Self {
+            name: self.name.clone(),
+            input: children.swap_remove(0),
+            rewrite_fails: false,
+        }))
     }
 
     fn execute(
@@ -1416,11 +1574,292 @@ impl ExecutionPlan for FailingPlanRewriteExec {
     }
 }
 
-/// Wraps `plan` in a [`FailingPlanRewriteExec`] in place and returns the new plan.
+/// Wraps `plan` in a [`PassThroughExec`] that fails every attempt to rewrite
+/// its children, in place, and returns the new plan.
 pub fn fail_plan_rewrites(plan: &mut Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-    let failing_plan: Arc<dyn ExecutionPlan> = Arc::new(FailingPlanRewriteExec {
-        input: Arc::clone(plan),
-    });
+    let failing_plan: Arc<dyn ExecutionPlan> = Arc::new(
+        PassThroughExec::failing_rewrites("FailingPlanRewriteExec", Arc::clone(plan)),
+    );
     *plan = Arc::clone(&failing_plan);
     failing_plan
+}
+
+/// A stand-in for a node defined outside Ballista that holds one payload per
+/// partition. Only the node knows how to restrict them, so the scheduler needs
+/// a resolver to find it.
+pub mod payload {
+    use std::fmt::Formatter;
+    use std::sync::Arc;
+
+    use ballista_core::execution_plans::plan_algebra::{
+        PartitionSliceable, PartitionSliceableResolver, slice_by_global_partition,
+    };
+    use ballista_core::serde::BallistaPhysicalExtensionCodec;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::tree_node::TreeNodeRecursion;
+    use datafusion::common::{DataFusionError, Result, not_impl_err};
+    use datafusion::execution::TaskContext;
+    use datafusion::physical_expr::{
+        Distribution, EquivalenceProperties, Partitioning, PhysicalExpr,
+    };
+    use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+    use datafusion::physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+        SendableRecordBatchStream,
+    };
+    use datafusion_proto::physical_plan::{
+        PhysicalExtensionCodec, PhysicalProtoConverterExtension,
+    };
+
+    /// Prefix of a [`PayloadExec`] on the wire, ahead of its payloads.
+    const WIRE_PREFIX: &[u8] = b"payload-exec:";
+
+    /// One payload per partition. It reads `inputs` partition for partition,
+    /// except those listed in `whole`, which it declares `SinglePartition`.
+    #[derive(Debug)]
+    pub struct PayloadExec {
+        payloads: Vec<String>,
+        inputs: Vec<Arc<dyn ExecutionPlan>>,
+        whole: Vec<usize>,
+        forgets_to_restrict: bool,
+        properties: Arc<PlanProperties>,
+    }
+
+    impl PayloadExec {
+        fn new(
+            payloads: Vec<String>,
+            inputs: Vec<Arc<dyn ExecutionPlan>>,
+            whole: Vec<usize>,
+            forgets_to_restrict: bool,
+        ) -> Self {
+            // The schema of `scan_with_file_groups`, so that the two can be
+            // branches of one `UnionExec`.
+            let schema =
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+            let properties = Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(payloads.len()),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ));
+            Self {
+                payloads,
+                inputs,
+                whole,
+                forgets_to_restrict,
+                properties,
+            }
+        }
+
+        fn strings(payloads: &[&str]) -> Vec<String> {
+            payloads.iter().map(|p| p.to_string()).collect()
+        }
+
+        /// A leaf with one partition per payload.
+        pub fn leaf(payloads: &[&str]) -> Arc<dyn ExecutionPlan> {
+            Arc::new(Self::new(Self::strings(payloads), vec![], vec![], false))
+        }
+
+        /// A node over `inputs`, with one partition per payload.
+        pub fn over(
+            payloads: &[&str],
+            inputs: Vec<Arc<dyn ExecutionPlan>>,
+            whole: &[usize],
+        ) -> Arc<dyn ExecutionPlan> {
+            Arc::new(Self::new(
+                Self::strings(payloads),
+                inputs,
+                whole.to_vec(),
+                false,
+            ))
+        }
+
+        /// A leaf whose restriction hands back all of its payloads, as an
+        /// implementation that forgets to restrict would.
+        pub fn forgets_to_restrict(payloads: &[&str]) -> Arc<dyn ExecutionPlan> {
+            Arc::new(Self::new(Self::strings(payloads), vec![], vec![], true))
+        }
+    }
+
+    /// The payloads of a [`PayloadExec`], one per partition.
+    pub fn payloads_of(plan: &Arc<dyn ExecutionPlan>) -> Vec<String> {
+        plan.downcast_ref::<PayloadExec>()
+            .expect("expected a PayloadExec")
+            .payloads
+            .clone()
+    }
+
+    impl DisplayAs for PayloadExec {
+        fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+            write!(f, "PayloadExec: payloads={:?}", self.payloads)
+        }
+    }
+
+    impl ExecutionPlan for PayloadExec {
+        fn name(&self) -> &str {
+            "PayloadExec"
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            &self.properties
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            self.inputs.iter().collect()
+        }
+
+        fn required_input_distribution(&self) -> Vec<Distribution> {
+            (0..self.inputs.len())
+                .map(|i| {
+                    if self.whole.contains(&i) {
+                        Distribution::SinglePartition
+                    } else {
+                        Distribution::UnspecifiedDistribution
+                    }
+                })
+                .collect()
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            Ok(Arc::new(Self::new(
+                self.payloads.clone(),
+                children,
+                self.whole.clone(),
+                self.forgets_to_restrict,
+            )))
+        }
+
+        fn execute(
+            &self,
+            _partition: usize,
+            _context: Arc<TaskContext>,
+        ) -> Result<SendableRecordBatchStream> {
+            not_impl_err!("PayloadExec is only ever planned")
+        }
+    }
+
+    impl PartitionSliceable for PayloadExec {
+        fn restrict_to_partitions(
+            &self,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+            partitions: &[usize],
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            let payloads = if self.forgets_to_restrict {
+                self.payloads.clone()
+            } else {
+                slice_by_global_partition(
+                    &self.payloads,
+                    partitions,
+                    "PayloadExec",
+                    "payloads",
+                )?
+            };
+            Ok(Arc::new(Self::new(
+                payloads,
+                children,
+                self.whole.clone(),
+                self.forgets_to_restrict,
+            )))
+        }
+    }
+
+    /// A resolver that finds a [`PayloadExec`].
+    pub fn payload_resolver() -> Arc<dyn PartitionSliceableResolver> {
+        fn_resolver(|plan, children, partitions| {
+            plan.downcast_ref::<PayloadExec>()
+                .map(|op| op.restrict_to_partitions(children, partitions))
+        })
+    }
+
+    /// A [`PartitionSliceableResolver`] that calls `resolve`.
+    pub fn fn_resolver<F>(resolve: F) -> Arc<dyn PartitionSliceableResolver>
+    where
+        F: Fn(
+                &Arc<dyn ExecutionPlan>,
+                Vec<Arc<dyn ExecutionPlan>>,
+                &[usize],
+            ) -> Option<Result<Arc<dyn ExecutionPlan>>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Arc::new(FnResolver(resolve))
+    }
+
+    struct FnResolver<F>(F);
+
+    impl<F> std::fmt::Debug for FnResolver<F> {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            f.write_str("FnResolver")
+        }
+    }
+
+    impl<F> PartitionSliceableResolver for FnResolver<F>
+    where
+        F: Fn(
+                &Arc<dyn ExecutionPlan>,
+                Vec<Arc<dyn ExecutionPlan>>,
+                &[usize],
+            ) -> Option<Result<Arc<dyn ExecutionPlan>>>
+            + Send
+            + Sync,
+    {
+        fn restrict_to_partitions(
+            &self,
+            plan: &Arc<dyn ExecutionPlan>,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+            partitions: &[usize],
+        ) -> Option<Result<Arc<dyn ExecutionPlan>>> {
+            (self.0)(plan, children, partitions)
+        }
+    }
+
+    /// Carries a leaf [`PayloadExec`] and leaves the rest to Ballista's codec.
+    #[derive(Debug, Default)]
+    pub struct PayloadCodec {
+        ballista: BallistaPhysicalExtensionCodec,
+    }
+
+    impl PhysicalExtensionCodec for PayloadCodec {
+        fn try_decode(
+            &self,
+            buf: &[u8],
+            inputs: &[Arc<dyn ExecutionPlan>],
+            ctx: &TaskContext,
+            proto_converter: &dyn PhysicalProtoConverterExtension,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            let Some(payloads) = buf.strip_prefix(WIRE_PREFIX) else {
+                return self.ballista.try_decode(buf, inputs, ctx, proto_converter);
+            };
+            let payloads = std::str::from_utf8(payloads)
+                .map_err(|e| DataFusionError::Internal(e.to_string()))?;
+            let payloads: Vec<&str> =
+                payloads.split(',').filter(|p| !p.is_empty()).collect();
+            Ok(PayloadExec::leaf(&payloads))
+        }
+
+        fn try_encode(
+            &self,
+            node: Arc<dyn ExecutionPlan>,
+            buf: &mut Vec<u8>,
+            proto_converter: &dyn PhysicalProtoConverterExtension,
+        ) -> Result<()> {
+            let Some(exec) = node.downcast_ref::<PayloadExec>() else {
+                return self.ballista.try_encode(node, buf, proto_converter);
+            };
+            buf.extend_from_slice(WIRE_PREFIX);
+            buf.extend_from_slice(exec.payloads.join(",").as_bytes());
+            Ok(())
+        }
+    }
 }

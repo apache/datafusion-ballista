@@ -44,7 +44,7 @@ pub const BALLISTA_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// instead (see [`crate::version`]), so a change that also reaches clients,
 /// such as the shuffle fetch they use to read results, must keep working for
 /// older clients of the same major version.
-pub const BALLISTA_PROTOCOL_VERSION: u32 = 3;
+pub const BALLISTA_PROTOCOL_VERSION: u32 = 4;
 
 /// Prints the current Ballista version to stdout.
 pub fn print_version() {

@@ -43,6 +43,10 @@ pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
 /// Configuration key to force remote reads even for local partitions.
 pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
     "ballista.shuffle.force_remote_read";
+/// Configuration key controlling whether the tasks of a stage running on the
+/// same executor share one fetch of each broadcast read. Enabled by default.
+pub const BALLISTA_SHUFFLE_CACHE_BROADCAST_READS: &str =
+    "ballista.shuffle.cache_broadcast_reads";
 /// Configuration key to prefer Flight protocol for remote shuffle reads.
 pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
     "ballista.shuffle.remote_read_prefer_flight";
@@ -159,6 +163,17 @@ pub const BALLISTA_STAGE_BUILD_SIDE_MAX_ESTIMATE_MULTIPLE: &str =
 /// lowering.
 pub const BALLISTA_NOT_IN_SUBQUERY_REWRITE: &str =
     "ballista.optimizer.not_in_subquery_rewrite";
+
+/// Configuration key controlling whether semi and anti joins are pushed below
+/// inner joins and projections during logical optimization, so they
+/// filter one join input instead of the joined result. Enabled by default.
+pub const BALLISTA_SEMI_JOIN_PUSHDOWN: &str = "ballista.optimizer.semi_join_pushdown";
+
+/// Configuration key controlling whether an inner join against a small,
+/// selectively filtered dimension table also adds a semi join against that
+/// dimension below the joins between it and the table its key comes from.
+/// Enabled by default.
+pub const BALLISTA_SEMI_JOIN_REDUCTION: &str = "ballista.optimizer.semi_join_reduction";
 
 /// Configuration key controlling whether scan files are pruned by statistics
 /// during planning and the surviving files are spread evenly over the scan's
@@ -307,6 +322,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Forces the shuffle reader to always read partitions via the Arrow Flight client, even when partitions are local to the node.".to_string(),
                          DataType::Boolean,
                          Some((false).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_CACHE_BROADCAST_READS.to_string(),
+                         "Lets the tasks on an executor share one fetch of each broadcast shuffle read (the build side of a broadcast hash join): the first task fetches and decodes it, the others reuse the batches. Without it every task fetches the whole build side, which at high partition counts multiplies the fetches by the number of tasks. Set to false to fetch per task.".to_string(),
+                         DataType::Boolean,
+                         Some((true).to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT.to_string(),
                          "Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization".to_string(),
                          DataType::Boolean,
@@ -444,6 +463,26 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          to keep the null-aware join and its single-task lowering.".to_string(),
                          DataType::Boolean,
                          Some("true".to_string())),
+        ConfigEntry::new(BALLISTA_SEMI_JOIN_PUSHDOWN.to_string(),
+                         "Pushes semi and anti joins (from IN, EXISTS and NOT EXISTS subqueries) \
+                         below inner joins and projections during logical optimization, \
+                         onto the join input that holds their keys. The subquery then filters \
+                         that input before it is joined and shuffled, instead of filtering the \
+                         joined result. Set to false to leave semi and anti joins where subquery \
+                         decorrelation placed them.".to_string(),
+                         DataType::Boolean,
+                         Some("true".to_string())),
+        ConfigEntry::new(BALLISTA_SEMI_JOIN_REDUCTION.to_string(),
+                         "For an inner join against a dimension table filtered by equality, IN \
+                         or LIKE predicates on literals (such as a nation or part type), also \
+                         semi-joins the dimension with the table the join key comes from, below \
+                         the other joins in between. The filter then removes rows before they \
+                         are joined and shuffled, like Spark's runtime filters. Only dimensions \
+                         estimated at no more than ballista.optimizer.broadcast_join_threshold_rows \
+                         rows are used (0 disables the reduction). Set to false to apply such \
+                         filters only at the join that names them.".to_string(),
+                         DataType::Boolean,
+                         Some("true".to_string())),
         ConfigEntry::new(BALLISTA_BALANCE_SCAN_FILE_GROUPS.to_string(),
                          "Prunes scan files using their Parquet statistics while planning and \
                          deals the remaining files round-robin over the scan's file groups. \
@@ -560,11 +599,12 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         .with_doc_default("(empty)"),
         ConfigEntry::new(
             BALLISTA_SHUFFLE_COMPRESSION_CODEC.to_string(),
-            "Compression codec specification \
-            used in the shuffle process. Possible values: \
-            none, lz4, zstd. Defaults to lz4 to preserve current behaviour".to_string(),
+            "Compression codec used for shuffle data written to disk and \
+            sent between executors. Possible values: none, lz4, zstd. \
+            zstd (level 1) writes shuffle files about half the size of lz4 for \
+            little extra CPU, which matters most when shuffles cross the network".to_string(),
             DataType::Utf8,
-            Some("lz4".to_string()),
+            Some("zstd".to_string()),
         ),
         ConfigEntry::new(
             BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS.to_string(),
@@ -964,6 +1004,11 @@ impl BallistaConfig {
     pub fn shuffle_reader_force_remote_read(&self) -> bool {
         self.get_bool_setting(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ)
     }
+
+    /// Whether the tasks on an executor share one fetch of each broadcast read.
+    pub fn shuffle_cache_broadcast_reads(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SHUFFLE_CACHE_BROADCAST_READS)
+    }
     /// Forces the shuffle reader to prefer flight protocol over block protocol
     /// to read remote shuffle partition.
     ///
@@ -1060,6 +1105,18 @@ impl BallistaConfig {
     /// optimization, avoiding the single-task null-aware hash join.
     pub fn not_in_subquery_rewrite_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_NOT_IN_SUBQUERY_REWRITE)
+    }
+
+    /// Whether semi and anti joins are pushed below inner joins and projections
+    /// during logical optimization.
+    pub fn semi_join_pushdown_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SEMI_JOIN_PUSHDOWN)
+    }
+
+    /// Whether inner joins against selectively filtered dimension tables also
+    /// add a semi join below the joins between the dimension and its key's table.
+    pub fn semi_join_reduction_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SEMI_JOIN_REDUCTION)
     }
 
     /// Whether scan files are pruned by statistics during planning and the
