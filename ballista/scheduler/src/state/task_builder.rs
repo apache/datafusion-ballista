@@ -69,8 +69,9 @@ use std::sync::Arc;
 /// partition.
 ///
 /// Nodes Ballista does not list are restricted by `resolver`. A leaf that
-/// nothing can restrict is an error unless `partitions` is all of its
-/// partitions, in order.
+/// nothing can restrict becomes an empty node when `partitions` is empty, and
+/// is otherwise an error unless `partitions` is all of its partitions, in
+/// order.
 pub fn restrict_plan_to_partitions(
     plan: Arc<dyn ExecutionPlan>,
     partitions: &[usize],
@@ -167,9 +168,14 @@ fn restrict(
         return checked_restriction(plan.name(), restricted?, partitions);
     }
 
-    // A leaf nothing above could restrict is only right if the task runs all
-    // of it.
+    // A leaf nothing above could restrict. A task that runs none of its
+    // partitions, such as one owning another branch of a `UnionExec`, never
+    // executes it, whatever it is. Otherwise it is only right if the task
+    // runs all of it.
     if children.is_empty() {
+        if partitions.is_empty() {
+            return Ok(Arc::new(EmptyExec::new(plan.schema()).with_partitions(0)));
+        }
         ensure_leaf_runs_whole(&plan, partitions)?;
         return Ok(plan);
     }
@@ -215,7 +221,7 @@ fn checked_restriction(
 /// Accept a leaf that nothing could restrict only if the task runs all of it,
 /// in order. Left as it is, it numbers its partitions from zero, so any other
 /// slice would run the wrong ones. A one-partition leaf therefore passes in the
-/// task that owns it, and fails in a `UnionExec` branch that belongs to another.
+/// task that owns it.
 fn ensure_leaf_runs_whole(
     plan: &Arc<dyn ExecutionPlan>,
     partitions: &[usize],
@@ -920,8 +926,13 @@ mod tests {
     }
 
     #[test]
-    fn a_leaf_nobody_can_restrict_is_refused_unless_the_task_runs_all_of_it() {
+    fn a_leaf_nobody_can_restrict_is_refused_unless_the_task_runs_all_or_none_of_it() {
         let leaf = PayloadExec::leaf(&["p0", "p1"]);
+
+        let none = restrict_plan_to_partitions(leaf.clone(), &[], None).unwrap();
+        assert!(none.is::<EmptyExec>());
+        assert_eq!(partition_count(&none), 0);
+        assert_eq!(none.schema(), leaf.schema());
 
         let kept = restrict_plan_to_partitions(leaf.clone(), &[0, 1], None).unwrap();
         assert!(
@@ -933,7 +944,7 @@ mod tests {
         let single = PayloadExec::leaf(&["p0"]);
         assert!(restrict_plan_to_partitions(single, &[0], None).is_ok());
 
-        for partitions in [&[0][..], &[1], &[1, 0], &[]] {
+        for partitions in [&[0][..], &[1], &[1, 0]] {
             assert!(
                 restrict_plan_to_partitions(leaf.clone(), partitions, None).is_err(),
                 "{partitions:?} is not all of the leaf, in order"
@@ -1012,8 +1023,9 @@ mod tests {
         );
     }
 
-    /// A union branch that belongs to another task must restrict to nothing,
-    /// which needs the resolver for a node Ballista does not know.
+    /// A union branch that belongs to another task restricts to nothing, even
+    /// a node Ballista does not know. Restricting one to some of its
+    /// partitions needs the resolver.
     #[test]
     fn a_union_branch_owned_by_another_task_restricts_to_nothing() {
         let resolver = payload_resolver();
@@ -1039,7 +1051,12 @@ mod tests {
         assert_eq!(group_files(branches[0]), ["file0.parquet"]);
         assert_eq!(partition_count(branches[1]), 0);
 
-        assert!(restrict_plan_to_partitions(union(), &[0], None).is_err());
+        let restricted = restrict_plan_to_partitions(union(), &[0], None).unwrap();
+        let branches = restricted.children();
+        assert_eq!(group_files(branches[0]), ["file0.parquet"]);
+        assert!(branches[1].is::<EmptyExec>());
+        assert_eq!(partition_count(branches[1]), 0);
+
         assert!(restrict_plan_to_partitions(union(), &[2], None).is_err());
     }
 
