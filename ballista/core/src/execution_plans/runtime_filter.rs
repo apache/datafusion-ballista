@@ -120,6 +120,19 @@ impl RuntimeFilter {
         self.in_hashes.is_none() && self.bloom.iter().all(|&byte| byte == u8::MAX)
     }
 
+    /// Whether Bloom occupancy is high enough to skip probe-side checks.
+    pub fn is_nearly_saturated(&self) -> bool {
+        // With four probes, 99% occupancy implies about 96% false positives.
+        self.in_hashes.is_none()
+            && self
+                .bloom
+                .iter()
+                .map(|byte| byte.count_ones() as usize)
+                .sum::<usize>()
+                * 100
+                >= BLOOM_BYTES * 8 * 99
+    }
+
     fn update(&mut self, keys: &ArrayRef) -> Result<()> {
         self.has_null |= keys.null_count() > 0;
         if !self.is_saturated() {
@@ -499,12 +512,6 @@ impl ExecutionPlan for RuntimeFilterApplyExec {
         let Some(filter) = self.filter.clone() else {
             return Ok(input);
         };
-        // Preserve the payload's bounds for scan pruning, but do not hash
-        // batches against a Bloom that accepts every non-NULL value.
-        if filter.is_saturated() {
-            return Ok(input);
-        }
-
         let key = self.key.clone();
         let pruned = MetricBuilder::new(&self.metrics).counter("rows_pruned", partition);
         let stream = input.map(move |batch| {

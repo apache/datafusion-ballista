@@ -47,7 +47,7 @@ impl RuntimeFilterRegistry {
     }
 
     /// Freeze available complete filters before this stage's first dispatch.
-    /// Missing or unfinished producers leave their consumers as pass-throughs.
+    /// Bypass missing, unfinished, and nearly saturated filters.
     pub fn prepare(
         &mut self,
         stage_id: usize,
@@ -102,6 +102,10 @@ fn completed_filter(
             merged.merge(&RuntimeFilter::from_proto(report)?);
         }
     }
+    // Decide once before serializing a payload for the probe tasks.
+    if merged.is_nearly_saturated() {
+        return Ok(None);
+    }
     merged.to_proto(id).map(Some)
 }
 
@@ -119,19 +123,19 @@ mod tests {
     use datafusion::physical_plan::collect;
     use datafusion::prelude::{SessionConfig, SessionContext};
 
-    fn source(values: Vec<i64>) -> Arc<dyn ExecutionPlan> {
+    fn source(values: impl IntoIterator<Item = i64>) -> Arc<dyn ExecutionPlan> {
         let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
         let batch = RecordBatch::try_new(
             schema.clone(),
-            vec![Arc::new(Int64Array::from(values))],
+            vec![Arc::new(Int64Array::from_iter_values(values))],
         )
         .unwrap();
         MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap()
     }
 
-    async fn report(value: i64) -> RuntimeFilterPayload {
+    async fn report(values: impl IntoIterator<Item = i64>) -> RuntimeFilterPayload {
         let build: Arc<dyn ExecutionPlan> = Arc::new(RuntimeFilterBuildExec::new(
-            source(vec![value]),
+            source(values),
             3,
             Arc::new(Column::new("k", 0)),
         ));
@@ -179,7 +183,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_filter_hub_uses_only_complete_current_attempts() {
         let build: Arc<dyn ExecutionPlan> = Arc::new(RuntimeFilterBuildExec::new(
-            source(vec![]),
+            source([]),
             3,
             Arc::new(Column::new("k", 0)),
         ));
@@ -193,11 +197,11 @@ mod tests {
             Arc::new(SessionConfig::new()),
         );
         stage.pending.next_slice(2);
-        stage.task_infos = vec![task(0, 0, Some(report(1).await)), task(1, 1, None)];
+        stage.task_infos = vec![task(0, 0, Some(report([1]).await)), task(1, 1, None)];
         let mut stages = HashMap::from([(1, ExecutionStage::Running(stage))]);
         let probe: Arc<dyn ExecutionPlan> = Arc::new(
             RuntimeFilterApplyExec::try_new(
-                source(vec![1, 2, 3, 4]),
+                source([1, 2, 3, 4]),
                 3,
                 Arc::new(Column::new("k", 0)),
                 None,
@@ -213,13 +217,36 @@ mod tests {
         };
         // Drop the lost attempt's key 1; only replacement slices may contribute.
         stage.reset_task_info(0);
-        stage.task_infos[1] = task(1, 1, Some(report(2).await));
+        stage.task_infos[1] = task(1, 1, Some(report([2]).await));
         stage.pending.next_slice(1);
-        stage.task_infos.push(task(2, 0, Some(report(3).await)));
+        stage.task_infos.push(task(2, 0, Some(report([3]).await)));
         // A stage already dispatched without a filter stays unchanged.
         let frozen = hub.prepare(2, bypass, &stages).unwrap();
         assert_eq!(keys(frozen).await, [1, 2, 3, 4]);
         let plan = hub.prepare(3, probe, &stages).unwrap();
         assert_eq!(keys(plan).await, [2, 3]);
+    }
+
+    #[tokio::test]
+    async fn runtime_filter_hub_skips_a_nearly_saturated_payload() {
+        let payload = report(0..120_000).await;
+        assert!(!RuntimeFilter::from_proto(&payload).unwrap().is_saturated());
+        let mut stage = RunningStage::new(
+            1,
+            0,
+            source([]),
+            1,
+            vec![],
+            HashMap::new(),
+            Arc::new(SessionConfig::new()),
+        );
+        stage.pending.next_slice(1);
+        stage.task_infos = vec![task(0, 0, Some(payload))];
+
+        assert!(
+            completed_filter(3, Some(&ExecutionStage::Running(stage)))
+                .unwrap()
+                .is_none()
+        );
     }
 }
