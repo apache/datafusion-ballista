@@ -217,48 +217,20 @@ impl ExecutorsData {
             .and_then(|i| self.executors.get(i))
     }
 
-    fn get_selected_executor_index(&self) -> Option<usize> {
-        self.table_state.selected()
-    }
-
     pub fn scroll_down(&mut self) {
-        if self.executors.is_empty() {
-            self.table_state.select(None);
-            return;
-        }
-
-        if let Some(selected) = self.get_selected_executor_index() {
-            if selected < self.executors.len() - 1 {
-                self.table_state.select(Some(selected + 1));
-            } else {
-                self.table_state.select(None);
-            }
-        } else {
-            self.table_state.select(Some(0));
-        }
-        self.scrollbar_state = self
-            .scrollbar_state
-            .position(self.get_selected_executor_index().unwrap_or(0));
+        super::scroll_down(
+            &mut self.table_state,
+            &mut self.scrollbar_state,
+            self.executors.len(),
+        );
     }
 
     pub fn scroll_up(&mut self) {
-        if self.executors.is_empty() {
-            self.table_state.select(None);
-            return;
-        }
-
-        if let Some(selected) = self.get_selected_executor_index() {
-            if selected == 0 {
-                self.table_state.select(None);
-            } else {
-                self.table_state.select(Some(selected - 1));
-            }
-        } else {
-            self.table_state.select(Some(self.executors.len() - 1));
-        }
-        self.scrollbar_state = self
-            .scrollbar_state
-            .position(self.get_selected_executor_index().unwrap_or(0));
+        super::scroll_up(
+            &mut self.table_state,
+            &mut self.scrollbar_state,
+            self.executors.len(),
+        );
     }
 }
 
@@ -581,114 +553,6 @@ mod tests {
         assert_eq!(data.executors[1].last_seen, Some(200));
         assert_eq!(data.executors[2].last_seen, Some(100));
         assert_eq!(data.executors[3].last_seen, None);
-    }
-
-    // --- scroll_down tests ---
-
-    #[test]
-    fn scroll_down_empty_list_stays_none() {
-        let mut data = ExecutorsData::new();
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), None);
-    }
-
-    #[test]
-    fn scroll_down_with_no_selection_selects_first() {
-        let mut data = make_executors_data(
-            vec![
-                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
-            ],
-            SortColumn::None,
-            SortOrder::Ascending,
-        );
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), Some(0));
-    }
-
-    #[test]
-    fn scroll_down_advances_selection() {
-        let mut data = make_executors_data(
-            vec![
-                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
-                make_executor("host", 8082, "id-c", 1, 0, 0, Some(3)),
-            ],
-            SortColumn::None,
-            SortOrder::Ascending,
-        );
-        data.table_state.select(Some(0));
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), Some(1));
-    }
-
-    #[test]
-    fn scroll_down_at_last_item_deselects() {
-        let mut data = make_executors_data(
-            vec![
-                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
-            ],
-            SortColumn::None,
-            SortOrder::Ascending,
-        );
-        data.table_state.select(Some(1));
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), None);
-    }
-
-    // --- scroll_up tests ---
-
-    #[test]
-    fn scroll_up_empty_list_stays_none() {
-        let mut data = ExecutorsData::new();
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), None);
-    }
-
-    #[test]
-    fn scroll_up_with_no_selection_selects_last() {
-        let mut data = make_executors_data(
-            vec![
-                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
-                make_executor("host", 8082, "id-c", 1, 0, 0, Some(3)),
-            ],
-            SortColumn::None,
-            SortOrder::Ascending,
-        );
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), Some(2));
-    }
-
-    #[test]
-    fn scroll_up_moves_selection_back() {
-        let mut data = make_executors_data(
-            vec![
-                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
-            ],
-            SortColumn::None,
-            SortOrder::Ascending,
-        );
-        data.table_state.select(Some(1));
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), Some(0));
-    }
-
-    #[test]
-    fn scroll_up_at_first_item_deselects() {
-        let mut data = make_executors_data(
-            vec![
-                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
-            ],
-            SortColumn::None,
-            SortOrder::Ascending,
-        );
-        data.table_state.select(Some(0));
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), None);
     }
 
     // --- selected_executor tests ---
