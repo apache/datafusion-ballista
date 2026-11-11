@@ -103,6 +103,10 @@ RUN_TIMEOUT = 6 * 60 * 60
 # Configuration
 # ---------------------------------------------------------------------------
 
+# "" leaves the policy to Kubernetes, which pulls only when the node does not
+# already have the tag (and always for :latest).
+IMAGE_PULL_POLICIES = ("", "Always", "IfNotPresent", "Never")
+
 CLUSTER_DEFAULTS = {
     "context": "",
     "namespace": "default",
@@ -114,6 +118,7 @@ CLUSTER_DEFAULTS = {
     "node_selector": {},
     "tolerations": [],
     "image_pull_secrets": [],
+    "image_pull_policy": "",
     "data": {"scale_factor": 1000, "tpch_partitioned": False},
     "images": {"trino": "trinodb/trino:483", "python": "python:3.12-slim"},
     "trino": {"metastore_dir": "", "money_type": "decimal(15, 2)"},
@@ -133,6 +138,11 @@ def load_cluster_config(path):
     unknown = sorted(set(user) - set(CLUSTER_DEFAULTS))
     if unknown:
         sys.exit(f"{path}: unknown settings {', '.join(unknown)}")
+    if cfg["image_pull_policy"] not in IMAGE_PULL_POLICIES:
+        sys.exit(
+            f"{path}: image_pull_policy must be one of "
+            f"{', '.join(repr(p) for p in IMAGE_PULL_POLICIES)}"
+        )
     return cfg
 
 
@@ -315,6 +325,8 @@ def pod_spec(
         ]
         if cfg["env_secret"]:
             container["envFrom"] = [{"secretRef": {"name": cfg["env_secret"]}}]
+        if cfg["image_pull_policy"]:
+            container["imagePullPolicy"] = cfg["image_pull_policy"]
     spec = {
         "serviceAccountName": cfg["service_account"],
         "enableServiceLinks": False,
@@ -805,7 +817,7 @@ def spark_manifests(args, cfg, run_name, data_path, numbers):
         "--conf",
         f"spark.kubernetes.container.image={image}",
         "--conf",
-        "spark.kubernetes.container.image.pullPolicy=IfNotPresent",
+        f"spark.kubernetes.container.image.pullPolicy={cfg['image_pull_policy'] or 'IfNotPresent'}",
         "--conf",
         f"spark.kubernetes.authenticate.executor.serviceAccountName={cfg['service_account']}",
         "--conf",
