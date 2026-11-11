@@ -103,8 +103,9 @@ RUN_TIMEOUT = 6 * 60 * 60
 # Configuration
 # ---------------------------------------------------------------------------
 
-# "" leaves the policy to Kubernetes, which pulls only when the node does not
-# already have the tag (and always for :latest).
+# Always, so a run uses the image as pushed: with Kubernetes' default for a tag
+# other than :latest (IfNotPresent), nodes reuse a cached build of a tag that was
+# pushed again. "" leaves the policy to Kubernetes.
 IMAGE_PULL_POLICIES = ("", "Always", "IfNotPresent", "Never")
 
 CLUSTER_DEFAULTS = {
@@ -118,7 +119,7 @@ CLUSTER_DEFAULTS = {
     "node_selector": {},
     "tolerations": [],
     "image_pull_secrets": [],
-    "image_pull_policy": "",
+    "image_pull_policy": "Always",
     "data": {"scale_factor": 1000, "tpch_partitioned": False},
     "images": {"trino": "trinodb/trino:483", "python": "python:3.12-slim"},
     "trino": {"metastore_dir": "", "money_type": "decimal(15, 2)"},

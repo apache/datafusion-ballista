@@ -187,8 +187,10 @@ class PodSpecTest(unittest.TestCase):
                     for c in m["spec"]["template"]["spec"]["containers"]:
                         self.assertEqual(c["imagePullPolicy"], "Always", engine)
 
-    def test_no_image_pull_policy_by_default(self):
+    def test_image_pull_policy_defaults_to_always_and_can_be_left_to_kubernetes(self):
         spec = run.pod_spec(config(), [{"name": "c"}])
+        self.assertEqual(spec["containers"][0]["imagePullPolicy"], "Always")
+        spec = run.pod_spec(config(image_pull_policy=""), [{"name": "c"}])
         self.assertNotIn("imagePullPolicy", spec["containers"][0])
 
     def test_scratch_volume_is_a_pvc_with_a_storage_class_else_an_empty_dir(self):
