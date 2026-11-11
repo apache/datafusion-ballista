@@ -216,7 +216,7 @@ async fn run_task(
     work_dir: &Path,
 ) -> Result<Vec<ShuffleWritePartition>> {
     let ctx = SessionContext::new();
-    let restricted = restrict_plan_to_partitions(Arc::clone(stage), slice)?;
+    let restricted = restrict_plan_to_partitions(Arc::clone(stage), slice, None)?;
     let output_ids = compute_global_output_partition_ids(stage, slice);
     let plan = roundtrip_operator(&ctx.task_ctx(), restricted)?;
     let task = DefaultExecutionEngine::new().create_query_stage_exec(

@@ -26,7 +26,8 @@ use ballista_core::object_store::{
 use ballista_executor::alloc_accounting::{AccountingAllocator, current_balance};
 use ballista_executor::config::Config;
 use ballista_executor::executor_process::{
-    ExecutorProcessConfig, start_executor_process_with_memory_metrics, with_spill_dir,
+    ExecutorProcessConfig, raise_open_file_limit,
+    start_executor_process_with_memory_metrics, with_spill_dir,
 };
 use ballista_executor::health::spawn_health_server;
 use ballista_executor::metrics::ExecutorMemoryMetrics;
@@ -97,6 +98,8 @@ async fn main() -> ballista_core::error::Result<()> {
     } else {
         tracing.init();
     }
+
+    raise_open_file_limit();
 
     let memory_metrics = ExecutorMemoryMetrics::default();
     // This binary installs `AccountingAllocator` as its global allocator, so

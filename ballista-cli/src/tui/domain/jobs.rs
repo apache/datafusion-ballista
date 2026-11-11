@@ -453,33 +453,7 @@ mod tests {
         Job, JobConfigEntry, JobConfigPopup, JobDetails, JobPlansPopup, JobsData,
         PlanTab, SortColumn,
     };
-
-    #[expect(clippy::too_many_arguments)]
-    fn make_job(
-        id: &str,
-        name: &str,
-        status: &str,
-        start_time: u64,
-        end_time: u64,
-        num_stages: usize,
-        completed_stages: usize,
-        percent_complete: u8,
-    ) -> Job {
-        Job {
-            job_id: id.to_string(),
-            job_name: name.to_string(),
-            status: status.to_string(),
-            job_status: status.to_string(),
-            start_time,
-            end_time,
-            num_stages,
-            completed_stages,
-            percent_complete,
-            logical_plan: None,
-            physical_plan: None,
-            stage_plan: None,
-        }
-    }
+    use crate::tui::domain::test_util::make_job;
 
     fn make_jobs_data(
         jobs: Vec<Job>,
