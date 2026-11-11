@@ -120,6 +120,19 @@ impl RuntimeFilter {
         self.in_hashes.is_none() && self.bloom.iter().all(|&byte| byte == u8::MAX)
     }
 
+    fn is_nearly_saturated(&self) -> bool {
+        // With four probes, 99% occupancy implies about 96% false positives.
+        // Keep the complete payload and its bounds, but avoid probing this Bloom.
+        self.in_hashes.is_none()
+            && self
+                .bloom
+                .iter()
+                .map(|byte| byte.count_ones() as usize)
+                .sum::<usize>()
+                * 100
+                >= BLOOM_BYTES * 8 * 99
+    }
+
     fn update(&mut self, keys: &ArrayRef) -> Result<()> {
         self.has_null |= keys.null_count() > 0;
         if !self.is_saturated() {
@@ -499,9 +512,9 @@ impl ExecutionPlan for RuntimeFilterApplyExec {
         let Some(filter) = self.filter.clone() else {
             return Ok(input);
         };
-        // Preserve the payload's bounds for scan pruning, but do not hash
-        // batches against a Bloom that accepts every non-NULL value.
-        if filter.is_saturated() {
+        // Preserve the payload's bounds for scan pruning, but avoid hashing
+        // batches against a nearly full Bloom with little filtering capacity.
+        if filter.is_nearly_saturated() {
             return Ok(input);
         }
 
@@ -722,5 +735,39 @@ mod tests {
             ScalarValue::try_from(payload.max.as_ref().unwrap()).unwrap(),
             ScalarValue::Int64(Some(2_000_000))
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_filter_nearly_full_bloom_bypasses_row_filtering() {
+        let mut filter = RuntimeFilter::default();
+        filter
+            .update(&(Arc::new(Int64Array::from_iter_values(0..120_000)) as ArrayRef))
+            .unwrap();
+        assert!(!filter.is_saturated());
+        let batch = RecordBatch::try_from_iter([(
+            "key",
+            Arc::new(Int64Array::from(vec![Some(2), None])) as ArrayRef,
+        )])
+        .unwrap();
+        let input = MemorySourceConfig::try_new_exec(
+            &[vec![batch.clone()]],
+            batch.schema(),
+            None,
+        )
+        .unwrap();
+        let apply: Arc<dyn ExecutionPlan> = Arc::new(
+            RuntimeFilterApplyExec::try_new(
+                input,
+                7,
+                Arc::new(Column::new("key", 0)),
+                Some(filter.to_proto(7).unwrap()),
+            )
+            .unwrap(),
+        );
+        let result = collect(apply, SessionContext::new().task_ctx())
+            .await
+            .unwrap();
+        // Bypass passes the batch through, including NULLs the join will check.
+        assert_eq!(result, vec![batch]);
     }
 }
