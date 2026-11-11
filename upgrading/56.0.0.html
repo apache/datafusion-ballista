@@ -543,6 +543,17 @@ pass <code class="docutils literal notranslate"><span class="pre">docker</span> 
 default.</p></li>
 </ul>
 </section>
+<section id="a-range-repartitionexec-in-a-submitted-physical-plan-is-planned-as-a-shuffle">
+<h4>A range <code class="docutils literal notranslate"><span class="pre">RepartitionExec</span></code> in a submitted physical plan is planned as a shuffle<a class="headerlink" href="#a-range-repartitionexec-in-a-submitted-physical-plan-is-planned-as-a-shuffle" title="Link to this heading">#</a></h4>
+<p>The static planner used to drop every <code class="docutils literal notranslate"><span class="pre">RepartitionExec</span></code> that was not a hash
+repartition, so a range repartition followed by a per-partition sort (a
+distributed global sort) returned partitions that were sorted but not
+range-disjoint, with no error. A range repartition is now a stage boundary, and
+partition <code class="docutils literal notranslate"><span class="pre">i</span></code> of the stage above holds exactly range <code class="docutils literal notranslate"><span class="pre">i</span></code>.</p>
+<p>One that must preserve its input order (<code class="docutils literal notranslate"><span class="pre">RepartitionExec::with_preserve_order</span></code>)
+is refused when the job is planned, because a shuffle cannot merge sorted
+inputs. Sort after the repartition instead.</p>
+</section>
 <section id="undecodable-fetch-tickets-are-rejected-as-invalidargument">
 <h4>Undecodable fetch tickets are rejected as <code class="docutils literal notranslate"><span class="pre">InvalidArgument</span></code><a class="headerlink" href="#undecodable-fetch-tickets-are-rejected-as-invalidargument" title="Link to this heading">#</a></h4>
 <p>Executors, the embedded proxy, and the result service now share one
@@ -599,6 +610,12 @@ the scheduler’s log. To make nodes of your own restrictable, see
 </section>
 <section id="api-changes">
 <h3>API changes<a class="headerlink" href="#api-changes" title="Link to this heading">#</a></h3>
+<section id="sortshufflewriterexec-accepts-a-range-partitioning">
+<h4><code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExec</span></code> accepts a range partitioning<a class="headerlink" href="#sortshufflewriterexec-accepts-a-range-partitioning" title="Link to this heading">#</a></h4>
+<p>A range partitioning travels in a new <code class="docutils literal notranslate"><span class="pre">partitioning</span></code> field of the generated
+<code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExecNode</span></code>, so a struct literal of that message needs
+<code class="docutils literal notranslate"><span class="pre">partitioning:</span> <span class="pre">None</span></code>. Hash plans are encoded as before.</p>
+</section>
 <section id="sort-shuffle-bufferedbatches-is-no-longer-public">
 <h4><code class="docutils literal notranslate"><span class="pre">sort_shuffle::BufferedBatches</span></code> is no longer public<a class="headerlink" href="#sort-shuffle-bufferedbatches-is-no-longer-public" title="Link to this heading">#</a></h4>
 <p><code class="docutils literal notranslate"><span class="pre">ballista_core::execution_plans::sort_shuffle::BufferedBatches</span></code>, the sort-shuffle
@@ -927,12 +944,14 @@ unchanged.</p>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#behavior-changes">Behavior changes</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#containers-stop-on-sigterm">Containers stop on SIGTERM</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#a-range-repartitionexec-in-a-submitted-physical-plan-is-planned-as-a-shuffle">A range <code class="docutils literal notranslate"><span class="pre">RepartitionExec</span></code> in a submitted physical plan is planned as a shuffle</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#undecodable-fetch-tickets-are-rejected-as-invalidargument">Undecodable fetch tickets are rejected as <code class="docutils literal notranslate"><span class="pre">InvalidArgument</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#pull-staged-executors-no-longer-run-more-partitions-than-they-have-vcores">Pull-staged executors no longer run more partitions than they have vcores</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#stages-split-between-tasks-fail-on-a-leaf-the-scheduler-cannot-restrict">Stages split between tasks fail on a leaf the scheduler cannot restrict</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sortshufflewriterexec-accepts-a-range-partitioning"><code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExec</span></code> accepts a range partitioning</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-shuffle-bufferedbatches-is-no-longer-public"><code class="docutils literal notranslate"><span class="pre">sort_shuffle::BufferedBatches</span></code> is no longer public</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#taskmanager-executor-lost-also-returns-jobs-that-lost-cached-data"><code class="docutils literal notranslate"><span class="pre">TaskManager::executor_lost</span></code> also returns jobs that lost cached data</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#partitionsliceable-covers-any-node-and-embedders-can-register-their-own"><code class="docutils literal notranslate"><span class="pre">PartitionSliceable</span></code> covers any node, and embedders can register their own</a></li>
