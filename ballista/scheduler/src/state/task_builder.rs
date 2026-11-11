@@ -68,10 +68,11 @@ use std::sync::Arc;
 /// side) — those leaves keep the full upstream so the collapse sees every
 /// partition.
 ///
-/// Nodes Ballista does not list are restricted by `resolver`. A leaf that
-/// nothing can restrict becomes an empty node when `partitions` is empty, and
-/// is otherwise an error unless `partitions` is all of its partitions, in
-/// order.
+/// A leaf the task runs none of becomes an empty leaf, whatever it is. Nodes
+/// Ballista does not list are restricted by `resolver`, and a leaf that nothing
+/// can restrict is an error unless `partitions` is all of its partitions, in
+/// order. Each branch of a `UnionExec` must end up with one partition for each
+/// partition the task runs of it.
 pub fn restrict_plan_to_partitions(
     plan: Arc<dyn ExecutionPlan>,
     partitions: &[usize],
@@ -119,6 +120,12 @@ fn restrict(
     under_collect: bool,
     resolver: Option<&dyn PartitionSliceableResolver>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
+    // A leaf the task runs none of, such as one in a `UnionExec` branch
+    // another task owns, is never executed, whatever it is.
+    if !under_collect && partitions.is_empty() && plan.children().is_empty() {
+        return no_partitions(&plan);
+    }
+
     // Leaves: apply the algebraic partition-projection when we're not
     // under a collapse. Under collapse, leaves keep their full upstream —
     // the generic recursion below leaves them unchanged.
@@ -172,14 +179,9 @@ fn restrict(
         return checked_restriction(plan.name(), restricted?, partitions);
     }
 
-    // A leaf nothing above could restrict. A task that runs none of its
-    // partitions, such as one owning another branch of a `UnionExec`, never
-    // executes it, whatever it is. Otherwise it is only right if the task
-    // runs all of it.
+    // A leaf nothing above could restrict is only right if the task runs all
+    // of it.
     if children.is_empty() {
-        if partitions.is_empty() {
-            return no_partitions(&plan);
-        }
         ensure_leaf_runs_whole(&plan, partitions)?;
         return Ok(plan);
     }
@@ -276,7 +278,7 @@ fn ensure_branch_restricted(
     let name = branch.name();
     plan_err!(
         "cannot restrict a `UnionExec` branch to partitions {partitions:?}: its \
-         `{name}` still reports {count} partitions, so the union would run the \
+         `{name}` keeps a partition count of {count}, so the union would run the \
          wrong branch. A branch that collapses its input, such as through a \
          `SortExec` or `CoalescePartitionsExec`, needs a stage of its own; a node \
          of your own can be restricted by \
@@ -519,17 +521,13 @@ fn select_output_partitions(
 
     // Self-generating leaves: PlaceholderRow (1 all-null row per partition)
     // and EmptyExec (0 rows per partition). Every partition of one of these
-    // is semantically identical, so any non-empty slice is the leaf as it is
-    // — currently safe because the only shape emitted is `partitions == 1`
-    // and UnionExec routing gives sub-slices of `[0]` (identity) or `[]`.
-    // Returned rather than `None` so the walker's leaf check accepts it: an
-    // `EmptyExec` under the round-robin `RepartitionExec` that
-    // `make_empty_exec_serde_safe` adds sees that repartition's partition
-    // numbers, not its own.
+    // is semantically identical, so a slice is the leaf as it is — currently
+    // safe because the only shape emitted is `partitions == 1`, and the walker
+    // has already emptied a leaf for `[]`. Returned rather than `None` so the
+    // walker's leaf check accepts it: an `EmptyExec` under the round-robin
+    // `RepartitionExec` that `make_empty_exec_serde_safe` adds sees that
+    // repartition's partition numbers, not its own.
     if plan.is::<PlaceholderRowExec>() || plan.is::<EmptyExec>() {
-        if indices.is_empty() {
-            return no_partitions(plan).map(Some);
-        }
         return Ok(Some(plan.clone()));
     }
 
@@ -706,8 +704,12 @@ mod tests {
     }
 
     /// File counts per file group of a `DataSourceExec` — the shape a union
-    /// test cares about after restriction.
+    /// test cares about after restriction. None for a leaf with no partitions,
+    /// which a scan the task doesn't poll becomes.
     fn group_file_counts(plan: &Arc<dyn ExecutionPlan>) -> Vec<usize> {
+        if plan.properties().output_partitioning().partition_count() == 0 {
+            return vec![];
+        }
         file_groups(plan).iter().map(|g| g.len()).collect()
     }
 
@@ -1056,12 +1058,9 @@ mod tests {
     #[test]
     fn a_union_branch_owned_by_another_task_restricts_to_nothing() {
         let resolver = payload_resolver();
+        let unknown = PayloadExec::leaf(&["p0", "p1"]);
         let union = || -> Arc<dyn ExecutionPlan> {
-            UnionExec::try_new(vec![
-                scan_with_file_groups(2),
-                PayloadExec::leaf(&["p0", "p1"]),
-            ])
-            .unwrap()
+            UnionExec::try_new(vec![scan_with_file_groups(2), unknown.clone()]).unwrap()
         };
 
         // Partition 2 is the second branch's partition 0.
@@ -1081,7 +1080,7 @@ mod tests {
         let restricted = restrict_plan_to_partitions(union(), &[0], None).unwrap();
         let branches = restricted.children();
         assert_eq!(group_files(branches[0]), ["file0.parquet"]);
-        assert_no_partitions(branches[1], &union().children()[1].clone());
+        assert_no_partitions(branches[1], &unknown);
 
         assert!(restrict_plan_to_partitions(union(), &[2], None).is_err());
     }
@@ -1091,8 +1090,12 @@ mod tests {
     /// would run it in place of the task's own.
     #[test]
     fn a_branch_the_task_runs_none_of_keeps_no_partitions_through_serialization() {
+        use ballista_core::serde::BallistaPhysicalExtensionCodec;
         use datafusion::prelude::SessionContext;
-        use datafusion_proto::bytes::{physical_plan_from_bytes, physical_plan_to_bytes};
+        use datafusion_proto::bytes::{
+            physical_plan_from_bytes_with_extension_codec,
+            physical_plan_to_bytes_with_extension_codec,
+        };
 
         let union = UnionExec::try_new(vec![
             scan_with_file_groups(2),
@@ -1101,9 +1104,15 @@ mod tests {
         .unwrap();
         let restricted = restrict_plan_to_partitions(union, &[0], None).unwrap();
 
-        let bytes = physical_plan_to_bytes(restricted).unwrap();
-        let decoded =
-            physical_plan_from_bytes(&bytes, &SessionContext::new().task_ctx()).unwrap();
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let bytes =
+            physical_plan_to_bytes_with_extension_codec(restricted, &codec).unwrap();
+        let decoded = physical_plan_from_bytes_with_extension_codec(
+            &bytes,
+            &SessionContext::new().task_ctx(),
+            &codec,
+        )
+        .unwrap();
 
         assert_eq!(partition_count(&decoded), 1);
         let branches = decoded.children();
@@ -1128,7 +1137,7 @@ mod tests {
         assert_eq!(
             error,
             "Error during planning: cannot restrict a `UnionExec` branch to \
-             partitions []: its `PayloadExec` still reports 2 partitions, so the \
+             partitions []: its `PayloadExec` keeps a partition count of 2, so the \
              union would run the wrong branch. A branch that collapses its input, \
              such as through a `SortExec` or `CoalescePartitionsExec`, needs a \
              stage of its own; a node of your own can be restricted by \
