@@ -43,7 +43,7 @@ by enabling the parallelized execution of workloads across multiple nodes in a d
 
 It is also a lighter, Rust-native alternative to [Apache Spark](https://spark.apache.org), keeping the same execution
 model of stages, shuffles and adaptive query execution. On a 1 TB benchmark derived from TPC-H, Ballista is
-**1.7x faster than Spark** by default and **2.8x faster** with experimental pipelined execution.
+**2.2x faster than Spark** by default and **3.4x faster** with experimental pipelined execution.
 
 An existing DataFusion application can be distributed with a few lines of code changed:
 
