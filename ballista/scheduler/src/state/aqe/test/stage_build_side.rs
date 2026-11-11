@@ -73,8 +73,7 @@ fn q8_shaped_ctx() -> SessionContext {
 }
 
 async fn planner_for(ctx: &SessionContext, sql: &str) -> AdaptivePlanner {
-    let lp = ctx.sql(sql).await.unwrap().into_optimized_plan().unwrap();
-    AdaptivePlanner::try_new(ctx, &lp, "test_job".into(), None)
+    AdaptivePlanner::from_logical_sql(ctx, sql, None)
         .await
         .unwrap()
 }

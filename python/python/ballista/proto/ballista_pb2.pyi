@@ -149,18 +149,20 @@ class PipelinedShuffleWriterExecNode(_message.Message):
     def __init__(self, job_id: _Optional[str] = ..., stage_id: _Optional[int] = ..., output_partitioning: _Optional[_Union[_datafusion_pb2.PhysicalHashRepartition, _Mapping]] = ..., broadcast: _Optional[bool] = ...) -> None: ...
 
 class PipelinedShuffleReaderExecNode(_message.Message):
-    __slots__ = ("partition", "schema", "stage_id", "partitioning", "broadcast")
+    __slots__ = ("partition", "schema", "stage_id", "partitioning", "broadcast", "executors")
     PARTITION_FIELD_NUMBER: _ClassVar[int]
     SCHEMA_FIELD_NUMBER: _ClassVar[int]
     STAGE_ID_FIELD_NUMBER: _ClassVar[int]
     PARTITIONING_FIELD_NUMBER: _ClassVar[int]
     BROADCAST_FIELD_NUMBER: _ClassVar[int]
+    EXECUTORS_FIELD_NUMBER: _ClassVar[int]
     partition: _containers.RepeatedCompositeFieldContainer[PipelinedReaderPartition]
     schema: _datafusion_common_pb2.Schema
     stage_id: int
     partitioning: _datafusion_pb2.Partitioning
     broadcast: bool
-    def __init__(self, partition: _Optional[_Iterable[_Union[PipelinedReaderPartition, _Mapping]]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., stage_id: _Optional[int] = ..., partitioning: _Optional[_Union[_datafusion_pb2.Partitioning, _Mapping]] = ..., broadcast: _Optional[bool] = ...) -> None: ...
+    executors: _containers.RepeatedCompositeFieldContainer[ExecutorEndpoint]
+    def __init__(self, partition: _Optional[_Iterable[_Union[PipelinedReaderPartition, _Mapping]]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., stage_id: _Optional[int] = ..., partitioning: _Optional[_Union[_datafusion_pb2.Partitioning, _Mapping]] = ..., broadcast: _Optional[bool] = ..., executors: _Optional[_Iterable[_Union[ExecutorEndpoint, _Mapping]]] = ...) -> None: ...
 
 class PipelinedReaderPartition(_message.Message):
     __slots__ = ("location",)
@@ -169,14 +171,16 @@ class PipelinedReaderPartition(_message.Message):
     def __init__(self, location: _Optional[_Iterable[_Union[PipelinedPartitionLocation, _Mapping]]] = ...) -> None: ...
 
 class PipelinedPartitionLocation(_message.Message):
-    __slots__ = ("partition_id", "task_id", "executor_meta")
+    __slots__ = ("partition_id", "task_id", "executor_meta", "executor_index")
     PARTITION_ID_FIELD_NUMBER: _ClassVar[int]
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     EXECUTOR_META_FIELD_NUMBER: _ClassVar[int]
+    EXECUTOR_INDEX_FIELD_NUMBER: _ClassVar[int]
     partition_id: PartitionId
     task_id: int
-    executor_meta: ExecutorMetadata
-    def __init__(self, partition_id: _Optional[_Union[PartitionId, _Mapping]] = ..., task_id: _Optional[int] = ..., executor_meta: _Optional[_Union[ExecutorMetadata, _Mapping]] = ...) -> None: ...
+    executor_meta: ExecutorEndpoint
+    executor_index: int
+    def __init__(self, partition_id: _Optional[_Union[PartitionId, _Mapping]] = ..., task_id: _Optional[int] = ..., executor_meta: _Optional[_Union[ExecutorEndpoint, _Mapping]] = ..., executor_index: _Optional[int] = ...) -> None: ...
 
 class DistributedQueryExecNode(_message.Message):
     __slots__ = ("scheduler_url", "settings", "logical_plan", "session_id")
@@ -407,7 +411,7 @@ class UnresolvedShuffleExecNode(_message.Message):
     def __init__(self, stage_id: _Optional[int] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., partitioning: _Optional[_Union[_datafusion_pb2.Partitioning, _Mapping]] = ..., broadcast: _Optional[bool] = ..., upstream_partition_count: _Optional[int] = ..., coalesce: _Optional[_Union[CoalescePlan, _Mapping]] = ...) -> None: ...
 
 class ShuffleReaderExecNode(_message.Message):
-    __slots__ = ("partition", "schema", "stage_id", "partitioning", "broadcast", "upstream_partition_count", "coalesce")
+    __slots__ = ("partition", "schema", "stage_id", "partitioning", "broadcast", "upstream_partition_count", "coalesce", "executors")
     PARTITION_FIELD_NUMBER: _ClassVar[int]
     SCHEMA_FIELD_NUMBER: _ClassVar[int]
     STAGE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -415,6 +419,7 @@ class ShuffleReaderExecNode(_message.Message):
     BROADCAST_FIELD_NUMBER: _ClassVar[int]
     UPSTREAM_PARTITION_COUNT_FIELD_NUMBER: _ClassVar[int]
     COALESCE_FIELD_NUMBER: _ClassVar[int]
+    EXECUTORS_FIELD_NUMBER: _ClassVar[int]
     partition: _containers.RepeatedCompositeFieldContainer[ShuffleReaderPartition]
     schema: _datafusion_common_pb2.Schema
     stage_id: int
@@ -422,7 +427,8 @@ class ShuffleReaderExecNode(_message.Message):
     broadcast: bool
     upstream_partition_count: int
     coalesce: CoalescePlan
-    def __init__(self, partition: _Optional[_Iterable[_Union[ShuffleReaderPartition, _Mapping]]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., stage_id: _Optional[int] = ..., partitioning: _Optional[_Union[_datafusion_pb2.Partitioning, _Mapping]] = ..., broadcast: _Optional[bool] = ..., upstream_partition_count: _Optional[int] = ..., coalesce: _Optional[_Union[CoalescePlan, _Mapping]] = ...) -> None: ...
+    executors: _containers.RepeatedCompositeFieldContainer[ExecutorEndpoint]
+    def __init__(self, partition: _Optional[_Iterable[_Union[ShuffleReaderPartition, _Mapping]]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., stage_id: _Optional[int] = ..., partitioning: _Optional[_Union[_datafusion_pb2.Partitioning, _Mapping]] = ..., broadcast: _Optional[bool] = ..., upstream_partition_count: _Optional[int] = ..., coalesce: _Optional[_Union[CoalescePlan, _Mapping]] = ..., executors: _Optional[_Iterable[_Union[ExecutorEndpoint, _Mapping]]] = ...) -> None: ...
 
 class ShuffleReaderPartition(_message.Message):
     __slots__ = ("location",)
@@ -431,20 +437,22 @@ class ShuffleReaderPartition(_message.Message):
     def __init__(self, location: _Optional[_Iterable[_Union[PartitionLocation, _Mapping]]] = ...) -> None: ...
 
 class RangeShuffleReaderExecNode(_message.Message):
-    __slots__ = ("partition", "schema", "stage_id", "merge_ordering", "fetch", "bounds")
+    __slots__ = ("partition", "schema", "stage_id", "merge_ordering", "fetch", "bounds", "executors")
     PARTITION_FIELD_NUMBER: _ClassVar[int]
     SCHEMA_FIELD_NUMBER: _ClassVar[int]
     STAGE_ID_FIELD_NUMBER: _ClassVar[int]
     MERGE_ORDERING_FIELD_NUMBER: _ClassVar[int]
     FETCH_FIELD_NUMBER: _ClassVar[int]
     BOUNDS_FIELD_NUMBER: _ClassVar[int]
+    EXECUTORS_FIELD_NUMBER: _ClassVar[int]
     partition: _containers.RepeatedCompositeFieldContainer[ShuffleReaderPartition]
     schema: _datafusion_common_pb2.Schema
     stage_id: int
     merge_ordering: _containers.RepeatedCompositeFieldContainer[_datafusion_pb2.PhysicalSortExprNode]
     fetch: int
     bounds: _containers.RepeatedCompositeFieldContainer[RangeBound]
-    def __init__(self, partition: _Optional[_Iterable[_Union[ShuffleReaderPartition, _Mapping]]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., stage_id: _Optional[int] = ..., merge_ordering: _Optional[_Iterable[_Union[_datafusion_pb2.PhysicalSortExprNode, _Mapping]]] = ..., fetch: _Optional[int] = ..., bounds: _Optional[_Iterable[_Union[RangeBound, _Mapping]]] = ...) -> None: ...
+    executors: _containers.RepeatedCompositeFieldContainer[ExecutorEndpoint]
+    def __init__(self, partition: _Optional[_Iterable[_Union[ShuffleReaderPartition, _Mapping]]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., stage_id: _Optional[int] = ..., merge_ordering: _Optional[_Iterable[_Union[_datafusion_pb2.PhysicalSortExprNode, _Mapping]]] = ..., fetch: _Optional[int] = ..., bounds: _Optional[_Iterable[_Union[RangeBound, _Mapping]]] = ..., executors: _Optional[_Iterable[_Union[ExecutorEndpoint, _Mapping]]] = ...) -> None: ...
 
 class CoalescePlan(_message.Message):
     __slots__ = ("upstream_partition_count", "groups")
@@ -707,20 +715,22 @@ class FetchPipelinedPartition(_message.Message):
     def __init__(self, job_id: _Optional[str] = ..., stage_id: _Optional[int] = ..., task_id: _Optional[int] = ..., partition_id: _Optional[int] = ..., host: _Optional[str] = ..., port: _Optional[int] = ..., registration_timeout_ms: _Optional[int] = ...) -> None: ...
 
 class PartitionLocation(_message.Message):
-    __slots__ = ("map_partition_id", "partition_id", "executor_meta", "partition_stats", "file_id", "is_sort_shuffle")
+    __slots__ = ("map_partition_id", "partition_id", "executor_meta", "partition_stats", "file_id", "is_sort_shuffle", "executor_index")
     MAP_PARTITION_ID_FIELD_NUMBER: _ClassVar[int]
     PARTITION_ID_FIELD_NUMBER: _ClassVar[int]
     EXECUTOR_META_FIELD_NUMBER: _ClassVar[int]
     PARTITION_STATS_FIELD_NUMBER: _ClassVar[int]
     FILE_ID_FIELD_NUMBER: _ClassVar[int]
     IS_SORT_SHUFFLE_FIELD_NUMBER: _ClassVar[int]
+    EXECUTOR_INDEX_FIELD_NUMBER: _ClassVar[int]
     map_partition_id: int
     partition_id: PartitionId
-    executor_meta: ExecutorMetadata
+    executor_meta: ExecutorEndpoint
     partition_stats: PartitionStats
     file_id: int
     is_sort_shuffle: bool
-    def __init__(self, map_partition_id: _Optional[int] = ..., partition_id: _Optional[_Union[PartitionId, _Mapping]] = ..., executor_meta: _Optional[_Union[ExecutorMetadata, _Mapping]] = ..., partition_stats: _Optional[_Union[PartitionStats, _Mapping]] = ..., file_id: _Optional[int] = ..., is_sort_shuffle: _Optional[bool] = ...) -> None: ...
+    executor_index: int
+    def __init__(self, map_partition_id: _Optional[int] = ..., partition_id: _Optional[_Union[PartitionId, _Mapping]] = ..., executor_meta: _Optional[_Union[ExecutorEndpoint, _Mapping]] = ..., partition_stats: _Optional[_Union[PartitionStats, _Mapping]] = ..., file_id: _Optional[int] = ..., is_sort_shuffle: _Optional[bool] = ..., executor_index: _Optional[int] = ...) -> None: ...
 
 class PartitionId(_message.Message):
     __slots__ = ("job_id", "stage_id", "partition_id")
@@ -854,21 +864,15 @@ class OperatorMetric(_message.Message):
     partition: int
     def __init__(self, output_rows: _Optional[int] = ..., elapse_time: _Optional[int] = ..., spill_count: _Optional[int] = ..., spilled_bytes: _Optional[int] = ..., current_memory_usage: _Optional[int] = ..., count: _Optional[_Union[NamedCount, _Mapping]] = ..., gauge: _Optional[_Union[NamedGauge, _Mapping]] = ..., time: _Optional[_Union[NamedTime, _Mapping]] = ..., start_timestamp: _Optional[int] = ..., end_timestamp: _Optional[int] = ..., spilled_rows: _Optional[int] = ..., output_bytes: _Optional[int] = ..., pruning_metrics: _Optional[_Union[NamedPruningMetrics, _Mapping]] = ..., ratio: _Optional[_Union[NamedRatio, _Mapping]] = ..., output_batches: _Optional[int] = ..., partition: _Optional[int] = ...) -> None: ...
 
-class ExecutorMetadata(_message.Message):
-    __slots__ = ("id", "host", "port", "grpc_port", "specification", "os_info")
+class ExecutorEndpoint(_message.Message):
+    __slots__ = ("id", "host", "port")
     ID_FIELD_NUMBER: _ClassVar[int]
     HOST_FIELD_NUMBER: _ClassVar[int]
     PORT_FIELD_NUMBER: _ClassVar[int]
-    GRPC_PORT_FIELD_NUMBER: _ClassVar[int]
-    SPECIFICATION_FIELD_NUMBER: _ClassVar[int]
-    OS_INFO_FIELD_NUMBER: _ClassVar[int]
     id: str
     host: str
     port: int
-    grpc_port: int
-    specification: ExecutorSpecification
-    os_info: ExecutorOperatingSystemSpecification
-    def __init__(self, id: _Optional[str] = ..., host: _Optional[str] = ..., port: _Optional[int] = ..., grpc_port: _Optional[int] = ..., specification: _Optional[_Union[ExecutorSpecification, _Mapping]] = ..., os_info: _Optional[_Union[ExecutorOperatingSystemSpecification, _Mapping]] = ...) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., host: _Optional[str] = ..., port: _Optional[int] = ...) -> None: ...
 
 class ExecutorRegistration(_message.Message):
     __slots__ = ("id", "host", "port", "grpc_port", "specification", "os_info", "ballista_protocol_version")

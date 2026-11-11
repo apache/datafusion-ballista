@@ -615,47 +615,16 @@ async fn scatter_input_partition(
 mod tests {
     use super::*;
     use crate::execution_plans::RuntimeStatsExec;
+    use crate::execution_plans::range_repartition_common::test_util::{
+        asc, batch, drain_concurrent, empty_input, schema_v2_id, session,
+    };
     use datafusion::arrow::array::{Float64Array, Int64Array};
     use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::datatypes::{Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::execution::SessionStateBuilder;
-    use datafusion::physical_expr::expressions::col;
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
-    use datafusion::prelude::SessionContext;
     use std::sync::Arc;
-
-    fn schema_v2_id() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![
-            Field::new("v2", DataType::Float64, false),
-            Field::new("id", DataType::Int64, false),
-        ]))
-    }
-
-    fn batch(schema: &Arc<Schema>, keys: Vec<f64>, ids: Vec<i64>) -> RecordBatch {
-        RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Float64Array::from(keys)),
-                Arc::new(Int64Array::from(ids)),
-            ],
-        )
-        .unwrap()
-    }
-
-    fn asc(schema: &Schema, name: &str) -> PhysicalSortExpr {
-        PhysicalSortExpr {
-            expr: col(name, schema).unwrap(),
-            options: Default::default(),
-        }
-    }
-
-    fn session() -> Arc<SessionContext> {
-        Arc::new(SessionContext::new_with_state(
-            SessionStateBuilder::new().with_default_features().build(),
-        ))
-    }
 
     /// Feed pre-sorted per-partition test data through a `SortExec`
     /// (preserve-partitioning) so the DRR's input carries the ordering
@@ -686,59 +655,23 @@ mod tests {
         Arc::new(OrderedRangeRepartitionExec::try_new(stats, vec![sort_expr], k).unwrap())
     }
 
-    async fn drain_concurrent(
-        exec: Arc<dyn ExecutionPlan>,
-        ctx: Arc<SessionContext>,
-    ) -> Vec<Vec<(f64, i64)>> {
-        let output_partitions = exec.output_partitioning().partition_count();
-        let streams: Vec<_> = (0..output_partitions)
-            .map(|p| exec.execute(p, ctx.task_ctx()).unwrap())
-            .collect();
-        let handles: Vec<_> = streams
-            .into_iter()
-            .map(|stream| {
-                tokio::spawn(async move {
-                    let batches: Vec<RecordBatch> =
-                        <_ as futures::stream::StreamExt>::collect::<
-                            Vec<Result<RecordBatch>>,
-                        >(stream)
-                        .await
-                        .into_iter()
-                        .map(|r| r.unwrap())
-                        .collect();
-                    batches
-                        .iter()
-                        .flat_map(|b| {
-                            let keys = b
-                                .column(0)
-                                .as_any()
-                                .downcast_ref::<Float64Array>()
-                                .unwrap();
-                            let ids = b
-                                .column(1)
-                                .as_any()
-                                .downcast_ref::<Int64Array>()
-                                .unwrap();
-                            (0..b.num_rows())
-                                .map(|i| (keys.value(i), ids.value(i)))
-                                .collect::<Vec<_>>()
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        let mut per_output = Vec::with_capacity(output_partitions);
-        for handle in handles {
-            per_output.push(handle.await.unwrap());
-        }
-        per_output
+    fn extract_rows(batch: &RecordBatch) -> Vec<(f64, i64)> {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        let ids = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        (0..batch.num_rows())
+            .map(|i| (keys.value(i), ids.value(i)))
+            .collect()
     }
 
     // ---------- Constructor validation ----------------------------------
-
-    fn empty_input(schema: &Arc<Schema>) -> Arc<dyn ExecutionPlan> {
-        MemorySourceConfig::try_new_exec(&[vec![]], schema.clone(), None).unwrap()
-    }
 
     #[test]
     fn try_new_rejects_empty_order_by() {
@@ -818,7 +751,7 @@ mod tests {
             .map(|i| ((i * 2 + 1) as f64, 100 + i as i64))
             .collect();
         let exec = build_pipeline(&schema, vec![part_a, part_b], 4);
-        let per_output = drain_concurrent(exec, session()).await;
+        let per_output = drain_concurrent(exec, session(), extract_rows).await;
         let total: usize = per_output.iter().map(|v| v.len()).sum();
         assert_eq!(total, 40, "no row lost or duplicated");
     }
@@ -834,7 +767,7 @@ mod tests {
             .map(|i| ((i * 2 + 1) as f64, 100 + i as i64))
             .collect();
         let exec = build_pipeline(&schema, vec![part_a, part_b], 4);
-        let per_output = drain_concurrent(exec, session()).await;
+        let per_output = drain_concurrent(exec, session(), extract_rows).await;
         for (p, rows) in per_output.iter().enumerate() {
             for pair in rows.windows(2) {
                 let [(left, _), (right, _)] = pair else {
@@ -863,7 +796,7 @@ mod tests {
             .map(|i| (((i * 2) + 100) as f64, 200 + i as i64))
             .collect();
         let exec = build_pipeline(&schema, vec![part_a, part_b, part_c], 4);
-        let per_output = drain_concurrent(exec, session()).await;
+        let per_output = drain_concurrent(exec, session(), extract_rows).await;
         for window in per_output.windows(2) {
             let [left, right] = window else {
                 unreachable!()
@@ -907,7 +840,7 @@ mod tests {
         let exec: Arc<dyn ExecutionPlan> = Arc::new(
             OrderedRangeRepartitionExec::try_new(sorted, vec![sort_expr], 4).unwrap(),
         );
-        let per_output = drain_concurrent(exec, session()).await;
+        let per_output = drain_concurrent(exec, session(), extract_rows).await;
         assert_eq!(per_output.len(), 4);
         assert_eq!(per_output[0].len(), 15);
         assert_eq!(per_output[1].len(), 0);
@@ -920,7 +853,7 @@ mod tests {
         let schema = schema_v2_id();
         let exec = build_pipeline(&schema, vec![vec![(1.0, 0)]], 3);
         let ctx = session();
-        let _ = drain_concurrent(exec.clone(), ctx.clone()).await;
+        let _ = drain_concurrent(exec.clone(), ctx.clone(), extract_rows).await;
         let err = match exec.execute(0, ctx.task_ctx()) {
             Ok(_) => panic!("second execute on same partition must error"),
             Err(err) => err,

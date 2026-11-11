@@ -49,8 +49,8 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
-# BallistaClient and BallistaPythonSessionContext, the cluster client
-# implemented in Python. BallistaSessionContext does not need it.
+# BallistaClient, the cluster client implemented in Python, used with
+# `BallistaSessionContext(client=...)`. The native client does not need it.
 python-client = [
     "grpcio>=1.85.1",
     "protobuf>=7.35.1,<8",

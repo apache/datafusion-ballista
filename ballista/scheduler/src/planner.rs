@@ -669,9 +669,11 @@ fn can_stay_inline(plan: &Arc<dyn ExecutionPlan>) -> bool {
 
 /// Whether per-task restriction can reduce `plan` to zero partitions. An empty
 /// slice means "this task polls nothing here", so a branch that still reports a
-/// partition afterwards is one that cannot be restricted away.
+/// partition afterwards, or that the rewriter refuses, cannot be restricted
+/// away. No resolver is passed, so a node Ballista does not know gets a stage
+/// of its own.
 fn restricts_to_nothing(plan: &Arc<dyn ExecutionPlan>) -> bool {
-    restrict_plan_to_partitions(plan.clone(), &[])
+    restrict_plan_to_partitions(plan.clone(), &[], None)
         .is_ok_and(|p| p.properties().output_partitioning().partition_count() == 0)
 }
 
@@ -890,7 +892,9 @@ mod test {
     use crate::test_utils::{datafusion_test_context, scan_with_file_groups};
     use ballista_core::assert_plan;
     use ballista_core::error::BallistaError;
-    use ballista_core::execution_plans::{SortShuffleWriterExec, UnresolvedShuffleExec};
+    use ballista_core::execution_plans::{
+        ShuffleWriter, SortShuffleWriterExec, UnresolvedShuffleExec,
+    };
     use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::compute::SortOptions;
 
@@ -1394,17 +1398,12 @@ order by
 
         let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
 
-        let df = ctx
-            .sql("select count(*) from big join small on big.k = small.k")
-            .await?;
-
-        let plan = df.into_optimized_plan()?;
-        let plan = ctx.state().create_physical_plan(&plan).await?;
-
-        let mut planner = DefaultDistributedPlanner::new();
-        let job_uuid = Uuid::new_v4();
-        let stages =
-            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+        let stages = stages_for_sql(
+            &ctx,
+            &options,
+            "select count(*) from big join small on big.k = small.k",
+        )
+        .await?;
         for (i, stage) in stages.iter().enumerate() {
             println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
@@ -1443,16 +1442,12 @@ order by
         // inputs even though the small side is well under the threshold.
         let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false)?;
 
-        let df = ctx
-            .sql("select count(*) from big join small on big.k = small.k")
-            .await?;
-        let plan = df.into_optimized_plan()?;
-        let plan = ctx.state().create_physical_plan(&plan).await?;
-
-        let mut planner = DefaultDistributedPlanner::new();
-        let job_uuid = Uuid::new_v4();
-        let stages =
-            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+        let stages = stages_for_sql(
+            &ctx,
+            &options,
+            "select count(*) from big join small on big.k = small.k",
+        )
+        .await?;
 
         // Stage 0 holds the join, still a SortMergeJoinExec over sorted inputs
         // (no HashJoinExec, no broadcast UnresolvedShuffleExec).
@@ -1478,17 +1473,12 @@ order by
 
         let (ctx, options) = make_broadcast_test_ctx(0, 1, true)?;
 
-        let df = ctx
-            .sql("select count(*) from big join small on big.k = small.k")
-            .await?;
-
-        let plan = df.into_optimized_plan()?;
-        let plan = ctx.state().create_physical_plan(&plan).await?;
-
-        let mut planner = DefaultDistributedPlanner::new();
-        let job_uuid = Uuid::new_v4();
-        let stages =
-            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+        let stages = stages_for_sql(
+            &ctx,
+            &options,
+            "select count(*) from big join small on big.k = small.k",
+        )
+        .await?;
 
         for stage in &stages {
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
@@ -1538,16 +1528,7 @@ order by
 
         for sql in sqls {
             let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
-            let plan = ctx.sql(sql).await?.into_optimized_plan()?;
-            let plan = ctx.state().create_physical_plan(&plan).await?;
-
-            let mut planner = DefaultDistributedPlanner::new();
-            let job_uuid = Uuid::new_v4();
-            let stages = planner.plan_query_stages(
-                &job_uuid.to_string().into(),
-                plan,
-                &options,
-            )?;
+            let stages = stages_for_sql(&ctx, &options, sql).await?;
 
             for stage in &stages {
                 let mut walker: Vec<Arc<dyn ExecutionPlan>> =
@@ -1626,16 +1607,12 @@ order by
         ctx.register_batch("small", small_batch)?;
         let options = ctx.state().config().options().clone();
 
-        let plan = ctx
-            .sql("select * from small left join big on small.k = big.k")
-            .await?
-            .into_optimized_plan()?;
-        let plan = ctx.state().create_physical_plan(&plan).await?;
-
-        let mut planner = DefaultDistributedPlanner::new();
-        let job_uuid = Uuid::new_v4();
-        let stages =
-            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+        let stages = stages_for_sql(
+            &ctx,
+            &options,
+            "select * from small left join big on small.k = big.k",
+        )
+        .await?;
 
         for stage in &stages {
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
@@ -1714,16 +1691,12 @@ order by
         ctx.register_batch("small", small_batch)?;
         let options = ctx.state().config().options().clone();
 
-        let plan = ctx
-            .sql("select * from big join small on big.k = small.k")
-            .await?
-            .into_optimized_plan()?;
-        let plan = ctx.state().create_physical_plan(&plan).await?;
-
-        let mut planner = DefaultDistributedPlanner::new();
-        let job_uuid = Uuid::new_v4();
-        let stages =
-            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+        let stages = stages_for_sql(
+            &ctx,
+            &options,
+            "select * from big join small on big.k = small.k",
+        )
+        .await?;
 
         let mut modes = vec![];
         for stage in &stages {
@@ -1775,16 +1748,12 @@ order by
 
         let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, true)?;
 
-        let df = ctx
-            .sql("select * from small left join big on small.k = big.k")
-            .await?;
-        let plan = df.into_optimized_plan()?;
-        let plan = ctx.state().create_physical_plan(&plan).await?;
-
-        let mut planner = DefaultDistributedPlanner::new();
-        let job_uuid = Uuid::new_v4();
-        let stages =
-            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+        let stages = stages_for_sql(
+            &ctx,
+            &options,
+            "select * from small left join big on small.k = big.k",
+        )
+        .await?;
 
         for stage in &stages {
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
@@ -1820,16 +1789,12 @@ order by
 
         let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024, 1, false)?;
 
-        let df = ctx
-            .sql("select count(*) from big join small on big.k = small.k")
-            .await?;
-        let plan = df.into_optimized_plan()?;
-        let plan = ctx.state().create_physical_plan(&plan).await?;
-
-        let mut planner = DefaultDistributedPlanner::new();
-        let job_uuid = Uuid::new_v4();
-        let stages =
-            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+        let stages = stages_for_sql(
+            &ctx,
+            &options,
+            "select count(*) from big join small on big.k = small.k",
+        )
+        .await?;
 
         for stage in &stages {
             let mut walker: Vec<Arc<dyn ExecutionPlan>> =
@@ -1864,17 +1829,12 @@ order by
         // upstream_partition_count = 3.
         let (ctx, options) = make_broadcast_test_ctx(10 * 1024 * 1024 * 1024, 3, true)?;
 
-        let df = ctx
-            .sql("select count(*) from big join small on big.k = small.k")
-            .await?;
-
-        let plan = df.into_optimized_plan()?;
-        let plan = ctx.state().create_physical_plan(&plan).await?;
-
-        let mut planner = DefaultDistributedPlanner::new();
-        let job_uuid = Uuid::new_v4();
-        let stages =
-            planner.plan_query_stages(&job_uuid.to_string().into(), plan, &options)?;
+        let stages = stages_for_sql(
+            &ctx,
+            &options,
+            "select count(*) from big join small on big.k = small.k",
+        )
+        .await?;
         for (i, stage) in stages.iter().enumerate() {
             println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
@@ -1905,8 +1865,7 @@ order by
     {
         use ballista_core::execution_plans::ShuffleReaderExec;
         use ballista_core::serde::scheduler::{
-            ExecutorMetadata, ExecutorOperatingSystemSpecification,
-            ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
+            ExecutorEndpoint, PartitionId, PartitionLocation, PartitionStats,
         };
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
 
@@ -1922,14 +1881,11 @@ order by
                 stage_id: 42,
                 partition_id,
             },
-            executor_meta: ExecutorMetadata {
+            executor_meta: Arc::new(ExecutorEndpoint {
                 id: format!("exec-{partition_id}"),
                 host: "localhost".to_string(),
                 port: 50050,
-                grpc_port: 50051,
-                specification: ExecutorSpecification::default().with_vcores(1),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
+            }),
             partition_stats: PartitionStats::new(Some(10), None, Some(1)),
             file_id: None,
             is_sort_shuffle: false,
@@ -2194,6 +2150,23 @@ order by
         );
 
         Ok(())
+    }
+
+    /// Plans `sql` on `ctx` and splits the physical plan into query stages.
+    async fn stages_for_sql(
+        ctx: &datafusion::prelude::SessionContext,
+        options: &datafusion::config::ConfigOptions,
+        sql: &str,
+    ) -> Result<Vec<Arc<dyn ShuffleWriter>>, BallistaError> {
+        let plan = ctx.sql(sql).await?.into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
+
+        let job_uuid = Uuid::new_v4();
+        DefaultDistributedPlanner::new().plan_query_stages(
+            &job_uuid.to_string().into(),
+            plan,
+            options,
+        )
     }
 
     fn make_broadcast_test_ctx(

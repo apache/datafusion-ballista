@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 660" width="960" height="660" role="img" aria-label="Ballista architecture. Rust, Python and SQL CLI clients send query plans to the scheduler over gRPC. ADBC, JDBC and BI tools send SQL over Arrow Flight SQL. The scheduler plans each query, sends tasks to executors and receives status and heartbeats. Executors exchange shuffle data over Arrow Flight, return results to clients over Arrow Flight, write shuffle files to local disk and read tables from object storage or a file system. Monitoring tools use the scheduler REST API.">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; font-size: 14px; fill: #1f2328; }
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f8fa; stroke: #d0d7de; stroke-width: 1; }
+    .core { fill: #e8f1fd; stroke: #9ec5f4; stroke-width: 1; }
+    .chip { fill: #ffffff; stroke: #d0d7de; stroke-width: 1; }
+    .inner { fill: #f6f8fa; stroke: #d0d7de; stroke-width: 1; }
+    .h { font-size: 17px; font-weight: 600; }
+    .h2 { font-size: 15px; font-weight: 600; }
+    .sub { fill: #59636e; }
+    .c { text-anchor: middle; }
+    .e { text-anchor: end; }
+    .link { stroke: #8c959f; stroke-width: 1.5; fill: none; }
+    .ctl { stroke: #2a78d6; stroke-width: 2; fill: none; }
+    .dat { stroke: #eb6834; stroke-width: 2.5; fill: none; }
+    .mctl { fill: #2a78d6; }
+    .mdat { fill: #eb6834; }
+    @media (prefers-color-scheme: dark) {
+      text { fill: #e6edf3; }
+      .bg { fill: #0d1117; }
+      .box { fill: #161b22; stroke: #3d444d; }
+      .core { fill: #12233d; stroke: #2f5f9e; }
+      .chip { fill: #0d1117; stroke: #3d444d; }
+      .inner { fill: #161b22; stroke: #3d444d; }
+      .sub { fill: #9198a1; }
+      .link { stroke: #6e7681; }
+      .ctl { stroke: #3987e5; }
+      .dat { stroke: #d95926; }
+      .mctl { fill: #3987e5; }
+      .mdat { fill: #d95926; }
+    }
+  </style>
+  <defs>
+    <marker id="ac" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path class="mctl" d="M0 0L10 5L0 10z"/></marker>
+    <marker id="ad" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path class="mdat" d="M0 0L10 5L0 10z"/></marker>
+  </defs>
+  <rect class="bg" width="960" height="660" rx="6"/>
+
+  <!-- Clients -->
+  <rect class="box" x="16" y="16" width="216" height="170" rx="10"/>
+  <text class="h" x="30" y="42">Clients</text>
+  <text class="sub" x="30" y="66">Ballista client</text>
+  <rect class="chip" x="30" y="74" width="46" height="30" rx="6"/>
+  <text class="c" x="53" y="94">Rust</text>
+  <rect class="chip" x="81" y="74" width="60" height="30" rx="6"/>
+  <text class="c" x="111" y="94">Python</text>
+  <rect class="chip" x="146" y="74" width="72" height="30" rx="6"/>
+  <text class="c" x="182" y="94">SQL CLI</text>
+  <text class="sub" x="30" y="128">Arrow Flight SQL drivers</text>
+  <rect class="chip" x="30" y="136" width="56" height="30" rx="6"/>
+  <text class="c" x="58" y="156">ADBC</text>
+  <rect class="chip" x="91" y="136" width="56" height="30" rx="6"/>
+  <text class="c" x="119" y="156">JDBC</text>
+  <rect class="chip" x="152" y="136" width="66" height="30" rx="6"/>
+  <text class="c" x="185" y="156">BI tools</text>
+
+  <!-- Scheduler -->
+  <rect class="core" x="320" y="16" width="420" height="170" rx="10"/>
+  <text class="h" x="334" y="42">Scheduler</text>
+  <rect class="chip" x="334" y="74" width="104" height="30" rx="6"/>
+  <text class="c" x="386" y="94">gRPC API</text>
+  <rect class="chip" x="334" y="136" width="104" height="30" rx="6"/>
+  <text class="c" x="386" y="156">Flight SQL*</text>
+  <path class="link" d="M532 86V94M532 126V134"/>
+  <rect class="chip" x="452" y="54" width="160" height="32" rx="6"/>
+  <text class="c" x="532" y="75">Planner and AQE</text>
+  <rect class="chip" x="452" y="94" width="160" height="32" rx="6"/>
+  <text class="c" x="532" y="115">Execution graphs</text>
+  <rect class="chip" x="452" y="134" width="160" height="32" rx="6"/>
+  <text class="c" x="532" y="155">Task scheduler</text>
+  <rect class="chip" x="626" y="74" width="100" height="30" rx="6"/>
+  <text class="c" x="676" y="94">REST API</text>
+
+  <!-- Monitoring -->
+  <rect class="box" x="804" y="16" width="140" height="170" rx="10"/>
+  <text class="h" x="818" y="42">Monitoring</text>
+  <rect class="chip" x="814" y="54" width="120" height="30" rx="6"/>
+  <text class="c" x="874" y="74">Web TUI</text>
+  <rect class="chip" x="814" y="92" width="120" height="30" rx="6"/>
+  <text class="c" x="874" y="112">Prometheus*</text>
+  <rect class="chip" x="814" y="130" width="120" height="30" rx="6"/>
+  <text class="c" x="874" y="150">History server*</text>
+
+  <!-- Client and monitoring flows -->
+  <path class="ctl" d="M232 89H332" marker-end="url(#ac)"/>
+  <text class="sub c" x="276" y="80">query plans</text>
+  <path class="ctl" d="M232 145H332" marker-end="url(#ac)"/>
+  <text class="sub c" x="276" y="137">SQL</text>
+  <path class="dat" d="M334 159H234" marker-end="url(#ad)"/>
+  <text class="sub c" x="276" y="177">results</text>
+  <path class="ctl" d="M804 89H728" marker-end="url(#ac)"/>
+
+  <!-- Scheduler and executor flows -->
+  <path class="ctl" d="M500 186V260" marker-end="url(#ac)"/>
+  <text class="sub e" x="491" y="229">tasks (physical plans)</text>
+  <path class="ctl" d="M560 262V188" marker-end="url(#ac)"/>
+  <text class="sub" x="569" y="229">task status, heartbeats</text>
+  <path class="dat" d="M124 262V188" marker-end="url(#ad)"/>
+  <text class="sub" x="134" y="221">results over Arrow Flight</text>
+  <text class="sub" x="134" y="239">direct or via result service*</text>
+
+  <!-- Executors -->
+  <rect class="core" x="16" y="262" width="928" height="208" rx="10"/>
+  <text class="h" x="30" y="288">Executors</text>
+
+  <rect class="chip" x="36" y="300" width="300" height="154" rx="8"/>
+  <text class="h2" x="48" y="322">Executor 1</text>
+  <rect class="inner" x="48" y="332" width="276" height="30" rx="6"/>
+  <text class="c" x="186" y="352">DataFusion task execution</text>
+  <rect class="inner" x="48" y="370" width="134" height="30" rx="6"/>
+  <text class="c" x="115" y="390">Shuffle writer</text>
+  <rect class="inner" x="190" y="370" width="134" height="30" rx="6"/>
+  <text class="c" x="257" y="390">Shuffle reader</text>
+  <rect class="inner" x="48" y="408" width="276" height="30" rx="6"/>
+  <text class="c" x="186" y="428">Arrow Flight service</text>
+
+  <rect class="chip" x="456" y="300" width="300" height="154" rx="8"/>
+  <text class="h2" x="468" y="322">Executor 2</text>
+  <rect class="inner" x="468" y="332" width="276" height="30" rx="6"/>
+  <text class="c" x="606" y="352">DataFusion task execution</text>
+  <rect class="inner" x="468" y="370" width="134" height="30" rx="6"/>
+  <text class="c" x="535" y="390">Shuffle writer</text>
+  <rect class="inner" x="610" y="370" width="134" height="30" rx="6"/>
+  <text class="c" x="677" y="390">Shuffle reader</text>
+  <rect class="inner" x="468" y="408" width="276" height="30" rx="6"/>
+  <text class="c" x="606" y="428">Arrow Flight service</text>
+
+  <text class="c" x="776" y="384" style="font-size:22px">···</text>
+
+  <rect class="chip" x="796" y="300" width="128" height="154" rx="8"/>
+  <text class="h2" x="808" y="322">Executor N</text>
+  <rect class="inner" x="808" y="332" width="104" height="30" rx="6"/>
+  <rect class="inner" x="808" y="370" width="104" height="30" rx="6"/>
+  <rect class="inner" x="808" y="408" width="104" height="30" rx="6"/>
+
+  <path class="dat" d="M326 423H466" marker-start="url(#ad)" marker-end="url(#ad)"/>
+  <text class="sub c" x="396" y="396">shuffle over</text>
+  <text class="sub c" x="396" y="413">Arrow Flight</text>
+  <path class="dat" d="M746 423H806" marker-start="url(#ad)" marker-end="url(#ad)"/>
+
+  <!-- Storage -->
+  <rect class="box" x="36" y="530" width="300" height="76" rx="10"/>
+  <text class="h2" x="50" y="556">Local disk</text>
+  <text class="sub" x="50" y="580">Shuffle files (staged mode) and spill files</text>
+
+  <rect class="box" x="456" y="530" width="468" height="76" rx="10"/>
+  <text class="h2" x="470" y="556">Object storage or file system</text>
+  <text class="sub" x="470" y="580">Parquet, CSV and JSON on S3, HTTP or local paths</text>
+
+  <path class="dat" d="M186 472V528" marker-start="url(#ad)" marker-end="url(#ad)"/>
+  <text class="sub" x="197" y="505">Arrow IPC</text>
+  <path class="dat" d="M690 472V528" marker-start="url(#ad)" marker-end="url(#ad)"/>
+  <text class="sub" x="701" y="505">read and write tables</text>
+
+  <!-- Legend -->
+  <path class="ctl" d="M36 636H76" marker-end="url(#ac)"/>
+  <text x="86" y="641">Control (gRPC, REST)</text>
+  <path class="dat" d="M246 636H286" marker-end="url(#ad)"/>
+  <text x="296" y="641">Data (Arrow Flight, Arrow IPC, Parquet)</text>
+  <text class="sub e" x="924" y="641">* optional</text>
+</svg>

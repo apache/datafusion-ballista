@@ -52,10 +52,10 @@ See [Versioning](../versioning.md) for the compatibility rules.
 
 ### Optional Extras
 
-| Extra           | Install                                 | Provides                                                                                |
-| --------------- | --------------------------------------- | --------------------------------------------------------------------------------------- |
-| `jupyter`       | `pip install "ballista[jupyter]"`       | Jupyter magics, see [Jupyter Notebooks](jupyter.md)                                     |
-| `python-client` | `pip install "ballista[python-client]"` | `BallistaClient` and `BallistaPythonSessionContext`, a cluster client written in Python |
+| Extra           | Install                                 | Provides                                                                                       |
+| --------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `jupyter`       | `pip install "ballista[jupyter]"`       | Jupyter magics, see [Jupyter Notebooks](jupyter.md)                                            |
+| `python-client` | `pip install "ballista[python-client]"` | `BallistaClient`, a cluster client written in Python, see `BallistaSessionContext(client=...)` |
 
 ### Verifying the Installation
 
