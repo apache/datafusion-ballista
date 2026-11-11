@@ -369,20 +369,22 @@ class ShuffleWriterExecNode(_message.Message):
     def __init__(self, job_id: _Optional[str] = ..., stage_id: _Optional[int] = ..., input: _Optional[_Union[_datafusion_pb2.PhysicalPlanNode, _Mapping]] = ..., output_partitioning: _Optional[_Union[_datafusion_pb2.PhysicalHashRepartition, _Mapping]] = ...) -> None: ...
 
 class SortShuffleWriterExecNode(_message.Message):
-    __slots__ = ("job_id", "stage_id", "input", "output_partitioning", "batch_size", "memory_limit_per_task_bytes")
+    __slots__ = ("job_id", "stage_id", "input", "output_partitioning", "partitioning", "batch_size", "memory_limit_per_task_bytes")
     JOB_ID_FIELD_NUMBER: _ClassVar[int]
     STAGE_ID_FIELD_NUMBER: _ClassVar[int]
     INPUT_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_PARTITIONING_FIELD_NUMBER: _ClassVar[int]
+    PARTITIONING_FIELD_NUMBER: _ClassVar[int]
     BATCH_SIZE_FIELD_NUMBER: _ClassVar[int]
     MEMORY_LIMIT_PER_TASK_BYTES_FIELD_NUMBER: _ClassVar[int]
     job_id: str
     stage_id: int
     input: _datafusion_pb2.PhysicalPlanNode
     output_partitioning: _datafusion_pb2.PhysicalHashRepartition
+    partitioning: _datafusion_pb2.Partitioning
     batch_size: int
     memory_limit_per_task_bytes: int
-    def __init__(self, job_id: _Optional[str] = ..., stage_id: _Optional[int] = ..., input: _Optional[_Union[_datafusion_pb2.PhysicalPlanNode, _Mapping]] = ..., output_partitioning: _Optional[_Union[_datafusion_pb2.PhysicalHashRepartition, _Mapping]] = ..., batch_size: _Optional[int] = ..., memory_limit_per_task_bytes: _Optional[int] = ...) -> None: ...
+    def __init__(self, job_id: _Optional[str] = ..., stage_id: _Optional[int] = ..., input: _Optional[_Union[_datafusion_pb2.PhysicalPlanNode, _Mapping]] = ..., output_partitioning: _Optional[_Union[_datafusion_pb2.PhysicalHashRepartition, _Mapping]] = ..., partitioning: _Optional[_Union[_datafusion_pb2.Partitioning, _Mapping]] = ..., batch_size: _Optional[int] = ..., memory_limit_per_task_bytes: _Optional[int] = ...) -> None: ...
 
 class RangeShuffleWriterExecNode(_message.Message):
     __slots__ = ("job_id", "stage_id", "input")
