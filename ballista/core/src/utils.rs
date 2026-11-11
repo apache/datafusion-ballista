@@ -103,7 +103,7 @@ pub struct GrpcClientConfig {
     pub connect_timeout_seconds: u64,
     /// Request timeout in seconds
     pub timeout_seconds: u64,
-    /// TCP keep-alive interval in seconds
+    /// TCP keep-alive interval in seconds (0 disables TCP keepalive)
     pub tcp_keepalive_seconds: u64,
     /// HTTP/2 keep-alive ping interval in seconds
     pub http2_keepalive_interval_seconds: u64,
@@ -175,7 +175,7 @@ impl Default for GrpcClientConfig {
 pub struct GrpcServerConfig {
     /// Request timeout in seconds
     pub timeout_seconds: u64,
-    /// TCP keep-alive interval in seconds
+    /// TCP keep-alive interval in seconds (0 disables TCP keepalive)
     pub tcp_keepalive_seconds: u64,
     /// HTTP/2 keep-alive ping interval in seconds
     pub http2_keepalive_interval_seconds: u64,
@@ -403,7 +403,7 @@ where
         .timeout(Duration::from_secs(config.timeout_seconds))
         // Disable Nagle's Algorithm since we don't want packets to wait
         .tcp_nodelay(true)
-        .tcp_keepalive(Some(Duration::from_secs(config.tcp_keepalive_seconds)))
+        .tcp_keepalive(tcp_keepalive(config.tcp_keepalive_seconds))
         .http2_keep_alive_interval(Duration::from_secs(
             config.http2_keepalive_interval_seconds,
         ))
@@ -431,7 +431,7 @@ where
             .connect_timeout(Duration::from_secs(config.connect_timeout_seconds))
             .timeout(Duration::from_secs(config.timeout_seconds))
             .tcp_nodelay(true)
-            .tcp_keepalive(Some(Duration::from_secs(config.tcp_keepalive_seconds)))
+            .tcp_keepalive(tcp_keepalive(config.tcp_keepalive_seconds))
             .http2_keep_alive_interval(Duration::from_secs(
                 config.http2_keepalive_interval_seconds,
             ))

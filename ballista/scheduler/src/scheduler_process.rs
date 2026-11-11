@@ -258,8 +258,8 @@ pub async fn start_grpc_service_with_listener<
     let final_route =
         with_version_headers(merged).into_make_service_with_connect_info::<SocketAddr>();
 
-    let tcp_keepalive = tcp_keepalive(config.grpc_server_tcp_keepalive_seconds);
-    let listener = listener.tap_io(move |tcp| configure_connection(tcp, tcp_keepalive));
+    let keepalive = tcp_keepalive(config.grpc_server_tcp_keepalive_seconds);
+    let listener = listener.tap_io(move |tcp| configure_connection(tcp, keepalive));
     axum::serve(listener, final_route)
         .with_graceful_shutdown(async move { shutdown.recv().await })
         .await
