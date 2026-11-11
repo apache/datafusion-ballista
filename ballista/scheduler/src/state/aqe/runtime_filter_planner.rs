@@ -110,9 +110,6 @@ impl RuntimeFilterPlanner {
         let Some(stage) = exchange.stage_id() else {
             return Ok(());
         };
-        if exchange.shuffle_created() || self.planned.contains(&stage) {
-            return Ok(());
-        }
         let Some(column) = build_key.downcast_ref::<Column>() else {
             return Ok(());
         };
@@ -136,15 +133,6 @@ impl RuntimeFilterPlanner {
         } else {
             (probe.clone(), None)
         };
-        // An unfinished exchange has unknown statistics. Compare its input:
-        // a known smaller probe is likely to become the eventual build side,
-        // leaving this larger producer with no useful scan consumer.
-        if SelectJoinRule::supports_swap_join_order(
-            exchange.input().as_ref(),
-            probe_input.as_ref(),
-        )? {
-            return Ok(());
-        }
         if probe_column(
             probe_input.as_ref(),
             probe_key.as_ref(),
@@ -154,14 +142,30 @@ impl RuntimeFilterPlanner {
         {
             return Ok(());
         }
-        let id = self.builds.len() as u64;
-        let filter = self
-            .builds
-            .entry((stage, column.index()))
-            .or_insert(Filter {
-                id,
-                key: build_key.clone(),
-            });
+        let producer_key = (stage, column.index());
+        // A fallback probe can be created after its producer completed. Reuse
+        // that producer's existing summary; only new taps need an unplanned stage.
+        if !self.builds.contains_key(&producer_key) {
+            if exchange.shuffle_created() || self.planned.contains(&stage) {
+                return Ok(());
+            }
+            // Unfinished exchanges have unknown statistics. Compare their inputs
+            // to avoid collecting a known larger prospective build side.
+            if SelectJoinRule::supports_swap_join_order(
+                exchange.input().as_ref(),
+                probe_input.as_ref(),
+            )? {
+                return Ok(());
+            }
+            self.builds.insert(
+                producer_key,
+                Filter {
+                    id: self.builds.len() as u64,
+                    key: build_key.clone(),
+                },
+            );
+        }
+        let filter = &self.builds[&producer_key];
         if let Some(probe_stage) = probe_stage {
             let probes = self.probes.entry(probe_stage).or_default();
             if !probes.iter().any(|p| p.id == filter.id) {
@@ -400,6 +404,67 @@ mod tests {
                 .to_string()
                 .contains("RuntimeFilterBuildExec"),
             "the exchange has unknown output statistics, but its input is already known to exceed the probe"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_filter_reuses_completed_build_for_partitioned_fallback() {
+        use crate::state::aqe::planner::AdaptivePlanner;
+        use crate::state::aqe::test::{ballista_ctx, mock_partitions_with_size};
+        use datafusion::datasource::MemTable;
+
+        let ctx = ballista_ctx();
+        for setting in [
+            "ballista.planner.runtime_filter.enabled = true",
+            "ballista.optimizer.broadcast_join_threshold_bytes = 500",
+        ] {
+            ctx.sql(&format!("SET {setting}"))
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+        }
+        for (name, rows) in [("build", 64), ("probe", 4096)] {
+            let batch = RecordBatch::try_from_iter([
+                (
+                    "id",
+                    Arc::new(Int64Array::from_iter_values(0..rows)) as ArrayRef,
+                ),
+                (
+                    "val",
+                    Arc::new(Int64Array::from_iter_values((0..rows).map(|n| n % 2)))
+                        as ArrayRef,
+                ),
+            ])
+            .unwrap();
+            let table = MemTable::try_new(batch.schema(), vec![vec![batch]; 4]).unwrap();
+            ctx.register_table(name, Arc::new(table)).unwrap();
+        }
+        let mut planner = AdaptivePlanner::from_logical_sql(
+            &ctx,
+            "SELECT p.id FROM build b JOIN probe p ON b.id = p.id WHERE b.val > 0 AND p.val > 0",
+            None,
+        )
+        .await
+        .unwrap();
+        let first = planner.actionable_stages().unwrap().0.unwrap();
+        assert_eq!(first.len(), 1);
+        let build = displayable(first[0].plan.as_ref())
+            .indent(false)
+            .to_string();
+        assert!(
+            build.contains("RuntimeFilterBuildExec: id=0, key=id@0"),
+            "{build}"
+        );
+        planner
+            .finalise_stage_internal(0, mock_partitions_with_size(128, 1024))
+            .unwrap();
+        let next = planner.actionable_stages().unwrap().0.unwrap();
+        let probe = displayable(next[0].plan.as_ref()).indent(false).to_string();
+        assert!(
+            probe.contains("RuntimeFilterApplyExec: id=0, key=id@0"),
+            "{probe}"
         );
     }
 
