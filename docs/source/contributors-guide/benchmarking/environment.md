@@ -21,8 +21,8 @@
 
 How the TPC-H SF1000 results on the [benchmarking page](index.md) were
 collected: cluster, data, and queries. Per-engine settings are on the
-[Ballista](ballista.md), [Spark](spark.md), [Spark + Comet](comet.md) and
-[Trino](trino.md) pages.
+[Ballista](ballista.md), [Spark](spark.md), [Spark + Comet](comet.md),
+[Trino](trino.md) and [DataFusion Distributed](datafusion-distributed.md) pages.
 
 ## Cluster
 
@@ -42,6 +42,9 @@ collected: cluster, data, and queries. Per-engine settings are on the
 - **Worker pod (Trino):** x86_64, 8 vCPU, 64 GiB memory (the image's
   default JVM heap of 80 %, about 51 GiB), no spill volume. A separate
   coordinator pod plans and schedules but does not scan data.
+- **Worker pod (DataFusion Distributed):** x86_64, 8 vCPU, 64 GiB memory, plus a
+  200 GiB `gp3` PVC for spill files. A separate coordinator pod (8 vCPU,
+  32 GiB) plans each query and runs its last stage.
 - **Driver (Spark and Spark + Comet):** runs the queries through a Spark
   benchmark harness. See [Spark](spark.md).
 - **Client pod (Ballista):** the `tpch` Rust benchmark runner from

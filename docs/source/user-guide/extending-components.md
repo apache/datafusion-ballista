@@ -137,12 +137,14 @@ As with the scheduler, to keep the executor's own command line, parse
 
 A plan with `ExecutionPlan` nodes of your own can run on a Ballista cluster once the scheduler and the executors have a `physical codec` that serializes them. A node that holds data per partition needs one thing more.
 
-When a stage is split between tasks, each task gets a copy of the plan restricted to its own partitions, and operators see only task-local partition indices: a task that runs partitions 4 and 5 executes partitions 0 and 1 of every node. The scheduler restricts the leaves it knows, such as shuffle readers and file and in-memory scans. A node it doesn't know would read its per-partition data, such as one list of files for each partition, from the wrong index, and the stage would return some partitions twice and others not at all. The scheduler fails a job whose split stage holds such a leaf. It cannot tell when an interior node holds per-partition data, so register those too.
+When a stage is split between tasks, each task gets a copy of the plan restricted to its own partitions, and operators see only task-local partition indices: a task that runs partitions 4 and 5 executes partitions 0 and 1 of every node. The scheduler restricts the leaves it knows, such as shuffle readers and file and in-memory scans. A node it doesn't know would read its per-partition data, such as one list of files for each partition, from the wrong index, and the stage would return some partitions twice and others not at all. The scheduler fails a job whose split stage holds such a leaf. It does not check interior nodes: it cannot tell one that holds per-partition data from one that does not, such as a `FilterExec`, so an interior node of yours that holds per-partition data returns wrong results in a split stage unless you register it. Whether a stage is split depends on free task slots and on retries, so test with `ballista.scheduler.max_partitions_per_task` set low rather than relying on a small cluster to show the failure.
 
-To make your node restrictable, implement `PartitionSliceable` for it and have the scheduler find it with a `partition sliceable resolver`:
+To make your node restrictable, give the scheduler a `PartitionSliceableResolver`. It is called with a node, its children already restricted, and the partitions the task runs, and returns the restricted node, or `None` for a node it doesn't know. A node of your own can implement `PartitionSliceable` to keep the slicing beside its fields:
 
 ```rust
-use ballista_core::execution_plans::plan_algebra::{PartitionSliceable, slice_by_global_partition};
+use ballista_core::execution_plans::plan_algebra::{
+    PartitionSliceable, PartitionSliceableResolver, slice_by_global_partition,
+};
 
 impl PartitionSliceable for MyScanExec {
     fn restrict_to_partitions(
@@ -157,15 +159,28 @@ impl PartitionSliceable for MyScanExec {
     }
 }
 
-let config = SchedulerConfig::default().with_partition_sliceable_resolver(Arc::new(|plan| {
-    plan.downcast_ref::<MyScanExec>()
-        .map(|node| node as &dyn PartitionSliceable)
-}));
+#[derive(Debug)]
+struct MyResolver;
+
+impl PartitionSliceableResolver for MyResolver {
+    fn restrict_to_partitions(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        partitions: &[usize],
+    ) -> Option<Result<Arc<dyn ExecutionPlan>>> {
+        plan.downcast_ref::<MyScanExec>()
+            .map(|node| node.restrict_to_partitions(children, partitions))
+    }
+}
+
+let config = SchedulerConfig::default().with_partition_sliceable_resolver(Arc::new(MyResolver));
 ```
 
 - `children` are the node's inputs, none for a scan, restricted to `partitions`. An input the node declares `SinglePartition` arrives whole, as a join's build side does. Partition `i` of the node must read partition `i` of every other input.
 - The restricted node must have exactly `partitions.len()` partitions. The scheduler rejects any other count.
 - `partitions` is empty for a `UnionExec` branch that belongs to other tasks. Return a node without partitions.
 - The restricted node is serialized with the scheduler's `physical codec`, so what it carries per partition has to survive encoding and decoding.
+- The resolver does not need `PartitionSliceable`. It can build the restricted node itself, which is the way to restrict a node you cannot implement the trait on, such as a `DataSourceExec` over a `DataSource` of your own: match it with `downcast_ref`, then build a `DataSourceExec` over the restricted source.
 - The resolver is asked after Ballista's own list. A node that is read whole, such as one below a `CoalescePartitionsExec` or on a join's build side, needs none of this.
 - The standalone scheduler (`SessionContext::standalone`) builds its own `SchedulerConfig`, so it cannot be given a resolver.

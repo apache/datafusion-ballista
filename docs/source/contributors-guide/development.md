@@ -60,6 +60,22 @@ cargo build --release
 cargo test
 ```
 
+### Test fixtures
+
+Look for an existing fixture before writing one, and put a new one in the narrowest place that every test
+using it can reach:
+
+- Used by the tests of one module: in that module's tests.
+- Shared by the unit tests of several modules of a crate: in that crate's `#[cfg(test)]` test utilities module.
+- Shared by the integration tests of a crate: in that crate's `tests/common/mod.rs`.
+- Needed by other crates, such as the TPC-H table schemas: in `ballista_core::test_utils`.
+
+A crate's own unit tests cannot use a helper crate that depends on that crate, because they would see two
+copies of it, so unit-test fixtures stay inside their crate.
+
+Tests that need table data write it into a `tempfile::TempDir` rather than add files to the repository. Data
+that has to be checked in lives in the `testdata` directory of the crate that reads it.
+
 ### TPC-H plan-stability golden files
 
 The `tpch_plan_stability` test suite in the `ballista-scheduler` crate guards the shape of the

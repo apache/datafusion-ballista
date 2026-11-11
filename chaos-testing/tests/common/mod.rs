@@ -15,15 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::prelude::{SessionConfigExt, SessionContextExt};
-use ballista_core::config::BALLISTA_ADAPTIVE_PLANNER_ENABLED;
 use chaos_testing::budget::FaultBudget;
 use chaos_testing::cluster::TestCluster;
 use chaos_testing::fetch::ResultFetch;
-use chaos_testing::fixture::Fixture;
-use datafusion::arrow::util::pretty::pretty_format_batches;
-use datafusion::execution::SessionStateBuilder;
-use datafusion::prelude::{SessionConfig, SessionContext};
+use chaos_testing::fixture::{Fixture, query};
+use datafusion::prelude::SessionContext;
 
 /// One cluster plus its fixture, wired for a single scenario.
 pub struct ChaosRun {
@@ -89,30 +85,7 @@ impl ChaosRun {
         let fixture = Fixture::write(cluster.shared_dir())
             .await
             .expect("fixture must be written");
-
-        let config = SessionConfig::new_with_ballista()
-            .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, aqe);
-        let state = SessionStateBuilder::new()
-            .with_config(config)
-            .with_default_features()
-            .build();
-
-        let ctx = SessionContext::remote_with_state(&cluster.scheduler_url(), state)
-            .await
-            .expect("client must connect to the scheduler");
-
-        // Registered *after* `remote_with_state`, not baked into the initial
-        // SessionState: `SessionStateExt::upgrade_for_ballista` (ballista/core)
-        // rebuilds the state via `with_scalar_functions(ballista_scalar_functions())`,
-        // which replaces rather than merges the scalar-function map, silently
-        // dropping any custom UDF registered beforehand. `register_udf` mutates
-        // the already-upgraded state's registry directly, so it survives.
-        ctx.register_udf(chaos_testing::udf::chaos_fail_udf().as_ref().clone());
-        ctx.register_udf(chaos_testing::udf::chaos_delay_udf().as_ref().clone());
-
-        for stmt in fixture.register_sql() {
-            ctx.sql(&stmt).await.unwrap().collect().await.unwrap();
-        }
+        let ctx = fixture.connect(&cluster.scheduler_url(), aqe).await;
 
         Self {
             cluster,
@@ -129,11 +102,7 @@ impl ChaosRun {
 
     /// Run a query on the cluster, returning the formatted result.
     pub async fn sql(&self, sql: &str) -> Result<String, String> {
-        let df = self.ctx.sql(sql).await.map_err(|e| e.to_string())?;
-        let batches = df.collect().await.map_err(|e| e.to_string())?;
-        Ok(pretty_format_batches(&batches)
-            .map_err(|e| e.to_string())?
-            .to_string())
+        query(&self.ctx, sql).await
     }
 
     /// The expected answer, computed by plain local DataFusion.
@@ -142,20 +111,12 @@ impl ChaosRun {
     }
 
     pub async fn local_sql(&self, sql: &str) -> String {
-        let ctx = SessionContext::new();
-        for stmt in self.fixture.register_sql() {
-            ctx.sql(&stmt).await.unwrap().collect().await.unwrap();
-        }
-        let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
-        pretty_format_batches(&batches).unwrap().to_string()
+        self.fixture.local_sql(sql).await
     }
 
-    /// A clone of the session context, for running a query concurrently with a fault.
-    ///
-    /// Not used until Task 9's executor-loss scenarios, which submit a query in
-    /// a spawned task while the main task polls the scheduler and kills an
-    /// executor.
-    #[allow(dead_code)]
+    /// A clone of the session context, for running a query concurrently with a
+    /// fault: the query is submitted in a spawned task while the main task
+    /// polls the scheduler and kills an executor.
     pub fn clone_ctx(&self) -> SessionContext {
         self.ctx.clone()
     }

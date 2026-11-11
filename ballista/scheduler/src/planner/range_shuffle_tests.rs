@@ -40,7 +40,7 @@ use ballista_core::execution_plans::{
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::ShuffleWritePartition;
-use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
+use ballista_core::serde::scheduler::{ExecutorEndpoint, PartitionLocation};
 use datafusion::arrow::array::{
     Array, AsArray, Int64Array, RecordBatch, StructArray, UInt64Array,
 };
@@ -255,15 +255,12 @@ impl Tasks {
     }
 }
 
-fn executor() -> ExecutorMetadata {
-    ExecutorMetadata {
+fn executor() -> Arc<ExecutorEndpoint> {
+    Arc::new(ExecutorEndpoint {
         id: "executor-0".to_string(),
         host: "localhost".to_string(),
         port: 0,
-        grpc_port: 0,
-        specification: Default::default(),
-        os_info: Default::default(),
-    }
+    })
 }
 
 /// Ship `plan` to an "executor" and back through the real codec.

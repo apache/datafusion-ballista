@@ -25,9 +25,10 @@
 //! conservative is the safety net: unrecognized node → property assumed
 //! false → caller falls back to the safer path.
 
+use std::fmt::Debug;
 use std::sync::Arc;
 
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::{Result, plan_err};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -140,19 +141,41 @@ pub fn as_partition_sliceable(
     None
 }
 
-/// Looks up the [`PartitionSliceable`] of a node that [`as_partition_sliceable`]
-/// does not list, so the scheduler can restrict `ExecutionPlan` nodes of your
-/// own. Set it with `SchedulerConfig::with_partition_sliceable_resolver`.
+/// Restricts nodes that [`as_partition_sliceable`] does not list to a task's
+/// partitions, so the scheduler can restrict `ExecutionPlan` nodes of your own,
+/// including ones you cannot implement [`PartitionSliceable`] on, such as a
+/// `DataSourceExec` over a `DataSource` of your own. Set it with
+/// `SchedulerConfig::with_partition_sliceable_resolver`.
 ///
 /// It is asked after the built-in list, and never about a node that is read
 /// whole: one below a collapse, or declared `SinglePartition` by its parent. It
 /// is called for most nodes of every task's plan as tasks are launched, so keep
-/// it cheap, typically a `downcast_ref` to your own types.
-pub type PartitionSliceableResolver = Arc<
-    dyn for<'a> Fn(&'a Arc<dyn ExecutionPlan>) -> Option<&'a dyn PartitionSliceable>
-        + Send
-        + Sync,
->;
+/// the `None` path cheap.
+///
+/// This is a stopgap for an `ExecutionPlan` method that would let each node
+/// restrict itself; see [`PartitionSliceable`].
+pub trait PartitionSliceableResolver: Debug + Send + Sync {
+    /// Restrict `plan` to `partitions`, or return `None` for a node this
+    /// resolver does not know.
+    ///
+    /// The restricted node is `plan` rebuilt over `children` with exactly
+    /// `partitions.len()` output partitions; any other count is an error. For a
+    /// node of your own, that is typically a `downcast_ref` to your type
+    /// followed by a call to its [`PartitionSliceable::restrict_to_partitions`].
+    ///
+    /// # Arguments
+    ///
+    /// * `plan` - the node to restrict
+    /// * `children` - its children, already restricted as
+    ///   [`PartitionSliceable::restrict_to_partitions`] receives them
+    /// * `partitions` - global partition indices the task runs
+    fn restrict_to_partitions(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        partitions: &[usize],
+    ) -> Option<Result<Arc<dyn ExecutionPlan>>>;
+}
 
 /// Unwraps the only child that a single-input operator's
 /// [`restrict_to_partitions`](PartitionSliceable::restrict_to_partitions)
@@ -166,13 +189,13 @@ pub fn single_child(
     owner: &str,
     children: Vec<Arc<dyn ExecutionPlan>>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let [child] = <[_; 1]>::try_from(children).map_err(|children| {
-        DataFusionError::Internal(format!(
+    match <[_; 1]>::try_from(children) {
+        Ok([child]) => Ok(child),
+        Err(children) => plan_err!(
             "{owner}: expected 1 child to restrict, got {}",
             children.len()
-        ))
-    })?;
-    Ok(child)
+        ),
+    }
 }
 
 /// Take `values[global]` for each global partition index, in task-local
@@ -193,13 +216,12 @@ pub fn slice_by_global_partition<T: Clone>(
 ) -> Result<Vec<T>> {
     partitions
         .iter()
-        .map(|&global| {
-            values.get(global).cloned().ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "{owner}: partition index {global} out of bounds ({} {what})",
-                    values.len()
-                ))
-            })
+        .map(|&global| match values.get(global) {
+            Some(value) => Ok(value.clone()),
+            None => plan_err!(
+                "{owner}: partition index {global} out of bounds ({} {what})",
+                values.len()
+            ),
         })
         .collect()
 }

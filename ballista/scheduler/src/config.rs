@@ -441,13 +441,14 @@ pub struct SchedulerConfig {
     pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
     /// Override function for customizing gRPC client endpoints before they are used
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
-    /// Finds the [`PartitionSliceable`](ballista_core::execution_plans::plan_algebra::PartitionSliceable)
-    /// of `ExecutionPlan` nodes of your own that hold data per partition, so
-    /// the scheduler can restrict them to a task's partitions. Without it, a
+    /// Restricts `ExecutionPlan` nodes of your own that hold data per
+    /// partition to a task's partitions, using
+    /// [`PartitionSliceable`](ballista_core::execution_plans::plan_algebra::PartitionSliceable)
+    /// or by building the restricted node itself. Without it, a
     /// stage split between tasks that holds such a leaf fails the job. Unlike
     /// the `override_*` fields it adds to Ballista's own list rather than
     /// replacing it. See [`PartitionSliceableResolver`].
-    pub partition_sliceable_resolver: Option<PartitionSliceableResolver>,
+    pub partition_sliceable_resolver: Option<Arc<dyn PartitionSliceableResolver>>,
     /// Rules of your own that adaptive query planning runs, for plans with
     /// `ExecutionPlan` nodes of your own. Unlike the `override_*` fields it
     /// adds to Ballista's rules rather than replacing them. Only the adaptive
@@ -855,7 +856,7 @@ impl SchedulerConfig {
     /// Sets [`Self::partition_sliceable_resolver`].
     pub fn with_partition_sliceable_resolver(
         mut self,
-        resolver: PartitionSliceableResolver,
+        resolver: Arc<dyn PartitionSliceableResolver>,
     ) -> Self {
         self.partition_sliceable_resolver = Some(resolver);
         self
