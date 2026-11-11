@@ -27,17 +27,17 @@ mod nested_loop_join {
 
     // Non-equi self-joins of the four-partition `orders`, so DataFusion plans a
     // nested-loop join whose probe side has several partitions, for each join
-    // type that emits unmatched build rows.
-    pub const QUERIES: &[&str] = &[
+    // type that emits build-side rows.
+    const QUERIES: &[&str] = &[
         "SELECT a.o_id, b.o_id FROM orders a LEFT JOIN orders b \
-         ON b.o_id < a.o_id AND b.o_id < 2 WHERE a.o_id < 3 ORDER BY 1, 2",
-        "SELECT a.o_id, b.o_id FROM orders b RIGHT JOIN orders a \
          ON b.o_id < a.o_id AND b.o_id < 2 WHERE a.o_id < 3 ORDER BY 1, 2",
         "SELECT a.o_id, b.o_id FROM (SELECT * FROM orders WHERE o_id < 3) a \
          FULL JOIN (SELECT * FROM orders WHERE o_id < 3) b ON b.o_id + 1 < a.o_id \
          ORDER BY 1, 2",
-        "SELECT o_id FROM orders a WHERE o_id < 3 AND EXISTS \
-         (SELECT 1 FROM orders b WHERE b.o_id < a.o_id AND b.o_id < 2) ORDER BY 1",
+        "SELECT o_id FROM orders a WHERE o_id % 100 = 7 AND EXISTS \
+         (SELECT 1 FROM orders b WHERE b.o_id < a.o_id AND b.o_id % 250 = 3) ORDER BY 1",
+        "SELECT o_id FROM orders a WHERE o_id < 3 OR EXISTS \
+         (SELECT 1 FROM orders b WHERE b.o_id < a.o_id AND b.o_id < 2 AND a.o_id > 900) ORDER BY 1",
         "SELECT o_id FROM orders a WHERE o_id < 3 AND NOT EXISTS \
          (SELECT 1 FROM orders b WHERE b.o_id < a.o_id AND b.o_id < 2) ORDER BY 1",
         // A hash repartition above the join, so its stage is planned again.
@@ -47,7 +47,7 @@ mod nested_loop_join {
     ];
 
     #[tokio::test]
-    async fn nested_loop_join_emits_unmatched_build_rows_once() {
+    async fn nested_loop_join_emits_build_rows_once() {
         let dir = orders_customers_dir();
         let df_ctx = datafusion_context();
         register_orders_customers(&df_ctx, dir.path()).await;

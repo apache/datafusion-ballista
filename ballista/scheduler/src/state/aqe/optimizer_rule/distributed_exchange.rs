@@ -67,8 +67,8 @@ impl DistributedExchangeRule {
         // This is the final plan-mutating rule, so enforce an explicit
         // probe-side coalesce here after DataFusion's optimizers have finished.
         // Add an exchange when the subtree has no existing boundary.
-        if let [left, right] = execution_plan.children().as_slice()
-            && probe_needs_one_task(&execution_plan)
+        if probe_needs_one_task(&execution_plan)
+            && let [left, right] = execution_plan.children().as_slice()
             && right.downcast_ref::<CoalescePartitionsExec>().is_none()
         {
             let left = Arc::clone(left);
@@ -484,6 +484,41 @@ mod tests {
             CoalescePartitionsExec
               ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
                 StatisticsExec: col_count=1, row_count=Absent
+        ");
+    }
+
+    #[test]
+    fn nested_loop_join_coalesces_probe_only_when_it_emits_build_rows() {
+        use datafusion::common::JoinType;
+        use datafusion::physical_plan::joins::NestedLoopJoinExec;
+
+        let join = |join_type| {
+            let join = NestedLoopJoinExec::try_new(
+                leaf_exec(),
+                leaf_exec(),
+                None,
+                &join_type,
+                None,
+            )
+            .unwrap();
+            DistributedExchangeRule::default()
+                .optimize(Arc::new(join), &config())
+                .unwrap()
+        };
+
+        assert_plan!(join(JoinType::LeftAnti).as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
+          NestedLoopJoinExec: join_type=LeftAnti
+            StatisticsExec: col_count=1, row_count=Absent
+            CoalescePartitionsExec
+              ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
+                StatisticsExec: col_count=1, row_count=Absent
+        ");
+        assert_plan!(join(JoinType::Inner).as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=0, stage_id=pending, stage_resolved=false
+          NestedLoopJoinExec: join_type=Inner
+            StatisticsExec: col_count=1, row_count=Absent
+            StatisticsExec: col_count=1, row_count=Absent
         ");
     }
 
