@@ -519,16 +519,24 @@ fn select_output_partitions(
         return Ok(None);
     }
 
-    // Self-generating leaves: PlaceholderRow (1 all-null row per partition)
-    // and EmptyExec (0 rows per partition). Every partition of one of these
-    // is semantically identical, so a slice is the leaf as it is — currently
-    // safe because the only shape emitted is `partitions == 1`, and the walker
-    // has already emptied a leaf for `[]`. Returned rather than `None` so the
-    // walker's leaf check accepts it: an `EmptyExec` under the round-robin
-    // `RepartitionExec` that `make_empty_exec_serde_safe` adds sees that
-    // repartition's partition numbers, not its own.
+    // Self-generating leaves: PlaceholderRow (1 row per partition) and
+    // EmptyExec (0 rows per partition). Every partition is the same, so a
+    // slice is the leaf with one partition for each index it has. As for the
+    // sources above, an index past its own count is dropped: under a
+    // round-robin `RepartitionExec` the leaf sees the repartition's numbers,
+    // and only the task that owns partition 0 may run a one-partition leaf.
     if plan.is::<PlaceholderRowExec>() || plan.is::<EmptyExec>() {
-        return Ok(Some(plan.clone()));
+        let count = plan.properties().output_partitioning().partition_count();
+        let kept = indices.iter().filter(|&&i| i < count).count();
+        if kept == 0 {
+            return no_partitions(plan).map(Some);
+        }
+        let restricted: Arc<dyn ExecutionPlan> = if plan.is::<EmptyExec>() {
+            Arc::new(EmptyExec::new(plan.schema()).with_partitions(kept))
+        } else {
+            Arc::new(PlaceholderRowExec::new(plan.schema()).with_partitions(kept))
+        };
+        return Ok(Some(restricted));
     }
 
     Ok(None)
@@ -1176,20 +1184,113 @@ mod tests {
         assert!(error.contains("returned 4 partitions"), "{error}");
     }
 
-    /// An `EmptyExec` sees the partition numbers of the repartition above it,
-    /// not its own, so these two leaves are exempt from the leaf check.
-    #[test]
-    fn self_generating_leaves_are_exempt_from_the_leaf_check() {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
-        let empty: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
-        assert!(restrict_plan_to_partitions(empty, &[1], None).is_ok());
+    /// The name and partition count of each restriction of `leaf`, one for
+    /// each of `slices`.
+    fn restricted_shapes(
+        leaf: &Arc<dyn ExecutionPlan>,
+        slices: &[&[usize]],
+    ) -> Vec<(String, usize)> {
+        slices
+            .iter()
+            .map(|slice| {
+                let restricted =
+                    restrict_plan_to_partitions(leaf.clone(), slice, None).unwrap();
+                assert_eq!(restricted.schema(), leaf.schema());
+                (restricted.name().to_string(), partition_count(&restricted))
+            })
+            .collect()
+    }
 
+    /// Every partition of these leaves is the same, so a task gets one for
+    /// each of its partitions. The `AdaptivePlanner` replaces a stage that
+    /// turns out empty with an `EmptyExec` of that stage's partition count.
+    #[test]
+    fn self_generating_leaves_keep_one_partition_for_each_the_task_runs() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let empty: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(schema.clone()).with_partitions(4));
+        let placeholder: Arc<dyn ExecutionPlan> =
+            Arc::new(PlaceholderRowExec::new(schema).with_partitions(4));
+        let slices: &[&[usize]] = &[&[0, 1, 2, 3], &[1, 3], &[2], &[]];
+        let memory = "DataSourceExec".to_string();
+
+        for leaf in [empty, placeholder] {
+            let name = leaf.name().to_string();
+            assert_eq!(
+                restricted_shapes(&leaf, slices),
+                [
+                    (name.clone(), 4),
+                    (name.clone(), 2),
+                    (name, 1),
+                    (memory.clone(), 0),
+                ]
+            );
+        }
+    }
+
+    /// Under a round-robin `RepartitionExec`, which the `AdaptivePlanner`
+    /// keeps inside a stage, a leaf sees the repartition's partition numbers.
+    /// Only the task that owns partition 0 runs a one-partition leaf, so a
+    /// `PlaceholderRowExec` there gives its row once, not once per task.
+    #[test]
+    fn self_generating_leaves_drop_partitions_past_their_own() {
+        use datafusion::physical_plan::repartition::RepartitionExec;
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
         let placeholder: Arc<dyn ExecutionPlan> =
             Arc::new(PlaceholderRowExec::new(schema));
-        assert!(restrict_plan_to_partitions(placeholder.clone(), &[0], None).is_ok());
+        let restricted = restrict_plan_to_partitions(
+            Arc::new(
+                RepartitionExec::try_new(
+                    placeholder.clone(),
+                    Partitioning::RoundRobinBatch(4),
+                )
+                .unwrap(),
+            ),
+            &[2, 3],
+            None,
+        )
+        .unwrap();
+        assert_no_partitions(restricted.children()[0], &placeholder);
 
-        // A task that polls none of it gets a source with no partitions.
-        let nothing = restrict_plan_to_partitions(placeholder, &[], None).unwrap();
-        assert_eq!(partition_count(&nothing), 0);
+        assert_eq!(
+            restricted_shapes(&placeholder, &[&[0, 1], &[3]]),
+            [
+                ("PlaceholderRowExec".to_string(), 1),
+                ("DataSourceExec".to_string(), 0),
+            ]
+        );
+    }
+
+    /// A union branch the `AdaptivePlanner` replaced with a multi-partition
+    /// `EmptyExec`, because its stage gave no rows, is cut down like any other,
+    /// so the union routes the task's partitions to the right branch.
+    #[test]
+    fn a_union_branch_replaced_by_an_empty_exec_is_restricted() {
+        let empty: Arc<dyn ExecutionPlan> = Arc::new(
+            EmptyExec::new(scan_with_file_groups(4).schema()).with_partitions(4),
+        );
+        let union = || -> Arc<dyn ExecutionPlan> {
+            UnionExec::try_new(vec![empty.clone(), scan_with_file_groups(4)]).unwrap()
+        };
+
+        // Partition 0 is the empty branch's.
+        let restricted = restrict_plan_to_partitions(union(), &[0], None).unwrap();
+        let branches = restricted.children();
+        assert_eq!(
+            (branches[0].name(), partition_count(branches[0])),
+            ("EmptyExec", 1)
+        );
+        assert_no_partitions(branches[1], &empty);
+
+        // Partitions 3 and 6 are the last of the empty branch's and the third
+        // of the scan's.
+        let restricted = restrict_plan_to_partitions(union(), &[3, 6], None).unwrap();
+        let branches = restricted.children();
+        assert_eq!(
+            (branches[0].name(), partition_count(branches[0])),
+            ("EmptyExec", 1)
+        );
+        assert_eq!(group_files(branches[1]), ["file2.parquet"]);
+        assert_eq!(partition_count(&restricted), 2);
     }
 }
