@@ -144,71 +144,37 @@ impl ExecutorsData {
     }
 
     pub fn sort(&mut self) {
-        match self.sort_column {
-            SortColumn::Host => self.executors.sort_by(|a, b| {
-                let a_host = format!("{}:{}", a.host, a.port);
-                let b_host = format!("{}:{}", b.host, b.port);
-                let cmp = a_host.cmp(&b_host);
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::Id => self.executors.sort_by(|a, b| {
-                let cmp = a.id.cmp(&b.id);
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::CpuCores => self.executors.sort_by(|a, b| {
-                let cmp = a.cpu_cores().cmp(&b.cpu_cores());
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::Vcores => self.executors.sort_by(|a, b| {
-                let cmp = a.vcores().cmp(&b.vcores());
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::ProcPhysicalMemoryUsage => self.executors.sort_by(|a, b| {
-                let cmp = a
-                    .proc_physical_memory_usage()
-                    .cmp(&b.proc_physical_memory_usage());
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::PeakPhysicalMemoryUsage => self.executors.sort_by(|a, b| {
-                let cmp = a
-                    .peak_physical_memory_usage()
-                    .cmp(&b.peak_physical_memory_usage());
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::LastSeen => self.executors.sort_by(|a, b| {
-                let cmp = a.last_seen.cmp(&b.last_seen);
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::None => {}
-        }
+        let compare_executors: fn(&Executor, &Executor) -> std::cmp::Ordering =
+            match self.sort_column {
+                SortColumn::Host => |a, b| {
+                    let a_host = format!("{}:{}", a.host, a.port);
+                    let b_host = format!("{}:{}", b.host, b.port);
+                    a_host.cmp(&b_host)
+                },
+                SortColumn::Id => |a, b| a.id.cmp(&b.id),
+                SortColumn::CpuCores => |a, b| a.cpu_cores().cmp(&b.cpu_cores()),
+                SortColumn::Vcores => |a, b| a.vcores().cmp(&b.vcores()),
+                SortColumn::ProcPhysicalMemoryUsage => |a, b| {
+                    a.proc_physical_memory_usage()
+                        .cmp(&b.proc_physical_memory_usage())
+                },
+                SortColumn::PeakPhysicalMemoryUsage => |a, b| {
+                    a.peak_physical_memory_usage()
+                        .cmp(&b.peak_physical_memory_usage())
+                },
+                SortColumn::LastSeen => |a, b| a.last_seen.cmp(&b.last_seen),
+                SortColumn::None => return,
+            };
+
+        self.executors.sort_by(|a, b| {
+            let cmp = compare_executors(a, b);
+
+            if self.sort_order == SortOrder::Descending {
+                cmp.reverse()
+            } else {
+                cmp
+            }
+        });
     }
 
     pub fn selected_executor(&self) -> Option<&Executor> {
