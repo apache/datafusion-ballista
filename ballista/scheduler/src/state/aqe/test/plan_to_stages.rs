@@ -20,6 +20,7 @@ use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{
     mock_batch, mock_context, mock_memory_table, mock_partitions_with_statistics,
+    unknown_statistics_exec,
 };
 use crate::state::execution_graph::ExecutionGraph;
 use ballista_core::JobId;
@@ -27,10 +28,7 @@ use ballista_core::assert_plan;
 use ballista_core::execution_plans::SortShuffleWriterExec;
 use ballista_core::serde::protobuf::job_status::Status;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::common::ColumnStatistics;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::Statistics;
-use datafusion::physical_plan::test::exec::StatisticsExec;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -43,9 +41,7 @@ async fn should_add_exchanges() -> datafusion::error::Result<()> {
             select min(a) as c0, max(b) as c1, c as c2 from t group by c
         "#;
 
-    let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let planner = AdaptivePlanner::from_physical_sql(&ctx, q).await?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -69,9 +65,7 @@ async fn should_split_plan_into_runnable_stages_internal() -> datafusion::error:
             select min(a) as c0, max(b) as c1, c as c2 from t group by c
         "#;
 
-    let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(&ctx, q).await?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -118,9 +112,7 @@ async fn should_split_plan_into_stages() -> datafusion::error::Result<()> {
             select min(a) as c0, max(b) as c1, c as c2 from t group by c
         "#;
 
-    let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(&ctx, q).await?;
 
     assert_plan!(planner.current_plan(),  @ r"
     AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
@@ -175,10 +167,7 @@ async fn should_create_initial_plan() -> datafusion::error::Result<()> {
             group by t0.c0
         "#;
 
-    let plan = ctx.sql(q).await?.create_physical_plan().await?;
-
-    let planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let planner = AdaptivePlanner::from_physical_sql(&ctx, q).await?;
 
     // plan has only two exchanges after initial planning
     // other stages will be added as stages get resolved
@@ -222,10 +211,7 @@ async fn should_split_stages_resolve_right_branch() -> datafusion::error::Result
             group by t0.c0
         "#;
 
-    let plan = ctx.sql(q).await?.create_physical_plan().await?;
-
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(&ctx, q).await?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(2, runnable_stages.len());
@@ -289,10 +275,7 @@ async fn should_split_stages_resolve_left_branch() -> datafusion::error::Result<
         group by t0.c0
         "#;
 
-    let plan = ctx.sql(q).await?.create_physical_plan().await?;
-
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(&ctx, q).await?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(2, runnable_stages.len());
@@ -361,10 +344,7 @@ async fn should_split_stages_resolve_both() -> datafusion::error::Result<()> {
         group by t0.c0
         "#;
 
-    let plan = ctx.sql(q).await?.create_physical_plan().await?;
-
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(&ctx, q).await?;
 
     let runnable_stages = planner.identify_runnable_stages()?.unwrap();
     assert_eq!(2, runnable_stages.len());
@@ -405,12 +385,7 @@ async fn should_split_stages_resolve_both() -> datafusion::error::Result<()> {
 #[tokio::test]
 async fn should_ignore_inactive_stages() -> datafusion::error::Result<()> {
     let schema = Schema::new(vec![Field::new("a", DataType::Int32, true)]);
-    let statistics = Statistics {
-        num_rows: Default::default(),
-        total_byte_size: Default::default(),
-        column_statistics: vec![ColumnStatistics::new_unknown()],
-    };
-    let empty_exec = Arc::new(StatisticsExec::new(statistics, schema.clone()));
+    let empty_exec = unknown_statistics_exec(&schema);
 
     let mut exchange_exec = ExchangeExec::new(empty_exec, None, 0);
     // we're testing that making stage inactive
@@ -448,9 +423,7 @@ async fn should_use_sort_shuffle_by_default() -> datafusion::error::Result<()> {
             select min(a) as c0, max(b) as c1, c as c2 from t group by c
         "#;
 
-    let plan = ctx.sql(q).await?.create_physical_plan().await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(&ctx, q).await?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(1, stages.len());

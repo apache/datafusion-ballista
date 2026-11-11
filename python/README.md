@@ -19,7 +19,15 @@
 
 # Ballista
 
-Ballista support for datafusion python.
+Ballista support for DataFusion Python: run DataFusion Python queries on a
+distributed Ballista cluster.
+
+```bash
+pip install ballista
+```
+
+User documentation is in the
+[Python client user guide](https://datafusion.apache.org/ballista/user-guide/python/index.html).
 
 This project is tracked under its own `Cargo.toml` and is intentionally not part of the default Cargo workspace so
 that it doesn't cause overhead for maintainers of the main Ballista codebase. It is released separately from the Rust
@@ -59,8 +67,8 @@ from ballista import BallistaSessionContext
 
 ctx = BallistaSessionContext("df://localhost:50050")
 
-# all other functions and functions are from
-# datafusion module
+# all other classes and functions are from
+# the datafusion module
 ctx.sql("create external table t stored as parquet location './testdata/test.parquet'")
 df : DataFrame = ctx.sql("select * from t limit 5")
 
@@ -87,128 +95,81 @@ ctx = BallistaSessionContext(
 )
 ```
 
+Python UDFs (scalar, aggregate and window) are serialised with the plan using `cloudpickle`, so
+they do not need to be registered on the cluster. They require a scheduler and executors started
+from Python (see [Scheduler and Executor](#scheduler-and-executor)), running the same Python minor
+version as the client, with everything the UDF imports installed.
+
 Known limitations and inefficiencies of the current approach:
 
 - Anything requiring custom `datafusion_proto::logical_plan::LogicalExtensionCodec`.
-- Python UDFs (scalar, aggregate and window) are serialised with the plan using `cloudpickle`, so
-  they do not need to be registered on the cluster. Scheduler and executors have to run the same
-  Python minor version as the client, and everything the UDF imports has to be installed there.
 - A Ballista connection will be created for each request.
+- The scheduler address is only used when a query runs, so connection errors are raised by the
+  first query, not by `BallistaSessionContext`.
 
 ### Example DataFrame Usage
 
 ```python
 ctx = BallistaSessionContext("df://localhost:50050")
-df = ctx.read_parquet('./testdata/test.parquet').filter(col(id) > lit(4)).limit(5)
+df = ctx.read_parquet('./testdata/test.parquet').filter(col("id") > lit(4)).limit(5)
 
 pyarrow_batches = df.collect()
 ```
 
-Check [DataFusion python](https://datafusion.apache.org/python/) provides more examples and manuals.
+See the [DataFusion Python documentation](https://datafusion.apache.org/python/) for more examples.
+
+### Python Cluster Client
+
+By default the native Rust client talks to the cluster. A client written in Python, `BallistaClient`,
+can be used instead. It needs the `python-client` extra (`pip install "ballista[python-client]"`).
+Set `ballista.python.client_impl` to `python` to use it, configured with the `ballista.*` options of `config`
+(`ballista.python.client_impl` is not sent to the cluster and can not be changed with `SET`):
+
+```python
+from ballista import BallistaSessionContext
+
+ctx = BallistaSessionContext(
+    "df://localhost:50050",
+    config={"ballista.python.client_impl": "python", "ballista.client.use_tls": True},
+)
+```
+
+Pass a `BallistaClient` to customize how the cluster is reached, for example to add authentication
+metadata:
+
+```python
+from ballista import BallistaClient, BallistaSessionContext
+
+class AuthClient(BallistaClient):
+    def call_metadata(self):
+        return super().call_metadata() + [("authorization", "token")]
+
+ctx = BallistaSessionContext(client=AuthClient("df://localhost:50050"))
+```
 
 ## Jupyter Notebook Support
 
 PyBallista provides first-class Jupyter notebook support with SQL magic commands and rich HTML rendering.
 
-### Install Jupyter extras first
+Install the Jupyter extras:
 
 ```bash
 pip install "ballista[jupyter]"
 ```
 
-### HTML Table Rendering
-
-DataFrames automatically render as styled HTML tables in Jupyter notebooks:
-
-```python
-from ballista import BallistaSessionContext
-
-ctx = BallistaSessionContext("df://localhost:50050")
-df = ctx.sql("SELECT * FROM my_table LIMIT 10")
-df  # Renders as HTML table via _repr_html_()
-```
-
-### SQL Magic Commands
-
-For a more interactive SQL experience, load the Ballista Jupyter extension:
+DataFrames render as HTML tables, and the `ballista.jupyter` extension adds SQL magic commands
+(`%ballista connect`, `%register`, `%sql`, `%%sql`), plan visualization (`explain_visual`) and
+progress reporting (`collect_with_progress`):
 
 ```python
-# Load the extension
 %load_ext ballista.jupyter
-
-# Connect to a Ballista cluster
 %ballista connect df://localhost:50050
-
-# Register .parquet table
-%register parquet public.test_data_v1 ../testdata/test.parquet
-
-# Check connection status
-%ballista status
-
-# List registered tables
-%ballista tables
-
-# Show table schema
-%ballista schema my_table
-
-# Execute a simple query (line magic)
-%sql SELECT COUNT(*) FROM orders
-
-# Execute a complex query (cell magic)
-%%sql
-SELECT
-    customer_id,
-    SUM(amount) as total
-FROM orders
-GROUP BY customer_id
-ORDER BY total DESC
-LIMIT 10
+%register parquet test_data ./testdata/test.parquet
+%sql SELECT COUNT(*) FROM test_data
 ```
 
-You can also store results in a variable:
-
-```python
-%%sql my_result
-SELECT * FROM orders WHERE status = 'pending'
-```
-
-### Execution Plan Visualization
-
-Visualize query execution plans directly in notebooks:
-
-```python
-from ballista.jupyter import explain_visual
-
-df = ctx.sql("SELECT * FROM orders WHERE amount > 100")
-explain_visual(df)  # Displays SVG visualization
-
-# With runtime statistics
-explain_visual(df, analyze=True)
-```
-
-> **Note:** Full SVG visualization requires graphviz to be installed (`brew install graphviz` on macOS).
-
-### Progress Indicators
-
-For long-running queries, use `collect_with_progress()` to see execution status.
-In Jupyter it displays elapsed time while the query runs:
-
-```python
-from ballista.jupyter import collect_with_progress
-
-df = ctx.sql("SELECT * FROM large_table")
-batches = collect_with_progress(df)
-```
-
-Outside Jupyter, or to handle progress yourself, pass a callback:
-
-```python
-def my_callback(status: str, progress: float):
-    # progress is -1.0 while running, 1.0 when completed
-    print(f"{status}: {progress}")
-
-batches = collect_with_progress(df, callback=my_callback, poll_interval=1.0)
-```
+See [Jupyter Notebooks](https://datafusion.apache.org/ballista/user-guide/python/jupyter.html)
+in the user guide for details.
 
 ### Example Notebooks
 
@@ -220,14 +181,15 @@ See the `examples/` directory for Jupyter notebooks demonstrating various featur
 
 ## Scheduler and Executor
 
-Scheduler and executors can be configured and started from python code.
+Scheduler and executors can be configured and started from python code. They use
+Python aware codecs, so unlike the Rust binaries and the Docker images they can run Python UDFs.
 
 To start scheduler:
 
 ```python
 from ballista import BallistaScheduler
 
-scheduler = BallistaScheduler()
+scheduler = BallistaScheduler(bind_host="0.0.0.0", bind_port=50050)
 
 scheduler.start()
 scheduler.wait_for_termination()
@@ -238,11 +200,34 @@ For executor:
 ```python
 from ballista import BallistaExecutor
 
-executor = BallistaExecutor()
+executor = BallistaExecutor(
+    bind_host="0.0.0.0",
+    bind_port=50051,
+    scheduler_host="localhost",
+    scheduler_port=50050,
+    vcores=8,
+    work_dir="/tmp/ballista-executor",
+)
 
 executor.start()
 executor.wait_for_termination()
 ```
+
+All constructor arguments are optional. `close()` stops a started process.
+`work_dir` holds the executor's shuffle and spill files; when omitted, the executor
+uses a temporary directory.
+
+For tests and notebooks, `setup_test_cluster()` starts a scheduler and an executor in
+the current process and returns the scheduler `(host, port)`.
+
+### Trust Model for Python UDFs
+
+A scheduler or executor started from Python decodes Python UDFs in query plans with `cloudpickle.loads`, which can run arbitrary Python code. Anyone who can reach the scheduler or executor ports can therefore run arbitrary code on the cluster, as the user the processes
+run as. This is the same trust model as PySpark.
+
+Only expose such a cluster to trusted clients, for example by binding to `localhost` or a private network, or restricting access with a firewall.
+
+Python UDFs only work on clusters started from Python. The `ballista-scheduler` and `ballista-executor` Rust binaries and the Docker images can not decode them.
 
 ## Development Process
 

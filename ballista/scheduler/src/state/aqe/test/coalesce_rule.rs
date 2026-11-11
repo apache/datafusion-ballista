@@ -24,99 +24,15 @@
 //! `coalesce_target_partition_bytes` so the bin-pack outcome is hand-traceable
 //! against `split_size_list_by_target_size`.
 
-use crate::state::aqe::planner::AdaptivePlanner;
-use crate::state::aqe::test::{mock_batch, mock_schema};
-use ballista_core::assert_plan;
-use ballista_core::extension::SessionConfigExt;
-use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+use crate::state::aqe::planner::{AdaptivePlanner, AdaptiveStageInfo};
+use crate::state::aqe::test::{
+    coalesce_config, coalesce_context, mock_batch, partitions_with_byte_sizes,
+    register_partitioned_table,
 };
+use ballista_core::assert_plan;
 use datafusion::common::ScalarValue;
-use datafusion::datasource::MemTable;
-use datafusion::execution::SessionStateBuilder;
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::prelude::SessionContext;
 use std::sync::Arc;
-
-/// Build a session context with the Ballista config extension installed and
-/// the coalesce-relevant knobs forced to specific values. The rule packs
-/// directly toward `target_partition_bytes` (here 200 for test scale), so
-/// every scenario below traces from inputs alone.
-fn coalesce_context(target_partitions: usize, enabled: bool) -> SessionContext {
-    let config = SessionConfig::new_with_ballista()
-        .with_target_partitions(target_partitions)
-        .with_round_robin_repartition(false)
-        .with_ballista_coalesce_enabled(enabled)
-        .with_ballista_coalesce_target_partition_bytes(200)
-        .set_bool("datafusion.optimizer.prefer_hash_join", false)
-        .set_u64(
-            "datafusion.optimizer.hash_join_single_partition_threshold",
-            0,
-        )
-        .set_u64(
-            "datafusion.optimizer.hash_join_single_partition_threshold_rows",
-            0,
-        );
-
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .build();
-
-    SessionContext::new_with_state(state)
-}
-
-/// Register a MemTable with `n_partitions` partitions, each holding one copy
-/// of `mock_batch`. Multi-partition sources force DataFusion's
-/// `EnforceDistribution` to insert a hash repartition before partitioned
-/// joins — without that, two 1-partition inputs satisfy `Partitioned` on a
-/// single partition and no `ExchangeExec` shows up in the final plan.
-fn register_partitioned_table(
-    ctx: &SessionContext,
-    name: &str,
-    n_partitions: usize,
-) -> datafusion::error::Result<()> {
-    let data = (0..n_partitions)
-        .map(|_| Ok(vec![mock_batch()?]))
-        .collect::<datafusion::error::Result<Vec<_>>>()?;
-    let table = MemTable::try_new(mock_schema(), data)?;
-    ctx.register_table(name, Arc::new(table))?;
-    Ok(())
-}
-
-/// Build a `Vec<Vec<PartitionLocation>>` of length `per_partition_bytes.len()`
-/// where each upstream partition reports the given byte size. The rule sums
-/// `partition_stats.num_bytes` across leaves before bin-packing — that's the
-/// only field these tests need to vary.
-pub(super) fn partitions_with_byte_sizes(
-    per_partition_bytes: &[u64],
-) -> Vec<Vec<PartitionLocation>> {
-    per_partition_bytes
-        .iter()
-        .enumerate()
-        .map(|(idx, &bytes)| {
-            vec![PartitionLocation {
-                map_partition_id: 0,
-                partition_id: PartitionId {
-                    job_id: "".into(),
-                    stage_id: 0,
-                    partition_id: idx,
-                },
-                executor_meta: ExecutorMetadata {
-                    id: "".to_string(),
-                    host: "".to_string(),
-                    port: 0,
-                    grpc_port: 0,
-                    specification: ExecutorSpecification::default().with_vcores(0),
-                    os_info: ExecutorOperatingSystemSpecification::default(),
-                },
-                partition_stats: PartitionStats::new(Some(1), None, Some(bytes)),
-                file_id: None,
-                is_sort_shuffle: false,
-            }]
-        })
-        .collect()
-}
 
 /// Happy path: M=8 upstream partitions @ 50 bytes each, target=200.
 /// Bin-pack trace (small_factor=0.2 → 40, merged_factor=1.2 → 240):
@@ -131,13 +47,11 @@ async fn should_attach_coalesce_when_partitions_pack_below_m()
     let ctx = coalesce_context(8, true);
     ctx.register_batch("t", mock_batch()?)?;
 
-    let plan = ctx
-        .sql("select min(a) as c0, c as c2 from t group by c")
-        .await?
-        .create_physical_plan()
-        .await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select min(a) as c0, c as c2 from t group by c",
+    )
+    .await?;
 
     // Before any stage finalizes the leaves are unresolved, so the rule
     // no-ops: `coalesce=none`.
@@ -181,13 +95,11 @@ async fn should_skip_coalesce_when_rule_disabled() -> datafusion::error::Result<
     let ctx = coalesce_context(8, false);
     ctx.register_batch("t", mock_batch()?)?;
 
-    let plan = ctx
-        .sql("select min(a) as c0, c as c2 from t group by c")
-        .await?
-        .create_physical_plan()
-        .await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select min(a) as c0, c as c2 from t group by c",
+    )
+    .await?;
 
     let _ = planner.runnable_stages()?.unwrap();
     planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[50; 8]))?;
@@ -221,13 +133,11 @@ async fn should_skip_coalesce_when_leaf_has_range_repartition_routing()
     let ctx = coalesce_context(8, true);
     ctx.register_batch("t", mock_batch()?)?;
 
-    let plan = ctx
-        .sql("select min(a) as c0, c as c2 from t group by c")
-        .await?
-        .create_physical_plan()
-        .await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select min(a) as c0, c as c2 from t group by c",
+    )
+    .await?;
 
     let _ = planner.runnable_stages()?.unwrap();
 
@@ -280,13 +190,11 @@ async fn should_skip_coalesce_when_partitions_are_full() -> datafusion::error::R
     let ctx = coalesce_context(8, true);
     ctx.register_batch("t", mock_batch()?)?;
 
-    let plan = ctx
-        .sql("select min(a) as c0, c as c2 from t group by c")
-        .await?
-        .create_physical_plan()
-        .await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select min(a) as c0, c as c2 from t group by c",
+    )
+    .await?;
 
     let _ = planner.runnable_stages()?.unwrap();
     planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[300; 8]))?;
@@ -316,13 +224,11 @@ async fn should_attach_coalesce_to_both_sides_of_hash_join()
     register_partitioned_table(&ctx, "t1", 8)?;
     register_partitioned_table(&ctx, "t2", 8)?;
 
-    let plan = ctx
-        .sql("select t1.a, t2.b from t1 join t2 on t1.c = t2.c")
-        .await?
-        .create_physical_plan()
-        .await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select t1.a, t2.b from t1 join t2 on t1.c = t2.c",
+    )
+    .await?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(2, stages.len());
@@ -332,6 +238,50 @@ async fn should_attach_coalesce_to_both_sides_of_hash_join()
 
     // Surface the join stage so `CoalescePartitionsRule` fires per-stage and
     // attaches the shared `CoalescePlan` to both leaf Exchanges.
+    let _ = planner.runnable_stages()?;
+
+    assert_plan!(planner.current_plan(),  @ r"
+    AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=false
+      SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)], projection=[a@0, b@2]
+        SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
+            DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+        SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=1, stage_resolved=true, coalesce=2 of 8
+            DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+    ");
+
+    Ok(())
+}
+
+/// Sort-merge join: same shuffle structure as the hash-join case, but
+/// DataFusion picks `SortMergeJoinExec` when `prefer_hash_join=false`. The
+/// rule is structural — it walks down to the leaf Exchanges and attaches
+/// `CoalescePlan` regardless of the parent join kind. Per-leaf bytes
+/// `[25; 8]` × 2 leaves trace identically to the hash-join case → K=2.
+#[tokio::test]
+async fn should_attach_coalesce_to_both_sides_of_sort_merge_join()
+-> datafusion::error::Result<()> {
+    let config =
+        coalesce_config(8, true).set_bool("datafusion.optimizer.prefer_hash_join", false);
+
+    let ctx = SessionContext::new_with_config(config);
+    register_partitioned_table(&ctx, "t1", 8)?;
+    register_partitioned_table(&ctx, "t2", 8)?;
+
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select t1.a, t2.b from t1 join t2 on t1.c = t2.c",
+    )
+    .await?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(2, stages.len());
+
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[25; 8]))?;
+    planner.finalise_stage_internal(1, partitions_with_byte_sizes(&[25; 8]))?;
+
+    // Surface the join stage so `CoalescePartitionsRule` fires per-stage.
     let _ = planner.runnable_stages()?;
 
     assert_plan!(planner.current_plan(),  @ r"
@@ -362,16 +312,12 @@ async fn should_attach_coalesce_to_all_three_legs_of_two_hash_joins()
     register_partitioned_table(&ctx, "t2", 8)?;
     register_partitioned_table(&ctx, "t3", 8)?;
 
-    let plan = ctx
-        .sql(
-            "select t1.a, t2.b, t3.c from t1 join t2 on t1.c = t2.c \
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select t1.a, t2.b, t3.c from t1 join t2 on t1.c = t2.c \
              join t3 on t1.c = t3.c",
-        )
-        .await?
-        .create_physical_plan()
-        .await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    )
+    .await?;
 
     let stages = planner.runnable_stages()?.unwrap();
     assert_eq!(3, stages.len());
@@ -402,60 +348,6 @@ async fn should_attach_coalesce_to_all_three_legs_of_two_hash_joins()
     Ok(())
 }
 
-/// Sort-merge join: same shuffle structure as the hash-join case, but
-/// DataFusion picks `SortMergeJoinExec` when `prefer_hash_join=false`. The
-/// rule is structural — it walks down to the leaf Exchanges and attaches
-/// `CoalescePlan` regardless of the parent join kind. Per-leaf bytes
-/// `[25; 8]` × 2 leaves trace identically to the hash-join case → K=2.
-#[tokio::test]
-async fn should_attach_coalesce_to_both_sides_of_sort_merge_join()
--> datafusion::error::Result<()> {
-    let config = SessionConfig::new_with_ballista()
-        .with_target_partitions(8)
-        .with_round_robin_repartition(false)
-        .with_ballista_coalesce_enabled(true)
-        .with_ballista_coalesce_target_partition_bytes(200)
-        .set_bool("datafusion.optimizer.prefer_hash_join", false);
-
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .build();
-    let ctx = SessionContext::new_with_state(state);
-    register_partitioned_table(&ctx, "t1", 8)?;
-    register_partitioned_table(&ctx, "t2", 8)?;
-
-    let plan = ctx
-        .sql("select t1.a, t2.b from t1 join t2 on t1.c = t2.c")
-        .await?
-        .create_physical_plan()
-        .await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
-
-    let stages = planner.runnable_stages()?.unwrap();
-    assert_eq!(2, stages.len());
-
-    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[25; 8]))?;
-    planner.finalise_stage_internal(1, partitions_with_byte_sizes(&[25; 8]))?;
-
-    // Surface the join stage so `CoalescePartitionsRule` fires per-stage.
-    let _ = planner.runnable_stages()?;
-
-    assert_plan!(planner.current_plan(),  @ r"
-    AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=false
-      SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)], projection=[a@0, b@2]
-        SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-          ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
-            DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
-        SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
-          ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=1, stage_resolved=true, coalesce=2 of 8
-            DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
-    ");
-
-    Ok(())
-}
-
 /// End-to-end: after the rule attaches `coalesce=K of M` to a leaf Exchange,
 /// the adapter must build the downstream `ShuffleReaderExec` with `K`
 /// partitions instead of `M`. The next runnable stage's plan tree is the
@@ -468,13 +360,11 @@ async fn shuffle_reader_uses_coalesced_k_when_rule_fires() -> datafusion::error:
     let ctx = coalesce_context(8, true);
     ctx.register_batch("t", mock_batch()?)?;
 
-    let plan = ctx
-        .sql("select min(a) as c0, max(b) as c1, c as c2 from t group by c")
-        .await?
-        .create_physical_plan()
-        .await?;
-    let mut planner =
-        AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "test_job".into())?;
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select min(a) as c0, max(b) as c1, c as c2 from t group by c",
+    )
+    .await?;
 
     // Stage 0 is the upstream shuffle writer, partitioning by `c` into M=8.
     let stages = planner.runnable_stages()?.unwrap();
@@ -499,6 +389,204 @@ async fn shuffle_reader_uses_coalesced_k_when_rule_fires() -> datafusion::error:
       ProjectionExec: expr=[min(t.a)@1 as c0, max(t.b)@2 as c1, c@0 as c2]
         AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a), max(t.b)]
           ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@0], 2), coalesce: 2 of 8
+    ");
+
+    Ok(())
+}
+
+/// A shuffle that fits in one target-sized partition coalesces all the way
+/// down to `K=1`: M=8 upstream partitions @ 10 bytes never overshoot
+/// target=200, so all 80 bytes land in one bucket and the stage that reads
+/// them runs as one task instead of eight.
+#[tokio::test]
+async fn should_coalesce_to_one_partition_when_shuffle_fits_target()
+-> datafusion::error::Result<()> {
+    let ctx = coalesce_context(8, true);
+    ctx.register_batch("t", mock_batch()?)?;
+
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select min(a) as c0, c as c2 from t group by c",
+    )
+    .await?;
+
+    let _ = planner.runnable_stages()?.unwrap();
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[10; 8]))?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+    assert_plan!(stages[0].plan.as_ref(),  @ r"
+    ShuffleWriterExec: partitioning: Hash([c2@1], 1)
+      ProjectionExec: expr=[min(t.a)@1 as c0, c@0 as c2]
+        AggregateExec: mode=FinalPartitioned, gby=[c@0 as c], aggr=[min(t.a)]
+          ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@0], 1), coalesce: 1 of 8
+    ");
+
+    Ok(())
+}
+
+/// Both legs of a partitioned join coalesce to `K=1` together: per-leaf
+/// `[10; 8]` sums to `[20; 8]`, 160 bytes in all, under target=200. They
+/// share one `CoalescePlan`, so the single partition on each side holds every
+/// hash bucket.
+#[tokio::test]
+async fn should_coalesce_both_sides_of_join_to_one_partition()
+-> datafusion::error::Result<()> {
+    let ctx = coalesce_context(8, true);
+    register_partitioned_table(&ctx, "t1", 8)?;
+    register_partitioned_table(&ctx, "t2", 8)?;
+
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select t1.a, t2.b from t1 join t2 on t1.c = t2.c",
+    )
+    .await?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(2, stages.len());
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[10; 8]))?;
+    planner.finalise_stage_internal(1, partitions_with_byte_sizes(&[10; 8]))?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+    assert_eq!(stages[0].plan.input_partition_count(), 1);
+    assert_plan!(planner.current_plan(),  @ r"
+    AdaptiveDatafusionExec: is_final=true, plan_id=2, stage_id=2, stage_resolved=false
+      SortMergeJoinExec: join_type=Inner, on=[(c@1, c@1)], projection=[a@0, b@2]
+        SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([c@1], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=1 of 8
+            DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+        SortExec: expr=[c@1 ASC], preserve_partitioning=[true]
+          ExchangeExec: partitioning=Hash([c@1], 8), plan_id=1, stage_id=1, stage_resolved=true, coalesce=1 of 8
+            DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+    ");
+
+    Ok(())
+}
+
+/// The stage that merges `select a, c from t order by a`, once the stage below
+/// it has written 8 sorted partitions of `sizes` bytes.
+async fn order_by_merge_stage(
+    sizes: &[u64],
+) -> datafusion::error::Result<AdaptiveStageInfo> {
+    let ctx = coalesce_context(8, true);
+    register_partitioned_table(&ctx, "t", 8)?;
+
+    let mut planner =
+        AdaptivePlanner::from_physical_sql(&ctx, "select a, c from t order by a").await?;
+
+    let _ = planner.runnable_stages()?.unwrap();
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(sizes))?;
+
+    let mut stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+    Ok(stages.remove(0))
+}
+
+/// A sorted shuffle is read back with a k-way merge per partition, which the
+/// coalesced reader can't do: it concatenates a group's files. Coalescing it
+/// would feed the `SortPreservingMergeExec` above unsorted input, so the rule
+/// leaves it alone whether the bin-pack says `K=1` (`[10; 8]`) or `K=2`
+/// (`[50; 8]`).
+#[tokio::test]
+async fn should_skip_coalesce_when_leaf_is_sorted() -> datafusion::error::Result<()> {
+    let one = order_by_merge_stage(&[10; 8]).await?;
+    assert_plan!(one.plan.as_ref(),  @ r"
+    ShuffleWriterExec: partitioning: UnknownPartitioning(1)
+      SortPreservingMergeExec: [a@0 ASC NULLS LAST]
+        RangeShuffleReaderExec: upstream_stage: 0, partitions: 8, ordering: a@0 ASC NULLS LAST, bounds: none
+    ");
+
+    let two = order_by_merge_stage(&[50; 8]).await?;
+    assert_plan!(two.plan.as_ref(),  @ r"
+    ShuffleWriterExec: partitioning: UnknownPartitioning(1)
+      SortPreservingMergeExec: [a@0 ASC NULLS LAST]
+        RangeShuffleReaderExec: upstream_stage: 0, partitions: 8, ordering: a@0 ASC NULLS LAST, bounds: none
+    ");
+
+    Ok(())
+}
+
+/// The join stage below a `CoalescePartitionsExec` writes one partition per
+/// partition it reads, so coalescing its inputs to `2 of 8` leaves it writing
+/// 2 partitions where its boundary declares 8. The final stage was planned for
+/// those 8, so the join stage still resolves all 8, 6 of them empty. A reader
+/// built from 2 would be asked for partitions it has no locations for.
+#[tokio::test]
+async fn should_resolve_every_declared_partition_of_coalesced_passthrough_stage()
+-> datafusion::error::Result<()> {
+    let ctx = coalesce_context(8, true);
+    register_partitioned_table(&ctx, "t1", 8)?;
+    register_partitioned_table(&ctx, "t2", 8)?;
+
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select count(*), sum(t1.a + t2.b) from t1 join t2 on t1.c = t2.c",
+    )
+    .await?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(2, stages.len());
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[25; 8]))?;
+    planner.finalise_stage_internal(1, partitions_with_byte_sizes(&[25; 8]))?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+    let join_stage = &stages[0].plan;
+    assert_eq!(join_stage.input_partition_count(), 2);
+    assert!(join_stage.shuffle_output_partitioning().is_none());
+
+    let stage_id = join_stage.stage_id();
+    planner.update_exchange_locations(
+        stage_id,
+        partitions_with_byte_sizes(&[1; 2])
+            .into_iter()
+            .flatten()
+            .collect(),
+    )?;
+    let output = planner.take_stage_output_partitions(stage_id)?;
+    assert_eq!(
+        output.iter().map(Vec::len).collect::<Vec<_>>(),
+        vec![1, 1, 0, 0, 0, 0, 0, 0]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_coalesce_the_readers_of_a_shared_stage() -> datafusion::error::Result<()>
+{
+    let ctx = coalesce_context(8, true);
+    register_partitioned_table(&ctx, "t1", 8)?;
+    register_partitioned_table(&ctx, "t2", 8)?;
+
+    let mut planner = AdaptivePlanner::from_physical_sql(
+        &ctx,
+        "select count(*) from t1 join t2 on t1.c = t2.c",
+    )
+    .await?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[25; 8]))?;
+
+    let stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(1, stages.len());
+    assert_eq!(stages[0].plan.input_partition_count(), 2);
+    assert_plan!(planner.current_plan(),  @ r"
+    AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
+      ProjectionExec: expr=[count(Int64(1))@0 as count(*)]
+        AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
+          CoalescePartitionsExec
+            ExchangeExec: partitioning=None, plan_id=3, stage_id=1, stage_resolved=false
+              AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+                SortMergeJoinExec: join_type=Inner, on=[(c@0, c@0)], projection=[]
+                  SortExec: expr=[c@0 ASC], preserve_partitioning=[true]
+                    ExchangeExec: partitioning=Hash([c@0], 8), plan_id=0, stage_id=0, stage_resolved=true, coalesce=2 of 8
+                      DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
+                  SortExec: expr=[c@0 ASC], preserve_partitioning=[true]
+                    ExchangeExec: partitioning=Hash([c@0], 8), plan_id=1, stage_id=0, stage_resolved=true, coalesce=2 of 8
+                      DataSourceExec: partitions=8, partition_sizes=[1, 1, 1, 1, 1, 1, 1, 1]
     ");
 
     Ok(())

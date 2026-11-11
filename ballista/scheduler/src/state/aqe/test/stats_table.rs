@@ -112,6 +112,23 @@ pub(crate) struct StatsExec {
 }
 
 impl StatsExec {
+    /// A scan over all of `schema` that reports `statistics` and yields no rows.
+    pub(crate) fn new(
+        schema: SchemaRef,
+        statistics: Statistics,
+        partitions: usize,
+    ) -> Self {
+        Self {
+            statistics,
+            properties: Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(partitions),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            )),
+        }
+    }
+
     fn try_new(
         schema: SchemaRef,
         statistics: Statistics,
@@ -135,15 +152,7 @@ impl StatsExec {
             None => statistics,
         };
 
-        Ok(Self {
-            statistics,
-            properties: Arc::new(PlanProperties::new(
-                EquivalenceProperties::new(schema),
-                Partitioning::UnknownPartitioning(partitions),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            )),
-        })
+        Ok(Self::new(schema, statistics, partitions))
     }
 }
 

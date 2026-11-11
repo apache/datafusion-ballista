@@ -347,7 +347,9 @@ currently implemented:
   downstream exchange is replaced with an empty execution node, and emptiness
   is propagated up the plan so downstream stages are skipped entirely.
 - **Shuffle-partition coalescing.** Adjacent small output partitions of a
-  completed stage are merged so the next stage runs fewer, larger tasks.
+  completed stage are merged so the next stage runs fewer, larger tasks, down
+  to a single task when the whole shuffle fits in
+  `ballista.planner.coalesce.target_partition_bytes`.
   Disabled by default; enable with `ballista.planner.coalesce.enabled` and tune
   with the `ballista.planner.coalesce.*` keys documented in
   [Configuration](configs.md).
@@ -355,6 +357,12 @@ currently implemented:
   distributed range shuffle so `BoundedWindowAggExec` is not a serial
   bottleneck. Disabled by default; enable with
   `ballista.planner.parallel_window.enabled`.
+- **Exchange reuse.** When a query reads the same subplan more than once, such
+  as a common table expression joined to itself or TPC-H q15's revenue view,
+  the subplan's shuffle stage runs once and every reader reads its output.
+  Subplans with a volatile expression such as `random()`, and range-shuffled
+  subplans, are never shared. Enabled by default; set
+  `ballista.planner.reuse_exchange.enabled` to `false` to run each copy.
 
 ### Current limitations
 

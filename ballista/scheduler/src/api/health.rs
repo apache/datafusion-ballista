@@ -118,10 +118,8 @@ pub(crate) async fn readyz<
 mod tests {
     use super::*;
     use crate::config::SchedulerConfig;
-    use crate::metrics::default_metrics_collector;
     use crate::scheduler_server::SchedulerServer;
-    use crate::test_utils::test_cluster_context;
-    use ballista_core::serde::BallistaCodec;
+    use crate::test_utils::{test_cluster_context, test_scheduler_server};
     use ballista_core::serde::protobuf::{
         ExecutorHeartbeat, ExecutorStatus, executor_status,
     };
@@ -134,15 +132,11 @@ mod tests {
             min_ready_executors: min_ready,
             ..Default::default()
         };
-        let mut server = SchedulerServer::new(
-            "localhost:50050".to_owned(),
-            test_cluster_context(),
-            BallistaCodec::default(),
-            Arc::new(config),
-            default_metrics_collector().unwrap(),
-        );
-        server.init().await.expect("scheduler init");
-        Arc::new(server)
+        Arc::new(
+            test_scheduler_server(test_cluster_context(), config)
+                .await
+                .expect("scheduler init"),
+        )
     }
 
     #[tokio::test]

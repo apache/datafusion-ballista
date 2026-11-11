@@ -18,6 +18,8 @@
 pub mod executors;
 pub mod jobs;
 pub mod metrics;
+#[cfg(test)]
+pub(crate) mod test_util;
 
 use serde::Deserialize;
 
