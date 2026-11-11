@@ -8,6 +8,14 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
+class AsOfMatchOperator(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    AS_OF_MATCH_OPERATOR_UNSPECIFIED: _ClassVar[AsOfMatchOperator]
+    AS_OF_MATCH_OPERATOR_LT: _ClassVar[AsOfMatchOperator]
+    AS_OF_MATCH_OPERATOR_LT_EQ: _ClassVar[AsOfMatchOperator]
+    AS_OF_MATCH_OPERATOR_GT: _ClassVar[AsOfMatchOperator]
+    AS_OF_MATCH_OPERATOR_GT_EQ: _ClassVar[AsOfMatchOperator]
+
 class FileFormatKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     FILE_FORMAT_KIND_UNSPECIFIED: _ClassVar[FileFormatKind]
@@ -51,6 +59,16 @@ class InsertOp(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     Overwrite: _ClassVar[InsertOp]
     Replace: _ClassVar[InsertOp]
 
+class PhysicalDurationFormat(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    PHYSICAL_DURATION_FORMAT_ISO8601: _ClassVar[PhysicalDurationFormat]
+    PHYSICAL_DURATION_FORMAT_PRETTY: _ClassVar[PhysicalDurationFormat]
+
+class ArrowIpcFormat(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ARROW_IPC_FORMAT_FILE: _ClassVar[ArrowIpcFormat]
+    ARROW_IPC_FORMAT_STREAM: _ClassVar[ArrowIpcFormat]
+
 class PartitionMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     COLLECT_LEFT: _ClassVar[PartitionMode]
@@ -75,6 +93,11 @@ class GenerateSeriesName(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     GS_GENERATE_SERIES: _ClassVar[GenerateSeriesName]
     GS_RANGE: _ClassVar[GenerateSeriesName]
+AS_OF_MATCH_OPERATOR_UNSPECIFIED: AsOfMatchOperator
+AS_OF_MATCH_OPERATOR_LT: AsOfMatchOperator
+AS_OF_MATCH_OPERATOR_LT_EQ: AsOfMatchOperator
+AS_OF_MATCH_OPERATOR_GT: AsOfMatchOperator
+AS_OF_MATCH_OPERATOR_GT_EQ: AsOfMatchOperator
 FILE_FORMAT_KIND_UNSPECIFIED: FileFormatKind
 FILE_FORMAT_KIND_CSV: FileFormatKind
 FILE_FORMAT_KIND_JSON: FileFormatKind
@@ -97,6 +120,10 @@ FILE_OUTPUT_MODE_DIRECTORY: FileOutputMode
 Append: InsertOp
 Overwrite: InsertOp
 Replace: InsertOp
+PHYSICAL_DURATION_FORMAT_ISO8601: PhysicalDurationFormat
+PHYSICAL_DURATION_FORMAT_PRETTY: PhysicalDurationFormat
+ARROW_IPC_FORMAT_FILE: ArrowIpcFormat
+ARROW_IPC_FORMAT_STREAM: ArrowIpcFormat
 COLLECT_LEFT: PartitionMode
 PARTITIONED: PartitionMode
 AUTO: PartitionMode
@@ -112,7 +139,7 @@ GS_GENERATE_SERIES: GenerateSeriesName
 GS_RANGE: GenerateSeriesName
 
 class LogicalPlanNode(_message.Message):
-    __slots__ = ("listing_scan", "projection", "selection", "limit", "aggregate", "join", "sort", "repartition", "empty_relation", "create_external_table", "explain", "window", "analyze", "cross_join", "values", "extension", "create_catalog_schema", "union", "create_catalog", "subquery_alias", "create_view", "distinct", "view_scan", "custom_scan", "prepare", "drop_view", "distinct_on", "copy_to", "unnest", "recursive_query", "cte_work_table_scan", "dml", "empty_table_scan")
+    __slots__ = ("listing_scan", "projection", "selection", "limit", "aggregate", "join", "sort", "repartition", "empty_relation", "create_external_table", "explain", "window", "analyze", "cross_join", "values", "extension", "create_catalog_schema", "union", "create_catalog", "subquery_alias", "create_view", "distinct", "view_scan", "custom_scan", "prepare", "drop_view", "distinct_on", "copy_to", "unnest", "recursive_query", "cte_work_table_scan", "dml", "empty_table_scan", "as_of_join")
     LISTING_SCAN_FIELD_NUMBER: _ClassVar[int]
     PROJECTION_FIELD_NUMBER: _ClassVar[int]
     SELECTION_FIELD_NUMBER: _ClassVar[int]
@@ -146,6 +173,7 @@ class LogicalPlanNode(_message.Message):
     CTE_WORK_TABLE_SCAN_FIELD_NUMBER: _ClassVar[int]
     DML_FIELD_NUMBER: _ClassVar[int]
     EMPTY_TABLE_SCAN_FIELD_NUMBER: _ClassVar[int]
+    AS_OF_JOIN_FIELD_NUMBER: _ClassVar[int]
     listing_scan: ListingTableScanNode
     projection: ProjectionNode
     selection: SelectionNode
@@ -179,7 +207,8 @@ class LogicalPlanNode(_message.Message):
     cte_work_table_scan: CteWorkTableScanNode
     dml: DmlNode
     empty_table_scan: EmptyTableScanNode
-    def __init__(self, listing_scan: _Optional[_Union[ListingTableScanNode, _Mapping]] = ..., projection: _Optional[_Union[ProjectionNode, _Mapping]] = ..., selection: _Optional[_Union[SelectionNode, _Mapping]] = ..., limit: _Optional[_Union[LimitNode, _Mapping]] = ..., aggregate: _Optional[_Union[AggregateNode, _Mapping]] = ..., join: _Optional[_Union[JoinNode, _Mapping]] = ..., sort: _Optional[_Union[SortNode, _Mapping]] = ..., repartition: _Optional[_Union[RepartitionNode, _Mapping]] = ..., empty_relation: _Optional[_Union[EmptyRelationNode, _Mapping]] = ..., create_external_table: _Optional[_Union[CreateExternalTableNode, _Mapping]] = ..., explain: _Optional[_Union[ExplainNode, _Mapping]] = ..., window: _Optional[_Union[WindowNode, _Mapping]] = ..., analyze: _Optional[_Union[AnalyzeNode, _Mapping]] = ..., cross_join: _Optional[_Union[CrossJoinNode, _Mapping]] = ..., values: _Optional[_Union[ValuesNode, _Mapping]] = ..., extension: _Optional[_Union[LogicalExtensionNode, _Mapping]] = ..., create_catalog_schema: _Optional[_Union[CreateCatalogSchemaNode, _Mapping]] = ..., union: _Optional[_Union[UnionNode, _Mapping]] = ..., create_catalog: _Optional[_Union[CreateCatalogNode, _Mapping]] = ..., subquery_alias: _Optional[_Union[SubqueryAliasNode, _Mapping]] = ..., create_view: _Optional[_Union[CreateViewNode, _Mapping]] = ..., distinct: _Optional[_Union[DistinctNode, _Mapping]] = ..., view_scan: _Optional[_Union[ViewTableScanNode, _Mapping]] = ..., custom_scan: _Optional[_Union[CustomTableScanNode, _Mapping]] = ..., prepare: _Optional[_Union[PrepareNode, _Mapping]] = ..., drop_view: _Optional[_Union[DropViewNode, _Mapping]] = ..., distinct_on: _Optional[_Union[DistinctOnNode, _Mapping]] = ..., copy_to: _Optional[_Union[CopyToNode, _Mapping]] = ..., unnest: _Optional[_Union[UnnestNode, _Mapping]] = ..., recursive_query: _Optional[_Union[RecursiveQueryNode, _Mapping]] = ..., cte_work_table_scan: _Optional[_Union[CteWorkTableScanNode, _Mapping]] = ..., dml: _Optional[_Union[DmlNode, _Mapping]] = ..., empty_table_scan: _Optional[_Union[EmptyTableScanNode, _Mapping]] = ...) -> None: ...
+    as_of_join: AsOfJoinNode
+    def __init__(self, listing_scan: _Optional[_Union[ListingTableScanNode, _Mapping]] = ..., projection: _Optional[_Union[ProjectionNode, _Mapping]] = ..., selection: _Optional[_Union[SelectionNode, _Mapping]] = ..., limit: _Optional[_Union[LimitNode, _Mapping]] = ..., aggregate: _Optional[_Union[AggregateNode, _Mapping]] = ..., join: _Optional[_Union[JoinNode, _Mapping]] = ..., sort: _Optional[_Union[SortNode, _Mapping]] = ..., repartition: _Optional[_Union[RepartitionNode, _Mapping]] = ..., empty_relation: _Optional[_Union[EmptyRelationNode, _Mapping]] = ..., create_external_table: _Optional[_Union[CreateExternalTableNode, _Mapping]] = ..., explain: _Optional[_Union[ExplainNode, _Mapping]] = ..., window: _Optional[_Union[WindowNode, _Mapping]] = ..., analyze: _Optional[_Union[AnalyzeNode, _Mapping]] = ..., cross_join: _Optional[_Union[CrossJoinNode, _Mapping]] = ..., values: _Optional[_Union[ValuesNode, _Mapping]] = ..., extension: _Optional[_Union[LogicalExtensionNode, _Mapping]] = ..., create_catalog_schema: _Optional[_Union[CreateCatalogSchemaNode, _Mapping]] = ..., union: _Optional[_Union[UnionNode, _Mapping]] = ..., create_catalog: _Optional[_Union[CreateCatalogNode, _Mapping]] = ..., subquery_alias: _Optional[_Union[SubqueryAliasNode, _Mapping]] = ..., create_view: _Optional[_Union[CreateViewNode, _Mapping]] = ..., distinct: _Optional[_Union[DistinctNode, _Mapping]] = ..., view_scan: _Optional[_Union[ViewTableScanNode, _Mapping]] = ..., custom_scan: _Optional[_Union[CustomTableScanNode, _Mapping]] = ..., prepare: _Optional[_Union[PrepareNode, _Mapping]] = ..., drop_view: _Optional[_Union[DropViewNode, _Mapping]] = ..., distinct_on: _Optional[_Union[DistinctOnNode, _Mapping]] = ..., copy_to: _Optional[_Union[CopyToNode, _Mapping]] = ..., unnest: _Optional[_Union[UnnestNode, _Mapping]] = ..., recursive_query: _Optional[_Union[RecursiveQueryNode, _Mapping]] = ..., cte_work_table_scan: _Optional[_Union[CteWorkTableScanNode, _Mapping]] = ..., dml: _Optional[_Union[DmlNode, _Mapping]] = ..., empty_table_scan: _Optional[_Union[EmptyTableScanNode, _Mapping]] = ..., as_of_join: _Optional[_Union[AsOfJoinNode, _Mapping]] = ...) -> None: ...
 
 class LogicalExtensionNode(_message.Message):
     __slots__ = ("node", "inputs")
@@ -208,7 +237,7 @@ class SortExprNodeCollection(_message.Message):
     def __init__(self, sort_expr_nodes: _Optional[_Iterable[_Union[SortExprNode, _Mapping]]] = ...) -> None: ...
 
 class ListingTableScanNode(_message.Message):
-    __slots__ = ("table_name", "paths", "file_extension", "projection", "schema", "filters", "table_partition_cols", "csv", "parquet", "avro", "json", "arrow", "file_sort_order")
+    __slots__ = ("table_name", "paths", "file_extension", "projection", "schema", "filters", "table_partition_cols", "csv", "parquet", "avro", "json", "arrow", "file_sort_order", "fetch", "skip")
     TABLE_NAME_FIELD_NUMBER: _ClassVar[int]
     PATHS_FIELD_NUMBER: _ClassVar[int]
     FILE_EXTENSION_FIELD_NUMBER: _ClassVar[int]
@@ -222,6 +251,8 @@ class ListingTableScanNode(_message.Message):
     JSON_FIELD_NUMBER: _ClassVar[int]
     ARROW_FIELD_NUMBER: _ClassVar[int]
     FILE_SORT_ORDER_FIELD_NUMBER: _ClassVar[int]
+    FETCH_FIELD_NUMBER: _ClassVar[int]
+    SKIP_FIELD_NUMBER: _ClassVar[int]
     table_name: TableReference
     paths: _containers.RepeatedScalarFieldContainer[str]
     file_extension: str
@@ -235,35 +266,45 @@ class ListingTableScanNode(_message.Message):
     json: _datafusion_common_pb2.NdJsonFormat
     arrow: _datafusion_common_pb2.ArrowFormat
     file_sort_order: _containers.RepeatedCompositeFieldContainer[SortExprNodeCollection]
-    def __init__(self, table_name: _Optional[_Union[TableReference, _Mapping]] = ..., paths: _Optional[_Iterable[str]] = ..., file_extension: _Optional[str] = ..., projection: _Optional[_Union[ProjectionColumns, _Mapping]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., filters: _Optional[_Iterable[_Union[LogicalExprNode, _Mapping]]] = ..., table_partition_cols: _Optional[_Iterable[_Union[PartitionColumn, _Mapping]]] = ..., csv: _Optional[_Union[_datafusion_common_pb2.CsvFormat, _Mapping]] = ..., parquet: _Optional[_Union[_datafusion_common_pb2.ParquetFormat, _Mapping]] = ..., avro: _Optional[_Union[_datafusion_common_pb2.AvroFormat, _Mapping]] = ..., json: _Optional[_Union[_datafusion_common_pb2.NdJsonFormat, _Mapping]] = ..., arrow: _Optional[_Union[_datafusion_common_pb2.ArrowFormat, _Mapping]] = ..., file_sort_order: _Optional[_Iterable[_Union[SortExprNodeCollection, _Mapping]]] = ...) -> None: ...
+    fetch: int
+    skip: int
+    def __init__(self, table_name: _Optional[_Union[TableReference, _Mapping]] = ..., paths: _Optional[_Iterable[str]] = ..., file_extension: _Optional[str] = ..., projection: _Optional[_Union[ProjectionColumns, _Mapping]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., filters: _Optional[_Iterable[_Union[LogicalExprNode, _Mapping]]] = ..., table_partition_cols: _Optional[_Iterable[_Union[PartitionColumn, _Mapping]]] = ..., csv: _Optional[_Union[_datafusion_common_pb2.CsvFormat, _Mapping]] = ..., parquet: _Optional[_Union[_datafusion_common_pb2.ParquetFormat, _Mapping]] = ..., avro: _Optional[_Union[_datafusion_common_pb2.AvroFormat, _Mapping]] = ..., json: _Optional[_Union[_datafusion_common_pb2.NdJsonFormat, _Mapping]] = ..., arrow: _Optional[_Union[_datafusion_common_pb2.ArrowFormat, _Mapping]] = ..., file_sort_order: _Optional[_Iterable[_Union[SortExprNodeCollection, _Mapping]]] = ..., fetch: _Optional[int] = ..., skip: _Optional[int] = ...) -> None: ...
 
 class ViewTableScanNode(_message.Message):
-    __slots__ = ("table_name", "input", "schema", "projection", "definition")
+    __slots__ = ("table_name", "input", "schema", "projection", "definition", "fetch", "skip")
     TABLE_NAME_FIELD_NUMBER: _ClassVar[int]
     INPUT_FIELD_NUMBER: _ClassVar[int]
     SCHEMA_FIELD_NUMBER: _ClassVar[int]
     PROJECTION_FIELD_NUMBER: _ClassVar[int]
     DEFINITION_FIELD_NUMBER: _ClassVar[int]
+    FETCH_FIELD_NUMBER: _ClassVar[int]
+    SKIP_FIELD_NUMBER: _ClassVar[int]
     table_name: TableReference
     input: LogicalPlanNode
     schema: _datafusion_common_pb2.Schema
     projection: ProjectionColumns
     definition: str
-    def __init__(self, table_name: _Optional[_Union[TableReference, _Mapping]] = ..., input: _Optional[_Union[LogicalPlanNode, _Mapping]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., projection: _Optional[_Union[ProjectionColumns, _Mapping]] = ..., definition: _Optional[str] = ...) -> None: ...
+    fetch: int
+    skip: int
+    def __init__(self, table_name: _Optional[_Union[TableReference, _Mapping]] = ..., input: _Optional[_Union[LogicalPlanNode, _Mapping]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., projection: _Optional[_Union[ProjectionColumns, _Mapping]] = ..., definition: _Optional[str] = ..., fetch: _Optional[int] = ..., skip: _Optional[int] = ...) -> None: ...
 
 class CustomTableScanNode(_message.Message):
-    __slots__ = ("table_name", "projection", "schema", "filters", "custom_table_data")
+    __slots__ = ("table_name", "projection", "schema", "filters", "custom_table_data", "fetch", "skip")
     TABLE_NAME_FIELD_NUMBER: _ClassVar[int]
     PROJECTION_FIELD_NUMBER: _ClassVar[int]
     SCHEMA_FIELD_NUMBER: _ClassVar[int]
     FILTERS_FIELD_NUMBER: _ClassVar[int]
     CUSTOM_TABLE_DATA_FIELD_NUMBER: _ClassVar[int]
+    FETCH_FIELD_NUMBER: _ClassVar[int]
+    SKIP_FIELD_NUMBER: _ClassVar[int]
     table_name: TableReference
     projection: ProjectionColumns
     schema: _datafusion_common_pb2.Schema
     filters: _containers.RepeatedCompositeFieldContainer[LogicalExprNode]
     custom_table_data: bytes
-    def __init__(self, table_name: _Optional[_Union[TableReference, _Mapping]] = ..., projection: _Optional[_Union[ProjectionColumns, _Mapping]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., filters: _Optional[_Iterable[_Union[LogicalExprNode, _Mapping]]] = ..., custom_table_data: _Optional[bytes] = ...) -> None: ...
+    fetch: int
+    skip: int
+    def __init__(self, table_name: _Optional[_Union[TableReference, _Mapping]] = ..., projection: _Optional[_Union[ProjectionColumns, _Mapping]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., filters: _Optional[_Iterable[_Union[LogicalExprNode, _Mapping]]] = ..., custom_table_data: _Optional[bytes] = ..., fetch: _Optional[int] = ..., skip: _Optional[int] = ...) -> None: ...
 
 class ProjectionNode(_message.Message):
     __slots__ = ("input", "expr", "alias")
@@ -328,10 +369,12 @@ class HashRepartition(_message.Message):
     def __init__(self, hash_expr: _Optional[_Iterable[_Union[LogicalExprNode, _Mapping]]] = ..., partition_count: _Optional[int] = ...) -> None: ...
 
 class EmptyRelationNode(_message.Message):
-    __slots__ = ("produce_one_row",)
+    __slots__ = ("produce_one_row", "schema")
     PRODUCE_ONE_ROW_FIELD_NUMBER: _ClassVar[int]
+    SCHEMA_FIELD_NUMBER: _ClassVar[int]
     produce_one_row: bool
-    def __init__(self, produce_one_row: _Optional[bool] = ...) -> None: ...
+    schema: _datafusion_common_pb2.DfSchema
+    def __init__(self, produce_one_row: _Optional[bool] = ..., schema: _Optional[_Union[_datafusion_common_pb2.DfSchema, _Mapping]] = ...) -> None: ...
 
 class CreateExternalTableNode(_message.Message):
     __slots__ = ("name", "location", "locations", "file_type", "schema", "table_partition_cols", "if_not_exists", "or_replace", "temporary", "definition", "order_exprs", "unbounded", "options", "constraints", "column_defaults")
@@ -490,7 +533,7 @@ class WindowNode(_message.Message):
     def __init__(self, input: _Optional[_Union[LogicalPlanNode, _Mapping]] = ..., window_expr: _Optional[_Iterable[_Union[LogicalExprNode, _Mapping]]] = ...) -> None: ...
 
 class JoinNode(_message.Message):
-    __slots__ = ("left", "right", "join_type", "join_constraint", "left_join_key", "right_join_key", "null_equality", "filter", "null_aware")
+    __slots__ = ("left", "right", "join_type", "join_constraint", "left_join_key", "right_join_key", "null_equality", "filter", "null_aware", "null_aware_value_keys")
     LEFT_FIELD_NUMBER: _ClassVar[int]
     RIGHT_FIELD_NUMBER: _ClassVar[int]
     JOIN_TYPE_FIELD_NUMBER: _ClassVar[int]
@@ -500,6 +543,7 @@ class JoinNode(_message.Message):
     NULL_EQUALITY_FIELD_NUMBER: _ClassVar[int]
     FILTER_FIELD_NUMBER: _ClassVar[int]
     NULL_AWARE_FIELD_NUMBER: _ClassVar[int]
+    NULL_AWARE_VALUE_KEYS_FIELD_NUMBER: _ClassVar[int]
     left: LogicalPlanNode
     right: LogicalPlanNode
     join_type: _datafusion_common_pb2.JoinType
@@ -509,7 +553,28 @@ class JoinNode(_message.Message):
     null_equality: _datafusion_common_pb2.NullEquality
     filter: LogicalExprNode
     null_aware: bool
-    def __init__(self, left: _Optional[_Union[LogicalPlanNode, _Mapping]] = ..., right: _Optional[_Union[LogicalPlanNode, _Mapping]] = ..., join_type: _Optional[_Union[_datafusion_common_pb2.JoinType, str]] = ..., join_constraint: _Optional[_Union[_datafusion_common_pb2.JoinConstraint, str]] = ..., left_join_key: _Optional[_Iterable[_Union[LogicalExprNode, _Mapping]]] = ..., right_join_key: _Optional[_Iterable[_Union[LogicalExprNode, _Mapping]]] = ..., null_equality: _Optional[_Union[_datafusion_common_pb2.NullEquality, str]] = ..., filter: _Optional[_Union[LogicalExprNode, _Mapping]] = ..., null_aware: _Optional[bool] = ...) -> None: ...
+    null_aware_value_keys: int
+    def __init__(self, left: _Optional[_Union[LogicalPlanNode, _Mapping]] = ..., right: _Optional[_Union[LogicalPlanNode, _Mapping]] = ..., join_type: _Optional[_Union[_datafusion_common_pb2.JoinType, str]] = ..., join_constraint: _Optional[_Union[_datafusion_common_pb2.JoinConstraint, str]] = ..., left_join_key: _Optional[_Iterable[_Union[LogicalExprNode, _Mapping]]] = ..., right_join_key: _Optional[_Iterable[_Union[LogicalExprNode, _Mapping]]] = ..., null_equality: _Optional[_Union[_datafusion_common_pb2.NullEquality, str]] = ..., filter: _Optional[_Union[LogicalExprNode, _Mapping]] = ..., null_aware: _Optional[bool] = ..., null_aware_value_keys: _Optional[int] = ...) -> None: ...
+
+class AsOfJoinNode(_message.Message):
+    __slots__ = ("left", "right", "left_join_key", "right_join_key", "left_match_expr", "right_match_expr", "match_operator", "join_constraint")
+    LEFT_FIELD_NUMBER: _ClassVar[int]
+    RIGHT_FIELD_NUMBER: _ClassVar[int]
+    LEFT_JOIN_KEY_FIELD_NUMBER: _ClassVar[int]
+    RIGHT_JOIN_KEY_FIELD_NUMBER: _ClassVar[int]
+    LEFT_MATCH_EXPR_FIELD_NUMBER: _ClassVar[int]
+    RIGHT_MATCH_EXPR_FIELD_NUMBER: _ClassVar[int]
+    MATCH_OPERATOR_FIELD_NUMBER: _ClassVar[int]
+    JOIN_CONSTRAINT_FIELD_NUMBER: _ClassVar[int]
+    left: LogicalPlanNode
+    right: LogicalPlanNode
+    left_join_key: _containers.RepeatedCompositeFieldContainer[LogicalExprNode]
+    right_join_key: _containers.RepeatedCompositeFieldContainer[LogicalExprNode]
+    left_match_expr: LogicalExprNode
+    right_match_expr: LogicalExprNode
+    match_operator: AsOfMatchOperator
+    join_constraint: _datafusion_common_pb2.JoinConstraint
+    def __init__(self, left: _Optional[_Union[LogicalPlanNode, _Mapping]] = ..., right: _Optional[_Union[LogicalPlanNode, _Mapping]] = ..., left_join_key: _Optional[_Iterable[_Union[LogicalExprNode, _Mapping]]] = ..., right_join_key: _Optional[_Iterable[_Union[LogicalExprNode, _Mapping]]] = ..., left_match_expr: _Optional[_Union[LogicalExprNode, _Mapping]] = ..., right_match_expr: _Optional[_Union[LogicalExprNode, _Mapping]] = ..., match_operator: _Optional[_Union[AsOfMatchOperator, str]] = ..., join_constraint: _Optional[_Union[_datafusion_common_pb2.JoinConstraint, str]] = ...) -> None: ...
 
 class DistinctNode(_message.Message):
     __slots__ = ("input",)
@@ -582,12 +647,14 @@ class DmlNode(_message.Message):
     def __init__(self, dml_type: _Optional[_Union[DmlNode.Type, str]] = ..., input: _Optional[_Union[LogicalPlanNode, _Mapping]] = ..., table_name: _Optional[_Union[TableReference, _Mapping]] = ..., target: _Optional[_Union[LogicalPlanNode, _Mapping]] = ..., merge_into: _Optional[_Union[MergeIntoOpNode, _Mapping]] = ...) -> None: ...
 
 class MergeIntoOpNode(_message.Message):
-    __slots__ = ("on", "clauses")
+    __slots__ = ("on", "clauses", "target_qualifier")
     ON_FIELD_NUMBER: _ClassVar[int]
     CLAUSES_FIELD_NUMBER: _ClassVar[int]
+    TARGET_QUALIFIER_FIELD_NUMBER: _ClassVar[int]
     on: LogicalExprNode
     clauses: _containers.RepeatedCompositeFieldContainer[MergeIntoClauseNode]
-    def __init__(self, on: _Optional[_Union[LogicalExprNode, _Mapping]] = ..., clauses: _Optional[_Iterable[_Union[MergeIntoClauseNode, _Mapping]]] = ...) -> None: ...
+    target_qualifier: TableReference
+    def __init__(self, on: _Optional[_Union[LogicalExprNode, _Mapping]] = ..., clauses: _Optional[_Iterable[_Union[MergeIntoClauseNode, _Mapping]]] = ..., target_qualifier: _Optional[_Union[TableReference, _Mapping]] = ...) -> None: ...
 
 class MergeIntoClauseNode(_message.Message):
     __slots__ = ("kind", "predicate", "action")
@@ -1319,7 +1386,7 @@ class TableReference(_message.Message):
     def __init__(self, bare: _Optional[_Union[BareTableReference, _Mapping]] = ..., partial: _Optional[_Union[PartialTableReference, _Mapping]] = ..., full: _Optional[_Union[FullTableReference, _Mapping]] = ...) -> None: ...
 
 class PhysicalPlanNode(_message.Message):
-    __slots__ = ("parquet_scan", "csv_scan", "empty", "projection", "global_limit", "local_limit", "aggregate", "hash_join", "sort", "coalesce_batches", "filter", "merge", "repartition", "window", "cross_join", "avro_scan", "extension", "union", "explain", "sort_preserving_merge", "nested_loop_join", "analyze", "json_sink", "symmetric_hash_join", "interleave", "placeholder_row", "csv_sink", "parquet_sink", "unnest", "json_scan", "cooperative", "generate_series", "sort_merge_join", "memory_scan", "async_func", "buffer", "arrow_scan", "scalar_subquery")
+    __slots__ = ("parquet_scan", "csv_scan", "empty", "projection", "global_limit", "local_limit", "aggregate", "hash_join", "sort", "coalesce_batches", "filter", "merge", "repartition", "window", "cross_join", "avro_scan", "extension", "union", "explain", "sort_preserving_merge", "nested_loop_join", "analyze", "json_sink", "symmetric_hash_join", "interleave", "placeholder_row", "csv_sink", "parquet_sink", "unnest", "json_scan", "cooperative", "generate_series", "sort_merge_join", "memory_scan", "async_func", "buffer", "arrow_scan", "scalar_subquery", "piecewise_merge_join", "as_of_join")
     PARQUET_SCAN_FIELD_NUMBER: _ClassVar[int]
     CSV_SCAN_FIELD_NUMBER: _ClassVar[int]
     EMPTY_FIELD_NUMBER: _ClassVar[int]
@@ -1358,6 +1425,8 @@ class PhysicalPlanNode(_message.Message):
     BUFFER_FIELD_NUMBER: _ClassVar[int]
     ARROW_SCAN_FIELD_NUMBER: _ClassVar[int]
     SCALAR_SUBQUERY_FIELD_NUMBER: _ClassVar[int]
+    PIECEWISE_MERGE_JOIN_FIELD_NUMBER: _ClassVar[int]
+    AS_OF_JOIN_FIELD_NUMBER: _ClassVar[int]
     parquet_scan: ParquetScanExecNode
     csv_scan: CsvScanExecNode
     empty: EmptyExecNode
@@ -1396,7 +1465,9 @@ class PhysicalPlanNode(_message.Message):
     buffer: BufferExecNode
     arrow_scan: ArrowScanExecNode
     scalar_subquery: ScalarSubqueryExecNode
-    def __init__(self, parquet_scan: _Optional[_Union[ParquetScanExecNode, _Mapping]] = ..., csv_scan: _Optional[_Union[CsvScanExecNode, _Mapping]] = ..., empty: _Optional[_Union[EmptyExecNode, _Mapping]] = ..., projection: _Optional[_Union[ProjectionExecNode, _Mapping]] = ..., global_limit: _Optional[_Union[GlobalLimitExecNode, _Mapping]] = ..., local_limit: _Optional[_Union[LocalLimitExecNode, _Mapping]] = ..., aggregate: _Optional[_Union[AggregateExecNode, _Mapping]] = ..., hash_join: _Optional[_Union[HashJoinExecNode, _Mapping]] = ..., sort: _Optional[_Union[SortExecNode, _Mapping]] = ..., coalesce_batches: _Optional[_Union[CoalesceBatchesExecNode, _Mapping]] = ..., filter: _Optional[_Union[FilterExecNode, _Mapping]] = ..., merge: _Optional[_Union[CoalescePartitionsExecNode, _Mapping]] = ..., repartition: _Optional[_Union[RepartitionExecNode, _Mapping]] = ..., window: _Optional[_Union[WindowAggExecNode, _Mapping]] = ..., cross_join: _Optional[_Union[CrossJoinExecNode, _Mapping]] = ..., avro_scan: _Optional[_Union[AvroScanExecNode, _Mapping]] = ..., extension: _Optional[_Union[PhysicalExtensionNode, _Mapping]] = ..., union: _Optional[_Union[UnionExecNode, _Mapping]] = ..., explain: _Optional[_Union[ExplainExecNode, _Mapping]] = ..., sort_preserving_merge: _Optional[_Union[SortPreservingMergeExecNode, _Mapping]] = ..., nested_loop_join: _Optional[_Union[NestedLoopJoinExecNode, _Mapping]] = ..., analyze: _Optional[_Union[AnalyzeExecNode, _Mapping]] = ..., json_sink: _Optional[_Union[JsonSinkExecNode, _Mapping]] = ..., symmetric_hash_join: _Optional[_Union[SymmetricHashJoinExecNode, _Mapping]] = ..., interleave: _Optional[_Union[InterleaveExecNode, _Mapping]] = ..., placeholder_row: _Optional[_Union[PlaceholderRowExecNode, _Mapping]] = ..., csv_sink: _Optional[_Union[CsvSinkExecNode, _Mapping]] = ..., parquet_sink: _Optional[_Union[ParquetSinkExecNode, _Mapping]] = ..., unnest: _Optional[_Union[UnnestExecNode, _Mapping]] = ..., json_scan: _Optional[_Union[JsonScanExecNode, _Mapping]] = ..., cooperative: _Optional[_Union[CooperativeExecNode, _Mapping]] = ..., generate_series: _Optional[_Union[GenerateSeriesNode, _Mapping]] = ..., sort_merge_join: _Optional[_Union[SortMergeJoinExecNode, _Mapping]] = ..., memory_scan: _Optional[_Union[MemoryScanExecNode, _Mapping]] = ..., async_func: _Optional[_Union[AsyncFuncExecNode, _Mapping]] = ..., buffer: _Optional[_Union[BufferExecNode, _Mapping]] = ..., arrow_scan: _Optional[_Union[ArrowScanExecNode, _Mapping]] = ..., scalar_subquery: _Optional[_Union[ScalarSubqueryExecNode, _Mapping]] = ...) -> None: ...
+    piecewise_merge_join: PiecewiseMergeJoinExecNode
+    as_of_join: AsOfJoinExecNode
+    def __init__(self, parquet_scan: _Optional[_Union[ParquetScanExecNode, _Mapping]] = ..., csv_scan: _Optional[_Union[CsvScanExecNode, _Mapping]] = ..., empty: _Optional[_Union[EmptyExecNode, _Mapping]] = ..., projection: _Optional[_Union[ProjectionExecNode, _Mapping]] = ..., global_limit: _Optional[_Union[GlobalLimitExecNode, _Mapping]] = ..., local_limit: _Optional[_Union[LocalLimitExecNode, _Mapping]] = ..., aggregate: _Optional[_Union[AggregateExecNode, _Mapping]] = ..., hash_join: _Optional[_Union[HashJoinExecNode, _Mapping]] = ..., sort: _Optional[_Union[SortExecNode, _Mapping]] = ..., coalesce_batches: _Optional[_Union[CoalesceBatchesExecNode, _Mapping]] = ..., filter: _Optional[_Union[FilterExecNode, _Mapping]] = ..., merge: _Optional[_Union[CoalescePartitionsExecNode, _Mapping]] = ..., repartition: _Optional[_Union[RepartitionExecNode, _Mapping]] = ..., window: _Optional[_Union[WindowAggExecNode, _Mapping]] = ..., cross_join: _Optional[_Union[CrossJoinExecNode, _Mapping]] = ..., avro_scan: _Optional[_Union[AvroScanExecNode, _Mapping]] = ..., extension: _Optional[_Union[PhysicalExtensionNode, _Mapping]] = ..., union: _Optional[_Union[UnionExecNode, _Mapping]] = ..., explain: _Optional[_Union[ExplainExecNode, _Mapping]] = ..., sort_preserving_merge: _Optional[_Union[SortPreservingMergeExecNode, _Mapping]] = ..., nested_loop_join: _Optional[_Union[NestedLoopJoinExecNode, _Mapping]] = ..., analyze: _Optional[_Union[AnalyzeExecNode, _Mapping]] = ..., json_sink: _Optional[_Union[JsonSinkExecNode, _Mapping]] = ..., symmetric_hash_join: _Optional[_Union[SymmetricHashJoinExecNode, _Mapping]] = ..., interleave: _Optional[_Union[InterleaveExecNode, _Mapping]] = ..., placeholder_row: _Optional[_Union[PlaceholderRowExecNode, _Mapping]] = ..., csv_sink: _Optional[_Union[CsvSinkExecNode, _Mapping]] = ..., parquet_sink: _Optional[_Union[ParquetSinkExecNode, _Mapping]] = ..., unnest: _Optional[_Union[UnnestExecNode, _Mapping]] = ..., json_scan: _Optional[_Union[JsonScanExecNode, _Mapping]] = ..., cooperative: _Optional[_Union[CooperativeExecNode, _Mapping]] = ..., generate_series: _Optional[_Union[GenerateSeriesNode, _Mapping]] = ..., sort_merge_join: _Optional[_Union[SortMergeJoinExecNode, _Mapping]] = ..., memory_scan: _Optional[_Union[MemoryScanExecNode, _Mapping]] = ..., async_func: _Optional[_Union[AsyncFuncExecNode, _Mapping]] = ..., buffer: _Optional[_Union[BufferExecNode, _Mapping]] = ..., arrow_scan: _Optional[_Union[ArrowScanExecNode, _Mapping]] = ..., scalar_subquery: _Optional[_Union[ScalarSubqueryExecNode, _Mapping]] = ..., piecewise_merge_join: _Optional[_Union[PiecewiseMergeJoinExecNode, _Mapping]] = ..., as_of_join: _Optional[_Union[AsOfJoinExecNode, _Mapping]] = ...) -> None: ...
 
 class PartitionColumn(_message.Message):
     __slots__ = ("name", "arrow_type")
@@ -1468,13 +1539,31 @@ class CsvSinkExecNode(_message.Message):
     sort_order: PhysicalSortExprNodeCollection
     def __init__(self, input: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., sink: _Optional[_Union[CsvSink, _Mapping]] = ..., sink_schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., sort_order: _Optional[_Union[PhysicalSortExprNodeCollection, _Mapping]] = ...) -> None: ...
 
+class ParquetSortingColumn(_message.Message):
+    __slots__ = ("column_idx", "descending", "nulls_first")
+    COLUMN_IDX_FIELD_NUMBER: _ClassVar[int]
+    DESCENDING_FIELD_NUMBER: _ClassVar[int]
+    NULLS_FIRST_FIELD_NUMBER: _ClassVar[int]
+    column_idx: int
+    descending: bool
+    nulls_first: bool
+    def __init__(self, column_idx: _Optional[int] = ..., descending: _Optional[bool] = ..., nulls_first: _Optional[bool] = ...) -> None: ...
+
+class ParquetSortingColumns(_message.Message):
+    __slots__ = ("columns",)
+    COLUMNS_FIELD_NUMBER: _ClassVar[int]
+    columns: _containers.RepeatedCompositeFieldContainer[ParquetSortingColumn]
+    def __init__(self, columns: _Optional[_Iterable[_Union[ParquetSortingColumn, _Mapping]]] = ...) -> None: ...
+
 class ParquetSink(_message.Message):
-    __slots__ = ("config", "parquet_options")
+    __slots__ = ("config", "parquet_options", "sorting_columns")
     CONFIG_FIELD_NUMBER: _ClassVar[int]
     PARQUET_OPTIONS_FIELD_NUMBER: _ClassVar[int]
+    SORTING_COLUMNS_FIELD_NUMBER: _ClassVar[int]
     config: FileSinkConfig
     parquet_options: _datafusion_common_pb2.TableParquetOptions
-    def __init__(self, config: _Optional[_Union[FileSinkConfig, _Mapping]] = ..., parquet_options: _Optional[_Union[_datafusion_common_pb2.TableParquetOptions, _Mapping]] = ...) -> None: ...
+    sorting_columns: ParquetSortingColumns
+    def __init__(self, config: _Optional[_Union[FileSinkConfig, _Mapping]] = ..., parquet_options: _Optional[_Union[_datafusion_common_pb2.TableParquetOptions, _Mapping]] = ..., sorting_columns: _Optional[_Union[ParquetSortingColumns, _Mapping]] = ...) -> None: ...
 
 class ParquetSinkExecNode(_message.Message):
     __slots__ = ("input", "sink", "sink_schema", "sort_order")
@@ -1511,15 +1600,17 @@ class ListUnnest(_message.Message):
     def __init__(self, index_in_input_schema: _Optional[int] = ..., depth: _Optional[int] = ...) -> None: ...
 
 class PhysicalExtensionNode(_message.Message):
-    __slots__ = ("node", "inputs")
+    __slots__ = ("node", "inputs", "plan_name")
     NODE_FIELD_NUMBER: _ClassVar[int]
     INPUTS_FIELD_NUMBER: _ClassVar[int]
+    PLAN_NAME_FIELD_NUMBER: _ClassVar[int]
     node: bytes
     inputs: _containers.RepeatedCompositeFieldContainer[PhysicalPlanNode]
-    def __init__(self, node: _Optional[bytes] = ..., inputs: _Optional[_Iterable[_Union[PhysicalPlanNode, _Mapping]]] = ...) -> None: ...
+    plan_name: str
+    def __init__(self, node: _Optional[bytes] = ..., inputs: _Optional[_Iterable[_Union[PhysicalPlanNode, _Mapping]]] = ..., plan_name: _Optional[str] = ...) -> None: ...
 
 class PhysicalExprNode(_message.Message):
-    __slots__ = ("expr_id", "column", "literal", "binary_expr", "aggregate_expr", "is_null_expr", "is_not_null_expr", "not_expr", "case_", "cast", "sort", "negative", "in_list", "try_cast", "window_expr", "scalar_udf", "like_expr", "extension", "unknown_column", "hash_expr", "scalar_subquery", "dynamic_filter", "higher_order_udf", "lambda_variable", "range_expr")
+    __slots__ = ("expr_id", "column", "literal", "binary_expr", "aggregate_expr", "is_null_expr", "is_not_null_expr", "not_expr", "case_", "cast", "sort", "negative", "in_list", "try_cast", "window_expr", "scalar_udf", "like_expr", "extension", "unknown_column", "hash_expr", "scalar_subquery", "dynamic_filter", "higher_order_udf", "lambda_variable", "range_expr", "sql_similar_to_pattern", "literal_with_metadata")
     EXPR_ID_FIELD_NUMBER: _ClassVar[int]
     COLUMN_FIELD_NUMBER: _ClassVar[int]
     LITERAL_FIELD_NUMBER: _ClassVar[int]
@@ -1546,6 +1637,8 @@ class PhysicalExprNode(_message.Message):
     LAMBDA_FIELD_NUMBER: _ClassVar[int]
     LAMBDA_VARIABLE_FIELD_NUMBER: _ClassVar[int]
     RANGE_EXPR_FIELD_NUMBER: _ClassVar[int]
+    SQL_SIMILAR_TO_PATTERN_FIELD_NUMBER: _ClassVar[int]
+    LITERAL_WITH_METADATA_FIELD_NUMBER: _ClassVar[int]
     expr_id: int
     column: PhysicalColumn
     literal: _datafusion_common_pb2.ScalarValue
@@ -1571,7 +1664,24 @@ class PhysicalExprNode(_message.Message):
     higher_order_udf: PhysicalHigherOrderUdfNode
     lambda_variable: PhysicalLambdaVariableExprNode
     range_expr: PhysicalRangeExprNode
-    def __init__(self, expr_id: _Optional[int] = ..., column: _Optional[_Union[PhysicalColumn, _Mapping]] = ..., literal: _Optional[_Union[_datafusion_common_pb2.ScalarValue, _Mapping]] = ..., binary_expr: _Optional[_Union[PhysicalBinaryExprNode, _Mapping]] = ..., aggregate_expr: _Optional[_Union[PhysicalAggregateExprNode, _Mapping]] = ..., is_null_expr: _Optional[_Union[PhysicalIsNull, _Mapping]] = ..., is_not_null_expr: _Optional[_Union[PhysicalIsNotNull, _Mapping]] = ..., not_expr: _Optional[_Union[PhysicalNot, _Mapping]] = ..., case_: _Optional[_Union[PhysicalCaseNode, _Mapping]] = ..., cast: _Optional[_Union[PhysicalCastNode, _Mapping]] = ..., sort: _Optional[_Union[PhysicalSortExprNode, _Mapping]] = ..., negative: _Optional[_Union[PhysicalNegativeNode, _Mapping]] = ..., in_list: _Optional[_Union[PhysicalInListNode, _Mapping]] = ..., try_cast: _Optional[_Union[PhysicalTryCastNode, _Mapping]] = ..., window_expr: _Optional[_Union[PhysicalWindowExprNode, _Mapping]] = ..., scalar_udf: _Optional[_Union[PhysicalScalarUdfNode, _Mapping]] = ..., like_expr: _Optional[_Union[PhysicalLikeExprNode, _Mapping]] = ..., extension: _Optional[_Union[PhysicalExtensionExprNode, _Mapping]] = ..., unknown_column: _Optional[_Union[UnknownColumn, _Mapping]] = ..., hash_expr: _Optional[_Union[PhysicalHashExprNode, _Mapping]] = ..., scalar_subquery: _Optional[_Union[PhysicalScalarSubqueryExprNode, _Mapping]] = ..., dynamic_filter: _Optional[_Union[PhysicalDynamicFilterNode, _Mapping]] = ..., higher_order_udf: _Optional[_Union[PhysicalHigherOrderUdfNode, _Mapping]] = ..., lambda_variable: _Optional[_Union[PhysicalLambdaVariableExprNode, _Mapping]] = ..., range_expr: _Optional[_Union[PhysicalRangeExprNode, _Mapping]] = ..., **kwargs) -> None: ...
+    sql_similar_to_pattern: PhysicalSqlSimilarToPatternNode
+    literal_with_metadata: PhysicalLiteralNode
+    def __init__(self, expr_id: _Optional[int] = ..., column: _Optional[_Union[PhysicalColumn, _Mapping]] = ..., literal: _Optional[_Union[_datafusion_common_pb2.ScalarValue, _Mapping]] = ..., binary_expr: _Optional[_Union[PhysicalBinaryExprNode, _Mapping]] = ..., aggregate_expr: _Optional[_Union[PhysicalAggregateExprNode, _Mapping]] = ..., is_null_expr: _Optional[_Union[PhysicalIsNull, _Mapping]] = ..., is_not_null_expr: _Optional[_Union[PhysicalIsNotNull, _Mapping]] = ..., not_expr: _Optional[_Union[PhysicalNot, _Mapping]] = ..., case_: _Optional[_Union[PhysicalCaseNode, _Mapping]] = ..., cast: _Optional[_Union[PhysicalCastNode, _Mapping]] = ..., sort: _Optional[_Union[PhysicalSortExprNode, _Mapping]] = ..., negative: _Optional[_Union[PhysicalNegativeNode, _Mapping]] = ..., in_list: _Optional[_Union[PhysicalInListNode, _Mapping]] = ..., try_cast: _Optional[_Union[PhysicalTryCastNode, _Mapping]] = ..., window_expr: _Optional[_Union[PhysicalWindowExprNode, _Mapping]] = ..., scalar_udf: _Optional[_Union[PhysicalScalarUdfNode, _Mapping]] = ..., like_expr: _Optional[_Union[PhysicalLikeExprNode, _Mapping]] = ..., extension: _Optional[_Union[PhysicalExtensionExprNode, _Mapping]] = ..., unknown_column: _Optional[_Union[UnknownColumn, _Mapping]] = ..., hash_expr: _Optional[_Union[PhysicalHashExprNode, _Mapping]] = ..., scalar_subquery: _Optional[_Union[PhysicalScalarSubqueryExprNode, _Mapping]] = ..., dynamic_filter: _Optional[_Union[PhysicalDynamicFilterNode, _Mapping]] = ..., higher_order_udf: _Optional[_Union[PhysicalHigherOrderUdfNode, _Mapping]] = ..., lambda_variable: _Optional[_Union[PhysicalLambdaVariableExprNode, _Mapping]] = ..., range_expr: _Optional[_Union[PhysicalRangeExprNode, _Mapping]] = ..., sql_similar_to_pattern: _Optional[_Union[PhysicalSqlSimilarToPatternNode, _Mapping]] = ..., literal_with_metadata: _Optional[_Union[PhysicalLiteralNode, _Mapping]] = ..., **kwargs) -> None: ...
+
+class PhysicalLiteralNode(_message.Message):
+    __slots__ = ("value", "metadata")
+    class MetadataEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    VALUE_FIELD_NUMBER: _ClassVar[int]
+    METADATA_FIELD_NUMBER: _ClassVar[int]
+    value: _datafusion_common_pb2.ScalarValue
+    metadata: _containers.ScalarMap[str, str]
+    def __init__(self, value: _Optional[_Union[_datafusion_common_pb2.ScalarValue, _Mapping]] = ..., metadata: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
 class PhysicalDynamicFilterNode(_message.Message):
     __slots__ = ("children", "remapped_children", "generation", "inner_expr", "is_complete")
@@ -1586,6 +1696,12 @@ class PhysicalDynamicFilterNode(_message.Message):
     inner_expr: PhysicalExprNode
     is_complete: bool
     def __init__(self, children: _Optional[_Iterable[_Union[PhysicalExprNode, _Mapping]]] = ..., remapped_children: _Optional[_Iterable[_Union[PhysicalExprNode, _Mapping]]] = ..., generation: _Optional[int] = ..., inner_expr: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., is_complete: _Optional[bool] = ...) -> None: ...
+
+class PhysicalSqlSimilarToPatternNode(_message.Message):
+    __slots__ = ("expr",)
+    EXPR_FIELD_NUMBER: _ClassVar[int]
+    expr: PhysicalExprNode
+    def __init__(self, expr: _Optional[_Union[PhysicalExprNode, _Mapping]] = ...) -> None: ...
 
 class PhysicalScalarUdfNode(_message.Message):
     __slots__ = ("name", "args", "fun_definition", "return_type", "nullable", "return_field_name")
@@ -1700,16 +1816,18 @@ class PhysicalAliasNode(_message.Message):
     def __init__(self, expr: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., alias: _Optional[str] = ...) -> None: ...
 
 class PhysicalBinaryExprNode(_message.Message):
-    __slots__ = ("l", "r", "op", "operands")
+    __slots__ = ("l", "r", "op", "operands", "fail_on_overflow")
     L_FIELD_NUMBER: _ClassVar[int]
     R_FIELD_NUMBER: _ClassVar[int]
     OP_FIELD_NUMBER: _ClassVar[int]
     OPERANDS_FIELD_NUMBER: _ClassVar[int]
+    FAIL_ON_OVERFLOW_FIELD_NUMBER: _ClassVar[int]
     l: PhysicalExprNode
     r: PhysicalExprNode
     op: str
     operands: _containers.RepeatedCompositeFieldContainer[PhysicalExprNode]
-    def __init__(self, l: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., r: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., op: _Optional[str] = ..., operands: _Optional[_Iterable[_Union[PhysicalExprNode, _Mapping]]] = ...) -> None: ...
+    fail_on_overflow: bool
+    def __init__(self, l: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., r: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., op: _Optional[str] = ..., operands: _Optional[_Iterable[_Union[PhysicalExprNode, _Mapping]]] = ..., fail_on_overflow: _Optional[bool] = ...) -> None: ...
 
 class PhysicalDateTimeIntervalExprNode(_message.Message):
     __slots__ = ("l", "r", "op")
@@ -1772,20 +1890,58 @@ class PhysicalCaseNode(_message.Message):
     def __init__(self, expr: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., when_then_expr: _Optional[_Iterable[_Union[PhysicalWhenThen, _Mapping]]] = ..., else_expr: _Optional[_Union[PhysicalExprNode, _Mapping]] = ...) -> None: ...
 
 class PhysicalTryCastNode(_message.Message):
-    __slots__ = ("expr", "arrow_type")
+    __slots__ = ("expr", "arrow_type", "target_field")
     EXPR_FIELD_NUMBER: _ClassVar[int]
     ARROW_TYPE_FIELD_NUMBER: _ClassVar[int]
+    TARGET_FIELD_FIELD_NUMBER: _ClassVar[int]
     expr: PhysicalExprNode
     arrow_type: _datafusion_common_pb2.ArrowType
-    def __init__(self, expr: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., arrow_type: _Optional[_Union[_datafusion_common_pb2.ArrowType, _Mapping]] = ...) -> None: ...
+    target_field: _datafusion_common_pb2.Field
+    def __init__(self, expr: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., arrow_type: _Optional[_Union[_datafusion_common_pb2.ArrowType, _Mapping]] = ..., target_field: _Optional[_Union[_datafusion_common_pb2.Field, _Mapping]] = ...) -> None: ...
 
 class PhysicalCastNode(_message.Message):
-    __slots__ = ("expr", "arrow_type")
+    __slots__ = ("expr", "arrow_type", "target_field", "cast_options")
     EXPR_FIELD_NUMBER: _ClassVar[int]
     ARROW_TYPE_FIELD_NUMBER: _ClassVar[int]
+    TARGET_FIELD_FIELD_NUMBER: _ClassVar[int]
+    CAST_OPTIONS_FIELD_NUMBER: _ClassVar[int]
     expr: PhysicalExprNode
     arrow_type: _datafusion_common_pb2.ArrowType
-    def __init__(self, expr: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., arrow_type: _Optional[_Union[_datafusion_common_pb2.ArrowType, _Mapping]] = ...) -> None: ...
+    target_field: _datafusion_common_pb2.Field
+    cast_options: PhysicalCastOptions
+    def __init__(self, expr: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., arrow_type: _Optional[_Union[_datafusion_common_pb2.ArrowType, _Mapping]] = ..., target_field: _Optional[_Union[_datafusion_common_pb2.Field, _Mapping]] = ..., cast_options: _Optional[_Union[PhysicalCastOptions, _Mapping]] = ...) -> None: ...
+
+class PhysicalCastOptions(_message.Message):
+    __slots__ = ("safe", "format_options")
+    SAFE_FIELD_NUMBER: _ClassVar[int]
+    FORMAT_OPTIONS_FIELD_NUMBER: _ClassVar[int]
+    safe: bool
+    format_options: PhysicalFormatOptions
+    def __init__(self, safe: _Optional[bool] = ..., format_options: _Optional[_Union[PhysicalFormatOptions, _Mapping]] = ...) -> None: ...
+
+class PhysicalFormatOptions(_message.Message):
+    __slots__ = ("safe", "null", "date_format", "datetime_format", "timestamp_format", "timestamp_tz_format", "time_format", "duration_format", "types_info", "quoted_strings")
+    SAFE_FIELD_NUMBER: _ClassVar[int]
+    NULL_FIELD_NUMBER: _ClassVar[int]
+    DATE_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    DATETIME_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    TIMESTAMP_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    TIMESTAMP_TZ_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    TIME_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    DURATION_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    TYPES_INFO_FIELD_NUMBER: _ClassVar[int]
+    QUOTED_STRINGS_FIELD_NUMBER: _ClassVar[int]
+    safe: bool
+    null: str
+    date_format: str
+    datetime_format: str
+    timestamp_format: str
+    timestamp_tz_format: str
+    time_format: str
+    duration_format: PhysicalDurationFormat
+    types_info: bool
+    quoted_strings: bool
+    def __init__(self, safe: _Optional[bool] = ..., null: _Optional[str] = ..., date_format: _Optional[str] = ..., datetime_format: _Optional[str] = ..., timestamp_format: _Optional[str] = ..., timestamp_tz_format: _Optional[str] = ..., time_format: _Optional[str] = ..., duration_format: _Optional[_Union[PhysicalDurationFormat, str]] = ..., types_info: _Optional[bool] = ..., quoted_strings: _Optional[bool] = ...) -> None: ...
 
 class PhysicalNegativeNode(_message.Message):
     __slots__ = ("expr",)
@@ -1794,12 +1950,14 @@ class PhysicalNegativeNode(_message.Message):
     def __init__(self, expr: _Optional[_Union[PhysicalExprNode, _Mapping]] = ...) -> None: ...
 
 class PhysicalExtensionExprNode(_message.Message):
-    __slots__ = ("expr", "inputs")
+    __slots__ = ("expr", "inputs", "expr_name")
     EXPR_FIELD_NUMBER: _ClassVar[int]
     INPUTS_FIELD_NUMBER: _ClassVar[int]
+    EXPR_NAME_FIELD_NUMBER: _ClassVar[int]
     expr: bytes
     inputs: _containers.RepeatedCompositeFieldContainer[PhysicalExprNode]
-    def __init__(self, expr: _Optional[bytes] = ..., inputs: _Optional[_Iterable[_Union[PhysicalExprNode, _Mapping]]] = ...) -> None: ...
+    expr_name: str
+    def __init__(self, expr: _Optional[bytes] = ..., inputs: _Optional[_Iterable[_Union[PhysicalExprNode, _Mapping]]] = ..., expr_name: _Optional[str] = ...) -> None: ...
 
 class PhysicalHashExprNode(_message.Message):
     __slots__ = ("on_columns", "seed0", "description")
@@ -1868,7 +2026,7 @@ class ProjectionExprs(_message.Message):
     def __init__(self, projections: _Optional[_Iterable[_Union[ProjectionExpr, _Mapping]]] = ...) -> None: ...
 
 class FileScanExecConf(_message.Message):
-    __slots__ = ("file_groups", "schema", "projection", "limit", "statistics", "table_partition_cols", "object_store_url", "output_ordering", "constraints", "batch_size", "projection_exprs", "output_partitioning")
+    __slots__ = ("file_groups", "schema", "projection", "limit", "statistics", "table_partition_cols", "object_store_url", "output_ordering", "constraints", "batch_size", "projection_exprs", "output_partitioning", "file_compression_type", "preserve_order")
     FILE_GROUPS_FIELD_NUMBER: _ClassVar[int]
     SCHEMA_FIELD_NUMBER: _ClassVar[int]
     PROJECTION_FIELD_NUMBER: _ClassVar[int]
@@ -1881,6 +2039,8 @@ class FileScanExecConf(_message.Message):
     BATCH_SIZE_FIELD_NUMBER: _ClassVar[int]
     PROJECTION_EXPRS_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_PARTITIONING_FIELD_NUMBER: _ClassVar[int]
+    FILE_COMPRESSION_TYPE_FIELD_NUMBER: _ClassVar[int]
+    PRESERVE_ORDER_FIELD_NUMBER: _ClassVar[int]
     file_groups: _containers.RepeatedCompositeFieldContainer[FileGroup]
     schema: _datafusion_common_pb2.Schema
     projection: _containers.RepeatedScalarFieldContainer[int]
@@ -1893,20 +2053,28 @@ class FileScanExecConf(_message.Message):
     batch_size: int
     projection_exprs: ProjectionExprs
     output_partitioning: Partitioning
-    def __init__(self, file_groups: _Optional[_Iterable[_Union[FileGroup, _Mapping]]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., projection: _Optional[_Iterable[int]] = ..., limit: _Optional[_Union[ScanLimit, _Mapping]] = ..., statistics: _Optional[_Union[_datafusion_common_pb2.Statistics, _Mapping]] = ..., table_partition_cols: _Optional[_Iterable[str]] = ..., object_store_url: _Optional[str] = ..., output_ordering: _Optional[_Iterable[_Union[PhysicalSortExprNodeCollection, _Mapping]]] = ..., constraints: _Optional[_Union[_datafusion_common_pb2.Constraints, _Mapping]] = ..., batch_size: _Optional[int] = ..., projection_exprs: _Optional[_Union[ProjectionExprs, _Mapping]] = ..., output_partitioning: _Optional[_Union[Partitioning, _Mapping]] = ...) -> None: ...
+    file_compression_type: _datafusion_common_pb2.CompressionTypeVariant
+    preserve_order: bool
+    def __init__(self, file_groups: _Optional[_Iterable[_Union[FileGroup, _Mapping]]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., projection: _Optional[_Iterable[int]] = ..., limit: _Optional[_Union[ScanLimit, _Mapping]] = ..., statistics: _Optional[_Union[_datafusion_common_pb2.Statistics, _Mapping]] = ..., table_partition_cols: _Optional[_Iterable[str]] = ..., object_store_url: _Optional[str] = ..., output_ordering: _Optional[_Iterable[_Union[PhysicalSortExprNodeCollection, _Mapping]]] = ..., constraints: _Optional[_Union[_datafusion_common_pb2.Constraints, _Mapping]] = ..., batch_size: _Optional[int] = ..., projection_exprs: _Optional[_Union[ProjectionExprs, _Mapping]] = ..., output_partitioning: _Optional[_Union[Partitioning, _Mapping]] = ..., file_compression_type: _Optional[_Union[_datafusion_common_pb2.CompressionTypeVariant, str]] = ..., preserve_order: _Optional[bool] = ...) -> None: ...
 
 class ParquetScanExecNode(_message.Message):
-    __slots__ = ("base_conf", "predicate", "parquet_options")
+    __slots__ = ("base_conf", "predicate", "parquet_options", "sort_order_for_reorder", "reverse_row_groups", "metadata_size_hint")
     BASE_CONF_FIELD_NUMBER: _ClassVar[int]
     PREDICATE_FIELD_NUMBER: _ClassVar[int]
     PARQUET_OPTIONS_FIELD_NUMBER: _ClassVar[int]
+    SORT_ORDER_FOR_REORDER_FIELD_NUMBER: _ClassVar[int]
+    REVERSE_ROW_GROUPS_FIELD_NUMBER: _ClassVar[int]
+    METADATA_SIZE_HINT_FIELD_NUMBER: _ClassVar[int]
     base_conf: FileScanExecConf
     predicate: PhysicalExprNode
     parquet_options: _datafusion_common_pb2.TableParquetOptions
-    def __init__(self, base_conf: _Optional[_Union[FileScanExecConf, _Mapping]] = ..., predicate: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., parquet_options: _Optional[_Union[_datafusion_common_pb2.TableParquetOptions, _Mapping]] = ...) -> None: ...
+    sort_order_for_reorder: PhysicalSortExprNodeCollection
+    reverse_row_groups: bool
+    metadata_size_hint: int
+    def __init__(self, base_conf: _Optional[_Union[FileScanExecConf, _Mapping]] = ..., predicate: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., parquet_options: _Optional[_Union[_datafusion_common_pb2.TableParquetOptions, _Mapping]] = ..., sort_order_for_reorder: _Optional[_Union[PhysicalSortExprNodeCollection, _Mapping]] = ..., reverse_row_groups: _Optional[bool] = ..., metadata_size_hint: _Optional[int] = ...) -> None: ...
 
 class CsvScanExecNode(_message.Message):
-    __slots__ = ("base_conf", "has_header", "delimiter", "quote", "escape", "comment", "newlines_in_values", "truncate_rows")
+    __slots__ = ("base_conf", "has_header", "delimiter", "quote", "escape", "comment", "newlines_in_values", "truncate_rows", "terminator")
     BASE_CONF_FIELD_NUMBER: _ClassVar[int]
     HAS_HEADER_FIELD_NUMBER: _ClassVar[int]
     DELIMITER_FIELD_NUMBER: _ClassVar[int]
@@ -1915,6 +2083,7 @@ class CsvScanExecNode(_message.Message):
     COMMENT_FIELD_NUMBER: _ClassVar[int]
     NEWLINES_IN_VALUES_FIELD_NUMBER: _ClassVar[int]
     TRUNCATE_ROWS_FIELD_NUMBER: _ClassVar[int]
+    TERMINATOR_FIELD_NUMBER: _ClassVar[int]
     base_conf: FileScanExecConf
     has_header: bool
     delimiter: str
@@ -1923,13 +2092,16 @@ class CsvScanExecNode(_message.Message):
     comment: str
     newlines_in_values: bool
     truncate_rows: bool
-    def __init__(self, base_conf: _Optional[_Union[FileScanExecConf, _Mapping]] = ..., has_header: _Optional[bool] = ..., delimiter: _Optional[str] = ..., quote: _Optional[str] = ..., escape: _Optional[str] = ..., comment: _Optional[str] = ..., newlines_in_values: _Optional[bool] = ..., truncate_rows: _Optional[bool] = ...) -> None: ...
+    terminator: bytes
+    def __init__(self, base_conf: _Optional[_Union[FileScanExecConf, _Mapping]] = ..., has_header: _Optional[bool] = ..., delimiter: _Optional[str] = ..., quote: _Optional[str] = ..., escape: _Optional[str] = ..., comment: _Optional[str] = ..., newlines_in_values: _Optional[bool] = ..., truncate_rows: _Optional[bool] = ..., terminator: _Optional[bytes] = ...) -> None: ...
 
 class JsonScanExecNode(_message.Message):
-    __slots__ = ("base_conf",)
+    __slots__ = ("base_conf", "newline_delimited")
     BASE_CONF_FIELD_NUMBER: _ClassVar[int]
+    NEWLINE_DELIMITED_FIELD_NUMBER: _ClassVar[int]
     base_conf: FileScanExecConf
-    def __init__(self, base_conf: _Optional[_Union[FileScanExecConf, _Mapping]] = ...) -> None: ...
+    newline_delimited: bool
+    def __init__(self, base_conf: _Optional[_Union[FileScanExecConf, _Mapping]] = ..., newline_delimited: _Optional[bool] = ...) -> None: ...
 
 class AvroScanExecNode(_message.Message):
     __slots__ = ("base_conf",)
@@ -1938,10 +2110,12 @@ class AvroScanExecNode(_message.Message):
     def __init__(self, base_conf: _Optional[_Union[FileScanExecConf, _Mapping]] = ...) -> None: ...
 
 class ArrowScanExecNode(_message.Message):
-    __slots__ = ("base_conf",)
+    __slots__ = ("base_conf", "format")
     BASE_CONF_FIELD_NUMBER: _ClassVar[int]
+    FORMAT_FIELD_NUMBER: _ClassVar[int]
     base_conf: FileScanExecConf
-    def __init__(self, base_conf: _Optional[_Union[FileScanExecConf, _Mapping]] = ...) -> None: ...
+    format: ArrowIpcFormat
+    def __init__(self, base_conf: _Optional[_Union[FileScanExecConf, _Mapping]] = ..., format: _Optional[_Union[ArrowIpcFormat, str]] = ...) -> None: ...
 
 class MemoryScanExecNode(_message.Message):
     __slots__ = ("partitions", "schema", "projection", "sort_information", "show_sizes", "fetch")
@@ -1966,7 +2140,7 @@ class CooperativeExecNode(_message.Message):
     def __init__(self, input: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ...) -> None: ...
 
 class HashJoinExecNode(_message.Message):
-    __slots__ = ("left", "right", "on", "join_type", "partition_mode", "null_equality", "filter", "projection", "null_aware", "dynamic_filter", "fetch")
+    __slots__ = ("left", "right", "on", "join_type", "partition_mode", "null_equality", "filter", "projection", "null_aware", "dynamic_filter", "fetch", "null_aware_value_keys")
     LEFT_FIELD_NUMBER: _ClassVar[int]
     RIGHT_FIELD_NUMBER: _ClassVar[int]
     ON_FIELD_NUMBER: _ClassVar[int]
@@ -1978,6 +2152,7 @@ class HashJoinExecNode(_message.Message):
     NULL_AWARE_FIELD_NUMBER: _ClassVar[int]
     DYNAMIC_FILTER_FIELD_NUMBER: _ClassVar[int]
     FETCH_FIELD_NUMBER: _ClassVar[int]
+    NULL_AWARE_VALUE_KEYS_FIELD_NUMBER: _ClassVar[int]
     left: PhysicalPlanNode
     right: PhysicalPlanNode
     on: _containers.RepeatedCompositeFieldContainer[JoinOn]
@@ -1989,7 +2164,8 @@ class HashJoinExecNode(_message.Message):
     null_aware: bool
     dynamic_filter: PhysicalExprNode
     fetch: int
-    def __init__(self, left: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., right: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., on: _Optional[_Iterable[_Union[JoinOn, _Mapping]]] = ..., join_type: _Optional[_Union[_datafusion_common_pb2.JoinType, str]] = ..., partition_mode: _Optional[_Union[PartitionMode, str]] = ..., null_equality: _Optional[_Union[_datafusion_common_pb2.NullEquality, str]] = ..., filter: _Optional[_Union[JoinFilter, _Mapping]] = ..., projection: _Optional[_Iterable[int]] = ..., null_aware: _Optional[bool] = ..., dynamic_filter: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., fetch: _Optional[int] = ...) -> None: ...
+    null_aware_value_keys: int
+    def __init__(self, left: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., right: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., on: _Optional[_Iterable[_Union[JoinOn, _Mapping]]] = ..., join_type: _Optional[_Union[_datafusion_common_pb2.JoinType, str]] = ..., partition_mode: _Optional[_Union[PartitionMode, str]] = ..., null_equality: _Optional[_Union[_datafusion_common_pb2.NullEquality, str]] = ..., filter: _Optional[_Union[JoinFilter, _Mapping]] = ..., projection: _Optional[_Iterable[int]] = ..., null_aware: _Optional[bool] = ..., dynamic_filter: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., fetch: _Optional[int] = ..., null_aware_value_keys: _Optional[int] = ...) -> None: ...
 
 class SymmetricHashJoinExecNode(_message.Message):
     __slots__ = ("left", "right", "on", "join_type", "partition_mode", "null_equality", "filter", "left_sort_exprs", "right_sort_exprs")
@@ -2036,7 +2212,7 @@ class ExplainExecNode(_message.Message):
     def __init__(self, schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., stringified_plans: _Optional[_Iterable[_Union[StringifiedPlan, _Mapping]]] = ..., verbose: _Optional[bool] = ...) -> None: ...
 
 class AnalyzeExecNode(_message.Message):
-    __slots__ = ("verbose", "show_statistics", "input", "schema", "has_metric_categories", "metric_categories", "format")
+    __slots__ = ("verbose", "show_statistics", "input", "schema", "has_metric_categories", "metric_categories", "format", "has_metric_types", "metric_types")
     VERBOSE_FIELD_NUMBER: _ClassVar[int]
     SHOW_STATISTICS_FIELD_NUMBER: _ClassVar[int]
     INPUT_FIELD_NUMBER: _ClassVar[int]
@@ -2044,6 +2220,8 @@ class AnalyzeExecNode(_message.Message):
     HAS_METRIC_CATEGORIES_FIELD_NUMBER: _ClassVar[int]
     METRIC_CATEGORIES_FIELD_NUMBER: _ClassVar[int]
     FORMAT_FIELD_NUMBER: _ClassVar[int]
+    HAS_METRIC_TYPES_FIELD_NUMBER: _ClassVar[int]
+    METRIC_TYPES_FIELD_NUMBER: _ClassVar[int]
     verbose: bool
     show_statistics: bool
     input: PhysicalPlanNode
@@ -2051,7 +2229,9 @@ class AnalyzeExecNode(_message.Message):
     has_metric_categories: bool
     metric_categories: _containers.RepeatedScalarFieldContainer[str]
     format: _datafusion_common_pb2.ExplainFormat
-    def __init__(self, verbose: _Optional[bool] = ..., show_statistics: _Optional[bool] = ..., input: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., has_metric_categories: _Optional[bool] = ..., metric_categories: _Optional[_Iterable[str]] = ..., format: _Optional[_Union[_datafusion_common_pb2.ExplainFormat, str]] = ...) -> None: ...
+    has_metric_types: bool
+    metric_types: _containers.RepeatedScalarFieldContainer[_datafusion_common_pb2.MetricType]
+    def __init__(self, verbose: _Optional[bool] = ..., show_statistics: _Optional[bool] = ..., input: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., has_metric_categories: _Optional[bool] = ..., metric_categories: _Optional[_Iterable[str]] = ..., format: _Optional[_Union[_datafusion_common_pb2.ExplainFormat, str]] = ..., has_metric_types: _Optional[bool] = ..., metric_types: _Optional[_Iterable[_Union[_datafusion_common_pb2.MetricType, str]]] = ...) -> None: ...
 
 class CrossJoinExecNode(_message.Message):
     __slots__ = ("left", "right")
@@ -2100,14 +2280,16 @@ class PlaceholderRowExecNode(_message.Message):
     def __init__(self, schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., partitions: _Optional[int] = ...) -> None: ...
 
 class ProjectionExecNode(_message.Message):
-    __slots__ = ("input", "expr", "expr_name")
+    __slots__ = ("input", "expr", "expr_name", "schema")
     INPUT_FIELD_NUMBER: _ClassVar[int]
     EXPR_FIELD_NUMBER: _ClassVar[int]
     EXPR_NAME_FIELD_NUMBER: _ClassVar[int]
+    SCHEMA_FIELD_NUMBER: _ClassVar[int]
     input: PhysicalPlanNode
     expr: _containers.RepeatedCompositeFieldContainer[PhysicalExprNode]
     expr_name: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, input: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., expr: _Optional[_Iterable[_Union[PhysicalExprNode, _Mapping]]] = ..., expr_name: _Optional[_Iterable[str]] = ...) -> None: ...
+    schema: _datafusion_common_pb2.Schema
+    def __init__(self, input: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., expr: _Optional[_Iterable[_Union[PhysicalExprNode, _Mapping]]] = ..., expr_name: _Optional[_Iterable[str]] = ..., schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ...) -> None: ...
 
 class PartiallySortedInputOrderMode(_message.Message):
     __slots__ = ("columns",)
@@ -2270,12 +2452,16 @@ class PhysicalHashRepartition(_message.Message):
     def __init__(self, hash_expr: _Optional[_Iterable[_Union[PhysicalExprNode, _Mapping]]] = ..., partition_count: _Optional[int] = ...) -> None: ...
 
 class PhysicalRangePartitioning(_message.Message):
-    __slots__ = ("sort_expr", "split_point")
+    __slots__ = ("sort_expr", "split_point", "sample_point", "partition_count")
     SORT_EXPR_FIELD_NUMBER: _ClassVar[int]
     SPLIT_POINT_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_POINT_FIELD_NUMBER: _ClassVar[int]
+    PARTITION_COUNT_FIELD_NUMBER: _ClassVar[int]
     sort_expr: _containers.RepeatedCompositeFieldContainer[PhysicalSortExprNode]
     split_point: _containers.RepeatedCompositeFieldContainer[PhysicalRangeSplitPoint]
-    def __init__(self, sort_expr: _Optional[_Iterable[_Union[PhysicalSortExprNode, _Mapping]]] = ..., split_point: _Optional[_Iterable[_Union[PhysicalRangeSplitPoint, _Mapping]]] = ...) -> None: ...
+    sample_point: _containers.RepeatedCompositeFieldContainer[PhysicalRangeSplitPoint]
+    partition_count: int
+    def __init__(self, sort_expr: _Optional[_Iterable[_Union[PhysicalSortExprNode, _Mapping]]] = ..., split_point: _Optional[_Iterable[_Union[PhysicalRangeSplitPoint, _Mapping]]] = ..., sample_point: _Optional[_Iterable[_Union[PhysicalRangeSplitPoint, _Mapping]]] = ..., partition_count: _Optional[int] = ...) -> None: ...
 
 class PhysicalRangeSplitPoint(_message.Message):
     __slots__ = ("value",)
@@ -2460,7 +2646,7 @@ class GenerateSeriesNode(_message.Message):
     def __init__(self, schema: _Optional[_Union[_datafusion_common_pb2.Schema, _Mapping]] = ..., target_batch_size: _Optional[int] = ..., contains_null: _Optional[_Union[GenerateSeriesArgsContainsNull, _Mapping]] = ..., int64_args: _Optional[_Union[GenerateSeriesArgsInt64, _Mapping]] = ..., timestamp_args: _Optional[_Union[GenerateSeriesArgsTimestamp, _Mapping]] = ..., date_args: _Optional[_Union[GenerateSeriesArgsDate, _Mapping]] = ...) -> None: ...
 
 class SortMergeJoinExecNode(_message.Message):
-    __slots__ = ("left", "right", "on", "join_type", "filter", "sort_options", "null_equality")
+    __slots__ = ("left", "right", "on", "join_type", "filter", "sort_options", "null_equality", "projection")
     LEFT_FIELD_NUMBER: _ClassVar[int]
     RIGHT_FIELD_NUMBER: _ClassVar[int]
     ON_FIELD_NUMBER: _ClassVar[int]
@@ -2468,6 +2654,7 @@ class SortMergeJoinExecNode(_message.Message):
     FILTER_FIELD_NUMBER: _ClassVar[int]
     SORT_OPTIONS_FIELD_NUMBER: _ClassVar[int]
     NULL_EQUALITY_FIELD_NUMBER: _ClassVar[int]
+    PROJECTION_FIELD_NUMBER: _ClassVar[int]
     left: PhysicalPlanNode
     right: PhysicalPlanNode
     on: _containers.RepeatedCompositeFieldContainer[JoinOn]
@@ -2475,7 +2662,44 @@ class SortMergeJoinExecNode(_message.Message):
     filter: JoinFilter
     sort_options: _containers.RepeatedCompositeFieldContainer[SortExprNode]
     null_equality: _datafusion_common_pb2.NullEquality
-    def __init__(self, left: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., right: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., on: _Optional[_Iterable[_Union[JoinOn, _Mapping]]] = ..., join_type: _Optional[_Union[_datafusion_common_pb2.JoinType, str]] = ..., filter: _Optional[_Union[JoinFilter, _Mapping]] = ..., sort_options: _Optional[_Iterable[_Union[SortExprNode, _Mapping]]] = ..., null_equality: _Optional[_Union[_datafusion_common_pb2.NullEquality, str]] = ...) -> None: ...
+    projection: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, left: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., right: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., on: _Optional[_Iterable[_Union[JoinOn, _Mapping]]] = ..., join_type: _Optional[_Union[_datafusion_common_pb2.JoinType, str]] = ..., filter: _Optional[_Union[JoinFilter, _Mapping]] = ..., sort_options: _Optional[_Iterable[_Union[SortExprNode, _Mapping]]] = ..., null_equality: _Optional[_Union[_datafusion_common_pb2.NullEquality, str]] = ..., projection: _Optional[_Iterable[int]] = ...) -> None: ...
+
+class PiecewiseMergeJoinExecNode(_message.Message):
+    __slots__ = ("buffered", "streamed", "on_buffered", "on_streamed", "operator", "join_type", "num_partitions")
+    BUFFERED_FIELD_NUMBER: _ClassVar[int]
+    STREAMED_FIELD_NUMBER: _ClassVar[int]
+    ON_BUFFERED_FIELD_NUMBER: _ClassVar[int]
+    ON_STREAMED_FIELD_NUMBER: _ClassVar[int]
+    OPERATOR_FIELD_NUMBER: _ClassVar[int]
+    JOIN_TYPE_FIELD_NUMBER: _ClassVar[int]
+    NUM_PARTITIONS_FIELD_NUMBER: _ClassVar[int]
+    buffered: PhysicalPlanNode
+    streamed: PhysicalPlanNode
+    on_buffered: PhysicalExprNode
+    on_streamed: PhysicalExprNode
+    operator: str
+    join_type: _datafusion_common_pb2.JoinType
+    num_partitions: int
+    def __init__(self, buffered: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., streamed: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., on_buffered: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., on_streamed: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., operator: _Optional[str] = ..., join_type: _Optional[_Union[_datafusion_common_pb2.JoinType, str]] = ..., num_partitions: _Optional[int] = ...) -> None: ...
+
+class AsOfJoinExecNode(_message.Message):
+    __slots__ = ("left", "right", "on", "left_match_expr", "right_match_expr", "match_operator", "projection")
+    LEFT_FIELD_NUMBER: _ClassVar[int]
+    RIGHT_FIELD_NUMBER: _ClassVar[int]
+    ON_FIELD_NUMBER: _ClassVar[int]
+    LEFT_MATCH_EXPR_FIELD_NUMBER: _ClassVar[int]
+    RIGHT_MATCH_EXPR_FIELD_NUMBER: _ClassVar[int]
+    MATCH_OPERATOR_FIELD_NUMBER: _ClassVar[int]
+    PROJECTION_FIELD_NUMBER: _ClassVar[int]
+    left: PhysicalPlanNode
+    right: PhysicalPlanNode
+    on: _containers.RepeatedCompositeFieldContainer[JoinOn]
+    left_match_expr: PhysicalExprNode
+    right_match_expr: PhysicalExprNode
+    match_operator: AsOfMatchOperator
+    projection: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, left: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., right: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., on: _Optional[_Iterable[_Union[JoinOn, _Mapping]]] = ..., left_match_expr: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., right_match_expr: _Optional[_Union[PhysicalExprNode, _Mapping]] = ..., match_operator: _Optional[_Union[AsOfMatchOperator, str]] = ..., projection: _Optional[_Iterable[int]] = ...) -> None: ...
 
 class AsyncFuncExecNode(_message.Message):
     __slots__ = ("input", "async_exprs", "async_expr_names")
@@ -2504,11 +2728,20 @@ class ScalarSubqueryExecNode(_message.Message):
     def __init__(self, input: _Optional[_Union[PhysicalPlanNode, _Mapping]] = ..., subqueries: _Optional[_Iterable[_Union[PhysicalPlanNode, _Mapping]]] = ...) -> None: ...
 
 class PhysicalScalarSubqueryExprNode(_message.Message):
-    __slots__ = ("data_type", "nullable", "index")
+    __slots__ = ("data_type", "nullable", "index", "metadata")
+    class MetadataEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
     DATA_TYPE_FIELD_NUMBER: _ClassVar[int]
     NULLABLE_FIELD_NUMBER: _ClassVar[int]
     INDEX_FIELD_NUMBER: _ClassVar[int]
+    METADATA_FIELD_NUMBER: _ClassVar[int]
     data_type: _datafusion_common_pb2.ArrowType
     nullable: bool
     index: int
-    def __init__(self, data_type: _Optional[_Union[_datafusion_common_pb2.ArrowType, _Mapping]] = ..., nullable: _Optional[bool] = ..., index: _Optional[int] = ...) -> None: ...
+    metadata: _containers.ScalarMap[str, str]
+    def __init__(self, data_type: _Optional[_Union[_datafusion_common_pb2.ArrowType, _Mapping]] = ..., nullable: _Optional[bool] = ..., index: _Optional[int] = ..., metadata: _Optional[_Mapping[str, str]] = ...) -> None: ...
