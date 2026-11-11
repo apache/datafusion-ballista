@@ -20,9 +20,10 @@
     python3 compare.py results/tpch-ballista-*.json results/tpch-spark-*.json
 
 One column per file, in the order given, with the mean of each query's timed
-iterations in seconds, and a total row. A query that failed in a run shows FAIL
-and leaves that run's total out (shown as a dash). Column headings are the
-engine and run name unless given with --label, once per file.
+iterations in seconds, and a total row. A query that failed in a run shows FAIL,
+or OOM if that is its error, and leaves that run's total out (shown as a dash).
+Column headings are the engine and run name unless given with --label, once per
+file.
 """
 
 import argparse
@@ -35,32 +36,45 @@ def load(path):
         return json.load(f)
 
 
-def table(runs, labels):
+def total(run):
+    """The run's total: its recorded total if it has one, else the sum of its means."""
+    return run.get("total", sum(q["mean"] for q in run["queries"]))
+
+
+def failure_cell(q):
+    """The cell for a query without a time: blank if it never ran."""
+    if q is None:
+        return ""
+    return "OOM" if q.get("error") == "OOM" else "FAIL"
+
+
+def rows(runs, labels):
+    """The cells of the table: the headings, one row per query, and the totals."""
     queries = sorted({q["query"] for run in runs for q in run["queries"]})
     by_query = [{q["query"]: q for q in run["queries"]} for run in runs]
-    header = "| Query | " + " | ".join(f"{label} (s)" for label in labels) + " |"
-    rule = (
-        "| ----: | "
-        + " | ".join("-" * max(len(label) + 4, 5) + ":" for label in labels)
-        + " |"
-    )
-    lines = [header, rule]
-    totals = [0.0] * len(runs)
+    result = [["Query"] + [f"{label} (s)" for label in labels]]
     complete = [True] * len(runs)
     for number in queries:
         cells = []
         for i, results in enumerate(by_query):
             q = results.get(number)
             if q is None or q.get("error") or "mean" not in q:
-                cells.append("FAIL" if q is not None else "")
+                cells.append(failure_cell(q))
                 complete[i] = False
             else:
                 cells.append(f"{q['mean']:.2f}")
-                totals[i] += q["mean"]
-        lines.append(f"| {number} | " + " | ".join(cells) + " |")
-    total_cells = [f"**{t:.2f}**" if ok else "-" for t, ok in zip(totals, complete)]
-    lines.append("| **Total** | " + " | ".join(total_cells) + " |")
-    return "\n".join(lines)
+        result.append([str(number)] + cells)
+    result.append(
+        ["**Total**"]
+        + [f"**{total(run):.2f}**" if ok else "-" for run, ok in zip(runs, complete)]
+    )
+    return result
+
+
+def table(runs, labels):
+    header, *body = rows(runs, labels)
+    rule = ["----:"] + ["-" * max(len(label) + 4, 5) + ":" for label in labels]
+    return "\n".join("| " + " | ".join(row) + " |" for row in [header, rule, *body])
 
 
 def main():

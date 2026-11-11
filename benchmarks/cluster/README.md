@@ -214,6 +214,8 @@ python3 compare.py results/tpch-ballista-*.json results/tpch-spark-*.json \
 
 When you publish results, follow
 [Recording a new result set](../../docs/source/contributors-guide/benchmarking/index.md#recording-a-new-result-set).
+Published results are kept as JSON in `published/`, and `publish.py` regenerates
+the results table in the docs and the charts in the top-level README from them.
 
 ## Tests
 
@@ -222,6 +224,7 @@ The tests need neither a cluster nor Spark:
 ```shell
 cd benchmarks/cluster
 python3 -m unittest -v test_run
+python3 -m unittest -v test_publish
 (cd spark && python3 -m unittest -v test_tpcbench)
 (cd trino && python3 -m unittest -v test_run_queries)
 (cd datafusion-distributed && python3 -m unittest -v test_run_queries)

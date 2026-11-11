@@ -42,7 +42,8 @@ Ballista is a distributed query execution engine that enhances [Apache DataFusio
 by enabling the parallelized execution of workloads across multiple nodes in a distributed environment.
 
 It is also a lighter, Rust-native alternative to [Apache Spark](https://spark.apache.org), keeping the same execution
-model of stages, shuffles and adaptive query execution.
+model of stages, shuffles and adaptive query execution. On a 1 TB benchmark derived from TPC-H, Ballista is
+**2.2x faster than Spark** by default and **3.4x faster** with experimental pipelined execution.
 
 An existing DataFusion application can be distributed with a few lines of code changed:
 
@@ -74,6 +75,21 @@ An existing DataFusion application can be distributed with a few lines of code c
 ```
 
 For documentation or more examples, please refer to the [Ballista User Guide][user-guide].
+
+## Performance
+
+Ballista is measured against Apache Spark 4.1.3 on the same cluster shape: Kubernetes on AWS, with 32 executors of
+8 vCPUs running the 22 queries over 1 TB of Parquet in S3. Each Ballista executor had 64 GiB of memory, and each Spark
+executor 74 GiB.
+
+![Total time for the 22 queries for Apache Spark, Ballista staged and Ballista pipelined](docs/source/_static/images/tpch_sf1000_total.svg)
+
+![Time per query for Apache Spark, Ballista staged and Ballista pipelined](docs/source/_static/images/tpch_sf1000_per_query.svg)
+
+Derived from TPC-H and not an official TPC-H result. Times are the mean of two runs, including the cold first run. The
+Spark numbers come from an earlier run with separate scripts and its own phrasing of the queries. See the
+[benchmarking guide](docs/source/contributors-guide/benchmarking/index.md) for versions, settings, the full results and
+how to reproduce them.
 
 ## Features
 
