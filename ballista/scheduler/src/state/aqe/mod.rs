@@ -1118,9 +1118,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             if let Err(e) = running_stage
                                 .update_task_metrics(task_id, operator_metrics)
                             {
-                                warn!(
-                                    "Ignoring the metrics of task {task_id} in stage {stage_id} of job {job_id}: {e}"
-                                );
+                                running_stage.log_skipped_metrics(&job_id, task_id, &e);
                             }
 
                             let ballista_core::serde::protobuf::SuccessfulTask {

@@ -31,6 +31,7 @@ use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, Metric};
 use datafusion::prelude::SessionConfig;
 use log::{debug, warn};
+use std::fmt::Display;
 
 use crate::cache::is_external_stage_id;
 use ballista_core::error::{BallistaError, Result};
@@ -46,6 +47,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::PartitionLocation;
+use ballista_core::utils::collect_plan_metrics;
 
 use crate::display::DisplayableBallistaExecutionPlan;
 
@@ -234,6 +236,13 @@ pub struct RunningStage {
     pub task_failure_numbers: Vec<usize>,
     /// Combined metrics of the already finished tasks in the stage, If it is None, no task is finished yet.
     pub stage_metrics: Option<Vec<MetricsSet>>,
+    /// How many operator metrics sets `plan` has, which is how many a task
+    /// of this stage reports. A task that reports a different number ran a
+    /// plan of a different shape and its metrics can't be merged.
+    pub plan_metrics_len: usize,
+    /// Number of successful tasks whose metrics were skipped because they
+    /// did not match `plan`.
+    pub metrics_skipped_tasks: usize,
     /// [SessionConfig] used for this stage
     pub session_config: Arc<SessionConfig>,
     /// Per-task runtime-stats reports collected from every successful task
@@ -693,11 +702,13 @@ impl RunningStage {
             partitions,
             output_links,
             inputs,
-            plan,
             pending: PendingPartitions::new(partitions),
             task_infos: Vec::new(),
             task_failure_numbers: vec![0; partitions],
             stage_metrics: None,
+            plan_metrics_len: collect_plan_metrics(plan.as_ref()).len(),
+            metrics_skipped_tasks: 0,
+            plan,
             session_config,
             runtime_stats_reports: Vec::new(),
             window_state_reports: Vec::new(),
@@ -999,7 +1010,16 @@ impl RunningStage {
             }));
     }
 
-    /// update and upsert the task metrics to the stage metrics
+    /// Merges a successful task's operator metrics into the stage metrics.
+    ///
+    /// A task reports one metrics set per operator of the plan it ran. The
+    /// scheduler restricts each task's copy of the stage plan to the task's
+    /// partitions, and that can change the shape, for example by swapping an
+    /// `EmptyExec` without metrics for a stand-in source with them. Such a
+    /// task's metrics would not line up with the stage plan, so they are
+    /// skipped with an error and counted in `metrics_skipped_tasks`. The
+    /// check is against the stage plan, not against the first task to
+    /// report, so the tasks that match the plan always merge.
     pub fn update_task_metrics(
         &mut self,
         task_id: usize,
@@ -1010,20 +1030,22 @@ impl RunningStage {
             return Ok(());
         }
 
+        if metrics.len() != self.plan_metrics_len {
+            self.metrics_skipped_tasks += 1;
+            return Err(BallistaError::Internal(format!(
+                "Error updating task metrics to stage {}, task {} reported {} operator metrics sets \
+                but the stage plan has {}",
+                self.stage_id,
+                task_id,
+                metrics.len(),
+                self.plan_metrics_len
+            )));
+        }
+
         let global_partitions =
             self.task_infos[task_id].global_input_partition_ids.clone();
 
         let new_metrics_set = if let Some(combined_metrics) = &mut self.stage_metrics {
-            if metrics.len() != combined_metrics.len() {
-                return Err(BallistaError::Internal(format!(
-                    "Error updating task metrics to stage {}, task metrics array size {} does not equal \
-                with the stage metrics array size {} for task {}",
-                    self.stage_id,
-                    metrics.len(),
-                    combined_metrics.len(),
-                    task_id
-                )));
-            }
             let metrics_values_array = metrics
                 .into_iter()
                 .map(|ms| Self::metrics_set_from_task_metrics(ms, &global_partitions))
@@ -1049,6 +1071,30 @@ impl RunningStage {
         self.stage_metrics = Some(new_metrics_set);
 
         Ok(())
+    }
+
+    /// Logs that `error` made `update_task_metrics` skip the metrics of
+    /// `task_id`. The first skipped task of a stage is a warning. The rest go
+    /// to the debug log, since a wide stage can skip thousands of tasks for
+    /// the same reason.
+    pub fn log_skipped_metrics(
+        &self,
+        job_id: impl Display,
+        task_id: usize,
+        error: &BallistaError,
+    ) {
+        if self.metrics_skipped_tasks <= 1 {
+            warn!(
+                "Ignoring the metrics of task {task_id} in stage {} of job {job_id}: {error}. \
+                Later tasks of this stage with the same problem are logged at debug level",
+                self.stage_id
+            );
+        } else {
+            debug!(
+                "Ignoring the metrics of task {task_id} in stage {} of job {job_id}: {error}",
+                self.stage_id
+            );
+        }
     }
 
     /// Convert a task's operator-metrics snapshot into a `MetricsSet`, mapping
@@ -1322,6 +1368,8 @@ impl SuccessfulStage {
             // It is Ok to forget the previous task failure attempts
             task_failure_numbers: vec![0; self.partitions],
             stage_metrics,
+            plan_metrics_len: collect_plan_metrics(self.plan.as_ref()).len(),
+            metrics_skipped_tasks: 0,
             session_config: self.session_config.clone(),
             stage_running_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1585,6 +1633,7 @@ impl StageOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ballista_core::JobId;
     use ballista_core::hll::DEFAULT_PRECISION;
     use ballista_core::serde::protobuf::{
         ColumnSketch, OperatorMetric, SuccessfulTask, TaskColumnStats, TaskStatus,
@@ -1594,9 +1643,19 @@ mod tests {
     use datafusion::prelude::SessionConfig;
     use std::collections::HashMap;
 
+    /// A stage whose plan is a shuffle writer over an `EmptyExec`, so it has
+    /// one operator with metrics, like the stage plans the planner builds.
     fn make_running_stage(partitions: usize) -> RunningStage {
         let schema = Arc::new(datafusion::arrow::datatypes::Schema::empty());
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(
+            ShuffleWriterExec::try_new(
+                JobId::new("test-job"),
+                1,
+                Arc::new(EmptyExec::new(schema)),
+                String::new(),
+            )
+            .unwrap(),
+        );
         RunningStage::new(
             1,
             0,
@@ -2010,6 +2069,54 @@ mod tests {
         let aggregated = operator_metrics.aggregate_by_name();
         assert_eq!(aggregated.output_rows(), Some(650));
         assert_eq!(aggregated.elapsed_compute().unwrap(), 65);
+    }
+
+    /// Tasks whose metrics don't match the stage plan are skipped whatever
+    /// order they report in. A mismatched first task must not set the shape
+    /// for the stage and crowd out the tasks that match the plan.
+    #[test]
+    fn test_update_task_metrics_checks_each_task_against_the_stage_plan() {
+        let mut stage = make_running_stage(3);
+        append_running_task(&mut stage, 0, "executor-1", vec![0]);
+        append_running_task(&mut stage, 1, "executor-1", vec![1]);
+        append_running_task(&mut stage, 2, "executor-1", vec![2]);
+        assert_eq!(stage.plan_metrics_len, 1);
+
+        // The first task to report ran a plan with two operators with metrics.
+        let err = stage
+            .update_task_metrics(
+                0,
+                vec![
+                    make_operator_metrics_set(100, 10),
+                    make_operator_metrics_set(100, 10),
+                ],
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "task 0 reported 2 operator metrics sets but the stage plan has 1"
+            ),
+            "{err}"
+        );
+        assert!(stage.stage_metrics.is_none());
+        assert_eq!(stage.metrics_skipped_tasks, 1);
+
+        // A task that matches the plan merges even though it reported second.
+        stage
+            .update_task_metrics(1, vec![make_operator_metrics_set(200, 20)])
+            .unwrap();
+        let metrics = stage.stage_metrics.as_ref().unwrap();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].output_rows(), Some(200));
+
+        // Another mismatched task is skipped and leaves the merged metrics alone.
+        stage
+            .update_task_metrics(2, vec![make_operator_metrics_set(300, 30); 3])
+            .unwrap_err();
+        assert_eq!(stage.metrics_skipped_tasks, 2);
+        let metrics = stage.stage_metrics.as_ref().unwrap();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].output_rows(), Some(200));
     }
 
     /// A task that covers multiple global partitions must file each partition's
