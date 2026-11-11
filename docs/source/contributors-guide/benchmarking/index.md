@@ -43,13 +43,13 @@ Distributed columns are not apples-to-apples comparisons (see
 
 ## Versions under test
 
-| Engine                 | Version                                                                                                                                                                                                                |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ballista               | [`d9872080`](https://github.com/apache/datafusion-ballista/commit/d98720804369917151052e1c280a1dae711817fb), Cargo pkg `55.0.0`, DataFusion `55.2.0`                                                                   |
-| DataFusion Distributed | [`90350275`](https://github.com/datafusion-contrib/datafusion-distributed/commit/903502750b99839515aa8af9982f84f9c8c2ee5f), DataFusion `55`, with the memory-limit patch                                               |
-| Spark                  | `4.1.3` (`apache/spark:4.1.3` image, vanilla, no acceleration plugin)                                                                                                                                                  |
-| Comet                  | [Apache DataFusion Comet](https://github.com/apache/datafusion-comet) `1.1.0` ([`992c806a`](https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa)) on the same Spark `4.1.3`     |
-| Trino                  | `483` (`trinodb/trino:483` image, Hive connector)                                                                                                                                                                      |
+| Engine                 | Version                                                                                                                                                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Ballista               | [`d9872080`](https://github.com/apache/datafusion-ballista/commit/d98720804369917151052e1c280a1dae711817fb), Cargo pkg `55.0.0`, DataFusion `55.2.0`                                                               |
+| DataFusion Distributed | [`90350275`](https://github.com/datafusion-contrib/datafusion-distributed/commit/903502750b99839515aa8af9982f84f9c8c2ee5f), DataFusion `55`, with the memory-limit patch                                           |
+| Spark                  | `4.1.3` (`apache/spark:4.1.3` image, vanilla, no acceleration plugin)                                                                                                                                              |
+| Comet                  | [Apache DataFusion Comet](https://github.com/apache/datafusion-comet) `1.1.0` ([`992c806a`](https://github.com/apache/datafusion-comet/commit/992c806a7e38c2e88bd018aa5774164b0850e1fa)) on the same Spark `4.1.3` |
+| Trino                  | `483` (`trinodb/trino:483` image, Hive connector)                                                                                                                                                                  |
 
 ## Results
 
