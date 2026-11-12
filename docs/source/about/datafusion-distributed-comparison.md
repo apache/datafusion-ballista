@@ -41,24 +41,19 @@ which is what lets Ballista recover from a lost executor by re-running only the 
 cluster, and plan the rest of a query from exact statistics. [Shuffle Design](../contributors-guide/shuffle.md)
 explains this model and its costs in detail.
 
-Ballista is adding a second, _pipelined_ execution model, in the style of Trino, as an experimental option chosen per
-job with `ballista.execution.mode = pipelined`. All of a job's tasks are placed up front and stages stream batches to
-each other through bounded in-memory queues, with nothing written to disk. The configuration and the pipelined
-exchange operators are on `main` ([#2670], [#2685]); the scheduler support that runs pipelined jobs end to end is in
-review in [#2657].
+Ballista also has a second, _pipelined_ execution model, in the style of Trino, as an experimental option chosen per
+job with `ballista.execution.mode = pipelined`. All of a job's tasks are placed up front and stages stream record
+batches to each other over Arrow Flight, with nothing written to disk. See
+[Pipelined Execution](../user-guide/pipelined-execution.md).
 
 DataFusion Distributed has one execution model, the pipelined one. Its documentation is clear about the trade-off:
 
 > If any node fails mid-query, the whole query fails; there are no retries. There's no persistence of intermediate
 > results, so queries can't checkpoint or resume from where they stopped.
 
-So the choice between them is no longer "batch versus interactive". Once pipelined mode is complete, a Ballista
-cluster will run long ETL jobs with the staged model and low-latency analytical queries with the pipelined model,
-side by side on the same scheduler and executors. DataFusion Distributed is designed for the second kind of workload.
-
-[#2657]: https://github.com/apache/datafusion-ballista/pull/2657
-[#2670]: https://github.com/apache/datafusion-ballista/pull/2670
-[#2685]: https://github.com/apache/datafusion-ballista/pull/2685
+So the choice between them is no longer "batch versus interactive". A Ballista cluster can run long ETL jobs with the
+staged model and low-latency analytical queries with the pipelined model, side by side on the same scheduler and
+executors. DataFusion Distributed is designed for the second kind of workload.
 
 ## Comparison
 
