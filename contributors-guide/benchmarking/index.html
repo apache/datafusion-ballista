@@ -723,8 +723,11 @@ one file per column of the table, in the format <code class="docutils literal no
 <code class="docutils literal notranslate"><span class="pre">label</span></code> for the column heading. Copy a run’s file over the column it
 replaces, leaving out anything private such as image registry names, then
 run <code class="docutils literal notranslate"><span class="pre">python3</span> <span class="pre">benchmarks/cluster/publish.py</span></code>. It regenerates the table on
-this page and the charts and speedups in the top-level README, so do not
-edit them by hand.</p></li>
+this page, the results and headline numbers on
+<a class="reference internal" href="../../about/datafusion-distributed-comparison.html"><span class="std std-doc">Comparison with DataFusion Distributed</span></a>,
+and the charts and speedups in the top-level README, so do not edit them by
+hand. Check that the prose around the generated text on the comparison page
+still agrees with the new numbers.</p></li>
 <li><p>Pin the <strong>exact commit</strong> the numbers came from, not a branch name.</p></li>
 <li><p>Replace the version, environment, config, and results tables together — a
 row that mixes numbers from different commits silently misattributes a

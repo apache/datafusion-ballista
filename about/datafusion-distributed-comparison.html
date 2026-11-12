@@ -428,19 +428,18 @@ to local storage before the next stage starts (a <em>staged</em> shuffle). That 
 which is what lets Ballista recover from a lost executor by re-running only the lost tasks, run a query wider than the
 cluster, and plan the rest of a query from exact statistics. <a class="reference internal" href="../contributors-guide/shuffle.html"><span class="std std-doc">Shuffle Design</span></a>
 explains this model and its costs in detail.</p>
-<p>Ballista is adding a second, <em>pipelined</em> execution model, in the style of Trino, as an experimental option chosen per
-job with <code class="docutils literal notranslate"><span class="pre">ballista.execution.mode</span> <span class="pre">=</span> <span class="pre">pipelined</span></code>. All of a job’s tasks are placed up front and stages stream batches to
-each other through bounded in-memory queues, with nothing written to disk. The configuration and the pipelined
-exchange operators are on <code class="docutils literal notranslate"><span class="pre">main</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2670">#2670</a>, <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2685">#2685</a>); the scheduler support that runs pipelined jobs end to end is in
-review in <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2657">#2657</a>.</p>
+<p>Ballista also has a second, <em>pipelined</em> execution model, in the style of Trino, as an experimental option chosen per
+job with <code class="docutils literal notranslate"><span class="pre">ballista.execution.mode</span> <span class="pre">=</span> <span class="pre">pipelined</span></code>. All of a job’s tasks are placed up front and stages stream record
+batches to each other over Arrow Flight, with nothing written to disk. See
+<a class="reference internal" href="../user-guide/pipelined-execution.html"><span class="std std-doc">Pipelined Execution</span></a>.</p>
 <p>DataFusion Distributed has one execution model, the pipelined one. Its documentation is clear about the trade-off:</p>
 <blockquote>
 <div><p>If any node fails mid-query, the whole query fails; there are no retries. There’s no persistence of intermediate
 results, so queries can’t checkpoint or resume from where they stopped.</p>
 </div></blockquote>
-<p>So the choice between them is no longer “batch versus interactive”. Once pipelined mode is complete, a Ballista
-cluster will run long ETL jobs with the staged model and low-latency analytical queries with the pipelined model,
-side by side on the same scheduler and executors. DataFusion Distributed is designed for the second kind of workload.</p>
+<p>So the choice between them is no longer “batch versus interactive”. A Ballista cluster can run long ETL jobs with the
+staged model and low-latency analytical queries with the pipelined model, side by side on the same scheduler and
+executors. DataFusion Distributed is designed for the second kind of workload.</p>
 </section>
 <section id="comparison">
 <h2>Comparison<a class="headerlink" href="#comparison" title="Link to this heading">#</a></h2>
@@ -553,162 +552,172 @@ DataFusion, where any distributed engine can use them.</p>
 Both use the same query engine, both are open source, and both are improving quickly. Treat the gaps as a snapshot of
 two moving targets rather than a fixed property of either design, and expect them to narrow as each project adopts
 what works in the other.</p>
+<p>These are the Ballista and DataFusion Distributed columns of the results on the
+<a class="reference internal" href="../contributors-guide/benchmarking/index.html"><span class="std std-doc">benchmarking page</span></a>, which has the versions under test, how each engine
+was configured, and how to reproduce the runs. Both pages are generated from the same result files in
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster/published"><code class="docutils literal notranslate"><span class="pre">benchmarks/cluster/published</span></code></a>.</p>
 <p><strong>Setup.</strong> TPC-H at scale factor 1000, Parquet files compressed with zstd, read from Amazon S3. The tables are
 Hive-partitioned (<code class="docutils literal notranslate"><span class="pre">lineitem</span></code> and <code class="docutils literal notranslate"><span class="pre">orders</span></code> by date), and both projects declared the partition columns so that they
-prune partitions. Kubernetes on AWS, with 32 workers (Ballista executors) of 8 vCPU and 64 GiB each. Each query ran
-twice with no warm-up, so the first, cold run is included in the mean.</p>
+prune partitions. Kubernetes on AWS, with 32 workers (Ballista executors) of 8 vCPU and 64 GiB each.</p>
 <ul class="simple">
-<li><p><strong>Ballista</strong> was built from <a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2657">#2657</a> at commit <code class="docutils literal notranslate"><span class="pre">cb49f30f</span></code> (DataFusion 55.2.0). Each executor ran 8 tasks with a
-memory pool of 70% of its memory, and <code class="docutils literal notranslate"><span class="pre">target_partitions</span></code> was 256. The same image ran the staged and pipelined
-modes.</p></li>
-<li><p><strong>DataFusion Distributed</strong> was built from <code class="docutils literal notranslate"><span class="pre">main</span></code> at commit <code class="docutils literal notranslate"><span class="pre">90350275</span></code> (DataFusion 55.0.0), using the worker from
-its <code class="docutils literal notranslate"><span class="pre">benchmarks/remote-worker</span></code> crate. Upstream’s worker has an unbounded memory pool, so it was patched to give each
-worker a fair spill pool of 70% of its memory, like Ballista’s executors. A separate 8 vCPU, 32 GiB pod ran the
-coordinator and the final stage of each query. Its settings were otherwise the defaults.</p></li>
+<li><p><strong>Ballista</strong> was built from <code class="docutils literal notranslate"><span class="pre">main</span></code>. Each executor ran 8 tasks with a memory pool of 70% of its memory, and
+<code class="docutils literal notranslate"><span class="pre">target_partitions</span></code> was 256. The same image ran the staged and pipelined modes. See
+<a class="reference internal" href="../contributors-guide/benchmarking/ballista.html"><span class="std std-doc">Ballista configuration</span></a>.</p></li>
+<li><p><strong>DataFusion Distributed</strong> was built from <code class="docutils literal notranslate"><span class="pre">main</span></code>, using the worker from its <code class="docutils literal notranslate"><span class="pre">benchmarks/remote-worker</span></code> crate.
+Upstream’s worker has an unbounded memory pool, so it was patched to give each worker a fair spill pool of 70% of
+its memory, like Ballista’s executors. A separate 8 vCPU, 32 GiB pod ran the coordinator and the final stage of
+each query. Its settings were otherwise the defaults. See
+<a class="reference internal" href="../contributors-guide/benchmarking/datafusion-distributed.html"><span class="std std-doc">DataFusion Distributed configuration</span></a>.</p></li>
 </ul>
-<p>Mean time per query, in seconds:</p>
+<!-- BEGIN GENERATED BENCHMARK RESULTS -->
+<p>Ballista at <code class="docutils literal notranslate"><span class="pre">d9872080</span></code> (DataFusion 55.2.0), mean of 2 iterations including the cold first one; DataFusion Distributed at <code class="docutils literal notranslate"><span class="pre">90350275</span></code> (DataFusion 55), mean of 3 iterations after an untimed warm-up. Times in seconds; lower is better.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
-<tr class="row-odd"><th class="head"><p>Query</p></th>
-<th class="head text-right"><p>DataFusion Distributed</p></th>
-<th class="head text-right"><p>Ballista (pipelined)</p></th>
-<th class="head text-right"><p>Ballista (staged)</p></th>
+<tr class="row-odd"><th class="head text-right"><p>Query</p></th>
+<th class="head text-right"><p>Ballista staged (s)</p></th>
+<th class="head text-right"><p>Ballista pipelined (s)</p></th>
+<th class="head text-right"><p>DataFusion Distributed (s)</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>Q1</p></td>
-<td class="text-right"><p>8.2</p></td>
-<td class="text-right"><p>13.8</p></td>
-<td class="text-right"><p>14.8</p></td>
+<tr class="row-even"><td class="text-right"><p>1</p></td>
+<td class="text-right"><p>14.59</p></td>
+<td class="text-right"><p>12.19</p></td>
+<td class="text-right"><p>7.85</p></td>
 </tr>
-<tr class="row-odd"><td><p>Q2</p></td>
-<td class="text-right"><p>19.3</p></td>
-<td class="text-right"><p>13.5</p></td>
-<td class="text-right"><p>36.3</p></td>
+<tr class="row-odd"><td class="text-right"><p>2</p></td>
+<td class="text-right"><p>31.83</p></td>
+<td class="text-right"><p>13.32</p></td>
+<td class="text-right"><p>21.29</p></td>
 </tr>
-<tr class="row-even"><td><p>Q3</p></td>
-<td class="text-right"><p>8.3</p></td>
-<td class="text-right"><p>7.3</p></td>
-<td class="text-right"><p>17.9</p></td>
+<tr class="row-even"><td class="text-right"><p>3</p></td>
+<td class="text-right"><p>17.32</p></td>
+<td class="text-right"><p>7.97</p></td>
+<td class="text-right"><p>8.85</p></td>
 </tr>
-<tr class="row-odd"><td><p>Q4</p></td>
-<td class="text-right"><p>5.8</p></td>
-<td class="text-right"><p>6.1</p></td>
-<td class="text-right"><p>10.9</p></td>
+<tr class="row-odd"><td class="text-right"><p>4</p></td>
+<td class="text-right"><p>11.39</p></td>
+<td class="text-right"><p>5.54</p></td>
+<td class="text-right"><p>6.10</p></td>
 </tr>
-<tr class="row-even"><td><p>Q5</p></td>
-<td class="text-right"><p>16.2</p></td>
-<td class="text-right"><p>13.9</p></td>
-<td class="text-right"><p>41.4</p></td>
+<tr class="row-even"><td class="text-right"><p>5</p></td>
+<td class="text-right"><p>34.79</p></td>
+<td class="text-right"><p>17.39</p></td>
+<td class="text-right"><p>18.89</p></td>
 </tr>
-<tr class="row-odd"><td><p>Q6</p></td>
-<td class="text-right"><p>1.7</p></td>
-<td class="text-right"><p>1.4</p></td>
-<td class="text-right"><p>1.7</p></td>
+<tr class="row-odd"><td class="text-right"><p>6</p></td>
+<td class="text-right"><p>1.90</p></td>
+<td class="text-right"><p>1.29</p></td>
+<td class="text-right"><p>1.47</p></td>
 </tr>
-<tr class="row-even"><td><p>Q7</p></td>
-<td class="text-right"><p>18.6</p></td>
-<td class="text-right"><p>18.7</p></td>
-<td class="text-right"><p>35.1</p></td>
+<tr class="row-even"><td class="text-right"><p>7</p></td>
+<td class="text-right"><p>17.22</p></td>
+<td class="text-right"><p>8.27</p></td>
+<td class="text-right"><p>19.31</p></td>
 </tr>
-<tr class="row-odd"><td><p>Q8</p></td>
-<td class="text-right"><p>20.9</p></td>
-<td class="text-right"><p>14.1</p></td>
-<td class="text-right"><p>21.6</p></td>
+<tr class="row-odd"><td class="text-right"><p>8</p></td>
+<td class="text-right"><p>16.57</p></td>
+<td class="text-right"><p>18.20</p></td>
+<td class="text-right"><p>23.87</p></td>
 </tr>
-<tr class="row-even"><td><p>Q9</p></td>
-<td class="text-right"><p>31.7</p></td>
-<td class="text-right"><p>24.2</p></td>
-<td class="text-right"><p>35.8</p></td>
+<tr class="row-even"><td class="text-right"><p>9</p></td>
+<td class="text-right"><p>34.09</p></td>
+<td class="text-right"><p>29.99</p></td>
+<td class="text-right"><p>35.92</p></td>
 </tr>
-<tr class="row-odd"><td><p>Q10</p></td>
-<td class="text-right"><p>25.5</p></td>
-<td class="text-right"><p>22.0</p></td>
-<td class="text-right"><p>45.1</p></td>
+<tr class="row-odd"><td class="text-right"><p>10</p></td>
+<td class="text-right"><p>39.89</p></td>
+<td class="text-right"><p>21.85</p></td>
+<td class="text-right"><p>19.93</p></td>
 </tr>
-<tr class="row-even"><td><p>Q11</p></td>
-<td class="text-right"><p>9.4</p></td>
-<td class="text-right"><p>4.4</p></td>
-<td class="text-right"><p>18.7</p></td>
+<tr class="row-even"><td class="text-right"><p>11</p></td>
+<td class="text-right"><p>9.62</p></td>
+<td class="text-right"><p>3.12</p></td>
+<td class="text-right"><p>7.47</p></td>
 </tr>
-<tr class="row-odd"><td><p>Q12</p></td>
-<td class="text-right"><p>5.0</p></td>
-<td class="text-right"><p>4.4</p></td>
-<td class="text-right"><p>10.1</p></td>
+<tr class="row-odd"><td class="text-right"><p>12</p></td>
+<td class="text-right"><p>7.65</p></td>
+<td class="text-right"><p>3.52</p></td>
+<td class="text-right"><p>4.40</p></td>
 </tr>
-<tr class="row-even"><td><p>Q13</p></td>
-<td class="text-right"><p>6.2</p></td>
-<td class="text-right"><p>5.8</p></td>
-<td class="text-right"><p>10.8</p></td>
+<tr class="row-even"><td class="text-right"><p>13</p></td>
+<td class="text-right"><p>9.93</p></td>
+<td class="text-right"><p>6.44</p></td>
+<td class="text-right"><p>6.38</p></td>
 </tr>
-<tr class="row-odd"><td><p>Q14</p></td>
-<td class="text-right"><p>2.9</p></td>
-<td class="text-right"><p>1.4</p></td>
-<td class="text-right"><p>7.0</p></td>
+<tr class="row-odd"><td class="text-right"><p>14</p></td>
+<td class="text-right"><p>6.83</p></td>
+<td class="text-right"><p>1.40</p></td>
+<td class="text-right"><p>2.53</p></td>
 </tr>
-<tr class="row-even"><td><p>Q15</p></td>
-<td class="text-right"><p>11.5</p></td>
-<td class="text-right"><p>6.9</p></td>
-<td class="text-right"><p>10.6</p></td>
+<tr class="row-even"><td class="text-right"><p>15</p></td>
+<td class="text-right"><p>13.13</p></td>
+<td class="text-right"><p>6.83</p></td>
+<td class="text-right"><p>7.68</p></td>
 </tr>
-<tr class="row-odd"><td><p>Q16</p></td>
-<td class="text-right"><p>78.2</p></td>
-<td class="text-right"><p>5.1</p></td>
-<td class="text-right"><p>13.3</p></td>
+<tr class="row-odd"><td class="text-right"><p>16</p></td>
+<td class="text-right"><p>12.15</p></td>
+<td class="text-right"><p>5.37</p></td>
+<td class="text-right"><p>76.41</p></td>
 </tr>
-<tr class="row-even"><td><p>Q17</p></td>
-<td class="text-right"><p>20.0</p></td>
-<td class="text-right"><p>15.4</p></td>
-<td class="text-right"><p>23.6</p></td>
+<tr class="row-even"><td class="text-right"><p>17</p></td>
+<td class="text-right"><p>21.81</p></td>
+<td class="text-right"><p>17.80</p></td>
+<td class="text-right"><p>22.06</p></td>
 </tr>
-<tr class="row-odd"><td><p>Q18</p></td>
-<td class="text-right"><p>30.8</p></td>
-<td class="text-right"><p>35.4</p></td>
-<td class="text-right"><p>55.4</p></td>
+<tr class="row-odd"><td class="text-right"><p>18</p></td>
+<td class="text-right"><p>35.10</p></td>
+<td class="text-right"><p>28.98</p></td>
+<td class="text-right"><p>34.84</p></td>
 </tr>
-<tr class="row-even"><td><p>Q19</p></td>
-<td class="text-right"><p>8.1</p></td>
-<td class="text-right"><p>7.4</p></td>
-<td class="text-right"><p>12.1</p></td>
+<tr class="row-even"><td class="text-right"><p>19</p></td>
+<td class="text-right"><p>8.84</p></td>
+<td class="text-right"><p>7.67</p></td>
+<td class="text-right"><p>8.26</p></td>
 </tr>
-<tr class="row-odd"><td><p>Q20</p></td>
-<td class="text-right"><p>16.6</p></td>
-<td class="text-right"><p>6.3</p></td>
-<td class="text-right"><p>15.6</p></td>
+<tr class="row-odd"><td class="text-right"><p>20</p></td>
+<td class="text-right"><p>14.50</p></td>
+<td class="text-right"><p>6.44</p></td>
+<td class="text-right"><p>17.77</p></td>
 </tr>
-<tr class="row-even"><td><p>Q21</p></td>
-<td class="text-right"><p>34.6</p></td>
-<td class="text-right"><p>45.9</p></td>
-<td class="text-right"><p>68.6</p></td>
+<tr class="row-even"><td class="text-right"><p>21</p></td>
+<td class="text-right"><p>35.71</p></td>
+<td class="text-right"><p>32.09</p></td>
+<td class="text-right"><p>39.06</p></td>
 </tr>
-<tr class="row-odd"><td><p>Q22</p></td>
-<td class="text-right"><p>6.9</p></td>
-<td class="text-right"><p>5.4</p></td>
-<td class="text-right"><p>10.5</p></td>
+<tr class="row-odd"><td class="text-right"><p>22</p></td>
+<td class="text-right"><p>10.16</p></td>
+<td class="text-right"><p>5.22</p></td>
+<td class="text-right"><p>5.51</p></td>
 </tr>
-<tr class="row-even"><td><p><strong>Total</strong></p></td>
-<td class="text-right"><p><strong>386.5</strong></p></td>
-<td class="text-right"><p><strong>278.8</strong></p></td>
-<td class="text-right"><p><strong>517.0</strong></p></td>
+<tr class="row-even"><td class="text-right"><p><strong>Total</strong></p></td>
+<td class="text-right"><p><strong>405.00</strong></p></td>
+<td class="text-right"><p><strong>260.90</strong></p></td>
+<td class="text-right"><p><strong>395.83</strong></p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<!-- END GENERATED BENCHMARK RESULTS -->
 <p><strong>What the results show.</strong></p>
+<!-- BEGIN GENERATED COMPARISON FINDINGS -->
 <ul class="simple">
-<li><p>Pipelined Ballista and DataFusion Distributed are close, which is expected of two pipelined engines on the same
-query engine. Ballista was faster on 17 of the 22 queries and DataFusion Distributed on 5 (Q1, Q4, Q7, Q18, and
-Q21). The geometric mean of the per-query ratios favours pipelined Ballista by about 1.4x.</p></li>
-<li><p>Most of the difference in the total is Q16. DataFusion Distributed runs the final <code class="docutils literal notranslate"><span class="pre">COUNT(DISTINCT)</span></code> aggregation and
-anti join of Q16 on the coordinator, over 8 partitions. With the coordinator’s 22.4 GiB memory pool, that stage
-spilled 7.2 GB, and it was the only stage in the run that spilled. Excluding Q16, the geometric mean favours
-pipelined Ballista by about 1.2x.</p></li>
-<li><p>Staged Ballista was about 1.85x slower than pipelined Ballista in total, which is the latency cost of writing
-every stage’s output to disk before the next stage starts.</p></li>
+<li><p>Pipelined Ballista was faster on 19 of the 22 queries and DataFusion Distributed on 3 (Q1, Q10, and Q13). The geometric mean of the per-query ratios favours pipelined Ballista by about 1.4x.</p></li>
+<li><p>The totals differ by 134.9 s, of which Q16 accounts for 71.0 s. Excluding Q16, the geometric mean favours pipelined Ballista by about 1.3x.</p></li>
+<li><p>Staged Ballista took 1.55 times as long as pipelined Ballista in total.</p></li>
+</ul>
+<!-- END GENERATED COMPARISON FINDINGS -->
+<ul class="simple">
+<li><p>DataFusion Distributed runs the final <code class="docutils literal notranslate"><span class="pre">COUNT(DISTINCT)</span></code> aggregation and anti join of Q16 on the coordinator, over
+8 partitions, so that stage has only the coordinator’s 22.4 GiB memory pool and must spill whatever does not fit.</p></li>
+<li><p>The gap between staged and pipelined Ballista is the latency cost of writing every stage’s output to disk before
+the next stage starts.</p></li>
 </ul>
 <p><strong>Caveats.</strong></p>
 <ul class="simple">
-<li><p>Each query ran only twice, so per-query differences of less than about 10% are within run-to-run variation.</p></li>
+<li><p>Ballista’s times are the mean of 2 iterations including the cold first one, while DataFusion Distributed’s are
+the mean of 3 iterations after an untimed warm-up. The difference in protocol favours DataFusion Distributed.
+Per-query differences of less than about 10% are within run-to-run variation.</p></li>
 <li><p>The setups are as close as we could make them, but not identical. DataFusion Distributed’s coordinator is an extra
 pod that runs part of each query, while Ballista’s scheduler runs no query work. The two projects were also on
 different patch releases of DataFusion.</p></li>
