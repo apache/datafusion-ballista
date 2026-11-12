@@ -124,7 +124,7 @@ def with_table(page, table, begin=BEGIN, end=END):
 
 
 def protocol(run):
-    """How a run's times were taken, such as "mean of 2 iterations, no warm-up"."""
+    """How a run's times were taken, such as "mean of 3 iterations after an untimed warm-up"."""
     warmup = (
         "after an untimed warm-up" if run["warmup"] else "including the cold first one"
     )
