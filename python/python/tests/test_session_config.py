@@ -225,7 +225,7 @@ _TYPED_SETTERS = [
         "ballista.shuffle.sort_based.memory_limit_per_task_bytes",
         "1024",
     ),
-    ("with_shuffle_compression_codec", "ballista.shuffle.compression.codec", "zstd"),
+    ("with_shuffle_compression_codec", "ballista.shuffle.compression.codec", "lz4"),
     (
         "with_grpc_client_initial_connection_window_size",
         "ballista.client.initial_connection_window_size",
@@ -336,8 +336,33 @@ _TYPED_SETTERS = [
 
 def test_typed_setters_are_all_tested():
     setters = {name for name in dir(BallistaSessionConfig) if name.startswith("with_")}
+    # picks the client, it is not a setting, see `test_with_client_impl`
+    setters.discard("with_client_impl")
 
     assert setters == {method for method, _, _ in _TYPED_SETTERS}
+
+
+@pytest.mark.parametrize("kind", ["python", "rust", "Python"])
+def test_with_client_impl(kind):
+    config = BallistaSessionConfig()
+    assert config.with_client_impl(kind) is config
+
+    assert config._client_impl == kind.lower()
+    # kept out of BallistaConfigExtension, which rejects unknown keys
+    assert "ballista.python.client_impl" not in _settings(config.build())
+    assert config._ballista_overrides() == {}
+
+
+def test_client_impl_in_dict():
+    config = BallistaSessionConfig({"ballista.python.client_impl": "python"})
+
+    assert config._client_impl == "python"
+    assert "ballista.python.client_impl" not in _settings(config.build())
+
+
+def test_client_impl_rejects_invalid_value():
+    with pytest.raises(ValueError, match="ballista.python.client_impl"):
+        BallistaSessionConfig({"ballista.python.client_impl": "java"})
 
 
 @pytest.mark.parametrize("method, key, value", _TYPED_SETTERS)

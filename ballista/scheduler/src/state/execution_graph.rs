@@ -42,7 +42,8 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, PartitionId, PartitionLocation, PartitionStats, TaskKey,
+    ExecutorEndpoint, ExecutorMetadata, PartitionId, PartitionLocation, PartitionStats,
+    TaskKey,
 };
 
 use crate::display::print_stage_metrics;
@@ -829,6 +830,8 @@ impl ExecutionGraph for StaticExecutionGraph {
         max_stage_failures: usize,
     ) -> Result<Vec<QueryStageSchedulerEvent>> {
         let job_id = self.job_id().to_owned();
+        // The locations this update reports share one copy of the address.
+        let endpoint = Arc::new(ExecutorEndpoint::from(executor));
         // First of all, classify the statuses by stages
         let mut job_task_statuses: HashMap<usize, Vec<TaskStatus>> = HashMap::new();
         for task_status in task_statuses {
@@ -1033,9 +1036,17 @@ impl ExecutionGraph for StaticExecutionGraph {
                             successful_task,
                         )) = status
                         {
-                            // update task metrics for successful task
-                            running_stage
-                                .update_task_metrics(task_id, operator_metrics)?;
+                            // Metrics only feed the plan display and the REST
+                            // API. A task whose metrics can't be merged still
+                            // succeeded, and failing here would drop its status
+                            // and leave the stage, and the job, unfinished.
+                            if let Err(e) = running_stage
+                                .update_task_metrics(task_id, operator_metrics)
+                            {
+                                warn!(
+                                    "Ignoring the metrics of task {task_id} in stage {stage_id} of job {job_id}: {e}"
+                                );
+                            }
 
                             let SuccessfulTask {
                                 partitions,
@@ -1049,7 +1060,7 @@ impl ExecutionGraph for StaticExecutionGraph {
                                 .append_window_state_reports(task_id, window_state);
 
                             locations.append(&mut partition_to_location(
-                                &job_id, task_id, stage_id, executor, partitions,
+                                &job_id, task_id, stage_id, &endpoint, partitions,
                             ));
                         } else {
                             warn!(
@@ -1903,7 +1914,7 @@ pub(crate) fn partition_to_location(
     job_id: &JobId,
     map_partition_id: usize,
     stage_id: usize,
-    executor: &ExecutorMetadata,
+    executor: &Arc<ExecutorEndpoint>,
     shuffles: Vec<ShuffleWritePartition>,
 ) -> Vec<PartitionLocation> {
     shuffles
@@ -1957,8 +1968,7 @@ mod test {
     use ballista_core::execution_plans::ShuffleReaderExec;
     use ballista_core::extension::SessionConfigExt;
     use ballista_core::serde::scheduler::{
-        ExecutorMetadata, ExecutorSpecification, PartitionId, PartitionLocation,
-        PartitionStats,
+        ExecutorEndpoint, PartitionId, PartitionLocation, PartitionStats,
     };
 
     use datafusion::physical_plan::union::UnionExec;
@@ -2213,6 +2223,49 @@ mod test {
 
         for location in outputs {
             assert_eq!(location.executor_meta.host, "localhost2".to_owned());
+        }
+
+        Ok(())
+    }
+
+    /// A completed stage leaves one location per task per output partition.
+    /// All those from one status update must share the executor's address
+    /// rather than each hold a copy of it.
+    #[tokio::test]
+    async fn locations_from_one_status_update_share_their_executor() -> Result<()> {
+        let executor = mock_executor("executor-id1".to_string());
+        let mut graph = test_aggregation_plan(4).await;
+        graph.revive();
+
+        let mut statuses = vec![];
+        while let Some(task) = graph.pop_next_task(&executor.id)? {
+            statuses.push(mock_completed_task(task, &executor.id));
+        }
+        graph.update_task_status(&executor, statuses, 1, 1)?;
+
+        let ExecutionStage::Resolved(reader) = &graph.stages()[&2] else {
+            panic!("the stage reading the completed stage should be resolved");
+        };
+        let locations: Vec<_> = reader.inputs[&1]
+            .partition_locations
+            .values()
+            .flatten()
+            .collect();
+        // The fixture scans two partitions: two tasks, four outputs each.
+        assert_eq!(locations.len(), 8);
+        assert_eq!(
+            *locations[0].executor_meta,
+            ExecutorEndpoint {
+                id: "executor-id1".to_string(),
+                host: "localhost2".to_string(),
+                port: 8080,
+            }
+        );
+        for location in &locations {
+            assert!(Arc::ptr_eq(
+                &location.executor_meta,
+                &locations[0].executor_meta
+            ));
         }
 
         Ok(())
@@ -3205,14 +3258,11 @@ mod test {
         PartitionLocation {
             map_partition_id: partition,
             partition_id: PartitionId::new(&JobId::new("cache-job"), stage, partition),
-            executor_meta: ExecutorMetadata {
+            executor_meta: Arc::new(ExecutorEndpoint {
                 id: executor.to_owned(),
                 host: "localhost".to_owned(),
                 port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default(),
-                os_info: Default::default(),
-            },
+            }),
             partition_stats: PartitionStats::default(),
             file_id: Some(0),
             is_sort_shuffle: false,

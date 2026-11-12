@@ -276,7 +276,17 @@ impl DefaultDistributedPlanner {
             ))
         } else if let Some(repart) = execution_plan.downcast_ref::<RepartitionExec>() {
             match repart.properties().output_partitioning() {
-                Partitioning::Hash(_, _) => {
+                // A shuffle cannot merge sorted inputs, so a sort-preserving
+                // repartition cannot be planned as one.
+                Partitioning::Range(_) if repart.preserve_order() => {
+                    Err(BallistaError::NotImplemented(format!(
+                        "cannot plan {} as a shuffle: it must preserve its input's order",
+                        repart.partitioning()
+                    )))
+                }
+                // Unlike round-robin, a range repartition decides which rows
+                // each partition holds, so it cannot be dropped.
+                Partitioning::Hash(_, _) | Partitioning::Range(_) => {
                     let input = children[0].clone();
                     let input =
                         self.optimizer_ensure_requirements.optimize(input, config)?;
@@ -294,8 +304,9 @@ impl DefaultDistributedPlanner {
                     stages.push(shuffle_writer);
                     Ok((unresolved_shuffle, stages))
                 }
-                _ => {
-                    // remove any non-hash repartition from the distributed plan
+                Partitioning::RoundRobinBatch(_)
+                | Partitioning::UnknownPartitioning(_) => {
+                    // remove any other repartition from the distributed plan
                     Ok((children[0].clone(), stages))
                 }
             }
@@ -669,9 +680,11 @@ fn can_stay_inline(plan: &Arc<dyn ExecutionPlan>) -> bool {
 
 /// Whether per-task restriction can reduce `plan` to zero partitions. An empty
 /// slice means "this task polls nothing here", so a branch that still reports a
-/// partition afterwards is one that cannot be restricted away.
+/// partition afterwards, or that the rewriter refuses, cannot be restricted
+/// away. No resolver is passed, so a node Ballista does not know gets a stage
+/// of its own.
 fn restricts_to_nothing(plan: &Arc<dyn ExecutionPlan>) -> bool {
-    restrict_plan_to_partitions(plan.clone(), &[])
+    restrict_plan_to_partitions(plan.clone(), &[], None)
         .is_ok_and(|p| p.properties().output_partitioning().partition_count() == 0)
 }
 
@@ -841,17 +854,16 @@ pub(crate) fn create_shuffle_writer_with_config(
     partitioning: Option<Partitioning>,
     config: &ConfigOptions,
 ) -> Result<Arc<dyn ShuffleWriter>> {
-    // Sort-based shuffle is the only shuffle writer for hash-repartition
-    // stages. Its tuning values still come from the session config.
+    // Sort-based shuffle is the only shuffle writer for hash- and range-
+    // repartition stages. Its tuning values still come from the session config.
     let ballista_config = config
         .extensions
         .get::<BallistaConfig>()
         .cloned()
         .unwrap_or_default();
 
-    // Sort shuffle requires hash partitioning.
     match partitioning {
-        Some(Partitioning::Hash(exprs, partition_count)) => {
+        Some(partitioning @ (Partitioning::Hash(..) | Partitioning::Range(..))) => {
             let sort_config = SortShuffleConfig::new(
                 true,
                 ballista_config.shuffle_sort_based_batch_size(),
@@ -865,7 +877,7 @@ pub(crate) fn create_shuffle_writer_with_config(
                 stage_id,
                 plan,
                 "".to_owned(),
-                Partitioning::Hash(exprs, partition_count),
+                partitioning,
                 sort_config,
             )?))
         }
@@ -882,6 +894,9 @@ pub(crate) fn create_shuffle_writer_with_config(
         ))),
     }
 }
+
+#[cfg(test)]
+mod range_shuffle_tests;
 
 #[cfg(test)]
 mod test {
@@ -1863,8 +1878,7 @@ order by
     {
         use ballista_core::execution_plans::ShuffleReaderExec;
         use ballista_core::serde::scheduler::{
-            ExecutorMetadata, ExecutorOperatingSystemSpecification,
-            ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
+            ExecutorEndpoint, PartitionId, PartitionLocation, PartitionStats,
         };
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
 
@@ -1880,14 +1894,11 @@ order by
                 stage_id: 42,
                 partition_id,
             },
-            executor_meta: ExecutorMetadata {
+            executor_meta: Arc::new(ExecutorEndpoint {
                 id: format!("exec-{partition_id}"),
                 host: "localhost".to_string(),
                 port: 50050,
-                grpc_port: 50051,
-                specification: ExecutorSpecification::default().with_vcores(1),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
+            }),
             partition_stats: PartitionStats::new(Some(10), None, Some(1)),
             file_id: None,
             is_sort_shuffle: false,
@@ -2249,7 +2260,7 @@ order by
         Ok((ctx, (*options).clone()))
     }
 
-    fn roundtrip_operator(
+    pub(super) fn roundtrip_operator(
         ctx: &TaskContext,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
