@@ -69,11 +69,10 @@ use std::sync::Arc;
 /// partition.
 ///
 /// A leaf Ballista does not list becomes an empty leaf when the task runs none
-/// of it, whatever it is. Other nodes Ballista does not list are restricted by
-/// `resolver`, and a leaf that nothing
-/// can restrict is an error unless `partitions` is all of its partitions, in
-/// order. Each branch of a `UnionExec` must end up with one partition for each
-/// partition the task runs of it.
+/// of it. Other nodes Ballista does not list are restricted by `resolver`, and
+/// a leaf that nothing can restrict is an error unless `partitions` is all of
+/// its partitions, in order. Each branch of a `UnionExec` must end up with one
+/// partition for each partition the task runs of it.
 pub fn restrict_plan_to_partitions(
     plan: Arc<dyn ExecutionPlan>,
     partitions: &[usize],
@@ -131,7 +130,7 @@ fn restrict(
     }
 
     // Any other leaf the task runs none of, such as one in a `UnionExec`
-    // branch another task owns, is never executed, whatever it is.
+    // branch another task owns, is never executed.
     if !under_collect && partitions.is_empty() && plan.children().is_empty() {
         return no_partitions(&plan);
     }
@@ -1398,6 +1397,6 @@ mod tests {
         let branches = restricted.children();
         assert_eq!(describe(branches[0]), "EmptyExec(1)");
         assert_eq!(group_files(branches[1]), ["file2.parquet"]);
-        assert_eq!(partition_count(&restricted), 2);
+        assert_eq!(describe(&restricted), "UnionExec(2)");
     }
 }
