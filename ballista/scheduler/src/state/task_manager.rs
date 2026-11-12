@@ -38,6 +38,7 @@ use crate::state::task_builder::restrict_plan_to_partitions;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::execution_plans::compute_global_output_partition_ids;
+use ballista_core::execution_plans::plan_algebra::PartitionSliceableResolver;
 use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
@@ -155,6 +156,9 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     task_max_failures: usize,
     /// Maximum number of failure attempts for stage-level retry before the stage is considered failed.
     stage_max_failures: usize,
+    /// Resolver for nodes Ballista does not know. See
+    /// [`SchedulerConfig::partition_sliceable_resolver`].
+    partition_sliceable_resolver: Option<Arc<dyn PartitionSliceableResolver>>,
     /// See [`SchedulerConfig::adaptive_rules`].
     adaptive_rules: Option<Arc<dyn AdaptiveRules>>,
 }
@@ -217,20 +221,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         scheduler_endpoint: String,
         config: Arc<SchedulerConfig>,
     ) -> Self {
-        Self {
+        Self::with_launcher(
             state,
             codec,
-            scheduler_id: scheduler_id.clone(),
-            active_job_cache: Arc::new(DashMap::new()),
-            outstanding_task_reservations: Arc::new(DashMap::new()),
-            launcher: Arc::new(DefaultTaskLauncher::new(scheduler_endpoint)),
-            task_max_failures: config.task_max_failures,
-            stage_max_failures: config.stage_max_failures,
-            adaptive_rules: config.adaptive_rules.clone(),
-        }
+            scheduler_id,
+            Arc::new(DefaultTaskLauncher::new(scheduler_endpoint)),
+            config,
+        )
     }
 
-    #[allow(dead_code)]
+    /// Creates a new `TaskManager` that launches its tasks with `launcher`.
     pub(crate) fn with_launcher(
         state: Arc<dyn JobState>,
         codec: BallistaCodec<T, U>,
@@ -247,6 +247,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             launcher,
             task_max_failures: config.task_max_failures,
             stage_max_failures: config.stage_max_failures,
+            partition_sliceable_resolver: config.partition_sliceable_resolver.clone(),
             adaptive_rules: config.adaptive_rules.clone(),
         }
     }
@@ -302,6 +303,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let session_config = session_state.config();
         let pipelined = session_config.ballista_config().execution_mode()?
             == ballista_core::config::ExecutionMode::Pipelined;
+
+        // Semi join reduction needs the size of each candidate dimension, so it
+        // runs here, before planning, rather than as an optimizer rule.
+        let reduced_plan;
+        let plan = match plan {
+            SubmitPlan::Logical(logical_plan) => {
+                reduced_plan = SubmitPlan::Logical(
+                    ballista_core::optimizer::apply_semi_join_reduction(
+                        &session_state,
+                        logical_plan,
+                    )
+                    .await?,
+                );
+                &reduced_plan
+            }
+            SubmitPlan::Physical(_) => plan,
+        };
 
         let mut graph = match plan {
             // A pipelined job plans with the static planner whatever the AQE
@@ -386,23 +404,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 }
             }
             SubmitPlan::Physical(physical_plan) => {
-                // AQE plans from the logical plan, so an already-built
-                // physical plan always uses the static planner, including when
-                // AQE is on (the default).
-                debug!("Using static query planner for physical-plan job submission");
-                let session_config = Arc::new(ctx.copied_config());
+                if session_config.ballista_adaptive_query_planner_enabled() {
+                    debug!(
+                        "Using adaptive query planner (AQE) for physical-plan job submission"
+                    );
+                    Box::new(AdaptiveExecutionGraph::try_new_from_physical(
+                        &self.scheduler_id,
+                        job_id,
+                        job_name,
+                        &ctx,
+                        physical_plan.clone(),
+                        queued_at,
+                        self.adaptive_rules.as_deref(),
+                    )?) as ExecutionGraphBox
+                } else {
+                    debug!("Using static query planner for physical-plan job submission");
+                    let session_config = Arc::new(ctx.copied_config());
 
-                Box::new(StaticExecutionGraph::new(
-                    &self.scheduler_id,
-                    job_id,
-                    job_name,
-                    &ctx.session_id(),
-                    physical_plan.clone(),
-                    queued_at,
-                    session_config,
-                    &mut planner,
-                    None,
-                )?) as ExecutionGraphBox
+                    Box::new(StaticExecutionGraph::new(
+                        &self.scheduler_id,
+                        job_id,
+                        job_name,
+                        &ctx.session_id(),
+                        physical_plan.clone(),
+                        queued_at,
+                        session_config,
+                        &mut planner,
+                        None,
+                    )?) as ExecutionGraphBox
+                }
             }
         };
         let string_plan =
@@ -444,9 +474,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         .await
     }
 
-    /// Submit an already-built physical plan for distributed execution. The physical
-    /// plan is planned with the static distributed planner; adaptive query planning
-    /// (AQE) is not available for this path.
+    /// Submit an already-built physical plan for distributed execution. The plan
+    /// goes through adaptive query planning (AQE) when
+    /// `ballista.planner.adaptive.enabled` is set, and through the static
+    /// distributed planner otherwise, like a logical submission.
     #[allow(clippy::too_many_arguments)]
     pub async fn submit_physical_plan(
         &self,
@@ -976,6 +1007,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// ShuffleReader partitions) to this task's assigned slice, then encoded
     /// fresh. No shared-plan cache — each task gets its own bytes because
     /// each task's plan is different.
+    ///
+    /// Fails if the plan holds a leaf that cannot be restricted to the slice.
     #[allow(dead_code)]
     pub fn prepare_task_definition(
         &self,
@@ -990,6 +1023,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let restricted = restrict_plan_to_partitions(
                 task.plan.clone(),
                 &task.global_input_partition_ids,
+                self.partition_sliceable_resolver.as_deref(),
             )?;
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(
@@ -1111,6 +1145,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let restricted = restrict_plan_to_partitions(
                 task.plan.clone(),
                 &task.global_input_partition_ids,
+                self.partition_sliceable_resolver.as_deref(),
             )?;
             let mut plan_buf: Vec<u8> = vec![];
             let plan_proto = PhysicalPlanNode::try_from_physical_plan(restricted, codec)?;
@@ -1308,8 +1343,8 @@ mod tests {
     use crate::cluster::JobStateEventStream;
     use crate::cluster::memory::InMemoryJobState;
     use crate::test_utils::{
-        mock_completed_task, mock_executor, test_aggregation_plan,
-        test_aggregation_plan_with_job_id,
+        drain_tasks_with_executor, join_aggregate_sort_logical_plan, mock_completed_task,
+        mock_executor, test_aggregation_plan, test_aggregation_plan_with_job_id,
     };
     use ballista_core::serde::protobuf::job_status::Status;
     use ballista_core::serde::protobuf::task_status;
@@ -1490,14 +1525,7 @@ mod tests {
             // contains Running until terminal persistence updates it.
             let mut graph = active_graph.write().await;
             let executor = mock_executor("executor-1".to_string());
-            while let Some(task) = graph.pop_next_task(&executor.id)? {
-                graph.update_task_status(
-                    &executor,
-                    vec![mock_completed_task(task, &executor.id)],
-                    1,
-                    1,
-                )?;
-            }
+            drain_tasks_with_executor(graph.as_mut(), &executor)?;
             graph.succeed_job()?;
         }
 
@@ -1509,11 +1537,6 @@ mod tests {
         use crate::cluster::bind_task_bias;
         use crate::state::execution_graph::ExecutionGraph;
         use ballista_core::serde::protobuf::AvailableVcores;
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
-        use datafusion::functions_aggregate::sum::sum;
-        use datafusion::logical_expr::SortExpr;
-        use datafusion::prelude::{JoinType, col};
-        use datafusion::test_util::scan_empty_with_partitions;
 
         let mut config = SessionConfig::new().with_target_partitions(2);
         config
@@ -1521,18 +1544,7 @@ mod tests {
             .optimizer
             .enable_round_robin_repartition = false;
         let ctx = SessionContext::new_with_config(config);
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-        let left = scan_empty_with_partitions(Some("left"), &schema, None, 2)?;
-        let right =
-            scan_empty_with_partitions(Some("right"), &schema, None, 2)?.build()?;
-        let plan = left
-            .join(right, JoinType::Inner, (vec!["id"], vec!["id"]), None)?
-            .aggregate(vec![col("left.id")], vec![sum(col("left.gmv"))])?
-            .sort(vec![SortExpr::new(col("id"), false, false)])?
-            .build()?;
+        let plan = join_aggregate_sort_logical_plan();
         let job_id: JobId = "retired-task-refund".into();
         let mut graph = AdaptiveExecutionGraph::try_new(
             "scheduler",
@@ -1738,10 +1750,9 @@ mod tests {
     /// nothing else would release it.
     #[tokio::test]
     async fn failed_terminal_save_still_releases_a_pipelined_reservation() -> Result<()> {
-        use crate::planner::DefaultDistributedPlanner;
         use crate::state::execution_graph::ExecutionGraph;
         use crate::state::pipelined_graph::{PlacementDecision, plan_placement};
-        use crate::test_utils::test_join_plan;
+        use crate::test_utils::{pipelined_graph_from_physical, test_join_plan};
         use ballista_core::serde::protobuf::AvailableVcores;
 
         let state = Arc::new(BlockingJobState::new());
@@ -1755,17 +1766,10 @@ mod tests {
             Arc::new(SchedulerConfig::default()),
         );
 
-        let mut graph = PipelinedExecutionGraph::new(
-            "localhost:50050",
-            &"job".into(),
-            "",
-            "session",
+        let mut graph = pipelined_graph_from_physical(
             test_join_plan(4).await.physical_plan(),
-            0,
-            Arc::new(SessionConfig::new_with_ballista()),
-            &mut DefaultDistributedPlanner::new(),
-            None,
-        )?;
+            SessionConfig::new_with_ballista(),
+        );
         let available: Vec<AvailableVcores> = ["a", "b"]
             .into_iter()
             .map(|id| AvailableVcores {

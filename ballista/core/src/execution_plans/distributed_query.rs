@@ -28,7 +28,7 @@ use crate::serde::protobuf::{
     KeyValuePair, PartitionLocation, execute_query_params::Query, execute_query_result,
     job_status, scheduler_grpc_client::SchedulerGrpcClient,
 };
-use crate::serde::protobuf::{ExecutorMetadata, RunningJob, SuccessfulJob};
+use crate::serde::protobuf::{RunningJob, SuccessfulJob};
 use crate::serde::scheduler::PipelinedPartitionLocation;
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use crate::version;
@@ -294,41 +294,12 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     ) -> Result<SendableRecordBatchStream> {
         assert_eq!(0, partition);
 
-        let mut buf: Vec<u8> = vec![];
-        let plan_message = T::try_from_logical_plan(
+        let query = execute_query_params::<T>(
             &self.plan,
             self.extension_codec.as_ref(),
-        )
-        .map_err(|e| {
-            DataFusionError::Internal(format!("failed to serialize logical plan: {e:?}"))
-        })?;
-        plan_message.try_encode(&mut buf).map_err(|e| {
-            DataFusionError::Execution(format!("failed to encode logical plan: {e:?}"))
-        })?;
-
-        let settings = context
-            .session_config()
-            .options()
-            .entries()
-            .iter()
-            .map(
-                |datafusion::config::ConfigEntry { key, value, .. }| KeyValuePair {
-                    key: key.to_owned(),
-                    value: value.clone(),
-                },
-            )
-            .collect();
-        let operation_id = uuid::Uuid::now_v7().to_string();
-        debug!(
-            "Distributed query with session_id: {}, execution operation_id: {}",
-            self.session_id, operation_id
-        );
-        let query = ExecuteQueryParams {
-            query: Some(Query::LogicalPlan(buf)),
-            settings,
-            session_id: self.session_id.clone(),
-            operation_id,
-        };
+            context.session_config(),
+            self.session_id.clone(),
+        )?;
 
         let metric_row_count = MetricBuilder::new(&self.metrics).output_rows(partition);
         let metric_total_bytes =
@@ -411,6 +382,45 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
     }
+}
+
+/// Builds the job submission request for a logical plan, carrying all
+/// options of `session_config` as settings and a new operation id.
+pub fn execute_query_params<T: 'static + AsLogicalPlan>(
+    plan: &LogicalPlan,
+    extension_codec: &dyn LogicalExtensionCodec,
+    session_config: &SessionConfig,
+    session_id: String,
+) -> Result<ExecuteQueryParams> {
+    let mut buf: Vec<u8> = vec![];
+    let plan_message = T::try_from_logical_plan(plan, extension_codec).map_err(|e| {
+        DataFusionError::Internal(format!("failed to serialize logical plan: {e:?}"))
+    })?;
+    plan_message.try_encode(&mut buf).map_err(|e| {
+        DataFusionError::Execution(format!("failed to encode logical plan: {e:?}"))
+    })?;
+
+    let settings = session_config
+        .options()
+        .entries()
+        .iter()
+        .map(
+            |datafusion::config::ConfigEntry { key, value, .. }| KeyValuePair {
+                key: key.to_owned(),
+                value: value.clone(),
+            },
+        )
+        .collect();
+    let operation_id = uuid::Uuid::now_v7().to_string();
+    debug!(
+        "Distributed query with session_id: {session_id}, execution operation_id: {operation_id}"
+    );
+    Ok(ExecuteQueryParams {
+        query: Some(Query::LogicalPlan(buf)),
+        settings,
+        session_id,
+        operation_id,
+    })
 }
 
 /// Submits an already-built physical plan directly to a Ballista scheduler for
@@ -601,9 +611,9 @@ fn pipelined_results(
         Vec<PipelinedPartitionLocation>,
     > = Default::default();
     for location in locations {
-        let executor_meta: ExecutorMetadata = location.executor_meta.clone().into();
         let endpoint = get_client_host_port(
-            &executor_meta,
+            &location.executor_meta.host,
+            location.executor_meta.port,
             &fetch.scheduler_url,
             &fetch.flight_proxy,
         )?;
@@ -1281,7 +1291,8 @@ async fn execute_query_push(
 }
 
 fn get_client_host_port(
-    executor_metadata: &ExecutorMetadata,
+    executor_host: &str,
+    executor_port: u16,
     scheduler_url: &str,
     flight_proxy: &Option<FlightProxy>,
 ) -> Result<(String, u16)> {
@@ -1315,12 +1326,9 @@ fn get_client_host_port(
         Some(FlightProxy::Local(false)) | None => {
             debug!(
                 "Fetching results from executor: {}:{}",
-                executor_metadata.host, executor_metadata.port
+                executor_host, executor_port
             );
-            Ok((
-                executor_metadata.host.clone(),
-                executor_metadata.port as u16,
-            ))
+            Ok((executor_host.to_owned(), executor_port))
         }
     }
 }
@@ -1348,7 +1356,7 @@ async fn fetch_partition(
     let port = metadata.port as u16;
 
     let (client_host, client_port) =
-        get_client_host_port(&metadata, &scheduler_url, &flight_proxy)?;
+        get_client_host_port(host, port, &scheduler_url, &flight_proxy)?;
 
     let mut ballista_client = BallistaClient::try_new(
         client_host.as_str(),
@@ -1385,6 +1393,7 @@ mod test {
         execute_query_pull, execute_query_push, get_client_host_port,
         job_submission_request,
     };
+    use crate::execution_plans::test_util::int32_batch;
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
     use crate::serde::protobuf::scheduler_grpc_server::{
         SchedulerGrpc, SchedulerGrpcServer,
@@ -1392,13 +1401,12 @@ mod test {
     use crate::serde::protobuf::{
         CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
         CreateUpdateSessionParams, CreateUpdateSessionResult, ExecuteQueryParams,
-        ExecuteQueryResult, ExecuteQuerySuccessResult, ExecutorMetadata,
-        ExecutorStoppedParams, ExecutorStoppedResult, GetJobMetricsParams,
-        GetJobMetricsResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
-        HeartBeatResult, JobStatus, PollWorkParams, PollWorkResult,
-        RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
-        RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
-        execute_query_result,
+        ExecuteQueryResult, ExecuteQuerySuccessResult, ExecutorStoppedParams,
+        ExecutorStoppedResult, GetJobMetricsParams, GetJobMetricsResult,
+        GetJobStatusParams, GetJobStatusResult, HeartBeatParams, HeartBeatResult,
+        JobStatus, PollWorkParams, PollWorkResult, RegisterExecutorParams,
+        RegisterExecutorResult, RemoveSessionParams, RemoveSessionResult,
+        UpdateTaskStatusParams, UpdateTaskStatusResult, execute_query_result,
     };
     use crate::utils::GrpcClientConfig;
     use crate::{BALLISTA_VERSION, JobId};
@@ -1676,17 +1684,6 @@ mod test {
         assert_eq!(scheduler.cancelled(), ["push-job"]);
     }
 
-    fn one_row_batch() -> datafusion::arrow::record_batch::RecordBatch {
-        use datafusion::arrow::array::Int32Array;
-        use datafusion::arrow::datatypes::{DataType, Field, Schema};
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        datafusion::arrow::record_batch::RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int32Array::from(vec![1]))],
-        )
-        .unwrap()
-    }
-
     /// A fetch that fails with `message`, then never yields again.
     fn failing_fetch(
         message: &str,
@@ -1724,7 +1721,8 @@ mod test {
         drop(tx);
         let batches = PipelinedResults::new(
             "job".into(),
-            futures::stream::iter(vec![Ok(one_row_batch()), Ok(one_row_batch())]).boxed(),
+            futures::stream::iter(vec![Ok(int32_batch(&[1])), Ok(int32_batch(&[1]))])
+                .boxed(),
             Some(rx),
             None,
         )
@@ -1804,7 +1802,7 @@ mod test {
 
         let finished = PipelinedResults::new(
             "finished".into(),
-            futures::stream::iter(vec![Ok(one_row_batch())]).boxed(),
+            futures::stream::iter(vec![Ok(int32_batch(&[1]))]).boxed(),
             None,
             Some(scheduler_client(url.clone()).await),
         );
@@ -1812,7 +1810,7 @@ mod test {
 
         let mut abandoned = PipelinedResults::new(
             "abandoned".into(),
-            futures::stream::iter(vec![Ok(one_row_batch())])
+            futures::stream::iter(vec![Ok(int32_batch(&[1]))])
                 .chain(futures::stream::pending())
                 .boxed(),
             None,
@@ -1846,36 +1844,32 @@ mod test {
         let scheduler_port: u16 = 5000;
 
         let scheduler_url = format!("http://{scheduler_host}:{scheduler_port}");
-        let executor = ExecutorMetadata {
-            id: "test".to_string(),
-            host: "executor".to_string(),
-            port: 12345,
-            grpc_port: 1,
-            specification: None,
-            os_info: None,
-        };
+        let (executor_host, executor_port) = ("executor", 12345_u16);
 
         // no flight proxy -> client should fetch results from executor
         assert_eq!(
-            get_client_host_port(&executor, &scheduler_url, &None).unwrap(),
-            (executor.host.clone(), executor.port as u16)
+            get_client_host_port(executor_host, executor_port, &scheduler_url, &None)
+                .unwrap(),
+            (executor_host.to_string(), executor_port)
         );
 
         // same, no flight proxy
         assert_eq!(
             get_client_host_port(
-                &executor,
+                executor_host,
+                executor_port,
                 &scheduler_url,
                 &Some(FlightProxy::Local(false))
             )
             .unwrap(),
-            (executor.host.clone(), executor.port as u16)
+            (executor_host.to_string(), executor_port)
         );
 
         // embedded flight proxy on scheduler
         assert_eq!(
             get_client_host_port(
-                &executor,
+                executor_host,
+                executor_port,
                 &scheduler_url,
                 &Some(FlightProxy::Local(true))
             )
@@ -1886,7 +1880,8 @@ mod test {
         // external proxy
         assert_eq!(
             get_client_host_port(
-                &executor,
+                executor_host,
+                executor_port,
                 &scheduler_url,
                 &Some(FlightProxy::External("proxy:1234".to_string()))
             )

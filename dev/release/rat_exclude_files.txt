@@ -37,4 +37,6 @@ Cargo.lock
 .history
 *rat.txt
 ballista/core/src/serde/generated/ballista.rs
+python/python/ballista/proto/*_pb2*
 python/uv.lock
+benchmarks/cluster/datafusion-distributed/worker-memory-limit.patch

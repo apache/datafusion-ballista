@@ -181,8 +181,9 @@ pub(crate) fn walk_child_partition_mapping(
 ///
 /// Two cases:
 ///
-/// - `SortShuffleWriter` — KSpace by construction, however it routes rows; the
-///   K-space `[0..K-1]` is intrinsic. Input ids are irrelevant.
+/// - `SortShuffleWriter` — KSpace by construction, however it routes rows (by
+///   hash, range or partition id); the K-space `[0..K-1]` is intrinsic. Input
+///   ids are irrelevant.
 /// - `ShuffleWriter` — always passthrough; the child's plan shape decides:
 ///   - `SortPreservingMergeExec` in the child chain → `[0]` (collapse).
 ///   - `RepartitionExec(Hash|RoundRobin)` in the child chain → `[0..K-1]`.
@@ -1289,12 +1290,12 @@ mod tests {
     use super::*;
     use crate::error::BallistaError;
     use crate::execution_plans::ChaosExec;
+    use crate::execution_plans::test_util::{drive_partition_results, two_by_two_input};
     use datafusion::arrow::array::{
         AsArray, StringArray, StringViewArray, StructArray, UInt32Array, UInt64Array,
     };
     use datafusion::arrow::ipc::reader::StreamReader;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::display::DefaultDisplay;
     use datafusion::physical_plan::expressions::Column;
@@ -1310,50 +1311,11 @@ mod tests {
         plan: Arc<ShuffleWriterExec>,
         task_ctx: Arc<TaskContext>,
     ) -> Result<Vec<RecordBatch>> {
-        let k = plan.properties().output_partitioning().partition_count();
-        let mut handles = Vec::with_capacity(k);
-        for n in 0..k {
-            let plan = plan.clone();
-            let ctx = task_ctx.clone();
-            handles.push(tokio::spawn(async move {
-                let mut stream = plan.execute(n, ctx)?;
-                utils::collect_stream(&mut stream)
-                    .await
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
-            }));
-        }
         let mut all = Vec::new();
-        for h in handles {
-            let batches = h.await.map_err(|e| {
-                DataFusionError::Execution(format!("drive_all_partitions panic: {e}"))
-            })??;
-            all.extend(batches);
+        for result in drive_partition_results(plan, task_ctx).await {
+            all.extend(result.map_err(|e| DataFusionError::Execution(format!("{e:?}")))?);
         }
         Ok(all)
-    }
-
-    async fn drive_partition_results(
-        plan: Arc<ShuffleWriterExec>,
-        task_ctx: Arc<TaskContext>,
-    ) -> Vec<crate::error::Result<Vec<RecordBatch>>> {
-        let k = plan.properties().output_partitioning().partition_count();
-        let mut handles = Vec::with_capacity(k);
-        for n in 0..k {
-            let plan = plan.clone();
-            let ctx = task_ctx.clone();
-            handles.push(tokio::spawn(async move {
-                let mut stream = plan.execute(n, ctx).map_err(BallistaError::from)?;
-                utils::collect_stream(&mut stream).await
-            }));
-        }
-        let mut results = Vec::new();
-        for h in handles {
-            results.push(
-                h.await
-                    .expect("drive_partition_results task should not panic"),
-            );
-        }
-        results
     }
 
     fn assert_shared_structural_error(err: &BallistaError) {
@@ -1380,7 +1342,7 @@ mod tests {
 
         // No output partitioning: passthrough writer, one file per one of
         // the input plan's 2 partitions.
-        let input_plan = create_input_plan()?;
+        let input_plan = two_by_two_input()?;
         let work_dir = TempDir::new()?;
         let query_stage = Arc::new(ShuffleWriterExec::try_new(
             JobId::new("jobOne"),
@@ -1434,7 +1396,7 @@ mod tests {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
 
-        let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
+        let input_plan = Arc::new(CoalescePartitionsExec::new(two_by_two_input()?));
         let work_dir = TempDir::new()?;
         let query_stage = ShuffleWriterExec::try_new(
             JobId::new("jobDisplay"),
@@ -1475,7 +1437,7 @@ mod tests {
         }
 
         // the passthrough case: the writer inherits its input's partitioning
-        let passthrough = render(create_input_plan()?)?;
+        let passthrough = render(two_by_two_input()?)?;
         assert!(
             passthrough.contains("UnknownPartitioning(2)"),
             "expected the input plan's 2 partitions:\n{passthrough}"
@@ -1483,7 +1445,7 @@ mod tests {
 
         // a hash-partitioned input has to come through as such, exprs and all
         let hashed = render(Arc::new(RepartitionExec::try_new(
-            create_input_plan()?,
+            two_by_two_input()?,
             Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
         )?))?;
         assert!(
@@ -1514,11 +1476,8 @@ mod tests {
         // 2 rows backed by a data buffer that holds all 1000 strings
         let batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(strings)])?.slice(10, 2);
-        let input = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
-            &[vec![batch.clone()]],
-            schema,
-            None,
-        )?)));
+        let input =
+            MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], schema, None)?;
         let work_dir = TempDir::new()?;
         let query_stage = Arc::new(ShuffleWriterExec::try_new(
             JobId::new("jobViews"),
@@ -1548,7 +1507,7 @@ mod tests {
         let task_ctx = session_ctx.task_ctx();
 
         let input_plan: Arc<dyn ExecutionPlan> = Arc::new(ChaosExec::new(
-            create_input_plan()?,
+            two_by_two_input()?,
             1.0,
             "transient",
             Some(42),
@@ -1578,7 +1537,7 @@ mod tests {
         let query_stage = Arc::new(ShuffleWriterExec::try_new(
             JobId::new("jobTwice"),
             1,
-            create_input_plan()?,
+            two_by_two_input()?,
             work_dir.path().to_str().unwrap().to_owned(),
         )?);
         drive_all_partitions(query_stage.clone(), task_ctx.clone()).await?;
@@ -1614,7 +1573,7 @@ mod tests {
         std::fs::File::create(&stage_id_as_file).unwrap();
         let work_dir = tmp.path().to_str().unwrap().to_owned();
 
-        let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
+        let input_plan = Arc::new(CoalescePartitionsExec::new(two_by_two_input()?));
         let query_stage = Arc::new(ShuffleWriterExec::try_new(
             "jobOne".into(),
             1,
@@ -1661,11 +1620,7 @@ mod tests {
             ],
         )?;
         let partitions = vec![vec![batch.clone(), batch.clone()], vec![batch]];
-        let input = Arc::new(DataSourceExec::new(Arc::new(MemorySourceConfig::try_new(
-            &partitions,
-            schema,
-            None,
-        )?)));
+        let input = MemorySourceConfig::try_new_exec(&partitions, schema, None)?;
 
         let work_dir = TempDir::new()?;
         let writer = Arc::new(ShuffleWriterExec::try_new(
@@ -1699,9 +1654,7 @@ mod tests {
                 Arc::new(UInt32Array::from_iter_values(0..1000)),
             ],
         )?;
-        let source = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(&[vec![batch]], schema, None)?,
-        )));
+        let source = MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None)?;
         let input = Arc::new(RepartitionExec::try_new(
             source,
             Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4),
@@ -1760,26 +1713,33 @@ mod tests {
         Ok(())
     }
 
-    fn create_input_plan() -> Result<Arc<dyn ExecutionPlan>> {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("a", DataType::UInt32, true),
-            Field::new("b", DataType::Utf8, true),
-        ]));
+    #[test]
+    fn range_sort_shuffle_output_ids_do_not_follow_the_input_slice() -> Result<()> {
+        use crate::execution_plans::sort_shuffle::SortShuffleConfig;
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_expr::{
+            LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
+        };
 
-        // define data.
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(UInt32Array::from(vec![Some(1), Some(3)])),
-                Arc::new(StringArray::from(vec![Some("hello"), Some("world")])),
-            ],
-        )?;
-        let partition = vec![batch.clone(), batch];
-        let partitions = vec![partition.clone(), partition];
+        let split = |v| SplitPoint::new(vec![ScalarValue::UInt32(Some(v))]);
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(
+            Column::new("a", 0),
+        ))])
+        .unwrap();
+        let range = RangePartitioning::try_new(ordering, vec![split(10), split(20)])?;
+        let writer: Arc<dyn ExecutionPlan> = Arc::new(SortShuffleWriterExec::try_new(
+            "job".into(),
+            1,
+            two_by_two_input()?,
+            String::new(),
+            Partitioning::Range(range),
+            SortShuffleConfig::default(),
+        )?);
 
-        let memory_data_source =
-            Arc::new(MemorySourceConfig::try_new(&partitions, schema, None)?);
-
-        Ok(Arc::new(DataSourceExec::new(memory_data_source)))
+        assert_eq!(
+            compute_global_output_partition_ids(&writer, &[5, 6]),
+            vec![0, 1, 2]
+        );
+        Ok(())
     }
 }

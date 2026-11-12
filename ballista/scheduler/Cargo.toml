@@ -48,9 +48,6 @@ required-features = ["build-binary", "rest-api"]
 [features]
 build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
 default = ["build-binary", "rest-api"]
-# job info can cache stage plans, in some cases where
-# task plans can be re-computed, cache behavior may need to be disabled.
-disable-stage-plan-cache = []
 # Arrow Flight SQL frontend, so generic SQL clients (JDBC/ODBC, BI tools,
 # Python ADBC) can run queries. Off by default; enable at runtime with
 # `--flight-sql`.
@@ -78,6 +75,7 @@ ballista-api-types = { workspace = true, optional = true }
 ballista-core = { workspace = true }
 ballista-flight-sql = { workspace = true, optional = true }
 ballista-history = { workspace = true, optional = true }
+blake3 = "1.8"
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }

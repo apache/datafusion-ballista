@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 236" width="880" height="236" role="img" aria-label="Bar chart of total time for the 22 queries. Apache Spark 4.1.3 takes 898 seconds. Ballista staged (default) takes 405 seconds, 2.2x faster. Ballista pipelined (experimental) takes 261 seconds, 3.4x faster.">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; fill: #1f2328; }
+    .bg { fill: #ffffff; }
+    .title { font-size: 20px; font-weight: 600; }
+    .sub { font-size: 14px; fill: #59636e; }
+    .label { font-size: 15px; }
+    .value { font-size: 15px; font-weight: 600; }
+    .delta { font-weight: 400; }
+    .note { font-size: 12.5px; fill: #59636e; }
+    .axis { stroke: #c3c2b7; stroke-width: 1; }
+    .spark { fill: #898781; }
+    .staged { fill: #2a78d6; }
+    .pipelined { fill: #eb6834; }
+    @media (prefers-color-scheme: dark) {
+      text { fill: #e6edf3; }
+      .bg { fill: #0d1117; }
+      .sub, .note { fill: #9198a1; }
+      .axis { stroke: #3d444d; }
+      .staged { fill: #3987e5; }
+      .pipelined { fill: #d95926; }
+    }
+  </style>
+  <rect class="bg" width="880" height="236" rx="6"/>
+  <text class="title" x="24" y="36">2.2x faster than Apache Spark by default, 3.4x with pipelined execution</text>
+  <text class="sub" x="24" y="60">Total time for the 22 queries of a 1 TB (SF1000) benchmark derived from TPC-H. Lower is better.</text>
+
+  <path class="spark" d="M264 84H798.9Q802.9 84 802.9 88V104Q802.9 108 798.9 108H264Z"/>
+  <path class="staged" d="M264 124H503Q507 124 507 128V144Q507 148 503 148H264Z"/>
+  <path class="pipelined" d="M264 164H416.54Q420.54 164 420.54 168V184Q420.54 188 416.54 188H264Z"/>
+  <line class="axis" x1="264" y1="76" x2="264" y2="196"/>
+
+  <text class="label" x="254" y="101" text-anchor="end">Apache Spark 4.1.3</text>
+  <text class="label" x="254" y="141" text-anchor="end">Ballista staged (default)</text>
+  <text class="label" x="254" y="181" text-anchor="end">Ballista pipelined (experimental)</text>
+
+  <text class="value" x="812.9" y="101">898 s</text>
+  <text class="value" x="517" y="141">405 s<tspan class="delta"> · 2.2x faster</tspan></text>
+  <text class="value" x="430.54" y="181">261 s<tspan class="delta"> · 3.4x faster</tspan></text>
+
+  <text class="note" x="24" y="222">Derived from TPC-H, not an official TPC-H result. 32 executors with 8 vCPUs each. Mean of 2 runs including the cold first run.</text>
+</svg>

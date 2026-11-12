@@ -478,30 +478,14 @@ impl ExecutionPlan for RangeShuffleReaderExec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId, PartitionStats,
-    };
+    use crate::execution_plans::test_util::{test_location, write_ipc_stream};
     use datafusion::arrow::array::{ArrayRef, Float64Array, RecordBatch};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
     use datafusion::prelude::SessionContext;
-    use std::fs::{File, create_dir_all};
     use tempfile::tempdir;
-
-    /// Write an Arrow IPC stream containing `batches` at `path`.
-    fn write_ipc_stream(path: &std::path::Path, batches: &[RecordBatch]) {
-        create_dir_all(path.parent().unwrap()).unwrap();
-        let file = File::create(path).unwrap();
-        let mut writer = StreamWriter::try_new(file, &batches[0].schema()).unwrap();
-        for b in batches {
-            writer.write(b).unwrap();
-        }
-        writer.finish().unwrap();
-    }
 
     fn sorted_batch(schema: SchemaRef, values: &[f64]) -> RecordBatch {
         let col: ArrayRef = Arc::new(Float64Array::from(values.to_vec()));
@@ -511,22 +495,7 @@ mod tests {
     fn make_location(job: &str, stage: usize, partition: usize) -> PartitionLocation {
         PartitionLocation {
             map_partition_id: partition,
-            partition_id: PartitionId {
-                job_id: job.into(),
-                stage_id: stage,
-                partition_id: partition,
-            },
-            executor_meta: ExecutorMetadata {
-                id: "test-executor".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default(),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
-            partition_stats: PartitionStats::default(),
-            file_id: None,
-            is_sort_shuffle: false,
+            ..test_location(job, stage, partition)
         }
     }
 

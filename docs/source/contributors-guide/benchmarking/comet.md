@@ -20,7 +20,7 @@
 # Spark + Comet Benchmark Configuration
 
 How Spark 4.1.3 with [Apache DataFusion Comet](https://github.com/apache/datafusion-comet)
-1.1.0-rc2 was configured for the TPC-H SF1000 results on the
+1.1.0 was configured for the TPC-H SF1000 results on the
 [benchmarking page](index.md). The cluster, data and queries are described in
 [Benchmark Environment](environment.md).
 

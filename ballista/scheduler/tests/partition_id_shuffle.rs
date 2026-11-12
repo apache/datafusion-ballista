@@ -30,8 +30,7 @@ use ballista_core::execution_plans::{
 };
 use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+    ExecutorEndpoint, PartitionId, PartitionLocation, PartitionStats,
 };
 use ballista_executor::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
 use ballista_scheduler::planner::{
@@ -101,15 +100,12 @@ fn input() -> Arc<dyn ExecutionPlan> {
     MemorySourceConfig::try_new_exec(&partitions, schema, None).unwrap()
 }
 
-fn executor() -> ExecutorMetadata {
-    ExecutorMetadata {
+fn executor() -> Arc<ExecutorEndpoint> {
+    Arc::new(ExecutorEndpoint {
         id: "executor-1".to_string(),
         host: "localhost".to_string(),
         port: 0,
-        grpc_port: 0,
-        specification: ExecutorSpecification::default().with_vcores(1),
-        os_info: ExecutorOperatingSystemSpecification::default(),
-    }
+    })
 }
 
 /// The first stage's output locations, keyed for `remove_unresolved_shuffles`:
