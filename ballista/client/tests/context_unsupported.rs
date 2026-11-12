@@ -23,13 +23,18 @@ mod common;
 /// gets support for them
 #[cfg(test)]
 mod unsupported {
-    use crate::common::{register_alltypes, remote_context, standalone_context};
+    use crate::common::{
+        register_alltypes, remote_context, remote_push_context, standalone_context,
+        standalone_push_context,
+    };
     use datafusion::prelude::SessionContext;
     use rstest::*;
 
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     #[should_panic]
     async fn should_support_sql_create_table(
@@ -57,6 +62,8 @@ mod unsupported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_support_information_schema_query_reading_other_tables(
         #[future(awt)]
