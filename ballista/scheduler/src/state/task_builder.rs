@@ -229,8 +229,8 @@ fn checked_restriction(
 ///
 /// Not an `EmptyExec`: DataFusion's proto codec decodes one with zero
 /// partitions as one partition, so it would reach the executor with a
-/// partition the task doesn't own, and a `UnionExec` above it would run the
-/// wrong branch. A `MemorySourceConfig` keeps its empty partition list.
+/// partition the task doesn't own, which the executor would run. A
+/// `MemorySourceConfig` keeps its empty partition list.
 fn no_partitions(plan: &Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
     let source = MemorySourceConfig::try_new(&[], plan.schema(), None)?;
     Ok(DataSourceExec::from_data_source(source))
@@ -261,12 +261,13 @@ fn ensure_leaf_runs_whole(
 }
 
 /// Check that a restricted `UnionExec` branch has one partition for each of
-/// `partitions`. The union routes the task's partitions by its branches'
-/// counts, so a branch with any other count would make the task run the wrong
-/// branch. That happens when the branch collapses its input, such as through a
-/// `SortExec` that merges its partitions, which reports one partition whatever
-/// its leaves do, or holds a node the scheduler doesn't know that keeps its
-/// own count.
+/// `partitions`. The executor runs every partition of the task's plan, so a
+/// branch that keeps partitions the task wasn't given runs them in this task
+/// too, and the union's later partitions no longer line up with the task's.
+/// When those partitions read their input whole, as below a `SortExec`, a
+/// `LIMIT` or an aggregate without `GROUP BY` that merges the branch into one
+/// partition, the task returns rows that another task returns as well. A node
+/// the scheduler doesn't know that keeps its own count does the same.
 fn ensure_branch_restricted(
     branch: &Arc<dyn ExecutionPlan>,
     partitions: &[usize],
@@ -278,10 +279,12 @@ fn ensure_branch_restricted(
     let name = branch.name();
     plan_err!(
         "cannot restrict a `UnionExec` branch to partitions {partitions:?}: its \
-         `{name}` keeps a partition count of {count}, so the union would run the \
-         wrong branch. A branch that collapses its input, such as through a \
-         `SortExec` or `CoalescePartitionsExec`, needs a stage of its own; a node \
-         of your own can be restricted by \
+         `{name}` keeps a partition count of {count}, so the task would also run \
+         partitions another task owns. The adaptive planner can leave a branch \
+         that merges its input into one partition, such as through an `ORDER BY`, \
+         a `LIMIT` or an aggregate without `GROUP BY`, in the union's stage; the \
+         static planner (`ballista.planner.adaptive.enabled = false`) gives it a \
+         stage of its own. A node of your own can be restricted by \
          `SchedulerConfig::partition_sliceable_resolver`."
     )
 }
@@ -1129,7 +1132,8 @@ mod tests {
     }
 
     /// A `UnionExec` branch that keeps another partition count after
-    /// restriction would make the union run the wrong branch, so it is refused.
+    /// restriction would make the task run partitions it doesn't own, so it is
+    /// refused.
     #[test]
     fn a_union_branch_with_the_wrong_partition_count_is_refused() {
         // A node the scheduler doesn't know that holds its own two partitions,
@@ -1146,9 +1150,12 @@ mod tests {
             error,
             "Error during planning: cannot restrict a `UnionExec` branch to \
              partitions []: its `PayloadExec` keeps a partition count of 2, so the \
-             union would run the wrong branch. A branch that collapses its input, \
-             such as through a `SortExec` or `CoalescePartitionsExec`, needs a \
-             stage of its own; a node of your own can be restricted by \
+             task would also run partitions another task owns. The adaptive \
+             planner can leave a branch that merges its input into one partition, \
+             such as through an `ORDER BY`, a `LIMIT` or an aggregate without \
+             `GROUP BY`, in the union's stage; the static planner \
+             (`ballista.planner.adaptive.enabled = false`) gives it a stage of its \
+             own. A node of your own can be restricted by \
              `SchedulerConfig::partition_sliceable_resolver`."
         );
     }
