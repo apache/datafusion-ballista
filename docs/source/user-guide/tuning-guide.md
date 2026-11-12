@@ -364,6 +364,48 @@ currently implemented:
   subplans, are never shared. Enabled by default; set
   `ballista.planner.reuse_exchange.enabled` to `false` to run each copy.
 
+### Debugging AQE decisions
+
+The scheduler logs how AQE changes each job's plan at the `debug` level. Turn
+it on for the AQE planner with `RUST_LOG`, or with the scheduler's
+`--log-level-setting` flag:
+
+```shell
+RUST_LOG=info,ballista_scheduler::state::aqe=debug ballista-scheduler
+```
+
+Each time AQE optimizes a job's plan (when the job starts, after each stage
+finishes, and as each stage launches), it logs every rule that changed the
+plan, with a diff of the change, and then the plan the rules left. A rule that
+leaves the plan as it was is not logged, and neither is a change that a later
+rule undoes. The AQE rules also log what they decided and why they skipped an
+optimization: the sizes and thresholds behind each join's strategy, why a
+stage's partitions were not coalesced or a skewed join was not split, and why a
+repeated subplan could not share a stage. For a join of a small table with a
+large one:
+
+```text
+DEBUG ballista_scheduler::state::aqe::execution_plan::dynamic_join: AQE join decision plan_id=0 action=CollectLeft(broadcast) partition_mode=CollectLeft build_side=right under_threshold=true ...
+DEBUG ballista_scheduler::state::aqe::plan_change_log: Job 038DQQWXQR000, initial optimization: SelectJoinRule changed the plan:
+...
+   AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
+     AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+       ProjectionExec: expr=[]
+-        DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(k@0, k@0)] repartitioned=false
+-          DataSourceExec: file_groups={1 group: [[big.parquet]]}, projection=[k], file_type=parquet
++        ProjectionExec: expr=[k@1 as k, k@0 as k]
++          HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(k@0, k@0)]
+             DataSourceExec: file_groups={1 group: [[small.parquet]]}, projection=[k], file_type=parquet
++            DataSourceExec: file_groups={1 group: [[big.parquet]]}, projection=[k], file_type=parquet
+```
+
+Lines starting with `-` were removed by the rule and lines starting with `+`
+were added, and `...` stands for unchanged lines left out. To see only the plan
+changes, use `ballista_scheduler::state::aqe::plan_change_log=debug`. Each rule
+logs its decisions under its own module, for example
+`ballista_scheduler::state::aqe::optimizer_rule::optimize_skewed_join` for the
+skew join rule.
+
 ### Current limitations
 
 The implementation covers the happy path only. The following are known to be

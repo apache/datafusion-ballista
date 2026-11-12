@@ -21,6 +21,7 @@
 use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::planner::AdaptivePlanner;
+use crate::state::aqe::reuse_exchange::{Unshareable, reuse_key};
 use crate::state::aqe::test::{
     mock_batch, mock_context, mock_partitions_with_statistics,
 };
@@ -55,6 +56,10 @@ const SELF_JOIN: &str = "with v as (select c, sum(a) as s from t group by c) \
 /// An aggregate compared with its own maximum, as TPC-H q15 does.
 const Q15_SHAPE: &str = "with v as (select c, sum(a) as s from t group by c) \
     select c, s from v where s = (select max(s) from v)";
+/// `random()` below the shuffle, where reading one stage would give both
+/// readers the same values.
+const VOLATILE: &str = "with v as (select c, sum(a * random()) as s from t group by c) \
+    select c, s from v union all select c, s from v";
 
 fn context(reuse: bool) -> SessionContext {
     let config = mock_context()
@@ -119,14 +124,25 @@ fn aggregates_the_table(stage: &Arc<dyn ExecutionPlan>) -> bool {
 
 #[tokio::test]
 async fn a_volatile_subplan_runs_for_each_reader() {
-    // `random()` below the shuffle, where reading one stage would give both
-    // readers the same values.
-    let sql = "with v as (select c, sum(a * random()) as s from t group by c) \
-        select c, s from v union all select c, s from v";
-    let mut planner = planner(&context(true), sql).await;
+    let mut planner = planner(&context(true), VOLATILE).await;
 
     let stages = planner.identify_runnable_stages().unwrap().unwrap();
     assert_eq!(stages.len(), 2);
+}
+
+#[tokio::test]
+async fn a_volatile_subplan_is_unshareable_for_its_volatile_expression() {
+    let ctx = context(true);
+    let planner = planner(&ctx, VOLATILE).await;
+    let codec = ctx.state().config().ballista_physical_extension_codec();
+
+    let mut runnable = Vec::new();
+    AdaptivePlanner::find_runnable_exchanges(&planner.plan, &mut runnable);
+    assert_eq!(runnable.len(), 2);
+    for exchange in &runnable {
+        let reason = reuse_key(exchange, &codec).unwrap_err();
+        assert!(matches!(reason, Unshareable::Volatile(_)), "{reason}");
+    }
 }
 
 #[rstest]
