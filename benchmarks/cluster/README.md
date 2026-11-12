@@ -216,6 +216,9 @@ When you publish results, follow
 [Recording a new result set](../../docs/source/contributors-guide/benchmarking/index.md#recording-a-new-result-set).
 Published results are kept as JSON in `published/`, and `publish.py` regenerates
 the results table in the docs and the charts in the top-level README from them.
+`published/memory/` holds a memory sweep (one query at decreasing executor
+memory per configuration), which `publish.py` turns into the tables and charts
+of the docs' memory usage page.
 
 ## Tests
 
