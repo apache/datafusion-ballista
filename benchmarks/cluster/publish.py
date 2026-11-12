@@ -23,8 +23,9 @@ Each file in published/tpch-sf1000/ is one column of the results table, in the
 format run.py writes, plus a "label" for the column heading. A "total" is only
 needed when the per-query means were rounded before they were recorded.
 
-Rewrites the results table on the docs' benchmarking page, and the charts and
-the speedups over Spark in the top-level README.
+Rewrites the results table on the docs' benchmarking page, the results and
+headline numbers on the comparison with DataFusion Distributed, and the charts
+and the speedups over Spark in the top-level README.
 """
 
 import html
@@ -41,6 +42,9 @@ PUBLISHED = os.path.join(HERE, "published", "tpch-sf1000")
 GUIDE = os.path.join(
     REPO, "docs", "source", "contributors-guide", "benchmarking", "index.md"
 )
+COMPARISON = os.path.join(
+    REPO, "docs", "source", "about", "datafusion-distributed-comparison.md"
+)
 README = os.path.join(REPO, "README.md")
 IMAGES = os.path.join(REPO, "docs", "source", "_static", "images")
 
@@ -54,8 +58,18 @@ TABLE_COLUMNS = [
     "trino",
 ]
 
+# The result files the comparison with DataFusion Distributed shows, in the order
+# of its table's columns.
+COMPARISON_COLUMNS = [
+    "ballista-staged",
+    "ballista-pipelined",
+    "datafusion-distributed",
+]
+
 BEGIN = "<!-- BEGIN GENERATED BENCHMARK RESULTS -->"
 END = "<!-- END GENERATED BENCHMARK RESULTS -->"
+FINDINGS_BEGIN = "<!-- BEGIN GENERATED COMPARISON FINDINGS -->"
+FINDINGS_END = "<!-- END GENERATED COMPARISON FINDINGS -->"
 SUMMARY = re.compile(
     r"\*\*[\d.]+x faster than Spark\*\* by default and \*\*[\d.]+x faster\*\*"
 )
@@ -100,13 +114,91 @@ def results_table(runs):
     )
 
 
-def with_table(page, table):
-    """The page with the text between its generated-results markers replaced."""
-    before, begin, rest = page.partition(BEGIN)
-    _, end, after = rest.partition(END)
-    if not begin or not end:
-        sys.exit(f"the page has no {BEGIN} ... {END} block")
-    return f"{before}{BEGIN}\n\n{table}\n\n{END}{after}"
+def with_table(page, table, begin=BEGIN, end=END):
+    """The page with the text between a pair of generated-text markers replaced."""
+    before, found_begin, rest = page.partition(begin)
+    _, found_end, after = rest.partition(end)
+    if not found_begin or not found_end:
+        sys.exit(f"the page has no {begin} ... {end} block")
+    return f"{before}{begin}\n\n{table}\n\n{end}{after}"
+
+
+def protocol(run):
+    """How a run's times were taken, such as "mean of 3 iterations after an untimed warm-up"."""
+    warmup = (
+        "after an untimed warm-up" if run["warmup"] else "including the cold first one"
+    )
+    return f"mean of {run['iterations']} iterations {warmup}"
+
+
+def commit(sha):
+    return f"`{sha[:8]}`"
+
+
+def comparison_results(results):
+    """The comparison page's results: where they came from, then the table."""
+    staged, pipelined, dfd = (results[name] for name in COMPARISON_COLUMNS)
+    if staged["ballista_commit"] != pipelined["ballista_commit"]:
+        sys.exit("the staged and pipelined results come from different commits")
+    provenance = (
+        f"Ballista at {commit(staged['ballista_commit'])} "
+        f"(DataFusion {staged['datafusion_version']}), {protocol(staged)}; "
+        f"DataFusion Distributed at {commit(dfd['datafusion_distributed_commit'])} "
+        f"(DataFusion {dfd['datafusion_version']}), {protocol(dfd)}. "
+        "Times in seconds; lower is better."
+    )
+    table = results_table([staged, pipelined, dfd])
+    return f"{provenance}\n\n{table}"
+
+
+def geometric_mean(ratios):
+    return math.exp(sum(math.log(r) for r in ratios) / len(ratios))
+
+
+def query_list(queries):
+    """Queries as prose, such as "Q1, Q10, and Q13"."""
+    names = [f"Q{q}" for q in queries]
+    if len(names) <= 2:
+        return " and ".join(names)
+    return f"{', '.join(names[:-1])}, and {names[-1]}"
+
+
+def comparison_findings(results):
+    """The headline numbers comparing pipelined Ballista with DataFusion Distributed."""
+    staged, pipelined, dfd = (results[name] for name in COMPARISON_COLUMNS)
+    for name in COMPARISON_COLUMNS:
+        if any(q.get("error") or "mean" not in q for q in results[name]["queries"]):
+            sys.exit(f"{name} has a failed query, so it cannot be compared")
+    ballista = {q["query"]: q["mean"] for q in pipelined["queries"]}
+    other = {q["query"]: q["mean"] for q in dfd["queries"]}
+    queries = sorted(other)
+    ballista_wins = [q for q in queries if ballista[q] < other[q]]
+    other_wins = [q for q in queries if other[q] < ballista[q]]
+    ratio = geometric_mean([other[q] / ballista[q] for q in queries])
+    widest = max(queries, key=lambda q: abs(other[q] - ballista[q]))
+    without_widest = geometric_mean(
+        [other[q] / ballista[q] for q in queries if q != widest]
+    )
+    gap = compare.total(dfd) - compare.total(pipelined)
+    favours = "pipelined Ballista" if ratio >= 1 else "DataFusion Distributed"
+    favours_without = (
+        "pipelined Ballista" if without_widest >= 1 else "DataFusion Distributed"
+    )
+    return "\n".join(
+        [
+            f"- Pipelined Ballista was faster on {len(ballista_wins)} of the "
+            f"{len(queries)} queries and DataFusion Distributed on {len(other_wins)}"
+            + (f" ({query_list(other_wins)})" if other_wins else "")
+            + ". The geometric mean of the per-query ratios favours "
+            f"{favours} by about {max(ratio, 1 / ratio):.1f}x.",
+            f"- The totals differ by {abs(gap):.1f} s, of which Q{widest} accounts for "
+            f"{abs(other[widest] - ballista[widest]):.1f} s. Excluding Q{widest}, the "
+            f"geometric mean favours {favours_without} by about "
+            f"{max(without_widest, 1 / without_widest):.1f}x.",
+            f"- Staged Ballista took {compare.total(staged) / compare.total(pipelined):.2f} "
+            "times as long as pipelined Ballista in total.",
+        ]
+    )
 
 
 def chart_series(results):
@@ -361,8 +453,13 @@ def outputs():
     """The content of each generated file, by path."""
     results = load_results()
     series = chart_series(results)
+    comparison = with_table(read(COMPARISON), comparison_results(results))
+    comparison = with_table(
+        comparison, comparison_findings(results), FINDINGS_BEGIN, FINDINGS_END
+    )
     return {
         GUIDE: with_table(read(GUIDE), results_table(list(results.values()))),
+        COMPARISON: comparison,
         README: with_speedups(read(README), series),
         os.path.join(IMAGES, "tpch_sf1000_total.svg"): total_chart(series),
         os.path.join(IMAGES, "tpch_sf1000_per_query.svg"): per_query_chart(series),
