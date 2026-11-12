@@ -26,11 +26,11 @@ description: Use when reviewing a pull request in the datafusion-ballista repo, 
 
 A full review of a Ballista pull request. The core is a line-level correctness review of
 the code. On top of that sit three Ballista-specific gates that a generic review misses:
-the user-persona registry, the public API surface, and benchmark evidence for changes to
-plan shape or execution.
+the contributor guides, the public API surface, and benchmark evidence for changes to plan
+shape or execution.
 
 The correctness review (Steps 3 to 5) is the main job. The gates (Steps 6 to 8) are
-additions to it, never a replacement for it. A report that only covers personas, API and
+additions to it, never a replacement for it. A report that only covers the guides, API and
 benchmarks is an incomplete review.
 
 Stay quiet where the PR is clean. Do not manufacture findings to look useful.
@@ -150,14 +150,20 @@ Lint locally if the PR is checked out (`cargo fmt --check`, `cargo clippy` on th
 crates). Leave the full workspace build and test run to CI, and read the CI results from
 Step 1 instead.
 
-## Step 6: Read the persona contract
+## Step 6: Check the contributor guides
 
-Read `docs/source/contributors-guide/user-personas.md` **every time**. Do not work from
-memory of it and do not copy its contents into this skill. That page is the source of
-truth, it is append-only, and it may have grown a persona since this skill was written.
+Read every page under `docs/source/contributors-guide/` and `CONTRIBUTING.md` **every
+time**. Do not work from memory of them and do not copy their contents into this skill.
+They are the source of truth and change more often than this skill does.
 
-For each persona it defines, note the "Depends on" list and the "Red flags in a pull
-request" list.
+Check the diff against every requirement they state that applies to it, for example test
+fixture placement, golden file refreshes, upgrade notes and labels, and design invariants
+such as the shuffle stage barrier. Report each miss with the page and section it comes
+from. A PR that changes behavior a guide describes needs to update that guide.
+
+The persona page (`user-personas.md`) is append-only and may have grown a persona since
+this skill was written. For each persona it defines, note the "Depends on" list and the
+"Red flags in a pull request" list.
 
 Walk each persona's red-flag list against the diff. A red flag is not a veto. It means the
 change needs explicit discussion, maintainer sign-off, and usually a migration path,
@@ -245,7 +251,7 @@ Write the report in chat. Order findings by severity and group them as:
 1. **Blocking**: wrong results, panics, data loss, deadlocks, memory regressions, an
    unmitigated persona break.
 2. **Should fix**: error handling gaps, missing tests for a risky path, avoidable API
-   breaks, missing label or upgrade note.
+   breaks, a missed contributor guide requirement.
 3. **Nits and questions**: naming, comments, small simplifications, things you could not
    confirm.
 
@@ -277,6 +283,6 @@ is paste-ready and written in the maintainer's voice:
 If the PR is clean, the report reads like:
 
 > Read the change in context and traced the new path through the scheduler and executor, no
-> correctness issues found. Tests cover the new path. Checked all personas against the
-> diff, no red flags. No public API breaks. No changes to plan shape or execution, so no
-> benchmark numbers needed. Approve.
+> correctness issues found. Tests cover the new path. Checked the contributor guides and all
+> personas against the diff, nothing missed and no red flags. No public API breaks. No
+> changes to plan shape or execution, so no benchmark numbers needed. Approve.
