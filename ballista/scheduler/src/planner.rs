@@ -276,7 +276,17 @@ impl DefaultDistributedPlanner {
             ))
         } else if let Some(repart) = execution_plan.downcast_ref::<RepartitionExec>() {
             match repart.properties().output_partitioning() {
-                Partitioning::Hash(_, _) => {
+                // A shuffle cannot merge sorted inputs, so a sort-preserving
+                // repartition cannot be planned as one.
+                Partitioning::Range(_) if repart.preserve_order() => {
+                    Err(BallistaError::NotImplemented(format!(
+                        "cannot plan {} as a shuffle: it must preserve its input's order",
+                        repart.partitioning()
+                    )))
+                }
+                // Unlike round-robin, a range repartition decides which rows
+                // each partition holds, so it cannot be dropped.
+                Partitioning::Hash(_, _) | Partitioning::Range(_) => {
                     let input = children[0].clone();
                     let input =
                         self.optimizer_ensure_requirements.optimize(input, config)?;
@@ -294,8 +304,9 @@ impl DefaultDistributedPlanner {
                     stages.push(shuffle_writer);
                     Ok((unresolved_shuffle, stages))
                 }
-                _ => {
-                    // remove any non-hash repartition from the distributed plan
+                Partitioning::RoundRobinBatch(_)
+                | Partitioning::UnknownPartitioning(_) => {
+                    // remove any other repartition from the distributed plan
                     Ok((children[0].clone(), stages))
                 }
             }
@@ -843,17 +854,16 @@ pub(crate) fn create_shuffle_writer_with_config(
     partitioning: Option<Partitioning>,
     config: &ConfigOptions,
 ) -> Result<Arc<dyn ShuffleWriter>> {
-    // Sort-based shuffle is the only shuffle writer for hash-repartition
-    // stages. Its tuning values still come from the session config.
+    // Sort-based shuffle is the only shuffle writer for hash- and range-
+    // repartition stages. Its tuning values still come from the session config.
     let ballista_config = config
         .extensions
         .get::<BallistaConfig>()
         .cloned()
         .unwrap_or_default();
 
-    // Sort shuffle requires hash partitioning.
     match partitioning {
-        Some(Partitioning::Hash(exprs, partition_count)) => {
+        Some(partitioning @ (Partitioning::Hash(..) | Partitioning::Range(..))) => {
             let sort_config = SortShuffleConfig::new(
                 true,
                 ballista_config.shuffle_sort_based_batch_size(),
@@ -867,7 +877,7 @@ pub(crate) fn create_shuffle_writer_with_config(
                 stage_id,
                 plan,
                 "".to_owned(),
-                Partitioning::Hash(exprs, partition_count),
+                partitioning,
                 sort_config,
             )?))
         }
@@ -884,6 +894,9 @@ pub(crate) fn create_shuffle_writer_with_config(
         ))),
     }
 }
+
+#[cfg(test)]
+mod range_shuffle_tests;
 
 #[cfg(test)]
 mod test {
@@ -2255,7 +2268,7 @@ order by
         Ok((ctx, (*options).clone()))
     }
 
-    fn roundtrip_operator(
+    pub(super) fn roundtrip_operator(
         ctx: &TaskContext,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {

@@ -1,0 +1,40 @@
+{
+  "run": "ballista-pipelined",
+  "label": "Ballista pipelined",
+  "engine": "ballista",
+  "benchmark": "tpch",
+  "scale_factor": 1000,
+  "version": "55.0.0",
+  "ballista_commit": "d98720804369917151052e1c280a1dae711817fb",
+  "datafusion_version": "55.2.0",
+  "ballista_config": {
+    "ballista.execution.mode": "pipelined"
+  },
+  "iterations": 2,
+  "warmup": false,
+  "total": 260.9,
+  "queries": [
+    {"query": 1, "mean": 12.19},
+    {"query": 2, "mean": 13.32},
+    {"query": 3, "mean": 7.97},
+    {"query": 4, "mean": 5.54},
+    {"query": 5, "mean": 17.39},
+    {"query": 6, "mean": 1.29},
+    {"query": 7, "mean": 8.27},
+    {"query": 8, "mean": 18.2},
+    {"query": 9, "mean": 29.99},
+    {"query": 10, "mean": 21.85},
+    {"query": 11, "mean": 3.12},
+    {"query": 12, "mean": 3.52},
+    {"query": 13, "mean": 6.44},
+    {"query": 14, "mean": 1.4},
+    {"query": 15, "mean": 6.83},
+    {"query": 16, "mean": 5.37},
+    {"query": 17, "mean": 17.8},
+    {"query": 18, "mean": 28.98},
+    {"query": 19, "mean": 7.67},
+    {"query": 20, "mean": 6.44},
+    {"query": 21, "mean": 32.09},
+    {"query": 22, "mean": 5.22}
+  ]
+}
