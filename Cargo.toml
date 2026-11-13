@@ -56,14 +56,14 @@ ballista-result-service = { path = "ballista/result-service", version = "55.0.0"
 ballista-scheduler = { path = "ballista/scheduler", version = "55.0.0" }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
-# Pinned to a commit on DataFusion's branch-56 while preparing for the
+# Pinned to the DataFusion 56.0.0-rc1 tag while preparing for the
 # DataFusion 56 upgrade. Switch back to crates.io versions once 56 is released.
-datafusion = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636" }
-datafusion-cli = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636" }
-datafusion-functions-aggregate-common = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636" }
-datafusion-proto = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636" }
-datafusion-proto-common = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636" }
-datafusion-substrait = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636" }
+datafusion = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1" }
+datafusion-cli = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1" }
+datafusion-functions-aggregate-common = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1" }
+datafusion-proto = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1" }
+datafusion-proto-common = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1" }
+datafusion-substrait = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1" }
 
 ctor = { version = "1.0" }
 insta = "1.47"
