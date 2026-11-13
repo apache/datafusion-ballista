@@ -25,6 +25,8 @@ mod broadcast_thresholds;
 mod coalesce_rule;
 /// Stage column statistics carried onto the stage's exchange
 mod column_statistics;
+/// Jobs in which one input finishes with no rows
+mod empty_input;
 /// Job-failure lifecycle tests for the adaptive graph
 mod job_failure;
 /// Job-success lifecycle tests for the adaptive graph
