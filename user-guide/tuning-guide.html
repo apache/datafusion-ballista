@@ -527,6 +527,21 @@ divided equally across the executor’s vcores: each task receives its own
 isolated from other tasks. Idle slots do not lend their share to busy ones,
 which keeps task memory predictable at the cost of some unused capacity when
 the executor is under-utilized.</p>
+</section>
+<section id="choosing-the-executor-s-memory-allocator">
+<h2>Choosing the Executor’s Memory Allocator<a class="headerlink" href="#choosing-the-executor-s-memory-allocator" title="Link to this heading">#</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">ballista-executor</span></code> binary uses <a class="reference external" href="https://github.com/microsoft/mimalloc">mimalloc</a>
+as its global allocator by default. To use
+<a class="reference external" href="https://github.com/jemalloc/jemalloc">jemalloc</a> instead, build it with the
+<code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> feature, which takes precedence over mimalloc:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>ballista-executor<span class="w"> </span>--features<span class="w"> </span>jemalloc
+</pre></div>
+</div>
+<p>Allocators differ in how much memory they hold on to after it is freed, so the
+choice can change an executor’s resident memory as well as its speed. The
+memory pool described above counts reservations, not resident memory, so leave
+headroom whichever allocator you use. jemalloc is not supported on Windows
+(MSVC) targets.</p>
 <p>The executor refuses to start if the per-task share would round to zero (i.e.
 <code class="docutils literal notranslate"><span class="pre">memory_pool_size</span> <span class="pre">&lt;</span> <span class="pre">vcores</span></code>).</p>
 <p>Use <code class="docutils literal notranslate"><span class="pre">--memory-pool-fraction</span></code> to tune how much of the detected memory limit
@@ -894,6 +909,7 @@ processes. Both processes must be configured with the same policy. The default i
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-vcores">Configuring Executor vcores</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-memory-pool">Configuring Executor Memory Pool</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-the-executor-s-memory-allocator">Choosing the Executor’s Memory Allocator</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#join-strategy">Join Strategy</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#with-aqe-the-default">With AQE (the default)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#with-aqe-turned-off">With AQE turned off</a></li>
