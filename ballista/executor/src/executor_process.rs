@@ -1450,15 +1450,33 @@ mod tests {
     use super::clean_shuffle_data_loop;
     use super::remove_job_data;
     use super::structure_executor_metadata;
+    use crate::metrics::ExecutorMemoryMetrics;
     use ballista_core::BALLISTA_PROTOCOL_VERSION;
     use ballista_core::JobId;
+    use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::ids::new_instance_id;
     use ballista_core::serde::protobuf::executor_resource::Resource;
+    use ballista_core::serde::protobuf::scheduler_grpc_server::{
+        SchedulerGrpc, SchedulerGrpcServer,
+    };
+    use ballista_core::serde::protobuf::{
+        CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
+        CreateUpdateSessionParams, CreateUpdateSessionResult, ExecuteQueryParams,
+        ExecuteQueryResult, ExecutorStoppedParams, ExecutorStoppedResult,
+        GetJobMetricsParams, GetJobMetricsResult, GetJobStatusParams, GetJobStatusResult,
+        HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
+        RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
+        RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
+    };
     use std::fs;
     use std::fs::File;
     use std::io::Write;
     use std::time::Duration;
     use tempfile::TempDir;
+    use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::codegen::BoxStream;
+    use tonic::{Request, Response, Status};
 
     #[test]
     fn executor_metadata_reflects_process_configuration() {
@@ -1568,6 +1586,273 @@ mod tests {
         );
         drop(queued);
         drop(listener);
+    }
+
+    /// Reserves a local port and releases it, so nothing listens there.
+    fn unused_local_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    type GrpcResult<T> = std::result::Result<Response<T>, Status>;
+
+    fn not_called<T>() -> GrpcResult<T> {
+        Err(Status::unimplemented("not called by a pull-based executor"))
+    }
+
+    /// A scheduler that answers what a pull-based executor asks of it, and
+    /// never has any work to hand out.
+    struct IdleScheduler;
+
+    #[tonic::async_trait]
+    impl SchedulerGrpc for IdleScheduler {
+        type ExecuteQueryPushStream = BoxStream<GetJobStatusResult>;
+
+        async fn poll_work(
+            &self,
+            _: Request<PollWorkParams>,
+        ) -> GrpcResult<PollWorkResult> {
+            Ok(Response::new(PollWorkResult {
+                tasks: vec![],
+                jobs_to_clean: vec![],
+            }))
+        }
+
+        async fn heart_beat_from_executor(
+            &self,
+            _: Request<HeartBeatParams>,
+        ) -> GrpcResult<HeartBeatResult> {
+            Ok(Response::new(HeartBeatResult::default()))
+        }
+
+        async fn executor_stopped(
+            &self,
+            _: Request<ExecutorStoppedParams>,
+        ) -> GrpcResult<ExecutorStoppedResult> {
+            Ok(Response::new(ExecutorStoppedResult::default()))
+        }
+
+        async fn register_executor(
+            &self,
+            _: Request<RegisterExecutorParams>,
+        ) -> GrpcResult<RegisterExecutorResult> {
+            not_called()
+        }
+
+        async fn update_task_status(
+            &self,
+            _: Request<UpdateTaskStatusParams>,
+        ) -> GrpcResult<UpdateTaskStatusResult> {
+            not_called()
+        }
+
+        async fn create_update_session(
+            &self,
+            _: Request<CreateUpdateSessionParams>,
+        ) -> GrpcResult<CreateUpdateSessionResult> {
+            not_called()
+        }
+
+        async fn remove_session(
+            &self,
+            _: Request<RemoveSessionParams>,
+        ) -> GrpcResult<RemoveSessionResult> {
+            not_called()
+        }
+
+        async fn execute_query_push(
+            &self,
+            _: Request<ExecuteQueryParams>,
+        ) -> GrpcResult<Self::ExecuteQueryPushStream> {
+            not_called()
+        }
+
+        async fn execute_query(
+            &self,
+            _: Request<ExecuteQueryParams>,
+        ) -> GrpcResult<ExecuteQueryResult> {
+            not_called()
+        }
+
+        async fn get_job_status(
+            &self,
+            _: Request<GetJobStatusParams>,
+        ) -> GrpcResult<GetJobStatusResult> {
+            not_called()
+        }
+
+        async fn get_job_metrics(
+            &self,
+            _: Request<GetJobMetricsParams>,
+        ) -> GrpcResult<GetJobMetricsResult> {
+            not_called()
+        }
+
+        async fn cancel_job(
+            &self,
+            _: Request<CancelJobParams>,
+        ) -> GrpcResult<CancelJobResult> {
+            not_called()
+        }
+
+        async fn clean_job_data(
+            &self,
+            _: Request<CleanJobDataParams>,
+        ) -> GrpcResult<CleanJobDataResult> {
+            not_called()
+        }
+    }
+
+    /// Runs a pull-based executor against an idle scheduler, with the given
+    /// clean-up interval and `work_dir` as its work directory, until it shuts
+    /// itself down. The shutdown comes from its Flight port being taken, which
+    /// stops a service right after startup; it then goes through the normal
+    /// graceful shutdown path, which runs to the end with the scheduler.
+    ///
+    /// This sets the process-wide `TERMINATING` flag, which no other unit test
+    /// reads.
+    async fn run_executor_until_flight_port_is_taken(
+        job_data_clean_up_interval_seconds: u64,
+        work_dir: &Path,
+    ) {
+        let scheduler = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let scheduler_port = scheduler.local_addr().unwrap().port();
+        tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(SchedulerGrpcServer::new(IdleScheduler))
+                .serve_with_incoming(TcpListenerStream::new(scheduler)),
+        );
+        let flight_port_holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port,
+            scheduler_connect_timeout_seconds: 5,
+            bind_host: "127.0.0.1".to_string(),
+            port: flight_port_holder.local_addr().unwrap().port(),
+            task_scheduling_policy: TaskSchedulingPolicy::PullStaged,
+            work_dir: Some(work_dir.to_str().unwrap().to_string()),
+            job_data_clean_up_interval_seconds,
+            ..ExecutorProcessConfig::default()
+        });
+
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            super::start_executor_process(config),
+        )
+        .await
+        .expect("the executor did not shut down")
+        .expect("the executor failed instead of shutting down gracefully");
+        drop(flight_port_holder);
+    }
+
+    /// A job directory with a file in it, as the shuffle writer leaves one.
+    fn create_job_dir(work_dir: &Path) -> PathBuf {
+        let job_dir = work_dir.join("job_id");
+        fs::create_dir(&job_dir).unwrap();
+        File::create(job_dir.join("data.arrow"))
+            .unwrap()
+            .write_all(b"data")
+            .unwrap();
+        job_dir
+    }
+
+    #[tokio::test]
+    async fn clean_up_interval_zero_disables_the_cleaner_and_the_shutdown_clean_up() {
+        let work_dir = TempDir::new().unwrap();
+        let job_dir = create_job_dir(work_dir.path());
+
+        run_executor_until_flight_port_is_taken(0, work_dir.path()).await;
+
+        assert!(
+            job_dir.exists(),
+            "job data was cleaned although the clean-up interval is 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn positive_clean_up_interval_cleans_job_data_on_shutdown() {
+        let work_dir = TempDir::new().unwrap();
+        let job_dir = create_job_dir(work_dir.path());
+
+        run_executor_until_flight_port_is_taken(1, work_dir.path()).await;
+
+        assert!(
+            !job_dir.exists(),
+            "job data was not cleaned on shutdown with a clean-up interval of 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_connect_zero_timeout_makes_a_single_attempt() {
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port: unused_local_port(),
+            scheduler_connect_timeout_seconds: 0,
+            ..ExecutorProcessConfig::default()
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::start_executor_process(config),
+        )
+        .await
+        .expect("executor kept retrying with scheduler_connect_timeout_seconds = 0");
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Could not connect to scheduler"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_memory_pool_size_is_reported_to_metrics() {
+        let metrics = ExecutorMemoryMetrics::default();
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port: unused_local_port(),
+            scheduler_connect_timeout_seconds: 0,
+            memory_pool_size: Some(64 * 1024 * 1024),
+            ..ExecutorProcessConfig::default()
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::start_executor_process_with_memory_metrics(config, metrics.clone()),
+        )
+        .await
+        .expect("executor did not fail fast without a scheduler");
+        assert!(result.is_err());
+
+        let usage = metrics.snapshot().expect("pool size was never recorded");
+        assert_eq!(usage.pool_size, Some(64 * 1024 * 1024));
+    }
+
+    #[tokio::test]
+    async fn unbounded_memory_pool_is_reported_to_metrics() {
+        let metrics = ExecutorMemoryMetrics::default();
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port: unused_local_port(),
+            scheduler_connect_timeout_seconds: 0,
+            memory_pool_size: Some(0),
+            ..ExecutorProcessConfig::default()
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::start_executor_process_with_memory_metrics(config, metrics.clone()),
+        )
+        .await
+        .expect("executor did not fail fast without a scheduler");
+        assert!(result.is_err());
+
+        let usage = metrics.snapshot().expect("pool size was never recorded");
+        assert_eq!(usage.pool_size, None);
     }
 
     #[test]
