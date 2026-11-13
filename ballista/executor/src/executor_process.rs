@@ -1041,22 +1041,8 @@ async fn start_executor_process_inner(
 
     let tasks_drained = TasksDrainedFuture(executor.clone());
 
-    // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
-    // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs
-    // until the `shutdown` signal is received or a stop request is coming.
-    let (notify_scheduler, stop_reason) = tokio::select! {
-        service_val = check_services(&mut service_handlers) => {
-            let msg = format!("executor services stopped with reason {service_val:?}");
-            info!("{msg:?}");
-            (true, msg)
-        },
-        signal = shutdown_signal() => {
-            (true, format!("executor received {signal}."))
-        },
-        _ = stop_recv.recv() => {
-            (false, "".to_string())
-        },
-    };
+    let (notify_scheduler, stop_reason) =
+        run_until_shutdown(&mut service_handlers, &mut stop_recv).await;
 
     // Set status to fenced
     info!("setting executor to TERMINATING status");
@@ -1171,6 +1157,30 @@ async fn flight_server_task(
             BallistaError::TonicError(e)
         })
     })
+}
+
+/// Waits until a service fails or finishes, a shutdown signal arrives, or a stop
+/// request is received. Returns whether to notify the scheduler and the reason.
+async fn run_until_shutdown(
+    service_handlers: &mut FuturesUnordered<JoinHandle<Result<(), BallistaError>>>,
+    stop_recv: &mut mpsc::Receiver<bool>,
+) -> (bool, String) {
+    // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
+    // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs
+    // until the `shutdown` signal is received or a stop request is coming.
+    tokio::select! {
+        service_val = check_services(service_handlers) => {
+            let msg = format!("executor services stopped with reason {service_val:?}");
+            info!("{msg:?}");
+            (true, msg)
+        },
+        signal = shutdown_signal() => {
+            (true, format!("executor received {signal}."))
+        },
+        _ = stop_recv.recv() => {
+            (false, "".to_string())
+        },
+    }
 }
 
 // Check the status of long running services
@@ -1477,6 +1487,7 @@ mod tests {
     use ballista_core::BALLISTA_PROTOCOL_VERSION;
     use ballista_core::JobId;
     use ballista_core::config::TaskSchedulingPolicy;
+    use ballista_core::error::BallistaError;
     use ballista_core::ids::new_instance_id;
     use ballista_core::serde::protobuf::executor_resource::Resource;
     use ballista_core::serde::protobuf::scheduler_grpc_server::{
@@ -1491,6 +1502,7 @@ mod tests {
         RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
         RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
     };
+    use futures::stream::FuturesUnordered;
     use std::fs;
     use std::fs::File;
     use std::io::Write;
@@ -1665,6 +1677,48 @@ mod tests {
         )
         .await
         .expect("shuffle cleaner did not stop on shutdown");
+    }
+
+    #[tokio::test]
+    async fn stop_request_ends_the_wait_without_notifying_the_scheduler() {
+        let mut handlers = FuturesUnordered::new();
+        handlers.push(tokio::spawn(async {
+            std::future::pending::<Result<(), BallistaError>>().await
+        }));
+        let (stop_send, mut stop_recv) = tokio::sync::mpsc::channel::<bool>(10);
+        stop_send.send(true).await.unwrap();
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::run_until_shutdown(&mut handlers, &mut stop_recv),
+        )
+        .await
+        .expect("a stop request did not end the wait");
+
+        assert_eq!(outcome, (false, String::new()));
+    }
+
+    #[tokio::test]
+    async fn failed_service_ends_the_wait_and_notifies_the_scheduler() {
+        let mut handlers = FuturesUnordered::new();
+        handlers.push(tokio::spawn(async {
+            Err::<(), BallistaError>(BallistaError::General("boom".to_string()))
+        }));
+        let (_stop_send, mut stop_recv) = tokio::sync::mpsc::channel::<bool>(10);
+
+        let (notify_scheduler, reason) = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::run_until_shutdown(&mut handlers, &mut stop_recv),
+        )
+        .await
+        .expect("a failed service did not end the wait");
+
+        assert!(notify_scheduler);
+        assert!(
+            reason.starts_with("executor services stopped with reason Err("),
+            "unexpected reason: {reason}"
+        );
+        assert!(reason.contains("boom"), "unexpected reason: {reason}");
     }
 
     /// Reserves a local port and releases it, so nothing listens there.
