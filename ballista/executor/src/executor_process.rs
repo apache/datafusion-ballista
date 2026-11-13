@@ -627,6 +627,40 @@ fn resolve_vcores(opt: &ExecutorProcessConfig) -> usize {
     }
 }
 
+/// Spawns the periodic shuffle data cleaner, which stops when the shutdown
+/// notification is received.
+fn spawn_shuffle_cleaner(
+    shutdown_notification: &ShutdownNotifier,
+    work_dir: &str,
+    clean_up_interval_seconds: u64,
+    job_data_ttl_seconds: u64,
+) {
+    let mut interval_time =
+        time::interval(Duration::from_secs(clean_up_interval_seconds));
+    let cleaner_work_dir = work_dir.to_owned();
+
+    let mut shuffle_cleaner_shutdown = shutdown_notification.subscribe_for_shutdown();
+    let shuffle_cleaner_complete = shutdown_notification.shutdown_complete_tx.clone();
+
+    tokio::spawn(async move {
+        // As long as the shutdown notification has not been received
+        while !shuffle_cleaner_shutdown.is_shutdown() {
+            tokio::select! {
+                _ = interval_time.tick() => {
+                        if let Err(e) = clean_shuffle_data_loop(&cleaner_work_dir, job_data_ttl_seconds).await
+                    {
+                        error!("Ballista executor fail to clean_shuffle_data {e:?}")
+                    }
+                    },
+                _ = shuffle_cleaner_shutdown.recv() => {
+                    drop(shuffle_cleaner_complete);
+                    return;
+                }
+            };
+        }
+    });
+}
+
 async fn start_executor_process_inner(
     opt: Arc<ExecutorProcessConfig>,
     memory_metrics: Option<ExecutorMemoryMetrics>,
@@ -912,30 +946,12 @@ async fn start_executor_process_inner(
     let clean_job_data_on_shutdown = opt.job_data_clean_up_interval_seconds > 0;
 
     if clean_job_data_on_shutdown {
-        let mut interval_time =
-            time::interval(Duration::from_secs(opt.job_data_clean_up_interval_seconds));
-        let cleaner_work_dir = work_dir.clone();
-
-        let mut shuffle_cleaner_shutdown = shutdown_notification.subscribe_for_shutdown();
-        let shuffle_cleaner_complete = shutdown_notification.shutdown_complete_tx.clone();
-
-        tokio::spawn(async move {
-            // As long as the shutdown notification has not been received
-            while !shuffle_cleaner_shutdown.is_shutdown() {
-                tokio::select! {
-                    _ = interval_time.tick() => {
-                            if let Err(e) = clean_shuffle_data_loop(&cleaner_work_dir, job_data_ttl_seconds).await
-                        {
-                            error!("Ballista executor fail to clean_shuffle_data {e:?}")
-                        }
-                        },
-                    _ = shuffle_cleaner_shutdown.recv() => {
-                        drop(shuffle_cleaner_complete);
-                        return;
-                    }
-                };
-            }
-        });
+        spawn_shuffle_cleaner(
+            &shutdown_notification,
+            &work_dir,
+            opt.job_data_clean_up_interval_seconds,
+            job_data_ttl_seconds,
+        );
     }
 
     let mut service_handlers: FuturesUnordered<JoinHandle<Result<(), BallistaError>>> =
@@ -1457,6 +1473,7 @@ mod tests {
     use super::remove_job_data;
     use super::structure_executor_metadata;
     use crate::metrics::ExecutorMemoryMetrics;
+    use crate::shutdown::ShutdownNotifier;
     use ballista_core::BALLISTA_PROTOCOL_VERSION;
     use ballista_core::JobId;
     use ballista_core::config::TaskSchedulingPolicy;
@@ -1615,6 +1632,39 @@ mod tests {
         };
 
         assert_eq!(super::resolve_vcores(&config), 3);
+    }
+
+    #[tokio::test]
+    async fn shuffle_cleaner_removes_expired_job_dirs_and_stops_on_shutdown() {
+        let work_dir = TempDir::new().unwrap();
+        let job_dir = work_dir.path().join("job_id");
+        fs::create_dir(&job_dir).unwrap();
+        File::create(job_dir.join("tmp.csv"))
+            .expect("creating temp file")
+            .write_all(b"data")
+            .expect("writing data");
+
+        let mut notifier = ShutdownNotifier::new();
+        super::spawn_shuffle_cleaner(&notifier, work_dir.path().to_str().unwrap(), 1, 1);
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while job_dir.exists() {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("expired job dir was never cleaned");
+
+        // The cleaner holds a completion sender until it sees the shutdown
+        // signal, so the receiver only completes once the cleaner has stopped.
+        let _ = notifier.notify_shutdown.send(());
+        drop(notifier.shutdown_complete_tx);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            notifier.shutdown_complete_rx.recv(),
+        )
+        .await
+        .expect("shuffle cleaner did not stop on shutdown");
     }
 
     /// Reserves a local port and releases it, so nothing listens there.
