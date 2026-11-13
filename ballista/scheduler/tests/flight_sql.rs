@@ -373,6 +373,32 @@ async fn the_advertised_schema_matches_the_data() -> Result {
     Ok(())
 }
 
+/// The stages of an adaptive job are held in a `HashMap`, so anything that
+/// picks the wrong one only shows up for some jobs, hence the repetition.
+#[tokio::test]
+async fn the_advertised_schema_of_a_multi_stage_query_matches_the_data() -> Result {
+    let url = start_cluster().await?;
+    let (mut client, _csv) = client_with_people(&url).await?;
+    let sql = "SELECT name, min(id) FROM people GROUP BY name";
+
+    for _ in 0..16 {
+        let info = client.execute(sql.to_string(), None).await?;
+        let advertised = info.clone().try_decode_schema()?;
+        let batches = collect(&mut client, info).await?;
+        let delivered = batches
+            .first()
+            .ok_or_else(|| BallistaError::General(format!("{sql} returned no data")))?
+            .schema();
+
+        assert_eq!(
+            advertised, *delivered,
+            "FlightInfo schema for `{sql}` does not match the schema of the data"
+        );
+    }
+
+    Ok(())
+}
+
 /// `SHOW TABLES` and friends read `information_schema`, which is a streaming
 /// table the physical codec cannot serialize. Distributing one produced a task
 /// the executors never got and a status the client never saw, so `GetFlightInfo`
