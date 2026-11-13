@@ -616,6 +616,48 @@ pub async fn start_executor_process_with_memory_metrics(
     start_executor_process_inner(opt, Some(memory_metrics)).await
 }
 
+fn create_default_work_dir() -> ballista_core::error::Result<(String, TempDir)> {
+    let temp_dir = TempDir::new()?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            temp_dir.path(),
+            std::fs::Permissions::from_mode(0o700),
+        )?;
+    }
+
+    let path = temp_dir
+        .path()
+        .to_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| BallistaError::Configuration("Unable to bind work dir".into()))?;
+
+    Ok((path, temp_dir))
+}
+
+#[cfg(all(test, unix))]
+mod default_work_dir_regression_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    #[tokio::test]
+    async fn default_work_dir_survives_await_with_private_permissions() {
+        let (path, owner) = create_default_work_dir().unwrap();
+
+        tokio::task::yield_now().await;
+
+        assert!(Path::new(&path).is_dir());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+
+        drop(owner);
+        assert!(!Path::new(&path).exists());
+    }
+}
+
 async fn start_executor_process_inner(
     opt: Arc<ExecutorProcessConfig>,
     memory_metrics: Option<ExecutorMemoryMetrics>,
@@ -631,15 +673,12 @@ async fn start_executor_process_inner(
     let scheduler_port = opt.scheduler_port;
     let scheduler_url = format!("http://{scheduler_host}:{scheduler_port}");
 
-    let work_dir = if let Some(work_dir) = opt.work_dir.clone() {
-        work_dir
-    } else if let Some(temp_dir) = TempDir::new()?.path().to_str().map(ToOwned::to_owned)
-    {
-        temp_dir
-    } else {
-        return Err(BallistaError::Configuration(
-            "Unable to bind work dir".to_string(),
-        ));
+    let (work_dir, _default_work_dir_owner) = match opt.work_dir.clone() {
+        Some(work_dir) => (work_dir, None),
+        None => {
+            let (path, owner) = create_default_work_dir()?;
+            (path, Some(owner))
+        }
     };
 
     let vcores = if opt.vcores == 0 {
