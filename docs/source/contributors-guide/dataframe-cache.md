@@ -29,8 +29,8 @@ rather than adding a cache store or a recovery path of its own.
 
 The cache is a **hint, not a correctness dependency**: a cached node keeps its
 subplan (lineage), so lost cache data is recomputed, never a wrong or partial
-answer. In this PR a query that loses it mid-run fails with a clear error and
-the retry rebuilds the cache; rebuild-and-resume is next
+answer. A query that loses it mid-run rebuilds it and carries on, or, where it
+cannot, fails with a clear error and the retry rebuilds it
 ([Recovery](#recovery)).
 
 ## End-to-end flow
@@ -106,24 +106,19 @@ executors find data from the locations, not the id.
 
 The entry is complete from the start, so it never delays the stage; it is there
 so a rollback (for example, after the job loses one of its own shuffle outputs)
-restores the reader. For each running job the scheduler also records which
-builds it read, to drop them if the job loses their data.
+restores the reader, and so a lost cache can leave the stage waiting for a
+rebuild. For each running job the scheduler also keeps a read record: per read,
+the cache, the build read and the schema the build wrote, plus the subplan of a
+read that can be rebuilt mid-query, to rebuild the cache if the job loses its
+data (see [Recovery](#recovery)). It holds nothing session-wide: a rebuild gets
+a context made from the job's configuration (`JobState::new_context`), and an
+admission of its own.
 
 ## Recovery
 
-**In this PR: fail cleanly, rebuild on retry.** When a fetch of cache data
-fails, or the scheduler loses an executor holding cache data that an unfinished
-stage reads, the job fails with "lost DataFrame::cache() data; retry the query",
-under both planners. A failed fetch is cache data when it names one of the
-stage's registered cache locations (executor, build stage, partition), so a
-failed fetch of the job's own output from the same executor is recovered as
-usual, and the check holds even when the cache's build stage shares an id with
-one of the job's own stages.
-The builds the job read are dropped, so the retry rebuilds them (validate-on-read
-already does that for caches on dead executors).
-
-**Next: rebuild and resume** (follow-up PR). The graph reports the lost input
-instead of failing, and the scheduler rebuilds the cache and resumes the stage:
+When a running query loses cache data it reads (a fetch of it fails, or the
+scheduler loses an executor holding it), the stage reading it rolls back, the
+cache is rebuilt, and the stage resumes:
 
 ```text
  query job running; a stage reads cache c1
@@ -131,7 +126,7 @@ instead of failing, and the scheduler rebuilds the cache and resumes the stage:
       ▼
  stage rolls back (Ballista's own rollback — the read is a stage input)
       ▼
- ExternalInputLost(job, id)        the graph cannot re-run another job's output
+ ExternalInputLost(job, id)        no stage of this job can re-run c1's build
       ▼
  read record (job, id) → c1, subplan, lost build
  drop the lost build; rebuild c1 (or wait on a rebuild in flight)
@@ -141,17 +136,62 @@ instead of failing, and the scheduler rebuilds the cache and resumes the stage:
  stage resolves and re-runs → results to the client
 ```
 
-- A failed fetch is reported under the reader's stage id — the external id for a
-  cache read — so the graph knows exactly which input was lost.
-- Readers that lose the same cache share one rebuild. A rebuild may have a
-  different partition count; the reader declares unknown partitioning, so the
-  new partitions are folded into the old count.
-- Retries count towards `stage_max_failures`, like any stage's. If the rebuild
-  fails, the job fails with the reason.
-- The cache is rebuilt in full and the reading stage re-runs; the job keeps its
-  other stages. See [Per-partition recovery](#per-partition-recovery).
-- The adaptive planner cannot yet re-resolve a stage it rolls back (for any
-  job), so under it a job that loses cache data still fails cleanly.
+- **Which data was lost.** A failed fetch is cache data when it names one of
+  the stage's cache locations (executor, build stage, partition). The report
+  carries no job id, so when one of the job's own inputs on that executor
+  matches too, both are recovered: the own producer re-runs its tasks there, and
+  the cache is rebuilt. On executor loss, Ballista's reset already drops the
+  executor's locations from every stage input, cache reads included, and rolls
+  back their readers; the cache inputs it leaves incomplete are reported.
+- **No producer re-run.** For an own input the graph re-runs the producer's lost
+  tasks; a cache's producer is another job, so the graph reports the input lost
+  and the stage waits until it is provided again.
+- **Shared rebuilds.** Readers that lose the same cache share one rebuild, and
+  one that finds a newer build resumes on it at once. A rebuild may have
+  another partition count; the reader declares unknown partitioning, so the new
+  partitions are folded into the old count. A rebuild must write the schema the
+  read was planned with, as the read picks its columns by position; otherwise
+  the job fails.
+- **Retries and failure.** Retries count towards `stage_max_failures`, like any
+  stage's; a stage out of attempts fails the job with "lost DataFrame::cache()
+  data". A rebuild that fails, writes another schema, or is lost again before
+  it is read fails the job with "could not recover a cache it reads: …". The
+  lost build was dropped before the rebuild started, so either way the retry
+  rebuilds the cache.
+- **Admission.** Rebuilds run off the event loop, and each is admitted on its
+  own, even while the scheduler drains, as the job it serves already was. A
+  scheduler shutting down waits for it until its build jobs are planned, like
+  any submission, and then for them as running jobs.
+- **Whole rebuild.** The cache is rebuilt in full, which is correct whatever the
+  subplan does; rebuilding only the lost partitions is a separate item (see
+  [Per-partition recovery](#per-partition-recovery)). The reading stage re-runs
+  in full; the job keeps its other stages.
+- **A cache shared with another read is not rebuilt mid-query.** A read
+  depends on its cache and on every cache in its subplan, and its rebuild may
+  rebuild any of them. If a subplan is not reproducible (`random()`, a `LIMIT`
+  without `ORDER BY`, changed source files), a query whose lost read shares one
+  of those caches with another of its reads (the same cache twice, one built
+  from the other, or two built from a common one) would see two versions of it.
+  It fails cleanly instead, and the retry reads one build throughout. A query
+  reading only the outer cache of a nested chain still recovers: the rebuild
+  brings back the inner caches it needs.
+- **The adaptive planner** cannot yet re-resolve a stage it rolls back (for any
+  job), so under it a job that loses cache data fails cleanly, and the retry
+  rebuilds the cache.
+- **A pipelined job** (`ballista.execution.mode = pipelined`) reads a cache
+  built by an ordinary staged job. If the cache is lost **before the job is
+  placed**, nothing has run yet, so the job waits for the rebuild and is placed
+  reading it. **Once placed**, its tasks stream to each other and its results
+  stream to the client, so restarting any of them would deliver rows twice; it
+  fails cleanly instead, and the retry rebuilds the cache.
+
+### When lost cache data is rebuilt
+
+| Found lost by                  | What happens                                                                                                                                                                                                                                                                               |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A new query reaching the cache | Rebuilt before the query runs, whatever the planner or mode.                                                                                                                                                                                                                               |
+| A query held for its caches    | Linked to a new build and held again, up to `stage_max_failures` times.                                                                                                                                                                                                                    |
+| A running query                | Rebuilt and resumed if the job is planned by the static planner (or is pipelined and not yet placed), its lost read shares no cache with another read, the stage has attempts left, and the rebuild succeeds with the same schema. Otherwise the job fails cleanly and the retry rebuilds. |
 
 ## Registry and pinning
 
@@ -218,7 +258,9 @@ is dropped when it is next read, or when a query loses its data.
   an executor deletes job dirs untouched for `job_data_ttl_seconds`, pinned
   caches included; the next read fails and drops the cache, and a retry
   rebuilds it.
-- **Mid-query loss.** Losing cache data mid-query fails the job (see
+- **Mid-query loss.** Under the static planner a query rebuilds lost cache data
+  and carries on, unless the lost read shares a cache with another of its
+  reads; otherwise it fails cleanly and the retry rebuilds (see
   [Recovery](#recovery)).
 
 ## Extension points
@@ -272,8 +314,8 @@ rebuilds only the lost partitions, the reading stage still re-runs:
 3. **Pinning** (done) — job-data cleanup honours `pinned_stages()`.
 4. **Recovery, part 1** (done) — validate-on-read, re-checking a held query's
    caches, and failing cleanly when a running query loses cache data.
-5. **Recovery, part 2** — rebuild-and-resume for a running job
-   ([Recovery](#recovery)).
+5. **Recovery, part 2** (done) — rebuild-and-resume for a running job under the
+   static planner ([Recovery](#recovery)).
 6. **Locality** — place read tasks where partitions live ([#2319]).
 7. **Session teardown** — wire `remove_session` and sweep entries on executor
    loss (`invalidate_executor`), deleting their build data as invalidation

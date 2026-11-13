@@ -159,6 +159,54 @@ pub(crate) async fn stages(
     get_json(client, format!("{rest_url}/api/job/{job_id}/stages")).await
 }
 
+/// The summary of `stage_id` in a job's stage listing, whose stage ids come
+/// back as strings.
+pub(crate) fn find_stage(
+    stages: &serde_json::Value,
+    stage_id: usize,
+) -> Option<&serde_json::Value> {
+    stages.get("stages")?.as_array()?.iter().find(|s| {
+        s.get("stage_id").and_then(|v| v.as_str()) == Some(stage_id.to_string().as_str())
+    })
+}
+
+/// Block until a task of `stage_id` is in `state` ("Running", "Successful").
+/// Retries request errors until the deadline (see `running_job_id`).
+pub(crate) async fn await_stage_task_state(
+    client: &reqwest::Client,
+    rest_url: &str,
+    job_id: &str,
+    stage_id: usize,
+    state: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut last_err = "no request attempted".to_string();
+    loop {
+        match stages(client, rest_url, job_id).await {
+            Ok(stages) => {
+                let hit = find_stage(&stages, stage_id)
+                    .and_then(|stage| stage.get("tasks"))
+                    .and_then(|tasks| tasks.as_array())
+                    .is_some_and(|tasks| {
+                        tasks.iter().any(|t| {
+                            t.get("status").and_then(|s| s.as_str()) == Some(state)
+                        })
+                    });
+                if hit {
+                    return Ok(());
+                }
+            }
+            Err(e) => last_err = e,
+        }
+        if Instant::now() > deadline {
+            return Err(format!(
+                "timed out waiting for a {state} task in stage {stage_id}; last error: {last_err}"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// Block until any task in any stage is Running.
 ///
 /// Planner-agnostic sync point: the static and adaptive (AQE) planners number

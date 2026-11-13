@@ -40,6 +40,7 @@ use prost::Message;
 use std::any::type_name;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 pub(crate) mod aqe;
@@ -141,6 +142,10 @@ pub struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     pub(crate) job_id_generator: Arc<dyn JobIdGenerator>,
     /// Scheduler configuration.
     pub config: Arc<SchedulerConfig>,
+    /// Submissions admitted and not yet registered as running jobs, see
+    /// [`Admission`](crate::scheduler_server::event::Admission). Held here so
+    /// a cache rebuild can be admitted too.
+    pub(crate) admissions: Arc<AtomicUsize>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
@@ -167,6 +172,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             session_manager: SessionManager::new(cluster.job_state()),
             cache_state: cluster.cache_state(),
             cache_linker: Default::default(),
+            admissions: Default::default(),
             job_id_generator: config
                 .job_id_generator
                 .clone()
@@ -215,6 +221,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             session_manager: SessionManager::new(cluster.job_state()),
             cache_state: cluster.cache_state(),
             cache_linker: Default::default(),
+            admissions: Default::default(),
             job_id_generator: config
                 .job_id_generator
                 .clone()

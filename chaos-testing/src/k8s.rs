@@ -105,6 +105,10 @@ const PORT_FORWARD_STDERR_LINES: usize = 20;
 /// but this keeps namespaces unique if that ever changes or a start is retried).
 static NS_SEQ: AtomicU32 = AtomicU32::new(0);
 
+/// Where each executor pod writes its shuffle files, inside the container, so a
+/// scenario can tell which pod holds a job's data.
+pub const EXECUTOR_WORK_DIR: &str = "/tmp/ballista-work";
+
 /// How an executor pod is removed.
 #[derive(Clone, Copy, Debug)]
 pub enum KillMode {
@@ -457,11 +461,71 @@ impl K8sCluster {
             .into_iter()
             .next()
             .ok_or_else(|| "no executor pods found".to_string())?;
-        let mut args = vec!["-n", &self.namespace, "delete", "pod", &name];
+        self.kill_executor_pod(&name, mode).await
+    }
+
+    /// Delete executor pod `name`. As with [`Self::kill_one_executor`], the
+    /// Deployment reschedules a replacement with a new executor id.
+    pub async fn kill_executor_pod(
+        &self,
+        name: &str,
+        mode: KillMode,
+    ) -> Result<(), String> {
+        let mut args = vec!["-n", &self.namespace, "delete", "pod", name];
         if matches!(mode, KillMode::Forced) {
             args.extend_from_slice(&["--grace-period=0", "--force"]);
         }
         kubectl(&args).await.map(|_| ())
+    }
+
+    /// The executor pods holding shuffle data of `job_id`: those whose work dir
+    /// has an entry for the job. The scheduler's REST API does not say which
+    /// executor ran a task, so this looks at the pods themselves.
+    pub async fn executor_pods_with_job_data(
+        &self,
+        job_id: &str,
+    ) -> Result<Vec<String>, String> {
+        let mut holders = Vec::new();
+        for pod in self.pods_by_label("app=ballista-executor").await? {
+            let listing =
+                format!("ls -A {EXECUTOR_WORK_DIR}/{job_id} 2>/dev/null || true");
+            let out = kubectl(&[
+                "-n",
+                &self.namespace,
+                "exec",
+                &pod,
+                "--",
+                "sh",
+                "-c",
+                &listing,
+            ])
+            .await?;
+            if !out.trim().is_empty() {
+                holders.push(pod);
+            }
+        }
+        Ok(holders)
+    }
+
+    /// The ids of every job the scheduler lists, in the order they started.
+    pub async fn job_ids(&self) -> Result<Vec<String>, String> {
+        crate::rest::job_ids(&self.client, &self.rest_url()).await
+    }
+
+    /// Block until a task of `stage_id` of `job_id` has succeeded.
+    pub async fn await_stage_task_successful(
+        &self,
+        job_id: &str,
+        stage_id: usize,
+    ) -> Result<(), String> {
+        crate::rest::await_stage_task_state(
+            &self.client,
+            &self.rest_url(),
+            job_id,
+            stage_id,
+            "Successful",
+        )
+        .await
     }
 
     async fn pods_by_label(&self, label: &str) -> Result<Vec<String>, String> {
@@ -1026,6 +1090,8 @@ spec:
                   fieldPath: status.podIP
             - name: CHAOS_HEARTBEAT_SECONDS
               value: "1"
+            - name: CHAOS_WORK_DIR
+              value: "{EXECUTOR_WORK_DIR}"
             - name: RUST_LOG
               value: "info"
           ports:

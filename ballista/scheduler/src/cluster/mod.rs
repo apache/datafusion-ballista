@@ -418,6 +418,21 @@ pub trait JobState: Send + Sync {
         config: &SessionConfig,
     ) -> Result<Arc<SessionContext>>;
 
+    /// Creates a context for work the scheduler starts on behalf of a running
+    /// job, such as rebuilding a `DataFrame::cache()` it lost, from the job's
+    /// `config`. Unlike [`create_or_update_session`](Self::create_or_update_session)
+    /// it must not create or update any session.
+    ///
+    /// The default calls `create_or_update_session` under `session_id`; a
+    /// backend that records sessions should override it.
+    async fn new_context(
+        &self,
+        session_id: &str,
+        config: &SessionConfig,
+    ) -> Result<Arc<SessionContext>> {
+        self.create_or_update_session(session_id, config).await
+    }
+
     /// Removes a session from the state.
     async fn remove_session(&self, session_id: &str) -> Result<()>;
 
