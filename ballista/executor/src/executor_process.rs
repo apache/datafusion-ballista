@@ -616,6 +616,17 @@ pub async fn start_executor_process_with_memory_metrics(
     start_executor_process_inner(opt, Some(memory_metrics)).await
 }
 
+/// Number of vcores the executor advertises: the configured value, or all
+/// available cores when it is `0`.
+fn resolve_vcores(opt: &ExecutorProcessConfig) -> usize {
+    if opt.vcores == 0 {
+        // use all available cores if no concurrency level is specified
+        std::thread::available_parallelism().unwrap().get()
+    } else {
+        opt.vcores
+    }
+}
+
 async fn start_executor_process_inner(
     opt: Arc<ExecutorProcessConfig>,
     memory_metrics: Option<ExecutorMemoryMetrics>,
@@ -642,12 +653,7 @@ async fn start_executor_process_inner(
         ));
     };
 
-    let vcores = if opt.vcores == 0 {
-        // use all available cores if no concurrency level is specified
-        std::thread::available_parallelism().unwrap().get()
-    } else {
-        opt.vcores
-    };
+    let vcores = resolve_vcores(&opt);
     let task_scheduling_policy = opt.task_scheduling_policy;
     let executor_id = opt.executor_id.clone();
     info!(
@@ -1586,6 +1592,29 @@ mod tests {
         );
         drop(queued);
         drop(listener);
+    }
+
+    #[test]
+    fn resolve_vcores_zero_uses_available_parallelism() {
+        let config = ExecutorProcessConfig {
+            vcores: 0,
+            ..ExecutorProcessConfig::default()
+        };
+
+        assert_eq!(
+            super::resolve_vcores(&config),
+            std::thread::available_parallelism().unwrap().get()
+        );
+    }
+
+    #[test]
+    fn resolve_vcores_explicit_is_kept() {
+        let config = ExecutorProcessConfig {
+            vcores: 3,
+            ..ExecutorProcessConfig::default()
+        };
+
+        assert_eq!(super::resolve_vcores(&config), 3);
     }
 
     /// Reserves a local port and releases it, so nothing listens there.
