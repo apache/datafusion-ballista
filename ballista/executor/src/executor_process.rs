@@ -661,6 +661,66 @@ fn spawn_shuffle_cleaner(
     });
 }
 
+/// Resolves the executor memory pool budget into the per-task pool policy,
+/// recording the budget in `memory_metrics` when they are enabled.
+fn resolve_memory_pool_policy(
+    opt: &ExecutorProcessConfig,
+    vcores: usize,
+    memory_metrics: Option<&ExecutorMemoryMetrics>,
+) -> ballista_core::error::Result<MemoryPoolPolicy> {
+    let fraction = opt.memory_pool_fraction;
+    let pool_policy: MemoryPoolPolicy =
+        match detect_pool(memory_budget_from_cli(opt.memory_pool_size, fraction)) {
+            ResolvedPool::Bounded { bytes, source } => {
+                if let Some(metrics) = memory_metrics {
+                    metrics.set_pool_size(Some(bytes));
+                }
+                let per_vcore = bytes / vcores as u64;
+                let source_desc = match source {
+                    PoolSource::Configured => {
+                        "configured via --memory-pool-size".to_string()
+                    }
+                    PoolSource::AutoCgroup => {
+                        format!("auto: {:.0}% of cgroup memory limit", fraction * 100.0)
+                    }
+                    PoolSource::AutoHost => {
+                        format!("auto: {:.0}% of host memory", fraction * 100.0)
+                    }
+                };
+                info!(
+                    "Executor memory pool: {} ({source_desc}), \
+                     split across {vcores} vcores ({}/vcore)",
+                    bytesize::ByteSize::b(bytes),
+                    bytesize::ByteSize::b(per_vcore),
+                );
+                memory_pool_policy(bytes, vcores)?
+            }
+            ResolvedPool::Unbounded(reason) => {
+                if let Some(metrics) = memory_metrics {
+                    metrics.set_pool_size(None);
+                }
+                match reason {
+                    UnboundedReason::Explicit => {
+                        info!("Executor memory pool: unbounded (--memory-pool-size 0)")
+                    }
+                    UnboundedReason::Undetected => warn!(
+                        "Executor memory pool: unbounded (could not detect host or \
+                         cgroup memory limit; set --memory-pool-size to enable spilling)"
+                    ),
+                }
+                identity_pool_policy()
+            }
+        };
+
+    let pool_policy = if let Some(metrics) = memory_metrics.cloned() {
+        observe_memory_pools(pool_policy, metrics)
+    } else {
+        pool_policy
+    };
+
+    Ok(pool_policy)
+}
+
 async fn start_executor_process_inner(
     opt: Arc<ExecutorProcessConfig>,
     memory_metrics: Option<ExecutorMemoryMetrics>,
@@ -728,55 +788,7 @@ async fn start_executor_process_inner(
         None => base_runtime_producer,
     };
 
-    let fraction = opt.memory_pool_fraction;
-    let pool_policy: MemoryPoolPolicy =
-        match detect_pool(memory_budget_from_cli(opt.memory_pool_size, fraction)) {
-            ResolvedPool::Bounded { bytes, source } => {
-                if let Some(metrics) = &memory_metrics {
-                    metrics.set_pool_size(Some(bytes));
-                }
-                let per_vcore = bytes / vcores as u64;
-                let source_desc = match source {
-                    PoolSource::Configured => {
-                        "configured via --memory-pool-size".to_string()
-                    }
-                    PoolSource::AutoCgroup => {
-                        format!("auto: {:.0}% of cgroup memory limit", fraction * 100.0)
-                    }
-                    PoolSource::AutoHost => {
-                        format!("auto: {:.0}% of host memory", fraction * 100.0)
-                    }
-                };
-                info!(
-                    "Executor memory pool: {} ({source_desc}), \
-                     split across {vcores} vcores ({}/vcore)",
-                    bytesize::ByteSize::b(bytes),
-                    bytesize::ByteSize::b(per_vcore),
-                );
-                memory_pool_policy(bytes, vcores)?
-            }
-            ResolvedPool::Unbounded(reason) => {
-                if let Some(metrics) = &memory_metrics {
-                    metrics.set_pool_size(None);
-                }
-                match reason {
-                    UnboundedReason::Explicit => {
-                        info!("Executor memory pool: unbounded (--memory-pool-size 0)")
-                    }
-                    UnboundedReason::Undetected => warn!(
-                        "Executor memory pool: unbounded (could not detect host or \
-                         cgroup memory limit; set --memory-pool-size to enable spilling)"
-                    ),
-                }
-                identity_pool_policy()
-            }
-        };
-
-    let pool_policy = if let Some(metrics) = memory_metrics.clone() {
-        observe_memory_pools(pool_policy, metrics)
-    } else {
-        pool_policy
-    };
+    let pool_policy = resolve_memory_pool_policy(&opt, vcores, memory_metrics.as_ref())?;
 
     // Combined producer preserving the current per-task behavior: build a fresh
     // base env, then apply the pool policy. Used by `Executor::produce_runtime`
