@@ -39,12 +39,26 @@ use std::time::Duration;
 use tokio::time::MissedTickBehavior;
 use tracing_subscriber::EnvFilter;
 
-#[cfg(feature = "mimalloc")]
+// The allocator is chosen by Cargo feature. `jemalloc` takes precedence over
+// `mimalloc` (which `build-binary` enables), so `--features jemalloc` is enough
+// to switch, and `--all-features` still builds. With neither, the system
+// allocator is used.
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: AccountingAllocator<tikv_jemallocator::Jemalloc> =
+    AccountingAllocator::new(tikv_jemallocator::Jemalloc);
+
+// `build-binary` enables `mimalloc` even when jemalloc wins, so mark the
+// dependency as used rather than leave it to the unused-dependency lint.
+#[cfg(all(feature = "mimalloc", feature = "jemalloc"))]
+use mimalloc as _;
+
+#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
 #[global_allocator]
 static GLOBAL: AccountingAllocator<mimalloc::MiMalloc> =
     AccountingAllocator::new(mimalloc::MiMalloc);
 
-#[cfg(not(feature = "mimalloc"))]
+#[cfg(not(any(feature = "mimalloc", feature = "jemalloc")))]
 #[global_allocator]
 static GLOBAL: AccountingAllocator<std::alloc::System> =
     AccountingAllocator::new(std::alloc::System);

@@ -80,6 +80,9 @@ docker build -f benchmarks/cluster/docker/ballista.Dockerfile \
   -t <registry>/ballista-bench:$(git rev-parse --short HEAD) .
 ```
 
+To build the executor with jemalloc instead of mimalloc, add
+`--build-arg FEATURES=ballista-executor/jemalloc`.
+
 The Spark image adds the S3 connector to the official Apache Spark image, and
 the Comet image adds the Comet JAR to it. The JAR must match the Spark and Scala
 version (see the
