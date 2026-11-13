@@ -22,7 +22,9 @@ use std::io::Write;
 use std::path::Path;
 
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
-use ballista_core::config::BALLISTA_STANDALONE_PARALLELISM;
+use ballista_core::config::{
+    BALLISTA_STANDALONE_PARALLELISM, BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY,
+};
 use ballista_core::serde::{
     BallistaCodec, protobuf::scheduler_grpc_client::SchedulerGrpcClient,
 };
@@ -280,6 +282,33 @@ pub async fn standalone_context_with_state() -> SessionContext {
 
 pub async fn remote_context_with_state() -> SessionContext {
     let state = state_with_config(SessionConfig::new_with_ballista());
+    let (host, port) = setup_test_cluster_with_state(state.clone()).await;
+    SessionContext::remote_with_state(&format!("df://{host}:{port}"), state)
+        .await
+        .unwrap()
+}
+
+/// A Ballista session state that schedules tasks push-staged. Every other
+/// setting is the default, so a test sees the same configuration as with a
+/// pull-staged context.
+pub fn push_staged_state() -> SessionState {
+    state_with_config(
+        SessionConfig::new_with_ballista()
+            .set_str(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY, "push-staged"),
+    )
+}
+
+/// A standalone context whose scheduler pushes tasks to its executor.
+pub async fn standalone_push_context() -> SessionContext {
+    SessionContext::standalone_with_state(push_staged_state())
+        .await
+        .unwrap()
+}
+
+/// A remote context to a test cluster whose scheduler pushes tasks to its
+/// executor.
+pub async fn remote_push_context() -> SessionContext {
+    let state = push_staged_state();
     let (host, port) = setup_test_cluster_with_state(state.clone()).await;
     SessionContext::remote_with_state(&format!("df://{host}:{port}"), state)
         .await
