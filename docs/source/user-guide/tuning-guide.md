@@ -138,6 +138,23 @@ isolated from other tasks. Idle slots do not lend their share to busy ones,
 which keeps task memory predictable at the cost of some unused capacity when
 the executor is under-utilized.
 
+## Choosing the Executor's Memory Allocator
+
+The `ballista-executor` binary uses [mimalloc](https://github.com/microsoft/mimalloc)
+as its global allocator by default. To use
+[jemalloc](https://github.com/jemalloc/jemalloc) instead, build it with the
+`jemalloc` feature, which takes precedence over mimalloc:
+
+```sh
+cargo install --locked ballista-executor --features jemalloc
+```
+
+Allocators differ in how much memory they hold on to after it is freed, so the
+choice can change an executor's resident memory as well as its speed. The
+memory pool described above counts reservations, not resident memory, so leave
+headroom whichever allocator you use. jemalloc is not supported on Windows
+(MSVC) targets.
+
 The executor refuses to start if the per-task share would round to zero (i.e.
 `memory_pool_size < vcores`).
 
