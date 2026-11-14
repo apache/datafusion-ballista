@@ -41,8 +41,9 @@
 Ballista is a distributed query execution engine that enhances [Apache DataFusion](https://github.com/apache/datafusion)
 by enabling the parallelized execution of workloads across multiple nodes in a distributed environment.
 
-It is also a lighter, Rust-native alternative to [Apache Spark](https://spark.apache.org), with two execution modes
-that share one cluster:
+It is also a lighter, Rust-native alternative to both batch engines such as [Apache Spark](https://spark.apache.org)
+and interactive MPP query engines such as [Trino](https://trino.io) and [Presto](https://prestodb.io), with two
+execution modes that share one cluster:
 
 - **Staged** (default) runs a query the way Spark does: it is split into stages at shuffle boundaries, each stage
   writes shuffle files, a failed task is re-run from them, and adaptive query execution re-plans the rest of the query
