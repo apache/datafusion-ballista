@@ -41,14 +41,15 @@
 Ballista is a distributed query execution engine that enhances [Apache DataFusion](https://github.com/apache/datafusion)
 by enabling the parallelized execution of workloads across multiple nodes in a distributed environment.
 
-It is also a lighter, Rust-native alternative to [Apache Spark](https://spark.apache.org) and
-[Trino](https://trino.io), with two execution modes that share one cluster:
+It is also a lighter, Rust-native alternative to [Apache Spark](https://spark.apache.org), with two execution modes
+that share one cluster:
 
 - **Staged** (default) runs a query the way Spark does: it is split into stages at shuffle boundaries, each stage
   writes shuffle files, a failed task is re-run from them, and adaptive query execution re-plans the rest of the query
   between stages. It suits batch and ETL jobs.
-- **Pipelined** (experimental) runs a query the way Trino does: every stage is scheduled at once and stages stream
-  record batches to each other over Arrow Flight, with nothing written to disk. It suits short, interactive queries.
+- **Pipelined** (experimental) runs a query the way interactive MPP engines do: every stage is scheduled at once and
+  stages stream record batches to each other over Arrow Flight, with nothing written to disk. It suits short,
+  interactive queries.
 
 On a 1 TB benchmark derived from TPC-H, Ballista is **2.2x faster than Spark** in staged mode and **3.4x faster** in
 pipelined mode. A session can switch modes between queries, so
@@ -144,8 +145,8 @@ how to reproduce them.
 Ballista serves several distinct audiences:
 
 - **DataFusion users going multi-node** — you already use [Apache DataFusion](https://github.com/apache/datafusion) on a single machine and have outgrown it. Ballista runs the same SQL and DataFrame workloads across a cluster with minimal code changes and the same results.
-- **Spark users wanting the same execution model** — you run Spark SQL or batch jobs and want a lighter, Rust-native alternative without relearning a new paradigm. Ballista keeps the familiar model: plans split into stages at shuffle boundaries, tasks over partitions, executors with vcores, and adaptive query execution (AQE). For latency-sensitive queries, the same cluster can also run them pipelined, the way Trino does, instead of needing a separate interactive engine.
-- **Teams running separate batch and interactive engines** — you run Spark for ETL and Trino or Presto for interactive analytics, and want to consolidate. Ballista runs both workloads on one scheduler and one pool of executors, choosing staged or pipelined execution per query.
+- **Spark users wanting the same execution model** — you run Spark SQL or batch jobs and want a lighter, Rust-native alternative without relearning a new paradigm. Ballista keeps the familiar model: plans split into stages at shuffle boundaries, tasks over partitions, executors with vcores, and adaptive query execution (AQE). For latency-sensitive queries, the same cluster can also run them pipelined, the way interactive MPP engines do, instead of needing a separate interactive engine.
+- **Teams running separate batch and interactive engines** — you run Spark for ETL and an MPP engine such as Trino, Presto or Impala for interactive analytics, and want to consolidate. Ballista runs both workloads on one scheduler and one pool of executors, choosing staged or pipelined execution per query.
 - **Library users building a specialized engine** — you are building a bespoke distributed query engine and want reusable scheduler, executor, and plan-serialization building blocks with extension points, instead of writing distributed execution from scratch.
 
 These audiences are documented in more detail, along with the guarantees each relies on, in the [User Personas](docs/source/contributors-guide/user-personas.md) guide.
