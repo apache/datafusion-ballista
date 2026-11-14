@@ -632,7 +632,6 @@ dependencies = [
  "prost",
  "rand 0.10.3",
  "serde",
- "socket2",
  "tokio",
  "tokio-stream",
  "tonic",

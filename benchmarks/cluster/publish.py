@@ -863,9 +863,7 @@ def time_chart(sweep):
 
 def memory_outputs():
     sweep = load_memory()
-    page = with_table(
-        read(MEMORY_PAGE), memory_summary_table(sweep), *MEMORY_SUMMARY
-    )
+    page = with_table(read(MEMORY_PAGE), memory_summary_table(sweep), *MEMORY_SUMMARY)
     page = with_table(page, memory_runs_table(sweep), *MEMORY_RUNS)
     return {
         MEMORY_PAGE: page,
