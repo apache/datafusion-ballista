@@ -1290,6 +1290,7 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
+ "socket2",
  "tempfile",
  "tokio",
  "tokio-stream",
