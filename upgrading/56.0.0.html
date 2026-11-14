@@ -611,11 +611,19 @@ the scheduler’s log. To make nodes of your own restrictable, see
 </section>
 <section id="api-changes">
 <h3>API changes<a class="headerlink" href="#api-changes" title="Link to this heading">#</a></h3>
-<section id="sortshufflewriterexec-accepts-a-range-partitioning">
-<h4><code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExec</span></code> accepts a range partitioning<a class="headerlink" href="#sortshufflewriterexec-accepts-a-range-partitioning" title="Link to this heading">#</a></h4>
-<p>A range partitioning travels in a new <code class="docutils literal notranslate"><span class="pre">partitioning</span></code> field of the generated
-<code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExecNode</span></code>, so a struct literal of that message needs
-<code class="docutils literal notranslate"><span class="pre">partitioning:</span> <span class="pre">None</span></code>. Hash plans are encoded as before.</p>
+<section id="sortshufflewriterexec-accepts-a-range-partitioning-and-a-partition-id-routing">
+<h4><code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExec</span></code> accepts a range partitioning and a partition-id routing<a class="headerlink" href="#sortshufflewriterexec-accepts-a-range-partitioning-and-a-partition-id-routing" title="Link to this heading">#</a></h4>
+<p>The generated <code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExecNode</span></code> now says how the writer assigns rows
+to output partitions in a <code class="docutils literal notranslate"><span class="pre">routing</span></code> <code class="docutils literal notranslate"><span class="pre">oneof</span></code>: <code class="docutils literal notranslate"><span class="pre">output_partitioning</span></code> for a hash,
+<code class="docutils literal notranslate"><span class="pre">partitioning</span></code> for a range, and <code class="docutils literal notranslate"><span class="pre">partition_id_routing</span></code> for ids a client computed
+(see <a class="reference internal" href="../user-guide/tuning-guide.html#partition-id-shuffles"><span class="std std-ref">Partition-id shuffles</span></a>).
+A <code class="docutils literal notranslate"><span class="pre">oneof</span></code> member is encoded like a plain field, so hash plans are encoded as
+before and plans from an older scheduler still decode.</p>
+<p>In Rust, <code class="docutils literal notranslate"><span class="pre">output_partitioning</span></code> and <code class="docutils literal notranslate"><span class="pre">partitioning</span></code> are no longer fields of
+<code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExecNode</span></code>. A struct literal of the message sets <code class="docutils literal notranslate"><span class="pre">routing</span></code>
+instead, for example
+<code class="docutils literal notranslate"><span class="pre">routing:</span> <span class="pre">Some(sort_shuffle_writer_exec_node::Routing::OutputPartitioning(hash))</span></code>,
+and code that reads the message matches on <code class="docutils literal notranslate"><span class="pre">routing</span></code>.</p>
 </section>
 <section id="sort-shuffle-bufferedbatches-is-no-longer-public">
 <h4><code class="docutils literal notranslate"><span class="pre">sort_shuffle::BufferedBatches</span></code> is no longer public<a class="headerlink" href="#sort-shuffle-bufferedbatches-is-no-longer-public" title="Link to this heading">#</a></h4>
@@ -952,7 +960,7 @@ unchanged.</p>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sortshufflewriterexec-accepts-a-range-partitioning"><code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExec</span></code> accepts a range partitioning</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sortshufflewriterexec-accepts-a-range-partitioning-and-a-partition-id-routing"><code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExec</span></code> accepts a range partitioning and a partition-id routing</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-shuffle-bufferedbatches-is-no-longer-public"><code class="docutils literal notranslate"><span class="pre">sort_shuffle::BufferedBatches</span></code> is no longer public</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#taskmanager-executor-lost-also-returns-jobs-that-lost-cached-data"><code class="docutils literal notranslate"><span class="pre">TaskManager::executor_lost</span></code> also returns jobs that lost cached data</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#partitionsliceable-covers-any-node-and-embedders-can-register-their-own"><code class="docutils literal notranslate"><span class="pre">PartitionSliceable</span></code> covers any node, and embedders can register their own</a></li>
