@@ -41,9 +41,20 @@
 Ballista is a distributed query execution engine that enhances [Apache DataFusion](https://github.com/apache/datafusion)
 by enabling the parallelized execution of workloads across multiple nodes in a distributed environment.
 
-It is also a lighter, Rust-native alternative to [Apache Spark](https://spark.apache.org), keeping the same execution
-model of stages, shuffles and adaptive query execution. On a 1 TB benchmark derived from TPC-H, Ballista is
-**2.2x faster than Spark** by default and **3.4x faster** with experimental pipelined execution.
+It is also a lighter, Rust-native alternative to both batch engines such as [Apache Spark](https://spark.apache.org)
+and interactive MPP query engines such as [Trino](https://trino.io) and [Presto](https://prestodb.io), with two
+execution modes that share one cluster:
+
+- **Staged** (default) runs a query the way Spark does: it is split into stages at shuffle boundaries, each stage
+  writes shuffle files, a failed task is re-run from them, and adaptive query execution re-plans the rest of the query
+  between stages. It suits batch and ETL jobs.
+- **Pipelined** (experimental) runs a query the way interactive MPP engines do: every stage is scheduled at once and
+  stages stream record batches to each other over Arrow Flight, with nothing written to disk. It suits short,
+  interactive queries.
+
+On a 1 TB benchmark derived from TPC-H, Ballista is **2.2x faster than Spark** in staged mode and **3.4x faster** in
+pipelined mode. A session can switch modes between queries, so
+[one engine can serve both ETL and interactive queries](#execution-modes-one-engine-for-etl-and-interactive-queries).
 
 An existing DataFusion application can be distributed with a few lines of code changed:
 
@@ -79,8 +90,8 @@ For documentation or more examples, please refer to the [Ballista User Guide][us
 ## Performance
 
 Ballista is measured against Apache Spark 4.1.3 on the same cluster shape: Kubernetes on AWS, with 32 executors of
-8 vCPUs running the 22 queries over 1 TB of Parquet in S3. Each Ballista executor had 64 GiB of memory, and each Spark
-executor 74 GiB.
+8 vCPUs running the 22 TPC-H-derived queries over 1 TB of Parquet in S3. Each Ballista executor had 64 GiB of memory,
+and each Spark executor 74 GiB.
 
 ![Total time for the 22 queries for Apache Spark, Ballista staged and Ballista pipelined](docs/source/_static/images/tpch_sf1000_total.svg)
 
@@ -105,8 +116,9 @@ how to reproduce them.
 
 - **Adaptive query execution**, on by default, re-optimizes the remaining plan from runtime statistics: join selection,
   broadcast joins, empty-stage elimination and exchange reuse, with opt-in skew-join splitting and partition coalescing
-- **Two execution modes** that share one cluster: fault-tolerant staged execution by default, for batch and ETL jobs,
-  and low-latency pipelined execution (experimental), for interactive queries
+- **Two [execution modes](#execution-modes-one-engine-for-etl-and-interactive-queries)** that share one cluster:
+  fault-tolerant staged execution by default, for batch and ETL jobs, and low-latency pipelined execution
+  (experimental), for interactive queries
 - **Memory-bounded executors** with an auto-sized pool by default, and spilling to disk
 - **Sort-based and hash shuffle** with configurable compression
 - **Multi-partition tasks** that share memory and broadcast state across a stage's partitions
@@ -134,7 +146,8 @@ how to reproduce them.
 Ballista serves several distinct audiences:
 
 - **DataFusion users going multi-node** — you already use [Apache DataFusion](https://github.com/apache/datafusion) on a single machine and have outgrown it. Ballista runs the same SQL and DataFrame workloads across a cluster with minimal code changes and the same results.
-- **Spark users wanting the same execution model** — you run Spark SQL or batch jobs and want a lighter, Rust-native alternative without relearning a new paradigm. Ballista keeps the familiar model: plans split into stages at shuffle boundaries, tasks over partitions, executors with vcores, and adaptive query execution (AQE).
+- **Spark users wanting the same execution model** — you run Spark SQL or batch jobs and want a lighter, Rust-native alternative without relearning a new paradigm. Ballista keeps the familiar model: plans split into stages at shuffle boundaries, tasks over partitions, executors with vcores, and adaptive query execution (AQE). For latency-sensitive queries, the same cluster can also run them pipelined, the way interactive MPP engines do, instead of needing a separate interactive engine.
+- **Teams running separate batch and interactive engines** — you run Spark for ETL and an MPP engine such as Trino, Presto or Impala for interactive analytics, and want to consolidate. Ballista runs both workloads on one scheduler and one pool of executors, choosing staged or pipelined execution per query.
 - **Library users building a specialized engine** — you are building a bespoke distributed query engine and want reusable scheduler, executor, and plan-serialization building blocks with extension points, instead of writing distributed execution from scratch.
 
 These audiences are documented in more detail, along with the guarantees each relies on, in the [User Personas](docs/source/contributors-guide/user-personas.md) guide.
@@ -147,27 +160,27 @@ can be run as native binaries and are also available as Docker Images, which can
 [Kubernetes](https://datafusion.apache.org/ballista/user-guide/deployment/kubernetes.html).
 
 Clients submit query plans to the scheduler over gRPC, or SQL over Arrow Flight SQL. The scheduler breaks each query
-into stages and sends tasks to the executors, which report progress back. Executors exchange shuffle data with each
-other over Arrow Flight and return results to the client the same way.
+into stages and sends tasks to the executors, which report progress back. Executors exchange data with each other over
+Arrow Flight, reading shuffle files in staged mode or streaming record batches directly in pipelined mode, and return
+results to the client the same way.
 
 ![Ballista Cluster Diagram](docs/source/contributors-guide/ballista_architecture.svg)
 
 See the [architecture guide](docs/source/contributors-guide/architecture.md) for more details.
 
-## Execution Modes
-
-Ballista supports two execution modes, selected with `ballista.execution.mode`. Staged execution, the default, runs a job one stage at a time, the way [Apache Spark](https://spark.apache.org) does: each stage writes its output to shuffle files, and a failed task is simply re-run from them, which suits long-running jobs and busy shared clusters.
-
-Pipelined execution (experimental) runs a job the way [Trino](https://trino.io) does: every task is scheduled at once and stages stream record batches to each other over Arrow Flight, with no intermediate data written to disk, so results reach the client sooner, at the cost of a failed task failing the whole job. It suits short, latency-sensitive queries on clusters with room for the whole job. See the [Pipelined Execution Guide](docs/source/user-guide/pipelined-execution.md) for details.
-
-## One Engine for ETL and Interactive Queries
+## Execution Modes: One Engine for ETL and Interactive Queries
 
 A lakehouse aims to merge the data warehouse and the ETL platform, but it is often still served by two kinds of engine:
 a batch engine for long ETL jobs, built to survive task failures, and an interactive engine for short analytical
 queries, built for low latency. Ballista's two execution modes let one engine serve both, from the same scheduler and
-executors. Long ETL jobs run staged, where a failed task is re-run from shuffle files. Short analytical queries run
-pipelined, where results stream to the client as they are produced. A session picks its mode and can change it between
-queries, so the same SQL and DataFrame code serves either workload.
+executors. A session selects its mode with `ballista.execution.mode` and can change it between queries, so the same
+SQL and DataFrame code serves either workload.
+
+The modes trade fault tolerance for latency. In staged mode, a failed task is re-run from the shuffle files its input
+stages wrote, which suits long-running jobs and busy shared clusters. In pipelined mode, results stream to the client
+as they are produced, but there are no shuffle files to recover from, so a failed task fails the whole job, and the
+cluster needs room to run every task of the job at once. See the
+[Pipelined Execution Guide](docs/source/user-guide/pipelined-execution.md) for details.
 
 Sharing one pool of executors can also take less capacity than running two clusters. Batch and interactive load are
 often uncorrelated, so the capacity one leaves idle is available to the other, and the pool can be sized for the peak
@@ -249,11 +262,11 @@ Ballista uses Cargo features to enable optional functionality.
 
 ### ballista-executor
 
-| Feature                   | Default | Description                                           |
-| ------------------------- | ------- | ----------------------------------------------------- |
-| `arrow-ipc-optimizations` | Yes     | Enables Arrow IPC optimizations                       |
-| `build-binary`            | Yes     | Builds the executor binary with CLI and logging       |
-| `mimalloc`                | Yes     | Uses mimalloc memory allocator for better performance |
+| Feature                   | Default | Description                                                                        |
+| ------------------------- | ------- | ---------------------------------------------------------------------------------- |
+| `arrow-ipc-optimizations` | Yes     | Enables Arrow IPC optimizations                                                    |
+| `build-binary`            | Yes     | Builds the executor binary with CLI and logging, using mimalloc as the allocator   |
+| `jemalloc`                | No      | Uses jemalloc instead of mimalloc as the allocator (not supported on MSVC targets) |
 
 ### ballista-cli
 
@@ -262,8 +275,6 @@ Ballista uses Cargo features to enable optional functionality.
 | `cli`   | Yes     | Builds the `ballista-cli` SQL shell binary                          |
 | `tui`   | Yes     | Enables a REST client with Terminal User Interface                  |
 | `web`   | No      | Builds the WebAssembly Web TUI (see the Ballista CLI documentation) |
-
-![TUI Jobs table](./docs/source/user-guide/screenshots/tui-jobs-table.png)
 
 ### Usage Examples
 
