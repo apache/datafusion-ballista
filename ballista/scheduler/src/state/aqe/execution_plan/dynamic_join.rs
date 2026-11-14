@@ -913,9 +913,9 @@ fn estimated_value_width(data_type: &DataType) -> usize {
 mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::ExchangeExec;
-    use ballista_core::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId, PartitionLocation, PartitionStats,
+    use crate::state::aqe::test::stats_table::sizeless_statistics;
+    use crate::state::aqe::test::{
+        MB, mock_partition_location, statistics_exec, unknown_statistics_exec,
     };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::config::ExtensionOptions;
@@ -928,7 +928,6 @@ mod tests {
 
     const BYTE_THRESHOLD: usize = 10 * 1024 * 1024;
     const ROW_THRESHOLD: usize = 1_000_000;
-    const MB: usize = 1024 * 1024;
 
     fn test_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]))
@@ -940,15 +939,8 @@ mod tests {
         num_rows: usize,
         fields: Vec<Field>,
     ) -> Arc<dyn ExecutionPlan> {
-        let column_statistics = vec![ColumnStatistics::new_unknown(); fields.len()];
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Inexact(num_rows),
-                total_byte_size: Precision::Absent,
-                column_statistics,
-            },
-            Schema::new(fields),
-        ))
+        let schema = Schema::new(fields);
+        statistics_exec(sizeless_statistics(&schema, num_rows), &schema)
     }
 
     fn supports_collect(plan: &Arc<dyn ExecutionPlan>) -> bool {
@@ -1014,24 +1006,11 @@ mod tests {
     // estimate, in both directions.
     #[test]
     fn known_total_byte_size_still_decides() {
-        let over: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Inexact(10),
-                total_byte_size: Precision::Exact(BYTE_THRESHOLD + 1),
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("x", DataType::Int32, false)]),
-        ));
+        let over =
+            stats_exec_with(Precision::Inexact(10), Precision::Exact(BYTE_THRESHOLD + 1));
         assert!(!supports_collect(&over));
 
-        let under: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Inexact(10),
-                total_byte_size: Precision::Exact(64),
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("x", DataType::Int32, false)]),
-        ));
+        let under = stats_exec_with(Precision::Inexact(10), Precision::Exact(64));
         assert!(supports_collect(&under));
     }
 
@@ -1051,14 +1030,7 @@ mod tests {
     // side is small.
     #[test]
     fn does_not_collect_without_any_statistics() {
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Absent,
-                total_byte_size: Precision::Absent,
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("x", DataType::Int32, false)]),
-        ));
+        let plan = unknown_statistics_exec(&test_schema());
 
         assert!(!supports_collect(&plan));
     }
@@ -1137,14 +1109,13 @@ mod tests {
         num_rows: Precision<usize>,
         total_byte_size: Precision<usize>,
     ) -> Arc<dyn ExecutionPlan> {
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows,
-                total_byte_size,
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("k", DataType::Int32, false)]),
-        ))
+        let schema = Schema::new(vec![Field::new("k", DataType::Int32, false)]);
+        let statistics = Statistics {
+            num_rows,
+            total_byte_size,
+            ..Statistics::new_unknown(&schema)
+        };
+        statistics_exec(statistics, &schema)
     }
 
     /// A source reporting `num_rows` rows at 16 bytes each.
@@ -1863,31 +1834,7 @@ mod tests {
         let partitions = per_partition_bytes
             .iter()
             .enumerate()
-            .map(|(idx, &bytes)| {
-                vec![PartitionLocation {
-                    map_partition_id: 0,
-                    partition_id: PartitionId {
-                        job_id: "".into(),
-                        stage_id: 0,
-                        partition_id: idx,
-                    },
-                    executor_meta: ExecutorMetadata {
-                        id: "".to_string(),
-                        host: "".to_string(),
-                        port: 0,
-                        grpc_port: 0,
-                        specification: ExecutorSpecification::default().with_vcores(0),
-                        os_info: ExecutorOperatingSystemSpecification::default(),
-                    },
-                    partition_stats: PartitionStats::new(
-                        Some(1),
-                        None,
-                        Some(bytes as u64),
-                    ),
-                    file_id: None,
-                    is_sort_shuffle: false,
-                }]
-            })
+            .map(|(idx, &bytes)| vec![mock_partition_location(idx, 1, bytes as u64)])
             .collect();
         exchange.resolve_shuffle_partitions(partitions);
 

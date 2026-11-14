@@ -91,7 +91,7 @@ impl TableProvider for StatsTable {
     async fn scan(
         &self,
         _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
+        projection: Option<&[usize]>,
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
@@ -112,11 +112,28 @@ pub(crate) struct StatsExec {
 }
 
 impl StatsExec {
+    /// A scan over all of `schema` that reports `statistics` and yields no rows.
+    pub(crate) fn new(
+        schema: SchemaRef,
+        statistics: Statistics,
+        partitions: usize,
+    ) -> Self {
+        Self {
+            statistics,
+            properties: Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(partitions),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            )),
+        }
+    }
+
     fn try_new(
         schema: SchemaRef,
         statistics: Statistics,
         partitions: usize,
-        projection: Option<&Vec<usize>>,
+        projection: Option<&[usize]>,
     ) -> Result<Self> {
         let schema = project_schema(&schema, projection)?;
 
@@ -135,15 +152,7 @@ impl StatsExec {
             None => statistics,
         };
 
-        Ok(Self {
-            statistics,
-            properties: Arc::new(PlanProperties::new(
-                EquivalenceProperties::new(schema),
-                Partitioning::UnknownPartitioning(partitions),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            )),
-        })
+        Ok(Self::new(schema, statistics, partitions))
     }
 }
 

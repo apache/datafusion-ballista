@@ -309,8 +309,8 @@ impl RangeShuffleWriterExec {
 
                 debug!("Writing range shuffle results to {path:?}");
 
-                let stream =
-                    column_stats.count(plan.execute(global_partition, context.clone())?);
+                let stream = column_stats
+                    .count(plan.execute(global_partition, context.clone())?, None);
                 let index_schema = index_schema.clone();
                 let ordering = self.ordering.clone();
                 handles.spawn(async move {

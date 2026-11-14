@@ -82,7 +82,7 @@ use futures::{Stream, StreamExt, ready};
 use parking_lot::Mutex;
 
 use crate::execution_plans::plan_algebra::{
-    PartitionSliceable, slice_by_global_partition,
+    PartitionSliceable, single_child, slice_by_global_partition,
 };
 
 /// Half-open `[lo, hi)` bound for one input partition. `None` on either side
@@ -336,11 +336,12 @@ impl PartitionSliceable for RangeFilterExec {
     /// `raw_bounds` is indexed by input partition, so it slices parallel to
     /// the input. Halos and routing carry over verbatim — the fresh operator
     /// re-widens the unwidened bounds itself.
-    fn slice_to_partitions(
+    fn restrict_to_partitions(
         &self,
-        child: Arc<dyn ExecutionPlan>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
         partitions: &[usize],
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        let child = single_child("RangeFilterExec", children)?;
         let raw_bounds = self.raw_bounds().ok_or_else(|| {
             datafusion::common::DataFusionError::Internal(
                 "RangeFilterExec: task-restriction before resolve_bounds()".into(),

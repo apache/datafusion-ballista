@@ -538,8 +538,8 @@ mod tests {
     use crate::executor::Executor;
     use crate::health::ExecutorHealth;
     use crate::metrics::LoggingMetricsCollector;
+    use crate::test_util::fresh_runtime_producer;
     use ballista_core::JobId;
-    use ballista_core::RuntimeProducer;
     use ballista_core::registry::BallistaFunctionRegistry;
     use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
@@ -561,7 +561,6 @@ mod tests {
     use datafusion::arrow::datatypes::Schema;
     use datafusion::error::Result;
     use datafusion::execution::context::TaskContext;
-    use datafusion::execution::runtime_env::RuntimeEnv;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::physical_plan::metrics::MetricsSet;
@@ -762,8 +761,6 @@ mod tests {
         expected_free: usize,
     ) {
         let engine = BlockingEngine::default();
-        let runtime_producer: RuntimeProducer =
-            Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())));
         let executor = Arc::new(Executor::new(
             ExecutorRegistration {
                 id: "executor".to_string(),
@@ -775,7 +772,7 @@ mod tests {
                 ..Default::default()
             },
             "",
-            runtime_producer,
+            fresh_runtime_producer(),
             Arc::new(default_config_producer),
             Arc::new(BallistaFunctionRegistry::default()),
             Arc::new(LoggingMetricsCollector::default()),

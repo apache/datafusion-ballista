@@ -27,7 +27,7 @@ use super::{
     CONTINUATION_MARKER, OFFSETS_AS_LENGTHS_ZSTD, frame_metadata, rebuild_batch_message,
 };
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::ipc::{MessageHeader, convert::fb_to_schema, root_as_message};
+use datafusion::arrow::ipc::{MessageHeader, convert::try_fb_to_schema, root_as_message};
 use prost::bytes::{Buf, Bytes, BytesMut};
 use std::io::{self, Read};
 
@@ -70,7 +70,7 @@ impl MessageTranslator {
                         "Unable to read IPC message as schema".to_string(),
                     )
                 })?;
-                self.roles = offsets::buffer_roles(&fb_to_schema(schema));
+                self.roles = offsets::buffer_roles(&try_fb_to_schema(schema)?);
             }
             MessageHeader::RecordBatch => {
                 let rewritten = message

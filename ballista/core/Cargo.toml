@@ -68,7 +68,7 @@ tonic-prost = { workspace = true }
 url = { workspace = true }
 utoipa = { workspace = true, optional = true }
 uuid = { workspace = true }
-zstd = "0.13"
+zstd = "0.14"
 
 [dev-dependencies]
 tempfile = { workspace = true }

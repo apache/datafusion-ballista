@@ -98,7 +98,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use crate::execution_plans::plan_algebra::{
-    PartitionSliceable, slice_by_global_partition,
+    PartitionSliceable, single_child, slice_by_global_partition,
 };
 
 /// A single already-prefix-merged window-aggregate state.
@@ -397,11 +397,12 @@ impl PartitionSliceable for PrefixMergeExec {
     /// Both the per-partition state and every [`WindowApply::Scalar`]'s
     /// offsets are indexed by global input partition, so both slice parallel
     /// to the input.
-    fn slice_to_partitions(
+    fn restrict_to_partitions(
         &self,
-        child: Arc<dyn ExecutionPlan>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
         partitions: &[usize],
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        let child = single_child("PrefixMergeExec", children)?;
         let applies = self
             .applies
             .iter()

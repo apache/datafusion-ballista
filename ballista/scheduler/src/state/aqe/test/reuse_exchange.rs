@@ -66,14 +66,7 @@ fn context(reuse: bool) -> SessionContext {
 }
 
 async fn planner(ctx: &SessionContext, sql: &str) -> AdaptivePlanner {
-    let plan = ctx
-        .sql(sql)
-        .await
-        .unwrap()
-        .create_physical_plan()
-        .await
-        .unwrap();
-    AdaptivePlanner::try_from_plan(ctx.state().config(), plan, "job".into()).unwrap()
+    AdaptivePlanner::from_physical_sql(ctx, sql).await.unwrap()
 }
 
 async fn graph(ctx: &SessionContext, sql: &str) -> AdaptiveExecutionGraph {

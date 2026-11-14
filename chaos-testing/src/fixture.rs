@@ -15,11 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use ballista::prelude::{SessionConfigExt, SessionContextExt};
+use ballista_core::config::BALLISTA_ADAPTIVE_PLANNER_ENABLED;
 use datafusion::arrow::array::{Int64Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::error::Result;
-use datafusion::prelude::SessionContext;
+use datafusion::execution::SessionStateBuilder;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -122,6 +126,46 @@ impl Fixture {
         ]
     }
 
+    /// Connects a client to the scheduler at `scheduler_url` with the adaptive
+    /// planner set to `aqe`, and registers the chaos UDFs and this fixture's
+    /// tables.
+    pub async fn connect(&self, scheduler_url: &str, aqe: bool) -> SessionContext {
+        let config = SessionConfig::new_with_ballista()
+            .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, aqe);
+        let state = SessionStateBuilder::new()
+            .with_config(config)
+            .with_default_features()
+            .build();
+        let ctx = SessionContext::remote_with_state(scheduler_url, state)
+            .await
+            .expect("client must connect to the scheduler");
+
+        // Registered *after* `remote_with_state`, not baked into the initial
+        // SessionState: `SessionStateExt::upgrade_for_ballista` (ballista/core)
+        // rebuilds the state via `with_scalar_functions(ballista_scalar_functions())`,
+        // which replaces rather than merges the scalar-function map, silently
+        // dropping any custom UDF registered beforehand. `register_udf` mutates
+        // the already-upgraded state's registry directly, so it survives.
+        ctx.register_udf(crate::udf::chaos_fail_udf().as_ref().clone());
+        ctx.register_udf(crate::udf::chaos_delay_udf().as_ref().clone());
+
+        for stmt in self.register_sql() {
+            ctx.sql(&stmt).await.unwrap().collect().await.unwrap();
+        }
+        ctx
+    }
+
+    /// The result of `sql` in plain local DataFusion over this fixture, which
+    /// a cluster run must reproduce exactly.
+    pub async fn local_sql(&self, sql: &str) -> String {
+        let ctx = SessionContext::new();
+        for stmt in self.register_sql() {
+            ctx.sql(&stmt).await.unwrap().collect().await.unwrap();
+        }
+        let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
+        pretty_format_batches(&batches).unwrap().to_string()
+    }
+
     /// The chaos-free query. A join plus a grouped aggregate: at least two
     /// stages, with a shuffle between them.
     pub fn baseline_query() -> &'static str {
@@ -192,6 +236,18 @@ impl Fixture {
              ORDER BY f.value"
         )
     }
+}
+
+/// Runs `sql` on `ctx`, returning the formatted result or the error text.
+pub async fn query(
+    ctx: &SessionContext,
+    sql: &str,
+) -> std::result::Result<String, String> {
+    let df = ctx.sql(sql).await.map_err(|e| e.to_string())?;
+    let batches = df.collect().await.map_err(|e| e.to_string())?;
+    Ok(pretty_format_batches(&batches)
+        .map_err(|e| e.to_string())?
+        .to_string())
 }
 
 #[cfg(test)]

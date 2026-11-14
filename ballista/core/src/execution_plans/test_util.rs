@@ -33,8 +33,7 @@ use datafusion::physical_plan::ExecutionPlan;
 
 use crate::error::BallistaError;
 use crate::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+    ExecutorEndpoint, PartitionId, PartitionLocation, PartitionStats,
 };
 use crate::utils;
 
@@ -150,16 +149,13 @@ pub(crate) fn key_payload_batch(keys: &[i32]) -> RecordBatch {
     .unwrap()
 }
 
-/// A single-vcore executor with the id and host `executor_1`.
-fn test_executor() -> ExecutorMetadata {
-    ExecutorMetadata {
+/// An executor with the id and host `executor_1`.
+fn test_executor() -> Arc<ExecutorEndpoint> {
+    Arc::new(ExecutorEndpoint {
         id: "executor_1".to_string(),
         host: "executor_1".to_string(),
         port: 7070,
-        grpc_port: 8080,
-        specification: ExecutorSpecification::default().with_vcores(1),
-        os_info: ExecutorOperatingSystemSpecification::default(),
-    }
+    })
 }
 
 /// A location of partition `partition` of stage `stage_id` on

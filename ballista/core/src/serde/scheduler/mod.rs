@@ -201,8 +201,8 @@ pub struct PartitionLocation {
     pub map_partition_id: usize,
     /// The partition identifier.
     pub partition_id: PartitionId,
-    /// Metadata about the executor hosting this partition.
-    pub executor_meta: ExecutorMetadata,
+    /// The executor hosting this partition.
+    pub executor_meta: Arc<ExecutorEndpoint>,
     /// Statistics about the partition data.
     pub partition_stats: PartitionStats,
     /// shuffle file id
@@ -234,10 +234,34 @@ pub struct PipelinedPartitionLocation {
     /// The producer task within its stage.
     pub task_id: usize,
     /// The executor running the producer task.
-    pub executor_meta: ExecutorMetadata,
+    pub executor_meta: Arc<ExecutorEndpoint>,
 }
 
-/// Meta-data for an executor, used when fetching shuffle partitions from other executors.
+/// Where a reader fetches a partition from.
+///
+/// A plan can refer to one executor from thousands of partition locations, so
+/// this holds only what a fetch needs and is shared between locations.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ExecutorEndpoint {
+    /// Unique executor identifier.
+    pub id: String,
+    /// Hostname or IP address of the executor.
+    pub host: String,
+    /// Port number for data transfer.
+    pub port: u16,
+}
+
+impl From<&ExecutorMetadata> for ExecutorEndpoint {
+    fn from(metadata: &ExecutorMetadata) -> Self {
+        Self {
+            id: metadata.id.clone(),
+            host: metadata.host.clone(),
+            port: metadata.port,
+        }
+    }
+}
+
+/// What the scheduler records about a registered executor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExecutorMetadata {
     /// Unique executor identifier.

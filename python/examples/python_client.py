@@ -17,7 +17,7 @@
 
 # Customizing how the Python Ballista client reaches the cluster.
 #
-# `BallistaPythonSessionContext` runs queries through a `BallistaClient`
+# `BallistaSessionContext(client=...)` runs queries through a `BallistaClient`
 # implemented in Python. Subclass it and override its hooks to change how the
 # scheduler and executors are reached:
 #
@@ -34,7 +34,7 @@ from typing import List, Mapping, Tuple
 import grpc
 import pyarrow.flight as flight
 
-from ballista import BallistaClient, BallistaPythonSessionContext, setup_test_cluster
+from ballista import BallistaClient, BallistaSessionContext, setup_test_cluster
 
 # helper starting a local test cluster
 host, port = setup_test_cluster()
@@ -116,7 +116,7 @@ class CustomClient(BallistaClient):
 
 # %%
 client = CustomClient(f"df://{host}:{port}", token="secret")
-ctx = BallistaPythonSessionContext(client=client)
+ctx = BallistaSessionContext(client=client)
 
 ctx.sql("create external table t stored as parquet location '../testdata/test.parquet'")
 ctx.sql("select id, bool_col from t where id > 4").show()

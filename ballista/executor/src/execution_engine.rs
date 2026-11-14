@@ -22,6 +22,7 @@
 //! for creating query stage executors from physical plans.
 
 use ballista_core::client_pool::BallistaClientPool;
+use ballista_core::execution_plans::broadcast_cache::BroadcastReadCache;
 use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::execution_plans::{
     PipelinedShuffleReaderExec, PipelinedShuffleWriterExec, RangeShuffleReaderExec,
@@ -67,6 +68,10 @@ pub trait ExecutionEngine: Sync + Send {
         work_dir: &str,
         config: &SessionConfig,
     ) -> Result<Arc<dyn QueryStageExecutor>>;
+
+    /// Drops any state this engine keeps for `job_id`, called when the
+    /// executor removes the job's data. The default keeps none.
+    fn remove_job(&self, _job_id: &str) {}
 }
 
 /// Executor for a single query stage in a distributed query.
@@ -145,22 +150,34 @@ pub trait QueryStageExecutor: Sync + Send + Debug + Display {
 #[derive(Default)]
 pub struct DefaultExecutionEngine {
     client_pool: Option<Arc<dyn BallistaClientPool>>,
+    /// Shared by the broadcast readers of every task this engine creates.
+    broadcast_cache: Arc<BroadcastReadCache>,
 }
 
 impl DefaultExecutionEngine {
     /// Creates new Default Execution Engine without client pooling
     pub fn new() -> Self {
-        Self { client_pool: None }
+        Self::default()
     }
     /// Creates new Default Execution Engine with client pooling
     pub fn with_client_pool(client_pool: Arc<dyn BallistaClientPool>) -> Self {
         Self {
             client_pool: Some(client_pool),
+            ..Self::default()
         }
+    }
+
+    /// The cache the broadcast readers of this engine's tasks share.
+    pub fn broadcast_cache(&self) -> &Arc<BroadcastReadCache> {
+        &self.broadcast_cache
     }
 }
 
 impl ExecutionEngine for DefaultExecutionEngine {
+    fn remove_job(&self, job_id: &str) {
+        self.broadcast_cache.remove_job(job_id);
+    }
+
     fn create_query_stage_exec(
         &self,
         job_id: JobId,
@@ -174,16 +191,15 @@ impl ExecutionEngine for DefaultExecutionEngine {
         let plan = plan
             .transform(|p| {
                 if let Some(reader) = p.downcast_ref::<ShuffleReaderExec>() {
-                    match &self.client_pool {
-                        Some(client_pool) => Ok(Transformed::yes(Arc::new(
-                            reader
-                                .with_work_dir(work_dir.to_string())
-                                .with_client_pool(client_pool.clone()),
-                        ))),
-                        None => Ok(Transformed::yes(Arc::new(
-                            reader.with_work_dir(work_dir.to_string()),
-                        ))),
+                    let mut reader = reader.with_work_dir(work_dir.to_string());
+                    if let Some(client_pool) = &self.client_pool {
+                        reader = reader.with_client_pool(client_pool.clone());
                     }
+                    if reader.broadcast {
+                        reader =
+                            reader.with_broadcast_cache(self.broadcast_cache.clone());
+                    }
+                    Ok(Transformed::yes(Arc::new(reader)))
                 } else if let Some(reader) =
                     p.downcast_ref::<PipelinedShuffleReaderExec>()
                 {
@@ -255,16 +271,11 @@ impl ExecutionEngine for DefaultExecutionEngine {
         } else if let Some(sort_shuffle_writer) =
             plan.downcast_ref::<SortShuffleWriterExec>()
         {
-            let exec = SortShuffleWriterExec::try_new(
-                job_id,
-                stage_id,
-                plan.children()[0].clone(),
-                work_dir.to_string(),
-                sort_shuffle_writer.shuffle_output_partitioning().clone(),
-                sort_shuffle_writer.config().clone(),
-            )?
-            .with_task_id(task_id)
-            .with_global_output_partition_ids(global_output_partition_ids);
+            let exec = sort_shuffle_writer
+                .clone()
+                .with_work_dir(work_dir.to_string())
+                .with_task_id(task_id)
+                .with_global_output_partition_ids(global_output_partition_ids);
             Ok(Arc::new(DefaultQueryStageExec::new(
                 ShuffleWriterVariant::Sort(exec),
             )))
@@ -451,8 +462,8 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         &self,
     ) -> Result<Vec<ballista_core::serde::protobuf::WindowStateReport>> {
         // Both partitioning-preserving writers can sit over a window; the sort
-        // writer is Hash-partitioned by construction, which the prefix rewrite
-        // never plants.
+        // writer repartitions (by hash, range or partition id), which the prefix
+        // rewrite never plants.
         let captured = match &self.shuffle_writer {
             ShuffleWriterVariant::Passthrough(writer) => writer.collect_window_state()?,
             ShuffleWriterVariant::Range(writer) => writer.collect_window_state(),

@@ -20,8 +20,8 @@ Ballista cluster client implemented in Python.
 
 ``BallistaClient`` submits jobs to a Ballista scheduler over gRPC and fetches
 their results from executors over Arrow Flight. It is the Python counterpart
-of the native Rust client used by ``BallistaSessionContext``, and is used by
-``BallistaPythonSessionContext``.
+of the native Rust client, and is used by ``BallistaSessionContext`` when
+passed as its ``client`` argument.
 
 Plans are still built and encoded in Rust. The planner hands every query to
 ``BallistaClient.execute`` as an ``ExecuteQueryParams`` message, and reads the
@@ -168,13 +168,11 @@ class BallistaClient:
     ``config`` sets it.
 
     Examples:
-        >>> from ballista import BallistaClient, BallistaPythonSessionContext
+        >>> from ballista import BallistaClient, BallistaSessionContext
         >>> class AuthClient(BallistaClient):
         ...     def call_metadata(self):
         ...         return super().call_metadata() + [("authorization", "token")]
-        >>> ctx = BallistaPythonSessionContext(
-        ...     client=AuthClient("df://localhost:50050")
-        ... )
+        >>> ctx = BallistaSessionContext(client=AuthClient("df://localhost:50050"))
     """
 
     def __init__(
@@ -515,7 +513,7 @@ class BallistaJob:
         return None
 
     def _flight_client(
-        self, executor: ballista_pb2.ExecutorMetadata, proxy
+        self, executor: ballista_pb2.ExecutorEndpoint, proxy
     ) -> flight.FlightClient:
         host, port = proxy if proxy is not None else (executor.host, executor.port)
         key = (host, port)
@@ -685,44 +683,20 @@ class BallistaJob:
 
 
 def BallistaPythonSessionContext(
-    address: str = "df://localhost:50050",
+    client: BallistaClient,
     config: Optional[
         Union[BallistaSessionConfig, SessionConfig, Dict[str, ConfigValue]]
     ] = None,
     runtime: Optional[RuntimeEnvBuilder] = None,
-    client: Optional[BallistaClient] = None,
 ) -> SessionContext:
     """
-    Create a DataFusion ``SessionContext`` that executes queries on a Ballista
-    cluster through a Python ``BallistaClient``.
+    Create a ``SessionContext`` that talks to the cluster through the Python
+    ``client``.
 
-    Works like ``BallistaSessionContext``, but the communication with the
-    cluster (job submission, status tracking and fetching results over Arrow
-    Flight) is done in Python, by ``client``, instead of the native Rust
-    client. Planning is the same for both.
-
-    Args:
-        address: Ballista scheduler URL, used when ``client`` is not given.
-            Defaults to ``"df://localhost:50050"``.
-        config: Session configuration, see ``BallistaSessionContext``. Its
-            ``ballista.*`` options also configure the default client.
-        runtime: Optional runtime environment used by the local session.
-        client: Client used to talk to the cluster. Defaults to a
-            ``BallistaClient`` for ``address`` and ``config``.
-
-    Returns:
-        A ``SessionContext`` configured with the Ballista query planner.
-
-    Examples:
-        >>> from ballista import BallistaPythonSessionContext
-        >>> ctx = BallistaPythonSessionContext("df://localhost:50050")
-        >>> ctx.sql("SELECT 1").show()
+    Internal, use ``BallistaSessionContext(client=...)``.
     """
     if not isinstance(config, BallistaSessionConfig):
         config = BallistaSessionConfig(config)
-
-    if client is None:
-        client = BallistaClient(address, config=dict(config._ballista_settings))
 
     source_ctx = SessionContext(config.build(), runtime)
     return source_ctx.with_extensions(BallistaPythonClientExtension(client))

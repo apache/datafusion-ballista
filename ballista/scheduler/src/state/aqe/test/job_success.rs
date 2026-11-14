@@ -20,30 +20,18 @@
 use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::aqe::test::{mock_batch, mock_context};
 use crate::state::execution_graph::ExecutionGraph;
-use crate::test_utils::revive_graph_and_complete_next_stage;
+use crate::test_utils::{
+    mock_completed_task, mock_executor, revive_graph_and_complete_next_stage,
+};
 use ballista_core::error::Result;
-use ballista_core::serde::protobuf::job_status;
-use std::collections::HashSet;
+use ballista_core::serde::protobuf::{OperatorMetricsSet, job_status};
+use std::collections::{HashMap, HashSet};
 
 /// Plans `sql` as an adaptive job and completes its stages one by one until
 /// the job succeeds. While the job is running no stage may be reported as
 /// intermediate, because the final stage is not known yet.
 async fn run_to_success(sql: &str) -> Result<AdaptiveExecutionGraph> {
-    let ctx = mock_context();
-    ctx.register_batch("t", mock_batch()?)?;
-    let logical_plan = ctx.sql(sql).await?.logical_plan().clone();
-
-    let mut graph = AdaptiveExecutionGraph::try_new(
-        "localhost:50050",
-        &"job".into(),
-        "",
-        &ctx,
-        &logical_plan,
-        0,
-        None,
-    )
-    .await?;
-
+    let mut graph = plan_job(sql).await?;
     while !graph.is_successful() {
         assert!(graph.intermediate_stage_ids().is_empty());
         revive_graph_and_complete_next_stage(&mut graph)?;
@@ -54,6 +42,24 @@ async fn run_to_success(sql: &str) -> Result<AdaptiveExecutionGraph> {
     ));
 
     Ok(graph)
+}
+
+/// Plans `sql` over the mock table `t` as an adaptive job.
+async fn plan_job(sql: &str) -> Result<AdaptiveExecutionGraph> {
+    let ctx = mock_context();
+    ctx.register_batch("t", mock_batch()?)?;
+    let logical_plan = ctx.sql(sql).await?.logical_plan().clone();
+
+    AdaptiveExecutionGraph::try_new(
+        "localhost:50050",
+        &"job".into(),
+        "",
+        &ctx,
+        &logical_plan,
+        0,
+        None,
+    )
+    .await
 }
 
 /// After success, every stage except the one the job's output locations point
@@ -95,5 +101,45 @@ async fn nested_aggregation_reports_non_final_stages_as_intermediate() -> Result
     )
     .await?;
     assert_intermediate_excludes_only_final_stage(&graph);
+    Ok(())
+}
+
+/// Tasks of one stage can run plans that report different numbers of operator
+/// metrics: the scheduler restricts each task's copy of the stage plan to its
+/// partitions, and that can swap a leaf without metrics (`EmptyExec` under a
+/// `UnionExec`, say) for one with them. The metrics of such a task cannot be
+/// merged with the stage's, but the task still succeeded. Its status must be
+/// applied anyway, or the stage never completes and the job hangs.
+#[tokio::test]
+async fn tasks_reporting_different_metrics_counts_complete_the_job() -> Result<()> {
+    let mut graph = plan_job("select min(a), c from t group by c").await?;
+    let executor = mock_executor("executor-id1".to_string());
+    let mut tasks_per_stage: HashMap<usize, usize> = HashMap::new();
+
+    while !graph.is_successful() {
+        graph.revive();
+        let mut progressed = false;
+        while let Some(task) = graph.pop_next_task(&executor.id)? {
+            let stage_id = task.key.stage_id;
+            let nth = tasks_per_stage.entry(stage_id).or_default();
+            let mut status = mock_completed_task(task, &executor.id);
+            // One operator metrics set for the stage's first task, two for the
+            // next, and so on.
+            status.metrics = vec![OperatorMetricsSet::default(); 1 + *nth % 2];
+            *nth += 1;
+            graph.update_task_status(&executor, vec![status], 1, 1)?;
+            progressed = true;
+        }
+        assert!(progressed, "no task to run, but the job has not succeeded");
+    }
+
+    assert!(
+        tasks_per_stage.values().any(|&n| n > 1),
+        "expected a stage with more than one task: {tasks_per_stage:?}"
+    );
+    assert!(matches!(
+        graph.status().status.as_ref(),
+        Some(job_status::Status::Successful(_))
+    ));
     Ok(())
 }

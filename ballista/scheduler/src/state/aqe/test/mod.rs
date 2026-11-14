@@ -47,30 +47,36 @@ mod stage_build_side;
 /// Failed stage transitions leave the stage in the graph
 mod stage_transitions;
 /// A table whose statistics are declared rather than measured
-mod stats_table;
+pub(super) mod stats_table;
 
+use crate::state::aqe::adaptive_rules::{AdaptiveRule, AdaptiveRules};
 use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::{AdaptivePlanner, RunnableStages};
 use ballista_core::JobId;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+    ExecutorEndpoint, PartitionId, PartitionLocation, PartitionStats,
 };
 use datafusion::arrow::array::{Int32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::TableProvider;
 use datafusion::common::stats::Precision;
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{ColumnStatistics, Statistics};
+use datafusion::config::ConfigOptions;
 use datafusion::datasource::MemTable;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::statistics::StatisticsContext;
+use datafusion::physical_plan::test::exec::StatisticsExec;
+use datafusion::physical_plan::{ExecutionPlan, StatisticsArgs};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use stats_table::StatsTable;
 use std::collections::HashSet;
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 impl AdaptivePlanner {
     /// Creates an `AdaptivePlanner` over an already-built physical `plan`, with
@@ -89,6 +95,27 @@ impl AdaptivePlanner {
             job_id,
             Self::default_optimizers(plan_id_generator),
         )
+    }
+
+    /// Plans `sql` in `ctx` to a physical plan and wraps it in an
+    /// `AdaptivePlanner`, bypassing the preparation rules.
+    pub(super) async fn from_physical_sql(
+        ctx: &SessionContext,
+        sql: &str,
+    ) -> datafusion::common::Result<Self> {
+        let plan = ctx.sql(sql).await?.create_physical_plan().await?;
+        Self::try_from_plan(ctx.state().config(), plan, "test_job".into())
+    }
+
+    /// Plans `sql` in `ctx` to an optimized logical plan and hands it to
+    /// [`AdaptivePlanner::try_new`], which runs the preparation rules.
+    pub(super) async fn from_logical_sql(
+        ctx: &SessionContext,
+        sql: &str,
+        rules: Option<&dyn AdaptiveRules>,
+    ) -> datafusion::common::Result<Self> {
+        let plan = ctx.sql(sql).await?.into_optimized_plan()?;
+        Self::try_new(ctx, &plan, "test_job".into(), rules).await
     }
 
     /// The stages that can run now, or `None` if no more stages can run.
@@ -150,10 +177,7 @@ pub(crate) fn ballista_ctx() -> SessionContext {
     let config = SessionConfig::new_with_ballista()
         .with_target_partitions(4)
         .with_round_robin_repartition(false);
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_config(config)
-        .build();
-    SessionContext::new_with_state(state)
+    SessionContext::new_with_config(config)
 }
 
 /// Registers a [`StatsTable`] declaring `stats` over `schema`.
@@ -171,6 +195,15 @@ pub(crate) fn mock_partitions_with_statistics() -> Vec<Vec<PartitionLocation>> {
     mock_partitions_with_size(42, 10)
 }
 
+/// An executor for locations that a test never fetches from.
+pub(crate) fn unused_executor() -> Arc<ExecutorEndpoint> {
+    Arc::new(ExecutorEndpoint {
+        id: "".to_string(),
+        host: "".to_string(),
+        port: 0,
+    })
+}
+
 /// Shuffle output reporting `num_rows` rows over `num_bytes` bytes in a single
 /// partition. Tests that turn on the *value* of a measured size, rather than
 /// just its presence, pick their own figures.
@@ -178,28 +211,29 @@ pub(crate) fn mock_partitions_with_size(
     num_rows: u64,
     num_bytes: u64,
 ) -> Vec<Vec<PartitionLocation>> {
-    let location = PartitionLocation {
-        // next few properties are generic values
+    vec![vec![mock_partition_location(0, num_rows, num_bytes)]]
+}
+
+/// Output partition `partition_id` of stage 0 on a blank executor, reporting
+/// `num_rows` rows over `num_bytes` bytes.
+pub(crate) fn mock_partition_location(
+    partition_id: usize,
+    num_rows: u64,
+    num_bytes: u64,
+) -> PartitionLocation {
+    PartitionLocation {
         map_partition_id: 0,
         partition_id: PartitionId {
             job_id: "".into(),
             stage_id: 0,
-            partition_id: 0,
+            partition_id,
         },
-        executor_meta: ExecutorMetadata {
-            id: "".to_string(),
-            host: "".to_string(),
-            port: 0,
-            grpc_port: 0,
-            specification: ExecutorSpecification::default().with_vcores(0),
-            os_info: ExecutorOperatingSystemSpecification::default(),
-        },
+        executor_meta: unused_executor(),
         // next few properties are needed
         partition_stats: PartitionStats::new(Some(num_rows), None, Some(num_bytes)),
         file_id: None,
         is_sort_shuffle: false,
-    };
-    vec![vec![location]]
+    }
 }
 
 /// Column statistics carrying only the given exact null counts.
@@ -252,10 +286,200 @@ pub(crate) fn mock_context() -> SessionContext {
         // here so join-input swaps during AQE re-optimization are legal.
         .set_bool("datafusion.optimizer.enable_dynamic_filter_pushdown", false);
 
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .build();
+    SessionContext::new_with_config(config)
+}
 
-    SessionContext::new_with_state(state)
+/// A leaf over `schema` that reports `statistics` and yields no rows.
+pub(crate) fn statistics_exec(
+    statistics: Statistics,
+    schema: &Schema,
+) -> Arc<dyn ExecutionPlan> {
+    Arc::new(StatisticsExec::new(statistics, schema.clone()))
+}
+
+/// A leaf over `schema` whose statistics are all unknown.
+pub(crate) fn unknown_statistics_exec(schema: &Schema) -> Arc<dyn ExecutionPlan> {
+    statistics_exec(Statistics::new_unknown(schema), schema)
+}
+
+/// A Ballista session config with the coalesce-relevant knobs forced to
+/// specific values. The rule packs toward `target_partition_bytes` (200, for
+/// test scale), so a scenario traces from its inputs alone.
+pub(crate) fn coalesce_config(target_partitions: usize, enabled: bool) -> SessionConfig {
+    SessionConfig::new_with_ballista()
+        .with_target_partitions(target_partitions)
+        .with_round_robin_repartition(false)
+        .with_ballista_coalesce_enabled(enabled)
+        .with_ballista_coalesce_target_partition_bytes(200)
+}
+
+/// A session over [`coalesce_config`] in which joins plan as sort-merge joins
+/// over hash-partitioned inputs.
+pub(crate) fn coalesce_context(
+    target_partitions: usize,
+    enabled: bool,
+) -> SessionContext {
+    let config = coalesce_config(target_partitions, enabled)
+        .set_bool("datafusion.optimizer.prefer_hash_join", false)
+        .set_u64(
+            "datafusion.optimizer.hash_join_single_partition_threshold",
+            0,
+        )
+        .set_u64(
+            "datafusion.optimizer.hash_join_single_partition_threshold_rows",
+            0,
+        );
+
+    SessionContext::new_with_config(config)
+}
+
+/// Registers a MemTable with `n_partitions` partitions, each holding one copy
+/// of `mock_batch`. Multi-partition sources force DataFusion's
+/// `EnforceDistribution` to insert a hash repartition before partitioned
+/// joins; without that, two 1-partition inputs satisfy `Partitioned` on a
+/// single partition and no `ExchangeExec` shows up in the final plan.
+pub(crate) fn register_partitioned_table(
+    ctx: &SessionContext,
+    name: &str,
+    n_partitions: usize,
+) -> datafusion::error::Result<()> {
+    let data = (0..n_partitions)
+        .map(|_| Ok(vec![mock_batch()?]))
+        .collect::<datafusion::error::Result<Vec<_>>>()?;
+    let table = MemTable::try_new(mock_schema(), data)?;
+    ctx.register_table(name, Arc::new(table))?;
+    Ok(())
+}
+
+/// A `Vec<Vec<PartitionLocation>>` of length `per_partition_bytes.len()` where
+/// each upstream partition reports the given byte size. The coalesce rule sums
+/// `partition_stats.num_bytes` across leaves before bin-packing, which is the
+/// only field these tests need to vary.
+pub(crate) fn partitions_with_byte_sizes(
+    per_partition_bytes: &[u64],
+) -> Vec<Vec<PartitionLocation>> {
+    per_partition_bytes
+        .iter()
+        .enumerate()
+        .map(|(idx, &bytes)| vec![mock_partition_location(idx, 1, bytes)])
+        .collect()
+}
+
+/// What an embedder's rules saw.
+#[derive(Debug, Default)]
+pub(crate) struct Seen {
+    pub(crate) preparation_runs: AtomicUsize,
+    pub(crate) replan_runs: AtomicUsize,
+    /// The measured row counts of finished stages' exchanges, by stage id.
+    pub(crate) measured_rows: Mutex<Vec<(usize, usize)>>,
+    /// A preparation rule was given a `RepartitionExec`.
+    pub(crate) prepared_submitted_shuffle: AtomicBool,
+    /// A preparation rule was given an `ExchangeExec`.
+    pub(crate) prepared_stage_boundary: AtomicBool,
+}
+
+/// Counts its runs, records what a preparation rule is given and the measured
+/// rows of each finished stage a replan rule is given, and optionally holds
+/// back every stage that hasn't run yet.
+#[derive(Debug)]
+struct Recording {
+    seen: Arc<Seen>,
+    replan: bool,
+    hold: bool,
+}
+
+impl PhysicalOptimizerRule for Recording {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        _config: &ConfigOptions,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        if !self.replan {
+            self.seen.preparation_runs.fetch_add(1, Ordering::Relaxed);
+            plan.apply(|node| {
+                if node.is::<RepartitionExec>() {
+                    self.seen
+                        .prepared_submitted_shuffle
+                        .store(true, Ordering::Relaxed);
+                }
+                if node.is::<ExchangeExec>() {
+                    self.seen
+                        .prepared_stage_boundary
+                        .store(true, Ordering::Relaxed);
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })?;
+            return Ok(plan);
+        }
+        self.seen.replan_runs.fetch_add(1, Ordering::Relaxed);
+        plan.apply(|node| {
+            if let Some(exchange) = node.downcast_ref::<ExchangeExec>()
+                && exchange.shuffle_created()
+            {
+                let stats = StatisticsContext::new()
+                    .compute(node.as_ref(), &StatisticsArgs::new())?;
+                if let (Some(stage_id), Some(rows)) =
+                    (exchange.stage_id(), stats.num_rows.get_value())
+                {
+                    self.seen
+                        .measured_rows
+                        .lock()
+                        .unwrap()
+                        .push((stage_id, *rows));
+                }
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        if !self.hold {
+            return Ok(plan);
+        }
+        Ok(plan
+            .transform_up(|node| {
+                let Some(exchange) = node.downcast_ref::<ExchangeExec>() else {
+                    return Ok(Transformed::no(node));
+                };
+                if exchange.shuffle_created() || exchange.is_inactive_stage() {
+                    return Ok(Transformed::no(node));
+                }
+                let held: Arc<dyn ExecutionPlan> =
+                    Arc::new(exchange.with_inactive_stage(true));
+                Ok(Transformed::yes(held))
+            })?
+            .data)
+    }
+
+    fn name(&self) -> &str {
+        "Recording"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
+/// A scheduler embedder whose preparation and replan rules are [`Recording`]
+/// rules. Its replan rule holds back the stages that haven't run when `hold`
+/// is set.
+#[derive(Debug)]
+pub(crate) struct Embedder {
+    pub(crate) seen: Arc<Seen>,
+    pub(crate) hold: bool,
+}
+
+impl AdaptiveRules for Embedder {
+    fn preparation_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
+        vec![Arc::new(Recording {
+            seen: Arc::clone(&self.seen),
+            replan: false,
+            hold: false,
+        })]
+    }
+
+    fn replan_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
+        vec![Arc::new(Recording {
+            seen: Arc::clone(&self.seen),
+            replan: true,
+            hold: self.hold,
+        })]
+    }
 }

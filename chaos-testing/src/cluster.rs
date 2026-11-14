@@ -66,18 +66,27 @@ fn open_log(path: &Path) -> std::io::Result<File> {
 /// `target/ci/` while the inference points at `target/release/`. Deriving the
 /// directory from `current_exe` is correct for any profile and honours
 /// `CARGO_TARGET_DIR` for free.
+///
+/// The depth of the test executable below the profile directory depends on
+/// Cargo's build-dir layout: `<target>/<profile>/deps/<test>` in the old
+/// layout, `<target>/<profile>/build/<pkg>/<hash>/.../<test>` in the new one
+/// (the default since Rust 1.100). Final binaries are uplifted to
+/// `<target>/<profile>/` in both, so walk up from the test executable and take
+/// the first ancestor directory that holds the binary.
 fn binary(name: &str) -> PathBuf {
-    let mut path = std::env::current_exe().expect("locate the test executable");
-    path.pop(); // deps/
-    path.pop(); // <target>/<profile>/
-    path.push(name);
-    assert!(
-        path.exists(),
-        "{} not found at {}. Run `cargo build -p ballista-chaos --bins` first.",
-        name,
-        path.display()
-    );
-    path
+    let exe = std::env::current_exe().expect("locate the test executable");
+    let file_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    exe.ancestors()
+        .skip(1)
+        .map(|dir| dir.join(&file_name))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "{name} not found in any ancestor of {}. \
+                 Run `cargo build -p ballista-chaos --bins` first.",
+                exe.display()
+            )
+        })
 }
 
 /// One supervised executor process.

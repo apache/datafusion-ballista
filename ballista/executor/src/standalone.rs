@@ -25,7 +25,9 @@ use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightSe
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::registry::BallistaFunctionRegistry;
-use ballista_core::utils::{GrpcServerConfig, default_config_producer};
+use ballista_core::utils::{
+    GrpcServerConfig, default_config_producer, tcp_incoming_from_listener,
+};
 use ballista_core::{
     BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION,
     error::Result,
@@ -38,12 +40,11 @@ use ballista_core::{
 use ballista_core::{ConfigProducer, RuntimeProducer};
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use log::info;
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tonic::transport::Channel;
-use tonic::transport::server::TcpIncoming;
 
 /// Creates new standalone executor based on
 /// session_state provided.
@@ -117,9 +118,13 @@ pub async fn new_standalone_executor_from_builder(
     // A push-staged executor serves the scheduler's task launches on a gRPC
     // port of its own. Bind it now and keep it bound until the server takes it
     // over, so no other port-0 bind in this process can be handed the same
-    // number in between.
+    // number in between. Bind it on the Flight listener's address: the
+    // scheduler dials it by the `localhost` name the executor registers, and
+    // a listener on the other address family (127.0.0.1 next to a scheduler
+    // on ::1) can be handed the scheduler's own port number, so the
+    // scheduler's launches would reach the scheduler instead.
     let grpc_listener = if push_staged {
-        Some(TcpListener::bind("127.0.0.1:0").await?)
+        Some(TcpListener::bind(SocketAddr::new(address.ip(), 0)).await?)
     } else {
         None
     };
@@ -163,17 +168,19 @@ pub async fn new_standalone_executor_from_builder(
         .max_decoding_message_size(max_message_size)
         .max_encoding_message_size(max_message_size);
 
+    // tonic ignores the builder's `tcp_nodelay` and `tcp_keepalive` on a
+    // pre-bound listener, so they are set on the incoming stream.
+    let grpc_server_config = GrpcServerConfig::default();
+    let incoming = tcp_incoming_from_listener(listener, &grpc_server_config);
     tokio::spawn(
-        create_grpc_server(&GrpcServerConfig::default())
+        create_grpc_server(&grpc_server_config)
             .add_service(server)
-            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
-                listener,
-            )),
+            .serve_with_incoming(incoming),
     );
 
     if let Some(grpc_listener) = grpc_listener {
         let process_config = crate::executor_process::ExecutorProcessConfig {
-            bind_host: "127.0.0.1".to_owned(),
+            bind_host: address.ip().to_string(),
             port: address.port(),
             grpc_port,
             vcores,
@@ -185,13 +192,11 @@ pub async fn new_standalone_executor_from_builder(
         };
         let shutdown = crate::shutdown::ShutdownNotifier::new();
         let (stop_send, stop_receive) = tokio::sync::mpsc::channel::<bool>(10);
-        let incoming = TcpIncoming::from(grpc_listener)
-            .with_nodelay(Some(true))
-            .with_keepalive(Some(Duration::from_secs(
-                process_config.grpc_server_config.tcp_keepalive_seconds,
-            )));
+        let incoming =
+            tcp_incoming_from_listener(grpc_listener, &process_config.grpc_server_config);
         info!(
-            "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on 127.0.0.1:{grpc_port}"
+            "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {}",
+            SocketAddr::new(address.ip(), grpc_port)
         );
         crate::executor_server::startup_with_incoming(
             scheduler,

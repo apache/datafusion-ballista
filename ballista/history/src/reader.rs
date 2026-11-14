@@ -170,38 +170,12 @@ fn read_job_end<T: for<'de> Deserialize<'de>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{HistoryEvent, JobEnd, JobEndStatus, SCHEMA_VERSION};
+    use crate::event::{HistoryEvent, SCHEMA_VERSION};
+    use crate::test_util::job_end;
     use std::io::Write;
 
-    fn sample_index() -> JobIndex {
-        JobIndex {
-            job_id: "job-1".into(),
-            job_name: "q1".into(),
-            status: "Completed".into(),
-            job_status: "COMPLETED".into(),
-            start_time: 2,
-            end_time: 3,
-            num_stages: 1,
-            completed_stages: 1,
-            percent_complete: 100,
-        }
-    }
-
     fn job_end_line() -> String {
-        let event = HistoryEvent::JobEnd(Box::new(JobEnd {
-            status: JobEndStatus::Succeeded,
-            queued_at: 1,
-            started_at: 2,
-            completed_at: 3,
-            index: sample_index(),
-            job: RawValue::from_string(
-                r#"{"job_id":"job-1","physical_plan":"ProjectionExec"}"#.to_string(),
-            )
-            .unwrap(),
-            stages: RawValue::from_string(r#"{"stages":[]}"#.to_string()).unwrap(),
-            config: Default::default(),
-            dot: "digraph {}".into(),
-        }));
+        let event = HistoryEvent::JobEnd(Box::new(job_end("job-1")));
         serde_json::to_string(&event.to_record().unwrap()).unwrap()
     }
 
