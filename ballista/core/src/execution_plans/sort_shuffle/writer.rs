@@ -23,7 +23,7 @@
 //! concurrently and then emits one file holding every bucket, laid out
 //! partition-major so each output partition stays one contiguous range.
 
-use datafusion::arrow::array::{Array, AsArray};
+use datafusion::arrow::array::AsArray;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
@@ -167,9 +167,9 @@ pub enum ShuffleRouting {
         /// Number of output partitions.
         partition_count: usize,
     },
-    /// Compare the key expressions of the ordering against the split points,
-    /// as `RepartitionExec` does for a `Partitioning::Range`, so output
-    /// partition `i` holds exactly range `i`.
+    /// Send each row to the range of the key ordering it falls in, as
+    /// `RepartitionExec` does for range partitioning: output partition `i`
+    /// holds range `i`.
     Range(RangePartitioning),
     /// Send each row to the partition named by an integer input column, which
     /// the writer drops. A null, negative or out-of-range id fails the task.
@@ -184,8 +184,8 @@ pub enum ShuffleRouting {
 impl TryFrom<Partitioning> for ShuffleRouting {
     type Error = DataFusionError;
 
-    /// Hash and range partitioning are the routings the writer can apply on
-    /// its own.
+    /// Only hash and range partitioning are routings the writer can apply on its
+    /// own.
     fn try_from(partitioning: Partitioning) -> Result<Self> {
         match partitioning {
             Partitioning::Hash(exprs, partition_count) => Ok(Self::Hash {
@@ -210,7 +210,6 @@ impl ShuffleRouting {
             | Self::PartitionId {
                 partition_count, ..
             } => *partition_count,
-            // One more than the split points, so never zero.
             Self::Range(range) => range.partition_count(),
         }
     }
@@ -248,13 +247,9 @@ impl ShuffleRouting {
 ///
 /// # Routing
 ///
-/// Rows reach the K output partitions by the writer's [`Partitioning`]:
-/// `Hash` hashes the key expressions, and `Range` compares them with the
-/// plan's split points so that output partition `i` holds exactly range `i`
-/// (the same routing `RepartitionExec` applies to a `Partitioning::Range`).
-/// Everything after routing — buffering, spilling, the consolidated file and
-/// its index, the summaries — is the same either way, because it only sees
-/// "these rows are for output partition `p`".
+/// Rows are placed as the writer's [`ShuffleRouting`] says. A hash stage routes
+/// them as `RepartitionExec` does. So does a range stage, so output partition
+/// `i` holds range `i`. A partition-id stage uses an id column the plan computed.
 ///
 /// Under the multi-partition-task model each task's restricted plan carries
 /// input partitions 0..N_local, and different tasks in the same stage share
@@ -271,8 +266,8 @@ impl ShuffleRouting {
 /// per output partition) and spawns `run_coordinator`, which spawns M
 /// concurrent tokio tasks — one per local input partition in the task's
 /// slice. Each input writer pulls `child.execute(i)`, buckets rows into K
-/// sub-slices as its [`ShuffleRouting`] says (by hash, by value range, or by
-/// partition id), sorts and spills, and produces one indexed data file.
+/// sub-slices as its [`ShuffleRouting`] says (by hash, by range, or by partition
+/// id), sorts and spills, and produces one indexed data file.
 /// The coordinator collects M×K per-bucket summaries and re-buckets them
 /// by output partition so each of the K oneshots receives the M summaries
 /// for its output. Each `execute(k)` returns a stream that awaits its
@@ -288,8 +283,7 @@ impl ShuffleRouting {
 /// Data flows bottom → top (child produces, executor consumes), matching
 /// DataFusion's diagram convention for `RepartitionExec`. Arrows point up
 /// with the data. **M and K are independent**: M = the task's slice of the
-/// child's partitions, K = the output partition count the planner chose (the
-/// hash target, or one more than a range's split points).
+/// child's partitions, K = the output partition count from the planner.
 /// Example: M=2, K=3.
 ///
 /// ```text
@@ -320,7 +314,7 @@ impl ShuffleRouting {
 ///           ┌────────────────┐           ┌────────────────┐
 ///           │  input bucketer│           │  input bucketer│
 ///           │      (0)       │           │      (1)       │
-///           │ bucket by key  │           │ bucket by key  │
+///           │ route by key   │           │ route by key   │
 ///           │ bucket, spill  │           │ bucket, spill  │
 ///           │ if needed      │           │ if needed      │
 ///           └────────────────┘           └────────────────┘
@@ -517,7 +511,7 @@ impl SortShuffleWriteMetrics {
 }
 
 impl SortShuffleWriterExec {
-    /// Create a new sort-based shuffle writer that routes rows by
+    /// Create a new sort-based shuffle writer that routes rows into
     /// `shuffle_output_partitioning`, which must be [`Partitioning::Hash`] or
     /// [`Partitioning::Range`]. See [`Self::try_new_with_routing`] for other
     /// routings.
@@ -654,9 +648,9 @@ impl SortShuffleWriterExec {
         self.stage_id
     }
 
-    /// Get the shuffle output partitioning: `Hash` for a hash shuffle, `Range`
-    /// for a range shuffle, otherwise only `UnknownPartitioning` of the
-    /// partition count.
+    /// Get the shuffle output partitioning: `Hash` for a hash shuffle, `Range` for
+    /// a range shuffle, otherwise only `UnknownPartitioning` of the partition
+    /// count.
     pub fn shuffle_output_partitioning(&self) -> &Partitioning {
         self.properties.output_partitioning()
     }
@@ -716,26 +710,22 @@ impl SortShuffleWriterExec {
         let column_stats = self.column_stats.clone();
 
         async move {
-            let mut stream = plan.execute(input_partition, context.clone())?;
+            // The id column of a partition-id shuffle is routed on but never
+            // written, so it is left out of the statistics too.
+            let ignored_column = match &routing {
+                ShuffleRouting::Hash { .. } | ShuffleRouting::Range(_) => None,
+                ShuffleRouting::PartitionId { column, .. } => Some(*column),
+            };
+            let mut stream = column_stats.count(
+                plan.execute(input_partition, context.clone())?,
+                ignored_column,
+            );
             let schema = routing.output_schema(&stream.schema())?;
-            // A partition-id shuffle doesn't write the id column, so its nulls
-            // are counted below on the batches that are written, to line up
-            // with a reader's columns. Every other routing writes the input
-            // as it is, so the collector can count the stream.
-            let counts_written_columns =
-                matches!(routing, ShuffleRouting::PartitionId { .. });
-            let mut null_counts = vec![0u64; schema.fields().len()];
-            if !counts_written_columns {
-                stream = column_stats.count(stream);
-            }
             let ballista_config = Arc::new(context.session_config().ballista_config());
             let compression_type = ballista_config.shuffle_compression_codec()?;
 
-            // Built once for the whole input partition: the hash reducer and
-            // the range expression are fixed, and the scratch buffers inside
-            // the router are reused across batches.
-            let mut router = RowRouter::try_new(&routing)?;
-            let num_output_partitions = router.num_partitions();
+            let num_output_partitions = routing.partition_count();
+            let mut router = RowRouter::try_new(routing)?;
 
             let mut spill_manager = SpillManager::new(
                 &work_dir,
@@ -774,20 +764,8 @@ impl SortShuffleWriterExec {
                 // Compute partition assignment for every row.
                 let timer = metrics.repart_time.timer();
                 router.assign(&input_batch, &mut per_partition_rows)?;
-                // A partition-id shuffle does not write the id column.
-                let input_batch = match &routing {
-                    ShuffleRouting::PartitionId { column, .. } => {
-                        drop_partition_id(input_batch, *column, &schema)?
-                    }
-                    ShuffleRouting::Hash { .. } | ShuffleRouting::Range(_) => input_batch,
-                };
+                let input_batch = router.without_routing_columns(input_batch, &schema)?;
                 timer.done();
-
-                if counts_written_columns {
-                    for (i, col) in input_batch.columns().iter().enumerate() {
-                        null_counts[i] += col.logical_null_count() as u64;
-                    }
-                }
 
                 buffered.push_batch(input_batch, &per_partition_rows);
                 let buffered_bytes = buffered.memory_size();
@@ -881,10 +859,6 @@ impl SortShuffleWriterExec {
             let opts = create_write_options(compression_type)?;
             let EncodedPartitions { encoded, stats } =
                 encode_buffered_partitions(&mut buffered, &schema, &opts)?;
-
-            if counts_written_columns {
-                column_stats.add_null_counts(&null_counts);
-            }
 
             Ok(InputPartitionOutput {
                 encoded,
@@ -1067,9 +1041,9 @@ impl ExecutionPlan for SortShuffleWriterExec {
         vec![&self.plan]
     }
 
-    /// This writer routes rows itself rather than relying on an upstream
-    /// `RepartitionExec`, so a hash or range shuffle's key expressions are its
-    /// own. A partition-id shuffle has none: the plan below computed the column.
+    /// A hash or range shuffle routes rows itself rather than relying on an
+    /// upstream `RepartitionExec`, so the key expressions are its own. A
+    /// partition-id shuffle has none: the plan below computed the column.
     fn apply_expressions(
         &self,
         f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
@@ -1168,9 +1142,19 @@ impl ExecutionPlan for SortShuffleWriterExec {
             ShuffleRouting::Hash { .. } | ShuffleRouting::Range(_) => {}
             // The id column is not part of the output, so its statistics aren't.
             ShuffleRouting::PartitionId { column, .. } => {
-                let columns = &mut Arc::make_mut(&mut stats).column_statistics;
-                if *column < columns.len() {
-                    columns.remove(*column);
+                let input_schema = self.plan.schema();
+                let stats = Arc::make_mut(&mut stats);
+                if *column < stats.column_statistics.len() {
+                    let removed = stats.column_statistics.remove(*column);
+                    // The total counted the id column's bytes too. Take them
+                    // off when the column reports its size, otherwise let
+                    // DataFusion re-derive the total from the written schema.
+                    if removed.byte_size.get_value().is_some() {
+                        stats.total_byte_size =
+                            stats.total_byte_size.sub(&removed.byte_size);
+                    } else if let Ok(schema) = self.routing.output_schema(&input_schema) {
+                        stats.calculate_total_byte_size(&schema);
+                    }
                 }
             }
         }
@@ -1230,10 +1214,15 @@ async fn run_coordinator(
         .partition_count();
 
     let config = ctx.session_config().ballista_config();
+    // Statistics describe what is written, so they line up with a reader's columns.
+    let written_columns = writer
+        .routing
+        .output_schema(&writer.plan.schema())
+        .map_or(0, |schema| schema.fields().len());
     writer.column_stats.reset(
-        writer.schema().fields().len(),
+        written_columns,
         &sketched_columns(
-            writer.shuffle_output_partitioning(),
+            &writer.routing.output_partitioning(),
             config.shuffle_collect_distinct_counts(),
         ),
         config.shuffle_collect_distinct_counts_precision(),
@@ -1487,73 +1476,47 @@ fn compute_partition_indices(
     Ok(())
 }
 
-/// Computes per-row output partition assignments for range partitioning.
-///
-/// Same contract as [`compute_partition_indices`]: `out` ends up with
-/// `num_partitions` entries, where entry `p` lists the row indices in `batch`
-/// whose key falls in range `p`.
-///
-/// The routing function is DataFusion's own [`RangeExpr`], the one
-/// `RepartitionExec` applies to a `Partitioning::Range`, so a shuffled range
-/// repartition puts every row where the in-process operator would have. That
-/// covers the cases a hand-rolled comparison tends to get wrong: descending
-/// keys, null placement, and a row equal to a split point (which belongs to
-/// the range it opens, not the one it closes).
+/// Range counterpart of [`compute_partition_indices`]: routes rows with
+/// [`RangeExpr`], which shares `BatchPartitioner`'s routing function.
 fn compute_range_partition_indices(
     batch: &RecordBatch,
     expr: &RangeExpr,
-    num_partitions: usize,
     out: &mut Vec<Vec<u32>>,
 ) -> Result<()> {
     let partition_ids = expr.evaluate(batch)?.into_array(batch.num_rows())?;
     let partition_ids = partition_ids.as_primitive::<UInt64Type>();
 
-    out.resize_with(num_partitions, Vec::new);
-    for rows in out.iter_mut() {
-        rows.clear();
-    }
+    // `RangeExpr` answers with `0..=split_points.len()`.
+    reset_buckets(out, expr.split_points().len() + 1);
     for (row, &partition) in partition_ids.values().iter().enumerate() {
-        // `RangeExpr` answers with `0..=split_points.len()`, and
-        // `num_partitions` is one more than that, so this never runs off `out`.
         out[partition as usize].push(row as u32);
     }
     Ok(())
 }
 
-/// Assigns each row of an input batch to an output partition, per the
-/// writer's [`ShuffleRouting`].
-///
-/// Everything downstream of routing (buffering, spilling, the consolidated
-/// file and its index) only sees "rows for output partition `p`", which is why
-/// hash, range and partition-id shuffles share one writer: the routing decides
-/// which rows go to which bucket and nothing else.
+/// Assigns each row of an input batch to an output partition.
 enum RowRouter {
     Hash {
         exprs: Vec<Arc<dyn PhysicalExpr>>,
-        /// Fixed for the whole input partition, so it is built once rather
-        /// than re-derived per batch.
         reducer: StrengthReducedU64,
         hash_buffer: Vec<u64>,
     },
-    Range {
-        expr: RangeExpr,
-        num_partitions: usize,
-    },
+    Range(RangeExpr),
     PartitionId {
         column: usize,
-        num_partitions: usize,
+        partition_count: usize,
     },
 }
 
 impl RowRouter {
-    fn try_new(routing: &ShuffleRouting) -> Result<Self> {
+    fn try_new(routing: ShuffleRouting) -> Result<Self> {
         match routing {
             ShuffleRouting::Hash {
                 exprs,
                 partition_count,
             } => Ok(Self::Hash {
-                exprs: exprs.clone(),
-                reducer: StrengthReducedU64::new(*partition_count as u64),
+                exprs,
+                reducer: StrengthReducedU64::new(partition_count as u64),
                 hash_buffer: Vec::new(),
             }),
             ShuffleRouting::Range(range) => {
@@ -1562,32 +1525,19 @@ impl RowRouter {
                     .iter()
                     .map(|sort_expr| Arc::clone(&sort_expr.expr))
                     .collect();
-                Ok(Self::Range {
-                    expr: RangeExpr::try_new(key_exprs, range)?,
-                    num_partitions: range.partition_count(),
-                })
+                Ok(Self::Range(RangeExpr::try_new(key_exprs, &range)?))
             }
             ShuffleRouting::PartitionId {
                 column,
                 partition_count,
             } => Ok(Self::PartitionId {
-                column: *column,
-                num_partitions: *partition_count,
+                column,
+                partition_count,
             }),
         }
     }
 
-    fn num_partitions(&self) -> usize {
-        match self {
-            Self::Hash { reducer, .. } => reducer.divisor() as usize,
-            Self::Range { num_partitions, .. }
-            | Self::PartitionId { num_partitions, .. } => *num_partitions,
-        }
-    }
-
-    /// Fills `out` with one entry per output partition, listing the rows of
-    /// `batch` bound for it. See [`compute_partition_indices`] for how `out`
-    /// is reused across calls.
+    /// Fills `out` with the rows of `batch` bound for each output partition.
     fn assign(&mut self, batch: &RecordBatch, out: &mut Vec<Vec<u32>>) -> Result<()> {
         match self {
             Self::Hash {
@@ -1595,14 +1545,26 @@ impl RowRouter {
                 reducer,
                 hash_buffer,
             } => compute_partition_indices(batch, exprs, *reducer, hash_buffer, out),
-            Self::Range {
-                expr,
-                num_partitions,
-            } => compute_range_partition_indices(batch, expr, *num_partitions, out),
+            Self::Range(expr) => compute_range_partition_indices(batch, expr, out),
             Self::PartitionId {
                 column,
-                num_partitions,
-            } => compute_partition_indices_from_ids(batch, *column, *num_partitions, out),
+                partition_count,
+            } => {
+                compute_partition_indices_from_ids(batch, *column, *partition_count, out)
+            }
+        }
+    }
+
+    /// `batch` as it is written: itself, less the id column of a partition-id
+    /// shuffle, rebuilt under `schema` (the writer's output schema).
+    fn without_routing_columns(
+        &self,
+        batch: RecordBatch,
+        schema: &SchemaRef,
+    ) -> Result<RecordBatch> {
+        match self {
+            Self::Hash { .. } | Self::Range(_) => Ok(batch),
+            Self::PartitionId { column, .. } => drop_partition_id(batch, *column, schema),
         }
     }
 }
@@ -1616,9 +1578,14 @@ mod tests {
     use crate::hll::HyperLogLog;
     use crate::serde::protobuf::SketchType;
     use datafusion::arrow::array::{NullArray, StringArray, UInt32Array};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::compute::SortOptions;
+    use datafusion::arrow::datatypes::{DataType, Field, Int64Type, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::common::ScalarValue;
     use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::physical_expr::{
+        LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
+    };
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::expressions::Column;
     use datafusion::prelude::{SessionConfig, SessionContext};
@@ -2689,463 +2656,6 @@ mod tests {
         }
     }
 
-    // --- range partitioning -------------------------------------------------
-
-    /// `Range` partitioning on a single `Int64` key, column `index` of its input.
-    fn int_range_partitioning(
-        index: usize,
-        options: datafusion::arrow::compute::SortOptions,
-        split_points: &[i64],
-    ) -> Partitioning {
-        use datafusion::common::ScalarValue;
-        use datafusion::physical_expr::{
-            LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
-        };
-
-        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
-            Arc::new(Column::new("k", index)),
-            options,
-        )])
-        .unwrap();
-        let split_points = split_points
-            .iter()
-            .map(|&v| SplitPoint::new(vec![ScalarValue::Int64(Some(v))]))
-            .collect();
-        Partitioning::Range(RangePartitioning::try_new(ordering, split_points).unwrap())
-    }
-
-    fn ascending_nulls_last() -> datafusion::arrow::compute::SortOptions {
-        datafusion::arrow::compute::SortOptions {
-            descending: false,
-            nulls_first: false,
-        }
-    }
-
-    /// `(k, id)` rows, where `id` makes every row identifiable after a shuffle.
-    fn keyed_batch(rows: &[(Option<i64>, i64)]) -> RecordBatch {
-        use datafusion::arrow::array::Int64Array;
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int64, true),
-            Field::new("id", DataType::Int64, false),
-        ]));
-        RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Int64Array::from(
-                    rows.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
-                )),
-                Arc::new(Int64Array::from(
-                    rows.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
-                )),
-            ],
-        )
-        .unwrap()
-    }
-
-    fn keyed_input(partitions: Vec<Vec<RecordBatch>>) -> Result<Arc<dyn ExecutionPlan>> {
-        let schema = partitions[0][0].schema();
-        Ok(MemorySourceConfig::try_new_exec(&partitions, schema, None)?)
-    }
-
-    /// Route `batch` through a [`RowRouter`] built for `partitioning`.
-    fn route(partitioning: &Partitioning, batch: &RecordBatch) -> Vec<Vec<u32>> {
-        let mut router =
-            RowRouter::try_new(&partitioning.clone().try_into().unwrap()).unwrap();
-        let mut out = Vec::new();
-        router.assign(batch, &mut out).unwrap();
-        out
-    }
-
-    /// A value equal to a split point opens the next range: ranges are lower
-    /// inclusive and upper exclusive. Getting this backwards puts a boundary
-    /// value in the wrong partition, which a global sort then returns out of
-    /// order.
-    #[test]
-    fn range_routing_sends_a_row_equal_to_a_split_point_to_the_range_it_opens() {
-        let partitioning = int_range_partitioning(0, ascending_nulls_last(), &[10, 20]);
-        let batch = keyed_batch(&[
-            (Some(-5), 0),
-            (Some(9), 1),
-            (Some(10), 2),
-            (Some(11), 3),
-            (Some(19), 4),
-            (Some(20), 5),
-            (Some(21), 6),
-        ]);
-
-        assert_eq!(
-            route(&partitioning, &batch),
-            vec![vec![0, 1], vec![2, 3, 4], vec![5, 6]]
-        );
-    }
-
-    /// Descending order flips which side of a split point a value falls on, and
-    /// `nulls_first` decides where a null goes. Both come from the plan's own
-    /// sort options, not from anything this writer assumes.
-    #[test]
-    fn range_routing_honours_descending_order_and_null_placement() {
-        let options = datafusion::arrow::compute::SortOptions {
-            descending: true,
-            nulls_first: true,
-        };
-        // Split points descend with the key: "before 20" means "above 20".
-        let partitioning = int_range_partitioning(0, options, &[20, 10]);
-        let batch = keyed_batch(&[
-            (None, 0),
-            (Some(30), 1),
-            (Some(20), 2),
-            (Some(15), 3),
-            (Some(10), 4),
-            (Some(5), 5),
-        ]);
-
-        assert_eq!(
-            route(&partitioning, &batch),
-            vec![vec![0, 1], vec![2, 3], vec![4, 5]]
-        );
-
-        // The same data with nulls last sends the null to the final range.
-        let nulls_last = datafusion::arrow::compute::SortOptions {
-            descending: true,
-            nulls_first: false,
-        };
-        let partitioning = int_range_partitioning(0, nulls_last, &[20, 10]);
-        assert_eq!(
-            route(&partitioning, &batch),
-            vec![vec![1], vec![2, 3], vec![0, 4, 5]]
-        );
-    }
-
-    /// A compound key compares lexicographically, each column in its own
-    /// direction: the router must take the key columns, and their sort options,
-    /// from the plan's ordering in order.
-    #[test]
-    fn range_routing_compares_a_compound_key_column_by_column() {
-        use datafusion::arrow::compute::SortOptions;
-        use datafusion::common::ScalarValue;
-        use datafusion::physical_expr::{
-            LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
-        };
-
-        // (k ASC NULLS LAST, id DESC): within one `k`, a larger `id` sorts first.
-        let ordering = LexOrdering::new(vec![
-            PhysicalSortExpr::new(
-                Arc::new(Column::new("k", 0)),
-                SortOptions {
-                    descending: false,
-                    nulls_first: false,
-                },
-            ),
-            PhysicalSortExpr::new(
-                Arc::new(Column::new("id", 1)),
-                SortOptions {
-                    descending: true,
-                    nulls_first: false,
-                },
-            ),
-        ])
-        .unwrap();
-        let split = |k: i64, id: i64| {
-            SplitPoint::new(vec![
-                ScalarValue::Int64(Some(k)),
-                ScalarValue::Int64(Some(id)),
-            ])
-        };
-        let partitioning = Partitioning::Range(
-            RangePartitioning::try_new(
-                ordering,
-                vec![split(10, 5), split(10, 2), split(20, 100)],
-            )
-            .unwrap(),
-        );
-
-        let batch = keyed_batch(&[
-            (Some(9), 99),    // 0: below every split point on `k` alone
-            (Some(10), 9),    // 0: same `k`, but `id` 9 sorts ahead of (10, 5)
-            (Some(10), 5),    // 1: equal to the first split point
-            (Some(10), 3),    // 1: between (10, 5) and (10, 2)
-            (Some(10), 2),    // 2: equal to the second split point
-            (Some(19), 1000), // 2: `k` decides before `id` is looked at
-            (Some(20), 100),  // 3: equal to the third split point
-            (Some(20), 50),   // 3: after it, since `id` descends
-            (Some(21), 0),    // 3
-            (None, 7),        // 3: nulls last
-        ]);
-
-        assert_eq!(
-            route(&partitioning, &batch),
-            vec![vec![0, 1], vec![2, 3], vec![4, 5], vec![6, 7, 8, 9]]
-        );
-    }
-
-    #[test]
-    fn range_routing_of_an_empty_batch_yields_an_empty_bucket_per_range() {
-        let partitioning = int_range_partitioning(0, ascending_nulls_last(), &[10, 20]);
-        let batch = keyed_batch(&[]);
-
-        assert_eq!(
-            route(&partitioning, &batch),
-            vec![Vec::<u32>::new(), Vec::new(), Vec::new()]
-        );
-    }
-
-    /// Reused buffers must not leak rows from one batch into the next.
-    #[test]
-    fn range_routing_reuses_its_buffers_across_batches() {
-        let partitioning = int_range_partitioning(0, ascending_nulls_last(), &[10]);
-        let mut router = RowRouter::try_new(&partitioning.try_into().unwrap()).unwrap();
-        let mut out = Vec::new();
-
-        router
-            .assign(&keyed_batch(&[(Some(1), 0), (Some(50), 1)]), &mut out)
-            .unwrap();
-        assert_eq!(out, vec![vec![0], vec![1]]);
-
-        router
-            .assign(&keyed_batch(&[(Some(60), 0)]), &mut out)
-            .unwrap();
-        assert_eq!(out, vec![Vec::<u32>::new(), vec![0]]);
-    }
-
-    /// Drift detection, as for hashing: every row must land where DataFusion's
-    /// own `BatchPartitioner` puts it, because that is what the plan's
-    /// `RepartitionExec` would have done had it run in-process.
-    #[test]
-    fn range_routing_matches_batch_partitioner() {
-        use datafusion::arrow::array::Int64Array;
-        use datafusion::physical_plan::metrics::Time;
-        use datafusion::physical_plan::repartition::BatchPartitioner;
-
-        let options = datafusion::arrow::compute::SortOptions {
-            descending: false,
-            nulls_first: true,
-        };
-        let partitioning = int_range_partitioning(0, options, &[-3, 0, 4, 9]);
-        let Partitioning::Range(range) = &partitioning else {
-            unreachable!("int_range_partitioning builds a range partitioning");
-        };
-
-        // Values land on, just below and just above every split point, with
-        // nulls mixed in.
-        let rows: Vec<(Option<i64>, i64)> = (0..60)
-            .map(|i| {
-                let key = (i % 11 != 0).then_some(i % 17 - 5);
-                (key, i)
-            })
-            .collect();
-        let batch = keyed_batch(&rows);
-
-        let ours = route(&partitioning, &batch);
-
-        let mut reference = vec![usize::MAX; rows.len()];
-        BatchPartitioner::new_range_partitioner(range, Time::default())
-            .partition(batch, |partition, sub_batch| {
-                // `id` is the original row index, so it names which row this is.
-                let ids = sub_batch
-                    .column(1)
-                    .as_any()
-                    .downcast_ref::<Int64Array>()
-                    .unwrap();
-                for id in ids.values() {
-                    reference[*id as usize] = partition;
-                }
-                Ok(())
-            })
-            .unwrap();
-
-        for (row, &expected) in reference.iter().enumerate() {
-            let actual = ours
-                .iter()
-                .position(|bucket| bucket.contains(&(row as u32)))
-                .expect("row not assigned to any partition");
-            assert_eq!(
-                actual, expected,
-                "row {row} ({:?}) routed differently from BatchPartitioner",
-                rows[row].0
-            );
-        }
-    }
-
-    #[test]
-    fn range_partitioned_writer_has_one_output_partition_per_range() -> Result<()> {
-        let work_dir = TempDir::new()?;
-        let writer = SortShuffleWriterExec::try_new(
-            "job1".into(),
-            1,
-            keyed_input(vec![vec![keyed_batch(&[(Some(1), 0)])]])?,
-            work_dir.path().to_str().unwrap().to_string(),
-            int_range_partitioning(0, ascending_nulls_last(), &[10, 20, 30]),
-            SortShuffleConfig::default(),
-        )?;
-
-        assert_eq!(
-            writer.properties().output_partitioning().partition_count(),
-            4
-        );
-        Ok(())
-    }
-
-    /// A single range, with no split points, is a valid partitioning: every row
-    /// goes to its one partition.
-    #[test]
-    fn range_partitioning_without_split_points_routes_everything_to_partition_zero() {
-        let partitioning = int_range_partitioning(0, ascending_nulls_last(), &[]);
-        let batch = keyed_batch(&[(Some(-1), 0), (None, 1), (Some(1_000), 2)]);
-
-        assert_eq!(route(&partitioning, &batch), vec![vec![0, 1, 2]]);
-    }
-
-    #[test]
-    fn sort_shuffle_writer_rejects_partitioning_it_cannot_route() -> Result<()> {
-        let work_dir = TempDir::new()?;
-
-        let err = SortShuffleWriterExec::try_new(
-            "job1".into(),
-            1,
-            two_by_two_input()?,
-            work_dir.path().to_str().unwrap().to_string(),
-            Partitioning::RoundRobinBatch(4),
-            SortShuffleConfig::default(),
-        )
-        .expect_err("round-robin has no key to route by")
-        .to_string();
-
-        assert!(err.contains("Hash and Range"), "actual: {err}");
-        Ok(())
-    }
-
-    /// The writer owns its partitioning expressions, so expression visitors
-    /// (rewrites, column pruning) must reach a range key as they do a hash key.
-    #[test]
-    fn range_partitioned_writer_exposes_its_key_expression() -> Result<()> {
-        let work_dir = TempDir::new()?;
-        let writer = SortShuffleWriterExec::try_new(
-            "job1".into(),
-            1,
-            keyed_input(vec![vec![keyed_batch(&[(Some(1), 0)])]])?,
-            work_dir.path().to_str().unwrap().to_string(),
-            int_range_partitioning(0, ascending_nulls_last(), &[10]),
-            SortShuffleConfig::default(),
-        )?;
-
-        let mut visited = Vec::new();
-        writer.apply_expressions(&mut |expr| {
-            visited.push(expr.to_string());
-            Ok(TreeNodeRecursion::Continue)
-        })?;
-
-        assert_eq!(visited, vec!["k@0".to_string()]);
-        Ok(())
-    }
-
-    /// End to end through the real writer and reader: three input partitions
-    /// that each span every range, written in one task, then read back one
-    /// output partition at a time. Each partition must hold exactly the rows
-    /// whose key falls in its range, and together they must hold every row
-    /// exactly once.
-    #[tokio::test]
-    async fn range_partitioning_round_trips_one_range_per_output_partition() -> Result<()>
-    {
-        use super::super::reader::stream_sort_shuffle_partition;
-        use datafusion::arrow::array::Int64Array;
-        use std::collections::BTreeSet;
-
-        let split_points = [100_i64, 200];
-        let num_partitions = split_points.len() + 1;
-        let partitioning =
-            int_range_partitioning(0, ascending_nulls_last(), &split_points);
-
-        let num_inputs = 3_i64;
-        let rows_per_input = 300_i64;
-        let partitions: Vec<Vec<RecordBatch>> = (0..num_inputs)
-            .map(|input| {
-                let rows: Vec<(Option<i64>, i64)> = (0..rows_per_input)
-                    .map(|i| {
-                        // A null every 50th row: ascending with nulls last
-                        // puts those in the final range.
-                        let key = (i % 50 != 49).then_some(i);
-                        (key, input * 1_000 + i)
-                    })
-                    .collect();
-                vec![keyed_batch(&rows)]
-            })
-            .collect();
-
-        let work_dir = TempDir::new()?;
-        let writer = SortShuffleWriterExec::try_new(
-            "range_job".into(),
-            1,
-            keyed_input(partitions)?,
-            work_dir.path().to_str().unwrap().to_string(),
-            partitioning,
-            SortShuffleConfig::default(),
-        )?
-        .with_task_id(3);
-
-        let ctx = SessionContext::new();
-        let mut reported = Vec::new();
-        for output_partition in 0..num_partitions {
-            let mut stream = writer.execute(output_partition, ctx.task_ctx())?;
-            while let Some(summary) = stream.next().await {
-                reported.push((output_partition, summary?.num_rows()));
-            }
-        }
-        // One summary batch per output partition, the same contract hash
-        // stages keep.
-        assert_eq!(reported.len(), num_partitions);
-
-        let task_dir = work_dir.path().join("range_job").join("1").join("3");
-        let data_path = task_dir.join("data.arrow");
-        let index_path = task_dir.join("data.arrow.index");
-
-        let mut all_ids = BTreeSet::new();
-        for partition_id in 0..num_partitions {
-            let mut stream =
-                stream_sort_shuffle_partition(&data_path, &index_path, partition_id)
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-            while let Some(batch) = stream.next().await {
-                let batch = batch?;
-                let keys = batch
-                    .column(0)
-                    .as_any()
-                    .downcast_ref::<Int64Array>()
-                    .unwrap();
-                let ids = batch
-                    .column(1)
-                    .as_any()
-                    .downcast_ref::<Int64Array>()
-                    .unwrap();
-                for row in 0..batch.num_rows() {
-                    let expected = match keys.is_valid(row).then(|| keys.value(row)) {
-                        None => num_partitions - 1,
-                        Some(k) => {
-                            split_points.iter().filter(|&&split| k >= split).count()
-                        }
-                    };
-                    assert_eq!(
-                        partition_id,
-                        expected,
-                        "key {:?} was written to partition {partition_id}",
-                        keys.is_valid(row).then(|| keys.value(row))
-                    );
-                    assert!(
-                        all_ids.insert(ids.value(row)),
-                        "row {} was written twice",
-                        ids.value(row)
-                    );
-                }
-            }
-        }
-
-        assert_eq!(
-            all_ids.len() as i64,
-            num_inputs * rows_per_input,
-            "every input row must come back exactly once"
-        );
-        Ok(())
-    }
-
     // Partition-id routing
 
     /// The tests' client placement: by range, which no hash produces.
@@ -3533,11 +3043,13 @@ mod tests {
             null_count: Precision::Exact(nulls),
             ..ColumnStatistics::new_unknown()
         };
+        let mut pid = column(2);
+        pid.byte_size = Precision::Exact(40);
         let input = Arc::new(StatisticsExec::new(
             Statistics {
                 num_rows: Precision::Exact(10),
-                total_byte_size: Precision::Absent,
-                column_statistics: vec![column(1), column(2), column(3)],
+                total_byte_size: Precision::Exact(500),
+                column_statistics: vec![column(1), pid, column(3)],
             },
             schema,
         ));
@@ -3555,6 +3067,53 @@ mod tests {
             .collect();
         assert_eq!(nulls, [Precision::Exact(1), Precision::Exact(3)]);
         assert_eq!(stats.num_rows, Precision::Exact(10));
+        // The 40 bytes of `pid` are not written either.
+        assert_eq!(stats.total_byte_size, Precision::Exact(460));
+        Ok(())
+    }
+
+    /// Without a size for the id column, the total is re-derived from the
+    /// written schema when that can be done, and is otherwise only an estimate.
+    #[test]
+    fn partition_id_writer_total_byte_size_excludes_the_id_column() -> Result<()> {
+        use datafusion::common::ColumnStatistics;
+        use datafusion::common::stats::Precision;
+        use datafusion::physical_plan::statistics::StatisticsContext;
+        use datafusion::physical_plan::test::exec::StatisticsExec;
+
+        let stats_of = |schema: Schema| -> Result<Statistics> {
+            let columns = schema.fields().len();
+            let input = Arc::new(StatisticsExec::new(
+                Statistics {
+                    num_rows: Precision::Exact(10),
+                    total_byte_size: Precision::Exact(500),
+                    column_statistics: vec![ColumnStatistics::new_unknown(); columns],
+                },
+                schema,
+            ));
+            let work_dir = TempDir::new()?;
+            let writer =
+                partition_id_writer(input, &work_dir, SortShuffleConfig::default(), 4)?;
+            Ok(Arc::unwrap_or_clone(
+                StatisticsContext::new().compute(&writer, &StatisticsArgs::new())?,
+            ))
+        };
+
+        // Every written column has a fixed width: 10 rows of Int64 and Int16.
+        let fixed = stats_of(Schema::new(vec![
+            Field::new("v", DataType::Int64, false),
+            Field::new("pid", DataType::Int32, false),
+            Field::new("w", DataType::Int16, false),
+        ]))?;
+        assert_eq!(fixed.total_byte_size, Precision::Exact(10 * (8 + 2)));
+
+        // A string column has no fixed width, so the old total is kept as an
+        // estimate.
+        let variable = stats_of(Schema::new(vec![
+            Field::new("v", DataType::Utf8, false),
+            Field::new("pid", DataType::Int32, false),
+        ]))?;
+        assert_eq!(variable.total_byte_size, Precision::Inexact(500));
         Ok(())
     }
 
@@ -3577,6 +3136,260 @@ mod tests {
         let tree = displayable(&writer).tree_render().to_string();
         assert!(tree.contains("partition_id_column:"), "actual: {tree}");
         assert!(tree.contains("pid@1"), "actual: {tree}");
+        Ok(())
+    }
+
+    /// A range partitioning on the `Int64` key `k`.
+    fn int_range_partitioning(
+        options: SortOptions,
+        split_points: &[i64],
+    ) -> Partitioning {
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
+            Arc::new(Column::new("k", 0)),
+            options,
+        )])
+        .unwrap();
+        let split_points = split_points
+            .iter()
+            .map(|&v| SplitPoint::new(vec![ScalarValue::Int64(Some(v))]))
+            .collect();
+        Partitioning::Range(RangePartitioning::try_new(ordering, split_points).unwrap())
+    }
+
+    /// `(k, id)` rows; `id` makes each row identifiable after a shuffle.
+    fn keyed_batch(rows: &[(Option<i64>, i64)]) -> RecordBatch {
+        use datafusion::arrow::array::Int64Array;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, true),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let keys = Int64Array::from_iter(rows.iter().map(|(k, _)| *k));
+        let ids = Int64Array::from_iter_values(rows.iter().map(|(_, id)| *id));
+        RecordBatch::try_new(schema, vec![Arc::new(keys), Arc::new(ids)]).unwrap()
+    }
+
+    /// The `(k, id)` rows of `batch`.
+    fn rows_of(batch: &RecordBatch) -> Vec<(Option<i64>, i64)> {
+        let keys = batch.column(0).as_primitive::<Int64Type>();
+        let ids = batch.column(1).as_primitive::<Int64Type>();
+        keys.iter().zip(ids.values().iter().copied()).collect()
+    }
+
+    /// Route `batch` through a [`RowRouter`] built for `partitioning`.
+    fn route(partitioning: &Partitioning, batch: &RecordBatch) -> Vec<Vec<u32>> {
+        let mut router =
+            RowRouter::try_new(partitioning.clone().try_into().unwrap()).unwrap();
+        let mut out = Vec::new();
+        router.assign(batch, &mut out).unwrap();
+        out
+    }
+
+    /// Ranges are lower-inclusive: a value equal to a split point opens the next.
+    #[test]
+    fn range_routing_sends_a_row_equal_to_a_split_point_to_the_range_it_opens() {
+        let partitioning =
+            int_range_partitioning(SortOptions::new(false, false), &[10, 20]);
+        let batch = keyed_batch(&[
+            (Some(-5), 0),
+            (Some(9), 1),
+            (Some(10), 2),
+            (Some(11), 3),
+            (Some(19), 4),
+            (Some(20), 5),
+            (Some(21), 6),
+        ]);
+
+        assert_eq!(
+            route(&partitioning, &batch),
+            vec![vec![0, 1], vec![2, 3, 4], vec![5, 6]]
+        );
+    }
+
+    #[test]
+    fn range_partitioning_without_split_points_routes_everything_to_partition_zero() {
+        let partitioning = int_range_partitioning(SortOptions::new(false, false), &[]);
+        let batch = keyed_batch(&[(Some(-1), 0), (None, 1), (Some(1_000), 2)]);
+
+        assert_eq!(route(&partitioning, &batch), vec![vec![0, 1, 2]]);
+    }
+
+    /// Reused buffers must not carry rows over from the previous batch.
+    #[test]
+    fn range_routing_reuses_its_buffers_across_batches() {
+        let partitioning = int_range_partitioning(SortOptions::new(false, false), &[10]);
+        let mut router = RowRouter::try_new(partitioning.try_into().unwrap()).unwrap();
+        let mut out = Vec::new();
+
+        router
+            .assign(&keyed_batch(&[(Some(1), 0), (Some(50), 1)]), &mut out)
+            .unwrap();
+        assert_eq!(out, vec![vec![0], vec![1]]);
+
+        router
+            .assign(&keyed_batch(&[(Some(60), 0)]), &mut out)
+            .unwrap();
+        assert_eq!(out, vec![Vec::<u32>::new(), vec![0]]);
+    }
+
+    /// Rows must land where DataFusion's own `BatchPartitioner` puts them, for
+    /// ascending, descending and compound keys.
+    #[test]
+    fn range_routing_matches_batch_partitioner() {
+        use datafusion::physical_plan::metrics::Time;
+        use datafusion::physical_plan::repartition::BatchPartitioner;
+
+        // (k ASC NULLS LAST, id DESC): within one `k`, a larger `id` sorts first.
+        let compound = LexOrdering::new(vec![
+            PhysicalSortExpr::new(
+                Arc::new(Column::new("k", 0)),
+                SortOptions::new(false, false),
+            ),
+            PhysicalSortExpr::new(
+                Arc::new(Column::new("id", 1)),
+                SortOptions::new(true, false),
+            ),
+        ])
+        .unwrap();
+        let split = |k: i64, id: i64| {
+            SplitPoint::new(vec![
+                ScalarValue::Int64(Some(k)),
+                ScalarValue::Int64(Some(id)),
+            ])
+        };
+        let partitionings = [
+            int_range_partitioning(SortOptions::new(false, true), &[-3, 0, 4, 9]),
+            // The split points descend with the key.
+            int_range_partitioning(SortOptions::new(true, false), &[9, 4, 0, -3]),
+            Partitioning::Range(
+                RangePartitioning::try_new(
+                    compound,
+                    vec![split(0, 30), split(0, 10), split(4, 40)],
+                )
+                .unwrap(),
+            ),
+        ];
+
+        // Keys land on, just below and just above the split points, with nulls
+        // mixed in.
+        let rows: Vec<_> = (0..60)
+            .map(|i| ((i % 11 != 0).then_some(i % 17 - 5), i))
+            .collect();
+        for partitioning in &partitionings {
+            let Partitioning::Range(range) = partitioning else {
+                unreachable!()
+            };
+            let batch = keyed_batch(&rows);
+            let ours = route(partitioning, &batch);
+
+            let mut expected = vec![usize::MAX; rows.len()];
+            BatchPartitioner::new_range_partitioner(range, Time::default())
+                .partition(batch, |partition, sub_batch| {
+                    for (_, id) in rows_of(&sub_batch) {
+                        expected[id as usize] = partition;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+
+            for (row, &partition) in expected.iter().enumerate() {
+                assert!(
+                    ours[partition].contains(&(row as u32)),
+                    "{range}: row {row} ({:?}) routed differently from BatchPartitioner",
+                    rows[row].0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sort_shuffle_writer_rejects_partitioning_it_cannot_route() -> Result<()> {
+        let err = SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            two_by_two_input()?,
+            String::new(),
+            Partitioning::RoundRobinBatch(4),
+            SortShuffleConfig::default(),
+        )
+        .expect_err("round-robin has no key to route by")
+        .to_string();
+
+        assert!(err.contains("Hash and Range"), "actual: {err}");
+        Ok(())
+    }
+
+    /// Expression visitors must reach a range key as they do a hash key.
+    #[test]
+    fn range_partitioned_writer_exposes_its_key_expression() -> Result<()> {
+        let batch = keyed_batch(&[(Some(1), 0)]);
+        let writer = SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            MemorySourceConfig::try_new_exec(
+                &[vec![batch.clone()]],
+                batch.schema(),
+                None,
+            )?,
+            String::new(),
+            int_range_partitioning(SortOptions::new(false, false), &[10]),
+            SortShuffleConfig::default(),
+        )?;
+
+        let mut visited = Vec::new();
+        writer.apply_expressions(&mut |expr| {
+            visited.push(expr.to_string());
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+
+        assert_eq!(visited, vec!["k@0".to_string()]);
+        Ok(())
+    }
+
+    /// A range-routed writer, run end to end, sends each row to the range its
+    /// key falls in and keeps every column. Keys sit below, on and above the
+    /// split points, spread over two input partitions.
+    #[tokio::test]
+    async fn range_routing_places_each_row_in_its_range() -> Result<()> {
+        let first =
+            keyed_batch(&[(Some(5), 0), (Some(10), 1), (Some(15), 2), (Some(25), 3)]);
+        let second =
+            keyed_batch(&[(Some(20), 4), (Some(9), 5), (Some(30), 6), (Some(11), 7)]);
+        let input = MemorySourceConfig::try_new_exec(
+            &[vec![first.clone()], vec![second]],
+            first.schema(),
+            None,
+        )?;
+        let work_dir = TempDir::new()?;
+        let writer = Arc::new(SortShuffleWriterExec::try_new(
+            // The job `read_partition_id_output` reads back.
+            "pid_job".into(),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_string(),
+            int_range_partitioning(SortOptions::new(false, false), &[10, 20]),
+            SortShuffleConfig::default(),
+        )?);
+
+        drive_to_completion(&writer).await;
+
+        let placed: Vec<Vec<(Option<i64>, i64)>> = read_partition_id_output(&work_dir, 3)
+            .await?
+            .iter()
+            .map(|batches| {
+                let mut rows: Vec<_> = batches.iter().flat_map(rows_of).collect();
+                rows.sort_by_key(|(_, id)| *id);
+                rows
+            })
+            .collect();
+        assert_eq!(
+            placed,
+            vec![
+                vec![(Some(5), 0), (Some(9), 5)],
+                vec![(Some(10), 1), (Some(15), 2), (Some(11), 7)],
+                vec![(Some(25), 3), (Some(20), 4), (Some(30), 6)],
+            ]
+        );
         Ok(())
     }
 }

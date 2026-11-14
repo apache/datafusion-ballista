@@ -151,6 +151,7 @@ impl AdaptiveExecutionGraph {
     ///
     /// This will use the `DistributedPlanner` to break the plan into stages
     /// and build the DAG structure needed for distributed execution.
+    #[allow(clippy::too_many_arguments)]
     pub async fn try_new(
         scheduler_id: &str,
         job_id: &JobId,

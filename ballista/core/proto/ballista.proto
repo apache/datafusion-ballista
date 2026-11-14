@@ -423,16 +423,13 @@ message SortShuffleWriterExecNode {
   string job_id = 1;
   uint32 stage_id = 2;
   datafusion.PhysicalPlanNode input = 3;
-  // How rows are assigned to output partitions. Exactly one is set; a writer
-  // that predates a routing sees none of the fields it knows and rejects the
-  // node instead of hashing.
+  // How rows are assigned to output partitions. A writer that predates the
+  // field a node sets finds none it knows and rejects the node instead of
+  // hashing.
   oneof routing {
-    // Hash routing. Hash stages always use this field, so a hash plan reads
-    // the same as before the other routings existed.
     datafusion.PhysicalHashRepartition output_partitioning = 4;
-    // Route by an integer column of the input, computed by the client.
     PartitionIdRouting partition_id_routing = 10;
-    // Range routing: the schemes `output_partitioning` cannot carry.
+    // Range output partitioning; a hash stage sets `output_partitioning` instead.
     datafusion.Partitioning partitioning = 11;
   }
   // Target batch size in rows when materializing buffered shuffle data.

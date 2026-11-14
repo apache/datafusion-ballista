@@ -590,28 +590,25 @@ pub struct SortShuffleWriterExecNode {
     /// before this field existed decodes to the built-in default rather than 0.
     #[prost(uint64, optional, tag = "9")]
     pub memory_limit_per_task_bytes: ::core::option::Option<u64>,
-    /// How rows are assigned to output partitions. Exactly one is set; a writer
-    /// that predates a routing sees none of the fields it knows and rejects the
-    /// node instead of hashing.
+    /// How rows are assigned to output partitions. A writer that predates the
+    /// field a node sets finds none it knows and rejects the node instead of
+    /// hashing.
     #[prost(oneof = "sort_shuffle_writer_exec_node::Routing", tags = "4, 10, 11")]
     pub routing: ::core::option::Option<sort_shuffle_writer_exec_node::Routing>,
 }
 /// Nested message and enum types in `SortShuffleWriterExecNode`.
 pub mod sort_shuffle_writer_exec_node {
-    /// How rows are assigned to output partitions. Exactly one is set; a writer
-    /// that predates a routing sees none of the fields it knows and rejects the
-    /// node instead of hashing.
+    /// How rows are assigned to output partitions. A writer that predates the
+    /// field a node sets finds none it knows and rejects the node instead of
+    /// hashing.
     #[allow(clippy::all)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Routing {
-        /// Hash routing. Hash stages always use this field, so a hash plan reads
-        /// the same as before the other routings existed.
         #[prost(message, tag = "4")]
         OutputPartitioning(::datafusion_proto::protobuf::PhysicalHashRepartition),
-        /// Route by an integer column of the input, computed by the client.
         #[prost(message, tag = "10")]
         PartitionIdRouting(super::PartitionIdRouting),
-        /// Range routing: the schemes `output_partitioning` cannot carry.
+        /// Range output partitioning; a hash stage sets `output_partitioning` instead.
         #[prost(message, tag = "11")]
         Partitioning(::datafusion_proto::protobuf::Partitioning),
     }

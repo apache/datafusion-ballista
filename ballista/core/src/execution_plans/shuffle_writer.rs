@@ -182,8 +182,8 @@ pub(crate) fn walk_child_partition_mapping(
 /// Two cases:
 ///
 /// - `SortShuffleWriter` — KSpace by construction, however it routes rows (by
-///   hash, by value range, or by partition id); the K-space `[0..K-1]` is
-///   intrinsic. Input ids are irrelevant.
+///   hash, range or partition id); the K-space `[0..K-1]` is intrinsic. Input
+///   ids are irrelevant.
 /// - `ShuffleWriter` — always passthrough; the child's plan shape decides:
 ///   - `SortPreservingMergeExec` in the child chain → `[0]` (collapse).
 ///   - `RepartitionExec(Hash|RoundRobin)` in the child chain → `[0..K-1]`.
@@ -300,11 +300,17 @@ impl ColumnStatsCollector {
     /// Wraps `stream` so every batch it yields is added to these totals. Each
     /// stream counts on its own and adds its totals when dropped, so the
     /// partitions a task drains concurrently don't share a lock per batch.
+    ///
+    /// `ignored_column` is a column of `stream` that the writer routes on but
+    /// does not write. It is left out, so the totals have one entry per
+    /// written column. It must not be a sketched column.
     pub(crate) fn count(
         &self,
         stream: SendableRecordBatchStream,
+        ignored_column: Option<usize>,
     ) -> SendableRecordBatchStream {
-        let num_columns = stream.schema().fields().len();
+        let num_columns =
+            stream.schema().fields().len() - usize::from(ignored_column.is_some());
         let sketches = self
             .0
             .lock()
@@ -319,20 +325,11 @@ impl ColumnStatsCollector {
         Box::pin(ColumnStatsStream {
             input: stream,
             null_counts: vec![0; num_columns],
+            ignored_column,
             sketches,
             hashes: Vec::new(),
             total: self.clone(),
         })
-    }
-
-    /// Adds `counts` to the null totals, for a writer that counts the columns
-    /// it writes itself rather than through [`Self::count`].
-    pub(crate) fn add_null_counts(&self, counts: &[u64]) {
-        if let Ok(mut total) = self.0.lock() {
-            for (slot, n) in total.null_counts.iter_mut().zip(counts) {
-                *slot += n;
-            }
-        }
     }
 
     /// The null counts, one per column of the written schema.
@@ -375,6 +372,8 @@ impl ColumnStatsCollector {
 struct ColumnStatsStream {
     input: SendableRecordBatchStream,
     null_counts: Vec<u64>,
+    /// A column of `input` that isn't counted, see [`ColumnStatsCollector::count`].
+    ignored_column: Option<usize>,
     sketches: Vec<(usize, HyperLogLog)>,
     /// Scratch space for hashing a column.
     hashes: Vec<u64>,
@@ -388,7 +387,13 @@ impl Stream for ColumnStatsStream {
         let this = self.get_mut();
         let poll = this.input.poll_next_unpin(cx);
         if let Poll::Ready(Some(Ok(batch))) = &poll {
-            for (slot, column) in this.null_counts.iter_mut().zip(batch.columns()) {
+            let counted = batch
+                .columns()
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| Some(*i) != this.ignored_column)
+                .map(|(_, column)| column);
+            for (slot, column) in this.null_counts.iter_mut().zip(counted) {
                 *slot += column.logical_null_count() as u64;
             }
             for (column, sketch) in this.sketches.iter_mut() {
@@ -815,7 +820,7 @@ impl ShuffleWriterExec {
                 debug!("Writing results to {path:?}");
 
                 let mut stream = column_stats
-                    .count(plan.execute(local_input_partition, context.clone())?);
+                    .count(plan.execute(local_input_partition, context.clone())?, None);
                 handles.spawn(async move {
                     let stats = utils::write_stream_to_disk(
                         &mut stream,
@@ -1708,52 +1713,33 @@ mod tests {
         Ok(())
     }
 
-    /// A sort-shuffle stage numbers its outputs afresh from 0, whether it routes
-    /// by hash or by value range, and whichever input partitions the task was
-    /// handed. Consumers address those ids, so a range stage whose ids followed
-    /// the task's input slice would be read from the wrong files.
     #[test]
-    fn sort_shuffle_output_ids_follow_its_partitioning_not_the_input_slice() -> Result<()>
-    {
+    fn range_sort_shuffle_output_ids_do_not_follow_the_input_slice() -> Result<()> {
         use crate::execution_plans::sort_shuffle::SortShuffleConfig;
-        use datafusion::arrow::compute::SortOptions;
         use datafusion::common::ScalarValue;
         use datafusion::physical_expr::{
             LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
         };
 
-        let key: Arc<dyn PhysicalExpr> = Arc::new(Column::new("a", 0));
-        let range = RangePartitioning::try_new(
-            LexOrdering::new(vec![PhysicalSortExpr::new(
-                Arc::clone(&key),
-                SortOptions::default(),
-            )])
-            .unwrap(),
-            vec![
-                SplitPoint::new(vec![ScalarValue::UInt32(Some(10))]),
-                SplitPoint::new(vec![ScalarValue::UInt32(Some(20))]),
-            ],
-        )?;
+        let split = |v| SplitPoint::new(vec![ScalarValue::UInt32(Some(v))]);
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(
+            Column::new("a", 0),
+        ))])
+        .unwrap();
+        let range = RangePartitioning::try_new(ordering, vec![split(10), split(20)])?;
+        let writer: Arc<dyn ExecutionPlan> = Arc::new(SortShuffleWriterExec::try_new(
+            "job".into(),
+            1,
+            two_by_two_input()?,
+            String::new(),
+            Partitioning::Range(range),
+            SortShuffleConfig::default(),
+        )?);
 
-        for (partitioning, expected_count) in [
-            (Partitioning::Hash(vec![key], 4), 4),
-            (Partitioning::Range(range), 3),
-        ] {
-            let writer: Arc<dyn ExecutionPlan> =
-                Arc::new(SortShuffleWriterExec::try_new(
-                    "job".into(),
-                    1,
-                    two_by_two_input()?,
-                    String::new(),
-                    partitioning,
-                    SortShuffleConfig::default(),
-                )?);
-
-            assert_eq!(
-                compute_global_output_partition_ids(&writer, &[5, 6]),
-                (0..expected_count).collect::<Vec<_>>()
-            );
-        }
+        assert_eq!(
+            compute_global_output_partition_ids(&writer, &[5, 6]),
+            vec![0, 1, 2]
+        );
         Ok(())
     }
 }

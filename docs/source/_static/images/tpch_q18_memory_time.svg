@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 470" width="880" height="470" role="img" aria-label="Line chart of TPC-H q18 time against executor memory. Smallest size that finished: Ballista 8 GiB, Spark 12 GiB, Spark + Comet 20 GiB. The numbers are in the tables on this page.">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; fill: #1f2328; }
+    .bg { fill: #ffffff; }
+    .title { font-size: 20px; font-weight: 600; }
+    .sub { font-size: 14px; fill: #59636e; }
+    .label { font-size: 14px; }
+    .value { font-size: 14px; font-weight: 600; }
+    .detail { font-weight: 400; fill: #59636e; }
+    .legend { font-size: 13px; }
+    .tick { font-size: 12.5px; fill: #59636e; }
+    .note { font-size: 12.5px; fill: #59636e; }
+    .grid { stroke: #e1e0d9; stroke-width: 1; }
+    .axis { stroke: #c3c2b7; stroke-width: 1; }
+    .comet { fill: #1baf7a; }
+    .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+    .line.spark { stroke: #898781; }
+    .line.staged { stroke: #2a78d6; }
+    .line.comet { stroke: #1baf7a; }
+    .ring { stroke: #ffffff; stroke-width: 2; }
+    .cross { fill: none; stroke-width: 2.5; stroke-linecap: round; }
+    .cross.spark { stroke: #898781; }
+    .cross.staged { stroke: #2a78d6; }
+    .cross.comet { stroke: #1baf7a; }
+    .cross.key { stroke: #59636e; }
+    .line.spark, .line.staged, .line.comet, .cross.spark, .cross.staged, .cross.comet { fill: none; }
+    .spark { fill: #898781; }
+    .staged { fill: #2a78d6; }
+    .pipelined { fill: #eb6834; }
+    @media (prefers-color-scheme: dark) {
+      text { fill: #e6edf3; }
+      .bg { fill: #0d1117; }
+      .sub, .note, .tick, .detail { fill: #9198a1; }
+      .grid { stroke: #21262d; }
+      .axis { stroke: #3d444d; }
+      .comet { fill: #199e70; }
+      .line.staged, .cross.staged { stroke: #3987e5; }
+      .line.comet, .cross.comet { stroke: #199e70; }
+      .ring { stroke: #0d1117; }
+      .cross.key { stroke: #9198a1; }
+      .staged { fill: #3987e5; }
+      .pipelined { fill: #d95926; }
+    }
+  </style>
+  <rect class="bg" width="880" height="470" rx="6"/>
+  <text class="title" x="24" y="36">Time for TPC-H q18 as executor memory shrinks</text>
+  <text class="sub" x="24" y="60">Query time in seconds for each engine in its configuration with the smallest size. Lower is better; lines stop at that size.</text>
+
+  <rect class="staged" x="24" y="78" width="12" height="12" rx="2"/>
+  <text class="legend" x="42" y="88">Ballista</text>
+  <rect class="spark" x="118" y="78" width="12" height="12" rx="2"/>
+  <text class="legend" x="136" y="88">Spark</text>
+  <rect class="comet" x="191" y="78" width="12" height="12" rx="2"/>
+  <text class="legend" x="209" y="88">Spark + Comet</text>
+  <path class="cross key" d="M321 79L331 89M321 89L331 79"/>
+  <text class="legend" x="338" y="88">largest size that failed or needed an executor restarted</text>
+
+  <line class="grid" x1="60" y1="322" x2="700" y2="322"/>
+  <line class="grid" x1="60" y1="252" x2="700" y2="252"/>
+  <line class="grid" x1="60" y1="182" x2="700" y2="182"/>
+  <line class="grid" x1="60" y1="112" x2="700" y2="112"/>
+  <line class="axis" x1="60" y1="392" x2="700" y2="392"/>
+
+  <g text-anchor="end">
+    <text class="tick" x="52" y="396">0</text>
+    <text class="tick" x="52" y="326">100</text>
+    <text class="tick" x="52" y="256">200</text>
+    <text class="tick" x="52" y="186">300</text>
+    <text class="tick" x="52" y="116">400</text>
+  </g>
+  <g text-anchor="middle">
+    <text class="tick" x="60" y="412">0</text>
+    <text class="tick" x="140" y="412">8</text>
+    <text class="tick" x="220" y="412">16</text>
+    <text class="tick" x="300" y="412">24</text>
+    <text class="tick" x="380" y="412">32</text>
+    <text class="tick" x="460" y="412">40</text>
+    <text class="tick" x="540" y="412">48</text>
+    <text class="tick" x="620" y="412">56</text>
+    <text class="tick" x="700" y="412">64</text>
+    <text class="tick" x="380" y="432">Executor memory (GiB)</text>
+  </g>
+
+  <path class="line staged" d="M140 299.92 L180 301.98 L220 304.22 L300 301.74 L380 302.25 L540 300.9 L700 298.89"/>
+  <path class="line spark" d="M180 120.88 L220 144.6 L300 152.5 L380 158.01 L540 160.82 L700 161.08"/>
+  <path class="line comet" d="M260 286.93 L300 284.72 L380 285.43 L540 287.64 L700 290.29"/>
+  <circle class="staged ring" cx="140" cy="299.92" r="5"/>
+  <circle class="staged ring" cx="180" cy="301.98" r="5"/>
+  <circle class="staged ring" cx="220" cy="304.22" r="5"/>
+  <circle class="staged ring" cx="300" cy="301.74" r="5"/>
+  <circle class="staged ring" cx="380" cy="302.25" r="5"/>
+  <circle class="staged ring" cx="540" cy="300.9" r="5"/>
+  <circle class="staged ring" cx="700" cy="298.89" r="5"/>
+  <path class="cross staged" d="M115 387L125 397M115 397L125 387"/>
+  <circle class="spark ring" cx="180" cy="120.88" r="5"/>
+  <circle class="spark ring" cx="220" cy="144.6" r="5"/>
+  <circle class="spark ring" cx="300" cy="152.5" r="5"/>
+  <circle class="spark ring" cx="380" cy="158.01" r="5"/>
+  <circle class="spark ring" cx="540" cy="160.82" r="5"/>
+  <circle class="spark ring" cx="700" cy="161.08" r="5"/>
+  <path class="cross spark" d="M155 387L165 397M155 397L165 387"/>
+  <circle class="comet ring" cx="260" cy="286.93" r="5"/>
+  <circle class="comet ring" cx="300" cy="284.72" r="5"/>
+  <circle class="comet ring" cx="380" cy="285.43" r="5"/>
+  <circle class="comet ring" cx="540" cy="287.64" r="5"/>
+  <circle class="comet ring" cx="700" cy="290.29" r="5"/>
+  <path class="cross comet" d="M235 387L245 397M235 397L245 387"/>
+
+  <text class="value" x="724" y="161.08">Spark</text>
+  <text class="tick" x="724" y="176.08">330 s at 64 GiB</text>
+  <path class="axis" fill="none" d="M708 290.29H714L720 273.59"/>
+  <text class="value" x="724" y="277.59">Spark + Comet</text>
+  <text class="tick" x="724" y="292.59">145 s at 64 GiB</text>
+  <path class="axis" fill="none" d="M708 298.89H714L720 307.59"/>
+  <text class="value" x="724" y="311.59">Ballista</text>
+  <text class="tick" x="724" y="326.59">133 s at 64 GiB</text>
+
+  <text class="note" x="24" y="456">Derived from TPC-H, not an official TPC-H result. 2 executors of 16 CPUs. Each size is a fresh cluster; mean of 2 runs.</text>
+</svg>
