@@ -713,6 +713,14 @@ impl StaticExecutionGraph {
     fn clear_stage_failure(&mut self, stage_id: usize) {
         self.failed_stage_attempts.remove(&stage_id);
     }
+
+    /// Mutable stage access for tests that need to build states the
+    /// scheduling paths cannot reach on their own (e.g. a plan whose
+    /// rewrite fails).
+    #[cfg(test)]
+    pub(crate) fn stages_mut(&mut self) -> &mut HashMap<usize, ExecutionStage> {
+        &mut self.stages
+    }
 }
 
 impl ExecutionGraph for StaticExecutionGraph {
