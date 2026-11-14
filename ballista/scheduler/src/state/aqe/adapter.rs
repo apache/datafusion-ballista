@@ -23,6 +23,7 @@ use crate::state::aqe::planner::AdaptiveStageInfo;
 use crate::state::aqe::skew_join::sort_mapper_outputs;
 use crate::state::execution_graph::StageOutput;
 use ballista_core::JobId;
+use ballista_core::execution_plans::sort_shuffle::ShuffleRouting;
 use ballista_core::execution_plans::{
     OrderedRangeRepartitionExec, RangeFilterExec, RangeShuffleReaderExec,
     RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriter, ShuffleWriterExec,
@@ -269,14 +270,14 @@ impl BallistaAdapter {
                     "shuffle partitions have to be resolved at this point".to_string(),
                 )
             })?;
-            let partitioning = root.partitioning.clone();
+            let routing = root
+                .partitioning
+                .clone()
+                .map(ShuffleRouting::try_from)
+                .transpose()?;
 
             let writer = create_shuffle_writer_with_config(
-                job_id,
-                stage_id,
-                plan,
-                partitioning,
-                config,
+                job_id, stage_id, plan, routing, config,
             )
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
             let writer = use_range_shuffle_writer(writer, root)?;

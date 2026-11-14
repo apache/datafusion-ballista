@@ -37,7 +37,7 @@ use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
-use ballista_core::utils::{serve_until_shutdown, wait_until_idle};
+use ballista_core::utils::{serve_until_shutdown, tcp_keepalive, wait_until_idle};
 use datafusion::DATAFUSION_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -258,18 +258,33 @@ pub async fn start_grpc_service_with_listener<
     let final_route =
         with_version_headers(merged).into_make_service_with_connect_info::<SocketAddr>();
 
-    // axum, unlike tonic's server, leaves Nagle on, which delays the later
-    // HTTP/2 frames of each poll response behind the client's delayed ACK
-    // (~40 ms on Linux).
-    let listener = listener.tap_io(|tcp| {
-        if let Err(e) = tcp.set_nodelay(true) {
-            warn!("Failed to set TCP_NODELAY on a scheduler connection: {e}");
-        }
-    });
+    let keepalive = tcp_keepalive(config.grpc_server_tcp_keepalive_seconds);
+    let listener = listener.tap_io(move |tcp| configure_connection(tcp, keepalive));
     axum::serve(listener, final_route)
         .with_graceful_shutdown(async move { shutdown.recv().await })
         .await
         .map_err(BallistaError::from)
+}
+
+/// Applies the socket options that tonic's server sets on every accepted
+/// connection, which `axum::serve` does not.
+///
+/// - axum leaves Nagle on, which delays the later HTTP/2 frames of each poll
+///   response behind the client's delayed ACK (~40 ms on Linux).
+/// - Without TCP keepalive, a connection whose peer disappears without closing
+///   it (a killed executor host, a dropped NAT or load-balancer entry) is never
+///   reaped by the OS. Executors and the result service get keepalive from
+///   [`ballista_core::utils::create_grpc_server_incoming`].
+fn configure_connection(tcp: &tokio::net::TcpStream, keepalive: Option<Duration>) {
+    if let Err(e) = tcp.set_nodelay(true) {
+        warn!("Failed to set TCP_NODELAY on a scheduler connection: {e}");
+    }
+    if let Some(idle) = keepalive {
+        let keepalive = socket2::TcpKeepalive::new().with_time(idle);
+        if let Err(e) = socket2::SockRef::from(tcp).set_tcp_keepalive(&keepalive) {
+            warn!("Failed to set TCP keepalive on a scheduler connection: {e}");
+        }
+    }
 }
 
 /// Creates scheduler and exposes it as grpc service
@@ -347,6 +362,29 @@ mod tests {
     use tokio::io::AsyncWriteExt;
     use tokio::sync::{broadcast, oneshot};
     use tower::ServiceExt;
+
+    /// Connections accepted by the scheduler get the same TCP keepalive as
+    /// executor and result-service connections, and none when it is disabled.
+    /// `tcp_keepalive_time()` is not available on Windows in socket2 0.6.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn configures_nodelay_and_keepalive_on_accepted_connections() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        for (seconds, expected) in [(3600, Some(Duration::from_secs(3600))), (0, None)] {
+            let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let (server, _) = listener.accept().await.unwrap();
+            configure_connection(&server, tcp_keepalive(seconds));
+
+            assert!(server.nodelay().unwrap());
+            let sock = socket2::SockRef::from(&server);
+            assert_eq!(sock.keepalive().unwrap(), expected.is_some());
+            if let Some(idle) = expected {
+                assert_eq!(sock.tcp_keepalive_time().unwrap(), idle);
+            }
+        }
+    }
 
     #[tokio::test]
     async fn adds_server_and_app_version_headers() {

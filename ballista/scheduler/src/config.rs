@@ -232,6 +232,13 @@ pub struct Config {
         help = "The maximum size of an encoded message at the grpc server side."
     )]
     pub grpc_server_max_encoding_message_size: u32,
+    /// TCP keepalive idle time for connections accepted by the gRPC server.
+    #[arg(
+        long,
+        default_value_t = 3600,
+        help = "Idle time in seconds before TCP keepalive probes are sent on connections accepted by the scheduler's gRPC server. Zero disables TCP keepalive."
+    )]
+    pub grpc_server_tcp_keepalive_seconds: u64,
     /// Maximum size of messages sent by the scheduler's outbound gRPC clients
     /// (e.g. task assignment to executors). Should be at least as large as the
     /// executor's `--grpc-server-max-decoding-message-size` for those RPCs to
@@ -407,6 +414,11 @@ pub struct SchedulerConfig {
     pub grpc_server_max_decoding_message_size: u32,
     /// The maximum size of an encoded message at the grpc server side.
     pub grpc_server_max_encoding_message_size: u32,
+    /// Idle time, in seconds, before TCP keepalive probes are sent on
+    /// connections accepted by the scheduler's gRPC server, so a connection
+    /// whose peer vanished without closing it is eventually reaped. Defaults
+    /// to 3600, the value executors and the result service use (0 = disabled).
+    pub grpc_server_tcp_keepalive_seconds: u64,
     /// The maximum size of a message sent by the scheduler's outbound gRPC clients.
     pub grpc_client_max_message_size: u32,
     /// The executor timeout in seconds. It should be longer than executor's heartbeat intervals.
@@ -527,6 +539,7 @@ impl Default for SchedulerConfig {
             scheduler_event_expected_processing_duration: 0,
             grpc_server_max_decoding_message_size: 16777216,
             grpc_server_max_encoding_message_size: 16777216,
+            grpc_server_tcp_keepalive_seconds: 3600,
             grpc_client_max_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
@@ -807,6 +820,13 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the TCP keepalive idle time, in seconds, for connections accepted
+    /// by the scheduler's gRPC server (0 disables TCP keepalive).
+    pub fn with_grpc_server_tcp_keepalive_seconds(mut self, value: u64) -> Self {
+        self.grpc_server_tcp_keepalive_seconds = value;
+        self
+    }
+
     /// Sets the maximum gRPC server encoding message size.
     pub fn with_grpc_server_max_encoding_message_size(mut self, value: u32) -> Self {
         self.grpc_server_max_encoding_message_size = value;
@@ -997,6 +1017,7 @@ impl TryFrom<Config> for SchedulerConfig {
                 .grpc_server_max_decoding_message_size,
             grpc_server_max_encoding_message_size: opt
                 .grpc_server_max_encoding_message_size,
+            grpc_server_tcp_keepalive_seconds: opt.grpc_server_tcp_keepalive_seconds,
             grpc_client_max_message_size: opt.grpc_client_max_message_size,
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
