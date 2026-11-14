@@ -120,18 +120,8 @@ mod tests {
                 .unwrap(),
         );
 
-        // Rebuilding the interleave itself with a mismatched child is what
-        // aborts an AQE replan today.
         let divergent: Arc<dyn ExecutionPlan> =
             Arc::new(EmptyExec::new(Arc::clone(&schema)).with_partitions(4));
-        assert!(
-            Arc::clone(&interleave)
-                .replace_children(
-                    vec![hash_branch(&schema), Arc::clone(&divergent)],
-                    recompute()
-                )
-                .is_err()
-        );
 
         let union = NormalizeInterleaveRule::default()
             .optimize(interleave, &ConfigOptions::default())

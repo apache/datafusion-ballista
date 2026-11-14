@@ -182,7 +182,8 @@ mod tests {
 
     #[test]
     fn schema_without_partition_id_keeps_metadata() {
-        let metadata = [("k".to_string(), "v".to_string())].into();
+        let metadata: std::collections::HashMap<String, String> =
+            [("k".to_string(), "v".to_string())].into();
         let schema = schema().with_metadata(metadata);
 
         let projected = schema_without_partition_id(&schema, 1).unwrap();

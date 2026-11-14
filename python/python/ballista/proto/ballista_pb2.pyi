@@ -61,7 +61,7 @@ class LogicalPlanCacheNode(_message.Message):
     def __init__(self, cache_id: _Optional[str] = ..., session_id: _Optional[str] = ...) -> None: ...
 
 class BallistaPhysicalPlanNode(_message.Message):
-    __slots__ = ("shuffle_writer", "shuffle_reader", "unresolved_shuffle", "sort_shuffle_writer", "chaos_exec", "runtime_stats", "buffer", "unordered_range_repartition", "ordered_range_repartition", "per_partition_filter", "partitioned_bounded_window_agg", "range_shuffle_reader", "range_filter", "prefix_merge", "range_shuffle_writer", "distributed_query", "distributed_explain_analyze", "pipelined_shuffle_writer", "pipelined_shuffle_reader", "runtime_filter")
+    __slots__ = ("shuffle_writer", "shuffle_reader", "unresolved_shuffle", "sort_shuffle_writer", "chaos_exec", "runtime_stats", "buffer", "unordered_range_repartition", "ordered_range_repartition", "per_partition_filter", "partitioned_bounded_window_agg", "range_shuffle_reader", "range_filter", "prefix_merge", "range_shuffle_writer", "distributed_query", "distributed_explain_analyze", "pipelined_shuffle_writer", "pipelined_shuffle_reader", "runtime_filter", "partition_id_repartition")
     SHUFFLE_WRITER_FIELD_NUMBER: _ClassVar[int]
     SHUFFLE_READER_FIELD_NUMBER: _ClassVar[int]
     UNRESOLVED_SHUFFLE_FIELD_NUMBER: _ClassVar[int]
@@ -82,6 +82,7 @@ class BallistaPhysicalPlanNode(_message.Message):
     PIPELINED_SHUFFLE_WRITER_FIELD_NUMBER: _ClassVar[int]
     PIPELINED_SHUFFLE_READER_FIELD_NUMBER: _ClassVar[int]
     RUNTIME_FILTER_FIELD_NUMBER: _ClassVar[int]
+    PARTITION_ID_REPARTITION_FIELD_NUMBER: _ClassVar[int]
     shuffle_writer: ShuffleWriterExecNode
     shuffle_reader: ShuffleReaderExecNode
     unresolved_shuffle: UnresolvedShuffleExecNode
@@ -102,7 +103,8 @@ class BallistaPhysicalPlanNode(_message.Message):
     pipelined_shuffle_writer: PipelinedShuffleWriterExecNode
     pipelined_shuffle_reader: PipelinedShuffleReaderExecNode
     runtime_filter: RuntimeFilterExecNode
-    def __init__(self, shuffle_writer: _Optional[_Union[ShuffleWriterExecNode, _Mapping]] = ..., shuffle_reader: _Optional[_Union[ShuffleReaderExecNode, _Mapping]] = ..., unresolved_shuffle: _Optional[_Union[UnresolvedShuffleExecNode, _Mapping]] = ..., sort_shuffle_writer: _Optional[_Union[SortShuffleWriterExecNode, _Mapping]] = ..., chaos_exec: _Optional[_Union[ChaosExecNode, _Mapping]] = ..., runtime_stats: _Optional[_Union[RuntimeStatsExecNode, _Mapping]] = ..., buffer: _Optional[_Union[BufferExecNode, _Mapping]] = ..., unordered_range_repartition: _Optional[_Union[UnorderedRangeRepartitionExecNode, _Mapping]] = ..., ordered_range_repartition: _Optional[_Union[OrderedRangeRepartitionExecNode, _Mapping]] = ..., per_partition_filter: _Optional[_Union[PerPartitionFilterExecNode, _Mapping]] = ..., partitioned_bounded_window_agg: _Optional[_Union[PartitionedBoundedWindowAggExecNode, _Mapping]] = ..., range_shuffle_reader: _Optional[_Union[RangeShuffleReaderExecNode, _Mapping]] = ..., range_filter: _Optional[_Union[RangeFilterExecNode, _Mapping]] = ..., prefix_merge: _Optional[_Union[PrefixMergeExecNode, _Mapping]] = ..., range_shuffle_writer: _Optional[_Union[RangeShuffleWriterExecNode, _Mapping]] = ..., distributed_query: _Optional[_Union[DistributedQueryExecNode, _Mapping]] = ..., distributed_explain_analyze: _Optional[_Union[DistributedExplainAnalyzeExecNode, _Mapping]] = ..., pipelined_shuffle_writer: _Optional[_Union[PipelinedShuffleWriterExecNode, _Mapping]] = ..., pipelined_shuffle_reader: _Optional[_Union[PipelinedShuffleReaderExecNode, _Mapping]] = ..., runtime_filter: _Optional[_Union[RuntimeFilterExecNode, _Mapping]] = ...) -> None: ...
+    partition_id_repartition: PartitionIdRepartitionExecNode
+    def __init__(self, shuffle_writer: _Optional[_Union[ShuffleWriterExecNode, _Mapping]] = ..., shuffle_reader: _Optional[_Union[ShuffleReaderExecNode, _Mapping]] = ..., unresolved_shuffle: _Optional[_Union[UnresolvedShuffleExecNode, _Mapping]] = ..., sort_shuffle_writer: _Optional[_Union[SortShuffleWriterExecNode, _Mapping]] = ..., chaos_exec: _Optional[_Union[ChaosExecNode, _Mapping]] = ..., runtime_stats: _Optional[_Union[RuntimeStatsExecNode, _Mapping]] = ..., buffer: _Optional[_Union[BufferExecNode, _Mapping]] = ..., unordered_range_repartition: _Optional[_Union[UnorderedRangeRepartitionExecNode, _Mapping]] = ..., ordered_range_repartition: _Optional[_Union[OrderedRangeRepartitionExecNode, _Mapping]] = ..., per_partition_filter: _Optional[_Union[PerPartitionFilterExecNode, _Mapping]] = ..., partitioned_bounded_window_agg: _Optional[_Union[PartitionedBoundedWindowAggExecNode, _Mapping]] = ..., range_shuffle_reader: _Optional[_Union[RangeShuffleReaderExecNode, _Mapping]] = ..., range_filter: _Optional[_Union[RangeFilterExecNode, _Mapping]] = ..., prefix_merge: _Optional[_Union[PrefixMergeExecNode, _Mapping]] = ..., range_shuffle_writer: _Optional[_Union[RangeShuffleWriterExecNode, _Mapping]] = ..., distributed_query: _Optional[_Union[DistributedQueryExecNode, _Mapping]] = ..., distributed_explain_analyze: _Optional[_Union[DistributedExplainAnalyzeExecNode, _Mapping]] = ..., pipelined_shuffle_writer: _Optional[_Union[PipelinedShuffleWriterExecNode, _Mapping]] = ..., pipelined_shuffle_reader: _Optional[_Union[PipelinedShuffleReaderExecNode, _Mapping]] = ..., runtime_filter: _Optional[_Union[RuntimeFilterExecNode, _Mapping]] = ..., partition_id_repartition: _Optional[_Union[PartitionIdRepartitionExecNode, _Mapping]] = ...) -> None: ...
 
 class RuntimeFilterExecNode(_message.Message):
     __slots__ = ("filter_id", "key", "build", "payload")
@@ -181,6 +183,22 @@ class PipelinedPartitionLocation(_message.Message):
     executor_meta: ExecutorEndpoint
     executor_index: int
     def __init__(self, partition_id: _Optional[_Union[PartitionId, _Mapping]] = ..., task_id: _Optional[int] = ..., executor_meta: _Optional[_Union[ExecutorEndpoint, _Mapping]] = ..., executor_index: _Optional[int] = ...) -> None: ...
+
+class PartitionIdRouting(_message.Message):
+    __slots__ = ("column", "partition_count")
+    COLUMN_FIELD_NUMBER: _ClassVar[int]
+    PARTITION_COUNT_FIELD_NUMBER: _ClassVar[int]
+    column: int
+    partition_count: int
+    def __init__(self, column: _Optional[int] = ..., partition_count: _Optional[int] = ...) -> None: ...
+
+class PartitionIdRepartitionExecNode(_message.Message):
+    __slots__ = ("partition_id_column", "partition_count")
+    PARTITION_ID_COLUMN_FIELD_NUMBER: _ClassVar[int]
+    PARTITION_COUNT_FIELD_NUMBER: _ClassVar[int]
+    partition_id_column: int
+    partition_count: int
+    def __init__(self, partition_id_column: _Optional[int] = ..., partition_count: _Optional[int] = ...) -> None: ...
 
 class DistributedQueryExecNode(_message.Message):
     __slots__ = ("scheduler_url", "settings", "logical_plan", "session_id")
@@ -369,20 +387,24 @@ class ShuffleWriterExecNode(_message.Message):
     def __init__(self, job_id: _Optional[str] = ..., stage_id: _Optional[int] = ..., input: _Optional[_Union[_datafusion_pb2.PhysicalPlanNode, _Mapping]] = ..., output_partitioning: _Optional[_Union[_datafusion_pb2.PhysicalHashRepartition, _Mapping]] = ...) -> None: ...
 
 class SortShuffleWriterExecNode(_message.Message):
-    __slots__ = ("job_id", "stage_id", "input", "output_partitioning", "batch_size", "memory_limit_per_task_bytes")
+    __slots__ = ("job_id", "stage_id", "input", "output_partitioning", "partition_id_routing", "partitioning", "batch_size", "memory_limit_per_task_bytes")
     JOB_ID_FIELD_NUMBER: _ClassVar[int]
     STAGE_ID_FIELD_NUMBER: _ClassVar[int]
     INPUT_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_PARTITIONING_FIELD_NUMBER: _ClassVar[int]
+    PARTITION_ID_ROUTING_FIELD_NUMBER: _ClassVar[int]
+    PARTITIONING_FIELD_NUMBER: _ClassVar[int]
     BATCH_SIZE_FIELD_NUMBER: _ClassVar[int]
     MEMORY_LIMIT_PER_TASK_BYTES_FIELD_NUMBER: _ClassVar[int]
     job_id: str
     stage_id: int
     input: _datafusion_pb2.PhysicalPlanNode
     output_partitioning: _datafusion_pb2.PhysicalHashRepartition
+    partition_id_routing: PartitionIdRouting
+    partitioning: _datafusion_pb2.Partitioning
     batch_size: int
     memory_limit_per_task_bytes: int
-    def __init__(self, job_id: _Optional[str] = ..., stage_id: _Optional[int] = ..., input: _Optional[_Union[_datafusion_pb2.PhysicalPlanNode, _Mapping]] = ..., output_partitioning: _Optional[_Union[_datafusion_pb2.PhysicalHashRepartition, _Mapping]] = ..., batch_size: _Optional[int] = ..., memory_limit_per_task_bytes: _Optional[int] = ...) -> None: ...
+    def __init__(self, job_id: _Optional[str] = ..., stage_id: _Optional[int] = ..., input: _Optional[_Union[_datafusion_pb2.PhysicalPlanNode, _Mapping]] = ..., output_partitioning: _Optional[_Union[_datafusion_pb2.PhysicalHashRepartition, _Mapping]] = ..., partition_id_routing: _Optional[_Union[PartitionIdRouting, _Mapping]] = ..., partitioning: _Optional[_Union[_datafusion_pb2.Partitioning, _Mapping]] = ..., batch_size: _Optional[int] = ..., memory_limit_per_task_bytes: _Optional[int] = ...) -> None: ...
 
 class RangeShuffleWriterExecNode(_message.Message):
     __slots__ = ("job_id", "stage_id", "input")

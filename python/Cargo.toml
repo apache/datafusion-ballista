@@ -33,10 +33,26 @@ publish = false
 
 async-ffi = { version = "0.5" }
 async-trait = { version = "0.1.92" }
-ballista = { path = "../ballista/client", version = "55.0.0" }
-ballista-core = { path = "../ballista/core", version = "55.0.0", features = ["build-binary"] }
-ballista-executor = { path = "../ballista/executor", version = "55.0.0", default-features = false }
-ballista-scheduler = { path = "../ballista/scheduler", version = "55.0.0", default-features = false }
+
+# The Rust workspace is pinned to a DataFusion commit on branch-56 ahead of the
+# DataFusion 56 release, but this crate builds against the DataFusion 55
+# release of datafusion-python. The path dependencies below would pull the
+# pinned DataFusion into this build next to DataFusion 55, so build against a
+# Ballista commit from before the pin, which is still on DataFusion 55. It is
+# not a release, so the Python release check rejects it. Restore the path
+# dependencies once the workspace is back on a DataFusion release that
+# datafusion-python supports.
+ballista = { git = "https://github.com/apache/datafusion-ballista", rev = "d98720804369917151052e1c280a1dae711817fb" }
+ballista-core = { git = "https://github.com/apache/datafusion-ballista", rev = "d98720804369917151052e1c280a1dae711817fb", features = [
+    "build-binary",
+] }
+ballista-executor = { git = "https://github.com/apache/datafusion-ballista", rev = "d98720804369917151052e1c280a1dae711817fb", default-features = false }
+ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "d98720804369917151052e1c280a1dae711817fb", default-features = false }
+
+# ballista = { path = "../ballista/client", version = "55.0.0" }
+# ballista-core = { path = "../ballista/core", version = "55.0.0", features = ["build-binary"] }
+# ballista-executor = { path = "../ballista/executor", version = "55.0.0", default-features = false }
+# ballista-scheduler = { path = "../ballista/scheduler", version = "55.0.0", default-features = false }
 
 # ballista = { version = "=55.0.0" }
 # ballista-core = { version = "=55.0.0", features = ["build-binary"] }

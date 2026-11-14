@@ -536,6 +536,7 @@ dependencies = [
 [[package]]
 name = "ballista"
 version = "55.0.0"
+source = "git+https://github.com/apache/datafusion-ballista?rev=d98720804369917151052e1c280a1dae711817fb#d98720804369917151052e1c280a1dae711817fb"
 dependencies = [
  "async-trait",
  "ballista-core",
@@ -550,6 +551,7 @@ dependencies = [
 [[package]]
 name = "ballista-core"
 version = "55.0.0"
+source = "git+https://github.com/apache/datafusion-ballista?rev=d98720804369917151052e1c280a1dae711817fb#d98720804369917151052e1c280a1dae711817fb"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -581,6 +583,7 @@ dependencies = [
 [[package]]
 name = "ballista-executor"
 version = "55.0.0"
+source = "git+https://github.com/apache/datafusion-ballista?rev=d98720804369917151052e1c280a1dae711817fb#d98720804369917151052e1c280a1dae711817fb"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -609,6 +612,7 @@ dependencies = [
 [[package]]
 name = "ballista-scheduler"
 version = "55.0.0"
+source = "git+https://github.com/apache/datafusion-ballista?rev=d98720804369917151052e1c280a1dae711817fb#d98720804369917151052e1c280a1dae711817fb"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -628,7 +632,6 @@ dependencies = [
  "prost",
  "rand 0.10.3",
  "serde",
- "socket2",
  "tokio",
  "tokio-stream",
  "tonic",

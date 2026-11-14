@@ -692,7 +692,9 @@ mod tests {
         BlackholeTaskLauncher, RejectingTaskLauncher, aggregation_logical_plan,
         mock_executor, register_virtual_executor, test_cluster_context,
     };
-    use ballista_core::config::BALLISTA_EXECUTION_MODE;
+    use ballista_core::config::{
+        BALLISTA_EXECUTION_MODE, BALLISTA_PROPAGATE_EMPTY_ENABLED,
+    };
     use ballista_core::extension::SessionConfigExt;
     use ballista_core::serde::protobuf::MultiTaskDefinition;
     use ballista_core::serde::scheduler::{
@@ -702,6 +704,18 @@ mod tests {
     use datafusion::execution::context::SessionConfig;
 
     use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+
+    /// The session config for the tests that bind tasks for two jobs at once.
+    ///
+    /// `aggregation_logical_plan` scans an empty table, so with the
+    /// propagate-empty rule on, AQE collapses the whole plan into one
+    /// `EmptyExec` with `target_partitions` partitions. Its first task would
+    /// take every vcore of the executor and leave nothing to bind for the
+    /// other job.
+    fn two_jobs_session_config() -> SessionConfig {
+        SessionConfig::new_with_ballista()
+            .set_bool(BALLISTA_PROPAGATE_EMPTY_ENABLED, false)
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn launch_tasks_isolates_single_rejected_job() -> Result<()> {
@@ -722,7 +736,7 @@ mod tests {
 
         let ctx = state
             .session_manager
-            .create_or_update_session("session", &SessionConfig::new_with_ballista())
+            .create_or_update_session("session", &two_jobs_session_config())
             .await?;
 
         for job_id in [&good_job, &bad_job] {
@@ -803,7 +817,7 @@ mod tests {
 
         let ctx = state
             .session_manager
-            .create_or_update_session("session", &SessionConfig::new_with_ballista())
+            .create_or_update_session("session", &two_jobs_session_config())
             .await?;
         for job_id in [&good_job, &doomed_job] {
             state
