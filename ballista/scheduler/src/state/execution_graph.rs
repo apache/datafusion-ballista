@@ -3268,7 +3268,7 @@ mod test {
     #[tokio::test]
     async fn losing_own_shuffle_output_restores_the_cache_reader() -> Result<()> {
         /// The own input's stage id, which the cache's build stage shares.
-        const OWN_INPUT: usize = 2;
+        const OWN_INPUT: usize = 1;
         fn cache_reader_of(plan: &Arc<dyn ExecutionPlan>) -> Option<&ShuffleReaderExec> {
             plan.downcast_ref::<ShuffleReaderExec>()
                 .filter(|reader| is_external_stage_id(reader.stage_id))
@@ -3304,9 +3304,8 @@ mod test {
             .expect("a stage reads the cache and its own input");
         assert_eq!(own_input, OWN_INPUT);
 
-        // The job's own stages complete on executor 1, then a task of the stage
-        // reading both their output and the cache starts on executor 2.
-        revive_graph_and_complete_next_stage(&mut graph)?;
+        // The job's own input completes on executor 1, then a task of the
+        // stage reading both its output and the cache starts on executor 2.
         revive_graph_and_complete_next_stage(&mut graph)?;
         graph.revive();
         let executor2 = mock_executor("executor-id2".to_string());
@@ -3326,7 +3325,6 @@ mod test {
         // The own input re-runs, one task on the cache's executor. The late
         // task then fails fetching the cache, under the own input's stage id:
         // the own task's output there is kept, not re-run.
-        revive_graph_and_complete_next_stage(&mut graph)?;
         graph.revive();
         let cache_executor = mock_executor("executor-cache".to_string());
         let own_task = graph.pop_next_task(&cache_executor.id)?.unwrap();

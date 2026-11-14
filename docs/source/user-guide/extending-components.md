@@ -179,7 +179,7 @@ let config = SchedulerConfig::default().with_partition_sliceable_resolver(Arc::n
 
 - `children` are the node's inputs, none for a scan, restricted to `partitions`. An input the node declares `SinglePartition` arrives whole, as a join's build side does. Partition `i` of the node must read partition `i` of every other input.
 - The restricted node must have exactly `partitions.len()` partitions. The scheduler rejects any other count.
-- `partitions` is empty for a `UnionExec` branch that belongs to other tasks. Return a node without partitions.
+- `partitions` is empty for a `UnionExec` branch that belongs to other tasks. Return a node without partitions. A leaf is never asked for none of its partitions: the scheduler replaces it with an empty leaf itself.
 - The restricted node is serialized with the scheduler's `physical codec`, so what it carries per partition has to survive encoding and decoding.
 - The resolver does not need `PartitionSliceable`. It can build the restricted node itself, which is the way to restrict a node you cannot implement the trait on, such as a `DataSourceExec` over a `DataSource` of your own: match it with `downcast_ref`, then build a `DataSourceExec` over the restricted source.
 - The resolver is asked after Ballista's own list. A node that is read whole, such as one below a `CoalescePartitionsExec` or on a join's build side, needs none of this.

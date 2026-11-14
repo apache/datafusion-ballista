@@ -902,6 +902,7 @@ mod range_shuffle_tests;
 mod test {
     use super::{can_stay_inline, holds_a_broadcast};
     use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
+    use crate::test_utils::payload::PayloadExec;
     use crate::test_utils::{datafusion_test_context, scan_with_file_groups};
     use ballista_core::assert_plan;
     use ballista_core::error::BallistaError;
@@ -936,6 +937,13 @@ mod test {
     #[test]
     fn plain_union_branch_stays_inline() {
         assert!(can_stay_inline(&scan_with_file_groups(4)));
+    }
+
+    /// A branch over a leaf the scheduler doesn't know restricts away too: a
+    /// task that runs none of its partitions gets an empty node.
+    #[test]
+    fn unknown_leaf_union_branch_stays_inline() {
+        assert!(can_stay_inline(&PayloadExec::leaf(&["p0", "p1"])));
     }
 
     /// A branch already sitting behind a stage boundary needs nothing more.
