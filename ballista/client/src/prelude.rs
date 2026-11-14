@@ -18,3 +18,4 @@
 //! Ballista Prelude (common imports)
 
 pub use crate::extension::{SessionConfigExt, SessionContextExt};
+pub use ballista_core::config::ExecutionMode;

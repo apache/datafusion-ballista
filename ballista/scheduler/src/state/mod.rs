@@ -597,11 +597,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Result<()> {
         let start = Instant::now();
 
-        let pipelined = session_ctx
-            .state()
-            .config()
-            .ballista_config()
-            .execution_mode()?
+        let pipelined = session_ctx.state().config().ballista_execution_mode()?
             == ExecutionMode::Pipelined;
         // A cache build runs staged whatever the session's mode: a pipelined
         // job streams its output and leaves no shuffle files to cache. Jobs
