@@ -62,7 +62,7 @@ pub(crate) enum Pass {
     /// The replan after a stage about to launch read a finished stage instead.
     StageReused,
     /// The rules run on a stage's own plan as it launches.
-    Stage(Option<usize>),
+    Stage(usize),
 }
 
 impl Display for Pass {
@@ -73,8 +73,7 @@ impl Display for Pass {
                 write!(f, "replan after stage {stage_id} finished")
             }
             Self::StageReused => write!(f, "replan after reusing a finished stage"),
-            Self::Stage(Some(stage_id)) => write!(f, "stage {stage_id}"),
-            Self::Stage(None) => write!(f, "stage"),
+            Self::Stage(stage_id) => write!(f, "stage {stage_id}"),
         }
     }
 }
@@ -95,10 +94,10 @@ struct Changes {
     plan: String,
     /// Each change no later rule undid: the rule's name and its diff.
     made: Vec<(String, String)>,
-    /// A digest of each plan the pass went through, and how many changes of
-    /// `made` led to it, so a rule that brings a plan back drops the changes
-    /// it undid.
-    seen: Vec<(u64, usize)>,
+    /// A digest of each plan the pass went through, `seen[k]` being the plan
+    /// the first `k` changes of `made` led to, so a rule that brings a plan
+    /// back drops the changes it undid.
+    seen: Vec<u64>,
 }
 
 impl<'a> PlanChangeLog<'a> {
@@ -116,7 +115,7 @@ impl<'a> PlanChangeLog<'a> {
         let changes = enabled.then(|| {
             let plan = render(plan);
             Changes {
-                seen: vec![(digest(&plan), 0)],
+                seen: vec![digest(&plan)],
                 plan,
                 made: Vec::new(),
             }
@@ -135,37 +134,30 @@ impl<'a> PlanChangeLog<'a> {
             return;
         };
         let after = render(plan);
-        if after == changes.plan {
-            return;
-        }
         let after_digest = digest(&after);
-        match changes
-            .seen
-            .iter()
-            .position(|(seen, _)| *seen == after_digest)
-        {
-            // The rule undid every change since the plan was last like this.
+        match changes.seen.iter().position(|seen| *seen == after_digest) {
+            // The rule undid every change since the plan was last like this,
+            // or changed nothing.
             Some(back) => {
-                changes.made.truncate(changes.seen[back].1);
+                changes.made.truncate(back);
                 changes.seen.truncate(back + 1);
             }
             None => {
                 changes
                     .made
                     .push((rule.to_owned(), diff(&changes.plan, &after)));
-                changes.seen.push((after_digest, changes.made.len()));
+                changes.seen.push(after_digest);
             }
         }
         changes.plan = after;
     }
+}
 
-    /// Logs the changes of the pass, and the plan they left, if any.
-    pub(crate) fn finish(mut self) {
-        self.flush();
-    }
-
-    fn flush(&mut self) {
-        let Some(changes) = self.changes.take() else {
+impl Drop for PlanChangeLog<'_> {
+    /// Logs the changes of the pass, and the plan they left, if any. A pass
+    /// that fails logs what its rules changed before it failed.
+    fn drop(&mut self) {
+        let Some(changes) = &self.changes else {
             return;
         };
         if changes.made.is_empty() {
@@ -186,13 +178,6 @@ impl<'a> PlanChangeLog<'a> {
             rules.join(", "),
             changes.plan.trim_end()
         );
-    }
-}
-
-impl Drop for PlanChangeLog<'_> {
-    /// Logs what the rules of a pass that failed changed before it failed.
-    fn drop(&mut self) {
-        self.flush();
     }
 }
 

@@ -456,7 +456,8 @@ impl AdaptivePlanner {
             &self.session_state,
             |plan, rule| changes.record(rule.name(), plan),
         )?;
-        changes.finish();
+        // Log the changes before the timing below.
+        drop(changes);
         self.plan = plan;
 
         debug!("Job {}: {pass} took {:?}", self.job_id, interval.elapsed());
@@ -485,7 +486,7 @@ impl AdaptivePlanner {
                 let config = self.session_state.config().options();
                 let (stage_ids, shuffle_writers) = stages
                     .into_iter()
-                    .map(|plan| {
+                    .map(|mut plan| {
                         let mut changes = PlanChangeLog::new(
                             &self.job_id,
                             Pass::Stage(launched_stage_id(&plan)),
@@ -497,11 +498,13 @@ impl AdaptivePlanner {
                         // group. This avoids cross-stage gluing and stale state
                         // that would arise if the rule walked the entire residual
                         // plan in `default_optimizers()`.
-                        let plan = CoalescePartitionsRule.optimize(plan, config)?;
-                        changes.record(CoalescePartitionsRule.name(), plan.as_ref());
-                        let plan = OptimizeSkewedJoinRule.optimize(plan, config)?;
-                        changes.record(OptimizeSkewedJoinRule.name(), plan.as_ref());
-                        changes.finish();
+                        let stage_rules: [&dyn PhysicalOptimizerRule; 2] =
+                            [&CoalescePartitionsRule, &OptimizeSkewedJoinRule];
+                        for rule in stage_rules {
+                            plan = rule.optimize(plan, config)?;
+                            changes.record(rule.name(), plan.as_ref());
+                        }
+                        drop(changes);
                         BallistaAdapter::adapt_to_ballista(plan, &self.job_id, config)
                             .map(|w| (w.plan.stage_id(), w))
                     })
@@ -937,11 +940,14 @@ fn count_exchanges(plan: &Arc<dyn ExecutionPlan>) -> usize {
 
 /// The stage id of `root`, the exchange or `AdaptiveDatafusionExec` a stage's
 /// plan starts at.
-fn launched_stage_id(root: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+fn launched_stage_id(root: &Arc<dyn ExecutionPlan>) -> usize {
     match root.downcast_ref::<ExchangeExec>() {
         Some(exchange) => exchange.stage_id(),
-        None => root.downcast_ref::<AdaptiveDatafusionExec>()?.stage_id(),
+        None => root
+            .downcast_ref::<AdaptiveDatafusionExec>()
+            .and_then(|adaptive| adaptive.stage_id()),
     }
+    .expect("a runnable stage has a stage id")
 }
 
 fn as_exchange(plan: &Arc<dyn ExecutionPlan>) -> &ExchangeExec {

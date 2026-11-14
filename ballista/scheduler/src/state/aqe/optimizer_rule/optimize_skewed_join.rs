@@ -151,19 +151,21 @@ impl PhysicalOptimizerRule for OptimizeSkewedJoinRule {
         }
         sort_mapper_outputs(&mut left_parts);
         sort_mapper_outputs(&mut right_parts);
-        let (left_ranges, left_threshold) = build_ranges(&left_parts, split_left, &bc);
-        let (right_ranges, right_threshold) =
-            build_ranges(&right_parts, split_right, &bc);
-        let (left_shards, right_shards) = pair_shards(&left_ranges, &right_ranges);
+        let left_ranges = build_ranges(&left_parts, split_left, &bc);
+        let right_ranges = build_ranges(&right_parts, split_right, &bc);
+        let (left_shards, right_shards) =
+            pair_shards(&left_ranges.ranges, &right_ranges.ranges);
         if left_shards.len() == partition_count {
             debug!(
                 "skew join skipped: no partition of the {join_type} join was split \
-                 (exchange {}: largest {} bytes, skewed above {left_threshold} bytes; \
-                 exchange {}: largest {} bytes, skewed above {right_threshold} bytes)",
+                 (exchange {}: largest {} bytes, skewed above {} bytes; \
+                 exchange {}: largest {} bytes, skewed above {} bytes)",
                 left.plan_id(),
-                largest_partition_bytes(&left_parts),
+                left_ranges.largest,
+                left_ranges.threshold,
                 right.plan_id(),
-                largest_partition_bytes(&right_parts),
+                right_ranges.largest,
+                right_ranges.threshold,
             );
             return Ok(plan);
         }
@@ -241,22 +243,36 @@ fn join_type_of(plan: &Arc<dyn ExecutionPlan>) -> Option<JoinType> {
         .map(|join| join.join_type())
 }
 
-/// The mapper ranges each of `partitions` is read in, and the size in bytes
-/// above which a partition is skewed.
+/// How the partitions of one join input are read.
+struct InputRanges {
+    /// The mapper ranges each partition is read in.
+    ranges: Vec<Vec<(u32, u32)>>,
+    /// The size in bytes above which a partition is skewed.
+    threshold: u64,
+    /// The size in bytes of the largest partition.
+    largest: u64,
+}
+
 fn build_ranges(
     partitions: &[Vec<PartitionLocation>],
     can_split: bool,
     config: &BallistaConfig,
-) -> (Vec<Vec<(u32, u32)>>, u64) {
+) -> InputRanges {
     let sizes: Vec<u64> = partitions
         .iter()
-        .map(|locations| partition_bytes(locations))
+        .map(|locations| {
+            locations
+                .iter()
+                .filter_map(|location| location.partition_stats.num_bytes())
+                .sum()
+        })
         .collect();
     let threshold = skew_threshold(
         &sizes,
         config.skew_join_skewed_partition_factor(),
         config.skew_join_partition_threshold_bytes() as u64,
     );
+    let largest = sizes.iter().copied().max().unwrap_or(0);
     let advisory_bytes = config.skew_join_advisory_partition_bytes() as u64;
     let small_factor = config.skew_join_small_partition_factor();
     let ranges = partitions
@@ -274,22 +290,9 @@ fn build_ranges(
             }
         })
         .collect();
-    (ranges, threshold)
-}
-
-/// The bytes the mappers wrote to one partition.
-fn partition_bytes(locations: &[PartitionLocation]) -> u64 {
-    locations
-        .iter()
-        .filter_map(|location| location.partition_stats.num_bytes())
-        .sum()
-}
-
-/// The bytes the mappers wrote to the largest of `partitions`.
-fn largest_partition_bytes(partitions: &[Vec<PartitionLocation>]) -> u64 {
-    partitions
-        .iter()
-        .map(|locations| partition_bytes(locations))
-        .max()
-        .unwrap_or(0)
+    InputRanges {
+        ranges,
+        threshold,
+        largest,
+    }
 }

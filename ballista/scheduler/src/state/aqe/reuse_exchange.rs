@@ -56,7 +56,6 @@ use ballista_core::execution_plans::{
     OrderedRangeRepartitionExec, PartitionedBoundedWindowAggExec, PerPartitionFilterExec,
     PrefixMergeExec, RangeFilterExec, RuntimeStatsExec, UnorderedRangeRepartitionExec,
 };
-use datafusion::common::internal_datafusion_err;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
@@ -106,17 +105,15 @@ impl Display for Unshareable {
 }
 
 /// The key `node`, an exchange about to launch its stage, is matched on, or
-/// why its stage may not be shared. See the module docs.
+/// why its stage may not be shared. See the module docs. Panics if `node` is
+/// not an [`ExchangeExec`].
 pub(crate) fn reuse_key(
     node: &Arc<dyn ExecutionPlan>,
     codec: &Arc<dyn PhysicalExtensionCodec>,
 ) -> std::result::Result<ReuseKey, Unshareable> {
-    let exchange = node.downcast_ref::<ExchangeExec>().ok_or_else(|| {
-        Unshareable::NoKey(internal_datafusion_err!(
-            "{} is not an exchange",
-            node.name()
-        ))
-    })?;
+    let exchange = node
+        .downcast_ref::<ExchangeExec>()
+        .expect("only exchanges are keyed");
     if matches!(exchange.partitioning(), Some(Partitioning::Range(_))) {
         return Err(Unshareable::RangePartitioned);
     }
