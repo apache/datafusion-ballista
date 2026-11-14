@@ -552,7 +552,6 @@ pub fn stats_for_partition(
     num_fields: usize,
     partition_locations: &[Vec<PartitionLocation>],
 ) -> Result<Statistics> {
-    // TODO stats: add column statistics to PartitionStats
     let (num_rows, total_byte_size) = partition_locations
         .iter()
         .map(|location| {
@@ -587,7 +586,6 @@ pub fn stats_for_partitions(
     num_fields: usize,
     partition_stats: impl Iterator<Item = PartitionStats>,
 ) -> Statistics {
-    // TODO stats: add column statistics to PartitionStats
     let (num_rows, total_byte_size) =
         partition_stats.fold((Some(0), Some(0)), |(num_rows, total_byte_size), part| {
             // if any statistic is unkown it makes the entire statistic unkown

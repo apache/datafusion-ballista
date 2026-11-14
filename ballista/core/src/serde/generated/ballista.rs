@@ -1039,7 +1039,7 @@ pub struct TaskId {
     pub vcores_consumed: u32,
 }
 #[allow(clippy::all)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PartitionStats {
     #[prost(int64, tag = "1")]
     pub num_rows: i64,
@@ -1047,20 +1047,6 @@ pub struct PartitionStats {
     pub num_batches: i64,
     #[prost(int64, tag = "3")]
     pub num_bytes: i64,
-    #[prost(message, repeated, tag = "4")]
-    pub column_stats: ::prost::alloc::vec::Vec<ColumnStats>,
-}
-#[allow(clippy::all)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ColumnStats {
-    #[prost(message, optional, tag = "1")]
-    pub min_value: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
-    #[prost(message, optional, tag = "2")]
-    pub max_value: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
-    #[prost(uint32, tag = "3")]
-    pub null_count: u32,
-    #[prost(uint32, tag = "4")]
-    pub distinct_count: u32,
 }
 #[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]

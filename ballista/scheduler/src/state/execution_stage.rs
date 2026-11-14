@@ -38,7 +38,7 @@ use ballista_core::execution_plans::{
     PipelinedShuffleWriterExec, RangeShuffleWriterExec, ShuffleReaderExec,
     ShuffleWriterExec, SortShuffleWriterExec, TaskRuntimeStats, TaskWindowState,
 };
-use ballista_core::hll::HyperLogLog;
+use ballista_core::hll::{HyperLogLog, HyperLogLogUnion};
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
     FailedTask, OperatorMetricsSet, ResultLost, RuntimeStatsReport, SketchType,
@@ -648,9 +648,9 @@ impl Debug for ResolvedStage {
 enum MergedSketch {
     /// No successful task has been added yet.
     Empty,
-    Merged(HyperLogLog),
-    /// Some task didn't sketch the column, or sketched it at a different
-    /// precision from the others, so the stage has no distinct count for it.
+    Merged(HyperLogLogUnion),
+    /// Some task didn't sketch the column, so the stage has no distinct count
+    /// for it.
     Unavailable,
 }
 
@@ -659,13 +659,14 @@ impl MergedSketch {
     /// the task didn't make one.
     fn add(&mut self, sketch: Option<HyperLogLog>) {
         *self = match (std::mem::replace(self, Self::Unavailable), sketch) {
-            (Self::Empty, Some(sketch)) => Self::Merged(sketch),
-            (Self::Merged(mut merged), Some(sketch)) => {
-                if merged.merge(&sketch) {
-                    Self::Merged(merged)
-                } else {
-                    Self::Unavailable
-                }
+            (Self::Empty, Some(sketch)) => {
+                let mut union = HyperLogLogUnion::new(sketch.precision());
+                union.update(&sketch);
+                Self::Merged(union)
+            }
+            (Self::Merged(mut union), Some(sketch)) => {
+                union.update(&sketch);
+                Self::Merged(union)
             }
             _ => Self::Unavailable,
         };
@@ -730,7 +731,7 @@ impl RunningStage {
     /// wrote, one entry per output-schema column. `null_count` is `Exact` only
     /// when every successful task reported that column. `distinct_count` is an
     /// `Inexact` estimate from the tasks' merged HLL sketches, and only set
-    /// when every successful task sketched that column at the same precision.
+    /// when every successful task sketched that column.
     pub fn output_column_stats(&self) -> Vec<ColumnStatistics> {
         let num_columns = self.plan.schema().fields().len();
         let mut output_column_stats = vec![
@@ -774,8 +775,8 @@ impl RunningStage {
             }
         }
         for (slot, sketch) in output_column_stats.iter_mut().zip(sketches) {
-            if let MergedSketch::Merged(sketch) = sketch {
-                slot.distinct_count = Precision::Inexact(sketch.count());
+            if let MergedSketch::Merged(union) = sketch {
+                slot.distinct_count = Precision::Inexact(union.count());
             }
         }
         output_column_stats
@@ -1805,7 +1806,7 @@ mod tests {
             null_count: 0,
             sketches: vec![ColumnSketch {
                 r#type: SketchType::Hll as i32,
-                data: hll.as_bytes().to_vec(),
+                data: hll.to_bytes(),
             }],
         }
     }
@@ -1854,9 +1855,8 @@ mod tests {
     }
 
     #[test]
-    fn test_to_successful_leaves_distinct_count_absent_if_precisions_differ() {
-        // Registers of different precisions can't be merged, in either order,
-        // and a later task of the first precision doesn't bring the count back.
+    fn test_to_successful_merges_sketches_of_different_precisions() {
+        // The union merges at the lowest precision, in any order.
         for precisions in [[10, 12, 10], [12, 10, 12], [12, 12, 10]] {
             let stage = stage_with_col_stats(
                 precisions
@@ -1867,11 +1867,13 @@ mod tests {
                     .collect(),
             );
             let successful = stage.to_successful();
-            assert_eq!(
-                successful.output_column_stats[0].distinct_count,
-                Precision::Absent,
-                "precisions {precisions:?}"
-            );
+            let Precision::Inexact(distinct) =
+                successful.output_column_stats[0].distinct_count
+            else {
+                panic!("precisions {precisions:?}: expected an inexact distinct count");
+            };
+            // Standard error is 3.3% at precision 10.
+            assert!((800..=1200).contains(&distinct), "estimated {distinct}");
         }
     }
 
