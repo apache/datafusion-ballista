@@ -220,6 +220,9 @@ When you publish results, follow
 Published results are kept as JSON in `published/`, and `publish.py` regenerates
 the results tables in the docs (the benchmarking guide and the comparison with
 DataFusion Distributed) and the charts in the top-level README from them.
+`published/memory/` holds a memory sweep (one query at decreasing executor
+memory per configuration), which `publish.py` turns into the tables and charts
+of the docs' memory usage page.
 
 ## Tests
 

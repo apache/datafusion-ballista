@@ -123,12 +123,15 @@ Spark + Comet and Trino columns can be rerun with them too
 
 ## Details
 
-How the cluster was set up and how each engine was configured:
+How the cluster was set up and how each engine was configured. [Memory usage](memory.md)
+compares how much executor memory Ballista, Spark and Spark + Comet need for one
+query, measured on a smaller cluster:
 
 ```{toctree}
 :maxdepth: 1
 
 Environment <environment>
+Memory usage <memory>
 Ballista <ballista>
 Spark <spark>
 Spark + Comet <comet>

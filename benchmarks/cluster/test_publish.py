@@ -293,6 +293,104 @@ class WithSpeedupsTest(unittest.TestCase):
             publish.with_speedups("no summary\n", chart_series([1.0], [1.0], [1.0]))
 
 
+def sweep_config(engine, label, runs):
+    """A memory-sweep configuration; runs are (size, status, mean, executor OOM kills)."""
+    return {
+        "name": label,
+        "engine": engine,
+        "label": label,
+        "split": "",
+        "runs": [
+            {
+                "executor_memory_gib": size,
+                "status": status,
+                "executor_oom_kills": kills,
+                **({"mean": mean, "elapsed": [mean]} if mean is not None else {}),
+                "memory_pool_gib": size * 0.7,
+            }
+            for size, status, mean, kills in runs
+        ],
+    }
+
+
+SWEEP = {
+    "query": 18,
+    "scale_factor": 1000,
+    "configs": [
+        sweep_config(
+            "ballista",
+            "Ballista",
+            [
+                (16, "ok", 130.0, 0),
+                (8, "ok", 131.0, 0),
+                (6, "ok", 360.0, 2),
+                (5, "timeout", None, 2),
+            ],
+        ),
+        sweep_config(
+            "spark",
+            "Spark, on-heap",
+            [(32, "ok", 330.0, 0), (16, "oom-killed", None, 4)],
+        ),
+        sweep_config(
+            "spark",
+            "Spark, 50% off-heap",
+            [(32, "ok", 330.0, 0), (12, "ok", 390.0, 0), (8, "oom-killed", None, 6)],
+        ),
+        sweep_config(
+            "comet", "Spark + Comet", [(32, "ok", 150.0, 0), (20, "ok", 150.0, 0)]
+        ),
+    ],
+}
+
+
+class MemorySweepTest(unittest.TestCase):
+    def test_a_pass_that_needed_restarts_is_not_clean(self):
+        summary = publish.memory_summary(SWEEP["configs"][0])
+        self.assertEqual((summary["smallest"], summary["failed"]), (8, 6))
+        self.assertEqual((summary["largest"], summary["largest_mean"]), (16, 130.0))
+
+    def test_each_engine_is_shown_by_its_smallest_configuration(self):
+        best = [c["label"] for c, _ in publish.best_configs(SWEEP)]
+        self.assertEqual(best, ["Ballista", "Spark, 50% off-heap", "Spark + Comet"])
+
+    def test_the_headline_names_each_engines_smallest_size(self):
+        self.assertEqual(
+            publish.headline(publish.best_configs(SWEEP)),
+            "Ballista finished in 8 GiB per executor, Spark needed 12 GiB and "
+            "Spark + Comet 20 GiB",
+        )
+
+    def test_tables_are_padded_the_way_prettier_aligns_them(self):
+        table = publish.markdown_table([["Name", "N"], ["ab", "10"]], [False, True])
+        self.assertEqual(table, "| Name |   N |\n| ---- | --: |\n| ab   |  10 |")
+
+    def test_the_runs_table_explains_failures_and_restarts(self):
+        table = publish.memory_runs_table(SWEEP)
+        self.assertIn("Passed after 2 executors ran out of memory", table)
+        self.assertIn("Did not finish within the time limit", table)
+        self.assertIn("Failed: an executor ran out of memory", table)
+
+    def test_bar_lengths_are_proportional_to_the_smallest_sizes(self):
+        svg = publish.smallest_chart(SWEEP)
+        ends = [
+            float(e) - 330 for e in re.findall(r'd="M330 \d+H[\d.]+Q([\d.]+) ', svg)
+        ]
+        self.assertEqual(len(ends), 4)
+        for end, size in zip(ends, [8, 32, 12, 20]):
+            self.assertAlmostEqual(end / ends[0], size / 8, places=2)
+
+    def test_end_labels_that_would_collide_are_spread_around_their_points(self):
+        self.assertEqual(publish.spread([100, 300], 30), [100, 300])
+        self.assertEqual(publish.spread([100, 110], 30), [90, 120])
+
+    def test_the_time_chart_draws_one_line_per_engine(self):
+        svg = publish.time_chart(SWEEP)
+        self.assertEqual(len(re.findall(r'<path class="line ', svg)), 3)
+        # Comet never failed, so only Ballista and Spark have a failure marked.
+        self.assertEqual(len(re.findall(r'<path class="cross (?!key)', svg)), 2)
+
+
 class PublishedResultsTest(unittest.TestCase):
     def test_every_generated_file_is_up_to_date(self):
         for path, expected in publish.outputs().items():
