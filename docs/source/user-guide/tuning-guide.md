@@ -438,8 +438,11 @@ RUST_LOG=info,ballista_scheduler::state::aqe=debug ballista-scheduler
 Each time AQE optimizes a job's plan (when the job starts, after each stage
 finishes, and as each stage launches), it logs every rule that changed the
 plan, with a diff of the change, and then the plan the rules left. A rule that
-leaves the plan as it was is not logged, and neither is a change that a later
-rule undoes. The AQE rules also log what they decided and why they skipped an
+leaves the plan as it was is not logged. A change that a later rule undoes logs
+no diff, only a line naming the rule that undid it, such as
+`OutputRequirements undid the changes of OutputRequirements` for the node
+DataFusion's `OutputRequirements` rule adds and removes in every pass. The AQE
+rules also log what they decided and why they skipped an
 optimization: the sizes and thresholds behind each join's strategy, why a
 stage's partitions were not coalesced or a skewed join was not split, and why a
 repeated subplan could not share a stage. For a join of a small table with a
@@ -465,7 +468,12 @@ were added, and `...` stands for unchanged lines left out. To see only the plan
 changes, use `ballista_scheduler::state::aqe::plan_change_log=debug`. Each rule
 logs its decisions under its own module, for example
 `ballista_scheduler::state::aqe::optimizer_rule::optimize_skewed_join` for the
-skew join rule.
+skew join rule. The rules don't know which job they run for, so these lines
+carry no job id; with several jobs running at once, match them to a job by the
+plan change log and timing lines around them, which do.
+
+Rendering and diffing the plans takes time, so with the plan change log on, the
+line that times each pass leaves that time out and gives it separately.
 
 ### Current limitations
 

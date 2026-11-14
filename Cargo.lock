@@ -1302,6 +1302,7 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
+ "similar",
  "socket2",
  "tempfile",
  "tokio",

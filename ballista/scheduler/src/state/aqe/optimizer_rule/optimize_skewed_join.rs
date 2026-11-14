@@ -272,13 +272,14 @@ fn build_ranges(
         config.skew_join_skewed_partition_factor(),
         config.skew_join_partition_threshold_bytes() as u64,
     );
-    let largest = sizes.iter().copied().max().unwrap_or(0);
     let advisory_bytes = config.skew_join_advisory_partition_bytes() as u64;
     let small_factor = config.skew_join_small_partition_factor();
+    let mut largest = 0;
     let ranges = partitions
         .iter()
         .zip(sizes)
         .map(|(locations, bytes)| {
+            largest = largest.max(bytes);
             if can_split && bytes > threshold {
                 let mapper_bytes: Vec<_> = locations
                     .iter()

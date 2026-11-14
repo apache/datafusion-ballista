@@ -456,11 +456,22 @@ impl AdaptivePlanner {
             &self.session_state,
             |plan, rule| changes.record(rule.name(), plan),
         )?;
-        // Log the changes before the timing below.
+        // Leave out the time the plan change log took, which is only spent
+        // while it is enabled, and log the changes before the timing.
+        let elapsed = interval.elapsed();
+        let overhead = changes.overhead();
         drop(changes);
         self.plan = plan;
 
-        debug!("Job {}: {pass} took {:?}", self.job_id, interval.elapsed());
+        if overhead.is_zero() {
+            debug!("Job {}: {pass} took {elapsed:?}", self.job_id);
+        } else {
+            debug!(
+                "Job {}: {pass} took {:?}, not counting {overhead:?} logging plan changes",
+                self.job_id,
+                elapsed.saturating_sub(overhead)
+            );
+        }
 
         Ok(())
     }
@@ -569,7 +580,7 @@ impl AdaptivePlanner {
                 if exchange.inactive_stage || exchange.stage_id().is_some() {
                     continue;
                 }
-                let key = match reuse_key(exec, &codec) {
+                let key = match reuse_key(exec, exchange, &codec) {
                     Ok(key) => key,
                     Err(reason) => {
                         debug!(
@@ -939,15 +950,14 @@ fn count_exchanges(plan: &Arc<dyn ExecutionPlan>) -> usize {
 }
 
 /// The stage id of `root`, the exchange or `AdaptiveDatafusionExec` a stage's
-/// plan starts at.
-fn launched_stage_id(root: &Arc<dyn ExecutionPlan>) -> usize {
+/// plan starts at, if it has one.
+fn launched_stage_id(root: &Arc<dyn ExecutionPlan>) -> Option<usize> {
     match root.downcast_ref::<ExchangeExec>() {
         Some(exchange) => exchange.stage_id(),
         None => root
             .downcast_ref::<AdaptiveDatafusionExec>()
             .and_then(|adaptive| adaptive.stage_id()),
     }
-    .expect("a runnable stage has a stage id")
 }
 
 fn as_exchange(plan: &Arc<dyn ExecutionPlan>) -> &ExchangeExec {

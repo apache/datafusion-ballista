@@ -124,25 +124,22 @@ fn aggregates_the_table(stage: &Arc<dyn ExecutionPlan>) -> bool {
 
 #[tokio::test]
 async fn a_volatile_subplan_runs_for_each_reader() {
-    let mut planner = planner(&context(true), VOLATILE).await;
-
-    let stages = planner.identify_runnable_stages().unwrap().unwrap();
-    assert_eq!(stages.len(), 2);
-}
-
-#[tokio::test]
-async fn a_volatile_subplan_is_unshareable_for_its_volatile_expression() {
     let ctx = context(true);
-    let planner = planner(&ctx, VOLATILE).await;
+    let mut planner = planner(&ctx, VOLATILE).await;
     let codec = ctx.state().config().ballista_physical_extension_codec();
 
+    // Neither exchange can share a stage, because of its volatile expression.
     let mut runnable = Vec::new();
     AdaptivePlanner::find_runnable_exchanges(&planner.plan, &mut runnable);
     assert_eq!(runnable.len(), 2);
-    for exchange in &runnable {
-        let reason = reuse_key(exchange, &codec).unwrap_err();
+    for node in &runnable {
+        let exchange = node.downcast_ref::<ExchangeExec>().unwrap();
+        let reason = reuse_key(node, exchange, &codec).unwrap_err();
         assert!(matches!(reason, Unshareable::Volatile(_)), "{reason}");
     }
+
+    let stages = planner.identify_runnable_stages().unwrap().unwrap();
+    assert_eq!(stages.len(), 2);
 }
 
 #[rstest]

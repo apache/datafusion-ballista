@@ -21,9 +21,9 @@
 //! plan logs every rule that changed the plan, with a diff of the plan before
 //! and after the rule, and then the plan the pass ended with. A rule that
 //! leaves the plan as it was logs nothing, as with LLVM's `-print-changed` or
-//! Spark's plan change log, and neither does a change a later rule of the
-//! pass undoes, such as the node DataFusion's `OutputRequirements` adds and
-//! removes again:
+//! Spark's plan change log. A change a later rule of the pass undoes, such as
+//! the node DataFusion's `OutputRequirements` adds and removes again, logs no
+//! diff, only a line naming the rule that undid it and the rules it undid:
 //!
 //! ```text
 //! RUST_LOG=ballista_scheduler::state::aqe::plan_change_log=debug
@@ -39,18 +39,15 @@
 
 use std::fmt::{self, Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::time::{Duration, Instant};
 
 use ballista_core::JobId;
 use datafusion::physical_plan::{ExecutionPlan, displayable};
 use log::{Level, debug, log_enabled};
+use similar::{Algorithm, DiffOp, DiffTag, capture_diff_slices, group_diff_ops};
 
 /// Unchanged lines a diff keeps on each side of a change.
 const CONTEXT: usize = 3;
-
-/// The largest table of line matches a diff builds, `(m + 1) * (n + 1)` for
-/// the `m` and `n` lines between the first and last change of each plan, about
-/// 500 lines each. Past it, all of those lines show as removed and added.
-const MAX_MATCH_TABLE: usize = 1 << 18;
 
 /// What the planner runs a pass of rules over a job's plan for.
 #[derive(Clone, Copy, Debug)]
@@ -61,8 +58,9 @@ pub(crate) enum Pass {
     StageFinished(usize),
     /// The replan after a stage about to launch read a finished stage instead.
     StageReused,
-    /// The rules run on a stage's own plan as it launches.
-    Stage(usize),
+    /// The rules run on a stage's own plan as it launches, with the stage's
+    /// id if it has one.
+    Stage(Option<usize>),
 }
 
 impl Display for Pass {
@@ -73,7 +71,8 @@ impl Display for Pass {
                 write!(f, "replan after stage {stage_id} finished")
             }
             Self::StageReused => write!(f, "replan after reusing a finished stage"),
-            Self::Stage(stage_id) => write!(f, "stage {stage_id}"),
+            Self::Stage(Some(stage_id)) => write!(f, "stage {stage_id}"),
+            Self::Stage(None) => write!(f, "stage ?"),
         }
     }
 }
@@ -86,6 +85,8 @@ pub(crate) struct PlanChangeLog<'a> {
     /// What the rules of the pass changed so far, or `None` while the log is
     /// disabled.
     changes: Option<Changes>,
+    /// The time spent rendering and diffing plans.
+    overhead: Duration,
 }
 
 /// The changes the rules of a pass made to a plan.
@@ -94,6 +95,8 @@ struct Changes {
     plan: String,
     /// Each change no later rule undid: the rule's name and its diff.
     made: Vec<(String, String)>,
+    /// Each rule that undid changes, and the rules whose changes it undid.
+    undone: Vec<(String, Vec<String>)>,
     /// A digest of each plan the pass went through, `seen[k]` being the plan
     /// the first `k` changes of `made` led to, so a rule that brings a plan
     /// back drops the changes it undid.
@@ -112,19 +115,28 @@ impl<'a> PlanChangeLog<'a> {
         pass: Pass,
         plan: &dyn ExecutionPlan,
     ) -> Self {
+        let start = Instant::now();
         let changes = enabled.then(|| {
             let plan = render(plan);
             Changes {
                 seen: vec![digest(&plan)],
                 plan,
                 made: Vec::new(),
+                undone: Vec::new(),
             }
         });
         Self {
             job_id,
             pass,
             changes,
+            overhead: start.elapsed(),
         }
+    }
+
+    /// The time the log spent rendering and diffing plans so far, which is
+    /// zero while it is disabled.
+    pub(crate) fn overhead(&self) -> Duration {
+        self.overhead
     }
 
     /// Records the change `rule` made, given the `plan` it returned, if it
@@ -133,13 +145,18 @@ impl<'a> PlanChangeLog<'a> {
         let Some(changes) = &mut self.changes else {
             return;
         };
+        let start = Instant::now();
         let after = render(plan);
         let after_digest = digest(&after);
         match changes.seen.iter().position(|seen| *seen == after_digest) {
             // The rule undid every change since the plan was last like this,
             // or changed nothing.
             Some(back) => {
-                changes.made.truncate(back);
+                if back < changes.made.len() {
+                    let undone =
+                        changes.made.drain(back..).map(|(rule, _)| rule).collect();
+                    changes.undone.push((rule.to_owned(), undone));
+                }
                 changes.seen.truncate(back + 1);
             }
             None => {
@@ -150,24 +167,34 @@ impl<'a> PlanChangeLog<'a> {
             }
         }
         changes.plan = after;
+        self.overhead += start.elapsed();
     }
 }
 
 impl Drop for PlanChangeLog<'_> {
-    /// Logs the changes of the pass, and the plan they left, if any. A pass
-    /// that fails logs what its rules changed before it failed.
+    /// Logs the changes of the pass, the changes later rules undid, and the
+    /// plan they left, if any. A pass that fails logs what its rules changed
+    /// before it failed.
     fn drop(&mut self) {
         let Some(changes) = &self.changes else {
             return;
         };
-        if changes.made.is_empty() {
-            return;
-        }
         for (rule, diff) in &changes.made {
             debug!(
                 "Job {}, {}: {rule} changed the plan:\n{diff}",
                 self.job_id, self.pass
             );
+        }
+        for (rule, undone) in &changes.undone {
+            debug!(
+                "Job {}, {}: {rule} undid the changes of {}",
+                self.job_id,
+                self.pass,
+                undone.join(", ")
+            );
+        }
+        if changes.made.is_empty() {
+            return;
         }
         let rules: Vec<&str> =
             changes.made.iter().map(|(rule, _)| rule.as_str()).collect();
@@ -199,100 +226,52 @@ fn digest(rendering: &str) -> u64 {
 fn diff(before: &str, after: &str) -> String {
     let before: Vec<&str> = before.lines().collect();
     let after: Vec<&str> = after.lines().collect();
-    let mut lines = edit_script(&before, &after, str::trim_start);
-    if lines.iter().all(|(tag, _)| *tag == ' ') {
+    let before_keys: Vec<&str> = before.iter().map(|line| line.trim_start()).collect();
+    let after_keys: Vec<&str> = after.iter().map(|line| line.trim_start()).collect();
+    let mut ops = capture_diff_slices(Algorithm::Myers, &before_keys, &after_keys);
+    if ops.iter().all(|op| op.tag() == DiffTag::Equal) {
         // Only the indentation changed: a node moved to another parent without
         // moving in the rendering.
-        lines = edit_script(&before, &after, |line| line);
+        ops = capture_diff_slices(Algorithm::Myers, &before, &after);
     }
 
-    let mut kept = vec![false; lines.len()];
-    for (i, (tag, _)) in lines.iter().enumerate() {
-        if *tag != ' ' {
-            let end = (i + CONTEXT + 1).min(lines.len());
-            kept[i.saturating_sub(CONTEXT)..end].fill(true);
-        }
-    }
     let mut out = Vec::new();
-    let mut skipped = false;
-    for ((tag, line), kept) in lines.into_iter().zip(kept) {
-        if !kept {
-            skipped = true;
-        } else {
-            if std::mem::take(&mut skipped) {
-                out.push("...".to_owned());
-            }
-            out.push(format!("{tag}{line}"));
+    // The end, in `after`, of the lines shown so far.
+    let mut shown_to = 0;
+    for group in group_diff_ops(ops, CONTEXT) {
+        let Some(first) = group.first() else {
+            continue;
+        };
+        if first.new_range().start > shown_to {
+            out.push("...".to_owned());
         }
+        for op in &group {
+            push_lines(&mut out, op, &before, &after);
+        }
+        shown_to = group.last().map_or(shown_to, |op| op.new_range().end);
     }
-    if skipped {
+    if shown_to < after.len() {
         out.push("...".to_owned());
     }
     out.join("\n")
 }
 
-/// The lines of `before` and `after` in order, each tagged ` ` when kept, as
-/// it is in `after`, `-` when removed and `+` when added. Two lines match when
-/// their `key`s are equal.
-fn edit_script<'a>(
-    before: &[&'a str],
-    after: &[&'a str],
-    key: fn(&str) -> &str,
-) -> Vec<(char, &'a str)> {
-    let shorter = before.len().min(after.len());
-    let prefix = (0..shorter)
-        .take_while(|&i| key(before[i]) == key(after[i]))
-        .count();
-    let suffix = (0..shorter - prefix)
-        .take_while(|&i| {
-            key(before[before.len() - 1 - i]) == key(after[after.len() - 1 - i])
-        })
-        .count();
-    let old = &before[prefix..before.len() - suffix];
-    let new = &after[prefix..after.len() - suffix];
-
-    let mut script: Vec<_> = after[..prefix].iter().map(|line| (' ', *line)).collect();
-    let width = new.len() + 1;
-    if (old.len() + 1).saturating_mul(width) > MAX_MATCH_TABLE {
-        script.extend(old.iter().map(|line| ('-', *line)));
-        script.extend(new.iter().map(|line| ('+', *line)));
-    } else {
-        // `common[i * width + j]`: how many lines `old[i..]` and `new[j..]`
-        // have in common, in order.
-        let mut common = vec![0u32; (old.len() + 1) * width];
-        for i in (0..old.len()).rev() {
-            for j in (0..new.len()).rev() {
-                common[i * width + j] = if key(old[i]) == key(new[j]) {
-                    common[(i + 1) * width + j + 1] + 1
-                } else {
-                    common[(i + 1) * width + j].max(common[i * width + j + 1])
-                };
-            }
-        }
-        let (mut i, mut j) = (0, 0);
-        while i < old.len() || j < new.len() {
-            if i < old.len() && j < new.len() && key(old[i]) == key(new[j]) {
-                script.push((' ', new[j]));
-                i += 1;
-                j += 1;
-            } else if j == new.len()
-                || (i < old.len()
-                    && common[(i + 1) * width + j] >= common[i * width + j + 1])
-            {
-                script.push(('-', old[i]));
-                i += 1;
-            } else {
-                script.push(('+', new[j]));
-                j += 1;
-            }
+/// Appends the lines of `op`, tagged as [`diff`] does: an unchanged line as it
+/// is in `after`.
+fn push_lines(out: &mut Vec<String>, op: &DiffOp, before: &[&str], after: &[&str]) {
+    let (tag, old, new) = op.as_tag_tuple();
+    let mut push = |tag: char, lines: &[&str]| {
+        out.extend(lines.iter().map(|line| format!("{tag}{line}")));
+    };
+    match tag {
+        DiffTag::Equal => push(' ', &after[new]),
+        DiffTag::Delete => push('-', &before[old]),
+        DiffTag::Insert => push('+', &after[new]),
+        DiffTag::Replace => {
+            push('-', &before[old]);
+            push('+', &after[new]);
         }
     }
-    script.extend(
-        after[after.len() - suffix..]
-            .iter()
-            .map(|line| (' ', *line)),
-    );
-    script
 }
 
 #[cfg(test)]
@@ -344,19 +323,16 @@ mod tests {
     }
 
     #[test]
-    fn a_diff_too_large_to_match_shows_every_line_between_the_changes() {
+    fn a_large_diff_shows_only_the_lines_around_its_changes() {
         let before: Vec<String> = (0..600).map(|i| format!("line {i}")).collect();
         let mut after = before.clone();
         after[0] = "first".to_owned();
         after[599] = "last".to_owned();
         let diff = diff(&before.join("\n"), &after.join("\n"));
         assert_eq!(
-            diff.lines().filter(|line| line.starts_with('-')).count(),
-            600
-        );
-        assert_eq!(
-            diff.lines().filter(|line| line.starts_with('+')).count(),
-            600
+            diff,
+            "-line 0\n+first\n line 1\n line 2\n line 3\n...\n \
+             line 596\n line 597\n line 598\n-line 599\n+last"
         );
     }
 
@@ -368,6 +344,14 @@ mod tests {
     fn rules_with_changes(log: &PlanChangeLog) -> Vec<String> {
         let changes = log.changes.as_ref().expect("the log is enabled");
         changes.made.iter().map(|(rule, _)| rule.clone()).collect()
+    }
+
+    fn undone(log: &PlanChangeLog) -> Vec<(String, Vec<String>)> {
+        log.changes
+            .as_ref()
+            .expect("the log is enabled")
+            .undone
+            .clone()
     }
 
     #[test]
@@ -386,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn changes_a_later_rule_undoes_are_dropped() {
+    fn changes_a_later_rule_undoes_are_noted_without_a_diff() {
         let job_id: JobId = "job".into();
         let (start, other) = (exchange(0), exchange(1));
         let mut log = PlanChangeLog::with_enabled(true, &job_id, Pass::Initial, &start);
@@ -399,6 +383,16 @@ mod tests {
         log.record("B", &exchange(2));
         log.record("C", &other);
         assert_eq!(rules_with_changes(&log), ["A"]);
+
+        // A rule that changes nothing undoes nothing.
+        log.record("D", &other);
+        assert_eq!(
+            undone(&log),
+            [
+                ("Remove".to_owned(), vec!["Add".to_owned()]),
+                ("C".to_owned(), vec!["B".to_owned()]),
+            ]
+        );
     }
 
     #[test]
@@ -411,5 +405,6 @@ mod tests {
         log.record("A", &plan);
 
         assert!(log.changes.is_none());
+        assert!(log.overhead().is_zero());
     }
 }
