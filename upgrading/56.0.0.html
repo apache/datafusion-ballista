@@ -688,6 +688,28 @@ statuses still set <code class="docutils literal notranslate"><span class="pre">
 each task’s plan separately, so the feature had no effect. Remove it from the
 <code class="docutils literal notranslate"><span class="pre">features</span></code> list of your <code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code> dependency. Behavior is unchanged.</p>
 </section>
+<section id="the-spark-compat-feature-is-removed">
+<h4>The <code class="docutils literal notranslate"><span class="pre">spark-compat</span></code> feature is removed<a class="headerlink" href="#the-spark-compat-feature-is-removed" title="Link to this heading">#</a></h4>
+<p>The <code class="docutils literal notranslate"><span class="pre">spark-compat</span></code> feature of <code class="docutils literal notranslate"><span class="pre">ballista-core</span></code>, <code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ballista-executor</span></code> is removed, along with their <code class="docutils literal notranslate"><span class="pre">datafusion-spark</span></code> dependency,
+the <code class="docutils literal notranslate"><span class="pre">remote-spark-functions</span></code> example and the Spark-Compatible Functions page of
+the user guide. Remove <code class="docutils literal notranslate"><span class="pre">spark-compat</span></code> from the <code class="docutils literal notranslate"><span class="pre">features</span></code> list of your Ballista
+dependencies.</p>
+<p>The feature registered the functions of
+<a class="reference external" href="https://crates.io/crates/datafusion-spark"><code class="docutils literal notranslate"><span class="pre">datafusion-spark</span></code></a> in every
+session. To keep using them, depend on <code class="docutils literal notranslate"><span class="pre">datafusion-spark</span></code> yourself and register
+its <code class="docutils literal notranslate"><span class="pre">all_default_scalar_functions()</span></code>, <code class="docutils literal notranslate"><span class="pre">all_default_aggregate_functions()</span></code> and
+<code class="docutils literal notranslate"><span class="pre">all_default_window_functions()</span></code> everywhere a plan that calls them is decoded:</p>
+<ul class="simple">
+<li><p>on the client, on the <code class="docutils literal notranslate"><span class="pre">SessionState</span></code> the <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code> is created from;</p></li>
+<li><p>on the scheduler, in the session built by
+<code class="docutils literal notranslate"><span class="pre">SchedulerConfig::override_session_builder</span></code>;</p></li>
+<li><p>on the executor, in the <code class="docutils literal notranslate"><span class="pre">BallistaFunctionRegistry</span></code> passed as
+<code class="docutils literal notranslate"><span class="pre">ExecutorProcessConfig::override_function_registry</span></code>.</p></li>
+</ul>
+<p>The scheduler’s REST endpoint for its state, and the scheduler info popup of
+the TUI, no longer report a <code class="docutils literal notranslate"><span class="pre">spark_support</span></code> field.</p>
+</section>
 </section>
 <section id="python-client-changes">
 <h3>Python client changes<a class="headerlink" href="#python-client-changes" title="Link to this heading">#</a></h3>
@@ -966,6 +988,7 @@ unchanged.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#partitionsliceable-covers-any-node-and-embedders-can-register-their-own"><code class="docutils literal notranslate"><span class="pre">PartitionSliceable</span></code> covers any node, and embedders can register their own</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#partition-locations-hold-an-executorendpoint">Partition locations hold an <code class="docutils literal notranslate"><span class="pre">ExecutorEndpoint</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-disable-stage-plan-cache-feature-of-ballista-scheduler-is-removed">The <code class="docutils literal notranslate"><span class="pre">disable-stage-plan-cache</span></code> feature of <code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code> is removed</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-spark-compat-feature-is-removed">The <code class="docutils literal notranslate"><span class="pre">spark-compat</span></code> feature is removed</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#python-client-changes">Python client changes</a><ul class="nav section-nav flex-column">

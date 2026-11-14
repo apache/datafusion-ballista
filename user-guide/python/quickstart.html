@@ -499,6 +499,50 @@ operation which executes a plan, such as <code class="docutils literal notransla
 <code class="docutils literal notranslate"><span class="pre">write_parquet</span></code>, runs on the cluster.</p>
 <p>The scheduler address is only used when a query is executed. Creating a context with
 a wrong address succeeds, and the error is raised by the first query.</p>
+<section id="python-cluster-client">
+<h3>Python Cluster Client<a class="headerlink" href="#python-cluster-client" title="Link to this heading">#</a></h3>
+<p>By default, queries are sent to the scheduler, and their results fetched, by the
+native Rust client. <code class="docutils literal notranslate"><span class="pre">BallistaClient</span></code> is a client written in Python that can be used
+instead, for example to customize how the cluster is reached. It talks to the
+scheduler over gRPC and fetches results over Arrow Flight, and needs the
+<code class="docutils literal notranslate"><span class="pre">python-client</span></code> extra:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"ballista[python-client]"</span>
+</pre></div>
+</div>
+<p>To use it with the context’s address and the <code class="docutils literal notranslate"><span class="pre">ballista.*</span></code> options of <code class="docutils literal notranslate"><span class="pre">config</span></code>, set
+<code class="docutils literal notranslate"><span class="pre">ballista.python.client_impl</span></code> to <code class="docutils literal notranslate"><span class="pre">python</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span>
+    <span class="s2">"df://localhost:50050"</span><span class="p">,</span>
+    <span class="n">config</span><span class="o">=</span><span class="p">{</span><span class="s2">"ballista.python.client_impl"</span><span class="p">:</span> <span class="s2">"python"</span><span class="p">,</span> <span class="s2">"ballista.client.use_tls"</span><span class="p">:</span> <span class="kc">True</span><span class="p">},</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ballista.python.client_impl</span></code> only picks the client. It is not sent to the cluster,
+and can only be set in <code class="docutils literal notranslate"><span class="pre">config</span></code>: <code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">ballista.python.client_impl</span></code> fails.</p>
+<p>To configure the client yourself, create it and pass it as <code class="docutils literal notranslate"><span class="pre">client</span></code>. Its <code class="docutils literal notranslate"><span class="pre">metadata</span></code>
+is sent with every scheduler call, for example for authentication:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaClient</span><span class="p">,</span> <span class="n">BallistaSessionContext</span>
+
+<span class="n">client</span> <span class="o">=</span> <span class="n">BallistaClient</span><span class="p">(</span>
+    <span class="s2">"df://localhost:50050"</span><span class="p">,</span>
+    <span class="n">config</span><span class="o">=</span><span class="p">{</span><span class="s2">"ballista.client.use_tls"</span><span class="p">:</span> <span class="s2">"true"</span><span class="p">},</span>
+    <span class="n">metadata</span><span class="o">=</span><span class="p">[(</span><span class="s2">"authorization"</span><span class="p">,</span> <span class="s2">"Bearer &lt;token&gt;"</span><span class="p">)],</span>
+<span class="p">)</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="n">client</span><span class="o">=</span><span class="n">client</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">BallistaClient</span></code> can also be subclassed, overriding <code class="docutils literal notranslate"><span class="pre">call_metadata</span></code>,
+<code class="docutils literal notranslate"><span class="pre">create_channel</span></code> or <code class="docutils literal notranslate"><span class="pre">create_flight_client</span></code> to change how the scheduler and the
+executors are reached.</p>
+<p>A passed client connects with the <code class="docutils literal notranslate"><span class="pre">ballista.client.use_tls</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ballista.client.grpc_max_message_size</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ballista.client.grpc_http2_keepalive_interval_seconds</span></code> options of its own <code class="docutils literal notranslate"><span class="pre">config</span></code>.
+If the context’s <code class="docutils literal notranslate"><span class="pre">config</span></code> sets them to other values, a <code class="docutils literal notranslate"><span class="pre">UserWarning</span></code> is raised; set
+them on the client instead. The other <code class="docutils literal notranslate"><span class="pre">ballista.*</span></code> options of the context’s <code class="docutils literal notranslate"><span class="pre">config</span></code>
+apply to the client’s queries.</p>
+<p>Without the extra, <code class="docutils literal notranslate"><span class="pre">import</span> <span class="pre">ballista</span></code> and the native client still work. Using
+<code class="docutils literal notranslate"><span class="pre">BallistaClient</span></code> then raises an <code class="docutils literal notranslate"><span class="pre">ImportError</span></code> that names the extra.</p>
+</section>
 </section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
@@ -785,7 +829,10 @@ uses a temporary directory.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#building-from-source">Building from Source</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connecting-to-a-cluster">Connecting to a Cluster</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connecting-to-a-cluster">Connecting to a Cluster</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#python-cluster-client">Python Cluster Client</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#target-partitions">Target Partitions</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ballista-settings">Ballista Settings</a></li>
