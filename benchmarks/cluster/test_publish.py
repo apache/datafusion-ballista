@@ -103,6 +103,104 @@ class WithTableTest(unittest.TestCase):
             publish.with_table("no markers here\n", "new")
 
 
+def comparison(staged, pipelined, dfd):
+    ballista = {
+        "ballista_commit": "d98720804369917151052e1c280a1dae711817fb",
+        "datafusion_version": "55.2.0",
+        "iterations": 2,
+        "warmup": False,
+    }
+    return {
+        "ballista-staged": result("Ballista staged", staged, **ballista),
+        "ballista-pipelined": result("Ballista pipelined", pipelined, **ballista),
+        "datafusion-distributed": result(
+            "DataFusion Distributed",
+            dfd,
+            datafusion_distributed_commit="903502750b99839515aa8af9982f84f9c8c2ee5f",
+            datafusion_version="55",
+            iterations=3,
+            warmup=True,
+        ),
+    }
+
+
+class ComparisonResultsTest(unittest.TestCase):
+    def test_states_where_the_results_came_from_above_the_table(self):
+        self.assertEqual(
+            publish.comparison_results(comparison([4.0], [2.0], [3.0])),
+            "\n".join(
+                [
+                    "Ballista at `d9872080` (DataFusion 55.2.0), mean of 2 iterations "
+                    "including the cold first one; DataFusion Distributed at "
+                    "`90350275` (DataFusion 55), mean of 3 iterations after an "
+                    "untimed warm-up. Times in seconds; lower is better.",
+                    "",
+                    "|     Query | Ballista staged (s) | Ballista pipelined (s) "
+                    "| DataFusion Distributed (s) |",
+                    "| --------: | ------------------: | ---------------------: "
+                    "| -------------------------: |",
+                    "|         1 |                4.00 |                   2.00 "
+                    "|                       3.00 |",
+                    "| **Total** |            **4.00** |               **2.00** "
+                    "|                   **3.00** |",
+                ]
+            ),
+        )
+
+    def test_staged_and_pipelined_from_different_commits_is_an_error(self):
+        inputs = comparison([1.0], [1.0], [1.0])
+        inputs["ballista-staged"]["ballista_commit"] = "0" * 40
+        with self.assertRaises(SystemExit):
+            publish.comparison_results(inputs)
+
+
+class ComparisonFindingsTest(unittest.TestCase):
+    def test_counts_wins_and_isolates_the_widest_gap(self):
+        self.assertEqual(
+            publish.comparison_findings(
+                comparison([8.0, 8.0, 40.0], [4.0, 2.0, 2.0], [2.0, 4.0, 32.0])
+            ),
+            "\n".join(
+                [
+                    "- Pipelined Ballista was faster on 2 of the 3 queries and "
+                    "DataFusion Distributed on 1 (Q1). The geometric mean of the "
+                    "per-query ratios favours pipelined Ballista by about 2.5x.",
+                    "- The totals differ by 30.0 s, of which Q3 accounts for 30.0 s. "
+                    "Excluding Q3, the geometric mean favours pipelined Ballista by "
+                    "about 1.0x.",
+                    "- Staged Ballista took 7.00 times as long as pipelined Ballista "
+                    "in total.",
+                ]
+            ),
+        )
+
+    def test_names_datafusion_distributed_when_it_is_faster_overall(self):
+        self.assertEqual(
+            publish.comparison_findings(
+                comparison([4.0, 4.0, 4.0], [2.0, 4.0, 8.0], [1.0, 2.0, 4.0])
+            ),
+            "\n".join(
+                [
+                    "- Pipelined Ballista was faster on 0 of the 3 queries and "
+                    "DataFusion Distributed on 3 (Q1, Q2, and Q3). The geometric mean "
+                    "of the per-query ratios favours DataFusion Distributed by about "
+                    "2.0x.",
+                    "- The totals differ by 7.0 s, of which Q3 accounts for 4.0 s. "
+                    "Excluding Q3, the geometric mean favours DataFusion Distributed "
+                    "by about 2.0x.",
+                    "- Staged Ballista took 0.86 times as long as pipelined Ballista "
+                    "in total.",
+                ]
+            ),
+        )
+
+    def test_a_result_with_a_failed_query_cannot_be_compared(self):
+        inputs = comparison([1.0], [1.0], [1.0])
+        inputs["datafusion-distributed"]["queries"][0] = {"query": 1, "error": "OOM"}
+        with self.assertRaises(SystemExit):
+            publish.comparison_findings(inputs)
+
+
 class ChartSeriesTest(unittest.TestCase):
     def test_labels_are_built_from_the_labels_in_the_results(self):
         self.assertEqual(
