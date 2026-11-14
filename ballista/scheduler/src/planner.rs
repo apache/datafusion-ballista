@@ -39,7 +39,7 @@ use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::ensure_requirements::EnsureRequirements;
 use datafusion::physical_plan::StatisticsArgs;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
@@ -200,6 +200,35 @@ impl DefaultDistributedPlanner {
                 self.plan_query_stages_internal(job_id, child.clone(), config)?;
             children.push(new_child);
             stages.append(&mut child_stages);
+        }
+
+        // A nested-loop join tracks which build rows matched in memory shared by
+        // its probe partitions, so a join type that emits build rows is only
+        // correct in one task. Give its probe side a one-partition stage of its
+        // own: an inline `CoalescePartitionsExec` would not hold, as
+        // `EnsureRequirements` removes one the join does not require.
+        if let Some(join) = execution_plan.downcast_ref::<NestedLoopJoinExec>()
+            && !collect_left_broadcast_safe(*join.join_type())
+            && children[1]
+                .properties()
+                .output_partitioning()
+                .partition_count()
+                > 1
+        {
+            let probe = Arc::new(CoalescePartitionsExec::new(children[1].clone()));
+            let writer = create_shuffle_writer_with_config(
+                job_id,
+                self.next_stage_id(),
+                probe,
+                None,
+                config,
+            )?;
+            children[1] = create_unresolved_shuffle(writer.as_ref());
+            stages.push(writer);
+            return Ok((
+                replace_children_if_necessary(execution_plan, children)?,
+                stages,
+            ));
         }
 
         // UnionExec: a branch that cannot be restricted away needs its own

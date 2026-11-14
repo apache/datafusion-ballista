@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::physical_optimizer::join_selection::collect_left_broadcast_safe;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::{
@@ -27,7 +28,7 @@ use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
@@ -60,21 +61,18 @@ impl DistributedExchangeRule {
         config: &datafusion::config::ConfigOptions,
     ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
         // DataFusion's null-aware hash join coordinates visited rows and
-        // probe-side NULL state with in-process atomics. A CollectLeft join
-        // running once per probe partition therefore produces duplicate or
-        // incorrect output. This is the final plan-mutating rule, so enforce an
-        // explicit probe-side coalesce here after DataFusion's optimizers have
-        // finished. Add an exchange when the subtree has no existing boundary.
-        if let Some(hash_join) = execution_plan.downcast_ref::<HashJoinExec>()
-            && hash_join.null_aware
-            && *hash_join.partition_mode() == PartitionMode::CollectLeft
-            && hash_join
-                .right()
-                .downcast_ref::<CoalescePartitionsExec>()
-                .is_none()
+        // probe-side NULL state with in-process atomics, and a nested-loop join
+        // tracks matched build rows the same way. Such a join running once per
+        // probe partition therefore produces duplicate or incorrect output.
+        // This is the final plan-mutating rule, so enforce an explicit
+        // probe-side coalesce here after DataFusion's optimizers have finished.
+        // Add an exchange when the subtree has no existing boundary.
+        if probe_needs_one_task(&execution_plan)
+            && let [left, right] = execution_plan.children().as_slice()
+            && right.downcast_ref::<CoalescePartitionsExec>().is_none()
         {
-            let left = hash_join.left().clone();
-            let right = hash_join.right().clone();
+            let left = Arc::clone(left);
+            let right = Arc::clone(right);
             let right = if right.downcast_ref::<ExchangeExec>().is_none()
                 && !matches!(nearest_exchange_status(&right), ExchangeStatus::Unresolved)
             {
@@ -178,6 +176,17 @@ impl DistributedExchangeRule {
             }
         }
         Ok(Transformed::no(execution_plan))
+    }
+}
+
+/// Whether `plan` is a join that must see every probe partition in one task.
+fn probe_needs_one_task(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() {
+        hash_join.null_aware && *hash_join.partition_mode() == PartitionMode::CollectLeft
+    } else if let Some(join) = plan.downcast_ref::<NestedLoopJoinExec>() {
+        !collect_left_broadcast_safe(*join.join_type())
+    } else {
+        false
     }
 }
 
@@ -475,6 +484,40 @@ mod tests {
             CoalescePartitionsExec
               ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
                 StatisticsExec: col_count=1, row_count=Absent
+        ");
+    }
+
+    #[test]
+    fn nested_loop_join_coalesces_probe_only_when_it_emits_build_rows() {
+        use datafusion::common::JoinType;
+
+        let join = |join_type| {
+            let join = NestedLoopJoinExec::try_new(
+                leaf_exec(),
+                leaf_exec(),
+                None,
+                &join_type,
+                None,
+            )
+            .unwrap();
+            DistributedExchangeRule::default()
+                .optimize(Arc::new(join), &config())
+                .unwrap()
+        };
+
+        assert_plan!(join(JoinType::LeftAnti).as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
+          NestedLoopJoinExec: join_type=LeftAnti
+            StatisticsExec: col_count=1, row_count=Absent
+            CoalescePartitionsExec
+              ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
+                StatisticsExec: col_count=1, row_count=Absent
+        ");
+        assert_plan!(join(JoinType::Inner).as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=0, stage_id=pending, stage_resolved=false
+          NestedLoopJoinExec: join_type=Inner
+            StatisticsExec: col_count=1, row_count=Absent
+            StatisticsExec: col_count=1, row_count=Absent
         ");
     }
 
