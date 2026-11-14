@@ -109,25 +109,22 @@ impl PhysicalOptimizerRule for ChaosCreatingRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::aqe::test::unknown_statistics_exec;
     use ballista_core::assert_plan;
     use ballista_core::config::BallistaConfig;
     use ballista_core::execution_plans::ChaosExec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::common::{ColumnStatistics, Statistics};
     use datafusion::config::{ConfigOptions, ExtensionOptions};
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-    use datafusion::physical_plan::test::exec::StatisticsExec;
     use std::sync::Arc;
 
     fn leaf_exec() -> Arc<dyn ExecutionPlan> {
-        let schema = Schema::new(vec![Field::new("a", DataType::Int32, true)]);
-        let stats = Statistics {
-            num_rows: Default::default(),
-            total_byte_size: Default::default(),
-            column_statistics: vec![ColumnStatistics::new_unknown()],
-        };
-        Arc::new(StatisticsExec::new(stats, schema))
+        unknown_statistics_exec(&Schema::new(vec![Field::new(
+            "a",
+            DataType::Int32,
+            true,
+        )]))
     }
 
     fn chaos_config(probability: f64, seed: u64) -> ConfigOptions {

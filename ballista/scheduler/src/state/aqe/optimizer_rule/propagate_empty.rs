@@ -379,9 +379,11 @@ pub fn build_null_padded_projection(
 mod tests {
     use super::*;
 
+    use crate::state::aqe::test::stats_table::sized_statistics;
+    use crate::state::aqe::test::{statistics_exec, unknown_statistics_exec};
     use datafusion::{
         arrow::datatypes::{DataType, Field, Schema},
-        common::{ColumnStatistics, JoinType, NullEquality, ScalarValue, Statistics},
+        common::{JoinType, NullEquality, ScalarValue},
         physical_expr::aggregate::AggregateExprBuilder,
         physical_plan::{
             aggregates::{AggregateMode, PhysicalGroupBy},
@@ -397,36 +399,21 @@ mod tests {
     }
 
     pub fn empty_stats_exec() -> Arc<dyn ExecutionPlan> {
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Exact(0),
-                total_byte_size: Precision::Exact(0),
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("a", DataType::Int32, true)]),
-        ))
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, true)]);
+        statistics_exec(sized_statistics(&schema, 0, 0), &schema)
     }
 
     pub fn non_empty_stats_exec() -> Arc<dyn ExecutionPlan> {
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Exact(100),
-                total_byte_size: Precision::Exact(800),
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("a", DataType::Int32, true)]),
-        ))
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, true)]);
+        statistics_exec(sized_statistics(&schema, 100, 800), &schema)
     }
 
     pub fn unknown_stats_exec() -> Arc<dyn ExecutionPlan> {
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Absent,
-                total_byte_size: Precision::Absent,
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("a", DataType::Int32, true)]),
-        ))
+        unknown_statistics_exec(&Schema::new(vec![Field::new(
+            "a",
+            DataType::Int32,
+            true,
+        )]))
     }
 
     pub fn join_on() -> Vec<(
@@ -1028,14 +1015,8 @@ mod tests {
     }
 
     fn non_empty_two_col_stats_exec() -> Arc<dyn ExecutionPlan> {
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Exact(100),
-                total_byte_size: Precision::Exact(800),
-                column_statistics: vec![ColumnStatistics::new_unknown(); 2],
-            },
-            two_col_schema(),
-        ))
+        let schema = two_col_schema();
+        statistics_exec(sized_statistics(&schema, 100, 800), &schema)
     }
 
     fn hash_join_with_projection(

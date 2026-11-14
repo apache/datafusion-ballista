@@ -703,79 +703,43 @@ mod test {
     use futures::StreamExt;
     use tokio::sync::Barrier;
 
+    fn job_state() -> InMemoryJobState {
+        InMemoryJobState::new(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        )
+    }
+
+    fn executor_metadata() -> ExecutorMetadata {
+        ExecutorMetadata {
+            id: "id123".to_string(),
+            host: "executor-a".to_string(),
+            port: 50055,
+            grpc_port: 50050,
+            specification: ExecutorSpecification::default().with_vcores(2),
+            os_info: ExecutorOperatingSystemSpecification::default(),
+        }
+    }
+
     #[tokio::test]
     async fn test_in_memory_job_lifecycle() -> Result<()> {
-        test_job_lifecycle(
-            InMemoryJobState::new(
-                "",
-                Arc::new(default_session_builder),
-                Arc::new(default_config_producer),
-            ),
-            Box::new(test_aggregation_plan(4).await),
-        )
-        .await?;
-        test_job_lifecycle(
-            InMemoryJobState::new(
-                "",
-                Arc::new(default_session_builder),
-                Arc::new(default_config_producer),
-            ),
-            Box::new(test_two_aggregations_plan(4).await),
-        )
-        .await?;
-        test_job_lifecycle(
-            InMemoryJobState::new(
-                "",
-                Arc::new(default_session_builder),
-                Arc::new(default_config_producer),
-            ),
-            Box::new(test_join_plan(4).await),
-        )
-        .await?;
+        test_job_lifecycle(job_state(), Box::new(test_aggregation_plan(4).await)).await?;
+        test_job_lifecycle(job_state(), Box::new(test_two_aggregations_plan(4).await))
+            .await?;
+        test_job_lifecycle(job_state(), Box::new(test_join_plan(4).await)).await?;
 
         Ok(())
     }
 
     #[tokio::test]
     async fn test_in_memory_job_planning_failure() -> Result<()> {
-        test_job_planning_failure(
-            InMemoryJobState::new(
-                "",
-                Arc::new(default_session_builder),
-                Arc::new(default_config_producer),
-            ),
-            Box::new(test_aggregation_plan(4).await),
-        )
-        .await?;
-        test_job_planning_failure(
-            InMemoryJobState::new(
-                "",
-                Arc::new(default_session_builder),
-                Arc::new(default_config_producer),
-            ),
-            Box::new(test_two_aggregations_plan(4).await),
-        )
-        .await?;
-        test_job_planning_failure(
-            InMemoryJobState::new(
-                "",
-                Arc::new(default_session_builder),
-                Arc::new(default_config_producer),
-            ),
-            Box::new(test_join_plan(4).await),
-        )
-        .await?;
-
-        Ok(())
+        test_job_planning_failure(job_state(), &JobId::from("job")).await
     }
 
     #[tokio::test]
     async fn test_in_memory_job_planning_failure_notification() -> Result<()> {
-        let state = InMemoryJobState::new(
-            "",
-            Arc::new(default_session_builder),
-            Arc::new(default_config_producer),
-        );
+        let state = job_state();
         let mut events = state.job_state_events().await?;
         let job_id = JobId::from("job-1");
 
@@ -806,11 +770,7 @@ mod test {
 
     #[tokio::test]
     async fn test_in_memory_job_notification() -> Result<()> {
-        let state = InMemoryJobState::new(
-            "",
-            Arc::new(default_session_builder),
-            Arc::new(default_config_producer),
-        );
+        let state = job_state();
 
         let event_stream = state.job_state_events().await?;
         let barrier = Arc::new(Barrier::new(2));
@@ -848,14 +808,7 @@ mod test {
 
         let mut event_stream = cluster_state.cluster_state_events().await?;
 
-        let metadata = ExecutorMetadata {
-            id: "id123".to_string(),
-            host: "".to_string(),
-            port: 50055,
-            grpc_port: 50050,
-            specification: ExecutorSpecification::default().with_vcores(2),
-            os_info: ExecutorOperatingSystemSpecification::default(),
-        };
+        let metadata = executor_metadata();
 
         cluster_state
             .save_executor_metadata(metadata.clone())
@@ -895,14 +848,7 @@ mod test {
     async fn register_executor_rejects_duplicate_id() -> Result<()> {
         let cluster_state = InMemoryClusterState::default();
 
-        let metadata = ExecutorMetadata {
-            id: "id123".to_string(),
-            host: "executor-a".to_string(),
-            port: 50055,
-            grpc_port: 50050,
-            specification: ExecutorSpecification::default().with_vcores(2),
-            os_info: ExecutorOperatingSystemSpecification::default(),
-        };
+        let metadata = executor_metadata();
         let executor_data = ExecutorData {
             executor_id: metadata.id.clone(),
             total_vcores: 2,
@@ -931,14 +877,7 @@ mod test {
     async fn save_executor_metadata_rejects_duplicate_id() -> Result<()> {
         let cluster_state = InMemoryClusterState::default();
 
-        let metadata = ExecutorMetadata {
-            id: "id123".to_string(),
-            host: "executor-a".to_string(),
-            port: 50055,
-            grpc_port: 50050,
-            specification: ExecutorSpecification::default().with_vcores(2),
-            os_info: ExecutorOperatingSystemSpecification::default(),
-        };
+        let metadata = executor_metadata();
 
         cluster_state
             .save_executor_metadata(metadata.clone())
@@ -966,11 +905,7 @@ mod test {
 
     #[tokio::test]
     async fn test_in_memory_session_notification() -> Result<()> {
-        let state = InMemoryJobState::new(
-            "",
-            Arc::new(default_session_builder),
-            Arc::new(default_config_producer),
-        );
+        let state = job_state();
 
         let event_stream = state.job_state_events().await?;
 

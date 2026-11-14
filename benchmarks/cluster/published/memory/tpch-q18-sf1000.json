@@ -1,0 +1,659 @@
+{
+  "benchmark": "tpch",
+  "query": 18,
+  "scale_factor": 1000,
+  "iterations": 2,
+  "dates": "2026-11-11 to 2026-11-12",
+  "cluster": "Kubernetes (k3s) on two servers with 32 CPU cores and 125 GiB each; 2 executors of 16 CPUs, one per server; Parquet on each server's local disk",
+  "versions": {
+    "ballista": "d98720804369917151052e1c280a1dae711817fb",
+    "spark": "4.1.3",
+    "comet": "1.2.0"
+  },
+  "configs": [
+    {
+      "name": "ballista:pool=0.7",
+      "engine": "ballista",
+      "label": "Ballista",
+      "split": "memory pool 70% (default)",
+      "runs": [
+        {
+          "executor_memory_gib": 64,
+          "status": "ok",
+          "memory_pool_gib": 44.8,
+          "elapsed": [
+            136.9,
+            129.11
+          ],
+          "mean": 133.01,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 34.48
+        },
+        {
+          "executor_memory_gib": 48,
+          "status": "ok",
+          "memory_pool_gib": 33.6,
+          "elapsed": [
+            129.49,
+            130.8
+          ],
+          "mean": 130.14,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 18.27
+        },
+        {
+          "executor_memory_gib": 32,
+          "status": "ok",
+          "memory_pool_gib": 22.4,
+          "elapsed": [
+            127.8,
+            128.65
+          ],
+          "mean": 128.22,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 16.43
+        },
+        {
+          "executor_memory_gib": 24,
+          "status": "ok",
+          "memory_pool_gib": 16.8,
+          "elapsed": [
+            127.57,
+            130.34
+          ],
+          "mean": 128.95,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 9.16
+        },
+        {
+          "executor_memory_gib": 16,
+          "status": "ok",
+          "memory_pool_gib": 11.2,
+          "elapsed": [
+            124.89,
+            125.91
+          ],
+          "mean": 125.4,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 10.11
+        },
+        {
+          "executor_memory_gib": 12,
+          "status": "ok",
+          "memory_pool_gib": 8.4,
+          "elapsed": [
+            129.69,
+            127.53
+          ],
+          "mean": 128.6,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 7.99
+        },
+        {
+          "executor_memory_gib": 8,
+          "status": "ok",
+          "memory_pool_gib": 5.6,
+          "elapsed": [
+            132.18,
+            130.9
+          ],
+          "mean": 131.54,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 6.24
+        },
+        {
+          "executor_memory_gib": 6,
+          "status": "ok",
+          "memory_pool_gib": 4.2,
+          "elapsed": [
+            366.22,
+            360.0
+          ],
+          "mean": 363.11,
+          "executor_oom_kills": 2,
+          "max_anon_gib": 5.9
+        },
+        {
+          "executor_memory_gib": 5,
+          "status": "timeout",
+          "memory_pool_gib": 3.5,
+          "executor_oom_kills": 2,
+          "max_anon_gib": 4.33
+        },
+        {
+          "executor_memory_gib": 4,
+          "status": "timeout",
+          "memory_pool_gib": 2.8,
+          "executor_oom_kills": 2,
+          "max_anon_gib": 3.98
+        }
+      ]
+    },
+    {
+      "name": "spark:off=0,ovh=0.1",
+      "engine": "spark",
+      "label": "Spark, on-heap",
+      "split": "heap 90%, overhead 10%",
+      "runs": [
+        {
+          "executor_memory_gib": 64,
+          "status": "ok",
+          "heap_gib": 57.6,
+          "offheap_gib": 0.0,
+          "overhead_gib": 6.4,
+          "elapsed": [
+            328.35,
+            345.87
+          ],
+          "mean": 337.11,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 58.58
+        },
+        {
+          "executor_memory_gib": 48,
+          "status": "ok",
+          "heap_gib": 43.2,
+          "offheap_gib": 0.0,
+          "overhead_gib": 4.8,
+          "elapsed": [
+            339.37,
+            344.24
+          ],
+          "mean": 341.81,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 44.08
+        },
+        {
+          "executor_memory_gib": 32,
+          "status": "ok",
+          "heap_gib": 28.8,
+          "offheap_gib": 0.0,
+          "overhead_gib": 3.2,
+          "elapsed": [
+            328.01,
+            334.32
+          ],
+          "mean": 331.16,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 30.49
+        },
+        {
+          "executor_memory_gib": 24,
+          "status": "ok",
+          "heap_gib": 21.6,
+          "offheap_gib": 0.0,
+          "overhead_gib": 2.4,
+          "elapsed": [
+            322.26,
+            337.43
+          ],
+          "mean": 329.85,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 23.29
+        },
+        {
+          "executor_memory_gib": 20,
+          "status": "ok",
+          "heap_gib": 18.0,
+          "offheap_gib": 0.0,
+          "overhead_gib": 2.0,
+          "elapsed": [
+            326.78,
+            341.33
+          ],
+          "mean": 334.06,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 19.68
+        },
+        {
+          "executor_memory_gib": 18,
+          "status": "ok",
+          "heap_gib": 16.2,
+          "offheap_gib": 0.0,
+          "overhead_gib": 1.8,
+          "elapsed": [
+            330.08,
+            342.37
+          ],
+          "mean": 336.23,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 17.76
+        },
+        {
+          "executor_memory_gib": 16,
+          "status": "oom-killed",
+          "heap_gib": 14.4,
+          "offheap_gib": 0.0,
+          "overhead_gib": 1.6,
+          "executor_oom_kills": 4,
+          "max_anon_gib": 15.82
+        }
+      ]
+    },
+    {
+      "name": "spark:off=0,ovh=0.2",
+      "engine": "spark",
+      "label": "Spark, on-heap, 2x overhead",
+      "split": "heap 80%, overhead 20%",
+      "runs": [
+        {
+          "executor_memory_gib": 24,
+          "status": "ok",
+          "heap_gib": 19.2,
+          "offheap_gib": 0.0,
+          "overhead_gib": 4.8,
+          "elapsed": [
+            321.57,
+            342.17
+          ],
+          "mean": 331.87,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 20.89
+        },
+        {
+          "executor_memory_gib": 20,
+          "status": "ok",
+          "heap_gib": 16.0,
+          "offheap_gib": 0.0,
+          "overhead_gib": 4.0,
+          "elapsed": [
+            333.09,
+            345.03
+          ],
+          "mean": 339.06,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 17.56
+        },
+        {
+          "executor_memory_gib": 16,
+          "status": "ok",
+          "heap_gib": 12.8,
+          "offheap_gib": 0.0,
+          "overhead_gib": 3.2,
+          "elapsed": [
+            346.15,
+            340.65
+          ],
+          "mean": 343.4,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 14.56
+        },
+        {
+          "executor_memory_gib": 12,
+          "status": "ok",
+          "heap_gib": 9.6,
+          "offheap_gib": 0.0,
+          "overhead_gib": 2.4,
+          "elapsed": [
+            393.29,
+            419.7
+          ],
+          "mean": 406.5,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 11.57
+        },
+        {
+          "executor_memory_gib": 8,
+          "status": "ok",
+          "heap_gib": 6.4,
+          "offheap_gib": 0.0,
+          "overhead_gib": 1.6,
+          "elapsed": [
+            723.26,
+            664.45
+          ],
+          "mean": 693.86,
+          "executor_oom_kills": 4,
+          "max_anon_gib": 7.93
+        }
+      ]
+    },
+    {
+      "name": "spark:off=0.5,ovh=0.1",
+      "engine": "spark",
+      "label": "Spark, 50% off-heap",
+      "split": "heap 45%, off-heap 45%, overhead 10%",
+      "runs": [
+        {
+          "executor_memory_gib": 64,
+          "status": "ok",
+          "heap_gib": 28.8,
+          "offheap_gib": 28.8,
+          "overhead_gib": 6.4,
+          "elapsed": [
+            331.98,
+            327.8
+          ],
+          "mean": 329.89,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 35.77
+        },
+        {
+          "executor_memory_gib": 48,
+          "status": "ok",
+          "heap_gib": 21.6,
+          "offheap_gib": 21.6,
+          "overhead_gib": 4.8,
+          "elapsed": [
+            330.95,
+            329.58
+          ],
+          "mean": 330.26,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 31.72
+        },
+        {
+          "executor_memory_gib": 32,
+          "status": "ok",
+          "heap_gib": 14.4,
+          "offheap_gib": 14.4,
+          "overhead_gib": 3.2,
+          "elapsed": [
+            335.93,
+            332.61
+          ],
+          "mean": 334.27,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 20.68
+        },
+        {
+          "executor_memory_gib": 24,
+          "status": "ok",
+          "heap_gib": 10.8,
+          "offheap_gib": 10.8,
+          "overhead_gib": 2.4,
+          "elapsed": [
+            340.42,
+            343.89
+          ],
+          "mean": 342.15,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 17.22
+        },
+        {
+          "executor_memory_gib": 16,
+          "status": "ok",
+          "heap_gib": 7.2,
+          "offheap_gib": 7.2,
+          "overhead_gib": 1.6,
+          "elapsed": [
+            359.04,
+            347.83
+          ],
+          "mean": 353.43,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 14.6
+        },
+        {
+          "executor_memory_gib": 12,
+          "status": "ok",
+          "heap_gib": 5.4,
+          "offheap_gib": 5.4,
+          "overhead_gib": 1.2,
+          "elapsed": [
+            391.03,
+            383.61
+          ],
+          "mean": 387.32,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 10.62
+        },
+        {
+          "executor_memory_gib": 10,
+          "status": "ok",
+          "heap_gib": 4.5,
+          "offheap_gib": 4.5,
+          "overhead_gib": 1.0,
+          "elapsed": [
+            600.58,
+            401.91
+          ],
+          "mean": 501.25,
+          "executor_oom_kills": 2,
+          "max_anon_gib": 9.82
+        },
+        {
+          "executor_memory_gib": 8,
+          "status": "oom-killed",
+          "heap_gib": 3.5,
+          "offheap_gib": 3.5,
+          "overhead_gib": 1.0,
+          "executor_oom_kills": 6,
+          "max_anon_gib": 7.71
+        }
+      ]
+    },
+    {
+      "name": "comet:off=0.5,ovh=0.1",
+      "engine": "comet",
+      "label": "Spark + Comet, 50% off-heap",
+      "split": "heap 45%, off-heap 45%, overhead 10%",
+      "runs": [
+        {
+          "executor_memory_gib": 64,
+          "status": "ok",
+          "heap_gib": 28.8,
+          "offheap_gib": 28.8,
+          "overhead_gib": 6.4,
+          "elapsed": [
+            150.76,
+            146.24
+          ],
+          "mean": 148.5,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 32.19
+        },
+        {
+          "executor_memory_gib": 48,
+          "status": "ok",
+          "heap_gib": 21.6,
+          "offheap_gib": 21.6,
+          "overhead_gib": 4.8,
+          "elapsed": [
+            155.36,
+            151.99
+          ],
+          "mean": 153.68,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 27.57
+        },
+        {
+          "executor_memory_gib": 32,
+          "status": "ok",
+          "heap_gib": 14.4,
+          "offheap_gib": 14.4,
+          "overhead_gib": 3.2,
+          "elapsed": [
+            160.04,
+            155.95
+          ],
+          "mean": 158.0,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 24.9
+        },
+        {
+          "executor_memory_gib": 24,
+          "status": "ok",
+          "heap_gib": 10.8,
+          "offheap_gib": 10.8,
+          "overhead_gib": 2.4,
+          "elapsed": [
+            163.86,
+            155.64
+          ],
+          "mean": 159.75,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 21.43
+        },
+        {
+          "executor_memory_gib": 22,
+          "status": "oom-killed",
+          "heap_gib": 9.9,
+          "offheap_gib": 9.9,
+          "overhead_gib": 2.2,
+          "executor_oom_kills": 4,
+          "max_anon_gib": 21.69
+        },
+        {
+          "executor_memory_gib": 20,
+          "status": "oom-killed",
+          "heap_gib": 9.0,
+          "offheap_gib": 9.0,
+          "overhead_gib": 2.0,
+          "executor_oom_kills": 5,
+          "max_anon_gib": 18.47
+        },
+        {
+          "executor_memory_gib": 16,
+          "status": "oom-killed",
+          "heap_gib": 7.2,
+          "offheap_gib": 7.2,
+          "overhead_gib": 1.6,
+          "executor_oom_kills": 5,
+          "max_anon_gib": 15.88
+        }
+      ]
+    },
+    {
+      "name": "comet:off=0.75,ovh=0.1",
+      "engine": "comet",
+      "label": "Spark + Comet, 75% off-heap",
+      "split": "heap 22.5%, off-heap 67.5%, overhead 10%",
+      "runs": [
+        {
+          "executor_memory_gib": 64,
+          "status": "ok",
+          "heap_gib": 14.4,
+          "offheap_gib": 43.2,
+          "overhead_gib": 6.4,
+          "elapsed": [
+            145.74,
+            144.86
+          ],
+          "mean": 145.3,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 24.12
+        },
+        {
+          "executor_memory_gib": 48,
+          "status": "ok",
+          "heap_gib": 10.8,
+          "offheap_gib": 32.4,
+          "overhead_gib": 4.8,
+          "elapsed": [
+            150.66,
+            147.51
+          ],
+          "mean": 149.09,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 21.53
+        },
+        {
+          "executor_memory_gib": 32,
+          "status": "ok",
+          "heap_gib": 7.2,
+          "offheap_gib": 21.6,
+          "overhead_gib": 3.2,
+          "elapsed": [
+            153.69,
+            150.81
+          ],
+          "mean": 152.25,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 19.81
+        },
+        {
+          "executor_memory_gib": 24,
+          "status": "ok",
+          "heap_gib": 5.4,
+          "offheap_gib": 16.2,
+          "overhead_gib": 2.4,
+          "elapsed": [
+            156.09,
+            150.44
+          ],
+          "mean": 153.26,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 18.67
+        },
+        {
+          "executor_memory_gib": 20,
+          "status": "ok",
+          "heap_gib": 4.5,
+          "offheap_gib": 13.5,
+          "overhead_gib": 2.0,
+          "elapsed": [
+            148.5,
+            151.69
+          ],
+          "mean": 150.1,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 18.52
+        },
+        {
+          "executor_memory_gib": 18,
+          "status": "oom-killed",
+          "heap_gib": 4.05,
+          "offheap_gib": 12.15,
+          "overhead_gib": 1.8,
+          "executor_oom_kills": 5,
+          "max_anon_gib": 17.65
+        },
+        {
+          "executor_memory_gib": 16,
+          "status": "oom-killed",
+          "heap_gib": 3.6,
+          "offheap_gib": 10.8,
+          "overhead_gib": 1.6,
+          "executor_oom_kills": 5,
+          "max_anon_gib": 15.84
+        }
+      ]
+    },
+    {
+      "name": "comet:off=0.75,ovh=0.2",
+      "engine": "comet",
+      "label": "Spark + Comet, 75% off-heap, 2x overhead",
+      "split": "heap 20%, off-heap 60%, overhead 20%",
+      "runs": [
+        {
+          "executor_memory_gib": 24,
+          "status": "ok",
+          "heap_gib": 4.8,
+          "offheap_gib": 14.4,
+          "overhead_gib": 4.8,
+          "elapsed": [
+            157.95,
+            159.35
+          ],
+          "mean": 158.65,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 21.94
+        },
+        {
+          "executor_memory_gib": 22,
+          "status": "ok",
+          "heap_gib": 4.4,
+          "offheap_gib": 13.2,
+          "overhead_gib": 4.4,
+          "elapsed": [
+            155.53,
+            193.22
+          ],
+          "mean": 174.38,
+          "executor_oom_kills": 0,
+          "max_anon_gib": 18.23
+        },
+        {
+          "executor_memory_gib": 20,
+          "status": "oom-killed",
+          "heap_gib": 4.0,
+          "offheap_gib": 12.0,
+          "overhead_gib": 4.0,
+          "executor_oom_kills": 4,
+          "max_anon_gib": 19.53
+        }
+      ]
+    }
+  ]
+}

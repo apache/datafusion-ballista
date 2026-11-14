@@ -37,7 +37,6 @@ if TYPE_CHECKING:
         BallistaClient,
         BallistaJob,
         BallistaJobError,
-        BallistaPythonSessionContext,
     )
 
 __version__ = importlib_metadata.version(__name__)
@@ -52,7 +51,6 @@ _CLIENT_EXPORTS = frozenset(
         "BallistaClient",
         "BallistaJob",
         "BallistaJobError",
-        "BallistaPythonSessionContext",
     ]
 )
 
@@ -83,7 +81,6 @@ __all__ = [
     "BallistaExecutor",
     "BallistaSessionConfig",
     "BallistaSessionContext",
-    "BallistaPythonSessionContext",
     "BallistaClient",
     "BallistaJob",
     "BallistaJobError",

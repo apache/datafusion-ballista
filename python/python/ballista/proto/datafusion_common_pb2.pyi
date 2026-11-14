@@ -143,10 +143,12 @@ METRIC_CATEGORY_TIMING: MetricCategory
 METRIC_CATEGORY_UNCATEGORIZED: MetricCategory
 
 class ColumnRelation(_message.Message):
-    __slots__ = ("relation",)
+    __slots__ = ("relation", "parts")
     RELATION_FIELD_NUMBER: _ClassVar[int]
+    PARTS_FIELD_NUMBER: _ClassVar[int]
     relation: str
-    def __init__(self, relation: _Optional[str] = ...) -> None: ...
+    parts: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, relation: _Optional[str] = ..., parts: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class Column(_message.Message):
     __slots__ = ("name", "relation")
@@ -707,13 +709,15 @@ class EmptyMessage(_message.Message):
     def __init__(self) -> None: ...
 
 class JsonWriterOptions(_message.Message):
-    __slots__ = ("compression",)
+    __slots__ = ("compression", "compression_level")
     COMPRESSION_FIELD_NUMBER: _ClassVar[int]
+    COMPRESSION_LEVEL_FIELD_NUMBER: _ClassVar[int]
     compression: CompressionTypeVariant
-    def __init__(self, compression: _Optional[_Union[CompressionTypeVariant, str]] = ...) -> None: ...
+    compression_level: int
+    def __init__(self, compression: _Optional[_Union[CompressionTypeVariant, str]] = ..., compression_level: _Optional[int] = ...) -> None: ...
 
 class CsvWriterOptions(_message.Message):
-    __slots__ = ("compression", "delimiter", "has_header", "date_format", "datetime_format", "timestamp_format", "time_format", "null_value", "quote", "escape", "double_quote", "quote_style", "ignore_leading_whitespace", "ignore_trailing_whitespace")
+    __slots__ = ("compression", "delimiter", "has_header", "date_format", "datetime_format", "timestamp_format", "time_format", "null_value", "quote", "escape", "double_quote", "quote_style", "ignore_leading_whitespace", "ignore_trailing_whitespace", "compression_level", "timestamp_tz_format", "terminator")
     COMPRESSION_FIELD_NUMBER: _ClassVar[int]
     DELIMITER_FIELD_NUMBER: _ClassVar[int]
     HAS_HEADER_FIELD_NUMBER: _ClassVar[int]
@@ -728,6 +732,9 @@ class CsvWriterOptions(_message.Message):
     QUOTE_STYLE_FIELD_NUMBER: _ClassVar[int]
     IGNORE_LEADING_WHITESPACE_FIELD_NUMBER: _ClassVar[int]
     IGNORE_TRAILING_WHITESPACE_FIELD_NUMBER: _ClassVar[int]
+    COMPRESSION_LEVEL_FIELD_NUMBER: _ClassVar[int]
+    TIMESTAMP_TZ_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    TERMINATOR_FIELD_NUMBER: _ClassVar[int]
     compression: CompressionTypeVariant
     delimiter: str
     has_header: bool
@@ -742,7 +749,10 @@ class CsvWriterOptions(_message.Message):
     quote_style: CsvQuoteStyle
     ignore_leading_whitespace: bool
     ignore_trailing_whitespace: bool
-    def __init__(self, compression: _Optional[_Union[CompressionTypeVariant, str]] = ..., delimiter: _Optional[str] = ..., has_header: _Optional[bool] = ..., date_format: _Optional[str] = ..., datetime_format: _Optional[str] = ..., timestamp_format: _Optional[str] = ..., time_format: _Optional[str] = ..., null_value: _Optional[str] = ..., quote: _Optional[str] = ..., escape: _Optional[str] = ..., double_quote: _Optional[bool] = ..., quote_style: _Optional[_Union[CsvQuoteStyle, str]] = ..., ignore_leading_whitespace: _Optional[bool] = ..., ignore_trailing_whitespace: _Optional[bool] = ...) -> None: ...
+    compression_level: int
+    timestamp_tz_format: str
+    terminator: bytes
+    def __init__(self, compression: _Optional[_Union[CompressionTypeVariant, str]] = ..., delimiter: _Optional[str] = ..., has_header: _Optional[bool] = ..., date_format: _Optional[str] = ..., datetime_format: _Optional[str] = ..., timestamp_format: _Optional[str] = ..., time_format: _Optional[str] = ..., null_value: _Optional[str] = ..., quote: _Optional[str] = ..., escape: _Optional[str] = ..., double_quote: _Optional[bool] = ..., quote_style: _Optional[_Union[CsvQuoteStyle, str]] = ..., ignore_leading_whitespace: _Optional[bool] = ..., ignore_trailing_whitespace: _Optional[bool] = ..., compression_level: _Optional[int] = ..., timestamp_tz_format: _Optional[str] = ..., terminator: _Optional[bytes] = ...) -> None: ...
 
 class CsvOptions(_message.Message):
     __slots__ = ("has_header", "delimiter", "quote", "escape", "compression", "schema_infer_max_rec", "date_format", "datetime_format", "timestamp_format", "timestamp_tz_format", "time_format", "null_value", "null_regex", "comment", "double_quote", "newlines_in_values", "terminator", "truncated_rows", "compression_level", "quote_style", "ignore_leading_whitespace", "ignore_trailing_whitespace")
@@ -847,7 +857,7 @@ class ParquetColumnOptions(_message.Message):
     def __init__(self, bloom_filter_enabled: _Optional[bool] = ..., encoding: _Optional[str] = ..., dictionary_enabled: _Optional[bool] = ..., compression: _Optional[str] = ..., statistics_enabled: _Optional[str] = ..., bloom_filter_fpp: _Optional[float] = ..., bloom_filter_ndv: _Optional[int] = ...) -> None: ...
 
 class ParquetOptions(_message.Message):
-    __slots__ = ("enable_page_index", "pruning", "skip_metadata", "pushdown_filters", "reorder_filters", "force_filter_selections", "data_pagesize_limit", "write_batch_size", "writer_version", "allow_single_file_parallelism", "maximum_parallel_row_group_writers", "maximum_buffered_record_batches_per_stream", "bloom_filter_on_read", "bloom_filter_on_write", "schema_force_view_types", "binary_as_string", "skip_arrow_metadata", "metadata_size_hint", "compression", "dictionary_enabled", "statistics_enabled", "column_index_truncate_length", "statistics_truncate_length", "encoding", "bloom_filter_fpp", "bloom_filter_ndv", "dictionary_page_size_limit", "data_page_row_count_limit", "max_row_group_size", "max_in_list_size", "created_by", "coerce_int96", "max_predicate_cache_size", "max_row_group_bytes", "content_defined_chunking", "coerce_int96_tz")
+    __slots__ = ("enable_page_index", "pruning", "skip_metadata", "pushdown_filters", "reorder_filters", "force_filter_selections", "data_pagesize_limit", "write_batch_size", "writer_version", "allow_single_file_parallelism", "maximum_parallel_row_group_writers", "maximum_buffered_record_batches_per_stream", "bloom_filter_on_read", "bloom_filter_on_write", "schema_force_view_types", "binary_as_string", "skip_arrow_metadata", "write_row_group_number_distinct_values", "metadata_size_hint", "compression", "dictionary_enabled", "statistics_enabled", "column_index_truncate_length", "statistics_truncate_length", "encoding", "bloom_filter_fpp", "bloom_filter_ndv", "dictionary_page_size_limit", "data_page_row_count_limit", "max_row_group_size", "max_in_list_size", "row_group_range_assignment", "enable_rle_to_dictionary", "created_by", "coerce_int96", "max_predicate_cache_size", "max_row_group_bytes", "content_defined_chunking", "coerce_int96_tz")
     ENABLE_PAGE_INDEX_FIELD_NUMBER: _ClassVar[int]
     PRUNING_FIELD_NUMBER: _ClassVar[int]
     SKIP_METADATA_FIELD_NUMBER: _ClassVar[int]
@@ -865,6 +875,7 @@ class ParquetOptions(_message.Message):
     SCHEMA_FORCE_VIEW_TYPES_FIELD_NUMBER: _ClassVar[int]
     BINARY_AS_STRING_FIELD_NUMBER: _ClassVar[int]
     SKIP_ARROW_METADATA_FIELD_NUMBER: _ClassVar[int]
+    WRITE_ROW_GROUP_NUMBER_DISTINCT_VALUES_FIELD_NUMBER: _ClassVar[int]
     METADATA_SIZE_HINT_FIELD_NUMBER: _ClassVar[int]
     COMPRESSION_FIELD_NUMBER: _ClassVar[int]
     DICTIONARY_ENABLED_FIELD_NUMBER: _ClassVar[int]
@@ -878,6 +889,8 @@ class ParquetOptions(_message.Message):
     DATA_PAGE_ROW_COUNT_LIMIT_FIELD_NUMBER: _ClassVar[int]
     MAX_ROW_GROUP_SIZE_FIELD_NUMBER: _ClassVar[int]
     MAX_IN_LIST_SIZE_FIELD_NUMBER: _ClassVar[int]
+    ROW_GROUP_RANGE_ASSIGNMENT_FIELD_NUMBER: _ClassVar[int]
+    ENABLE_RLE_TO_DICTIONARY_FIELD_NUMBER: _ClassVar[int]
     CREATED_BY_FIELD_NUMBER: _ClassVar[int]
     COERCE_INT96_FIELD_NUMBER: _ClassVar[int]
     MAX_PREDICATE_CACHE_SIZE_FIELD_NUMBER: _ClassVar[int]
@@ -901,6 +914,7 @@ class ParquetOptions(_message.Message):
     schema_force_view_types: bool
     binary_as_string: bool
     skip_arrow_metadata: bool
+    write_row_group_number_distinct_values: bool
     metadata_size_hint: int
     compression: str
     dictionary_enabled: bool
@@ -914,13 +928,15 @@ class ParquetOptions(_message.Message):
     data_page_row_count_limit: int
     max_row_group_size: int
     max_in_list_size: int
+    row_group_range_assignment: str
+    enable_rle_to_dictionary: bool
     created_by: str
     coerce_int96: str
     max_predicate_cache_size: int
     max_row_group_bytes: int
     content_defined_chunking: ParquetCdcOptions
     coerce_int96_tz: str
-    def __init__(self, enable_page_index: _Optional[bool] = ..., pruning: _Optional[bool] = ..., skip_metadata: _Optional[bool] = ..., pushdown_filters: _Optional[bool] = ..., reorder_filters: _Optional[bool] = ..., force_filter_selections: _Optional[bool] = ..., data_pagesize_limit: _Optional[int] = ..., write_batch_size: _Optional[int] = ..., writer_version: _Optional[str] = ..., allow_single_file_parallelism: _Optional[bool] = ..., maximum_parallel_row_group_writers: _Optional[int] = ..., maximum_buffered_record_batches_per_stream: _Optional[int] = ..., bloom_filter_on_read: _Optional[bool] = ..., bloom_filter_on_write: _Optional[bool] = ..., schema_force_view_types: _Optional[bool] = ..., binary_as_string: _Optional[bool] = ..., skip_arrow_metadata: _Optional[bool] = ..., metadata_size_hint: _Optional[int] = ..., compression: _Optional[str] = ..., dictionary_enabled: _Optional[bool] = ..., statistics_enabled: _Optional[str] = ..., column_index_truncate_length: _Optional[int] = ..., statistics_truncate_length: _Optional[int] = ..., encoding: _Optional[str] = ..., bloom_filter_fpp: _Optional[float] = ..., bloom_filter_ndv: _Optional[int] = ..., dictionary_page_size_limit: _Optional[int] = ..., data_page_row_count_limit: _Optional[int] = ..., max_row_group_size: _Optional[int] = ..., max_in_list_size: _Optional[int] = ..., created_by: _Optional[str] = ..., coerce_int96: _Optional[str] = ..., max_predicate_cache_size: _Optional[int] = ..., max_row_group_bytes: _Optional[int] = ..., content_defined_chunking: _Optional[_Union[ParquetCdcOptions, _Mapping]] = ..., coerce_int96_tz: _Optional[str] = ...) -> None: ...
+    def __init__(self, enable_page_index: _Optional[bool] = ..., pruning: _Optional[bool] = ..., skip_metadata: _Optional[bool] = ..., pushdown_filters: _Optional[bool] = ..., reorder_filters: _Optional[bool] = ..., force_filter_selections: _Optional[bool] = ..., data_pagesize_limit: _Optional[int] = ..., write_batch_size: _Optional[int] = ..., writer_version: _Optional[str] = ..., allow_single_file_parallelism: _Optional[bool] = ..., maximum_parallel_row_group_writers: _Optional[int] = ..., maximum_buffered_record_batches_per_stream: _Optional[int] = ..., bloom_filter_on_read: _Optional[bool] = ..., bloom_filter_on_write: _Optional[bool] = ..., schema_force_view_types: _Optional[bool] = ..., binary_as_string: _Optional[bool] = ..., skip_arrow_metadata: _Optional[bool] = ..., write_row_group_number_distinct_values: _Optional[bool] = ..., metadata_size_hint: _Optional[int] = ..., compression: _Optional[str] = ..., dictionary_enabled: _Optional[bool] = ..., statistics_enabled: _Optional[str] = ..., column_index_truncate_length: _Optional[int] = ..., statistics_truncate_length: _Optional[int] = ..., encoding: _Optional[str] = ..., bloom_filter_fpp: _Optional[float] = ..., bloom_filter_ndv: _Optional[int] = ..., dictionary_page_size_limit: _Optional[int] = ..., data_page_row_count_limit: _Optional[int] = ..., max_row_group_size: _Optional[int] = ..., max_in_list_size: _Optional[int] = ..., row_group_range_assignment: _Optional[str] = ..., enable_rle_to_dictionary: _Optional[bool] = ..., created_by: _Optional[str] = ..., coerce_int96: _Optional[str] = ..., max_predicate_cache_size: _Optional[int] = ..., max_row_group_bytes: _Optional[int] = ..., content_defined_chunking: _Optional[_Union[ParquetCdcOptions, _Mapping]] = ..., coerce_int96_tz: _Optional[str] = ...) -> None: ...
 
 class ParquetCdcOptions(_message.Message):
     __slots__ = ("enabled", "min_chunk_size", "max_chunk_size", "norm_level")

@@ -37,14 +37,10 @@
 
 use std::time::{Duration, Instant};
 
-use ballista::prelude::{SessionConfigExt, SessionContextExt};
-use ballista_core::config::BALLISTA_ADAPTIVE_PLANNER_ENABLED;
 use chaos_testing::fetch::ResultFetch;
-use chaos_testing::fixture::Fixture;
+use chaos_testing::fixture::{Fixture, query};
 use chaos_testing::k8s::{K8sCluster, KillMode};
-use datafusion::arrow::util::pretty::pretty_format_batches;
-use datafusion::execution::session_state::SessionStateBuilder;
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::prelude::SessionContext;
 use rstest::rstest;
 
 /// The k8s scenarios need a running kind cluster with the chaos image loaded;
@@ -108,26 +104,7 @@ impl K8sRun {
             .await
             .expect("fixture must be written to the shared mount");
 
-        let config = SessionConfig::new_with_ballista()
-            .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, aqe);
-        let state = SessionStateBuilder::new()
-            .with_config(config)
-            .with_default_features()
-            .build();
-        let ctx = SessionContext::remote_with_state(&cluster.scheduler_url(), state)
-            .await
-            .expect("client must connect to the scheduler");
-
-        // Registered *after* `remote_with_state`: `upgrade_for_ballista` rebuilds
-        // the state with `with_scalar_functions(...)`, which replaces rather than
-        // merges the scalar-function map and would drop a UDF registered before.
-        // (Same subtlety documented in `ha.rs`'s `ChaosRun`.)
-        ctx.register_udf(chaos_testing::udf::chaos_fail_udf().as_ref().clone());
-        ctx.register_udf(chaos_testing::udf::chaos_delay_udf().as_ref().clone());
-
-        for stmt in fixture.register_sql() {
-            ctx.sql(&stmt).await.unwrap().collect().await.unwrap();
-        }
+        let ctx = fixture.connect(&cluster.scheduler_url(), aqe).await;
 
         Self {
             cluster,
@@ -144,28 +121,13 @@ impl K8sRun {
 
     /// Run a query on the cluster, returning the formatted result.
     async fn sql(&self, sql: &str) -> Result<String, String> {
-        let df = self.ctx.sql(sql).await.map_err(|e| e.to_string())?;
-        let batches = df.collect().await.map_err(|e| e.to_string())?;
-        Ok(pretty_format_batches(&batches)
-            .map_err(|e| e.to_string())?
-            .to_string())
+        query(&self.ctx, sql).await
     }
 
     /// The expected answer, computed by plain local DataFusion over the same
     /// fixture — the reference the cluster must reproduce exactly.
     async fn local_baseline(&self) -> String {
-        let ctx = SessionContext::new();
-        for stmt in self.fixture.register_sql() {
-            ctx.sql(&stmt).await.unwrap().collect().await.unwrap();
-        }
-        let batches = ctx
-            .sql(Fixture::baseline_query())
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-        pretty_format_batches(&batches).unwrap().to_string()
+        self.fixture.local_sql(Fixture::baseline_query()).await
     }
 }
 

@@ -1311,10 +1311,10 @@ mod tests {
     use crate::tui::app::{
         ExecutorsSortColumn, INVALID_DATE, JobsSortColumn, MetricsSortColumn,
     };
+    use crate::tui::domain::test_util::{self, make_popup};
     use crate::tui::domain::{
         SchedulerState, SortOrder,
-        executors::{Executor, ExecutorDetailsPopup, OsInfo, Specification},
-        jobs::stages::{JobStagesPopup, JobStagesResponse},
+        executors::{Executor, ExecutorDetailsPopup},
         jobs::{Job, JobConfigEntry, JobConfigPopup},
     };
     use crate::tui::infrastructure::Settings;
@@ -1326,20 +1326,7 @@ mod tests {
     }
 
     fn make_job(id: &str, status: &str) -> Job {
-        Job {
-            job_id: id.to_string(),
-            job_name: format!("Job {id}"),
-            status: status.to_string(),
-            job_status: status.to_string(),
-            start_time: 0,
-            end_time: 1,
-            num_stages: 1,
-            completed_stages: 0,
-            percent_complete: 0,
-            logical_plan: None,
-            physical_plan: None,
-            stage_plan: None,
-        }
+        test_util::make_job(id, &format!("Job {id}"), status, 0, 1, 1, 0, 0)
     }
 
     fn make_scheduler_state() -> SchedulerState {
@@ -1558,10 +1545,6 @@ mod tests {
 
     // --- Popup state tests ---
 
-    fn make_stages_popup() -> JobStagesPopup {
-        JobStagesPopup::new("job1".to_string(), JobStagesResponse { stages: Vec::new() })
-    }
-
     #[test]
     fn is_job_stages_popup_open_false_when_none() {
         let app = make_app();
@@ -1571,21 +1554,21 @@ mod tests {
     #[test]
     fn is_job_stages_popup_open_true_when_some() {
         let mut app = make_app();
-        app.job_stages_popup = Some(make_stages_popup());
+        app.job_stages_popup = Some(make_popup(0));
         assert!(app.is_job_stages_popup_open());
     }
 
     #[test]
     fn is_job_stage_no_details_popup_open_true() {
         let mut app = make_app();
-        app.job_stages_popup = Some(make_stages_popup());
+        app.job_stages_popup = Some(make_popup(0));
         assert!(app.is_job_stage_no_details_popup_open());
     }
 
     #[test]
     fn is_job_stage_tasks_popup_open_true() {
         let mut app = make_app();
-        let mut popup = make_stages_popup();
+        let mut popup = make_popup(0);
         popup.set_tasks_view();
         app.job_stages_popup = Some(popup);
         assert!(app.is_job_stage_tasks_popup_open());
@@ -1594,7 +1577,7 @@ mod tests {
     #[test]
     fn is_job_stage_plan_popup_open_true() {
         let mut app = make_app();
-        let mut popup = make_stages_popup();
+        let mut popup = make_popup(0);
         popup.set_plan_view();
         app.job_stages_popup = Some(popup);
         assert!(app.is_job_stage_plan_popup_open());
@@ -1603,7 +1586,7 @@ mod tests {
     #[test]
     fn is_job_stage_no_details_when_tasks_returns_false() {
         let mut app = make_app();
-        let mut popup = make_stages_popup();
+        let mut popup = make_popup(0);
         popup.set_tasks_view();
         app.job_stages_popup = Some(popup);
         assert!(!app.is_job_stage_no_details_popup_open());
@@ -1612,25 +1595,7 @@ mod tests {
     // --- has_selected_executor / is_executor_details_popup_open tests ---
 
     fn make_executor(id: &str) -> Executor {
-        Executor {
-            host: "host".to_string(),
-            port: 8080,
-            id: id.to_string(),
-            last_seen: None,
-            specification: Specification { vcores: 4 },
-            metrics: vec![],
-            os_info: OsInfo {
-                kernel_ver: "5.15".to_string(),
-                num_disks: 1,
-                open_files_limit: 1024,
-                os_ver: "Ubuntu 22.04".to_string(),
-                os_ver_long: "Ubuntu 22.04.1 LTS".to_string(),
-                physical_cores: 4,
-                system_name: "Linux".to_string(),
-                total_available_disk_space: 50_000_000_000,
-                total_disk_space: 100_000_000_000,
-            },
-        }
+        test_util::make_executor("host", 8080, id, 4, 0, 0, None)
     }
 
     #[test]

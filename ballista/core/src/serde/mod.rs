@@ -55,21 +55,27 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{convert::TryInto, io::Cursor};
 
-use crate::execution_plans::sort_shuffle::SortShuffleConfig;
+use crate::execution_plans::sort_shuffle::{ShuffleRouting, SortShuffleConfig};
 use crate::execution_plans::{
     BufferExec, BufferMode, ChaosExec, CoalescePlan, FinalizedPartitionState, InputOrder,
-    OrderedRangeRepartitionExec, PartitionGroup, PartitionedBoundedWindowAggExec,
-    PerPartitionFilterExec, PipelinedShuffleReaderExec, PipelinedShuffleWriterExec,
-    PrefixMergeExec, RangeFilterExec, RangeShuffleReaderExec, RangeShuffleWriterExec,
-    RuntimeFilterApplyExec, RuntimeFilterBuildExec, RuntimeStatsExec, ScalarOp,
-    ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
-    UnorderedRangeRepartitionExec, UnresolvedShuffleExec, WindowApply,
+    OrderedRangeRepartitionExec, PartitionGroup, PartitionIdRepartitionExec,
+    PartitionedBoundedWindowAggExec, PerPartitionFilterExec, PipelinedShuffleReaderExec,
+    PipelinedShuffleWriterExec, PrefixMergeExec, RangeFilterExec, RangeShuffleReaderExec,
+    RangeShuffleWriterExec, RuntimeFilterApplyExec, RuntimeFilterBuildExec,
+    RuntimeStatsExec, ScalarOp, ShuffleReaderExec, ShuffleWriterExec,
+    SortShuffleWriterExec, UnorderedRangeRepartitionExec, UnresolvedShuffleExec,
+    WindowApply,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
-    ballista_physical_plan_node::PhysicalPlanType,
+    ballista_physical_plan_node::PhysicalPlanType, sort_shuffle_writer_exec_node,
 };
-use crate::serde::scheduler::PartitionLocation;
+use crate::serde::scheduler::from_proto::{
+    pipelined_reader_partitions_from_proto, reader_partitions_from_proto,
+};
+use crate::serde::scheduler::to_proto::{
+    pipelined_reader_partitions_to_proto, reader_partitions_to_proto,
+};
 use datafusion::arrow::compute::SortOptions;
 use datafusion::execution::FunctionRegistry;
 
@@ -662,18 +668,59 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             PhysicalPlanType::SortShuffleWriter(sort_shuffle_writer) => {
                 let input = inputs[0].clone();
 
-                let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
-                    sort_shuffle_writer.output_partitioning.as_ref(),
-                    &decode_ctx,
-                    input.schema().as_ref(),
-                    &converter,
-                )?;
-
-                let partitioning = shuffle_output_partitioning.ok_or_else(|| {
-                    DataFusionError::Internal(
-                        "SortShuffleWriterExec requires hash partitioning".to_string(),
-                    )
-                })?;
+                let routing = match &sort_shuffle_writer.routing {
+                    // Hash keeps its own field, which is all an older plan carries.
+                    Some(sort_shuffle_writer_exec_node::Routing::OutputPartitioning(
+                        hash,
+                    )) => {
+                        let Some(Partitioning::Hash(exprs, partition_count)) =
+                            parse_protobuf_hash_partitioning(
+                                Some(hash),
+                                &decode_ctx,
+                                input.schema().as_ref(),
+                                &converter,
+                            )?
+                        else {
+                            return Err(DataFusionError::Internal(
+                                "SortShuffleWriterExec requires hash partitioning"
+                                    .to_string(),
+                            ));
+                        };
+                        ShuffleRouting::Hash {
+                            exprs,
+                            partition_count,
+                        }
+                    }
+                    // Range travels in `partitioning`.
+                    Some(sort_shuffle_writer_exec_node::Routing::Partitioning(
+                        partitioning,
+                    )) => {
+                        let partitioning = parse_protobuf_partitioning(
+                            Some(partitioning),
+                            &decode_ctx,
+                            input.schema().as_ref(),
+                            &converter,
+                        )?
+                        .ok_or_else(|| {
+                            DataFusionError::Internal(
+                                "SortShuffleWriterExec requires hash or range partitioning"
+                                    .to_string(),
+                            )
+                        })?;
+                        ShuffleRouting::try_from(partitioning)?
+                    }
+                    Some(sort_shuffle_writer_exec_node::Routing::PartitionIdRouting(
+                        routing,
+                    )) => ShuffleRouting::PartitionId {
+                        column: routing.column as usize,
+                        partition_count: routing.partition_count as usize,
+                    },
+                    None => {
+                        return Err(DataFusionError::Internal(
+                            "SortShuffleWriterExec has no routing".to_string(),
+                        ));
+                    }
+                };
 
                 let batch_size = if sort_shuffle_writer.batch_size > 0 {
                     sort_shuffle_writer.batch_size as usize
@@ -689,12 +736,12 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     config = config.with_memory_limit_per_task_bytes(bytes as usize);
                 }
 
-                Ok(Arc::new(SortShuffleWriterExec::try_new(
+                Ok(Arc::new(SortShuffleWriterExec::try_new_with_routing(
                     sort_shuffle_writer.job_id.clone().into(),
                     sort_shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // executor will fill this in
-                    partitioning,
+                    routing,
                     config,
                 )?))
             }
@@ -717,22 +764,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             PhysicalPlanType::PipelinedShuffleReader(reader) => {
                 let stage_id = reader.stage_id as usize;
                 let schema: SchemaRef = Arc::new(convert_required!(reader.schema)?);
-                let partition = reader
-                    .partition
-                    .iter()
-                    .map(|p| {
-                        p.location
-                            .iter()
-                            .map(|l| {
-                                l.clone().try_into().map_err(|e| {
-                                    DataFusionError::Internal(format!(
-                                        "Fail to get pipelined partition location due to {e:?}"
-                                    ))
-                                })
-                            })
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .collect::<Result<Vec<_>, DataFusionError>>()?;
+                let partition = pipelined_reader_partitions_from_proto(
+                    &reader.partition,
+                    &reader.executors,
+                )
+                .map_err(location_error)?;
                 let exec = if reader.broadcast {
                     let locations = partition.into_iter().next().ok_or_else(|| {
                         proto_error(
@@ -761,22 +797,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 let stage_id = shuffle_reader.stage_id as usize;
                 let schema: SchemaRef =
                     Arc::new(convert_required!(shuffle_reader.schema)?);
-                let partition_location: Vec<Vec<PartitionLocation>> = shuffle_reader
-                    .partition
-                    .iter()
-                    .map(|p| {
-                        p.location
-                            .iter()
-                            .map(|l| {
-                                l.clone().try_into().map_err(|e| {
-                                    DataFusionError::Internal(format!(
-                                        "Fail to get partition location due to {e:?}"
-                                    ))
-                                })
-                            })
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .collect::<Result<Vec<_>, DataFusionError>>()?;
+                let partition_location = reader_partitions_from_proto(
+                    &shuffle_reader.partition,
+                    &shuffle_reader.executors,
+                )
+                .map_err(location_error)?;
                 let partitioning = parse_protobuf_partitioning(
                     shuffle_reader.partitioning.as_ref(),
                     &decode_ctx,
@@ -819,22 +844,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             PhysicalPlanType::RangeShuffleReader(range_reader) => {
                 let stage_id = range_reader.stage_id as usize;
                 let schema: SchemaRef = Arc::new(convert_required!(range_reader.schema)?);
-                let partition_location: Vec<Vec<PartitionLocation>> = range_reader
-                    .partition
-                    .iter()
-                    .map(|p| {
-                        p.location
-                            .iter()
-                            .map(|l| {
-                                l.clone().try_into().map_err(|e| {
-                                    DataFusionError::Internal(format!(
-                                        "Fail to get partition location due to {e:?}"
-                                    ))
-                                })
-                            })
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .collect::<Result<Vec<_>, DataFusionError>>()?;
+                let partition_location = reader_partitions_from_proto(
+                    &range_reader.partition,
+                    &range_reader.executors,
+                )
+                .map_err(location_error)?;
                 let merge_ordering_exprs = parse_physical_sort_exprs(
                     &range_reader.merge_ordering,
                     &decode_ctx,
@@ -1038,6 +1052,19 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     node.output_partitions as usize,
                 )?))
             }
+            PhysicalPlanType::PartitionIdRepartition(node) => {
+                let [input] = inputs else {
+                    return Err(DataFusionError::Internal(format!(
+                        "PartitionIdRepartitionExec expects exactly 1 input, got {}",
+                        inputs.len()
+                    )));
+                };
+                Ok(Arc::new(PartitionIdRepartitionExec::try_new(
+                    input.clone(),
+                    node.partition_id_column as usize,
+                    node.partition_count as usize,
+                )?))
+            }
             PhysicalPlanType::PerPartitionFilter(node) => {
                 let [input] = inputs else {
                     return Err(DataFusionError::Internal(format!(
@@ -1226,19 +1253,36 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             Ok(())
         } else if let Some(exec) = node.downcast_ref::<SortShuffleWriterExec>() {
-            let output_partitioning = match exec.shuffle_output_partitioning() {
-                Partitioning::Hash(exprs, partition_count) => {
-                    Some(serialize_hash_partitioning(
+            let routing = match exec.routing() {
+                // Hash keeps its own field, so a hash plan is encoded as before.
+                ShuffleRouting::Hash {
+                    exprs,
+                    partition_count,
+                } => sort_shuffle_writer_exec_node::Routing::OutputPartitioning(
+                    serialize_hash_partitioning(
                         exprs,
                         *partition_count,
                         self.default_codec.as_ref(),
-                    )?)
+                    )?,
+                ),
+                ShuffleRouting::Range(range) => {
+                    sort_shuffle_writer_exec_node::Routing::Partitioning(
+                        serialize_partitioning(
+                            &Partitioning::Range(range.clone()),
+                            self.default_codec.as_ref(),
+                            &DefaultPhysicalProtoConverter {},
+                        )?,
+                    )
                 }
-                other => {
-                    return Err(DataFusionError::Internal(format!(
-                        "SortShuffleWriterExec requires Hash partitioning, got: {other:?}"
-                    )));
-                }
+                ShuffleRouting::PartitionId {
+                    column,
+                    partition_count,
+                } => sort_shuffle_writer_exec_node::Routing::PartitionIdRouting(
+                    protobuf::PartitionIdRouting {
+                        column: *column as u32,
+                        partition_count: *partition_count as u32,
+                    },
+                ),
             };
 
             let config = exec.config();
@@ -1248,7 +1292,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         job_id: exec.job_id().to_string(),
                         stage_id: exec.stage_id() as u32,
                         input: None,
-                        output_partitioning,
+                        routing: Some(routing),
                         batch_size: config.batch_size as u64,
                         memory_limit_per_task_bytes: Some(
                             config.memory_limit_per_task_bytes as u64,
@@ -1298,13 +1342,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             Ok(())
         } else if let Some(exec) = node.downcast_ref::<PipelinedShuffleReaderExec>() {
-            let partition = exec
-                .partition
-                .iter()
-                .map(|locations| protobuf::PipelinedReaderPartition {
-                    location: locations.iter().cloned().map(Into::into).collect(),
-                })
-                .collect();
+            let (partition, executors) =
+                pipelined_reader_partitions_to_proto(&exec.partition);
             let converter = DefaultPhysicalProtoConverter {};
             let partitioning = serialize_partitioning(
                 &exec.properties().partitioning,
@@ -1319,6 +1358,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         stage_id: exec.stage_id as u32,
                         partitioning: Some(partitioning),
                         broadcast: exec.broadcast,
+                        executors,
                     },
                 )),
             };
@@ -1331,21 +1371,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             Ok(())
         } else if let Some(exec) = node.downcast_ref::<ShuffleReaderExec>() {
             let stage_id = exec.stage_id as u32;
-            let mut partition = vec![];
-            for location in &exec.partition {
-                partition.push(protobuf::ShuffleReaderPartition {
-                    location: location
-                        .iter()
-                        .map(|l| {
-                            l.clone().try_into().map_err(|e| {
-                                DataFusionError::Internal(format!(
-                                    "Fail to get partition location due to {e:?}"
-                                ))
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                });
-            }
+            let (partition, executors) = reader_partitions_to_proto(&exec.partition);
             let converter = DefaultPhysicalProtoConverter {};
             let partitioning = serialize_partitioning(
                 &exec.properties().partitioning,
@@ -1362,6 +1388,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         broadcast: exec.broadcast,
                         upstream_partition_count: exec.upstream_partition_count as u32,
                         coalesce: exec.coalesce.as_ref().map(|c| c.into()),
+                        executors,
                     },
                 )),
             };
@@ -1374,21 +1401,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             Ok(())
         } else if let Some(exec) = node.downcast_ref::<RangeShuffleReaderExec>() {
             let stage_id = exec.stage_id as u32;
-            let mut partition = vec![];
-            for location in &exec.partition {
-                partition.push(protobuf::ShuffleReaderPartition {
-                    location: location
-                        .iter()
-                        .map(|l| {
-                            l.clone().try_into().map_err(|e| {
-                                DataFusionError::Internal(format!(
-                                    "Fail to get partition location due to {e:?}"
-                                ))
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                });
-            }
+            let (partition, executors) = reader_partitions_to_proto(&exec.partition);
             let converter = DefaultPhysicalProtoConverter {};
             let merge_ordering = serialize_physical_sort_exprs(
                 exec.merge_ordering().iter().cloned(),
@@ -1413,6 +1426,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                                 Ok::<_, DataFusionError>(protobuf::RangeBound { lo, hi })
                             })
                             .collect::<Result<Vec<_>, DataFusionError>>()?,
+                        executors,
                     },
                 )),
             };
@@ -1572,6 +1586,21 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 ))
             })?;
             Ok(())
+        } else if let Some(exec) = node.downcast_ref::<PartitionIdRepartitionExec>() {
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::PartitionIdRepartition(
+                    protobuf::PartitionIdRepartitionExecNode {
+                        partition_id_column: exec.partition_id_column() as u32,
+                        partition_count: exec.partition_count() as u32,
+                    },
+                )),
+            };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode PartitionIdRepartitionExec: {e:?}"
+                ))
+            })?;
+            Ok(())
         } else if let Some(exec) = node.downcast_ref::<PerPartitionFilterExec>() {
             let predicates = exec
                 .predicates()
@@ -1723,10 +1752,18 @@ struct FileFormatProto {
     pub blob: Vec<u8>,
 }
 
+fn location_error(error: BallistaError) -> DataFusionError {
+    DataFusionError::Internal(format!("Fail to get partition location due to {error:?}"))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::execution_plans::PartitionGroup;
+    use crate::execution_plans::test_util::{int32_schema, test_location};
+    use crate::serde::scheduler::{
+        ExecutorEndpoint, PartitionLocation, PipelinedPartitionLocation,
+    };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::Partitioning;
     use datafusion::physical_plan::expressions::col;
@@ -1798,7 +1835,7 @@ mod test {
             AsExecutionPlan, DefaultPhysicalExtensionCodec,
         };
 
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let schema = int32_schema();
         let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
         let filter = FilterExecBuilder::new(lit(true), input)
             .apply_projection(Some(vec![]))
@@ -1843,7 +1880,7 @@ mod test {
             AsExecutionPlan, DefaultPhysicalExtensionCodec,
         };
 
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let schema = int32_schema();
         let plan: Arc<dyn ExecutionPlan> =
             Arc::new(EmptyExec::new(schema).with_partitions(4));
         assert_eq!(
@@ -1907,37 +1944,264 @@ mod test {
     fn pipelined_location(
         task_id: usize,
         partition: usize,
-    ) -> crate::serde::scheduler::PipelinedPartitionLocation {
-        use crate::serde::scheduler::{
-            ExecutorMetadata, ExecutorOperatingSystemSpecification,
-            ExecutorSpecification, PartitionId, PipelinedPartitionLocation,
-        };
+    ) -> PipelinedPartitionLocation {
         PipelinedPartitionLocation {
-            partition_id: PartitionId::new(&"job".into(), 2, partition),
+            partition_id: crate::serde::scheduler::PartitionId::new(
+                &"job".into(),
+                2,
+                partition,
+            ),
             task_id,
-            executor_meta: ExecutorMetadata {
+            executor_meta: Arc::new(ExecutorEndpoint {
                 id: format!("executor-{task_id}"),
                 host: "host".to_owned(),
                 port: 50051,
-                grpc_port: 50052,
-                specification: ExecutorSpecification::default(),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
+            }),
         }
     }
 
-    fn roundtrip_plan(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        let codec = BallistaPhysicalExtensionCodec::default();
-        let mut buf: Vec<u8> = vec![];
-        codec
-            .try_encode(plan.clone(), &mut buf, &DefaultPhysicalProtoConverter {})
+    fn encode_plan(plan: Arc<dyn ExecutionPlan>) -> Vec<u8> {
+        let mut encoded: Vec<u8> = vec![];
+        BallistaPhysicalExtensionCodec::default()
+            .try_encode(plan, &mut encoded, &DefaultPhysicalProtoConverter {})
             .unwrap();
+        encoded
+    }
+
+    fn decode_plan(
+        encoded: &[u8],
+        inputs: &[Arc<dyn ExecutionPlan>],
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let ctx = SessionContext::new().task_ctx();
+        BallistaPhysicalExtensionCodec::default().try_decode(
+            encoded,
+            inputs,
+            &ctx,
+            &DefaultPhysicalProtoConverter {},
+        )
+    }
+
+    fn roundtrip_plan(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         let inputs: Vec<Arc<dyn ExecutionPlan>> =
             plan.children().into_iter().cloned().collect();
-        codec
-            .try_decode(&buf, &inputs, &ctx, &DefaultPhysicalProtoConverter {})
-            .unwrap()
+        decode_plan(&encode_plan(plan), &inputs).unwrap()
+    }
+
+    fn executor_a() -> Arc<ExecutorEndpoint> {
+        Arc::new(ExecutorEndpoint {
+            id: "exec-a".to_owned(),
+            host: "10.0.0.1".to_owned(),
+            port: 7001,
+        })
+    }
+
+    fn executor_b() -> Arc<ExecutorEndpoint> {
+        Arc::new(ExecutorEndpoint {
+            id: "exec-b".to_owned(),
+            host: "10.0.0.2".to_owned(),
+            port: 7002,
+        })
+    }
+
+    fn location_on(
+        executor: Arc<ExecutorEndpoint>,
+        partition: usize,
+    ) -> PartitionLocation {
+        PartitionLocation {
+            executor_meta: executor,
+            ..test_location("job", 1, partition)
+        }
+    }
+
+    fn pipelined_location_on(
+        executor: Arc<ExecutorEndpoint>,
+        partition: usize,
+    ) -> PipelinedPartitionLocation {
+        PipelinedPartitionLocation {
+            executor_meta: executor,
+            ..pipelined_location(partition, partition)
+        }
+    }
+
+    /// Two reader partitions over four locations held by two executors.
+    fn on_two_executors<L>(
+        location: impl Fn(Arc<ExecutorEndpoint>, usize) -> L,
+    ) -> Vec<Vec<L>> {
+        vec![
+            vec![location(executor_a(), 0), location(executor_b(), 1)],
+            vec![location(executor_b(), 2), location(executor_a(), 3)],
+        ]
+    }
+
+    fn readers_on_two_executors() -> [Arc<dyn ExecutionPlan>; 3] {
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 2);
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr {
+            expr: col("id", schema.as_ref()).unwrap(),
+            options: SortOptions::default(),
+        }])
+        .unwrap();
+        [
+            Arc::new(
+                ShuffleReaderExec::try_new(
+                    1,
+                    on_two_executors(location_on),
+                    schema.clone(),
+                    partitioning.clone(),
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                RangeShuffleReaderExec::try_new(
+                    1,
+                    on_two_executors(location_on),
+                    schema.clone(),
+                    ordering,
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                PipelinedShuffleReaderExec::try_new(
+                    1,
+                    on_two_executors(pipelined_location_on),
+                    schema,
+                    partitioning,
+                )
+                .unwrap(),
+            ),
+        ]
+    }
+
+    /// The executor of every location of a reader, by partition.
+    fn reader_executors(
+        plan: &Arc<dyn ExecutionPlan>,
+    ) -> Vec<Vec<Arc<ExecutorEndpoint>>> {
+        fn collect<L>(
+            partitions: &[Vec<L>],
+            executor: impl Fn(&L) -> Arc<ExecutorEndpoint>,
+        ) -> Vec<Vec<Arc<ExecutorEndpoint>>> {
+            partitions
+                .iter()
+                .map(|locations| locations.iter().map(&executor).collect())
+                .collect()
+        }
+        if let Some(reader) = plan.downcast_ref::<ShuffleReaderExec>() {
+            collect(&reader.partition, |l| l.executor_meta.clone())
+        } else if let Some(reader) = plan.downcast_ref::<RangeShuffleReaderExec>() {
+            collect(&reader.partition, |l| l.executor_meta.clone())
+        } else if let Some(reader) = plan.downcast_ref::<PipelinedShuffleReaderExec>() {
+            collect(&reader.partition, |l| l.executor_meta.clone())
+        } else {
+            panic!("{} is not a reader", plan.name())
+        }
+    }
+
+    /// A stage can read thousands of locations from a handful of executors,
+    /// so a reader must write each executor's address once rather than once
+    /// per location. A gRPC message limit is what this overruns otherwise.
+    #[test]
+    fn readers_encode_each_executor_once() {
+        for plan in readers_on_two_executors() {
+            let name = plan.name().to_owned();
+            let encoded = encode_plan(plan);
+            for text in ["exec-a", "exec-b", "10.0.0.1", "10.0.0.2"] {
+                let occurrences = encoded
+                    .windows(text.len())
+                    .filter(|window| *window == text.as_bytes())
+                    .count();
+                assert_eq!(occurrences, 1, "`{text}` in the encoded {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn readers_keep_each_locations_executor() {
+        let (a, b) = (executor_a(), executor_b());
+        for plan in readers_on_two_executors() {
+            assert_eq!(
+                reader_executors(&roundtrip_plan(plan.clone())),
+                [[a.clone(), b.clone()], [b.clone(), a.clone()]],
+                "{}",
+                plan.name()
+            );
+        }
+    }
+
+    /// A broadcast reader has every upstream location in its one partition.
+    #[test]
+    fn broadcast_reader_keeps_each_locations_executor() {
+        let reader = ShuffleReaderExec::try_new_broadcast(
+            1,
+            on_two_executors(location_on).concat(),
+            create_test_schema(),
+            2,
+        )
+        .unwrap();
+        let (a, b) = (executor_a(), executor_b());
+        assert_eq!(
+            reader_executors(&roundtrip_plan(Arc::new(reader))),
+            [[a.clone(), b.clone(), b, a]]
+        );
+    }
+
+    /// One decoded instance per executor, rather than one per location: this
+    /// is what keeps a reader's memory from growing with its location count.
+    #[test]
+    fn decoded_readers_share_each_executor() {
+        for plan in readers_on_two_executors() {
+            let executors = reader_executors(&roundtrip_plan(plan.clone()));
+            assert!(
+                Arc::ptr_eq(&executors[0][0], &executors[1][1]),
+                "two locations on one executor in {}",
+                plan.name()
+            );
+        }
+    }
+
+    /// The index comes off the wire, so a bad one must be reported rather
+    /// than panic on an executor.
+    #[test]
+    fn readers_reject_an_unknown_executor_index() {
+        for plan in readers_on_two_executors() {
+            let mut node =
+                protobuf::BallistaPhysicalPlanNode::decode(encode_plan(plan).as_slice())
+                    .unwrap();
+            match node.physical_plan_type.as_mut().unwrap() {
+                PhysicalPlanType::ShuffleReader(reader) => {
+                    reader.partition[0].location[0].executor_index = 42
+                }
+                PhysicalPlanType::RangeShuffleReader(reader) => {
+                    reader.partition[0].location[0].executor_index = 42
+                }
+                PhysicalPlanType::PipelinedShuffleReader(reader) => {
+                    reader.partition[0].location[0].executor_index = 42
+                }
+                other => panic!("not a reader: {other:?}"),
+            }
+
+            let error = decode_plan(&node.encode_to_vec(), &[]).unwrap_err();
+            assert!(error.to_string().contains("42"), "{error}");
+        }
+    }
+
+    /// Clients read a location's executor from the location itself, not from
+    /// a table in the job status.
+    #[test]
+    fn job_status_locations_carry_their_executor() {
+        let location: protobuf::PartitionLocation =
+            location_on(executor_a(), 0).try_into().unwrap();
+        assert_eq!(location.executor_meta.as_ref().unwrap().host, "10.0.0.1");
+        let decoded: PartitionLocation = location.try_into().unwrap();
+        assert_eq!(decoded.executor_meta, executor_a());
+
+        let location: protobuf::PipelinedPartitionLocation =
+            pipelined_location_on(executor_b(), 1).into();
+        assert_eq!(location.executor_meta.as_ref().unwrap().host, "10.0.0.2");
+        let decoded: PipelinedPartitionLocation = location.try_into().unwrap();
+        assert_eq!(decoded.executor_meta, executor_b());
     }
 
     #[tokio::test]
@@ -2263,7 +2527,129 @@ mod test {
                 "memory_limit_per_task_bytes must survive the wire, including 0"
             );
             assert_eq!(decoded_exec.config().batch_size, 4096);
+            assert_eq!(decoded_exec.shuffle_output_partitioning(), &partitioning);
         }
+    }
+
+    /// A compound range partitioning with mixed sort directions.
+    fn test_range_partitioning(schema: &SchemaRef) -> Partitioning {
+        use datafusion::arrow::compute::SortOptions;
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_expr::{
+            LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
+        };
+
+        let ordering = LexOrdering::new(vec![
+            PhysicalSortExpr::new(
+                col("id", schema.as_ref()).unwrap(),
+                SortOptions::new(true, true),
+            ),
+            PhysicalSortExpr::new(
+                col("name", schema.as_ref()).unwrap(),
+                SortOptions::new(false, false),
+            ),
+        ])
+        .unwrap();
+        // `id` descends, so its split points do too.
+        let split = |id: i32, name: &str| {
+            SplitPoint::new(vec![
+                ScalarValue::Int32(Some(id)),
+                ScalarValue::Utf8(Some(name.to_string())),
+            ])
+        };
+        Partitioning::Range(
+            RangePartitioning::try_new(ordering, vec![split(90, "m"), split(40, "a")])
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_sort_shuffle_writer_exec_roundtrip_range_partitioning() {
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = create_test_schema();
+        let partitioning = test_range_partitioning(&schema);
+        let writer = SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            Arc::new(EmptyExec::new(schema)),
+            String::new(),
+            partitioning.clone(),
+            SortShuffleConfig::new(true, 4096),
+        )
+        .unwrap();
+
+        let decoded = roundtrip_plan(Arc::new(writer));
+
+        let decoded = decoded
+            .downcast_ref::<SortShuffleWriterExec>()
+            .expect("Expected SortShuffleWriterExec");
+        assert_eq!(decoded.shuffle_output_partitioning(), &partitioning);
+    }
+
+    /// A hash plan is encoded as before: in `output_partitioning`, with no
+    /// `partitioning`.
+    #[tokio::test]
+    async fn test_hash_sort_shuffle_writer_keeps_the_hash_partitioning_field() {
+        use datafusion::physical_plan::empty::EmptyExec;
+        use prost::Message;
+
+        let schema = create_test_schema();
+        let writer = SortShuffleWriterExec::try_new(
+            "job1".into(),
+            1,
+            Arc::new(EmptyExec::new(schema.clone())),
+            String::new(),
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 4),
+            SortShuffleConfig::new(true, 4096),
+        )
+        .unwrap();
+
+        let mut buf = vec![];
+        BallistaPhysicalExtensionCodec::default()
+            .try_encode(
+                Arc::new(writer),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap();
+
+        let node = protobuf::BallistaPhysicalPlanNode::decode(buf.as_slice()).unwrap();
+        let Some(PhysicalPlanType::SortShuffleWriter(writer)) = node.physical_plan_type
+        else {
+            panic!("expected a SortShuffleWriter node");
+        };
+        // A `oneof` member is encoded like a plain field, so this is field 4.
+        let Some(sort_shuffle_writer_exec_node::Routing::OutputPartitioning(hash)) =
+            writer.routing
+        else {
+            panic!("expected the hash partitioning in `output_partitioning`");
+        };
+        assert_eq!(hash.partition_count, 4);
+    }
+
+    #[tokio::test]
+    async fn test_range_partitioned_shuffle_readers_roundtrip() {
+        let schema = create_test_schema();
+        let partitioning = test_range_partitioning(&schema);
+
+        let unresolved =
+            UnresolvedShuffleExec::new(1, schema.clone(), partitioning.clone());
+        let decoded = roundtrip_plan(Arc::new(unresolved));
+        let decoded = decoded
+            .downcast_ref::<UnresolvedShuffleExec>()
+            .expect("Expected UnresolvedShuffleExec");
+        assert_eq!(&decoded.properties().partitioning, &partitioning);
+        assert_eq!(decoded.output_partition_count, 3);
+
+        let reader =
+            ShuffleReaderExec::try_new(1, vec![vec![]; 3], schema, partitioning.clone())
+                .unwrap();
+        let decoded = roundtrip_plan(Arc::new(reader));
+        let decoded = decoded
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("Expected ShuffleReaderExec");
+        assert_eq!(&decoded.properties().partitioning, &partitioning);
     }
 
     #[tokio::test]
@@ -2362,6 +2748,91 @@ mod test {
             "memory limit override must survive serialization to the executor"
         );
         assert_eq!(decoded.config().batch_size, 4096);
+    }
+
+    #[tokio::test]
+    async fn partition_id_sort_shuffle_writer_roundtrips() {
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(create_test_schema()));
+        // Column 0 is `id: Int32`, so `name` is all that gets written.
+        let routing = ShuffleRouting::PartitionId {
+            column: 0,
+            partition_count: 7,
+        };
+        let original = SortShuffleWriterExec::try_new_with_routing(
+            "job-1".into(),
+            3,
+            input,
+            String::new(),
+            routing.clone(),
+            SortShuffleConfig::new(true, 4096),
+        )
+        .unwrap();
+
+        let decoded = roundtrip_plan(Arc::new(original));
+
+        let decoded = decoded
+            .downcast_ref::<SortShuffleWriterExec>()
+            .expect("Expected SortShuffleWriterExec");
+        assert_eq!(decoded.routing(), &routing);
+        let names: Vec<_> = decoded
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(names, ["name"]);
+    }
+
+    /// A node with no routing, as a writer that predates partition-id routing
+    /// would see one, is rejected rather than hashed.
+    #[tokio::test]
+    async fn sort_shuffle_writer_without_a_routing_is_rejected() {
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let node = protobuf::BallistaPhysicalPlanNode {
+            physical_plan_type: Some(PhysicalPlanType::SortShuffleWriter(
+                protobuf::SortShuffleWriterExecNode {
+                    job_id: "job-1".to_string(),
+                    stage_id: 1,
+                    input: None,
+                    routing: None,
+                    batch_size: 4096,
+                    memory_limit_per_task_bytes: None,
+                },
+            )),
+        };
+        let mut buf: Vec<u8> = vec![];
+        node.encode(&mut buf).unwrap();
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(create_test_schema()));
+        let ctx = SessionContext::new().task_ctx();
+
+        let err = BallistaPhysicalExtensionCodec::default()
+            .try_decode(&buf, &[input], &ctx, &DefaultPhysicalProtoConverter {})
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("has no routing"), "actual: {err}");
+    }
+
+    #[tokio::test]
+    async fn partition_id_repartition_exec_roundtrips() {
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(create_test_schema()));
+        let original = PartitionIdRepartitionExec::try_new(input, 0, 12).unwrap();
+
+        let decoded = roundtrip_plan(Arc::new(original));
+
+        let decoded = decoded
+            .downcast_ref::<PartitionIdRepartitionExec>()
+            .expect("Expected PartitionIdRepartitionExec");
+        assert_eq!(decoded.partition_id_column(), 0);
+        assert_eq!(decoded.partition_count(), 12);
     }
 
     #[tokio::test]

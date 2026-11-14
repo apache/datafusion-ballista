@@ -119,7 +119,11 @@ impl ExecutionPlan for DynamicJoinSelectionExec {
             join_type: self.join_type,
             projection: self.projection.clone(),
             null_equality: self.null_equality,
-            properties: Arc::clone(&self.properties),
+            properties: undecided_properties(
+                &self.properties,
+                &children[0],
+                &children[1],
+            ),
             selection_state: self.selection_state.clone(),
             null_aware: self.null_aware,
             plan_id: self.plan_id,
@@ -600,7 +604,11 @@ impl DynamicJoinSelectionExec {
             join_type: *hash_join.join_type(),
             projection: hash_join.projection.as_deref().map(|p| p.to_vec()),
             null_equality: hash_join.null_equality,
-            properties: Arc::clone(hash_join.properties()),
+            properties: undecided_properties(
+                hash_join.properties(),
+                hash_join.left(),
+                hash_join.right(),
+            ),
             selection_state: JoinInputState::Unknown,
             null_aware: hash_join.null_aware,
             plan_id,
@@ -646,12 +654,47 @@ impl DynamicJoinSelectionExec {
             join_type: merge_join.join_type(),
             projection: None,
             null_equality: merge_join.null_equality,
-            properties: Arc::clone(merge_join.properties()),
+            properties: undecided_properties(
+                merge_join.properties(),
+                merge_join.left(),
+                merge_join.right(),
+            ),
             selection_state: JoinInputState::Unknown,
             null_aware: false,
             plan_id,
         }))
     }
+}
+
+/// The properties an undecided join reports: those of the join it was planned
+/// as, but with at least as many output partitions as either input has.
+///
+/// The planned join's partitioning reflects its planned orientation. A
+/// `CollectLeft` join passes its right input's partitioning through, so a join
+/// planned with a one-partition table such as `nation` on the right reports a
+/// single partition, although the join this resolves into may build `nation`
+/// and output the other side's partitions. Until then DataFusion's
+/// `CombinePartialFinalAggregate` sees an aggregate over one partition and
+/// merges it into a `Single` aggregate, which later replans cannot split
+/// again: once the join resolves, the input of that aggregate is coalesced and
+/// exchanged below it, and every task of the consuming stage reads and
+/// aggregates the whole input. TPC-H q11's scalar `sum` read 32M rows in every
+/// task this way instead of one partial sum per partition.
+fn undecided_properties(
+    planned: &Arc<PlanProperties>,
+    left: &Arc<dyn ExecutionPlan>,
+    right: &Arc<dyn ExecutionPlan>,
+) -> Arc<PlanProperties> {
+    let widest = left
+        .output_partitioning()
+        .partition_count()
+        .max(right.output_partitioning().partition_count());
+    if planned.output_partitioning().partition_count() >= widest {
+        return Arc::clone(planned);
+    }
+    Arc::new(planned.as_ref().clone().with_partitioning(
+        datafusion::physical_plan::Partitioning::UnknownPartitioning(widest),
+    ))
 }
 
 /// Whether to shuffle only the prospective build side now and re-decide the
@@ -870,9 +913,9 @@ fn estimated_value_width(data_type: &DataType) -> usize {
 mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::ExchangeExec;
-    use ballista_core::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId, PartitionLocation, PartitionStats,
+    use crate::state::aqe::test::stats_table::sizeless_statistics;
+    use crate::state::aqe::test::{
+        MB, mock_partition_location, statistics_exec, unknown_statistics_exec,
     };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::config::ExtensionOptions;
@@ -885,7 +928,6 @@ mod tests {
 
     const BYTE_THRESHOLD: usize = 10 * 1024 * 1024;
     const ROW_THRESHOLD: usize = 1_000_000;
-    const MB: usize = 1024 * 1024;
 
     fn test_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]))
@@ -897,15 +939,8 @@ mod tests {
         num_rows: usize,
         fields: Vec<Field>,
     ) -> Arc<dyn ExecutionPlan> {
-        let column_statistics = vec![ColumnStatistics::new_unknown(); fields.len()];
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Inexact(num_rows),
-                total_byte_size: Precision::Absent,
-                column_statistics,
-            },
-            Schema::new(fields),
-        ))
+        let schema = Schema::new(fields);
+        statistics_exec(sizeless_statistics(&schema, num_rows), &schema)
     }
 
     fn supports_collect(plan: &Arc<dyn ExecutionPlan>) -> bool {
@@ -971,24 +1006,11 @@ mod tests {
     // estimate, in both directions.
     #[test]
     fn known_total_byte_size_still_decides() {
-        let over: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Inexact(10),
-                total_byte_size: Precision::Exact(BYTE_THRESHOLD + 1),
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("x", DataType::Int32, false)]),
-        ));
+        let over =
+            stats_exec_with(Precision::Inexact(10), Precision::Exact(BYTE_THRESHOLD + 1));
         assert!(!supports_collect(&over));
 
-        let under: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Inexact(10),
-                total_byte_size: Precision::Exact(64),
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("x", DataType::Int32, false)]),
-        ));
+        let under = stats_exec_with(Precision::Inexact(10), Precision::Exact(64));
         assert!(supports_collect(&under));
     }
 
@@ -1008,14 +1030,7 @@ mod tests {
     // side is small.
     #[test]
     fn does_not_collect_without_any_statistics() {
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Absent,
-                total_byte_size: Precision::Absent,
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("x", DataType::Int32, false)]),
-        ));
+        let plan = unknown_statistics_exec(&test_schema());
 
         assert!(!supports_collect(&plan));
     }
@@ -1029,20 +1044,78 @@ mod tests {
         assert!(!supports_collect(&plan));
     }
 
+    // A `CollectLeft` join planned with a one-partition table on the right
+    // reports one output partition, but the join it resolves into may build
+    // that table and output the other side's partitions. The undecided join
+    // must not promise a single partition, or an aggregate above it is merged
+    // into a `Single` aggregate that later replans cannot split again.
+    #[test]
+    fn undecided_join_reports_at_least_its_widest_input() -> Result<()> {
+        use datafusion::physical_plan::repartition::RepartitionExec;
+
+        let wide: Arc<dyn ExecutionPlan> = Arc::new(RepartitionExec::try_new(
+            stats_exec(1_000_000),
+            Partitioning::RoundRobinBatch(8),
+        )?);
+        let narrow: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec::new(
+                stats_exec(25),
+            ),
+        );
+        let planned = HashJoinExec::try_new(
+            wide,
+            narrow,
+            vec![(
+                Arc::new(Column::new("k", 0)) as _,
+                Arc::new(Column::new("k", 0)) as _,
+            )],
+            None,
+            &JoinType::Inner,
+            None,
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )?;
+        assert_eq!(
+            planned.properties().output_partitioning().partition_count(),
+            1
+        );
+
+        let undecided = DynamicJoinSelectionExec::from_hash_join(&planned, 0)?;
+        assert_eq!(
+            undecided
+                .properties()
+                .output_partitioning()
+                .partition_count(),
+            8
+        );
+        // Rebuilding with the same children keeps the widened count.
+        let rebuilt = Arc::clone(&undecided).replace_children(
+            vec![Arc::clone(&undecided.left), Arc::clone(&undecided.right)],
+            datafusion::physical_plan::ReplaceChildrenOptions::new(
+                datafusion::physical_plan::ChildrenPropertiesMode::Recompute,
+            ),
+        )?;
+        assert_eq!(
+            rebuilt.properties().output_partitioning().partition_count(),
+            8
+        );
+        Ok(())
+    }
+
     /// A single-column `Int32` source reporting exactly the statistics given.
     /// The wrappers around it differ only in how `total_byte_size` is filled.
     fn stats_exec_with(
         num_rows: Precision<usize>,
         total_byte_size: Precision<usize>,
     ) -> Arc<dyn ExecutionPlan> {
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows,
-                total_byte_size,
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("k", DataType::Int32, false)]),
-        ))
+        let schema = Schema::new(vec![Field::new("k", DataType::Int32, false)]);
+        let statistics = Statistics {
+            num_rows,
+            total_byte_size,
+            ..Statistics::new_unknown(&schema)
+        };
+        statistics_exec(statistics, &schema)
     }
 
     /// A source reporting `num_rows` rows at 16 bytes each.
@@ -1761,31 +1834,7 @@ mod tests {
         let partitions = per_partition_bytes
             .iter()
             .enumerate()
-            .map(|(idx, &bytes)| {
-                vec![PartitionLocation {
-                    map_partition_id: 0,
-                    partition_id: PartitionId {
-                        job_id: "".into(),
-                        stage_id: 0,
-                        partition_id: idx,
-                    },
-                    executor_meta: ExecutorMetadata {
-                        id: "".to_string(),
-                        host: "".to_string(),
-                        port: 0,
-                        grpc_port: 0,
-                        specification: ExecutorSpecification::default().with_vcores(0),
-                        os_info: ExecutorOperatingSystemSpecification::default(),
-                    },
-                    partition_stats: PartitionStats::new(
-                        Some(1),
-                        None,
-                        Some(bytes as u64),
-                    ),
-                    file_id: None,
-                    is_sort_shuffle: false,
-                }]
-            })
+            .map(|(idx, &bytes)| vec![mock_partition_location(idx, 1, bytes as u64)])
             .collect();
         exchange.resolve_shuffle_partitions(partitions);
 

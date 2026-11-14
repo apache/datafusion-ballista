@@ -29,6 +29,7 @@ use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
 use crate::scheduler_server::JobIdGenerator;
 use crate::state::adaptive::AdaptiveRules;
+use ballista_core::execution_plans::plan_algebra::PartitionSliceableResolver;
 use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::{
     ConfigProducer, JobId, config::TaskSchedulingPolicy, ids::new_instance_id,
@@ -231,6 +232,13 @@ pub struct Config {
         help = "The maximum size of an encoded message at the grpc server side."
     )]
     pub grpc_server_max_encoding_message_size: u32,
+    /// TCP keepalive idle time for connections accepted by the gRPC server.
+    #[arg(
+        long,
+        default_value_t = 3600,
+        help = "Idle time in seconds before TCP keepalive probes are sent on connections accepted by the scheduler's gRPC server. Zero disables TCP keepalive."
+    )]
+    pub grpc_server_tcp_keepalive_seconds: u64,
     /// Maximum size of messages sent by the scheduler's outbound gRPC clients
     /// (e.g. task assignment to executors). Should be at least as large as the
     /// executor's `--grpc-server-max-decoding-message-size` for those RPCs to
@@ -406,6 +414,11 @@ pub struct SchedulerConfig {
     pub grpc_server_max_decoding_message_size: u32,
     /// The maximum size of an encoded message at the grpc server side.
     pub grpc_server_max_encoding_message_size: u32,
+    /// Idle time, in seconds, before TCP keepalive probes are sent on
+    /// connections accepted by the scheduler's gRPC server, so a connection
+    /// whose peer vanished without closing it is eventually reaped. Defaults
+    /// to 3600, the value executors and the result service use (0 = disabled).
+    pub grpc_server_tcp_keepalive_seconds: u64,
     /// The maximum size of a message sent by the scheduler's outbound gRPC clients.
     pub grpc_client_max_message_size: u32,
     /// The executor timeout in seconds. It should be longer than executor's heartbeat intervals.
@@ -440,6 +453,14 @@ pub struct SchedulerConfig {
     pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
     /// Override function for customizing gRPC client endpoints before they are used
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
+    /// Restricts `ExecutionPlan` nodes of your own that hold data per
+    /// partition to a task's partitions, using
+    /// [`PartitionSliceable`](ballista_core::execution_plans::plan_algebra::PartitionSliceable)
+    /// or by building the restricted node itself. Without it, a
+    /// stage split between tasks that holds such a leaf fails the job. Unlike
+    /// the `override_*` fields it adds to Ballista's own list rather than
+    /// replacing it. See [`PartitionSliceableResolver`].
+    pub partition_sliceable_resolver: Option<Arc<dyn PartitionSliceableResolver>>,
     /// Rules of your own that adaptive query planning runs, for plans with
     /// `ExecutionPlan` nodes of your own. Unlike the `override_*` fields it
     /// adds to Ballista's rules rather than replacing them. Only the adaptive
@@ -518,6 +539,7 @@ impl Default for SchedulerConfig {
             scheduler_event_expected_processing_duration: 0,
             grpc_server_max_decoding_message_size: 16777216,
             grpc_server_max_encoding_message_size: 16777216,
+            grpc_server_tcp_keepalive_seconds: 3600,
             grpc_client_max_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
@@ -530,6 +552,7 @@ impl Default for SchedulerConfig {
             override_logical_codec: None,
             override_physical_codec: None,
             override_create_grpc_client_endpoint: None,
+            partition_sliceable_resolver: None,
             adaptive_rules: None,
             use_tls: false,
             min_ready_executors: 1,
@@ -797,6 +820,13 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the TCP keepalive idle time, in seconds, for connections accepted
+    /// by the scheduler's gRPC server (0 disables TCP keepalive).
+    pub fn with_grpc_server_tcp_keepalive_seconds(mut self, value: u64) -> Self {
+        self.grpc_server_tcp_keepalive_seconds = value;
+        self
+    }
+
     /// Sets the maximum gRPC server encoding message size.
     pub fn with_grpc_server_max_encoding_message_size(mut self, value: u32) -> Self {
         self.grpc_server_max_encoding_message_size = value;
@@ -840,6 +870,15 @@ impl SchedulerConfig {
         override_fn: EndpointOverrideFn,
     ) -> Self {
         self.override_create_grpc_client_endpoint = Some(override_fn);
+        self
+    }
+
+    /// Sets [`Self::partition_sliceable_resolver`].
+    pub fn with_partition_sliceable_resolver(
+        mut self,
+        resolver: Arc<dyn PartitionSliceableResolver>,
+    ) -> Self {
+        self.partition_sliceable_resolver = Some(resolver);
         self
     }
 
@@ -978,6 +1017,7 @@ impl TryFrom<Config> for SchedulerConfig {
                 .grpc_server_max_decoding_message_size,
             grpc_server_max_encoding_message_size: opt
                 .grpc_server_max_encoding_message_size,
+            grpc_server_tcp_keepalive_seconds: opt.grpc_server_tcp_keepalive_seconds,
             grpc_client_max_message_size: opt.grpc_client_max_message_size,
             executor_timeout_seconds: opt.executor_timeout_seconds,
             expire_dead_executor_interval_seconds: opt
@@ -994,6 +1034,7 @@ impl TryFrom<Config> for SchedulerConfig {
             override_physical_codec: None,
             override_session_builder: None,
             override_create_grpc_client_endpoint: None,
+            partition_sliceable_resolver: None,
             adaptive_rules: None,
             use_tls: false,
             min_ready_executors: opt.min_ready_executors,

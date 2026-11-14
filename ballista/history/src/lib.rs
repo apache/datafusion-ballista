@@ -65,4 +65,6 @@
 
 pub mod event;
 pub mod reader;
+#[cfg(test)]
+mod test_util;
 pub mod writer;

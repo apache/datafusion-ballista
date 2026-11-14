@@ -80,6 +80,9 @@ docker build -f benchmarks/cluster/docker/ballista.Dockerfile \
   -t <registry>/ballista-bench:$(git rev-parse --short HEAD) .
 ```
 
+To build the executor with jemalloc instead of mimalloc, add
+`--build-arg FEATURES=ballista-executor/jemalloc`.
+
 The Spark image adds the S3 connector to the official Apache Spark image, and
 the Comet image adds the Comet JAR to it. The JAR must match the Spark and Scala
 version (see the
@@ -214,6 +217,12 @@ python3 compare.py results/tpch-ballista-*.json results/tpch-spark-*.json \
 
 When you publish results, follow
 [Recording a new result set](../../docs/source/contributors-guide/benchmarking/index.md#recording-a-new-result-set).
+Published results are kept as JSON in `published/`, and `publish.py` regenerates
+the results tables in the docs (the benchmarking guide and the comparison with
+DataFusion Distributed) and the charts in the top-level README from them.
+`published/memory/` holds a memory sweep (one query at decreasing executor
+memory per configuration), which `publish.py` turns into the tables and charts
+of the docs' memory usage page.
 
 ## Tests
 
@@ -222,6 +231,7 @@ The tests need neither a cluster nor Spark:
 ```shell
 cd benchmarks/cluster
 python3 -m unittest -v test_run
+python3 -m unittest -v test_publish
 (cd spark && python3 -m unittest -v test_tpcbench)
 (cd trino && python3 -m unittest -v test_run_queries)
 (cd datafusion-distributed && python3 -m unittest -v test_run_queries)

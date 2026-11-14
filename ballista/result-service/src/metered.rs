@@ -117,9 +117,8 @@ impl Stream for MeteredStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ballista_core::JobId;
+    use crate::test_util::fetch_partition_action;
     use ballista_core::error::Result as BallistaResult;
-    use ballista_core::serde::scheduler::{ShuffleFileKind, ShuffleLayout};
     use futures::StreamExt;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -193,18 +192,9 @@ mod tests {
     async fn fetch(
         backend: &MeteredBackend<FixedBackend>,
     ) -> Result<BoxedFlightStream<FlightData>, Status> {
-        let action = Action::FetchPartition {
-            job_id: JobId::new("job"),
-            stage_id: 1,
-            partition_id: 0,
-            host: "executor".to_owned(),
-            port: 50051,
-            file_id: None,
-            layout: ShuffleLayout::default(),
-            file_kind: ShuffleFileKind::default(),
-            byte_ranges: vec![],
-        };
-        backend.fetch(action, Ticket::default()).await
+        backend
+            .fetch(fetch_partition_action(), Ticket::default())
+            .await
     }
 
     #[tokio::test]

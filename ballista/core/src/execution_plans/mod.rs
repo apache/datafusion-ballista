@@ -18,11 +18,13 @@
 //! This module contains execution plans that are needed to distribute DataFusion's execution plans into
 //! several Ballista executors.
 
+pub mod broadcast_cache;
 mod buffer;
 mod chaos_exec;
 mod distributed_explain_analyze;
 mod distributed_query;
 mod ordered_range_repartition;
+mod partition_id_repartition;
 mod partitioned_bounded_window_agg;
 mod per_partition_filter;
 pub mod pipelined;
@@ -38,6 +40,8 @@ mod shuffle_reader;
 mod shuffle_writer;
 mod shuffle_writer_trait;
 pub mod sort_shuffle;
+#[cfg(test)]
+pub(crate) mod test_util;
 mod unordered_range_repartition;
 mod unresolved_shuffle;
 pub mod window_state;
@@ -54,6 +58,7 @@ pub use distributed_query::{
     DistributedQueryExec, execute_physical_plan, execute_query_params,
 };
 pub use ordered_range_repartition::OrderedRangeRepartitionExec;
+pub use partition_id_repartition::PartitionIdRepartitionExec;
 pub use partitioned_bounded_window_agg::PartitionedBoundedWindowAggExec;
 pub use per_partition_filter::{PerPartitionFilterExec, range_partition_predicates};
 pub use pipelined::{

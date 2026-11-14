@@ -138,6 +138,23 @@ isolated from other tasks. Idle slots do not lend their share to busy ones,
 which keeps task memory predictable at the cost of some unused capacity when
 the executor is under-utilized.
 
+## Choosing the Executor's Memory Allocator
+
+The `ballista-executor` binary uses [mimalloc](https://github.com/microsoft/mimalloc)
+as its global allocator by default. To use
+[jemalloc](https://github.com/jemalloc/jemalloc) instead, build it with the
+`jemalloc` feature, which takes precedence over mimalloc:
+
+```sh
+cargo install --locked ballista-executor --features jemalloc
+```
+
+Allocators differ in how much memory they hold on to after it is freed, so the
+choice can change an executor's resident memory as well as its speed. The
+memory pool described above counts reservations, not resident memory, so leave
+headroom whichever allocator you use. jemalloc is not supported on Windows
+(MSVC) targets.
+
 The executor refuses to start if the per-task share would round to zero (i.e.
 `memory_pool_size < vcores`).
 
@@ -285,6 +302,50 @@ The following session-level keys tune its behavior:
 | ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64 | 268435456 | Per-task buffered-bytes budget at which the sort shuffle writer spills its in-memory batches to disk. Counted independently of the runtime memory pool, so spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle memory per executor is approximately vcores * this value. Set to 0 to disable the per-task budget and rely solely on runtime memory-pool pressure to trigger spilling; this is safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory. |
 
 <!-- END GENERATED CONFIG REFERENCE -->
+
+### Partition-id shuffles
+
+A hash shuffle assigns rows to partitions with DataFusion's hash. That is
+consistent within a job, so joins and aggregations over shuffled inputs are
+correct, but it can't match data already partitioned by another function. Spark
+partitions by Murmur3, for example, and a Spark-bucketed table read without a
+shuffle only lines up with a shuffled input if the shuffle places rows the same
+way.
+
+A client that submits its own physical plan can do the placement itself. Put a
+`PartitionIdRepartitionExec` where a hash `RepartitionExec` would go, and have
+the plan below it compute each row's output partition into an integer column:
+
+```rust
+use ballista_core::execution_plans::PartitionIdRepartitionExec;
+
+// `plan` produces (key, value, pid): the id is column 2, and there are 8
+// output partitions.
+let shuffle = PartitionIdRepartitionExec::try_new(plan, 2, 8)?;
+```
+
+Output partition `i` holds exactly the rows whose id is `i`. The id column is
+dropped before the rows are written, so whatever reads the shuffle sees the
+input's columns without it (the id can't be the input's only column). A null,
+negative or out-of-range id fails the task.
+
+Some things to keep in mind:
+
+- The node only marks the boundary and can't be executed. The static planner
+  replaces it with a stage that ends in the sort-based writer. The adaptive
+  planner rejects it, because it may coalesce or re-plan an exchange's
+  partitions, which would break the placement. Set
+  `ballista.planner.adaptive.enabled` to `false` if a plan containing the node
+  would otherwise be planned adaptively. Pipelined execution only shuffles by
+  hash, so it rejects the node too.
+- The shuffle's output is reported as unknown partitioning, whatever function
+  produced the ids, so operators that require hash-partitioned input won't see
+  their requirement met. Put the node under operators that declare no
+  distribution requirement, such as a fragment node that does its joins and
+  aggregations internally.
+- `BallistaPhysicalExtensionCodec` serializes the node, so a plan that contains
+  it can be submitted over gRPC. A custom physical codec only needs to delegate
+  to it, as in the [extensions example](extensions-example.md).
 
 ## Adaptive Query Execution
 

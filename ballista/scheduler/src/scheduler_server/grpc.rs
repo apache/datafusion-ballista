@@ -26,12 +26,13 @@ use ballista_core::serde::protobuf::{
     CleanJobDataResult, CreateUpdateSessionParams, CreateUpdateSessionResult,
     ExecuteQueryFailureResult, ExecuteQueryParams, ExecuteQueryResult,
     ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorRegistration,
-    ExecutorStoppedParams, ExecutorStoppedResult, GetJobMetricsParams,
+    ExecutorStoppedParams, ExecutorStoppedResult, FailedTask, GetJobMetricsParams,
     GetJobMetricsResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
     HeartBeatResult, JobStatus, KeyValuePair, PollWorkParams, PollWorkResult,
     RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
-    RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
-    execute_query_failure_result, execute_query_result, executor_metric::Metric,
+    RemoveSessionResult, TaskDefinition, TaskStatus, UpdateTaskStatusParams,
+    UpdateTaskStatusResult, execute_query_failure_result, execute_query_result,
+    executor_metric::Metric, task_status,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use ballista_core::version;
@@ -40,6 +41,7 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::{Stream, StreamExt};
 use log::{debug, error, info, trace, warn};
+use prost::Message;
 use std::net::SocketAddr;
 use std::pin::Pin;
 
@@ -207,7 +209,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     }
                 }
             }
-            let jobs_to_clean = self
+            let jobs_to_clean: Vec<CleanJobDataParams> = self
                 .state
                 .executor_manager
                 .drain_pending_cleanup_jobs(&executor_id)
@@ -217,6 +219,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     remove_stage_ids,
                 })
                 .collect();
+            let tasks = self
+                .fit_tasks_in_response(&executor_id, tasks, &jobs_to_clean)
+                .await;
             Ok(Response::new(PollWorkResult {
                 tasks,
                 jobs_to_clean,
@@ -934,11 +939,106 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             None => None,
         }
     }
+
+    /// Keeps the tasks that fit in one `PollWorkResult` under the scheduler's
+    /// gRPC encoding limit and hands the rest back to their stages.
+    ///
+    /// The tasks are already bound, so a response tonic refuses to encode
+    /// would leave them running forever. Returned tasks are reported as
+    /// killed, which re-queues their partitions, and are bound again on a
+    /// later poll. A task larger than the limit by itself fails its job.
+    async fn fit_tasks_in_response(
+        &self,
+        executor_id: &str,
+        tasks: Vec<TaskDefinition>,
+        jobs_to_clean: &[CleanJobDataParams],
+    ) -> Vec<TaskDefinition> {
+        if tasks.is_empty() {
+            return tasks;
+        }
+        let limit = self.state.config.grpc_server_max_encoding_message_size as usize;
+        let cleanup_len = jobs_to_clean.iter().map(framed_len).sum();
+        let (kept, returned) = split_tasks_to_fit(tasks, cleanup_len, limit);
+        let (too_large, returned): (Vec<_>, Vec<_>) = returned
+            .into_iter()
+            .partition(|task| framed_len(task) > limit);
+        for task in &too_large {
+            let msg = format!(
+                "Task {}/{}/{} encodes to more than the scheduler's gRPC message limit \
+                 of {limit} bytes; raise --grpc-server-max-encoding-message-size on the \
+                 scheduler (and the executor's decoding limit to match)",
+                task.job_id, task.stage_id, task.task_id
+            );
+            error!("{msg}");
+            if let Err(e) = self.fail_job(task.job_id.clone().into(), msg).await {
+                error!("Error when failing job: {e:?}");
+            }
+        }
+        if returned.is_empty() {
+            return kept;
+        }
+        warn!(
+            "Poll response for executor {executor_id} would exceed the {limit} byte gRPC \
+             limit; sending {} task(s) and returning {} to be rescheduled",
+            kept.len(),
+            returned.len()
+        );
+        let statuses = returned
+            .into_iter()
+            .map(|task| TaskStatus {
+                task_id: task.task_id,
+                job_id: task.job_id,
+                stage_id: task.stage_id,
+                stage_attempt_num: task.stage_attempt_num,
+                launch_time: task.launch_time,
+                status: Some(task_status::Status::Failed(FailedTask::from(
+                    BallistaError::Cancelled,
+                ))),
+                ..Default::default()
+            })
+            .collect();
+        if let Err(e) = self.update_task_status(executor_id, statuses).await {
+            error!(
+                "Failed to reschedule tasks that did not fit in a poll response: {e:?}"
+            );
+        }
+        kept
+    }
+}
+
+/// Bytes a message adds to a `PollWorkResult` as a repeated field: the field's
+/// tag, a length prefix and the message itself.
+fn framed_len<M: Message>(message: &M) -> usize {
+    let len = message.encoded_len();
+    1 + prost::length_delimiter_len(len) + len
+}
+
+/// Splits `tasks` into those that fit in one `PollWorkResult` of at most
+/// `limit` encoded bytes, given `base_len` bytes of other content, and the
+/// rest. A task that does not fit does not stop smaller ones after it from
+/// being kept.
+fn split_tasks_to_fit(
+    tasks: Vec<TaskDefinition>,
+    base_len: usize,
+    limit: usize,
+) -> (Vec<TaskDefinition>, Vec<TaskDefinition>) {
+    let mut size = base_len;
+    let mut kept = Vec::with_capacity(tasks.len());
+    let mut returned = vec![];
+    for task in tasks {
+        let framed = framed_len(&task);
+        if size + framed <= limit {
+            size += framed;
+            kept.push(task);
+        } else {
+            returned.push(task);
+        }
+    }
+    (kept, returned)
 }
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
     use std::time::Duration;
 
     use datafusion::prelude::SessionContext;
@@ -955,25 +1055,76 @@ mod test {
     };
 
     use crate::config::SchedulerConfig;
-    use crate::metrics::default_metrics_collector;
     use ballista_core::error::BallistaError;
     use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::execute_query_params::Query;
     use ballista_core::serde::protobuf::{
-        ExecuteQueryParams, ExecutorMetric, ExecutorRegistration, ExecutorStatus,
-        ExecutorStoppedParams, HeartBeatParams, PollWorkParams, RegisterExecutorParams,
-        execute_query_result, executor_metric, executor_status,
-    };
-    use ballista_core::serde::scheduler::{
-        ExecutorOperatingSystemSpecification, ExecutorSpecification,
+        ExecuteQueryParams, ExecutorMetric, ExecutorStatus, ExecutorStoppedParams,
+        HeartBeatParams, PollWorkParams, PollWorkResult, RegisterExecutorParams,
+        TaskDefinition, execute_query_result, executor_metric, executor_status,
     };
     use ballista_core::{BALLISTA_PROTOCOL_VERSION, BALLISTA_VERSION};
 
     use crate::state::SchedulerState;
-    use crate::test_utils::await_condition;
-    use crate::test_utils::test_cluster_context;
+    use crate::test_utils::{
+        await_condition, executor_registration, test_cluster_context,
+        test_scheduler_server, test_scheduler_server_uninit,
+    };
 
     use super::{SchedulerGrpc, SchedulerServer, executor_registration_error};
+
+    fn task_with_plan(task_id: u32, plan_bytes: usize) -> TaskDefinition {
+        TaskDefinition {
+            task_id,
+            job_id: "job".to_string(),
+            plan: vec![7u8; plan_bytes],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn poll_response_keeps_exactly_the_tasks_that_encode_under_the_limit() {
+        use ballista_core::serde::protobuf::CleanJobDataParams;
+        use prost::Message;
+
+        let tasks: Vec<_> = (0..8).map(|i| task_with_plan(i, 1000)).collect();
+        let cleanup = vec![CleanJobDataParams {
+            job_id: "old-job".to_string(),
+            remove_stage_ids: vec![1, 2],
+        }];
+        let result = |tasks: &[TaskDefinition]| {
+            PollWorkResult {
+                tasks: tasks.to_vec(),
+                jobs_to_clean: cleanup.clone(),
+            }
+            .encoded_len()
+        };
+        let cleanup_len = super::framed_len(&cleanup[0]);
+        // The estimate matches the real encoding: a limit of exactly three
+        // tasks keeps three, and one byte less keeps two.
+        let three = result(&tasks[..3]);
+        let (kept, returned) =
+            super::split_tasks_to_fit(tasks.clone(), cleanup_len, three);
+        assert_eq!(
+            kept.iter().map(|t| t.task_id).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(returned.len(), 5);
+        let (kept, _) = super::split_tasks_to_fit(tasks, cleanup_len, three - 1);
+        assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn poll_response_keeps_small_tasks_behind_one_that_does_not_fit() {
+        let tasks = vec![
+            task_with_plan(0, 100),
+            task_with_plan(1, 5000),
+            task_with_plan(2, 100),
+        ];
+        let (kept, returned) = super::split_tasks_to_fit(tasks, 0, 1024);
+        assert_eq!(kept.iter().map(|t| t.task_id).collect::<Vec<_>>(), [0, 2]);
+        assert_eq!(returned.iter().map(|t| t.task_id).collect::<Vec<_>>(), [1]);
+    }
 
     #[test]
     fn duplicate_executor_registration_maps_to_already_exists() {
@@ -991,24 +1142,8 @@ mod test {
         let config = SchedulerConfig::default().with_scheduler_policy(
             ballista_core::config::TaskSchedulingPolicy::PullStaged,
         );
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster.clone(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
-        let exec_meta = ExecutorRegistration {
-            id: "abc".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
-        };
+        let scheduler = test_scheduler_server(cluster.clone(), config).await?;
+        let exec_meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION);
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
             num_free_vcores: 0,
@@ -1029,16 +1164,7 @@ mod test {
         state.init().await?;
 
         // executor should be registered
-        let stored_executor = state
-            .executor_manager
-            .get_executor_metadata("abc")
-            .await
-            .expect("getting executor");
-
-        assert_eq!(stored_executor.grpc_port, 0);
-        assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.vcores, 2);
-        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+        assert_registered(&state).await;
 
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
@@ -1061,16 +1187,7 @@ mod test {
         state.init().await?;
 
         // executor should be registered
-        let stored_executor = state
-            .executor_manager
-            .get_executor_metadata("abc")
-            .await
-            .expect("getting executor");
-
-        assert_eq!(stored_executor.grpc_port, 0);
-        assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.vcores, 2);
-        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+        assert_registered(&state).await;
 
         let mut conflicting_exec_meta = exec_meta.clone();
         conflicting_exec_meta.host = Some("http://localhost:8081".to_owned());
@@ -1100,25 +1217,9 @@ mod test {
         let cluster = test_cluster_context();
 
         let config = SchedulerConfig::default().with_remove_executor_wait_secs(0);
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster.clone(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(cluster.clone(), config).await?;
 
-        let exec_meta = ExecutorRegistration {
-            id: "abc".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
-        };
+        let exec_meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION);
 
         let request: Request<RegisterExecutorParams> =
             Request::new(RegisterExecutorParams {
@@ -1135,16 +1236,7 @@ mod test {
 
         let state = scheduler.state.clone();
         // executor should be registered
-        let stored_executor = state
-            .executor_manager
-            .get_executor_metadata("abc")
-            .await
-            .expect("getting executor");
-
-        assert_eq!(stored_executor.grpc_port, 0);
-        assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.vcores, 2);
-        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+        assert_registered(&state).await;
 
         let request: Request<ExecutorStoppedParams> =
             Request::new(ExecutorStoppedParams {
@@ -1187,25 +1279,9 @@ mod test {
         let cluster = test_cluster_context();
 
         let config = SchedulerConfig::default();
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster,
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(cluster, config).await?;
 
-        let exec_meta = ExecutorRegistration {
-            id: "abc".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
-        };
+        let exec_meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION);
 
         let request: Request<HeartBeatParams> = Request::new(HeartBeatParams {
             executor_id: exec_meta.id.clone(),
@@ -1222,16 +1298,7 @@ mod test {
 
         let state = scheduler.state.clone();
         // executor should be registered
-        let stored_executor = state
-            .executor_manager
-            .get_executor_metadata("abc")
-            .await
-            .expect("getting executor");
-
-        assert_eq!(stored_executor.grpc_port, 0);
-        assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.vcores, 2);
-        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+        assert_registered(&state).await;
 
         Ok(())
     }
@@ -1243,16 +1310,8 @@ mod test {
         let config = SchedulerConfig::default().with_scheduler_policy(
             ballista_core::config::TaskSchedulingPolicy::PullStaged,
         );
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
-        let exec_meta = exec_meta_with_version(BALLISTA_PROTOCOL_VERSION);
+        let scheduler = test_scheduler_server(test_cluster_context(), config).await?;
+        let exec_meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION);
         let memory = |bytes| ExecutorMetric {
             metric: Some(executor_metric::Metric::ProcPhysicalMemory(bytes)),
         };
@@ -1299,41 +1358,29 @@ mod test {
         Ok(())
     }
 
-    async fn scheduler_for_protocol_test()
-    -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>, BallistaError> {
-        let cluster = test_cluster_context();
-        let config = SchedulerConfig::default();
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster,
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
-        Ok(scheduler)
-    }
+    /// Asserts that the executor "abc" of `executor_registration` is registered.
+    async fn assert_registered(
+        state: &SchedulerState<LogicalPlanNode, PhysicalPlanNode>,
+    ) {
+        let stored_executor = state
+            .executor_manager
+            .get_executor_metadata("abc")
+            .await
+            .expect("getting executor");
 
-    fn exec_meta_with_version(version: u32) -> ExecutorRegistration {
-        ExecutorRegistration {
-            id: "abc".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: version,
-        }
+        assert_eq!(stored_executor.grpc_port, 0);
+        assert_eq!(stored_executor.port, 0);
+        assert_eq!(stored_executor.specification.vcores, 2);
+        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
     }
 
     #[tokio::test]
     async fn register_rejects_protocol_mismatch() -> Result<(), BallistaError> {
-        let scheduler = scheduler_for_protocol_test().await?;
+        let scheduler = test_scheduler().await?;
         // Version 0 is what an old executor without the field defaults to;
         // the scheduler must reject it.
         let request = Request::new(RegisterExecutorParams {
-            metadata: Some(exec_meta_with_version(0)),
+            metadata: Some(executor_registration("abc", 0)),
         });
 
         let status = scheduler
@@ -1351,8 +1398,8 @@ mod test {
 
     #[tokio::test]
     async fn heartbeat_rejects_protocol_mismatch() -> Result<(), BallistaError> {
-        let scheduler = scheduler_for_protocol_test().await?;
-        let meta = exec_meta_with_version(BALLISTA_PROTOCOL_VERSION + 1);
+        let scheduler = test_scheduler().await?;
+        let meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION + 1);
         let request = Request::new(HeartBeatParams {
             executor_id: meta.id.clone(),
             metrics: vec![],
@@ -1372,7 +1419,7 @@ mod test {
 
     #[tokio::test]
     async fn heartbeat_rejects_missing_metadata() -> Result<(), BallistaError> {
-        let scheduler = scheduler_for_protocol_test().await?;
+        let scheduler = test_scheduler().await?;
         let request = Request::new(HeartBeatParams {
             executor_id: "abc".to_owned(),
             metrics: vec![],
@@ -1396,18 +1443,10 @@ mod test {
             scheduling_policy: ballista_core::config::TaskSchedulingPolicy::PullStaged,
             ..Default::default()
         };
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(test_cluster_context(), config).await?;
 
         let request = Request::new(PollWorkParams {
-            metadata: Some(exec_meta_with_version(0)),
+            metadata: Some(executor_registration("abc", 0)),
             num_free_vcores: 0,
             task_status: vec![],
         });
@@ -1425,25 +1464,9 @@ mod test {
         let cluster = test_cluster_context();
 
         let config = SchedulerConfig::default();
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster.clone(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(cluster.clone(), config).await?;
 
-        let exec_meta = ExecutorRegistration {
-            id: "abc".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
-        };
+        let exec_meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION);
 
         let request: Request<RegisterExecutorParams> =
             Request::new(RegisterExecutorParams {
@@ -1460,16 +1483,7 @@ mod test {
 
         let state = scheduler.state.clone();
         // executor should be registered
-        let stored_executor = state
-            .executor_manager
-            .get_executor_metadata("abc")
-            .await
-            .expect("getting executor");
-
-        assert_eq!(stored_executor.grpc_port, 0);
-        assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.vcores, 2);
-        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+        assert_registered(&state).await;
 
         // heartbeat from the executor
         let request: Request<HeartBeatParams> = Request::new(HeartBeatParams {
@@ -1515,13 +1529,7 @@ mod test {
         use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
 
         let server = |config: SchedulerConfig| {
-            SchedulerServer::<LogicalPlanNode, PhysicalPlanNode>::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            )
+            test_scheduler_server_uninit(test_cluster_context(), config)
         };
 
         // Neither set: nothing advertised.
@@ -1573,15 +1581,9 @@ mod test {
 
     async fn test_scheduler()
     -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>, BallistaError> {
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                test_cluster_context(),
-                BallistaCodec::default(),
-                Arc::new(SchedulerConfig::default()),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler =
+            test_scheduler_server(test_cluster_context(), SchedulerConfig::default())
+                .await?;
         Ok(scheduler)
     }
 
@@ -1729,25 +1731,9 @@ mod test {
         let cluster = test_cluster_context();
 
         let config = SchedulerConfig::default();
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                cluster.clone(),
-                BallistaCodec::default(),
-                Arc::new(config),
-                default_metrics_collector().unwrap(),
-            );
-        scheduler.init().await?;
+        let scheduler = test_scheduler_server(cluster.clone(), config).await?;
 
-        let exec_meta = ExecutorRegistration {
-            id: "abc".to_owned(),
-            host: Some("http://localhost:8080".to_owned()),
-            port: 0,
-            grpc_port: 0,
-            specification: Some(ExecutorSpecification::default().with_vcores(2).into()),
-            os_info: Some(ExecutorOperatingSystemSpecification::default().into()),
-            ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
-        };
+        let exec_meta = executor_registration("abc", BALLISTA_PROTOCOL_VERSION);
 
         let request: Request<RegisterExecutorParams> =
             Request::new(RegisterExecutorParams {
@@ -1764,16 +1750,7 @@ mod test {
 
         let state = scheduler.state.clone();
         // executor should be registered
-        let stored_executor = state
-            .executor_manager
-            .get_executor_metadata("abc")
-            .await
-            .expect("getting executor");
-
-        assert_eq!(stored_executor.grpc_port, 0);
-        assert_eq!(stored_executor.port, 0);
-        assert_eq!(stored_executor.specification.vcores, 2);
-        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+        assert_registered(&state).await;
 
         // Context strictly used for values-based query serialization to avoid
         // needing to register tables and keep them in sync with the scheduler instance.
