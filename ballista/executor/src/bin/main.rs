@@ -26,7 +26,8 @@ use ballista_core::object_store::{
 use ballista_executor::alloc_accounting::{AccountingAllocator, current_balance};
 use ballista_executor::config::Config;
 use ballista_executor::executor_process::{
-    ExecutorProcessConfig, start_executor_process_with_memory_metrics, with_spill_dir,
+    ExecutorProcessConfig, raise_open_file_limit,
+    start_executor_process_with_memory_metrics, with_spill_dir,
 };
 use ballista_executor::health::spawn_health_server;
 use ballista_executor::metrics::ExecutorMemoryMetrics;
@@ -38,12 +39,26 @@ use std::time::Duration;
 use tokio::time::MissedTickBehavior;
 use tracing_subscriber::EnvFilter;
 
-#[cfg(feature = "mimalloc")]
+// The allocator is chosen by Cargo feature. `jemalloc` takes precedence over
+// `mimalloc` (which `build-binary` enables), so `--features jemalloc` is enough
+// to switch, and `--all-features` still builds. With neither, the system
+// allocator is used.
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: AccountingAllocator<tikv_jemallocator::Jemalloc> =
+    AccountingAllocator::new(tikv_jemallocator::Jemalloc);
+
+// `build-binary` enables `mimalloc` even when jemalloc wins, so mark the
+// dependency as used rather than leave it to the unused-dependency lint.
+#[cfg(all(feature = "mimalloc", feature = "jemalloc"))]
+use mimalloc as _;
+
+#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
 #[global_allocator]
 static GLOBAL: AccountingAllocator<mimalloc::MiMalloc> =
     AccountingAllocator::new(mimalloc::MiMalloc);
 
-#[cfg(not(feature = "mimalloc"))]
+#[cfg(not(any(feature = "mimalloc", feature = "jemalloc")))]
 #[global_allocator]
 static GLOBAL: AccountingAllocator<std::alloc::System> =
     AccountingAllocator::new(std::alloc::System);
@@ -97,6 +112,8 @@ async fn main() -> ballista_core::error::Result<()> {
     } else {
         tracing.init();
     }
+
+    raise_open_file_limit();
 
     let memory_metrics = ExecutorMemoryMetrics::default();
     // This binary installs `AccountingAllocator` as its global allocator, so

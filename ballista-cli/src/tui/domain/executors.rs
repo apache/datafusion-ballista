@@ -144,71 +144,37 @@ impl ExecutorsData {
     }
 
     pub fn sort(&mut self) {
-        match self.sort_column {
-            SortColumn::Host => self.executors.sort_by(|a, b| {
-                let a_host = format!("{}:{}", a.host, a.port);
-                let b_host = format!("{}:{}", b.host, b.port);
-                let cmp = a_host.cmp(&b_host);
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::Id => self.executors.sort_by(|a, b| {
-                let cmp = a.id.cmp(&b.id);
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::CpuCores => self.executors.sort_by(|a, b| {
-                let cmp = a.cpu_cores().cmp(&b.cpu_cores());
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::Vcores => self.executors.sort_by(|a, b| {
-                let cmp = a.vcores().cmp(&b.vcores());
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::ProcPhysicalMemoryUsage => self.executors.sort_by(|a, b| {
-                let cmp = a
-                    .proc_physical_memory_usage()
-                    .cmp(&b.proc_physical_memory_usage());
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::PeakPhysicalMemoryUsage => self.executors.sort_by(|a, b| {
-                let cmp = a
-                    .peak_physical_memory_usage()
-                    .cmp(&b.peak_physical_memory_usage());
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::LastSeen => self.executors.sort_by(|a, b| {
-                let cmp = a.last_seen.cmp(&b.last_seen);
-                if self.sort_order == SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::None => {}
-        }
+        let compare_executors: fn(&Executor, &Executor) -> std::cmp::Ordering =
+            match self.sort_column {
+                SortColumn::Host => |a, b| {
+                    let a_host = format!("{}:{}", a.host, a.port);
+                    let b_host = format!("{}:{}", b.host, b.port);
+                    a_host.cmp(&b_host)
+                },
+                SortColumn::Id => |a, b| a.id.cmp(&b.id),
+                SortColumn::CpuCores => |a, b| a.cpu_cores().cmp(&b.cpu_cores()),
+                SortColumn::Vcores => |a, b| a.vcores().cmp(&b.vcores()),
+                SortColumn::ProcPhysicalMemoryUsage => |a, b| {
+                    a.proc_physical_memory_usage()
+                        .cmp(&b.proc_physical_memory_usage())
+                },
+                SortColumn::PeakPhysicalMemoryUsage => |a, b| {
+                    a.peak_physical_memory_usage()
+                        .cmp(&b.peak_physical_memory_usage())
+                },
+                SortColumn::LastSeen => |a, b| a.last_seen.cmp(&b.last_seen),
+                SortColumn::None => return,
+            };
+
+        self.executors.sort_by(|a, b| {
+            let cmp = compare_executors(a, b);
+
+            if self.sort_order == SortOrder::Descending {
+                cmp.reverse()
+            } else {
+                cmp
+            }
+        });
     }
 
     pub fn selected_executor(&self) -> Option<&Executor> {
@@ -217,48 +183,20 @@ impl ExecutorsData {
             .and_then(|i| self.executors.get(i))
     }
 
-    fn get_selected_executor_index(&self) -> Option<usize> {
-        self.table_state.selected()
-    }
-
     pub fn scroll_down(&mut self) {
-        if self.executors.is_empty() {
-            self.table_state.select(None);
-            return;
-        }
-
-        if let Some(selected) = self.get_selected_executor_index() {
-            if selected < self.executors.len() - 1 {
-                self.table_state.select(Some(selected + 1));
-            } else {
-                self.table_state.select(None);
-            }
-        } else {
-            self.table_state.select(Some(0));
-        }
-        self.scrollbar_state = self
-            .scrollbar_state
-            .position(self.get_selected_executor_index().unwrap_or(0));
+        super::scroll_down(
+            &mut self.table_state,
+            &mut self.scrollbar_state,
+            self.executors.len(),
+        );
     }
 
     pub fn scroll_up(&mut self) {
-        if self.executors.is_empty() {
-            self.table_state.select(None);
-            return;
-        }
-
-        if let Some(selected) = self.get_selected_executor_index() {
-            if selected == 0 {
-                self.table_state.select(None);
-            } else {
-                self.table_state.select(Some(selected - 1));
-            }
-        } else {
-            self.table_state.select(Some(self.executors.len() - 1));
-        }
-        self.scrollbar_state = self
-            .scrollbar_state
-            .position(self.get_selected_executor_index().unwrap_or(0));
+        super::scroll_up(
+            &mut self.table_state,
+            &mut self.scrollbar_state,
+            self.executors.len(),
+        );
     }
 }
 
@@ -581,114 +519,6 @@ mod tests {
         assert_eq!(data.executors[1].last_seen, Some(200));
         assert_eq!(data.executors[2].last_seen, Some(100));
         assert_eq!(data.executors[3].last_seen, None);
-    }
-
-    // --- scroll_down tests ---
-
-    #[test]
-    fn scroll_down_empty_list_stays_none() {
-        let mut data = ExecutorsData::new();
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), None);
-    }
-
-    #[test]
-    fn scroll_down_with_no_selection_selects_first() {
-        let mut data = make_executors_data(
-            vec![
-                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
-            ],
-            SortColumn::None,
-            SortOrder::Ascending,
-        );
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), Some(0));
-    }
-
-    #[test]
-    fn scroll_down_advances_selection() {
-        let mut data = make_executors_data(
-            vec![
-                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
-                make_executor("host", 8082, "id-c", 1, 0, 0, Some(3)),
-            ],
-            SortColumn::None,
-            SortOrder::Ascending,
-        );
-        data.table_state.select(Some(0));
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), Some(1));
-    }
-
-    #[test]
-    fn scroll_down_at_last_item_deselects() {
-        let mut data = make_executors_data(
-            vec![
-                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
-            ],
-            SortColumn::None,
-            SortOrder::Ascending,
-        );
-        data.table_state.select(Some(1));
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), None);
-    }
-
-    // --- scroll_up tests ---
-
-    #[test]
-    fn scroll_up_empty_list_stays_none() {
-        let mut data = ExecutorsData::new();
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), None);
-    }
-
-    #[test]
-    fn scroll_up_with_no_selection_selects_last() {
-        let mut data = make_executors_data(
-            vec![
-                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
-                make_executor("host", 8082, "id-c", 1, 0, 0, Some(3)),
-            ],
-            SortColumn::None,
-            SortOrder::Ascending,
-        );
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), Some(2));
-    }
-
-    #[test]
-    fn scroll_up_moves_selection_back() {
-        let mut data = make_executors_data(
-            vec![
-                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
-            ],
-            SortColumn::None,
-            SortOrder::Ascending,
-        );
-        data.table_state.select(Some(1));
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), Some(0));
-    }
-
-    #[test]
-    fn scroll_up_at_first_item_deselects() {
-        let mut data = make_executors_data(
-            vec![
-                make_executor("host", 8080, "id-a", 1, 0, 0, Some(1)),
-                make_executor("host", 8081, "id-b", 1, 0, 0, Some(2)),
-            ],
-            SortColumn::None,
-            SortOrder::Ascending,
-        );
-        data.table_state.select(Some(0));
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), None);
     }
 
     // --- selected_executor tests ---

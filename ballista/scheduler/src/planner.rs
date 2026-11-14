@@ -25,11 +25,11 @@ use ballista_core::JobId;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::ShuffleWriter;
-use ballista_core::execution_plans::sort_shuffle::SortShuffleConfig;
+use ballista_core::execution_plans::sort_shuffle::{ShuffleRouting, SortShuffleConfig};
 use ballista_core::{
     execution_plans::{
-        RangeShuffleReaderExec, ShuffleReaderExec, ShuffleWriterExec,
-        SortShuffleWriterExec, UnresolvedShuffleExec,
+        PartitionIdRepartitionExec, RangeShuffleReaderExec, ShuffleReaderExec,
+        ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
     },
     serde::scheduler::PartitionLocation,
 };
@@ -276,7 +276,17 @@ impl DefaultDistributedPlanner {
             ))
         } else if let Some(repart) = execution_plan.downcast_ref::<RepartitionExec>() {
             match repart.properties().output_partitioning() {
-                Partitioning::Hash(_, _) => {
+                // A shuffle cannot merge sorted inputs, so a sort-preserving
+                // repartition cannot be planned as one.
+                Partitioning::Range(_) if repart.preserve_order() => {
+                    Err(BallistaError::NotImplemented(format!(
+                        "cannot plan {} as a shuffle: it must preserve its input's order",
+                        repart.partitioning()
+                    )))
+                }
+                // Unlike round-robin, a range repartition decides which rows
+                // each partition holds, so it cannot be dropped.
+                Partitioning::Hash(_, _) | Partitioning::Range(_) => {
                     let input = children[0].clone();
                     let input =
                         self.optimizer_ensure_requirements.optimize(input, config)?;
@@ -285,7 +295,7 @@ impl DefaultDistributedPlanner {
                         job_id,
                         self.next_stage_id(),
                         input,
-                        Some(repart.partitioning().to_owned()),
+                        Some(repart.partitioning().to_owned().try_into()?),
                         config,
                     )?;
                     let unresolved_shuffle =
@@ -294,11 +304,32 @@ impl DefaultDistributedPlanner {
                     stages.push(shuffle_writer);
                     Ok((unresolved_shuffle, stages))
                 }
-                _ => {
-                    // remove any non-hash repartition from the distributed plan
+                Partitioning::RoundRobinBatch(_)
+                | Partitioning::UnknownPartitioning(_) => {
+                    // remove any other repartition from the distributed plan
                     Ok((children[0].clone(), stages))
                 }
             }
+        } else if let Some(partition_id) =
+            execution_plan.downcast_ref::<PartitionIdRepartitionExec>()
+        {
+            let input = children[0].clone();
+            let input = self.optimizer_ensure_requirements.optimize(input, config)?;
+
+            let shuffle_writer = create_shuffle_writer_with_config(
+                job_id,
+                self.next_stage_id(),
+                input,
+                Some(ShuffleRouting::PartitionId {
+                    column: partition_id.partition_id_column(),
+                    partition_count: partition_id.partition_count(),
+                }),
+                config,
+            )?;
+            let unresolved_shuffle = create_unresolved_shuffle(shuffle_writer.as_ref());
+
+            stages.push(shuffle_writer);
+            Ok((unresolved_shuffle, stages))
         } else {
             Ok((
                 replace_children_if_necessary(execution_plan, children)?,
@@ -669,9 +700,11 @@ fn can_stay_inline(plan: &Arc<dyn ExecutionPlan>) -> bool {
 
 /// Whether per-task restriction can reduce `plan` to zero partitions. An empty
 /// slice means "this task polls nothing here", so a branch that still reports a
-/// partition afterwards is one that cannot be restricted away.
+/// partition afterwards, or that the rewriter refuses, cannot be restricted
+/// away. No resolver is passed, so a node Ballista does not know gets a stage
+/// of its own.
 fn restricts_to_nothing(plan: &Arc<dyn ExecutionPlan>) -> bool {
-    restrict_plan_to_partitions(plan.clone(), &[])
+    restrict_plan_to_partitions(plan.clone(), &[], None)
         .is_ok_and(|p| p.properties().output_partitioning().partition_count() == 0)
 }
 
@@ -838,20 +871,20 @@ pub(crate) fn create_shuffle_writer_with_config(
     job_id: &JobId,
     stage_id: usize,
     plan: Arc<dyn ExecutionPlan>,
-    partitioning: Option<Partitioning>,
+    routing: Option<ShuffleRouting>,
     config: &ConfigOptions,
 ) -> Result<Arc<dyn ShuffleWriter>> {
-    // Sort-based shuffle is the only shuffle writer for hash-repartition
-    // stages. Its tuning values still come from the session config.
+    // Sort-based shuffle is the only shuffle writer for repartition stages,
+    // however they route rows. Its tuning values still come from the session
+    // config.
     let ballista_config = config
         .extensions
         .get::<BallistaConfig>()
         .cloned()
         .unwrap_or_default();
 
-    // Sort shuffle requires hash partitioning.
-    match partitioning {
-        Some(Partitioning::Hash(exprs, partition_count)) => {
+    match routing {
+        Some(routing) => {
             let sort_config = SortShuffleConfig::new(
                 true,
                 ballista_config.shuffle_sort_based_batch_size(),
@@ -860,12 +893,12 @@ pub(crate) fn create_shuffle_writer_with_config(
                 ballista_config.shuffle_sort_based_memory_limit_per_task_bytes(),
             );
 
-            Ok(Arc::new(SortShuffleWriterExec::try_new(
+            Ok(Arc::new(SortShuffleWriterExec::try_new_with_routing(
                 job_id.to_owned(),
                 stage_id,
                 plan,
                 "".to_owned(),
-                Partitioning::Hash(exprs, partition_count),
+                routing,
                 sort_config,
             )?))
         }
@@ -877,11 +910,11 @@ pub(crate) fn create_shuffle_writer_with_config(
             plan,
             "".to_owned(),
         )?)),
-        Some(other) => Err(BallistaError::General(format!(
-            "unsupported shuffle output partitioning: {other}"
-        ))),
     }
 }
+
+#[cfg(test)]
+mod range_shuffle_tests;
 
 #[cfg(test)]
 mod test {
@@ -890,8 +923,10 @@ mod test {
     use crate::test_utils::{datafusion_test_context, scan_with_file_groups};
     use ballista_core::assert_plan;
     use ballista_core::error::BallistaError;
+    use ballista_core::execution_plans::sort_shuffle::ShuffleRouting;
     use ballista_core::execution_plans::{
-        ShuffleWriter, SortShuffleWriterExec, UnresolvedShuffleExec,
+        PartitionIdRepartitionExec, ShuffleWriter, SortShuffleWriterExec,
+        UnresolvedShuffleExec,
     };
     use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::compute::SortOptions;
@@ -2245,7 +2280,172 @@ order by
         Ok((ctx, (*options).clone()))
     }
 
-    fn roundtrip_operator(
+    /// `(v: Int64, pid: Int32)` over two input partitions, `pid` being the id a
+    /// client would have computed.
+    fn partition_id_source() -> Arc<dyn ExecutionPlan> {
+        use datafusion::arrow::array::{Int32Array, Int64Array};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::datasource::memory::MemorySourceConfig;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Int64, false),
+            Field::new("pid", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![10, 20, 30])),
+                Arc::new(Int32Array::from(vec![0, 1, 2])),
+            ],
+        )
+        .unwrap();
+        MemorySourceConfig::try_new_exec(
+            &[vec![batch.clone()], vec![batch]],
+            schema,
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Stands in for whatever consumes a shuffle: selects the first `n` columns.
+    fn project_leading_columns(
+        input: Arc<dyn ExecutionPlan>,
+        n: usize,
+    ) -> Arc<dyn ExecutionPlan> {
+        use datafusion::physical_plan::projection::ProjectionExpr;
+
+        let schema = input.schema();
+        let exprs: Vec<ProjectionExpr> = schema
+            .fields()
+            .iter()
+            .take(n)
+            .enumerate()
+            .map(|(i, f)| {
+                ProjectionExpr::new(Arc::new(Column::new(f.name(), i)), f.name().clone())
+            })
+            .collect();
+        Arc::new(ProjectionExec::try_new(exprs, input).unwrap())
+    }
+
+    #[test]
+    fn partition_id_repartition_ends_its_stage_in_a_partition_id_writer()
+    -> Result<(), BallistaError> {
+        let marker = Arc::new(PartitionIdRepartitionExec::try_new(
+            partition_id_source(),
+            1,
+            4,
+        )?);
+        let plan = project_leading_columns(marker, 1);
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let stages = planner.plan_query_stages(
+            &"job".into(),
+            plan,
+            &datafusion::config::ConfigOptions::default(),
+        )?;
+
+        // One stage for what is below the boundary, one for what reads it.
+        assert_eq!(stages.len(), 2);
+
+        // The shuffle's schema has no id column, and neither does what reads it.
+        let written: Vec<_> = stages[0]
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(written, ["v"]);
+
+        assert_plan!(stages[0].as_ref(), @r"
+        SortShuffleWriterExec: partitioning=UnknownPartitioning(4), partition_id_column=pid@1
+          DataSourceExec: partitions=2, partition_sizes=[1, 1]
+        ");
+        assert_plan!(stages[1].as_ref(), @r"
+        ShuffleWriterExec: partitioning: UnknownPartitioning(4)
+          ProjectionExec: expr=[v@0 as v]
+            UnresolvedShuffleExec: stage=1, partitioning: UnknownPartitioning(4)
+        ");
+        Ok(())
+    }
+
+    /// Consecutive markers become separate stages, each fed by the one before.
+    #[test]
+    fn partition_id_repartitions_stack_into_separate_stages() -> Result<(), BallistaError>
+    {
+        use datafusion::physical_plan::projection::ProjectionExpr;
+
+        let first = Arc::new(PartitionIdRepartitionExec::try_new(
+            partition_id_source(),
+            1,
+            4,
+        )?);
+        // The consumer of the first shuffle computes a second id for the next.
+        let widened: Arc<dyn ExecutionPlan> = Arc::new(ProjectionExec::try_new(
+            vec![
+                ProjectionExpr::new(Arc::new(Column::new("v", 0)), "v".to_string()),
+                ProjectionExpr::new(Arc::new(Column::new("v", 0)), "pid2".to_string()),
+            ],
+            first,
+        )?);
+        let second = Arc::new(PartitionIdRepartitionExec::try_new(widened, 1, 3)?);
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let stages = planner.plan_query_stages(
+            &"job".into(),
+            second,
+            &datafusion::config::ConfigOptions::default(),
+        )?;
+
+        // first shuffle, second shuffle, and the final stage reading the second.
+        assert_eq!(stages.len(), 3);
+        assert_plan!(stages[0].as_ref(), @r"
+        SortShuffleWriterExec: partitioning=UnknownPartitioning(4), partition_id_column=pid@1
+          DataSourceExec: partitions=2, partition_sizes=[1, 1]
+        ");
+        assert_plan!(stages[1].as_ref(), @r"
+        SortShuffleWriterExec: partitioning=UnknownPartitioning(3), partition_id_column=pid2@1
+          ProjectionExec: expr=[v@0 as v, v@0 as pid2]
+            UnresolvedShuffleExec: stage=1, partitioning: UnknownPartitioning(4)
+        ");
+        Ok(())
+    }
+
+    /// A client submitting over gRPC encodes the plan with the physical extension
+    /// codec and the scheduler decodes it before planning. The marker must plan
+    /// the same after that round trip.
+    #[tokio::test]
+    async fn partition_id_repartition_plans_the_same_after_submission()
+    -> Result<(), BallistaError> {
+        let marker = Arc::new(PartitionIdRepartitionExec::try_new(
+            partition_id_source(),
+            1,
+            4,
+        )?);
+        let plan = project_leading_columns(marker, 1);
+        let ctx = datafusion::prelude::SessionContext::new();
+
+        let submitted = roundtrip_operator(&ctx.task_ctx(), plan)?;
+
+        let mut planner = DefaultDistributedPlanner::new();
+        let stages = planner.plan_query_stages(
+            &"job".into(),
+            submitted,
+            &datafusion::config::ConfigOptions::default(),
+        )?;
+        assert_eq!(stages.len(), 2);
+        let writer = downcast_exec!(stages[0], SortShuffleWriterExec);
+        assert_eq!(
+            writer.routing(),
+            &ShuffleRouting::PartitionId {
+                column: 1,
+                partition_count: 4
+            }
+        );
+        Ok(())
+    }
+
+    pub(super) fn roundtrip_operator(
         ctx: &TaskContext,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {

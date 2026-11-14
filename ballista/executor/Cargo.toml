@@ -50,6 +50,10 @@ build-binary = [
     "dep:axum",
 ]
 default = ["arrow-ipc-optimizations", "build-binary"]
+# Use jemalloc as the executor binary's global allocator instead of mimalloc.
+# Takes precedence over `mimalloc` when both are enabled. Not supported on
+# MSVC targets.
+jemalloc = ["dep:tikv-jemallocator"]
 
 [dependencies]
 arrow = { workspace = true }
@@ -71,6 +75,7 @@ parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 sysinfo = { version = "0.38" }
 tempfile = { workspace = true }
+tikv-jemallocator = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { version = "0.7", features = ["io-util"] }

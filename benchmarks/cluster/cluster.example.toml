@@ -49,6 +49,10 @@ node_selector = { "kubernetes.io/arch" = "amd64" }
 tolerations = []
 # Secrets for pulling the images from a private registry.
 image_pull_secrets = []
+# Always, IfNotPresent or Never (default Always, so a tag pushed again is pulled
+# again). Empty leaves it to Kubernetes, which reuses an image a node already has
+# under the same tag, so nodes can run different builds of it.
+image_pull_policy = "Always"
 
 [data]
 # Directories with one subdirectory of Parquet files per table, such as

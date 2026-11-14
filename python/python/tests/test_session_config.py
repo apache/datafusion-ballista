@@ -28,6 +28,8 @@ from ballista.extension import (
 )
 from datafusion import SessionConfig, SessionContext
 
+from ._util import to_table
+
 
 def _settings(config: SessionConfig) -> dict:
     ctx = SessionContext(config)
@@ -336,8 +338,33 @@ _TYPED_SETTERS = [
 
 def test_typed_setters_are_all_tested():
     setters = {name for name in dir(BallistaSessionConfig) if name.startswith("with_")}
+    # picks the client, it is not a setting, see `test_with_client_impl`
+    setters.discard("with_client_impl")
 
     assert setters == {method for method, _, _ in _TYPED_SETTERS}
+
+
+@pytest.mark.parametrize("kind", ["python", "rust", "Python"])
+def test_with_client_impl(kind):
+    config = BallistaSessionConfig()
+    assert config.with_client_impl(kind) is config
+
+    assert config._client_impl == kind.lower()
+    # kept out of BallistaConfigExtension, which rejects unknown keys
+    assert "ballista.python.client_impl" not in _settings(config.build())
+    assert config._ballista_overrides() == {}
+
+
+def test_client_impl_in_dict():
+    config = BallistaSessionConfig({"ballista.python.client_impl": "python"})
+
+    assert config._client_impl == "python"
+    assert "ballista.python.client_impl" not in _settings(config.build())
+
+
+def test_client_impl_rejects_invalid_value():
+    with pytest.raises(ValueError, match="ballista.python.client_impl"):
+        BallistaSessionConfig({"ballista.python.client_impl": "java"})
 
 
 @pytest.mark.parametrize("method, key, value", _TYPED_SETTERS)
@@ -520,3 +547,66 @@ def test_cluster_config_rejects_ballista_session_config():
 
     with pytest.warns(DeprecationWarning), pytest.raises(ValueError):
         _merge_cluster_config(config, {"ballista.client.pull": True})
+
+
+#
+# BallistaConfigExtension
+#
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="information_schema scans cannot be serialized across the FFI "
+    "planner boundary",
+)
+def test_ballista_config_in_information_schema(ctx):
+    result = to_table(
+        ctx.sql(
+            "SELECT name, value FROM information_schema.df_settings "
+            "WHERE name = 'ballista.planner.adaptive.enabled'"
+        )
+    )
+    assert result.num_rows == 1
+    assert result.column("name").to_pylist() == ["ballista.planner.adaptive.enabled"]
+    assert result.column("value").to_pylist()[0] in ("true", "false")
+
+
+def adaptive_enabled_setting(ctx) -> list:
+    return to_table(
+        ctx.sql(
+            "SELECT name, value FROM information_schema.df_settings "
+            "WHERE name = 'ballista.planner.adaptive.enabled'"
+        )
+    ).to_pylist()
+
+
+def test_ballista_config_extension_local():
+    config = SessionConfig().with_information_schema(True)
+    ctx = SessionContext(config.with_extension(BallistaConfigExtension()))
+    rows = adaptive_enabled_setting(ctx)
+    assert len(rows) == 1
+    assert rows[0]["value"] in ("true", "false")
+
+
+def test_ballista_config_extension_overrides():
+    extension = BallistaConfigExtension({"ballista.planner.adaptive.enabled": "false"})
+    config = SessionConfig().with_information_schema(True).with_extension(extension)
+    assert adaptive_enabled_setting(SessionContext(config)) == [
+        {"name": "ballista.planner.adaptive.enabled", "value": "false"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"ballista.no_such_key": "1"},
+        {"datafusion.execution.batch_size": "1"},
+    ],
+)
+def test_ballista_config_extension_invalid_key(settings):
+    with pytest.raises(ValueError):
+        BallistaConfigExtension(settings)
+
+
+def test_set_ballista_config(ctx):
+    ctx.sql("SET ballista.planner.adaptive.enabled = false").collect()
