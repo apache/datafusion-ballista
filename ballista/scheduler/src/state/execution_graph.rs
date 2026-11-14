@@ -194,6 +194,20 @@ pub trait ExecutionGraph: Debug {
         executor_id: &str,
     ) -> Result<(HashSet<usize>, Vec<RunningTaskInfo>)>;
 
+    /// Return a bound-but-never-launched task to pending.
+    ///
+    /// Used when `launch_tasks` cannot dispatch a batch (e.g. a transient
+    /// executor-metadata miss) so the partitions are not left stranded as
+    /// `Running` with no status updates ever arriving. See #2691.
+    ///
+    /// Returns `true` when the task was still `Running` and was reset.
+    ///
+    /// The default implementation resets nothing and returns `false`, so
+    /// existing out-of-tree implementations keep compiling.
+    fn reset_unlaunched_task(&mut self, _key: &TaskKey) -> bool {
+        false
+    }
+
     /// Whether a stage that has not finished reads cache data (an external
     /// input) held on `executor_id`. The graph cannot re-run another job's
     /// output, so losing it fails the job.
@@ -314,6 +328,27 @@ pub trait ExecutionGraph: Debug {
     fn as_pipelined_mut(&mut self) -> Option<&mut PipelinedExecutionGraph> {
         None
     }
+}
+
+/// Reset a still-Running task_info slot so its partitions return to pending.
+pub(crate) fn reset_unlaunched_task_in_stages(
+    stages: &mut HashMap<usize, ExecutionStage>,
+    key: &TaskKey,
+) -> bool {
+    let Some(ExecutionStage::Running(stage)) = stages.get_mut(&key.stage_id) else {
+        return false;
+    };
+    if key.task_id >= stage.task_infos.len() {
+        return false;
+    }
+    if !matches!(
+        stage.task_infos[key.task_id].task_status,
+        task_status::Status::Running(_)
+    ) {
+        return false;
+    }
+    stage.reset_task_info(key.task_id);
+    true
 }
 
 /// [ExecutionGraph] implementation which generates
@@ -1392,6 +1427,10 @@ impl ExecutionGraph for StaticExecutionGraph {
                 return Ok((reset, tasks_to_cancel));
             }
         }
+    }
+
+    fn reset_unlaunched_task(&mut self, key: &TaskKey) -> bool {
+        reset_unlaunched_task_in_stages(&mut self.stages, key)
     }
 
     /// Convert unresolved stage to be resolved
