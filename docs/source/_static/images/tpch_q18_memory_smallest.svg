@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 372" width="880" height="372" role="img" aria-label="Bar chart of the smallest executor memory for TPC-H q18. Ballista: 8 GiB. Spark, on-heap: 18 GiB. Spark, on-heap, 2x overhead: 12 GiB. Spark, 50% off-heap: 12 GiB. Spark + Comet, 50% off-heap: 24 GiB. Spark + Comet, 75% off-heap: 20 GiB. Spark + Comet, 75% off-heap, 2x overhead: 22 GiB.">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; fill: #1f2328; }
+    .bg { fill: #ffffff; }
+    .title { font-size: 20px; font-weight: 600; }
+    .sub { font-size: 14px; fill: #59636e; }
+    .label { font-size: 14px; }
+    .value { font-size: 14px; font-weight: 600; }
+    .detail { font-weight: 400; fill: #59636e; }
+    .legend { font-size: 13px; }
+    .tick { font-size: 12.5px; fill: #59636e; }
+    .note { font-size: 12.5px; fill: #59636e; }
+    .grid { stroke: #e1e0d9; stroke-width: 1; }
+    .axis { stroke: #c3c2b7; stroke-width: 1; }
+    .comet { fill: #1baf7a; }
+    .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+    .line.spark { stroke: #898781; }
+    .line.staged { stroke: #2a78d6; }
+    .line.comet { stroke: #1baf7a; }
+    .ring { stroke: #ffffff; stroke-width: 2; }
+    .cross { fill: none; stroke-width: 2.5; stroke-linecap: round; }
+    .cross.spark { stroke: #898781; }
+    .cross.staged { stroke: #2a78d6; }
+    .cross.comet { stroke: #1baf7a; }
+    .cross.key { stroke: #59636e; }
+    .line.spark, .line.staged, .line.comet, .cross.spark, .cross.staged, .cross.comet { fill: none; }
+    .spark { fill: #898781; }
+    .staged { fill: #2a78d6; }
+    .pipelined { fill: #eb6834; }
+    @media (prefers-color-scheme: dark) {
+      text { fill: #e6edf3; }
+      .bg { fill: #0d1117; }
+      .sub, .note, .tick, .detail { fill: #9198a1; }
+      .grid { stroke: #21262d; }
+      .axis { stroke: #3d444d; }
+      .comet { fill: #199e70; }
+      .line.staged, .cross.staged { stroke: #3987e5; }
+      .line.comet, .cross.comet { stroke: #199e70; }
+      .ring { stroke: #0d1117; }
+      .cross.key { stroke: #9198a1; }
+      .staged { fill: #3987e5; }
+      .pipelined { fill: #d95926; }
+    }
+  </style>
+  <rect class="bg" width="880" height="372" rx="6"/>
+  <text class="title" x="24" y="36">Ballista finished in 8 GiB per executor, Spark needed 12 GiB and Spark + Comet 20 GiB</text>
+  <text class="sub" x="24" y="60">Smallest executor memory at which TPC-H q18 (SF1000) finished with no executor out of memory, and its time there.</text>
+
+  <path class="staged" d="M330 88H452.67Q456.67 88 456.67 92V104Q456.67 108 452.67 108H330Z"/>
+  <path class="spark" d="M330 124H611Q615 124 615 128V140Q615 144 611 144H330Z"/>
+  <path class="spark" d="M330 160H516Q520 160 520 164V176Q520 180 516 180H330Z"/>
+  <path class="spark" d="M330 196H516Q520 196 520 200V212Q520 216 516 216H330Z"/>
+  <path class="comet" d="M330 232H706Q710 232 710 236V248Q710 252 706 252H330Z"/>
+  <path class="comet" d="M330 268H642.67Q646.67 268 646.67 272V284Q646.67 288 642.67 288H330Z"/>
+  <path class="comet" d="M330 304H674.33Q678.33 304 678.33 308V320Q678.33 324 674.33 324H330Z"/>
+  <line class="axis" x1="330" y1="80" x2="330" y2="336"/>
+
+  <text class="label" x="320" y="103" text-anchor="end">Ballista</text>
+  <text class="label" x="320" y="139" text-anchor="end">Spark, on-heap</text>
+  <text class="label" x="320" y="175" text-anchor="end">Spark, on-heap, 2x overhead</text>
+  <text class="label" x="320" y="211" text-anchor="end">Spark, 50% off-heap</text>
+  <text class="label" x="320" y="247" text-anchor="end">Spark + Comet, 50% off-heap</text>
+  <text class="label" x="320" y="283" text-anchor="end">Spark + Comet, 75% off-heap</text>
+  <text class="label" x="320" y="319" text-anchor="end">Spark + Comet, 75% off-heap, 2x overhead</text>
+
+  <text class="value" x="466.67" y="103">8 GiB<tspan class="detail"> · 132 s</tspan></text>
+  <text class="value" x="625" y="139">18 GiB<tspan class="detail"> · 336 s</tspan></text>
+  <text class="value" x="530" y="175">12 GiB<tspan class="detail"> · 406 s</tspan></text>
+  <text class="value" x="530" y="211">12 GiB<tspan class="detail"> · 387 s</tspan></text>
+  <text class="value" x="720" y="247">24 GiB<tspan class="detail"> · 160 s</tspan></text>
+  <text class="value" x="656.67" y="283">20 GiB<tspan class="detail"> · 150 s</tspan></text>
+  <text class="value" x="688.33" y="319">22 GiB<tspan class="detail"> · 174 s</tspan></text>
+
+  <text class="note" x="24" y="358">Derived from TPC-H, not an official TPC-H result. 2 executors of 16 CPUs. Each size is a fresh cluster; mean of 2 runs.</text>
+</svg>

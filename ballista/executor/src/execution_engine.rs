@@ -271,16 +271,11 @@ impl ExecutionEngine for DefaultExecutionEngine {
         } else if let Some(sort_shuffle_writer) =
             plan.downcast_ref::<SortShuffleWriterExec>()
         {
-            let exec = SortShuffleWriterExec::try_new(
-                job_id,
-                stage_id,
-                plan.children()[0].clone(),
-                work_dir.to_string(),
-                sort_shuffle_writer.shuffle_output_partitioning().clone(),
-                sort_shuffle_writer.config().clone(),
-            )?
-            .with_task_id(task_id)
-            .with_global_output_partition_ids(global_output_partition_ids);
+            let exec = sort_shuffle_writer
+                .clone()
+                .with_work_dir(work_dir.to_string())
+                .with_task_id(task_id)
+                .with_global_output_partition_ids(global_output_partition_ids);
             Ok(Arc::new(DefaultQueryStageExec::new(
                 ShuffleWriterVariant::Sort(exec),
             )))
@@ -467,8 +462,8 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         &self,
     ) -> Result<Vec<ballista_core::serde::protobuf::WindowStateReport>> {
         // Both partitioning-preserving writers can sit over a window; the sort
-        // writer repartitions (by hash or range), which the prefix rewrite never
-        // plants.
+        // writer repartitions (by hash, range or partition id), which the prefix
+        // rewrite never plants.
         let captured = match &self.shuffle_writer {
             ShuffleWriterVariant::Passthrough(writer) => writer.collect_window_state()?,
             ShuffleWriterVariant::Range(writer) => writer.collect_window_state(),
