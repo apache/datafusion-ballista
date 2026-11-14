@@ -118,6 +118,7 @@ insta = { workspace = true }
 regex = "1"
 rstest = { workspace = true }
 serde_json = { workspace = true }
+# `all` exposes `SockRef::tcp_keepalive_time`, used to assert the keepalive idle time in tests
 socket2 = { version = "0.6", features = ["all"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
