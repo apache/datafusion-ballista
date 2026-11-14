@@ -103,6 +103,59 @@ operation which executes a plan, such as `collect`, `show`, `to_pandas` or
 The scheduler address is only used when a query is executed. Creating a context with
 a wrong address succeeds, and the error is raised by the first query.
 
+### Python Cluster Client
+
+By default, queries are sent to the scheduler, and their results fetched, by the
+native Rust client. `BallistaClient` is a client written in Python that can be used
+instead, for example to customize how the cluster is reached. It talks to the
+scheduler over gRPC and fetches results over Arrow Flight, and needs the
+`python-client` extra:
+
+```bash
+pip install "ballista[python-client]"
+```
+
+To use it with the context's address and the `ballista.*` options of `config`, set
+`ballista.python.client_impl` to `python`:
+
+```python
+ctx = BallistaSessionContext(
+    "df://localhost:50050",
+    config={"ballista.python.client_impl": "python", "ballista.client.use_tls": True},
+)
+```
+
+`ballista.python.client_impl` only picks the client. It is not sent to the cluster,
+and can only be set in `config`: `SET ballista.python.client_impl` fails.
+
+To configure the client yourself, create it and pass it as `client`. Its `metadata`
+is sent with every scheduler call, for example for authentication:
+
+```python
+from ballista import BallistaClient, BallistaSessionContext
+
+client = BallistaClient(
+    "df://localhost:50050",
+    config={"ballista.client.use_tls": "true"},
+    metadata=[("authorization", "Bearer <token>")],
+)
+ctx = BallistaSessionContext(client=client)
+```
+
+`BallistaClient` can also be subclassed, overriding `call_metadata`,
+`create_channel` or `create_flight_client` to change how the scheduler and the
+executors are reached.
+
+A passed client connects with the `ballista.client.use_tls`,
+`ballista.client.grpc_max_message_size` and
+`ballista.client.grpc_http2_keepalive_interval_seconds` options of its own `config`.
+If the context's `config` sets them to other values, a `UserWarning` is raised; set
+them on the client instead. The other `ballista.*` options of the context's `config`
+apply to the client's queries.
+
+Without the extra, `import ballista` and the native client still work. Using
+`BallistaClient` then raises an `ImportError` that names the extra.
+
 ## Configuration
 
 ### Target Partitions
