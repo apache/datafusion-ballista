@@ -26,7 +26,7 @@ incrementally make updates that are required due to changes in DataFusion rather
 to do when the next official release is available.
 
 When there is a new official release of DataFusion, we update the `main` branch to point to that, update the version
-number, and create a new release branch, such as `branch-0.11`. Once this branch is created, we switch the `main` branch
+number, and create a new release branch, such as `branch-56`. Once this branch is created, we switch the `main` branch
 back to using GitHub dependencies. The release activity (such as generating the changelog) can then happen on the
 release branch without blocking ongoing development in the `main` branch.
 
@@ -51,7 +51,7 @@ Although some tasks can only be performed by a PMC member, many tasks can be per
 | ---------------------------------------------------------------- | ------------- |
 | Create PRs against main branch to update DataFusion dependencies | None          |
 | Create PRs against main branch to update Ballista version        | None          |
-| Create release branch (e.g. branch-0.11)                         | Committer     |
+| Create release branch (e.g. branch-56)                           | Committer     |
 | Create PRs against release branch with CHANGELOG                 | None          |
 | Create PRs against release branch with cherry-picked commits     | None          |
 | Create release candidate tag                                     | Committer     |
@@ -89,12 +89,19 @@ This section is for major releases. For a minor or patch release, skip to
 
 Before creating a new release:
 
-- We need to ensure that the main branch does not have any GitHub dependencies
+- We need to ensure that the main branch does not have any GitHub dependencies. If `main` tracked a DataFusion
+  release candidate or branch, move the DataFusion crates in `[workspace.dependencies]` of the root `Cargo.toml` to the
+  released versions on crates.io, then run `dev/update_datafusion_proto.py` to re-sync the vendored proto files
+  (CI checks them with `ci/scripts/rust_proto_check.sh`). Leave `python/` on its current DataFusion release; it moves
+  to the new one as part of the [Python client release](../../python/dev/release/README.md).
 - a PR should be created and merged to update the major version number of the project. There is a script to automate
-  updating the version number: `./dev/update_ballista_versions.py 0.11.0`. The script does not change `python/`,
+  updating the version number: `./dev/update_ballista_versions.py 56.0.0`. The script does not change `python/`,
   which is versioned as part of the [Python client release](../../python/dev/release/README.md)
+- In the same PR, or a separate one, prepare the docs for the release: delete the "has not been released yet" note
+  at the top of `docs/source/upgrading/<version>.md`, and check that every change since the previous major release
+  that needs action from users (a removed feature, a changed public API, a new protocol version) has an entry there
 - Add the new release branch to `github.protected_branches` in `.asf.yaml` so that it requires an approving review
-- A new release branch should be created, such as `branch-0.11`
+- A new release branch should be created, such as `branch-56`
 
 Once the release branch has been created, the `main` branch can immediately go back to depending on DataFusion with a
 GitHub dependency.
@@ -158,8 +165,8 @@ tag and the new release tag (or `HEAD`):
 
 ```bash
 GITHUB_TOKEN=<TOKEN> ./dev/release/generate-changelog.py \
-    52.0.0 HEAD 53.0.0 \
-    > docs/source/changelog/53.0.0.md
+    55.0.0 HEAD 56.0.0 \
+    > docs/source/changelog/56.0.0.md
 ```
 
 The script writes a fully-formed file: ASF header, version title, commit /
@@ -171,14 +178,14 @@ top of `docs/source/changelog/index.md`:
 ```{toctree}
 :maxdepth: 1
 
-53.0.0
-52.0.0
+56.0.0
+55.0.0
 ...
 ```
 ````
 
 Send a PR with the new file and the updated index to the release branch
-(e.g. `branch-53`). If new commits land in the release branch before
+(e.g. `branch-56`). If new commits land in the release branch before
 merge, rerun the generator to refresh the file.
 
 ## Prepare release candidate artifacts
@@ -197,7 +204,7 @@ Pick numbers in sequential order, with `0` for `rc0`, `1` for `rc1`, etc.
 While the official release artifacts are signed tarballs and zip files, we also
 tag the commit it was created for convenience and code archaeology.
 
-Using a string such as `0.11.0` as the `<version>`, create and push the tag by running these commands:
+Using a string such as `56.0.0` as the `<version>`, create and push the tag by running these commands:
 
 ```shell
 git tag <version>-rc<rc>
@@ -232,7 +239,7 @@ svn commit KEYS -m "Add key for John Doe"
 Run `create-tarball.sh` with the `<version>` tag and `<rc>` and you found in previous steps:
 
 ```shell
-./dev/release/create-tarball.sh 0.11.0 1
+./dev/release/create-tarball.sh 56.0.0 1
 ```
 
 The `create-tarball.sh` script
@@ -280,7 +287,7 @@ the limit. Setting it in a separate terminal or a child shell does not update th
 Then run the script with the candidate's version and RC number, for example:
 
 ```
-./dev/release/verify-release-candidate.sh 0.11.0 0
+./dev/release/verify-release-candidate.sh 56.0.0 0
 ```
 
 #### If the release is not approved
@@ -299,7 +306,7 @@ https://dist.apache.org/repos/dist/release/datafusion/datafusion-ballista-0.8.0/
 the `release-tarball.sh` script:
 
 ```shell
-./dev/release/release-tarball.sh 0.11.0 1
+./dev/release/release-tarball.sh 56.0.0 1
 ```
 
 Congratulations! The release is now official!
@@ -309,9 +316,9 @@ Congratulations! The release is now official!
 Tag the same release candidate commit with the final release tag
 
 ```
-git checkout 0.11.0-rc1
-git tag 0.11.0
-git push apache 0.11.0
+git checkout 56.0.0-rc1
+git tag 56.0.0
+git push apache 56.0.0
 ```
 
 ### Publish on Crates.io
@@ -447,8 +454,8 @@ with a copy of the previous release announcement.
 Run the following commands to get the number of commits and number of unique contributors for inclusion in the blog post.
 
 ```bash
-git log --pretty=oneline 0.10.0..0.11.0 ballista ballista-cli examples | wc -l
-git shortlog -sn 0.10.0..0.11.0 ballista ballista-cli examples | wc -l
+git log --pretty=oneline 55.0.0..56.0.0 ballista ballista-cli examples | wc -l
+git shortlog -sn 55.0.0..56.0.0 ballista ballista-cli examples | wc -l
 ```
 
 Once there is consensus on the contents of the post, create a PR to add a blog post to the
