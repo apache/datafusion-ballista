@@ -301,7 +301,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let mut planner = DefaultDistributedPlanner::new();
         let session_state = ctx.state();
         let session_config = session_state.config();
-        let pipelined = session_config.ballista_config().execution_mode()?
+        let pipelined = session_config.ballista_execution_mode()?
             == ballista_core::config::ExecutionMode::Pipelined;
 
         // Semi join reduction needs the size of each candidate dimension, so it

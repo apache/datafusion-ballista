@@ -20,7 +20,7 @@ use crate::config::{
     BALLISTA_BROADCAST_JOIN_THRESHOLD_ROWS, BALLISTA_CLIENT_GRPC_MAX_MESSAGE_SIZE,
     BALLISTA_CLIENT_USE_TLS, BALLISTA_COALESCE_ENABLED,
     BALLISTA_COALESCE_MERGED_PARTITION_FACTOR, BALLISTA_COALESCE_SMALL_PARTITION_FACTOR,
-    BALLISTA_COALESCE_TARGET_PARTITION_BYTES,
+    BALLISTA_COALESCE_TARGET_PARTITION_BYTES, BALLISTA_EXECUTION_MODE,
     BALLISTA_HASH_JOIN_MAX_BUILD_PARTITION_BYTES, BALLISTA_JOB_NAME,
     BALLISTA_REUSE_EXCHANGE_ENABLED, BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ,
     BALLISTA_SHUFFLE_READER_MAX_REQUESTS, BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
@@ -28,7 +28,7 @@ use crate::config::{
     BALLISTA_SKEW_JOIN_PARTITION_THRESHOLD_BYTES,
     BALLISTA_SKEW_JOIN_SKEWED_PARTITION_FACTOR,
     BALLISTA_SKEW_JOIN_SMALL_PARTITION_FACTOR, BALLISTA_STANDALONE_PARALLELISM,
-    BallistaConfig,
+    BallistaConfig, ExecutionMode,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -306,6 +306,13 @@ pub trait SessionConfigExt {
     fn ballista_skew_join_small_partition_factor(&self) -> f64;
     /// Sets the tail-merge factor for the skew-join sub-shard bin-packer.
     fn with_ballista_skew_join_small_partition_factor(self, factor: f64) -> Self;
+
+    /// Returns how a job's stages exchange data, as an [`ExecutionMode`].
+    ///
+    /// Returns an error if `ballista.execution.mode` is not a valid value.
+    fn ballista_execution_mode(&self) -> datafusion::error::Result<ExecutionMode>;
+    /// Sets how a job's stages exchange data. By default, this is set to `Staged`.
+    fn with_ballista_execution_mode(self, execution_mode: ExecutionMode) -> Self;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -581,6 +588,19 @@ impl SessionConfigExt for SessionConfig {
         &self,
     ) -> Option<Arc<BallistaConfigGrpcEndpoint>> {
         self.get_extension::<BallistaConfigGrpcEndpoint>()
+    }
+
+    fn ballista_execution_mode(&self) -> datafusion::error::Result<ExecutionMode> {
+        self.ballista_config().execution_mode()
+    }
+
+    fn with_ballista_execution_mode(self, execution_mode: ExecutionMode) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_str(BALLISTA_EXECUTION_MODE, &execution_mode.to_string())
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_str(BALLISTA_EXECUTION_MODE, &execution_mode.to_string())
+        }
     }
 
     ballista_config_option!(
@@ -1041,7 +1061,7 @@ mod test {
     };
 
     use crate::{
-        config::BALLISTA_JOB_NAME,
+        config::{BALLISTA_EXECUTION_MODE, BALLISTA_JOB_NAME, ExecutionMode},
         extension::{SessionConfigExt, SessionConfigHelperExt, SessionStateExt},
     };
 
@@ -1206,6 +1226,37 @@ mod test {
 
         let config = SessionConfig::new().with_ballista_coalesce_enabled(true);
         assert!(config.ballista_coalesce_enabled());
+    }
+
+    #[test]
+    fn should_round_trip_execution_mode() {
+        let config = SessionConfig::new_with_ballista()
+            .with_ballista_execution_mode(ExecutionMode::Pipelined);
+        assert_eq!(
+            config.ballista_execution_mode().unwrap(),
+            ExecutionMode::Pipelined
+        );
+
+        let config =
+            SessionConfig::new().with_ballista_execution_mode(ExecutionMode::Pipelined);
+        assert_eq!(
+            config.ballista_execution_mode().unwrap(),
+            ExecutionMode::Pipelined
+        );
+
+        let config = SessionConfig::new_with_ballista();
+        assert_eq!(
+            config.ballista_execution_mode().unwrap(),
+            ExecutionMode::Staged
+        );
+    }
+
+    #[test]
+    fn should_error_on_invalid_execution_mode() {
+        // The typed setter cannot store an invalid value, so write the raw key
+        let config = SessionConfig::new_with_ballista()
+            .set_str(BALLISTA_EXECUTION_MODE, "non-existent-execution-mode");
+        assert!(config.ballista_execution_mode().is_err());
     }
 
     #[test]
