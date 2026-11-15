@@ -240,9 +240,9 @@ pub struct RunningStage {
     /// of this stage reports. A task that reports a different number ran a
     /// plan of a different shape and its metrics can't be merged.
     pub plan_metrics_len: usize,
-    /// Number of successful tasks whose metrics were skipped because they
-    /// did not match `plan`.
-    pub metrics_skipped_tasks: usize,
+    /// Whether a task's skipped metrics were already logged as a warning, so
+    /// that only the first skipped task of the stage warns.
+    pub skipped_metrics_warned: bool,
     /// [SessionConfig] used for this stage
     pub session_config: Arc<SessionConfig>,
     /// Per-task runtime-stats reports collected from every successful task
@@ -707,7 +707,7 @@ impl RunningStage {
             task_failure_numbers: vec![0; partitions],
             stage_metrics: None,
             plan_metrics_len: collect_plan_metrics(plan.as_ref()).len(),
-            metrics_skipped_tasks: 0,
+            skipped_metrics_warned: false,
             plan,
             session_config,
             runtime_stats_reports: Vec::new(),
@@ -1017,9 +1017,9 @@ impl RunningStage {
     /// partitions, and that can change the shape, for example by swapping an
     /// `EmptyExec` without metrics for a stand-in source with them. Such a
     /// task's metrics would not line up with the stage plan, so they are
-    /// skipped with an error and counted in `metrics_skipped_tasks`. The
-    /// check is against the stage plan, not against the first task to
-    /// report, so the tasks that match the plan always merge.
+    /// skipped with an error. The check is against the stage plan, not
+    /// against the first task to report, so the tasks that match the plan
+    /// always merge.
     pub fn update_task_metrics(
         &mut self,
         task_id: usize,
@@ -1031,7 +1031,6 @@ impl RunningStage {
         }
 
         if metrics.len() != self.plan_metrics_len {
-            self.metrics_skipped_tasks += 1;
             return Err(BallistaError::Internal(format!(
                 "Error updating task metrics to stage {}, task {} reported {} operator metrics sets \
                 but the stage plan has {}",
@@ -1078,15 +1077,16 @@ impl RunningStage {
     /// to the debug log, since a wide stage can skip thousands of tasks for
     /// the same reason.
     pub fn log_skipped_metrics(
-        &self,
+        &mut self,
         job_id: impl Display,
         task_id: usize,
         error: &BallistaError,
     ) {
-        if self.metrics_skipped_tasks <= 1 {
+        if !self.skipped_metrics_warned {
+            self.skipped_metrics_warned = true;
             warn!(
                 "Ignoring the metrics of task {task_id} in stage {} of job {job_id}: {error}. \
-                Later tasks of this stage with the same problem are logged at debug level",
+                Later skipped tasks of this stage are logged at debug level",
                 self.stage_id
             );
         } else {
@@ -1369,7 +1369,7 @@ impl SuccessfulStage {
             task_failure_numbers: vec![0; self.partitions],
             stage_metrics,
             plan_metrics_len: collect_plan_metrics(self.plan.as_ref()).len(),
-            metrics_skipped_tasks: 0,
+            skipped_metrics_warned: false,
             session_config: self.session_config.clone(),
             stage_running_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2099,7 +2099,10 @@ mod tests {
             "{err}"
         );
         assert!(stage.stage_metrics.is_none());
-        assert_eq!(stage.metrics_skipped_tasks, 1);
+        // Only the first skipped task warns.
+        assert!(!stage.skipped_metrics_warned);
+        stage.log_skipped_metrics("test-job", 0, &err);
+        assert!(stage.skipped_metrics_warned);
 
         // A task that matches the plan merges even though it reported second.
         stage
@@ -2110,10 +2113,11 @@ mod tests {
         assert_eq!(metrics[0].output_rows(), Some(200));
 
         // Another mismatched task is skipped and leaves the merged metrics alone.
-        stage
+        let err = stage
             .update_task_metrics(2, vec![make_operator_metrics_set(300, 30); 3])
             .unwrap_err();
-        assert_eq!(stage.metrics_skipped_tasks, 2);
+        stage.log_skipped_metrics("test-job", 2, &err);
+        assert!(stage.skipped_metrics_warned);
         let metrics = stage.stage_metrics.as_ref().unwrap();
         assert_eq!(metrics.len(), 1);
         assert_eq!(metrics[0].output_rows(), Some(200));
