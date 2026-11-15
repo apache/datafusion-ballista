@@ -450,7 +450,7 @@ pipelined jobs.</p>
 </div>
 <p>or when building the session:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
-<span class="w">    </span><span class="p">.</span><span class="n">set_str</span><span class="p">(</span><span class="s">"ballista.execution.mode"</span><span class="p">,</span><span class="w"> </span><span class="s">"pipelined"</span><span class="p">);</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_ballista_execution_mode</span><span class="p">(</span><span class="n">ExecutionMode</span><span class="p">::</span><span class="n">Pipelined</span><span class="p">);</span>
 <span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionStateBuilder</span><span class="p">::</span><span class="n">new</span><span class="p">()</span>
 <span class="w">    </span><span class="p">.</span><span class="n">with_config</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>

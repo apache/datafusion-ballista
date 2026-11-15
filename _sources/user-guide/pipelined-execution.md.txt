@@ -64,7 +64,7 @@ or when building the session:
 
 ```rust
 let config = SessionConfig::new_with_ballista()
-    .set_str("ballista.execution.mode", "pipelined");
+    .with_ballista_execution_mode(ExecutionMode::Pipelined);
 let state = SessionStateBuilder::new()
     .with_config(config)
     .with_default_features()
