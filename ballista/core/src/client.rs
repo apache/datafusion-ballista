@@ -766,7 +766,18 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Stream
                     )
                     .into())));
                 }
-                std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
+                std::task::Poll::Ready(None) => {
+                    if !self.translator.is_idle() {
+                        // The translator holds back a rewritten batch until
+                        // its whole body has arrived, so the decoder cannot
+                        // see that the stream ended inside it.
+                        return std::task::Poll::Ready(Some(Err(ArrowError::IpcError(
+                            "Shuffle stream ends inside a message".to_owned(),
+                        )
+                        .into())));
+                    }
+                    return std::task::Poll::Ready(None);
+                }
                 std::task::Poll::Pending => return std::task::Poll::Pending,
             }
         }
@@ -918,6 +929,48 @@ mod tests {
                 .await;
 
         assert_eq!(batches, result.unwrap())
+    }
+
+    #[tokio::test]
+    async fn should_fail_when_stream_ends_inside_a_rewritten_batch() {
+        use crate::shuffle_ipc::{
+            ShuffleCompression, ShuffleEncoding, ShuffleStreamWriter,
+        };
+        use datafusion::arrow::array::StringArray;
+        use datafusion::arrow::ipc::CompressionType;
+
+        let batch = RecordBatch::try_from_iter([(
+            "s",
+            Arc::new(StringArray::from_iter_values(
+                (0..1000).map(|i| format!("value-{i}")),
+            )) as _,
+        )])
+        .unwrap();
+        let compression = ShuffleCompression {
+            codec: Some(CompressionType::ZSTD),
+            offsets_as_lengths: true,
+        };
+        let encoding = ShuffleEncoding::try_new(&batch.schema(), compression).unwrap();
+        assert!(encoding.uses_lengths());
+        let mut writer =
+            ShuffleStreamWriter::try_new(Vec::new(), &batch.schema(), &encoding).unwrap();
+        writer.write(&batch).unwrap();
+        let mut bytes = writer.into_inner().unwrap();
+        // Drop the end-of-stream marker and the last bytes of the batch body.
+        bytes.truncate(bytes.len() - 8 - 16);
+
+        let stream = futures::stream::iter(bytes)
+            .chunks(64)
+            .map(|b| Ok(Bytes::from(b)));
+        let result: datafusion::error::Result<Vec<RecordBatch>> =
+            BlockDataStream::try_new(stream)
+                .await
+                .unwrap()
+                .try_collect()
+                .await;
+
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("ends inside a message"), "{error}");
     }
 
     #[tokio::test]

@@ -47,8 +47,8 @@
 //! messages through as they are.
 //!
 //! Only schemas that have at least one offsets buffer, and whose types all
-//! have a buffer layout this module maps, are rewritten. Views, dictionaries, unions and run-end encoded columns keep
-//! arrow-ipc's own compression.
+//! have a buffer layout this module maps, are rewritten. Views, dictionaries,
+//! unions and run-end encoded columns keep arrow-ipc's own compression.
 
 mod offsets;
 mod reader;

@@ -34,6 +34,7 @@ use crate::JobId;
 use crate::error::{BallistaError, Result};
 use crate::shuffle_ipc::{ShuffleCompression, ShuffleEncoding, ShuffleStreamWriter};
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
 use log::debug;
 use std::collections::HashMap;
@@ -118,7 +119,10 @@ impl SpillManager {
     /// * `stage_id` - Stage identifier
     /// * `input_partition` - Input partition number
     /// * `schema` - Schema shared by all spill writers
-    /// * `compression` - How spill files are compressed
+    /// * `compression` - Compression codec for spill files
+    ///
+    /// Spill files are plain arrow-ipc streams. Use
+    /// [`SpillManager::with_encoding`] to store offsets as lengths.
     pub fn new(
         work_dir: &str,
         job_id: &JobId,
@@ -126,7 +130,32 @@ impl SpillManager {
         task_id: usize,
         input_partition: usize,
         schema: SchemaRef,
-        compression: ShuffleCompression,
+        compression: Option<CompressionType>,
+    ) -> Result<Self> {
+        let encoding =
+            ShuffleEncoding::try_new(&schema, ShuffleCompression::plain(compression))?;
+        Self::with_encoding(
+            work_dir,
+            job_id,
+            stage_id,
+            task_id,
+            input_partition,
+            schema,
+            encoding,
+        )
+    }
+
+    /// Creates a new spill manager whose spill files are encoded with
+    /// `encoding`, which must have been made for `schema`. The arguments are
+    /// otherwise those of [`SpillManager::new`].
+    pub fn with_encoding(
+        work_dir: &str,
+        job_id: &JobId,
+        stage_id: usize,
+        task_id: usize,
+        input_partition: usize,
+        schema: SchemaRef,
+        encoding: ShuffleEncoding,
     ) -> Result<Self> {
         // Spills live beside the task's data file, one directory per input
         // partition, so a task owns exactly one directory under the stage and
@@ -139,7 +168,6 @@ impl SpillManager {
 
         std::fs::create_dir_all(&spill_dir).map_err(BallistaError::IoError)?;
 
-        let encoding = ShuffleEncoding::try_new(&schema, compression)?;
         Ok(Self {
             spill_dir,
             schema,
@@ -265,7 +293,6 @@ impl Drop for SpillManager {
 mod tests {
     use super::*;
     use crate::execution_plans::test_util::{int32_batch, int32_schema};
-    use datafusion::arrow::ipc::CompressionType;
     use datafusion::arrow::ipc::reader::StreamReader;
     use std::io::{Seek, SeekFrom};
     use tempfile::TempDir;
@@ -315,7 +342,7 @@ mod tests {
             0,
             0,
             schema.clone(),
-            ShuffleCompression::plain(Some(CompressionType::LZ4_FRAME)),
+            Some(CompressionType::LZ4_FRAME),
         )?;
 
         let b1 = int32_batch(&[1, 2, 3]);
@@ -347,7 +374,7 @@ mod tests {
             0,
             0,
             schema.clone(),
-            ShuffleCompression::plain(Some(CompressionType::LZ4_FRAME)),
+            Some(CompressionType::LZ4_FRAME),
         )?;
 
         spill_one(&mut manager, 0, int32_batch(&[1, 2]))?;
@@ -377,7 +404,7 @@ mod tests {
             0,
             0,
             schema.clone(),
-            ShuffleCompression::plain(Some(CompressionType::LZ4_FRAME)),
+            Some(CompressionType::LZ4_FRAME),
         )?;
 
         spill_one(&mut manager, 0, int32_batch(&[1, 2, 3]))?;
@@ -424,7 +451,7 @@ mod tests {
             0,
             0,
             schema.clone(),
-            ShuffleCompression::plain(Some(CompressionType::LZ4_FRAME)),
+            Some(CompressionType::LZ4_FRAME),
         )?;
 
         spill_one(&mut manager, 0, int32_batch(&[1, 2]))?;

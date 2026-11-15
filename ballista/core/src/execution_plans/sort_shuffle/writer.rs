@@ -723,18 +723,20 @@ impl SortShuffleWriterExec {
             let schema = routing.output_schema(&stream.schema())?;
             let ballista_config = Arc::new(context.session_config().ballista_config());
             let compression = ballista_config.shuffle_compression()?;
+            // Decided once: spills and the in-memory encoding share it.
+            let encoding = ShuffleEncoding::try_new(&schema, compression)?;
 
             let num_output_partitions = routing.partition_count();
             let mut router = RowRouter::try_new(routing, &schema)?;
 
-            let mut spill_manager = SpillManager::new(
+            let mut spill_manager = SpillManager::with_encoding(
                 &work_dir,
                 &job_id,
                 stage_id,
                 task_id,
                 input_partition,
                 schema.clone(),
-                compression,
+                encoding.clone(),
             )
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
@@ -856,7 +858,6 @@ impl SortShuffleWriterExec {
 
             // Encode here, on this input's own task, so the interleave/IPC/
             // compression cost stays parallel across the task's inputs.
-            let encoding = ShuffleEncoding::try_new(&schema, compression)?;
             let EncodedPartitions { encoded, stats } =
                 encode_buffered_partitions(&mut buffered, &schema, &encoding)?;
 

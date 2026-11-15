@@ -822,7 +822,7 @@ impl ShuffleWriterExec {
                 let mut stream = column_stats
                     .count(plan.execute(local_input_partition, context.clone())?, None);
                 handles.spawn(async move {
-                    let stats = utils::write_stream_to_disk(
+                    let stats = utils::write_shuffle_stream_to_disk(
                         &mut stream,
                         path.as_path(),
                         &write_metrics.write_time,
