@@ -69,7 +69,9 @@ An existing DataFusion application can be distributed with a few lines of code c
 +    // standalone context will start all required
 +    // ballista infrastructure in the background as well
 +    let ctx = SessionContext::standalone().await?;
+```
 
+```rust
      // register the table
      ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new())
          .await?;
@@ -114,7 +116,7 @@ how to reproduce them.
 
 ### Execution
 
-- **Adaptive query execution**, on by default, re-optimizes the remaining plan from runtime statistics: join selection,
+- **Adaptive query execution** (AQE), on by default, re-optimizes the remaining plan from runtime statistics: join selection,
   broadcast joins, empty-stage elimination and exchange reuse, with opt-in skew-join splitting and partition coalescing
 - **Two [execution modes](#execution-modes-one-engine-for-etl-and-interactive-queries)** that share one cluster:
   fault-tolerant staged execution by default, for batch and ETL jobs, and low-latency pipelined execution
