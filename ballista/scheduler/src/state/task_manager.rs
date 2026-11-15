@@ -945,7 +945,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// cannot survive the loss and must fail, with the reason. A pipelined
     /// job is one: its tasks stream to each other, so there is nothing to
     /// roll back to. So is a job that lost `DataFrame::cache()` data with the
-    /// executor: its graph cannot re-run another job's output.
+    /// executor: its graph cannot re-run another job's output. A job whose
+    /// rollback itself fails is failed too: its graph is half-reset and can
+    /// no longer make progress, and the remaining jobs still need their
+    /// tasks back.
     pub async fn executor_lost(&self, executor_id: &str) -> Result<ExecutorLostOutcome> {
         // Its capacity has been removed, so there is nothing left to refund.
         // Do this even for evicted jobs and before a graph reset can fail.
@@ -968,11 +971,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             } else if let Some(reason) = lost_pipelined {
                 reason
             } else {
-                let reset = graph.reset_stages_on_lost_executor(executor_id)?;
-                if !reset.0.is_empty() {
-                    outcome.tasks_to_cancel.extend(reset.1);
+                match graph.reset_stages_on_lost_executor(executor_id) {
+                    Ok(reset) => {
+                        if !reset.0.is_empty() {
+                            outcome.tasks_to_cancel.extend(reset.1);
+                        }
+                        continue;
+                    }
+                    // A failed rollback leaves the graph half-reset and it can
+                    // never make progress again, so fail the job rather than
+                    // hang it — and keep recovering the remaining jobs.
+                    Err(e) => Some(format!(
+                        "Job {job_id} failed to roll back after the loss of \
+                         executor {executor_id}: {e}"
+                    )),
                 }
-                continue;
             };
             if let Some(reason) = reason {
                 let queued_at = match &graph.status().status {
@@ -1342,9 +1355,12 @@ mod tests {
     use super::*;
     use crate::cluster::JobStateEventStream;
     use crate::cluster::memory::InMemoryJobState;
+    use crate::state::execution_graph::ExecutionGraph;
     use crate::test_utils::{
-        drain_tasks_with_executor, join_aggregate_sort_logical_plan, mock_completed_task,
-        mock_executor, test_aggregation_plan, test_aggregation_plan_with_job_id,
+        drain_tasks_with_executor, fail_plan_rewrites, join_aggregate_sort_logical_plan,
+        mock_completed_task, mock_executor,
+        revive_graph_and_complete_next_stage_with_executor, test_aggregation_plan,
+        test_aggregation_plan_with_job_id,
     };
     use ballista_core::serde::protobuf::job_status::Status;
     use ballista_core::serde::protobuf::task_status;
@@ -1702,6 +1718,118 @@ mod tests {
             task_info.task_status,
             task_status::Status::Successful(_)
         ));
+        Ok(())
+    }
+
+    /// Builds a two-stage aggregation graph whose first stage completed on
+    /// `executor` and whose second stage has a task running on it, so losing
+    /// the executor forces the second stage to roll back.
+    async fn graph_with_stage_two_running_on(
+        job_id: &JobId,
+        executor: &ExecutorMetadata,
+    ) -> Result<StaticExecutionGraph> {
+        let mut graph = test_aggregation_plan_with_job_id(2, job_id).await;
+        revive_graph_and_complete_next_stage_with_executor(&mut graph, executor)?;
+        graph.revive();
+        graph
+            .pop_next_task(&executor.id)?
+            .expect("second stage should have a task to assign");
+        Ok(graph)
+    }
+
+    /// Makes the running stage of `graph` impossible to roll back by wrapping
+    /// its plan in a node whose rewrite always fails.
+    fn fail_running_stage_rollback(graph: &mut StaticExecutionGraph) {
+        let running_stage_id = graph
+            .stages()
+            .iter()
+            .find_map(|(stage_id, stage)| {
+                matches!(stage, ExecutionStage::Running(_)).then_some(*stage_id)
+            })
+            .expect("graph should have a running stage");
+        match graph.stages_mut().get_mut(&running_stage_id) {
+            Some(ExecutionStage::Running(stage)) => {
+                fail_plan_rewrites(&mut stage.plan);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[tokio::test]
+    async fn executor_lost_fails_job_instead_of_hanging_when_rollback_fails() -> Result<()>
+    {
+        let (manager, _, _, _) = setup_job(false).await?;
+        let dead = mock_executor("executor-dead".to_string());
+
+        let mut graph =
+            graph_with_stage_two_running_on(&"doomed-job".into(), &dead).await?;
+        fail_running_stage_rollback(&mut graph);
+        let job_id = graph.job_id().clone();
+        manager
+            .active_job_cache
+            .insert(job_id.clone(), JobInfoCache::new(Box::new(graph)));
+
+        let outcome = manager.executor_lost(&dead.id).await?;
+
+        let (_, reason, _) = outcome
+            .failed_jobs
+            .iter()
+            .find(|(failed_id, _, _)| *failed_id == job_id)
+            .expect("job whose rollback failed should be failed, not left hanging");
+        assert!(reason.contains("failed to roll back"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn executor_lost_recovers_other_jobs_when_one_rollback_fails() -> Result<()> {
+        let (manager, _, _, _) = setup_job(false).await?;
+        let dead = mock_executor("executor-dead".to_string());
+
+        let mut doomed_graph =
+            graph_with_stage_two_running_on(&"doomed-job".into(), &dead).await?;
+        fail_running_stage_rollback(&mut doomed_graph);
+        let doomed_job_id = doomed_graph.job_id().clone();
+        manager.active_job_cache.insert(
+            doomed_job_id.clone(),
+            JobInfoCache::new(Box::new(doomed_graph)),
+        );
+
+        let survivor_graph =
+            graph_with_stage_two_running_on(&"survivor-job".into(), &dead).await?;
+        let survivor_job_id = survivor_graph.job_id().clone();
+        manager.active_job_cache.insert(
+            survivor_job_id.clone(),
+            JobInfoCache::new(Box::new(survivor_graph)),
+        );
+
+        let outcome = manager.executor_lost(&dead.id).await?;
+
+        assert!(
+            outcome
+                .failed_jobs
+                .iter()
+                .any(|(job_id, _, _)| *job_id == doomed_job_id),
+            "doomed job should be failed"
+        );
+        assert!(
+            outcome
+                .failed_jobs
+                .iter()
+                .all(|(job_id, _, _)| *job_id != survivor_job_id),
+            "survivor job should not be failed"
+        );
+
+        let graph = manager
+            .get_active_execution_graph(&survivor_job_id)
+            .expect("survivor job should remain active");
+        let graph = graph.read().await;
+        assert!(
+            graph
+                .stages()
+                .values()
+                .any(|stage| matches!(stage, ExecutionStage::UnResolved(_))),
+            "survivor job's second stage should roll back to unresolved"
+        );
         Ok(())
     }
 
