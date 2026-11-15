@@ -278,7 +278,7 @@ pub fn as_join(plan: &Arc<dyn ExecutionPlan>) -> Option<JoinInfo<'_>> {
             left: join.left(),
             right: join.right(),
             schema: join.schema(),
-            has_projection: false,
+            has_projection: join.projection.is_some(),
         });
     }
 
@@ -1082,6 +1082,83 @@ mod tests {
             "expected join to be untouched, got {:?}",
             result.name()
         );
+    }
+
+    fn sort_merge_join_with_projection(
+        left: Arc<dyn ExecutionPlan>,
+        right: Arc<dyn ExecutionPlan>,
+        join_type: JoinType,
+        projection: Vec<usize>,
+    ) -> Arc<dyn ExecutionPlan> {
+        Arc::new(
+            SortMergeJoinExec::try_new(
+                left,
+                right,
+                join_on(),
+                None,
+                join_type,
+                vec![Default::default()],
+                NullEquality::NullEqualsNothing,
+            )
+            .unwrap()
+            .with_projection(Some(projection))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn smj_left_join_with_embedded_projection_right_empty_untouched() {
+        // A SortMergeJoinExec can carry an embedded projection too. Null-padding
+        // it positionally would read a left column where the projection names a
+        // right one, so the join must stay as is.
+        let plan = sort_merge_join_with_projection(
+            non_empty_two_col_stats_exec(),
+            empty_stats_exec(),
+            JoinType::Left,
+            vec![1],
+        );
+        let join_schema = plan.schema();
+        let result = transform(plan);
+        assert!(
+            result.downcast_ref::<SortMergeJoinExec>().is_some(),
+            "expected join to be untouched, got {:?}",
+            result.name()
+        );
+        assert_eq!(result.schema(), join_schema);
+    }
+
+    #[test]
+    fn smj_left_anti_with_embedded_projection_right_empty_untouched() {
+        let plan = sort_merge_join_with_projection(
+            non_empty_two_col_stats_exec(),
+            empty_stats_exec(),
+            JoinType::LeftAnti,
+            vec![1],
+        );
+        let join_schema = plan.schema();
+        let result = transform(plan);
+        assert_eq!(result.schema(), join_schema);
+        assert!(
+            result.downcast_ref::<SortMergeJoinExec>().is_some(),
+            "expected join to be untouched, got {:?}",
+            result.name()
+        );
+    }
+
+    #[test]
+    fn smj_inner_join_with_embedded_projection_right_empty_is_empty() {
+        // Arms that produce an EmptyExec use the join's own projected schema,
+        // so they still fire with a projection.
+        let plan = sort_merge_join_with_projection(
+            non_empty_two_col_stats_exec(),
+            empty_stats_exec(),
+            JoinType::Inner,
+            vec![1],
+        );
+        let join_schema = plan.schema();
+        let result = transform(plan);
+        assert_empty(&result);
+        assert_eq!(result.schema(), join_schema);
     }
 
     #[test]

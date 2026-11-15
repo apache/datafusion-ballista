@@ -503,9 +503,8 @@ impl DynamicJoinSelectionExec {
     }
 
     pub fn to_sort_merge_join(&self) -> Result<Arc<SortMergeJoinExec>> {
-        //let null_equals_null = self.null_equality == NullEquality::NullEqualsNull;
         let sort_options = vec![SortOptions::default(); self.on.len()];
-        Ok(Arc::new(SortMergeJoinExec::try_new(
+        let join = SortMergeJoinExec::try_new(
             Arc::clone(&self.left),
             Arc::clone(&self.right),
             self.on.clone(),
@@ -513,7 +512,9 @@ impl DynamicJoinSelectionExec {
             self.join_type,
             sort_options,
             self.null_equality,
-        )?))
+        )?
+        .with_projection(self.projection.clone())?;
+        Ok(Arc::new(join))
     }
     // this method has been taken from datafusion
     // join selection optimizer rule
@@ -652,7 +653,7 @@ impl DynamicJoinSelectionExec {
             on: merge_join.on().to_vec(),
             filter: merge_join.filter().clone(),
             join_type: merge_join.join_type(),
-            projection: None,
+            projection: merge_join.projection.clone(),
             null_equality: merge_join.null_equality,
             properties: undecided_properties(
                 merge_join.properties(),
@@ -1922,6 +1923,39 @@ mod tests {
             .indent(false)
             .to_string();
         assert!(rendered.contains("SortMergeJoinExec"), "{rendered}");
+    }
+
+    // A hash join's embedded projection must survive the fallback, or the sort-merge
+    // join emits every column of both inputs and the plan above reads the wrong ones.
+    #[test]
+    fn sort_merge_join_fallback_keeps_the_projection() {
+        let exec = DynamicJoinSelectionExec {
+            projection: Some(vec![1]),
+            ..repartitioned_join_between_exchanges(&[500 * MB], PROBE_PARTITION_BYTES)
+        };
+        let action = exec
+            .to_actual_join(&config_with_max_build(200 * MB))
+            .unwrap();
+        let plan = resolved_plan(&action);
+        assert!(plan.is::<SortMergeJoinExec>(), "{}", plan.name());
+        assert_eq!(plan.schema().fields().len(), 1);
+    }
+
+    // A planned sort-merge join's embedded projection must carry over into the
+    // undecided join, whose properties already report the projected schema.
+    #[test]
+    fn from_sort_join_keeps_the_projection() {
+        let join = repartitioned_join_between_exchanges(&[MB], &[MB])
+            .to_sort_merge_join()
+            .unwrap()
+            .with_projection(Some(vec![1]))
+            .unwrap();
+        let dynamic = DynamicJoinSelectionExec::from_sort_join(&join, 0).unwrap();
+        assert_eq!(dynamic.projection, Some(vec![1]));
+        assert_eq!(
+            dynamic.to_sort_merge_join().unwrap().schema(),
+            join.schema()
+        );
     }
 
     // A build partition within the configured max keeps the Partitioned hash
