@@ -43,7 +43,7 @@ use ballista_core::serde::protobuf::{
     job_status, task_status,
 };
 use ballista_core::serde::scheduler::{
-    ExecutorEndpoint, ExecutorMetadata, PartitionLocation, TaskKey,
+    ExecutorEndpoint, ExecutorMetadata, PartitionLocation,
 };
 use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
@@ -1438,10 +1438,15 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         }
     }
 
-    fn reset_unlaunched_task(&mut self, key: &TaskKey) -> bool {
+    fn reset_unlaunched_task(
+        &mut self,
+        task: &crate::state::execution_graph::TaskDescription,
+        executor_id: &str,
+    ) -> bool {
         crate::state::execution_graph::reset_unlaunched_task_in_stages(
             &mut self.stages,
-            key,
+            task,
+            executor_id,
         )
     }
 

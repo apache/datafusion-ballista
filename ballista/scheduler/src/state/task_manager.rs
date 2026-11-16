@@ -695,6 +695,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// stranded until the executor is lost (#2691).
     pub(crate) async fn reset_unlaunched_tasks(
         &self,
+        executor_id: &str,
         tasks: &[TaskDescription],
     ) -> usize {
         let mut by_job: HashMap<JobId, Vec<&TaskDescription>> = HashMap::new();
@@ -714,7 +715,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             };
             let mut graph = graph.write().await;
             for task in job_tasks {
-                if graph.reset_unlaunched_task(&task.key) {
+                if graph.reset_unlaunched_task(task, executor_id) {
                     reset += 1;
                 }
             }

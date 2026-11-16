@@ -200,11 +200,20 @@ pub trait ExecutionGraph: Debug {
     /// executor-metadata miss) so the partitions are not left stranded as
     /// `Running` with no status updates ever arriving. See #2691.
     ///
-    /// Returns `true` when the task was still `Running` and was reset.
+    /// Only resets the slot when `task` still belongs to the current stage
+    /// attempt and the slot is `Running` on `executor_id`. Task ids restart
+    /// after a rollback, so a late reset must never touch a slot that was
+    /// re-bound in a newer attempt or launched on another executor.
+    ///
+    /// Returns `true` when the task was reset.
     ///
     /// The default implementation resets nothing and returns `false`, so
     /// existing out-of-tree implementations keep compiling.
-    fn reset_unlaunched_task(&mut self, _key: &TaskKey) -> bool {
+    fn reset_unlaunched_task(
+        &mut self,
+        _task: &TaskDescription,
+        _executor_id: &str,
+    ) -> bool {
         false
     }
 
@@ -341,21 +350,28 @@ pub trait ExecutionGraph: Debug {
 }
 
 /// Reset a still-Running task_info slot so its partitions return to pending.
+///
+/// The reset only applies when the stage is still on the attempt `task` was
+/// bound in and the slot is `Running` on `executor_id`; see
+/// [`ExecutionGraph::reset_unlaunched_task`].
 pub(crate) fn reset_unlaunched_task_in_stages(
     stages: &mut HashMap<usize, ExecutionStage>,
-    key: &TaskKey,
+    task: &TaskDescription,
+    executor_id: &str,
 ) -> bool {
+    let key = &task.key;
     let Some(ExecutionStage::Running(stage)) = stages.get_mut(&key.stage_id) else {
         return false;
     };
-    if key.task_id >= stage.task_infos.len() {
+    if stage.stage_attempt_num != task.stage_attempt_num {
         return false;
     }
-    if !matches!(
-        stage.task_infos[key.task_id].task_status,
-        task_status::Status::Running(_)
-    ) {
+    let Some(info) = stage.task_infos.get(key.task_id) else {
         return false;
+    };
+    match &info.task_status {
+        task_status::Status::Running(running) if running.executor_id == executor_id => {}
+        _ => return false,
     }
     stage.reset_task_info(key.task_id);
     true
@@ -1447,8 +1463,12 @@ impl ExecutionGraph for StaticExecutionGraph {
         }
     }
 
-    fn reset_unlaunched_task(&mut self, key: &TaskKey) -> bool {
-        reset_unlaunched_task_in_stages(&mut self.stages, key)
+    fn reset_unlaunched_task(
+        &mut self,
+        task: &TaskDescription,
+        executor_id: &str,
+    ) -> bool {
+        reset_unlaunched_task_in_stages(&mut self.stages, task, executor_id)
     }
 
     /// Convert unresolved stage to be resolved
