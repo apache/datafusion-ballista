@@ -2181,6 +2181,58 @@ order by
         Ok(())
     }
 
+    #[tokio::test]
+    async fn nested_loop_join_probe_gets_one_partition_stage() -> Result<(), BallistaError>
+    {
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::datasource::MemTable;
+        use datafusion::prelude::{SessionConfig, SessionContext};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+        let batch = |keys: Vec<i32>| {
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(keys))])
+                .map_err(|e| BallistaError::General(e.to_string()))
+        };
+        let ctx = SessionContext::new_with_config(
+            SessionConfig::new().with_target_partitions(2),
+        );
+        ctx.register_batch("small", batch(vec![1, 2])?)?;
+        // Two partitions, so the probe side has something to coalesce.
+        let big = MemTable::try_new(
+            schema.clone(),
+            vec![
+                vec![batch((0..100).collect())?],
+                vec![batch((100..200).collect())?],
+            ],
+        )?;
+        ctx.register_table("big", Arc::new(big))?;
+        let options = ctx.state().config().options().clone();
+
+        let stages = stages_for_sql(
+            &ctx,
+            &options,
+            "select * from small left join big on small.k < big.k",
+        )
+        .await?;
+
+        assert_eq!(stages.len(), 2);
+        assert_plan!(stages[0].as_ref(), @r"
+        ShuffleWriterExec: partitioning: UnknownPartitioning(1)
+          CoalescePartitionsExec
+            DataSourceExec: partitions=2, partition_sizes=[1, 1]
+        ");
+        assert_plan!(stages[1].as_ref(), @r"
+        ShuffleWriterExec: partitioning: UnknownPartitioning(1)
+          NestedLoopJoinExec: join_type=Left, filter=k@0 < k@1
+            DataSourceExec: partitions=1, partition_sizes=[1]
+            UnresolvedShuffleExec: stage=1, partitioning: UnknownPartitioning(1)
+        ");
+
+        Ok(())
+    }
+
     /// Plans `sql` on `ctx` and splits the physical plan into query stages.
     async fn stages_for_sql(
         ctx: &datafusion::prelude::SessionContext,

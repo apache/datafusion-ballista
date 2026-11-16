@@ -127,6 +127,10 @@ fn supports_collect_by_thresholds(
 ///
 /// `join_type` must be the join type *after* any build-side swap, since the
 /// build side is always the left input of the resulting `HashJoinExec`.
+///
+/// Nested-loop joins use it too: those it rejects must read their whole probe
+/// side in one task, since each task would emit build rows from its own slice
+/// of the probe.
 pub(crate) fn collect_left_broadcast_safe(join_type: JoinType) -> bool {
     matches!(
         join_type,

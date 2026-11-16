@@ -66,7 +66,8 @@ impl DistributedExchangeRule {
         // probe partition therefore produces duplicate or incorrect output.
         // This is the final plan-mutating rule, so enforce an explicit
         // probe-side coalesce here after DataFusion's optimizers have finished.
-        // Add an exchange when the subtree has no existing boundary.
+        // Add an exchange when the subtree has no existing boundary, unless it
+        // is a scan small enough to read inline.
         if probe_needs_one_task(&execution_plan)
             && let [left, right] = execution_plan.children().as_slice()
             && right.downcast_ref::<CoalescePartitionsExec>().is_none()
@@ -75,6 +76,7 @@ impl DistributedExchangeRule {
             let right = Arc::clone(right);
             let right = if right.downcast_ref::<ExchangeExec>().is_none()
                 && !matches!(nearest_exchange_status(&right), ExchangeStatus::Unresolved)
+                && !is_inlinable_scan_pipeline(&right, broadcast_threshold_bytes(config))?
             {
                 Arc::new(ExchangeExec::new(
                     right,
@@ -491,21 +493,19 @@ mod tests {
     fn nested_loop_join_coalesces_probe_only_when_it_emits_build_rows() {
         use datafusion::common::JoinType;
 
-        let join = |join_type| {
-            let join = NestedLoopJoinExec::try_new(
-                leaf_exec(),
-                leaf_exec(),
-                None,
-                &join_type,
-                None,
-            )
-            .unwrap();
+        let join = |join_type, probe| {
+            let join =
+                NestedLoopJoinExec::try_new(leaf_exec(), probe, None, &join_type, None)
+                    .unwrap();
             DistributedExchangeRule::default()
-                .optimize(Arc::new(join), &config())
+                .optimize(
+                    Arc::new(join),
+                    &config_with_broadcast_threshold(64 * 1024 * 1024),
+                )
                 .unwrap()
         };
 
-        assert_plan!(join(JoinType::LeftAnti).as_ref(), @ r"
+        assert_plan!(join(JoinType::LeftAnti, leaf_exec()).as_ref(), @ r"
         AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
           NestedLoopJoinExec: join_type=LeftAnti
             StatisticsExec: col_count=1, row_count=Absent
@@ -513,12 +513,41 @@ mod tests {
               ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
                 StatisticsExec: col_count=1, row_count=Absent
         ");
-        assert_plan!(join(JoinType::Inner).as_ref(), @ r"
+        assert_plan!(join(JoinType::LeftAnti, scan_exec()).as_ref(), @ r"
         AdaptiveDatafusionExec: is_final=false, plan_id=0, stage_id=pending, stage_resolved=false
-          NestedLoopJoinExec: join_type=Inner
+          NestedLoopJoinExec: join_type=LeftAnti
             StatisticsExec: col_count=1, row_count=Absent
-            StatisticsExec: col_count=1, row_count=Absent
+            CoalescePartitionsExec
+              DataSourceExec: partitions=1, partition_sizes=[1]
         ");
+
+        let emits_build_rows = [
+            JoinType::Left,
+            JoinType::Full,
+            JoinType::LeftSemi,
+            JoinType::LeftAnti,
+            JoinType::LeftMark,
+        ];
+        for join_type in [
+            JoinType::Inner,
+            JoinType::Left,
+            JoinType::Right,
+            JoinType::Full,
+            JoinType::LeftSemi,
+            JoinType::RightSemi,
+            JoinType::LeftAnti,
+            JoinType::RightAnti,
+            JoinType::LeftMark,
+            JoinType::RightMark,
+        ] {
+            let plan = join(join_type, leaf_exec());
+            let probe = plan.children()[0].children()[1];
+            assert_eq!(
+                probe.is::<CoalescePartitionsExec>(),
+                emits_build_rows.contains(&join_type),
+                "{join_type:?}"
+            );
+        }
     }
 
     // --- CoalescePartitionsExec ---
