@@ -608,6 +608,15 @@ the job’s status says only that a task could not be prepared; the reason is in
 the scheduler’s log. To make nodes of your own restrictable, see
 <a class="reference internal" href="../user-guide/extending-components.html#custom-physical-plan-nodes"><span class="std std-ref">Custom Physical Plan Nodes</span></a>.</p>
 </section>
+<section id="nested-loop-joins-that-emit-build-rows-run-as-a-single-task">
+<h4>Nested-loop joins that emit build rows run as a single task<a class="headerlink" href="#nested-loop-joins-that-emit-build-rows-run-as-a-single-task" title="Link to this heading">#</a></h4>
+<p>Nested-loop joins of type <code class="docutils literal notranslate"><span class="pre">Left</span></code>, <code class="docutils literal notranslate"><span class="pre">Full</span></code>, <code class="docutils literal notranslate"><span class="pre">LeftSemi</span></code>, <code class="docutils literal notranslate"><span class="pre">LeftAnti</span></code> or <code class="docutils literal notranslate"><span class="pre">LeftMark</span></code>
+(the type <code class="docutils literal notranslate"><span class="pre">EXPLAIN</span></code> shows, after the planner picks the build side) used to
+return wrong results when their probe side was split between tasks, because
+each task emitted its own copy of the build rows. These joins now run as a
+single task, so queries that use them may be slower. Other nested-loop joins
+are unchanged.</p>
+</section>
 </section>
 <section id="api-changes">
 <h3>API changes<a class="headerlink" href="#api-changes" title="Link to this heading">#</a></h3>
@@ -979,6 +988,7 @@ unchanged.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#undecodable-fetch-tickets-are-rejected-as-invalidargument">Undecodable fetch tickets are rejected as <code class="docutils literal notranslate"><span class="pre">InvalidArgument</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#pull-staged-executors-no-longer-run-more-partitions-than-they-have-vcores">Pull-staged executors no longer run more partitions than they have vcores</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#stages-split-between-tasks-fail-on-a-leaf-the-scheduler-cannot-restrict">Stages split between tasks fail on a leaf the scheduler cannot restrict</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#nested-loop-joins-that-emit-build-rows-run-as-a-single-task">Nested-loop joins that emit build rows run as a single task</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
