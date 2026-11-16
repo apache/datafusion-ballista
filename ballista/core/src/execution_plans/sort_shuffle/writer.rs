@@ -725,7 +725,7 @@ impl SortShuffleWriterExec {
             let compression_type = ballista_config.shuffle_compression_codec()?;
 
             let num_output_partitions = routing.partition_count();
-            let mut router = RowRouter::try_new(routing)?;
+            let mut router = RowRouter::try_new(routing, &schema)?;
 
             let mut spill_manager = SpillManager::new(
                 &work_dir,
@@ -1509,7 +1509,9 @@ enum RowRouter {
 }
 
 impl RowRouter {
-    fn try_new(routing: ShuffleRouting) -> Result<Self> {
+    /// `schema` is the schema of the batches to route. A range partitioning
+    /// takes its key types from it, not from the split points.
+    fn try_new(routing: ShuffleRouting, schema: &SchemaRef) -> Result<Self> {
         match routing {
             ShuffleRouting::Hash {
                 exprs,
@@ -1525,7 +1527,9 @@ impl RowRouter {
                     .iter()
                     .map(|sort_expr| Arc::clone(&sort_expr.expr))
                     .collect();
-                Ok(Self::Range(RangeExpr::try_new(key_exprs, &range)?))
+                Ok(Self::Range(RangeExpr::try_new_with_schema(
+                    key_exprs, &range, schema,
+                )?))
             }
             ShuffleRouting::PartitionId {
                 column,
@@ -3179,7 +3183,8 @@ mod tests {
     /// Route `batch` through a [`RowRouter`] built for `partitioning`.
     fn route(partitioning: &Partitioning, batch: &RecordBatch) -> Vec<Vec<u32>> {
         let mut router =
-            RowRouter::try_new(partitioning.clone().try_into().unwrap()).unwrap();
+            RowRouter::try_new(partitioning.clone().try_into().unwrap(), &batch.schema())
+                .unwrap();
         let mut out = Vec::new();
         router.assign(batch, &mut out).unwrap();
         out
@@ -3218,7 +3223,11 @@ mod tests {
     #[test]
     fn range_routing_reuses_its_buffers_across_batches() {
         let partitioning = int_range_partitioning(SortOptions::new(false, false), &[10]);
-        let mut router = RowRouter::try_new(partitioning.try_into().unwrap()).unwrap();
+        let mut router = RowRouter::try_new(
+            partitioning.try_into().unwrap(),
+            &keyed_batch(&[]).schema(),
+        )
+        .unwrap();
         let mut out = Vec::new();
 
         router
@@ -3283,14 +3292,19 @@ mod tests {
             let ours = route(partitioning, &batch);
 
             let mut expected = vec![usize::MAX; rows.len()];
-            BatchPartitioner::new_range_partitioner(range, Time::default())
-                .partition(batch, |partition, sub_batch| {
-                    for (_, id) in rows_of(&sub_batch) {
-                        expected[id as usize] = partition;
-                    }
-                    Ok(())
-                })
-                .unwrap();
+            BatchPartitioner::try_new_range_partitioner(
+                range,
+                &batch.schema(),
+                Time::default(),
+            )
+            .unwrap()
+            .partition(batch, |partition, sub_batch| {
+                for (_, id) in rows_of(&sub_batch) {
+                    expected[id as usize] = partition;
+                }
+                Ok(())
+            })
+            .unwrap();
 
             for (row, &partition) in expected.iter().enumerate() {
                 assert!(

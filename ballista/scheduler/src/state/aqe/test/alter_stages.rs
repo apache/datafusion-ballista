@@ -218,9 +218,9 @@ async fn should_support_join_re_ordering() -> datafusion::error::Result<()> {
     assert_plan!(join.as_ref(),  @ r"
     HashJoinExec: mode=Partitioned, join_type=Inner, on=[(big_col@0, big_col@0)]
       RepartitionExec: partitioning=Hash([big_col@0], 2), input_partitions=2
-        StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(2097152)
+        StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(8388608)
       RepartitionExec: partitioning=Hash([big_col@0], 2), input_partitions=2
-        StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(2097152)
+        StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(8388608)
     ");
 
     let mut planner =
@@ -230,9 +230,9 @@ async fn should_support_join_re_ordering() -> datafusion::error::Result<()> {
     AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
       HashJoinExec: mode=Partitioned, join_type=Inner, on=[(big_col@0, big_col@0)]
         ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=pending, stage_resolved=false
-          StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(2097152)
+          StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(8388608)
         ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=1, stage_id=pending, stage_resolved=false
-          StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(2097152)
+          StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(8388608)
     ");
 
     let stages = planner.runnable_stages()?.unwrap();
@@ -242,9 +242,9 @@ async fn should_support_join_re_ordering() -> datafusion::error::Result<()> {
     AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
       HashJoinExec: mode=Partitioned, join_type=Inner, on=[(big_col@0, big_col@0)]
         ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=0, stage_resolved=false
-          StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(2097152)
+          StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(8388608)
         ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=1, stage_id=1, stage_resolved=false
-          StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(2097152)
+          StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(8388608)
     ");
 
     // we finalize stage 1 with smaller number of rows, for test purposes,
@@ -259,10 +259,10 @@ async fn should_support_join_re_ordering() -> datafusion::error::Result<()> {
       HashJoinExec: mode=Partitioned, join_type=Inner, on=[(big_col@0, big_col@0)], projection=[big_col@1, big_col@0]
         ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=1, stage_id=1, stage_resolved=true
           CooperativeExec
-            StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(2097152)
+            StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(8388608)
         ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=0, stage_resolved=true
           CooperativeExec
-            StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(2097152)
+            StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(8388608)
     ");
 
     let stages = planner.runnable_stages()?.unwrap();
@@ -273,10 +273,10 @@ async fn should_support_join_re_ordering() -> datafusion::error::Result<()> {
       HashJoinExec: mode=Partitioned, join_type=Inner, on=[(big_col@0, big_col@0)], projection=[big_col@1, big_col@0]
         ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=1, stage_id=1, stage_resolved=true
           CooperativeExec
-            StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(2097152)
+            StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(8388608)
         ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=0, stage_resolved=true
           CooperativeExec
-            StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(2097152)
+            StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(8388608)
     ");
 
     planner.finalise_stage_internal(2, small_statistics_exchange())?;
@@ -286,10 +286,10 @@ async fn should_support_join_re_ordering() -> datafusion::error::Result<()> {
       HashJoinExec: mode=Partitioned, join_type=Inner, on=[(big_col@0, big_col@0)], projection=[big_col@1, big_col@0]
         ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=1, stage_id=1, stage_resolved=true
           CooperativeExec
-            StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(2097152)
+            StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(8388608)
         ExchangeExec: partitioning=Hash([big_col@0], 2), plan_id=0, stage_id=0, stage_resolved=true
           CooperativeExec
-            StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(2097152)
+            StatsExec: partitions=2, rows=Exact(262144), bytes=Exact(8388608)
     ");
 
     Ok(())
@@ -314,7 +314,7 @@ async fn should_support_cross_join() -> datafusion::error::Result<()> {
     CrossJoinExec
       RepartitionExec: partitioning=Hash([big_col@0], 2), input_partitions=2
         StatisticsExec: col_count=1, row_count=Exact(262144)
-      StatsExec: partitions=2, rows=Exact(1024), bytes=Exact(8192)
+      StatsExec: partitions=2, rows=Exact(1024), bytes=Exact(32768)
     ");
 
     let mut planner =
@@ -330,7 +330,7 @@ async fn should_support_cross_join() -> datafusion::error::Result<()> {
         CrossJoinExec
           CoalescePartitionsExec
             ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
-              StatsExec: partitions=2, rows=Exact(1024), bytes=Exact(8192)
+              StatsExec: partitions=2, rows=Exact(1024), bytes=Exact(32768)
           CooperativeExec
             StatisticsExec: col_count=1, row_count=Exact(262144)
     ");
@@ -344,7 +344,7 @@ async fn should_support_cross_join() -> datafusion::error::Result<()> {
 
     assert_plan!(stages[0].plan.as_ref(),  @ r"
     ShuffleWriterExec: partitioning: UnknownPartitioning(2)
-      StatsExec: partitions=2, rows=Exact(1024), bytes=Exact(8192)
+      StatsExec: partitions=2, rows=Exact(1024), bytes=Exact(32768)
     ");
 
     planner.finalise_stage_internal(0, small_statistics_exchange())?;
@@ -354,7 +354,7 @@ async fn should_support_cross_join() -> datafusion::error::Result<()> {
         CrossJoinExec
           CoalescePartitionsExec
             ExchangeExec: partitioning=None, plan_id=0, stage_id=0, stage_resolved=true
-              StatsExec: partitions=2, rows=Exact(1024), bytes=Exact(8192)
+              StatsExec: partitions=2, rows=Exact(1024), bytes=Exact(32768)
           CooperativeExec
             StatisticsExec: col_count=1, row_count=Exact(262144)
     ");
@@ -384,7 +384,7 @@ async fn should_support_cross_join() -> datafusion::error::Result<()> {
         CrossJoinExec
           CoalescePartitionsExec
             ExchangeExec: partitioning=None, plan_id=0, stage_id=0, stage_resolved=true
-              StatsExec: partitions=2, rows=Exact(1024), bytes=Exact(8192)
+              StatsExec: partitions=2, rows=Exact(1024), bytes=Exact(32768)
           CooperativeExec
             StatisticsExec: col_count=1, row_count=Exact(262144)
     ");
