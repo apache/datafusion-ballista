@@ -27,9 +27,11 @@ use crate::state::execution_graph::{
     ExecutionGraphBox, TaskDescription, create_task_info,
 };
 use crate::state::session_manager::share_file_statistics_cache;
+use crate::state::task_builder::has_unsplittable_union;
 use crate::state::task_manager::JobInfoCache;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::Result;
+use ballista_core::execution_plans::plan_algebra::PartitionSliceableResolver;
 use ballista_core::execution_plans::{
     PipelinedShuffleReaderExec, RangeShuffleReaderExec, ShuffleReaderExec,
     UnresolvedShuffleExec,
@@ -600,17 +602,28 @@ pub(crate) fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bo
 ///   tasks run in parallel on the remaining vcores. Correctness still
 ///   requires packing the entire pending queue into one bind (a split
 ///   collapse would produce partial results downstream can't merge).
+///
+/// - **Unsplittable union stage** (see [`has_unsplittable_union`]): a
+///   `UnionExec` branch keeps partitions however it is restricted, so every
+///   task given part of the stage would also run that branch, and the
+///   rewriter refuses such a task. The stage is packed into one task too,
+///   which runs each branch once. Its root keeps all of its partitions, so the
+///   task consumes one vcore for each, up to what the executor has free.
 fn bind_one(
     running_stage: &mut crate::state::execution_stage::RunningStage,
     session_id: &str,
     job_id: &JobId,
     budget: &mut AvailableVcores,
+    resolver: Option<&dyn PartitionSliceableResolver>,
 ) -> Option<BoundTask> {
     let is_collapse = stage_has_input_collapse(&running_stage.plan);
-    // Cap non-collapse slices at the configured `max_partitions_per_task`.
-    // Collapse stages must still pack their full pending queue into a single
-    // task for correctness — a split collapse would produce partial results
-    // downstream can't merge.
+    let is_unsplittable =
+        !is_collapse && has_unsplittable_union(&running_stage.plan, resolver);
+    // Cap other slices at the configured `max_partitions_per_task`. Collapse
+    // and unsplittable union stages must still pack their full pending queue
+    // into a single task for correctness: a split collapse would produce
+    // partial results downstream can't merge, and a split union would run a
+    // branch in every task.
     let cap = running_stage
         .session_config
         .options()
@@ -619,7 +632,7 @@ fn bind_one(
         .map(|bc| bc.max_partitions_per_task())
         .filter(|&n| n > 0)
         .unwrap_or(usize::MAX);
-    let max_partitions = if is_collapse {
+    let max_partitions = if is_collapse || is_unsplittable {
         usize::MAX
     } else {
         (budget.vcores as usize).min(cap)
@@ -636,11 +649,13 @@ fn bind_one(
     // one vcore and leave the rest for other stages' tasks on this executor.
     let vcores_consumed = if is_collapse {
         1
+    } else if is_unsplittable {
+        (input_partition_ids.len() as u32).min(budget.vcores)
     } else {
         input_partition_ids.len() as u32
     };
     debug!(
-        "bind_one: job={} stage={} exec={} vcores={} max={} slice_len={} consumed={} partitions={:?} collapse={}",
+        "bind_one: job={} stage={} exec={} vcores={} max={} slice_len={} consumed={} partitions={:?} collapse={} unsplittable_union={}",
         job_id,
         running_stage.stage_id,
         budget.executor_id,
@@ -654,6 +669,7 @@ fn bind_one(
         vcores_consumed,
         input_partition_ids,
         is_collapse,
+        is_unsplittable,
     );
     let executor_id = budget.executor_id.clone();
     // task_id is the append-order slot in `task_infos` — since we're
@@ -782,7 +798,13 @@ async fn bind_tasks_with(
                     return schedulable_tasks;
                 };
                 idx = picked;
-                match bind_one(running_stage, &session_id, job_id, &mut *budgets[idx]) {
+                match bind_one(
+                    running_stage,
+                    &session_id,
+                    job_id,
+                    &mut *budgets[idx],
+                    job_info.partition_sliceable_resolver.as_deref(),
+                ) {
                     Some(bound) => {
                         schedulable_tasks.push(bound);
                         idx = strategy.advance(idx, budgets.len());
@@ -862,17 +884,26 @@ mod test {
 
     use crate::cluster::stage_has_input_collapse;
     use crate::cluster::{
-        BindStrategy, BoundTask, bind_task_bias, bind_task_round_robin,
+        BindStrategy, BoundTask, bind_one, bind_task_bias, bind_task_round_robin,
         next_with_capacity,
     };
     use crate::state::execution_graph::{ExecutionGraph, StaticExecutionGraph};
     use crate::state::task_manager::JobInfoCache;
+    use crate::test_utils::payload::{PayloadExec, payload_resolver};
+    use crate::test_utils::scan_with_file_groups;
     use crate::test_utils::{
         mock_completed_task, revive_graph_and_complete_next_stage,
         test_aggregation_plan_with_config,
     };
     use ballista_core::config::BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK;
+    use ballista_core::execution_plans::ShuffleWriterExec;
+    use ballista_core::execution_plans::plan_algebra::PartitionSliceableResolver;
     use ballista_core::extension::SessionConfigExt;
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::physical_plan::sorts::sort::SortExec;
+    use datafusion::physical_plan::union::UnionExec;
     use datafusion::prelude::SessionConfig;
 
     #[tokio::test]
@@ -1071,6 +1102,108 @@ mod test {
         }
 
         Ok(graph)
+    }
+
+    /// A running stage of `plan` below a shuffle writer, with one partition
+    /// per task at most.
+    fn running_stage(
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> crate::state::execution_stage::RunningStage {
+        let partitions = plan.properties().output_partitioning().partition_count();
+        let writer: Arc<dyn ExecutionPlan> = Arc::new(
+            ShuffleWriterExec::try_new("job".into(), 1, plan, String::new()).unwrap(),
+        );
+        crate::state::execution_stage::RunningStage::new(
+            1,
+            0,
+            writer,
+            partitions,
+            vec![],
+            HashMap::new(),
+            Arc::new(
+                SessionConfig::new_with_ballista()
+                    .set_str(BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK, "1"),
+            ),
+        )
+    }
+
+    /// Binds every task of `stage` on one executor of `vcores` vcores,
+    /// returning each task's partitions and vcores.
+    fn bind_all(
+        stage: &mut crate::state::execution_stage::RunningStage,
+        vcores: u32,
+        resolver: Option<&dyn PartitionSliceableResolver>,
+    ) -> Vec<(Vec<usize>, u32)> {
+        let mut budget = AvailableVcores {
+            executor_id: "executor".to_string(),
+            vcores,
+        };
+        let mut bound = vec![];
+        while budget.vcores > 0 {
+            let Some((_, task)) =
+                bind_one(stage, "session", &"job".into(), &mut budget, resolver)
+            else {
+                break;
+            };
+            bound.push((task.global_input_partition_ids, task.vcores_consumed));
+        }
+        bound
+    }
+
+    /// A union whose sorted branch keeps its partition in every task runs as
+    /// one task, whatever `max_partitions_per_task` says, using one vcore for
+    /// each partition the executor has free.
+    #[test]
+    fn a_stage_with_an_unsplittable_union_is_bound_as_one_task() {
+        let sorted: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
+            LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(Column::new(
+                "a", 0,
+            )))])
+            .unwrap(),
+            scan_with_file_groups(2),
+        ));
+        // Partition 0 is the sort's, 1-2 the scan's.
+        let union = UnionExec::try_new(vec![sorted, scan_with_file_groups(2)]).unwrap();
+
+        assert_eq!(
+            bind_all(&mut running_stage(union.clone()), 8, None),
+            [(vec![0, 1, 2], 3)]
+        );
+        assert_eq!(
+            bind_all(&mut running_stage(union), 2, None),
+            [(vec![0, 1, 2], 2)]
+        );
+    }
+
+    /// A union that splits cleanly keeps one partition per task.
+    #[test]
+    fn a_stage_with_a_splittable_union_is_bound_a_partition_per_task() {
+        let union =
+            UnionExec::try_new(vec![scan_with_file_groups(2), scan_with_file_groups(1)])
+                .unwrap();
+
+        assert_eq!(
+            bind_all(&mut running_stage(union), 8, None),
+            [(vec![0], 1), (vec![1], 1), (vec![2], 1)]
+        );
+    }
+
+    /// Binding asks the resolver the tasks are restricted with, so a node of
+    /// the user's own that it can restrict doesn't pack the stage.
+    #[test]
+    fn binding_a_union_asks_the_resolver_the_tasks_are_restricted_with() {
+        let own = PayloadExec::over(&["p0", "p1"], vec![scan_with_file_groups(2)], &[]);
+        let union = UnionExec::try_new(vec![own, scan_with_file_groups(1)]).unwrap();
+        let resolver = payload_resolver();
+
+        assert_eq!(
+            bind_all(&mut running_stage(union.clone()), 8, None),
+            [(vec![0, 1, 2], 3)]
+        );
+        assert_eq!(
+            bind_all(&mut running_stage(union), 8, Some(resolver.as_ref())),
+            [(vec![0], 1), (vec![1], 1), (vec![2], 1)]
+        );
     }
 
     fn mock_budgets() -> Vec<AvailableVcores> {

@@ -1323,6 +1323,29 @@ mod tests {
         Ok(())
     }
 
+    /// A running job carries the resolver its tasks are restricted with, so
+    /// binding judges which stages it can split the same way.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_running_job_carries_the_configured_resolver() -> Result<()> {
+        let resolver = payload_resolver();
+        let config = SchedulerConfig::default()
+            .with_partition_sliceable_resolver(resolver.clone());
+        let (state, job_id, _bound) = bind_split_payload_stage(
+            config,
+            Arc::new(CapturingLauncher::default()),
+            PayloadExec::leaf(&["p0", "p1", "p2", "p3"]),
+        )
+        .await?;
+
+        let jobs = state.task_manager.get_running_job_cache();
+        let carried = jobs[&job_id]
+            .partition_sliceable_resolver
+            .clone()
+            .expect("the job carries a resolver");
+        assert!(Arc::ptr_eq(&carried, &resolver));
+        Ok(())
+    }
+
     /// The input of the shuffle writer of each task `launcher` launched,
     /// decoded as the executor would, with the codec the scheduler used.
     fn shipped_writer_inputs(
