@@ -266,8 +266,12 @@ fn ensure_leaf_runs_whole(
 /// too, and the union's later partitions no longer line up with the task's.
 /// When those partitions read their input whole, as below a `SortExec`, a
 /// `LIMIT` or an aggregate without `GROUP BY` that merges the branch into one
-/// partition, the task returns rows that another task returns as well. A node
-/// the scheduler doesn't know that keeps its own count does the same.
+/// partition, the task returns rows that another task returns as well. A
+/// broadcast reader, which every task reads whole, and a node that sets its own
+/// partition count do the same.
+///
+/// The scheduler doesn't know here which planner made the stage, so the error
+/// names the branch's causes rather than one planner's.
 fn ensure_branch_restricted(
     branch: &Arc<dyn ExecutionPlan>,
     partitions: &[usize],
@@ -277,16 +281,55 @@ fn ensure_branch_restricted(
         return Ok(());
     }
     let name = branch.name();
+    let cause = if along_single_inputs(branch, &reads_a_broadcast) {
+        "The branch reads a broadcast, which every task reads whole as one \
+         partition. The static planner gives a branch that reads a broadcast a \
+         stage of its own."
+    } else if along_single_inputs(branch, &merges_its_input) {
+        "The branch merges its input into one partition, as an `ORDER BY`, a \
+         `LIMIT` or an aggregate without `GROUP BY` does. The static planner \
+         gives such a branch a stage of its own; the adaptive planner \
+         (`ballista.planner.adaptive.enabled`) can leave it in the union's stage."
+    } else {
+        "The branch holds a node that sets its own partition count. A node of \
+         your own can be restricted by \
+         `SchedulerConfig::partition_sliceable_resolver`."
+    };
     plan_err!(
         "cannot restrict a `UnionExec` branch to partitions {partitions:?}: its \
          `{name}` keeps a partition count of {count}, so the task would also run \
-         partitions another task owns. The adaptive planner can leave a branch \
-         that merges its input into one partition, such as through an `ORDER BY`, \
-         a `LIMIT` or an aggregate without `GROUP BY`, in the union's stage; the \
-         static planner (`ballista.planner.adaptive.enabled = false`) gives it a \
-         stage of its own. A node of your own can be restricted by \
-         `SchedulerConfig::partition_sliceable_resolver`."
+         partitions another task owns. {cause}"
     )
+}
+
+/// Whether `found` holds for `plan` or for a node below it reached through
+/// nodes of one input each, which pass that node's partition count up.
+fn along_single_inputs(
+    plan: &Arc<dyn ExecutionPlan>,
+    found: &dyn Fn(&Arc<dyn ExecutionPlan>) -> bool,
+) -> bool {
+    if found(plan) {
+        return true;
+    }
+    match plan.children().as_slice() {
+        [child] => along_single_inputs(child, found),
+        _ => false,
+    }
+}
+
+fn reads_a_broadcast(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    plan.downcast_ref::<ShuffleReaderExec>()
+        .is_some_and(|reader| reader.broadcast)
+        || plan
+            .downcast_ref::<PipelinedShuffleReaderExec>()
+            .is_some_and(|reader| reader.broadcast)
+}
+
+/// Whether `plan` reads its one input whole, as a `SortExec`, a
+/// `GlobalLimitExec`, a final aggregate without `GROUP BY` or a coalesce does,
+/// and so merges it into one partition.
+fn merges_its_input(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    plan.children().len() == 1 && child_scopes(plan, false) == [true]
 }
 
 /// Bucket each parent partition of a `UnionExec` into its owning child's
@@ -395,11 +438,11 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
 ///
 /// **When a new leaf type surfaces, add a branch below.** Currently
 /// covered: `ShuffleReaderExec`, `DataSourceExec` (files, in-memory),
-/// `PlaceholderRowExec`, `EmptyExec`. `ValuesExec` and other future
-/// self-generating leaves fall through as `None`; if one sits under a
-/// partition-splitting fan-in, the walker refuses the task rather than let the
-/// executor duplicate output (see the PlaceholderRow-under-UnionExec bug for
-/// the failure mode).
+/// `PlaceholderRowExec`, `EmptyExec`. Any other leaf falls through as
+/// `None`. The walker then replaces it with an empty leaf in a task that runs
+/// none of it, such as one that owns another `UnionExec` branch, keeps it in a
+/// task that runs all of it, in order, and otherwise refuses the task rather
+/// than let the executor run the wrong partitions.
 ///
 /// # Scope
 ///
@@ -1253,13 +1296,77 @@ mod tests {
             error,
             "Error during planning: cannot restrict a `UnionExec` branch to \
              partitions []: its `SortExec` keeps a partition count of 1, so the \
-             task would also run partitions another task owns. The adaptive \
-             planner can leave a branch that merges its input into one partition, \
-             such as through an `ORDER BY`, a `LIMIT` or an aggregate without \
-             `GROUP BY`, in the union's stage; the static planner \
-             (`ballista.planner.adaptive.enabled = false`) gives it a stage of its \
-             own. A node of your own can be restricted by \
-             `SchedulerConfig::partition_sliceable_resolver`."
+             task would also run partitions another task owns. The branch merges \
+             its input into one partition, as an `ORDER BY`, a `LIMIT` or an \
+             aggregate without `GROUP BY` does. The static planner gives such a \
+             branch a stage of its own; the adaptive planner \
+             (`ballista.planner.adaptive.enabled`) can leave it in the union's \
+             stage."
+        );
+    }
+
+    /// A node of the user's own that keeps its partition count is pointed at
+    /// the resolver, not at the planners.
+    #[test]
+    fn a_union_branch_with_a_node_of_your_own_is_pointed_at_the_resolver() {
+        // Without a resolver it keeps one partition per payload, whatever its
+        // input is restricted to.
+        let own = PayloadExec::over(&["p0", "p1"], vec![scan_with_file_groups(2)], &[]);
+        // Partitions 0-1 are the node's, 2-3 the scan's.
+        let union = UnionExec::try_new(vec![own, scan_with_file_groups(2)]).unwrap();
+
+        let error = restrict_plan_to_partitions(union, &[2, 3], None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "Error during planning: cannot restrict a `UnionExec` branch to \
+             partitions []: its `PayloadExec` keeps a partition count of 2, so the \
+             task would also run partitions another task owns. The branch holds a \
+             node that sets its own partition count. A node of your own can be \
+             restricted by `SchedulerConfig::partition_sliceable_resolver`."
+        );
+    }
+
+    /// A broadcast reader keeps its one partition in every task, so a union
+    /// branch that reads one is refused in a task that owns another branch,
+    /// and the error says so rather than blaming a sort or a limit.
+    #[test]
+    fn a_union_branch_reading_a_broadcast_is_refused_as_a_broadcast() {
+        use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
+        let schema = scan_with_file_groups(2).schema();
+        let reader = ShuffleReaderExec::try_new_broadcast(
+            1,
+            (0..2).map(create_partition).collect(),
+            schema,
+            2,
+        )
+        .unwrap();
+        let projected: Arc<dyn ExecutionPlan> = Arc::new(
+            ProjectionExec::try_new(
+                vec![ProjectionExpr {
+                    expr: Arc::new(Column::new("a", 0)),
+                    alias: "a".to_string(),
+                }],
+                Arc::new(reader),
+            )
+            .unwrap(),
+        );
+        // Partition 0 is the broadcast branch's, 1-2 the scan's.
+        let union =
+            UnionExec::try_new(vec![projected, scan_with_file_groups(2)]).unwrap();
+
+        let error = restrict_plan_to_partitions(union, &[1, 2], None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "Error during planning: cannot restrict a `UnionExec` branch to \
+             partitions []: its `ProjectionExec` keeps a partition count of 1, so \
+             the task would also run partitions another task owns. The branch \
+             reads a broadcast, which every task reads whole as one partition. The \
+             static planner gives a branch that reads a broadcast a stage of its \
+             own."
         );
     }
 

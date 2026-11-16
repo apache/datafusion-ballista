@@ -731,7 +731,8 @@ mod tests {
     };
     use crate::test_utils::{
         BlackholeTaskLauncher, RejectingTaskLauncher, aggregation_logical_plan,
-        mock_executor, register_virtual_executor, test_cluster_context,
+        mock_executor, register_virtual_executor, scan_with_file_groups,
+        test_cluster_context,
     };
     use ballista_core::config::{
         BALLISTA_EXECUTION_MODE, BALLISTA_PROPAGATE_EMPTY_ENABLED,
@@ -743,6 +744,8 @@ mod tests {
     };
     use ballista_core::serde::{BallistaCodec, BallistaLogicalExtensionCodec};
     use datafusion::execution::context::SessionConfig;
+    use datafusion::physical_plan::union::UnionExec;
+    use datafusion::physical_plan::{ExecutionPlan, displayable};
 
     use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
     use std::collections::HashSet;
@@ -1141,12 +1144,13 @@ mod tests {
         }
     }
 
-    /// Submits a job of one four-partition `PayloadExec` to a scheduler with
-    /// two executors of two vcores each, so binding splits its stage into two
-    /// tasks.
+    /// Submits a job of `plan`, a stage of four partitions over `PayloadExec`,
+    /// to a scheduler with two executors of two vcores each, so binding splits
+    /// its stage into two tasks.
     async fn submit_split_payload_stage(
         config: SchedulerConfig,
         launcher: Arc<CapturingLauncher>,
+        plan: Arc<dyn ExecutionPlan>,
     ) -> Result<(SchedulerState<LogicalPlanNode, PhysicalPlanNode>, JobId)> {
         let job_id = JobId::from("job-payload");
         let codec = BallistaCodec::new(
@@ -1187,14 +1191,7 @@ mod tests {
             .queue_job(&job_id, "", timestamp_millis())?;
         state
             .task_manager
-            .submit_physical_plan(
-                &job_id,
-                "",
-                ctx,
-                PayloadExec::leaf(&["p0", "p1", "p2", "p3"]),
-                timestamp_millis(),
-                None,
-            )
+            .submit_physical_plan(&job_id, "", ctx, plan, timestamp_millis(), None)
             .await?;
 
         Ok((state, job_id))
@@ -1204,12 +1201,13 @@ mod tests {
     async fn bind_split_payload_stage(
         config: SchedulerConfig,
         launcher: Arc<CapturingLauncher>,
+        plan: Arc<dyn ExecutionPlan>,
     ) -> Result<(
         SchedulerState<LogicalPlanNode, PhysicalPlanNode>,
         JobId,
         Vec<BoundTask>,
     )> {
-        let (state, job_id) = submit_split_payload_stage(config, launcher).await?;
+        let (state, job_id) = submit_split_payload_stage(config, launcher, plan).await?;
         let bound = state
             .executor_manager
             .bind_schedulable_tasks(state.task_manager.get_running_job_cache())
@@ -1242,9 +1240,12 @@ mod tests {
     async fn launch_tasks_fails_a_job_whose_split_stage_holds_a_leaf_nobody_can_restrict()
     -> Result<()> {
         let launcher = Arc::new(CapturingLauncher::default());
-        let (state, job_id, bound) =
-            bind_split_payload_stage(SchedulerConfig::default(), launcher.clone())
-                .await?;
+        let (state, job_id, bound) = bind_split_payload_stage(
+            SchedulerConfig::default(),
+            launcher.clone(),
+            PayloadExec::leaf(&["p0", "p1", "p2", "p3"]),
+        )
+        .await?;
         let vcores: u32 = bound.iter().map(|(_, task)| task.vcores_consumed).sum();
 
         let (freed, failed_jobs) = launch(&state, bound).await?;
@@ -1261,8 +1262,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn revive_offers_fails_the_job_with_the_preparation_error() -> Result<()> {
         let launcher = Arc::new(CapturingLauncher::default());
-        let (state, job_id) =
-            submit_split_payload_stage(SchedulerConfig::default(), launcher).await?;
+        let (state, job_id) = submit_split_payload_stage(
+            SchedulerConfig::default(),
+            launcher,
+            PayloadExec::leaf(&["p0", "p1", "p2", "p3"]),
+        )
+        .await?;
 
         let (tx_event, mut rx_event) = tokio::sync::mpsc::channel(100);
         state.revive_offers(EventSender::new(tx_event)).await?;
@@ -1296,17 +1301,36 @@ mod tests {
         let launcher = Arc::new(CapturingLauncher::default());
         let config = SchedulerConfig::default()
             .with_partition_sliceable_resolver(payload_resolver());
-        let (state, _job_id, bound) =
-            bind_split_payload_stage(config, launcher.clone()).await?;
+        let (state, _job_id, bound) = bind_split_payload_stage(
+            config,
+            launcher.clone(),
+            PayloadExec::leaf(&["p0", "p1", "p2", "p3"]),
+        )
+        .await?;
 
         let (freed, failed_jobs) = launch(&state, bound).await?;
 
         assert!(failed_jobs.is_empty());
         assert_eq!(freed, 0, "every task was launched, so no slot is refunded");
 
-        // Decode what the executors would, with the codec the scheduler used.
+        let mut shipped: Vec<Vec<String>> = shipped_writer_inputs(&state, &launcher)
+            .iter()
+            .map(payloads_of)
+            .collect();
+        shipped.sort();
+        assert_eq!(shipped, [["p0", "p1"], ["p2", "p3"]]);
+
+        Ok(())
+    }
+
+    /// The input of the shuffle writer of each task `launcher` launched,
+    /// decoded as the executor would, with the codec the scheduler used.
+    fn shipped_writer_inputs(
+        state: &SchedulerState<LogicalPlanNode, PhysicalPlanNode>,
+        launcher: &CapturingLauncher,
+    ) -> Vec<Arc<dyn ExecutionPlan>> {
         let task_ctx = SessionContext::new().task_ctx();
-        let mut shipped: Vec<Vec<String>> = launcher
+        launcher
             .launched
             .lock()
             .unwrap()
@@ -1321,15 +1345,55 @@ mod tests {
                     })
                     .expect("the executor can decode the plan");
                 // The writer's input can come wrapped in a `CooperativeExec`.
-                let mut input = plan.children()[0];
+                let mut input = plan.children()[0].clone();
                 while input.name() == "CooperativeExec" {
-                    input = input.children()[0];
+                    input = input.children()[0].clone();
                 }
-                payloads_of(input)
+                input
             })
+            .collect()
+    }
+
+    /// A `UnionExec` branch over a leaf the scheduler doesn't know, as an
+    /// Iceberg scan is, runs in the task that owns it and becomes an empty
+    /// leaf in the task that doesn't, with no resolver configured.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_empties_an_unknown_leaf_in_a_union_branch_another_task_owns()
+    -> Result<()> {
+        let launcher = Arc::new(CapturingLauncher::default());
+        // Partition 0 is the payload's, 1-3 the scan's.
+        let union = UnionExec::try_new(vec![
+            PayloadExec::leaf(&["p0"]),
+            scan_with_file_groups(3),
+        ])?;
+        let (state, _job_id, bound) =
+            bind_split_payload_stage(SchedulerConfig::default(), launcher.clone(), union)
+                .await?;
+
+        let (freed, failed_jobs) = launch(&state, bound).await?;
+
+        assert!(failed_jobs.is_empty());
+        assert_eq!(freed, 0, "every task was launched, so no slot is refunded");
+        let mut shipped: Vec<String> = shipped_writer_inputs(&state, &launcher)
+            .iter()
+            .map(|plan| displayable(plan.as_ref()).indent(false).to_string())
             .collect();
         shipped.sort();
-        assert_eq!(shipped, [["p0", "p1"], ["p2", "p3"]]);
+        assert_eq!(
+            shipped,
+            [
+                "UnionExec\n  \
+                   CooperativeExec\n    \
+                     DataSourceExec: partitions=0, partition_sizes=[]\n  \
+                   DataSourceExec: file_groups={2 groups: [[file1.parquet], \
+                   [file2.parquet]]}, projection=[a], file_type=parquet\n",
+                "UnionExec\n  \
+                   CooperativeExec\n    \
+                     PayloadExec: payloads=[\"p0\"]\n  \
+                   DataSourceExec: file_groups={1 group: [[file0.parquet]]}, \
+                   projection=[a], file_type=parquet\n",
+            ]
+        );
 
         Ok(())
     }

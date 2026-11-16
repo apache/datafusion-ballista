@@ -746,8 +746,14 @@ fn can_stay_inline(plan: &Arc<dyn ExecutionPlan>) -> bool {
 /// Whether per-task restriction can reduce `plan` to zero partitions. An empty
 /// slice means "this task polls nothing here", so a branch that still reports a
 /// partition afterwards, or that the rewriter refuses, cannot be restricted
-/// away. No resolver is passed, so a node Ballista does not know gets a stage
-/// of its own.
+/// away.
+///
+/// No resolver is passed. A leaf Ballista does not know still passes, because
+/// the rewriter replaces a leaf the task runs none of with an empty leaf, so
+/// such a branch stays in the union's stage. Only the empty slice is tried: a
+/// task that runs some but not all of such a leaf still needs a resolver. An
+/// interior node Ballista does not know that keeps its own partition count
+/// fails, and its branch gets a stage of its own.
 fn restricts_to_nothing(plan: &Arc<dyn ExecutionPlan>) -> bool {
     restrict_plan_to_partitions(plan.clone(), &[], None)
         .is_ok_and(|p| p.properties().output_partitioning().partition_count() == 0)

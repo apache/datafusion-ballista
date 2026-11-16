@@ -120,4 +120,45 @@ mod split_union {
             );
         }
     }
+
+    /// The adaptive planner leaves a branch that merges its input into one
+    /// partition, here each sorted branch of a `UNION ALL ... ORDER BY`, in the
+    /// union's stage. With one partition per task every task would also run
+    /// the branch it doesn't own, so the job fails rather than return those
+    /// rows twice.
+    #[tokio::test]
+    async fn a_split_union_with_a_merging_branch_fails_under_the_adaptive_planner() {
+        let ctx = SessionContext::standalone_with_state(ballista_state(&[
+            (BALLISTA_ADAPTIVE_PLANNER_ENABLED, "true"),
+            (BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK, "1"),
+        ]))
+        .await
+        .unwrap();
+        register_alltypes(&ctx, "test").await;
+
+        let error = ctx
+            .sql("SELECT id FROM test UNION ALL SELECT id FROM test ORDER BY id")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap_err()
+            .to_string();
+        // The job id before it differs from run to run.
+        let reason = error.split_once("DataFusion error: ").map(|(_, r)| r);
+        assert_eq!(
+            reason,
+            Some(
+                "Error during planning: cannot restrict a `UnionExec` branch to \
+                 partitions []: its `SortExec` keeps a partition count of 1, so the \
+                 task would also run partitions another task owns. The branch merges \
+                 its input into one partition, as an `ORDER BY`, a `LIMIT` or an \
+                 aggregate without `GROUP BY` does. The static planner gives such a \
+                 branch a stage of its own; the adaptive planner \
+                 (`ballista.planner.adaptive.enabled`) can leave it in the union's \
+                 stage."
+            ),
+            "{error}"
+        );
+    }
 }
