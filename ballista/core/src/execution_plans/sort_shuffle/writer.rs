@@ -87,8 +87,9 @@ type FinalizeResult = (PathBuf, PathBuf, Vec<(usize, u64, u64, u64)>);
 /// The coordinator only concatenates the finished buffers, which keeps the
 /// serial tail down to byte copies.
 struct InputPartitionOutput {
-    /// IPC bytes for each output partition's in-memory rows. Empty for a
-    /// partition this input contributed no buffered rows to.
+    /// IPC bytes for each output partition's in-memory rows. Empty when this
+    /// input buffered no rows for the partition, or when the pool refused the
+    /// encoded bytes and they went to the spill file instead.
     encoded: Vec<Vec<u8>>,
     /// Counts for the rows in `encoded`, one entry per output partition.
     in_memory_stats: Vec<EncodedStats>,
