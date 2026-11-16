@@ -275,12 +275,18 @@ Only use `0` together with a bounded memory pool (see
 [Configuring Executor Memory Pool](#configuring-executor-memory-pool)), so
 pool pressure still forces spilling.
 
-After the input stream finishes, the remaining in-memory data and any spilled
-batches are written into a single consolidated Arrow IPC file per input
-partition, alongside an index file that lets readers seek directly to a given
-output partition.
+At the end of input, the writer encodes each output partition's buffered rows
+and reserves the encoded bytes from the memory pool. A partition whose bytes
+the pool refuses is appended to its spill file instead. The per-task budget
+does not apply to this step, so with the default unbounded pool it never
+spills.
 
-This produces `2 × N` files instead of `N × M`, coalesces small batches
+The task's in-memory data and any spilled batches are then written into a
+single consolidated Arrow IPC file per task, alongside an index file that lets
+readers seek directly to a given output partition.
+
+This produces two files per task instead of one per input and output
+partition pair, coalesces small batches
 to a target size before writing, and bounds shuffle memory use via
 spilling.
 
