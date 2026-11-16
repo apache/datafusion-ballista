@@ -311,7 +311,9 @@ pub trait SessionConfigExt {
     ///
     /// Returns an error if `ballista.execution.mode` is not a valid value.
     fn ballista_execution_mode(&self) -> datafusion::error::Result<ExecutionMode>;
-    /// Sets how a job's stages exchange data. By default, this is set to `Staged`.
+    /// Sets how a job's stages exchange data. Defaults to [`ExecutionMode::Staged`].
+    ///
+    /// [`ExecutionMode::Pipelined`] requires a push-staged scheduler.
     fn with_ballista_execution_mode(self, execution_mode: ExecutionMode) -> Self;
 }
 
