@@ -115,6 +115,13 @@ Metadata files never change, so every node rebuilds exactly that version.
   the client plans the query. DataFusion looks up each table a query names
   once, so every scan of it, such as each side of a self-join, reads that
   version, and each new query reads the latest one.
+- **A view**, from `CREATE VIEW` or a `DataFrame`'s `into_view`, stores the
+  plan it was created with, so each query that names it pins its
+  catalog-backed tables again, and it reads their latest versions.
+- **A table its catalog can't load**, because it was dropped or the catalog
+  can't be reached, fails a query only when the query reads it, as in
+  DataFusion. The table, and any view over it, can still be described, dropped
+  or replaced, and a view reads the table again once it loads.
 - **A static table** is sent as the version it holds.
 - **A scan** is sent as the version the scheduler planned it against.
 
@@ -162,11 +169,11 @@ and executors must all set the same codecs in the same order.
 - **Storage credentials travel in plain text.** Each table's serialized
   `FileIO` includes them, so the links between client, scheduler and executors
   must be trusted.
-- **A view keeps the version from when it was created.** DataFusion stores a
-  view as a planned query, and tables are pinned when a query is planned. The
-  same goes for a `DataFrame` or a Flight SQL prepared statement run more than
-  once: each run reads the version from when it was planned. To read newer
-  commits, recreate the view or plan the query again.
+- **A reused `DataFrame` or prepared statement keeps its version.** Tables are
+  pinned when a query is planned, so a `DataFrame` or a Flight SQL prepared
+  statement run more than once reads the version from when it was planned. To
+  read newer commits, plan the query again, or register the `DataFrame` as a
+  view with `into_view` and query that.
 - **A separately deployed scheduler and executors** must link
   `ballista-iceberg` and be readied with `with_iceberg` (see
   [SQL clients](#sql-clients)). The tests cover standalone mode and an

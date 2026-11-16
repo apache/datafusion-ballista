@@ -56,8 +56,8 @@
 //! - Reads only.
 //! - Each scan runs as a single task.
 //! - No metadata tables such as `t$snapshots`.
-//! - A view, or a `DataFrame` or prepared statement reused across runs, reads
-//!   the version from when it was planned.
+//! - A `DataFrame` or prepared statement reused across runs reads the version
+//!   from when it was planned.
 //! - No encrypted tables.
 //! - Storage credentials travel in plain text.
 //! - A `UNION` or `UNION ALL` can fail, or with an `ORDER BY` return rows more
