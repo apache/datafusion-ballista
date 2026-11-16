@@ -152,10 +152,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .get_job_execution_graph(job_id)
             .await?;
         let final_stage_schema = graph.and_then(|graph| {
+            let stage_id = graph.final_stage_ids().into_iter().next()?;
             graph
                 .stages()
-                .values()
-                .find(|stage| stage.output_links().is_empty())
+                .get(&stage_id)
                 .map(|stage| stage.plan().schema())
         });
 

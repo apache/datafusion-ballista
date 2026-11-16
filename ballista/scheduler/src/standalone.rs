@@ -24,7 +24,7 @@ use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
     GrpcServerConfig, create_grpc_server, default_config_producer,
-    default_session_builder,
+    default_session_builder, tcp_incoming_from_listener,
 };
 use ballista_core::{
     BALLISTA_VERSION, error::Result,
@@ -39,7 +39,6 @@ use log::info;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tonic::transport::server::TcpIncoming;
 
 /// Creates a standalone scheduler with default configuration.
 ///
@@ -120,11 +119,14 @@ pub async fn new_standalone_scheduler_with_builder(
     info!(
         "Ballista Scheduler v{BALLISTA_VERSION} (DataFusion v{DATAFUSION_VERSION}) listening on {addr:?}"
     );
+    let grpc_server_config = GrpcServerConfig::default();
+    let incoming = tcp_incoming_from_listener(listener, &grpc_server_config);
     tokio::spawn(
-        create_grpc_server(&GrpcServerConfig::default())
+        create_grpc_server(&grpc_server_config)
             .add_service(server)
-            // tonic ignores the builder's `tcp_nodelay` on a pre-bound listener.
-            .serve_with_incoming(TcpIncoming::from(listener).with_nodelay(Some(true))),
+            // tonic ignores the builder's `tcp_nodelay` and `tcp_keepalive` on a
+            // pre-bound listener, so they are set on the incoming stream.
+            .serve_with_incoming(incoming),
     );
 
     Ok(addr)

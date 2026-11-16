@@ -37,10 +37,13 @@ RUN apt-get update && \
 
 # release, or release-lto for a slower build and faster binaries.
 ARG PROFILE=release
+# Extra Cargo features, such as ballista-executor/jemalloc to build the
+# executor with jemalloc instead of mimalloc.
+ARG FEATURES=""
 
 WORKDIR /src
 COPY . .
-RUN cargo build --profile "${PROFILE}" \
+RUN cargo build --profile "${PROFILE}" ${FEATURES:+--features "${FEATURES}"} \
       -p ballista-scheduler --bin ballista-scheduler \
       -p ballista-executor --bin ballista-executor \
       -p ballista-benchmarks --bin tpch --bin tpcds && \

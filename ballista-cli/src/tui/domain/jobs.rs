@@ -96,32 +96,11 @@ impl JobsData {
     }
 
     pub fn sort_jobs(&self, jobs: &mut Vec<&Job>) {
-        match self.sort_column {
-            SortColumn::Id => jobs.sort_by(|a, b| {
-                let cmp = a.job_id.cmp(&b.job_id);
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::Name => jobs.sort_by(|a, b| {
-                let cmp = a.job_name.cmp(&b.job_name);
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::Status => jobs.sort_by(|a, b| {
-                let cmp = a.status.cmp(&b.status);
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::StagesCompleted => jobs.sort_by(|a, b| {
+        let compare_jobs: fn(&Job, &Job) -> std::cmp::Ordering = match self.sort_column {
+            SortColumn::Id => |a, b| a.job_id.cmp(&b.job_id),
+            SortColumn::Name => |a, b| a.job_name.cmp(&b.job_name),
+            SortColumn::Status => |a, b| a.status.cmp(&b.status),
+            SortColumn::StagesCompleted => |a, b| {
                 let stage_completion = |job: &Job| {
                     if job.num_stages == 0 {
                         0.0
@@ -129,30 +108,13 @@ impl JobsData {
                         job.completed_stages as f64 / job.num_stages as f64
                     }
                 };
-                let cmp = stage_completion(a).total_cmp(&stage_completion(b));
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::PercentComplete => jobs.sort_by(|a, b| {
-                let cmp = a.percent_complete.cmp(&b.percent_complete);
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::StartTime => jobs.sort_by(|a, b| {
-                let cmp = a.start_time.cmp(&b.start_time);
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::Duration => jobs.sort_by(|a, b| {
+                stage_completion(a).total_cmp(&stage_completion(b))
+            },
+            SortColumn::PercentComplete => {
+                |a, b| a.percent_complete.cmp(&b.percent_complete)
+            }
+            SortColumn::StartTime => |a, b| a.start_time.cmp(&b.start_time),
+            SortColumn::Duration => |a, b| {
                 let duration_a = if a.end_time > 0 {
                     a.end_time - a.start_time
                 } else {
@@ -163,15 +125,20 @@ impl JobsData {
                 } else {
                     0
                 };
-                let cmp = duration_a.cmp(&duration_b);
-                if self.sort_order == crate::tui::domain::SortOrder::Descending {
-                    cmp.reverse()
-                } else {
-                    cmp
-                }
-            }),
-            SortColumn::None => {}
-        }
+                duration_a.cmp(&duration_b)
+            },
+            SortColumn::None => return,
+        };
+
+        jobs.sort_by(|a, b| {
+            let cmp = compare_jobs(a, b);
+
+            if self.sort_order == crate::tui::domain::SortOrder::Descending {
+                cmp.reverse()
+            } else {
+                cmp
+            }
+        })
     }
 
     pub fn selected_job<'a>(&'a self, search_term: &str) -> Option<&'a Job> {
@@ -197,43 +164,19 @@ impl JobsData {
     }
 
     pub fn scroll_down(&mut self) {
-        if self.jobs.is_empty() {
-            self.table_state.select(None);
-            return;
-        }
-
-        if let Some(selected) = self.get_selected_job_index() {
-            if selected < self.jobs.len() - 1 {
-                self.table_state.select(Some(selected + 1));
-            } else {
-                self.table_state.select(None);
-            }
-        } else {
-            self.table_state.select(Some(0));
-        }
-        self.scrollbar_state = self
-            .scrollbar_state
-            .position(self.get_selected_job_index().unwrap_or(0));
+        super::scroll_down(
+            &mut self.table_state,
+            &mut self.scrollbar_state,
+            self.jobs.len(),
+        );
     }
 
     pub fn scroll_up(&mut self) {
-        if self.jobs.is_empty() {
-            self.table_state.select(None);
-            return;
-        }
-
-        if let Some(selected) = self.get_selected_job_index() {
-            if selected == 0 {
-                self.table_state.select(None);
-            } else {
-                self.table_state.select(Some(selected - 1));
-            }
-        } else {
-            self.table_state.select(Some(self.jobs.len() - 1));
-        }
-        self.scrollbar_state = self
-            .scrollbar_state
-            .position(self.get_selected_job_index().unwrap_or(0));
+        super::scroll_up(
+            &mut self.table_state,
+            &mut self.scrollbar_state,
+            self.jobs.len(),
+        );
     }
 }
 
@@ -785,96 +728,6 @@ mod tests {
         let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
         data.table_state.select(Some(0));
         assert!(data.selected_job("nonexistent").is_none());
-    }
-
-    // --- scroll_down tests ---
-
-    #[test]
-    fn scroll_down_empty_list_stays_none() {
-        let mut data = JobsData::new();
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), None);
-    }
-
-    #[test]
-    fn scroll_down_with_no_selection_selects_first() {
-        let jobs = vec![
-            make_job("j1", "A", "Running", 1, 2, 1, 0, 0),
-            make_job("j2", "B", "Running", 2, 3, 1, 0, 0),
-        ];
-        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), Some(0));
-    }
-
-    #[test]
-    fn scroll_down_advances_selection() {
-        let jobs = vec![
-            make_job("j1", "A", "Running", 1, 2, 1, 0, 0),
-            make_job("j2", "B", "Running", 2, 1, 2, 0, 0),
-            make_job("j3", "C", "Running", 3, 1, 2, 0, 0),
-        ];
-        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
-        data.table_state.select(Some(0));
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), Some(1));
-    }
-
-    #[test]
-    fn scroll_down_at_last_item_deselects() {
-        let jobs = vec![
-            make_job("j1", "A", "Running", 1, 2, 1, 0, 0),
-            make_job("j2", "B", "Running", 2, 3, 1, 0, 0),
-        ];
-        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
-        data.table_state.select(Some(1));
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), None);
-    }
-
-    // --- scroll_up tests ---
-
-    #[test]
-    fn scroll_up_empty_list_stays_none() {
-        let mut data = JobsData::new();
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), None);
-    }
-
-    #[test]
-    fn scroll_up_with_no_selection_selects_last() {
-        let jobs = vec![
-            make_job("j1", "A", "Running", 1, 2, 1, 0, 0),
-            make_job("j2", "B", "Running", 2, 3, 1, 0, 0),
-            make_job("j3", "C", "Running", 3, 4, 1, 0, 0),
-        ];
-        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), Some(2));
-    }
-
-    #[test]
-    fn scroll_up_moves_selection_back() {
-        let jobs = vec![
-            make_job("j1", "A", "Running", 1, 2, 1, 0, 0),
-            make_job("j2", "B", "Running", 2, 2, 1, 0, 0),
-        ];
-        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
-        data.table_state.select(Some(1));
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), Some(0));
-    }
-
-    #[test]
-    fn scroll_up_at_first_item_deselects() {
-        let jobs = vec![
-            make_job("j1", "A", "Running", 1, 2, 1, 0, 0),
-            make_job("j2", "B", "Running", 2, 3, 1, 0, 0),
-        ];
-        let mut data = make_jobs_data(jobs, SortColumn::None, SortOrder::Ascending);
-        data.table_state.select(Some(0));
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), None);
     }
 
     // --- JobPlansPopup tests ---

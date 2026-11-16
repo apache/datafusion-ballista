@@ -283,6 +283,16 @@ pub trait ExecutionGraph: Debug {
     /// Exposes executions stages and stage id's
     fn stages(&self) -> &HashMap<usize, ExecutionStage>;
 
+    /// Stage ids of the final stage(s), whose output is the job's result —
+    /// those whose `output_links` is empty.
+    fn final_stage_ids(&self) -> HashSet<usize> {
+        self.stages()
+            .iter()
+            .filter(|(_, stage)| stage.output_links().is_empty())
+            .map(|(stage_id, _)| *stage_id)
+            .collect()
+    }
+
     /// Stage ids of all non-final (intermediate) stages — those whose
     /// `output_links` is non-empty. The final stage(s) are excluded.
     fn intermediate_stage_ids(&self) -> Vec<u32> {
@@ -747,6 +757,14 @@ impl StaticExecutionGraph {
     /// Clear the stage failure count for this stage if the stage is finally success
     fn clear_stage_failure(&mut self, stage_id: usize) {
         self.failed_stage_attempts.remove(&stage_id);
+    }
+
+    /// Mutable stage access for tests that need to build states the
+    /// scheduling paths cannot reach on their own (e.g. a plan whose
+    /// rewrite fails).
+    #[cfg(test)]
+    pub(crate) fn stages_mut(&mut self) -> &mut HashMap<usize, ExecutionStage> {
+        &mut self.stages
     }
 }
 

@@ -363,7 +363,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::UInt64,
                          Some((20).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_GRPC_TCP_KEEPALIVE_SECONDS.to_string(),
-                         "TCP keep-alive interval for gRPC client in seconds".to_string(),
+                         "TCP keep-alive interval for gRPC client in seconds (0 disables)".to_string(),
                          DataType::UInt64,
                          Some((3600).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_GRPC_HTTP2_KEEPALIVE_INTERVAL_SECONDS.to_string(),
