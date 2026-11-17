@@ -800,6 +800,11 @@ impl SchedulerTest {
             .await
     }
 
+    /// Removes `session_id`, as a client's `RemoveSession` call does.
+    pub async fn remove_session(&self, session_id: &str) -> Result<()> {
+        self.scheduler.remove_session_and_caches(session_id).await
+    }
+
     /// Simulates the loss of an executor. This mirrors the reaper's
     /// `remove_executor` path without waiting out the heartbeat timeout.
     pub async fn lose_executor(&self, executor_id: &str) -> Result<()> {

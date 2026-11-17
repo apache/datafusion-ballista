@@ -462,8 +462,11 @@ cached.collect().await?;       // reads it
   a cache it was built from, another way (a self-join of a cached frame, say),
   fails instead with "lost DataFrame::cache() data; retry the query", and the
   retry rebuilds the cache.
-- Cached data is not evicted yet: it is kept until it is found lost, so cache
-  only what you reuse.
+- Cached data is not evicted yet: it is kept until it is found lost, or its
+  session is removed through the scheduler's `RemoveSession` gRPC call, which
+  the Rust and Python clients do not expose yet. So cache only what you reuse.
+  Each `cache()` call caches its DataFrame anew; an earlier call's cache is not
+  freed.
 - `EXPLAIN` of a cached DataFrame never builds it.
 - An operator can turn caching off for the whole cluster with the scheduler's
   `--disable-dataframe-cache` flag; cached DataFrames are then computed as part

@@ -640,6 +640,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Ok(())
     }
 
+    /// Removes `session_id`, and with it the session's `DataFrame::cache()`
+    /// data (see [`remove_session_caches`](Self::remove_session_caches)). The
+    /// session itself is removed even if dropping its caches fails.
+    pub(crate) async fn remove_session(
+        &self,
+        session_id: &str,
+        sender: &EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        let caches = self.remove_session_caches(session_id, sender).await;
+        self.session_manager.remove_session(session_id).await?;
+        caches
+    }
+
     /// Reclaim a finished job's shuffle data and schedule state cleanup. A job
     /// backing a cache (recorded by [`on_job_terminal`](Self::on_job_terminal)
     /// before this runs) keeps its final-stage data until the entry is
