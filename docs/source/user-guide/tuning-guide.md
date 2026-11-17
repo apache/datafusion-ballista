@@ -264,22 +264,24 @@ two independent triggers fires:
 - the per-task buffered-bytes budget
   (`ballista.shuffle.sort_based.memory_limit_per_task_bytes`) is reached. This
   budget is counted independently of the memory pool, so it bounds the writer's
-  memory even when the pool is unbounded (the default). Setting it to `0`
-  disables this trigger, leaving memory-pool pressure as the sole spill signal.
+  memory even when the pool is unbounded (`--memory-pool-size 0`). Setting it
+  to `0` disables this trigger, leaving memory-pool pressure as the sole spill
+  signal.
 
 **Warning:** setting `memory_limit_per_task_bytes` to `0` while the executor
-uses the default unbounded memory pool disables both spill triggers. The writer
-then buffers the entire task's shuffle output in memory and never spills, which
-can exhaust the executor and cause an out-of-memory failure on large inputs.
-Only use `0` together with a bounded memory pool (see
+runs an unbounded memory pool (`--memory-pool-size 0`) disables both spill
+triggers. The writer then buffers the entire task's shuffle output in memory
+and never spills, which can exhaust the executor and cause an out-of-memory
+failure on large inputs. Only use `0` together with a bounded memory pool (the
+default; see
 [Configuring Executor Memory Pool](#configuring-executor-memory-pool)), so
 pool pressure still forces spilling.
 
 At the end of input, the writer encodes each output partition's buffered rows
 and reserves the encoded bytes from the memory pool. A partition whose bytes
 the pool refuses is appended to its spill file instead. The per-task budget
-does not apply to this step, so with the default unbounded pool it never
-spills.
+does not apply to this step, so only memory-pool pressure can make it spill.
+With an unbounded pool (`--memory-pool-size 0`) it never does.
 
 The task's in-memory data and any spilled batches are then written into a
 single consolidated Arrow IPC file per task, alongside an index file that lets
