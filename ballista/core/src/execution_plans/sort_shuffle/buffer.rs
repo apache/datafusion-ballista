@@ -25,6 +25,7 @@
 use super::partitioned_batch_iterator::PartitionedBatchIterator;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::utils::memory::RecordBatchMemoryCounter;
 use datafusion::error::Result;
 
 /// Rows buffered for every output partition of one input partition.
@@ -34,8 +35,10 @@ pub struct BufferedBatches {
     batch_size: usize,
     /// Input batches in arrival order, indexed by `batch_idx`.
     batches: Vec<RecordBatch>,
-    /// Total `get_array_memory_size` of `batches`.
-    batches_bytes: usize,
+    /// Counts each buffer of `batches` once, so zero-copy slices of one array
+    /// (as aggregates emit) are not charged once per slice. Never refunds,
+    /// which holds because `batches` only grows until `drain`.
+    batches_counter: RecordBatchMemoryCounter,
     /// One list of `(batch_idx, row_idx)` pairs per output partition.
     indices: Vec<Vec<(u32, u32)>>,
     /// Total allocated capacity of `indices`, in bytes.
@@ -50,7 +53,7 @@ impl BufferedBatches {
             schema,
             batch_size,
             batches: Vec::new(),
-            batches_bytes: 0,
+            batches_counter: RecordBatchMemoryCounter::new(),
             indices: vec![Vec::new(); num_partitions],
             indices_bytes: 0,
         }
@@ -69,7 +72,7 @@ impl BufferedBatches {
     /// Returns the bytes held: the buffered batches plus the allocated
     /// capacity of the index lists.
     pub fn memory_size(&self) -> usize {
-        self.batches_bytes + self.indices_bytes
+        self.batches_counter.memory_usage() + self.indices_bytes
     }
 
     /// Buffers `batch`, recording the rows listed in `per_partition_rows[p]`
@@ -89,7 +92,7 @@ impl BufferedBatches {
             self.indices_bytes += (partition_indices.capacity() - capacity_before)
                 * size_of::<(u32, u32)>();
         }
-        self.batches_bytes += batch.get_array_memory_size();
+        self.batches_counter.count_batch(&batch);
         self.batches.push(batch);
     }
 
@@ -102,7 +105,7 @@ impl BufferedBatches {
         &mut self,
         mut f: impl FnMut(usize, &mut dyn Iterator<Item = Result<RecordBatch>>) -> Result<()>,
     ) -> Result<()> {
-        self.batches_bytes = 0;
+        self.batches_counter = RecordBatchMemoryCounter::new();
         self.indices_bytes = 0;
         let batches = std::mem::take(&mut self.batches);
         let indices: Vec<_> = self.indices.iter_mut().map(std::mem::take).collect();
@@ -125,17 +128,8 @@ impl BufferedBatches {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::Int32Array;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use std::sync::Arc;
-
-    fn schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
-    }
-
-    fn batch(values: Vec<i32>) -> RecordBatch {
-        RecordBatch::try_new(schema(), vec![Arc::new(Int32Array::from(values))]).unwrap()
-    }
+    use crate::execution_plans::test_util::{int32_batch, int32_schema};
+    use datafusion::common::utils::memory::get_record_batch_memory_size;
 
     /// Each partition `drain` visits, with its batches.
     fn drain(bb: &mut BufferedBatches) -> Vec<(usize, Vec<RecordBatch>)> {
@@ -160,24 +154,24 @@ mod tests {
         // With 3 rows a batch, partition 0's first output batch takes rows
         // from both inputs, so chunking by `batch_size` is told apart from
         // one output batch per input batch.
-        let mut bb = BufferedBatches::new(3, schema(), 3);
+        let mut bb = BufferedBatches::new(3, int32_schema(), 3);
         assert!(bb.is_empty());
         assert_eq!(bb.num_partitions(), 3);
 
         // Partition 0 gets rows {0, 2} of the first batch and all of the
         // second; partition 1 gets {3, 1} of the first; partition 2, none.
         bb.push_batch(
-            batch(vec![10, 20, 30, 40]),
+            int32_batch(&[10, 20, 30, 40]),
             &[vec![0, 2], vec![3, 1], vec![]],
         );
-        bb.push_batch(batch(vec![50, 60]), &[vec![0, 1], vec![], vec![]]);
+        bb.push_batch(int32_batch(&[50, 60]), &[vec![0, 1], vec![], vec![]]);
         assert!(!bb.is_empty());
 
         assert_eq!(
             drain(&mut bb),
             vec![
-                (0, vec![batch(vec![10, 30, 50]), batch(vec![60])]),
-                (1, vec![batch(vec![40, 20])]),
+                (0, vec![int32_batch(&[10, 30, 50]), int32_batch(&[60])]),
+                (1, vec![int32_batch(&[40, 20])]),
             ]
         );
         assert!(bb.is_empty());
@@ -185,20 +179,43 @@ mod tests {
     }
 
     #[test]
+    fn memory_size_counts_buffers_shared_by_slices_once() {
+        let whole = int32_batch(&(0..8192).collect::<Vec<_>>());
+        let whole_bytes = get_record_batch_memory_size(&whole);
+        let mut bb = BufferedBatches::new(1, int32_schema(), 8);
+        for i in 0..8 {
+            bb.push_batch(whole.slice(i * 1024, 1024), &[vec![0]]);
+        }
+        assert_eq!(
+            bb.memory_size(),
+            whole_bytes + index_bytes(&bb),
+            "eight slices of one array hold that array's buffers once"
+        );
+        drain(&mut bb);
+        assert_eq!(bb.memory_size(), 0);
+        bb.push_batch(whole.slice(0, 1024), &[vec![0]]);
+        assert_eq!(
+            bb.memory_size(),
+            whole_bytes + index_bytes(&bb),
+            "a drained buffer counts the shared buffers again"
+        );
+    }
+
+    #[test]
     fn memory_size_counts_batches_and_index_capacity() {
-        let mut bb = BufferedBatches::new(2, schema(), 8);
+        let mut bb = BufferedBatches::new(2, int32_schema(), 8);
         assert_eq!(bb.memory_size(), 0);
 
-        let first = batch(vec![1, 2, 3]);
-        let mut batch_bytes = first.get_array_memory_size();
+        let first = int32_batch(&[1, 2, 3]);
+        let mut batch_bytes = get_record_batch_memory_size(&first);
         bb.push_batch(first, &[vec![0, 2], vec![1]]);
         assert_eq!(bb.memory_size(), batch_bytes + index_bytes(&bb));
 
         // More rows for partition 0 than its list has room for, so the
         // running total must follow a reallocation.
         let capacity_before = bb.indices[0].capacity();
-        let second = batch((0..8).collect());
-        batch_bytes += second.get_array_memory_size();
+        let second = int32_batch(&[0, 1, 2, 3, 4, 5, 6, 7]);
+        batch_bytes += get_record_batch_memory_size(&second);
         bb.push_batch(second, &[(0..8).collect(), vec![]]);
         assert!(bb.indices[0].capacity() > capacity_before);
         assert_eq!(bb.memory_size(), batch_bytes + index_bytes(&bb));

@@ -66,6 +66,7 @@ message BallistaPhysicalPlanNode {
     PipelinedShuffleWriterExecNode pipelined_shuffle_writer = 18;
     PipelinedShuffleReaderExecNode pipelined_shuffle_reader = 19;
     RuntimeFilterExecNode runtime_filter = 20;
+    PartitionIdRepartitionExecNode partition_id_repartition = 21;
   }
 }
 
@@ -119,6 +120,8 @@ message PipelinedShuffleReaderExecNode {
   // A single logical output partition that streams every partition of every
   // producer task.
   bool broadcast = 5;
+  // The executors the locations in `partition` refer to by `executor_index`.
+  repeated ExecutorEndpoint executors = 6;
 }
 
 message PipelinedReaderPartition {
@@ -132,7 +135,30 @@ message PipelinedPartitionLocation {
   PartitionId partition_id = 1;
   // The producer task within its stage.
   uint32 task_id = 2;
-  ExecutorMetadata executor_meta = 3;
+  // The executor, when this location is reported in a job status. Unset inside
+  // a reader node, where `executor_index` identifies it.
+  ExecutorEndpoint executor_meta = 3;
+  // Inside a reader node, the position of the executor in its `executors`.
+  uint32 executor_index = 4;
+}
+
+// Where a shuffle finds each row's output partition: the value of an integer
+// column of the shuffle's input, which the shuffle drops before writing.
+message PartitionIdRouting {
+  // Index of the integer input column holding the partition id.
+  uint32 column = 1;
+  // Number of output partitions. Ids must lie in `0..partition_count`.
+  uint32 partition_count = 2;
+}
+
+// Exchange marker that the distributed planner lowers to a stage boundary whose
+// shuffle writer routes rows by an input column instead of hashing them. It never
+// executes. The child plan is plumbed by the framework as `inputs[0]`.
+message PartitionIdRepartitionExecNode {
+  // Index of the integer input column holding the partition id.
+  uint32 partition_id_column = 1;
+  // Number of output partitions.
+  uint32 partition_count = 2;
 }
 
 message DistributedQueryExecNode {
@@ -397,7 +423,15 @@ message SortShuffleWriterExecNode {
   string job_id = 1;
   uint32 stage_id = 2;
   datafusion.PhysicalPlanNode input = 3;
-  datafusion.PhysicalHashRepartition output_partitioning = 4;
+  // How rows are assigned to output partitions. A writer that predates the
+  // field a node sets finds none it knows and rejects the node instead of
+  // hashing.
+  oneof routing {
+    datafusion.PhysicalHashRepartition output_partitioning = 4;
+    PartitionIdRouting partition_id_routing = 10;
+    // Range output partitioning; a hash stage sets `output_partitioning` instead.
+    datafusion.Partitioning partitioning = 11;
+  }
   // Target batch size in rows when materializing buffered shuffle data.
   uint64 batch_size = 8;
   // Per-task buffered-bytes budget at which the writer spills its in-memory
@@ -436,6 +470,8 @@ message ShuffleReaderExecNode {
   uint32 upstream_partition_count = 6;
   // Optional coalesce metadata. Absent means "no coalesce" (legacy one-to-one read behavior).
   optional CoalescePlan coalesce = 7;
+  // The executors the locations in `partition` refer to by `executor_index`.
+  repeated ExecutorEndpoint executors = 8;
 }
 
 message ShuffleReaderPartition {
@@ -460,6 +496,8 @@ message RangeShuffleReaderExecNode {
   // the reader skip the parts of an indexed source that cannot hold a row the
   // partition wants; the consuming RangeFilterExec still does the exact trim.
   repeated RangeBound bounds = 6;
+  // The executors the locations in `partition` refer to by `executor_index`.
+  repeated ExecutorEndpoint executors = 7;
 }
 
 // CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
@@ -691,10 +729,14 @@ message PartitionLocation {
   uint32 map_partition_id = 1;
   // partition_id of the shuffle, a composition of(job_id + map_stage_id + partition_id).
   PartitionId partition_id = 2;
-  ExecutorMetadata executor_meta = 3;
+  // The executor, when this location is reported in a job status. Unset inside
+  // a reader node, where `executor_index` identifies it.
+  ExecutorEndpoint executor_meta = 3;
   PartitionStats partition_stats = 4;
   optional uint64 file_id = 6;
   bool is_sort_shuffle = 7;
+  // Inside a reader node, the position of the executor in its `executors`.
+  uint32 executor_index = 8;
 
   // reserved after removing deprecated `path`.
   reserved 5;
@@ -798,14 +840,16 @@ message OperatorMetric {
   optional uint32 partition = 16;
 }
 
-// Used by scheduler
-message ExecutorMetadata {
+// Where a reader fetches a partition from: only what a fetch needs, since a
+// plan can refer to an executor from thousands of partition locations.
+message ExecutorEndpoint {
   string id = 1;
   string host = 2;
   uint32 port = 3;
-  uint32 grpc_port = 4;
-  ExecutorSpecification specification = 5;
-  ExecutorOperatingSystemSpecification os_info = 6;
+
+  // reserved after narrowing `ExecutorMetadata` down to this message.
+  reserved 4, 5, 6;
+  reserved "grpc_port", "specification", "os_info";
 }
 
 

@@ -27,7 +27,7 @@ use crate::state::execution_graph::{
     StageOutput,
 };
 use crate::state::execution_stage::{
-    RunningStage, external_inputs, is_external_fetch_failure,
+    RunningStage, external_fetch_failures, external_inputs,
 };
 use crate::state::task_manager::UpdatedStages;
 use ballista_core::JobId;
@@ -42,7 +42,9 @@ use ballista_core::serde::protobuf::{
     FailedJob, FailedTask, JobStatus, ResultLost, RunningJob, SuccessfulJob, TaskStatus,
     job_status, task_status,
 };
-use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
+use ballista_core::serde::scheduler::{
+    ExecutorEndpoint, ExecutorMetadata, PartitionLocation,
+};
 use datafusion::common::DataFusionError;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::context::SessionContext;
@@ -70,6 +72,7 @@ pub(crate) mod coalesce;
 pub(crate) mod execution_plan;
 pub mod optimizer_rule;
 pub mod planner;
+pub(crate) mod reuse_exchange;
 pub(crate) mod skew_join;
 #[cfg(test)]
 mod test;
@@ -908,6 +911,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         max_stage_failures: usize,
     ) -> ballista_core::error::Result<Vec<QueryStageSchedulerEvent>> {
         let job_id = self.job_id().to_owned();
+        // The locations this update reports share one copy of the address.
+        let endpoint = Arc::new(ExecutorEndpoint::from(executor));
 
         // First of all, classify the statuses by stages
         let mut job_task_statuses: HashMap<usize, Vec<TaskStatus>> = HashMap::new();
@@ -1007,14 +1012,17 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                                 "Stages was marked failed, ignore FetchPartitionError from task {task_identity}"
                                             );
                                             warn!("{error_msg}");
-                                        } else if is_external_fetch_failure(
+                                        } else if !external_fetch_failures(
                                             &running_stage.inputs,
                                             &executor_id,
                                             map_stage_id,
                                             map_partition_id,
-                                        ) {
-                                            // Cache data is another job's output,
-                                            // which this graph cannot re-run.
+                                        )
+                                        .is_empty()
+                                        {
+                                            // Cache data is another job's output, and
+                                            // this graph cannot re-resolve a rolled-back
+                                            // stage to read a rebuild.
                                             let error_msg = format!(
                                                 "Stage {stage_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
                                             );
@@ -1049,13 +1057,27 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                             )
                                         }
                                     } else {
-                                        let error_msg = format!(
+                                        let mut error_msg = format!(
                                             "Stage {} has failed {} times, \
                                             most recent failure reason: {:?}",
                                             stage_id,
                                             max_stage_failures,
                                             failed_task.error
                                         );
+                                        if !external_fetch_failures(
+                                            &running_stage.inputs,
+                                            &fetch_partition_error.executor_id,
+                                            fetch_partition_error.map_stage_id as usize,
+                                            fetch_partition_error.map_partition_id
+                                                as usize,
+                                        )
+                                        .is_empty()
+                                        {
+                                            error_msg.push_str(&format!(
+                                                " ({CACHE_DATA_LOST} on executor {}; retry the query)",
+                                                fetch_partition_error.executor_id
+                                            ));
+                                        }
                                         error!("{error_msg}");
                                         failed_stages.insert(stage_id, error_msg);
                                     }
@@ -1106,9 +1128,15 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             successful_task,
                         )) = status
                         {
-                            // update task metrics for successful task
-                            running_stage
-                                .update_task_metrics(task_id, operator_metrics)?;
+                            // Metrics only feed the plan display and the REST
+                            // API. A task whose metrics can't be merged still
+                            // succeeded, and failing here would drop its status
+                            // and leave the stage, and the job, unfinished.
+                            if let Err(e) = running_stage
+                                .update_task_metrics(task_id, operator_metrics)
+                            {
+                                running_stage.log_skipped_metrics(&job_id, task_id, &e);
+                            }
 
                             let ballista_core::serde::protobuf::SuccessfulTask {
                                 partitions,
@@ -1130,7 +1158,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
                             locations.append(
                                 &mut crate::state::execution_graph::partition_to_location(
-                                    &job_id, task_id, stage_id, executor, partitions,
+                                    &job_id, task_id, stage_id, &endpoint, partitions,
                                 ),
                             );
                         } else {
@@ -1374,6 +1402,32 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     fn output_locations(&self) -> Vec<PartitionLocation> {
         self.output_locations.clone()
+    }
+
+    /// The default implementation treats a stage with no `output_links` as
+    /// final. Adaptive stages are created without output links, so it would
+    /// report every stage as final. Here a stage is final when the job's
+    /// `output_locations` point at it, so nothing is reported until those are
+    /// set.
+    fn final_stage_ids(&self) -> HashSet<usize> {
+        self.output_locations
+            .iter()
+            .map(|location| location.partition_id.stage_id)
+            .collect()
+    }
+
+    /// Until the final stage is known, nothing is reported, so a final stage
+    /// is never returned.
+    fn intermediate_stage_ids(&self) -> Vec<u32> {
+        let final_stage_ids = self.final_stage_ids();
+        if final_stage_ids.is_empty() {
+            return vec![];
+        }
+        self.stages
+            .keys()
+            .filter(|stage_id| !final_stage_ids.contains(stage_id))
+            .map(|stage_id| *stage_id as u32)
+            .collect()
     }
 
     /// Reset running and successful stages on a given executor

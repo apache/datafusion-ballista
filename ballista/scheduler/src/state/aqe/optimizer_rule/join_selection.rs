@@ -446,8 +446,11 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    use crate::state::aqe::test::statistics_exec;
+    use crate::state::aqe::test::stats_table::estimated_statistics;
     use ballista_core::assert_plan;
     use ballista_core::config::BallistaConfig;
+    use datafusion::physical_optimizer::ensure_requirements::EnsureRequirements;
     use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::{
         arrow::{
@@ -462,6 +465,13 @@ mod tests {
         },
         physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner},
     };
+
+    /// A single nullable `Int32` column named `name` whose size is an estimate of
+    /// `bytes`.
+    fn stats_exec(name: &str, bytes: usize) -> Arc<dyn ExecutionPlan> {
+        let schema = Schema::new(vec![Field::new(name, DataType::Int32, true)]);
+        statistics_exec(estimated_statistics(&schema, bytes / 4, bytes), &schema)
+    }
 
     fn key_partitioning(name: &str, schema: &Schema) -> Partitioning {
         Partitioning::Hash(
@@ -597,7 +607,7 @@ mod tests {
             SessionConfig::new().set_bool("datafusion.optimizer.prefer_hash_join", false);
         let state = SessionStateBuilder::new()
             .with_config(config)
-            .with_physical_optimizer_rules(vec![])
+            .with_physical_optimizer_rules(vec![Arc::new(EnsureRequirements::default())])
             .build();
 
         let lp = ctx
@@ -611,22 +621,26 @@ mod tests {
             .await
             .unwrap();
 
-        assert_plan!(plan.as_ref(), @ r"
+        assert_plan!(plan.as_ref(), @ "
         ProjectionExec: expr=[id@0 as id, val@2 as val]
           SortMergeJoinExec: join_type=Inner, on=[(id@0, id@0)]
-            DataSourceExec: partitions=1, partition_sizes=[1]
-            DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
         ");
 
         let optimized = DelayJoinSelectionRule::default()
             .optimize(plan, &ConfigOptions::default())
             .unwrap();
 
-        assert_plan!(optimized.as_ref(), @ r"
+        assert_plan!(optimized.as_ref(), @ "
         ProjectionExec: expr=[id@0 as id, val@2 as val]
           DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
-            DataSourceExec: partitions=1, partition_sizes=[1]
-            DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
         ");
     }
 
@@ -637,7 +651,7 @@ mod tests {
             SessionConfig::new().set_bool("datafusion.optimizer.prefer_hash_join", false);
         let state = SessionStateBuilder::new()
             .with_config(config.clone())
-            .with_physical_optimizer_rules(vec![])
+            .with_physical_optimizer_rules(vec![Arc::new(EnsureRequirements::default())])
             .build();
         let lp = ctx
             .sql("SELECT t1.id, t2.val FROM t1 JOIN t2 ON t1.id = t2.id")
@@ -654,22 +668,26 @@ mod tests {
             .optimize(plan, config.options())
             .unwrap();
 
-        assert_plan!(dynamic_plan.as_ref(), @ r"
+        assert_plan!(dynamic_plan.as_ref(), @ "
         ProjectionExec: expr=[id@0 as id, val@2 as val]
           DynamicJoinSelectionExec: plan_id=0, join_type=Inner, on=[(id@0, id@0)] repartitioned=false
-            DataSourceExec: partitions=1, partition_sizes=[1]
-            DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
         ");
 
         let resolved = SelectJoinRule::default()
             .optimize(dynamic_plan, config.options())
             .unwrap();
 
-        assert_plan!(resolved.as_ref(), @ r"
+        assert_plan!(resolved.as_ref(), @ "
         ProjectionExec: expr=[id@0 as id, val@2 as val]
           HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)]
-            DataSourceExec: partitions=1, partition_sizes=[1]
-            DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[id@0 ASC], preserve_partitioning=[false]
+              DataSourceExec: partitions=1, partition_sizes=[1]
         ");
     }
 
@@ -678,9 +696,7 @@ mod tests {
         let ctx = make_ctx_3tables();
         // Pinned: the staged exchange is hash-partitioned to `target_partitions`,
         // whose default follows the machine's core count.
-        let config = SessionConfig::new()
-            .with_target_partitions(4)
-            .set_bool("datafusion.optimizer.prefer_hash_join", false);
+        let config = SessionConfig::new().with_target_partitions(4);
 
         let state = SessionStateBuilder::new()
             .with_physical_optimizer_rules(vec![])
@@ -781,28 +797,13 @@ mod tests {
     fn null_aware_anti_join_is_not_swapped_by_aqe() {
         use datafusion::physical_expr::expressions::Column;
         use datafusion::{
-            arrow::datatypes::{DataType, Field, Schema},
-            common::{
-                ColumnStatistics, JoinType, NullEquality, Statistics, stats::Precision,
-            },
+            common::{JoinType, NullEquality},
             physical_plan::{
                 Partitioning,
                 joins::{HashJoinExec, PartitionMode},
                 repartition::RepartitionExec,
-                test::exec::StatisticsExec,
             },
         };
-
-        fn stats_exec(name: &str, bytes: usize) -> Arc<dyn ExecutionPlan> {
-            Arc::new(StatisticsExec::new(
-                Statistics {
-                    num_rows: Precision::Inexact(bytes / 4),
-                    total_byte_size: Precision::Inexact(bytes),
-                    column_statistics: vec![ColumnStatistics::new_unknown()],
-                },
-                Schema::new(vec![Field::new(name, DataType::Int32, true)]),
-            ))
-        }
 
         // A normal join would swap these inputs to build from the smaller right
         // side. Doing that to a null-aware LeftAnti creates an invalid
@@ -851,26 +852,9 @@ mod tests {
     fn null_aware_anti_join_rejects_known_oversized_build_side_in_aqe() {
         use datafusion::physical_expr::expressions::Column;
         use datafusion::{
-            arrow::datatypes::{DataType, Field, Schema},
-            common::{
-                ColumnStatistics, JoinType, NullEquality, Statistics, stats::Precision,
-            },
-            physical_plan::{
-                joins::{HashJoinExec, PartitionMode},
-                test::exec::StatisticsExec,
-            },
+            common::{JoinType, NullEquality},
+            physical_plan::joins::{HashJoinExec, PartitionMode},
         };
-
-        fn stats_exec(name: &str, bytes: usize) -> Arc<dyn ExecutionPlan> {
-            Arc::new(StatisticsExec::new(
-                Statistics {
-                    num_rows: Precision::Inexact(bytes / 4),
-                    total_byte_size: Precision::Inexact(bytes),
-                    column_statistics: vec![ColumnStatistics::new_unknown()],
-                },
-                Schema::new(vec![Field::new(name, DataType::Int32, true)]),
-            ))
-        }
 
         // Over `broadcast_join_threshold_bytes`, whose default is 128 MB.
         let join = HashJoinExec::try_new(

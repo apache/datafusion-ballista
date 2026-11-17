@@ -259,6 +259,18 @@ class TestBallistaMagicsConnected:
             connected_magics.register(f"csv my_table {tmp_path}/file.csv")
             mock_reg.assert_called_once()
 
+    def test_register_json_dispatches(self, connected_magics, tmp_path):
+        """Test %register json calls register_json on context."""
+        with patch.object(connected_magics._ctx, "register_json") as mock_reg:
+            connected_magics.register(f"json my_table {tmp_path}/file.json")
+            mock_reg.assert_called_once()
+
+    def test_register_avro_dispatches(self, connected_magics, tmp_path):
+        """Test %register avro calls register_avro on context."""
+        with patch.object(connected_magics._ctx, "register_avro") as mock_reg:
+            connected_magics.register(f"avro my_table {tmp_path}/file.avro")
+            mock_reg.assert_called_once()
+
     def test_register_unsupported_format_raises(self, connected_magics):
         """Test %register with unsupported format raises NotImplementedError."""
         with pytest.raises(NotImplementedError):

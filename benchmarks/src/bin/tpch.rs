@@ -27,7 +27,7 @@ use ballista_benchmarks::{
     execute_query_capturing_answer, find_path, parquet_table_layout, read_query_file,
     register_parquet_table,
 };
-use ballista_core::test_utils::tpch::tpch_schema;
+use ballista_core::test_utils::tpch::{TPCH_TABLES, tpch_schema};
 use datafusion::arrow::datatypes::SchemaBuilder;
 use datafusion::common::{DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
 use datafusion::datasource::listing::ListingTableUrl;
@@ -317,10 +317,6 @@ enum TpchOpt {
     Compare(CompareOpt),
 }
 
-const TABLES: &[&str] = &[
-    "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
-];
-
 #[tokio::main]
 async fn main() -> Result<()> {
     use BenchmarkSubCommandOpt::*;
@@ -394,7 +390,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
 
     // register tables
     if opt.mem_table {
-        for table in TABLES {
+        for table in TPCH_TABLES {
             let table_provider = {
                 let mut session_state = ctx.state();
                 get_table(
@@ -826,7 +822,7 @@ async fn register_datafusion_tables(
     file_format: &str,
     partition_cols: bool,
 ) -> Result<()> {
-    for table in TABLES {
+    for table in TPCH_TABLES {
         let table_provider = {
             let mut session_state = ctx.state();
             get_table(&mut session_state, path, table, file_format, partition_cols)
@@ -844,7 +840,7 @@ async fn register_tables(
     debug: bool,
     partition_cols: bool,
 ) -> Result<()> {
-    for &table in TABLES {
+    for &table in TPCH_TABLES {
         match file_format {
             // dbgen creates .tbl ('|' delimited) files without header
             "tbl" => {
@@ -994,7 +990,7 @@ async fn execute_query(
 
 async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
     let output_root_path = Path::new(&opt.output_path);
-    for table in TABLES {
+    for table in TPCH_TABLES {
         let start = Instant::now();
         let schema = tpch_schema(table);
 
@@ -1976,7 +1972,7 @@ mod tests {
             .with_batch_size(10);
         let ctx = SessionContext::new_with_config(config);
 
-        for &table in TABLES {
+        for &table in TPCH_TABLES {
             let schema = tpch_schema(table);
             let batch = RecordBatch::new_empty(Arc::new(schema.to_owned()));
 
@@ -2122,7 +2118,7 @@ mod ballista_round_trip {
         let tpch_data_path = env::var("TPCH_DATA").unwrap_or_else(|_| "./".to_string());
         let path = ListingTableUrl::parse(tpch_data_path)?;
 
-        for &table in TABLES {
+        for &table in TPCH_TABLES {
             let schema = tpch_schema(table);
             let options = CsvReadOptions::new()
                 .schema(&schema)
@@ -2179,7 +2175,7 @@ mod ballista_round_trip {
         let tpch_data_path = env::var("TPCH_DATA").unwrap_or_else(|_| "./".to_string());
         let path = ListingTableUrl::parse(tpch_data_path)?;
 
-        for &table in TABLES {
+        for &table in TPCH_TABLES {
             let schema = tpch_schema(table);
             let options = CsvReadOptions::new()
                 .schema(&schema)

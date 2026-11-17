@@ -39,6 +39,9 @@ to:
 ballista-scheduler --event-log-dir /var/lib/ballista/history
 ```
 
+The scheduler creates the directory if it does not exist, and fails to start if
+it cannot write to it.
+
 Each `JobStart` event records the unique scheduler id for the scheduler that
 created it. If you do not set an id, the scheduler generates the same
 UUID-backed instance identity used for executor ids at startup; set `--id` when

@@ -37,14 +37,11 @@
 
 use std::time::{Duration, Instant};
 
-use ballista::prelude::{SessionConfigExt, SessionContextExt};
-use ballista_core::config::BALLISTA_ADAPTIVE_PLANNER_ENABLED;
 use chaos_testing::fetch::ResultFetch;
-use chaos_testing::fixture::Fixture;
+use chaos_testing::fixture::{Fixture, query};
 use chaos_testing::k8s::{K8sCluster, KillMode};
 use datafusion::arrow::util::pretty::pretty_format_batches;
-use datafusion::execution::session_state::SessionStateBuilder;
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::prelude::SessionContext;
 use rstest::rstest;
 
 /// The k8s scenarios need a running kind cluster with the chaos image loaded;
@@ -108,26 +105,7 @@ impl K8sRun {
             .await
             .expect("fixture must be written to the shared mount");
 
-        let config = SessionConfig::new_with_ballista()
-            .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, aqe);
-        let state = SessionStateBuilder::new()
-            .with_config(config)
-            .with_default_features()
-            .build();
-        let ctx = SessionContext::remote_with_state(&cluster.scheduler_url(), state)
-            .await
-            .expect("client must connect to the scheduler");
-
-        // Registered *after* `remote_with_state`: `upgrade_for_ballista` rebuilds
-        // the state with `with_scalar_functions(...)`, which replaces rather than
-        // merges the scalar-function map and would drop a UDF registered before.
-        // (Same subtlety documented in `ha.rs`'s `ChaosRun`.)
-        ctx.register_udf(chaos_testing::udf::chaos_fail_udf().as_ref().clone());
-        ctx.register_udf(chaos_testing::udf::chaos_delay_udf().as_ref().clone());
-
-        for stmt in fixture.register_sql() {
-            ctx.sql(&stmt).await.unwrap().collect().await.unwrap();
-        }
+        let ctx = fixture.connect(&cluster.scheduler_url(), aqe).await;
 
         Self {
             cluster,
@@ -144,28 +122,13 @@ impl K8sRun {
 
     /// Run a query on the cluster, returning the formatted result.
     async fn sql(&self, sql: &str) -> Result<String, String> {
-        let df = self.ctx.sql(sql).await.map_err(|e| e.to_string())?;
-        let batches = df.collect().await.map_err(|e| e.to_string())?;
-        Ok(pretty_format_batches(&batches)
-            .map_err(|e| e.to_string())?
-            .to_string())
+        query(&self.ctx, sql).await
     }
 
     /// The expected answer, computed by plain local DataFusion over the same
     /// fixture — the reference the cluster must reproduce exactly.
     async fn local_baseline(&self) -> String {
-        let ctx = SessionContext::new();
-        for stmt in self.fixture.register_sql() {
-            ctx.sql(&stmt).await.unwrap().collect().await.unwrap();
-        }
-        let batches = ctx
-            .sql(Fixture::baseline_query())
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-        pretty_format_batches(&batches).unwrap().to_string()
+        self.fixture.local_sql(Fixture::baseline_query()).await
     }
 }
 
@@ -385,5 +348,126 @@ async fn await_replacement(
             );
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Scenario M on k8s: the pod holding part of a `DataFrame::cache()` is killed
+/// while a query reads it, after some of the reading tasks finished.
+///
+/// The cache spans the eight `facts` partitions on both executors. `chaos_delay`
+/// holds only the partitions with `value >= 8000` (files 4–7) open, so once a
+/// reading task has succeeded the others are still running when the pod goes.
+/// The scheduler's 5s executor timeout makes the loss an executor loss (perhaps
+/// after a fetch failure from the dead pod), and the Deployment reschedules a
+/// replacement. The reading stage rolls back, the cache is rebuilt by a new
+/// build job, and the query returns the baseline result.
+///
+/// Static planner only: the adaptive planner fails such a query cleanly, which
+/// the process harness (Scenario L) and the scheduler tests already cover.
+#[tokio::test]
+async fn cache_holder_killed_mid_read_is_recovered_on_k8s() {
+    if !kind_backend_selected() {
+        return;
+    }
+
+    let run = K8sRun::start_with_executor_grace(
+        false,
+        2,
+        chaos_testing::k8s::ABRUPT_EXECUTOR_GRACE_SECONDS,
+        ResultFetch::SchedulerProxy,
+    )
+    .await;
+    let expected = run.fixture.local_sql(Fixture::partial_reduce_query()).await;
+    run.sql("SET ballista.cache.noop = false")
+        .await
+        .expect("enable DataFrame::cache()");
+
+    let ctx = run.clone_ctx();
+    let cached = ctx
+        .sql("SELECT key, value FROM facts")
+        .await
+        .unwrap()
+        .cache()
+        .await
+        .unwrap();
+    ctx.register_table("cached", cached.clone().into_view())
+        .unwrap();
+
+    // The first action runs the build job, then a job reading it.
+    let before = run.cluster.job_ids().await.unwrap();
+    cached.count().await.expect("build the cache");
+    let built: Vec<String> = run
+        .cluster
+        .job_ids()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|id| !before.contains(id))
+        .collect();
+    assert_eq!(built.len(), 2, "the first action must build, then read");
+    let build_job = &built[0];
+    let victim = run
+        .cluster
+        .executor_pods_with_job_data(build_job)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("no executor pod holds the cache of job {build_job}"));
+
+    let sql = "SELECT key, COUNT(*) AS n, SUM(value) AS total FROM cached \
+               WHERE chaos_delay(value >= 8000, 8000) OR value < 8000 \
+               GROUP BY key ORDER BY key";
+    let known = run.cluster.job_ids().await.unwrap();
+    let query = tokio::spawn({
+        let ctx = run.clone_ctx();
+        async move { ctx.sql(sql).await?.collect().await }
+    });
+    let read_job = await_new_job(&run.cluster, &known).await;
+    // Static planning: stage 1 reads the cache, then partially aggregates.
+    if let Err(e) = run.cluster.await_stage_task_successful(&read_job, 1).await {
+        fail_with_diagnostics(&run.cluster, format!("the read must start: {e}")).await;
+    }
+    run.cluster
+        .kill_executor_pod(&victim, KillMode::Forced)
+        .await
+        .expect("force-delete the pod holding the cache");
+
+    let result = match tokio::time::timeout(Duration::from_secs(300), query).await {
+        Ok(result) => result.expect("query task must not panic"),
+        Err(_) => {
+            fail_with_diagnostics(
+                &run.cluster,
+                "the query must not hang after the cache is lost".to_owned(),
+            )
+            .await
+        }
+    };
+    let batches = result.expect("the query must rebuild the cache and finish");
+    let jobs = run.cluster.job_ids().await.unwrap();
+    assert!(
+        jobs.len() > known.len() + 1,
+        "the cache must have been rebuilt by a job of its own: {jobs:?}"
+    );
+    assert_eq!(
+        pretty_format_batches(&batches).unwrap().to_string(),
+        expected,
+        "the query must return the baseline result"
+    );
+}
+
+/// Poll until the scheduler lists a job not in `known`, and return its id.
+async fn await_new_job(cluster: &K8sCluster, known: &[String]) -> String {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Ok(jobs) = cluster.job_ids().await
+            && let Some(id) = jobs.into_iter().find(|id| !known.contains(id))
+        {
+            return id;
+        }
+        if Instant::now() > deadline {
+            fail_with_diagnostics(cluster, "the read job must appear".to_owned()).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

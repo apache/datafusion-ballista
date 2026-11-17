@@ -215,6 +215,7 @@ fn config_fingerprint(config: &SessionConfig) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::fresh_runtime_producer as base_producer;
     use ballista_core::config::BALLISTA_JOB_NAME;
     use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
     use ballista_core::object_store::{
@@ -224,10 +225,6 @@ mod tests {
     use datafusion::execution::memory_pool::GreedyMemoryPool;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-
-    fn base_producer() -> RuntimeProducer {
-        Arc::new(|_| Ok(Arc::new(RuntimeEnv::default())))
-    }
 
     /// Identity policy: the task shares the base env unchanged (no pool swap).
     fn identity_policy() -> MemoryPoolPolicy {

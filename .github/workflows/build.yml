@@ -113,6 +113,12 @@ jobs:
           uv run --no-project ruff check --output-format=github ..
           uv run --no-project ruff format --check ..
 
+      - name: Check generated Python gRPC stubs are up to date
+        run: |
+          cd python
+          uv run --no-project ./dev/generate_proto.sh
+          git diff --exit-code -- python/ballista/proto
+
   generate-license:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest

@@ -398,6 +398,8 @@ pub mod terminate;
 
 mod cpu_bound_executor;
 mod standalone;
+#[cfg(test)]
+mod test_util;
 
 use ballista_core::error::BallistaError;
 use log::debug;

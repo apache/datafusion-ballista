@@ -244,11 +244,11 @@ impl ExecutionPlan for UnresolvedShuffleExec {
 mod tests {
     use super::*;
     use crate::execution_plans::PartitionGroup;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use crate::execution_plans::test_util::int32_schema;
 
     #[tokio::test]
     async fn test_unresolved_shuffle_exec_display_with_coalesce_renders_k_of_m() {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let schema = int32_schema();
         let coalesce = CoalescePlan {
             upstream_partition_count: 8,
             groups: vec![
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn display_includes_stage_id() {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let schema = int32_schema();
         let exec =
             UnresolvedShuffleExec::new(3, schema, Partitioning::UnknownPartitioning(4));
         let s = format!(

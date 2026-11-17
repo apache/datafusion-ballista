@@ -127,6 +127,10 @@ fn supports_collect_by_thresholds(
 ///
 /// `join_type` must be the join type *after* any build-side swap, since the
 /// build side is always the left input of the resulting `HashJoinExec`.
+///
+/// Nested-loop joins use it too: those it rejects must read their whole probe
+/// side in one task, since each task would emit build rows from its own slice
+/// of the probe.
 pub(crate) fn collect_left_broadcast_safe(join_type: JoinType) -> bool {
     matches!(
         join_type,
@@ -781,7 +785,7 @@ mod test {
     }
 
     #[test]
-    fn partitioned_null_aware_anti_join_is_not_swapped() {
+    fn null_aware_anti_join_is_not_swapped() {
         use datafusion::{
             common::NullEquality,
             physical_optimizer::PhysicalOptimizerRule,
@@ -793,7 +797,8 @@ mod test {
         // The large left and small right sides would normally be swapped by
         // statistical join selection. Keep this rule aligned with upstream
         // DataFusion: a null-aware anti join retains both its orientation and
-        // its existing partition mode. Distributed lowering happens later.
+        // its existing partition mode. DataFusion only accepts null-aware
+        // joins in `CollectLeft` mode.
         let (big, small) = create_big_and_small();
         let join = Arc::new(
             HashJoinExec::try_new(
@@ -806,7 +811,7 @@ mod test {
                 None,
                 &JoinType::LeftAnti,
                 None,
-                PartitionMode::Partitioned,
+                PartitionMode::CollectLeft,
                 NullEquality::NullEqualsNothing,
                 true,
             )
@@ -821,7 +826,7 @@ mod test {
             .expect("null-aware join should remain a HashJoinExec");
 
         assert_eq!(*hash_join.join_type(), JoinType::LeftAnti);
-        assert_eq!(*hash_join.partition_mode(), PartitionMode::Partitioned);
+        assert_eq!(*hash_join.partition_mode(), PartitionMode::CollectLeft);
         assert!(hash_join.null_aware);
     }
 
@@ -881,7 +886,7 @@ mod test {
                 None,
                 &JoinType::LeftAnti,
                 None,
-                PartitionMode::Partitioned,
+                PartitionMode::CollectLeft,
                 NullEquality::NullEqualsNothing,
                 true,
             )

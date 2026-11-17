@@ -35,15 +35,15 @@ mod parallel_window {
     use std::fs;
     use std::path::Path;
 
+    use crate::common::{collect_text, datafusion_context, state_with_config};
     use ballista::prelude::{SessionConfigExt, SessionContextExt};
     use ballista_core::config::{
         BALLISTA_ADAPTIVE_PLANNER_ENABLED, BALLISTA_PARALLEL_WINDOW_ENABLED,
     };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::arrow::util::pretty::pretty_format_batches;
-    use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::*;
     use rstest::rstest;
+    use tempfile::TempDir;
 
     /// Rows per file. Four files of these interleave over the whole key range,
     /// so no file is range-disjoint from another and ORRE has real routing to
@@ -96,11 +96,6 @@ mod parallel_window {
         .unwrap();
     }
 
-    async fn run(ctx: &SessionContext, sql: &str) -> String {
-        let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
-        pretty_format_batches(&batches).unwrap().to_string()
-    }
-
     /// `ORDER BY id` on the outside so the comparison is over rows, not over
     /// whichever order the K output partitions happened to be drained in.
     fn query(ordering: &str, frame: &str) -> String {
@@ -117,11 +112,9 @@ mod parallel_window {
             .with_target_partitions(4)
             .set_bool(BALLISTA_ADAPTIVE_PLANNER_ENABLED, true)
             .set_bool(BALLISTA_PARALLEL_WINDOW_ENABLED, parallel);
-        let state = SessionStateBuilder::new()
-            .with_config(config)
-            .with_default_features()
-            .build();
-        let ctx = SessionContext::standalone_with_state(state).await.unwrap();
+        let ctx = SessionContext::standalone_with_state(state_with_config(config))
+            .await
+            .unwrap();
         register(&ctx, dir, nullable).await;
         ctx
     }
@@ -146,33 +139,27 @@ mod parallel_window {
         // a non-nullable one has no run and exercises the plain value paths.
         #[values(false, true)] nullable: bool,
     ) {
-        let case = format!("{ordering}_{frame}_{nullable}").replace(' ', "_");
-        let dir = std::env::temp_dir().join(format!("ballista_parallel_window_{case}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        write_table(&dir, nullable);
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        write_table(dir, nullable);
 
         let sql = query(ordering, frame);
 
-        let oracle_ctx = SessionContext::new_with_config(
-            SessionConfig::new().with_target_partitions(4),
-        );
-        register(&oracle_ctx, &dir, nullable).await;
-        let oracle = run(&oracle_ctx, &sql).await;
+        let oracle_ctx = datafusion_context();
+        register(&oracle_ctx, dir, nullable).await;
+        let oracle = collect_text(&oracle_ctx, &sql).await;
 
-        let serial = run(&ballista(&dir, nullable, false).await, &sql).await;
+        let serial = collect_text(&ballista(dir, nullable, false).await, &sql).await;
         assert_eq!(
             oracle, serial,
             "Ballista disagrees with DataFusion before the rule is even on\n{sql}"
         );
 
-        let parallel = run(&ballista(&dir, nullable, true).await, &sql).await;
+        let parallel = collect_text(&ballista(dir, nullable, true).await, &sql).await;
         assert_eq!(
             oracle, parallel,
             "the parallel-window rewrite changed the answer\n{sql}"
         );
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The rewrite has to fire for the cases above to mean anything. A plan
@@ -180,17 +167,16 @@ mod parallel_window {
     /// is the serial shape, and an agreeing answer from it proves nothing.
     #[tokio::test]
     async fn the_rewrite_actually_fires() {
-        let dir = std::env::temp_dir().join("ballista_parallel_window_explain");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        write_table(&dir, true);
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        write_table(dir, true);
 
         let sql = query("ASC NULLS LAST", "5 PRECEDING AND 5 FOLLOWING");
-        let ctx = ballista(&dir, true, true).await;
+        let ctx = ballista(dir, true, true).await;
         // `EXPLAIN` alone shows only the first stage split. The rewrite lands
         // when AQE re-plans stage 1 against stage 0's reported sketch, which
         // is reached by executing.
-        let plan = run(&ctx, &format!("EXPLAIN ANALYZE {sql}")).await;
+        let plan = collect_text(&ctx, &format!("EXPLAIN ANALYZE {sql}")).await;
 
         for operator in [
             "OrderedRangeRepartitionExec",
@@ -202,7 +188,5 @@ mod parallel_window {
                 "rewrite did not plant {operator}:\n{plan}"
             );
         }
-
-        let _ = fs::remove_dir_all(&dir);
     }
 }

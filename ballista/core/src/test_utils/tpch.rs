@@ -20,6 +20,11 @@
 
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 
+/// The names of the 8 TPC-H tables.
+pub const TPCH_TABLES: &[&str] = &[
+    "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
+];
+
 /// Returns the schema for a TPC-H table by name.
 ///
 /// # Panics

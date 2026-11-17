@@ -131,12 +131,9 @@ pub async fn get_openapi_spec() -> impl IntoResponse {
 mod tests {
     use super::*;
     use crate::config::SchedulerConfig;
-    use crate::metrics::default_metrics_collector;
-    use crate::scheduler_server::SchedulerServer;
-    use crate::test_utils::test_cluster_context;
+    use crate::test_utils::{test_cluster_context, test_scheduler_server_uninit};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use ballista_core::serde::BallistaCodec;
     use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
     use std::collections::BTreeSet;
     use std::sync::Arc;
@@ -279,13 +276,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_openapi_json_endpoint() {
-        let config = SchedulerConfig::default();
-        let server = SchedulerServer::new(
-            "localhost:50050".to_owned(),
+        let server = test_scheduler_server_uninit(
             test_cluster_context(),
-            BallistaCodec::default(),
-            Arc::new(config),
-            default_metrics_collector().unwrap(),
+            SchedulerConfig::default(),
         );
         let router =
             crate::api::get_routes::<LogicalPlanNode, PhysicalPlanNode>(Arc::new(server));

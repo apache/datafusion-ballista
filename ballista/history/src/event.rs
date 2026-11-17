@@ -301,35 +301,11 @@ impl HistoryEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
-
-    fn sample_job_end() -> JobEnd {
-        JobEnd {
-            status: JobEndStatus::Succeeded,
-            queued_at: 5,
-            started_at: 10,
-            completed_at: 20,
-            index: JobIndex {
-                job_id: "job-1".into(),
-                job_name: "q1".into(),
-                status: "Completed".into(),
-                job_status: "COMPLETED".into(),
-                start_time: 10,
-                end_time: 20,
-                num_stages: 1,
-                completed_stages: 1,
-                percent_complete: 100,
-            },
-            job: RawValue::from_string(r#"{"job_id":"job-1"}"#.to_string()).unwrap(),
-            stages: RawValue::from_string(r#"{"stages":[]}"#.to_string()).unwrap(),
-            config: BTreeMap::from([("k".to_string(), "v".to_string())]),
-            dot: "digraph {}".into(),
-        }
-    }
+    use crate::test_util::job_end;
 
     #[test]
     fn job_end_round_trips_through_jsonl() {
-        let event = HistoryEvent::JobEnd(Box::new(sample_job_end()));
+        let event = HistoryEvent::JobEnd(Box::new(job_end("job-1")));
         let line = serde_json::to_string(&event.to_record().unwrap()).unwrap();
 
         assert!(line.contains(r#""ev":"JobEnd""#));
@@ -347,7 +323,7 @@ mod tests {
     /// across releases.
     #[test]
     fn stored_payloads_survive_shapes_this_build_cannot_model() {
-        let mut end = sample_job_end();
+        let mut end = job_end("job-1");
         end.job = RawValue::from_string(
             r#"{"a_field_from_the_future":[1,2,3],"partition_id":{"nested":true}}"#
                 .to_string(),

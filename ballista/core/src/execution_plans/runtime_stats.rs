@@ -1088,7 +1088,6 @@ mod stream_tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::ScalarValue;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_plan::common;
     use datafusion::physical_plan::expressions::col;
@@ -1125,10 +1124,9 @@ mod stream_tests {
         );
         let b2 = batch(&schema, vec![Some(2.0), Some(4.0)], vec![20, 21]);
 
-        let memory = Arc::new(
-            MemorySourceConfig::try_new(&[vec![b1, b2]], schema.clone(), None).unwrap(),
-        );
-        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(memory));
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[vec![b1, b2]], schema.clone(), None)
+                .unwrap();
 
         let sort_expr = PhysicalSortExpr {
             expr: col("v", schema.as_ref()).unwrap(),
@@ -1187,10 +1185,8 @@ mod stream_tests {
             })
             .collect();
 
-        let memory = Arc::new(
-            MemorySourceConfig::try_new(&[batches], schema.clone(), None).unwrap(),
-        );
-        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(memory));
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[batches], schema.clone(), None).unwrap();
         let sort_expr = PhysicalSortExpr {
             expr: col("v", schema.as_ref()).unwrap(),
             options: SortOptions {
@@ -1231,9 +1227,8 @@ mod stream_tests {
         let b1 = batch(&schema, vec![Some(1.0), Some(2.0)], vec![40, 41]);
         let b2 = batch(&schema, vec![Some(3.0)], vec![42]);
 
-        let memory =
-            Arc::new(MemorySourceConfig::try_new(&[vec![b1, b2]], schema, None).unwrap());
-        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(memory));
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[vec![b1, b2]], schema, None).unwrap();
 
         let stats = Arc::new(RuntimeStatsExec::try_new(input, None).unwrap());
 
@@ -1260,21 +1255,17 @@ mod collect_tests {
     use super::*;
     use crate::execution_plans::BufferExec;
     use crate::execution_plans::buffer::BufferMode;
+    use crate::execution_plans::test_util::float64_v_schema;
     use datafusion::arrow::array::Float64Array;
     use datafusion::arrow::compute::SortOptions;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::datatypes::Schema;
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
     use datafusion::physical_plan::common;
     use datafusion::physical_plan::expressions::col;
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::prelude::SessionContext;
-
-    fn schema_v() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]))
-    }
 
     fn v_batch(schema: &Arc<Schema>, v: Vec<f64>) -> RecordBatch {
         RecordBatch::try_new(schema.clone(), vec![Arc::new(Float64Array::from(v))])
@@ -1284,9 +1275,7 @@ mod collect_tests {
     fn v_input(schema: Arc<Schema>) -> Arc<dyn ExecutionPlan> {
         let b1 = v_batch(&schema, vec![1.0, 3.0, 5.0]);
         let b2 = v_batch(&schema, vec![2.0, 4.0]);
-        let memory =
-            Arc::new(MemorySourceConfig::try_new(&[vec![b1, b2]], schema, None).unwrap());
-        Arc::new(DataSourceExec::new(memory))
+        MemorySourceConfig::try_new_exec(&[vec![b1, b2]], schema, None).unwrap()
     }
 
     fn sort_expr_on_v(schema: &Arc<Schema>) -> PhysicalSortExpr {
@@ -1305,7 +1294,7 @@ mod collect_tests {
     /// trip via `sketch_from_proto`.
     #[tokio::test]
     async fn collect_reports_finds_stats_and_ships_sketch() {
-        let schema = schema_v();
+        let schema = float64_v_schema();
         let input = v_input(schema.clone());
         let stats = Arc::new(
             RuntimeStatsExec::try_new(input, Some(vec![sort_expr_on_v(&schema)]))
@@ -1363,7 +1352,7 @@ mod collect_tests {
     /// carries no sketch.
     #[tokio::test]
     async fn collect_reports_row_count_only_emits_report_without_sketch() {
-        let schema = schema_v();
+        let schema = float64_v_schema();
         let input = v_input(schema.clone());
         let stats = Arc::new(RuntimeStatsExec::try_new(input, None).unwrap());
 
@@ -1387,7 +1376,7 @@ mod collect_tests {
     /// root and the stats-tap: walker still descends to it.
     #[tokio::test]
     async fn collect_reports_descends_through_whitelisted_op() {
-        let schema = schema_v();
+        let schema = float64_v_schema();
         let input = v_input(schema.clone());
         let stats = Arc::new(
             RuntimeStatsExec::try_new(input, Some(vec![sort_expr_on_v(&schema)]))
@@ -1411,7 +1400,7 @@ mod collect_tests {
     /// stops at the collapse and doesn't reach the stats below.
     #[tokio::test]
     async fn collect_reports_stops_at_sort_that_collapses_partitions() {
-        let schema = schema_v();
+        let schema = float64_v_schema();
         let input = v_input(schema.clone());
         let stats: Arc<dyn ExecutionPlan> = Arc::new(
             RuntimeStatsExec::try_new(input, Some(vec![sort_expr_on_v(&schema)]))
@@ -1707,30 +1696,23 @@ mod plan_walker_tests {
     //! at any depth.
 
     use super::*;
+    use crate::execution_plans::test_util::float64_v_schema;
     use crate::execution_plans::{
         OrderedRangeRepartitionExec, UnorderedRangeRepartitionExec,
     };
     use datafusion::arrow::compute::SortOptions;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
     use datafusion::physical_plan::expressions::col;
     use datafusion::physical_plan::sorts::sort::SortExec;
 
-    fn v_schema() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, false)]))
-    }
-
     fn v_source() -> Arc<dyn ExecutionPlan> {
-        let schema = v_schema();
-        let memory =
-            Arc::new(MemorySourceConfig::try_new(&[vec![]], schema, None).unwrap());
-        Arc::new(DataSourceExec::new(memory))
+        let schema = float64_v_schema();
+        MemorySourceConfig::try_new_exec(&[vec![]], schema, None).unwrap()
     }
 
     fn sort_expr_v() -> PhysicalSortExpr {
-        let schema = v_schema();
+        let schema = float64_v_schema();
         PhysicalSortExpr {
             expr: col("v", schema.as_ref()).unwrap(),
             options: SortOptions {
@@ -1833,50 +1815,27 @@ mod overlap_remap_tests {
     //! surface as errors rather than silent misroutes.
 
     use super::*;
+    use crate::execution_plans::test_util::cuts;
+    use crate::execution_plans::test_util::test_location;
     use crate::serde::protobuf::{RuntimeStatsPartitionEntry, RuntimeStatsReport};
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId, PartitionLocation, PartitionStats,
-    };
+    use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 
     /// Build a `PartitionLocation` for a producer file identified by
     /// `(producer_task_id, sub_part_id)`. `file_id = producer_task_id`
     /// matches the passthrough writer's convention.
     fn location(sub_part_id: usize, producer_task_id: usize) -> PartitionLocation {
         PartitionLocation {
-            map_partition_id: 0,
-            partition_id: PartitionId {
-                job_id: "test-job".into(),
-                stage_id: 0,
-                partition_id: sub_part_id,
-            },
-            executor_meta: ExecutorMetadata {
-                id: format!("exec-{producer_task_id}"),
-                host: "".to_string(),
-                port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default().with_vcores(0),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
             // `Some(0)` — helper's default is "empty file". Tests that
             // need rows overwrite `.partition_stats` explicitly.
             partition_stats: PartitionStats::new(Some(0), None, None),
             file_id: Some(producer_task_id as u64),
-            is_sort_shuffle: false,
+            ..test_location("test-job", 0, sub_part_id)
         }
     }
 
     /// A zero halo of the routing key's type, which is what the scheduler
     /// passes for a consumer with no halo at all.
     const ZERO_HALO: ScalarValue = ScalarValue::Float64(Some(0.0));
-
-    /// Cuts as `Float64` scalars, which is what merging produces.
-    fn cuts_f64<const N: usize>(values: [f64; N]) -> Vec<ScalarValue> {
-        values
-            .into_iter()
-            .map(|v| ScalarValue::Float64(Some(v)))
-            .collect()
-    }
 
     /// Build a report whose sub-parts carry the key range routing reads.
     /// Slot `sub_part_id` covers `values[sub_part_id]`.
@@ -1936,7 +1895,7 @@ mod overlap_remap_tests {
             sketch_report(200, vec![vec![20.0, 25.0, 29.0]]),
         ];
         // Cut at 15 → partition 0 = (-∞, 15), partition 1 = [15, +∞).
-        let cuts = cuts_f64([15.0]);
+        let cuts = cuts([15.0]);
         // Passthrough map: both producers wrote to sub_part_id=0.
         let original_partitions = vec![vec![location(0, 100), location(0, 200)]];
 
@@ -1965,7 +1924,7 @@ mod overlap_remap_tests {
     fn overlap_remap_straddling_producer_appears_in_both_partitions() {
         // Producer 300 covers [5, 25) — straddles the cut at 15.
         let reports = vec![sketch_report(300, vec![vec![5.0, 15.0, 25.0]])];
-        let cuts = cuts_f64([15.0]);
+        let cuts = cuts([15.0]);
         let original_partitions = vec![vec![location(0, 300)]];
 
         let remapped = cut_partitions(
@@ -2012,7 +1971,7 @@ mod overlap_remap_tests {
         // Values [1, 2] fall left of the cut; the run sorts last, so it
         // belongs to partition 1.
         let reports = vec![sketch_report_with_nulls(100, vec![(vec![1.0, 2.0], 2)])];
-        let cuts = cuts_f64([10.0]);
+        let cuts = cuts([10.0]);
         let original_partitions = vec![vec![location(0, 100)]];
 
         let remapped = cut_partitions(
@@ -2033,7 +1992,7 @@ mod overlap_remap_tests {
     #[test]
     fn overlap_remap_mixed_file_reaches_the_null_run_at_the_front() {
         let reports = vec![sketch_report_with_nulls(100, vec![(vec![20.0, 25.0], 2)])];
-        let cuts = cuts_f64([10.0]);
+        let cuts = cuts([10.0]);
         let original_partitions = vec![vec![location(0, 100)]];
 
         let remapped = cut_partitions(
@@ -2059,7 +2018,7 @@ mod overlap_remap_tests {
     #[test]
     fn overlap_remap_mixed_file_in_the_run_partition_is_delivered_once() {
         let reports = vec![sketch_report_with_nulls(100, vec![(vec![20.0, 25.0], 2)])];
-        let cuts = cuts_f64([10.0]);
+        let cuts = cuts([10.0]);
         let original_partitions = vec![vec![location(0, 100)]];
 
         let remapped = cut_partitions(
@@ -2084,7 +2043,7 @@ mod overlap_remap_tests {
     #[test]
     fn overlap_remap_all_null_file_goes_only_to_the_null_run() {
         let reports = vec![sketch_report_with_nulls(100, vec![(vec![], 3)])];
-        let cuts = cuts_f64([10.0]);
+        let cuts = cuts([10.0]);
         let mut only_nulls = location(0, 100);
         only_nulls.partition_stats = PartitionStats::new(Some(3), None, None);
 
@@ -2107,7 +2066,7 @@ mod overlap_remap_tests {
     #[test]
     fn overlap_remap_missing_file_id_errors() {
         let reports = vec![sketch_report(100, vec![vec![1.0, 2.0, 3.0]])];
-        let cuts = cuts_f64([10.0]);
+        let cuts = cuts([10.0]);
         // Loc has file_id=None — invalid for URRE/ORRE stages.
         let mut bad = location(0, 100);
         bad.file_id = None;
@@ -2139,7 +2098,7 @@ mod overlap_remap_tests {
         // Report from producer 100, but original_partitions only has
         // producer 200 — no file to route.
         let reports = vec![sketch_report(100, vec![vec![1.0, 2.0, 3.0]])];
-        let cuts = cuts_f64([10.0]);
+        let cuts = cuts([10.0]);
         let original_partitions = vec![vec![location(0, 200)]];
 
         let remapped = cut_partitions(
@@ -2161,7 +2120,7 @@ mod overlap_remap_tests {
     #[test]
     fn overlap_remap_empty_sketches_produce_empty_partitions() {
         let reports = vec![sketch_report(100, vec![vec![]])];
-        let cuts = cuts_f64([10.0]);
+        let cuts = cuts([10.0]);
         let original_partitions = vec![vec![location(0, 100)]];
 
         let remapped = cut_partitions(
@@ -2183,7 +2142,7 @@ mod overlap_remap_tests {
     #[test]
     fn missing_sketch_with_rows_errors() {
         let reports = vec![sketch_report(100, vec![vec![1.0, 2.0]])];
-        let cuts = cuts_f64([10.0]);
+        let cuts = cuts([10.0]);
         // File 200 has 5 rows but no report entry exists for it.
         let mut orphan = location(0, 200);
         orphan.partition_stats = PartitionStats::new(Some(5), None, None);
@@ -2226,7 +2185,7 @@ mod overlap_remap_tests {
             // F: spans the whole range → every bucket
             sketch_report(6, vec![vec![0.0, 20.0, 100.0]]),
         ];
-        let cuts = cuts_f64([10.0, 20.0, 30.0]);
+        let cuts = cuts([10.0, 20.0, 30.0]);
         let original_partitions = vec![vec![
             location(0, 1),
             location(0, 2),
@@ -2263,7 +2222,7 @@ mod overlap_remap_tests {
     #[test]
     fn missing_sketch_with_unknown_rows_errors() {
         let reports: Vec<TaskRuntimeStats> = vec![];
-        let cuts = cuts_f64([10.0]);
+        let cuts = cuts([10.0]);
         let mut orphan = location(0, 100);
         orphan.partition_stats = PartitionStats::default(); // num_rows = None
         let original_partitions = vec![vec![orphan]];
@@ -2297,7 +2256,7 @@ mod overlap_remap_tests {
     #[test]
     fn overlap_remap_halo_band_widens_both_sides_without_bleeding_to_far_partitions() {
         // K=5, asymmetric halos so we can tell halo_lo and halo_hi apart.
-        let cuts = cuts_f64([10.0, 20.0, 30.0, 40.0]);
+        let cuts = cuts([10.0, 20.0, 30.0, 40.0]);
         let halo_lo = ScalarValue::Float64(Some(1.0));
         let halo_hi = ScalarValue::Float64(Some(2.0));
         // Effective partition ranges:

@@ -32,8 +32,7 @@ use ballista_core::execution_plans::{
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::{RuntimeStatsPartitionEntry, RuntimeStatsReport};
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-    PartitionId, PartitionLocation, PartitionStats,
+    ExecutorEndpoint, PartitionId, PartitionLocation, PartitionStats,
 };
 use ballista_core::sort_key::{SortKeyCodec, SortKeySketch};
 use datafusion::arrow::array::Float64Array;
@@ -104,14 +103,11 @@ fn location(sub_part_id: usize, producer_task_id: usize, rows: u64) -> Partition
             stage_id: 0,
             partition_id: sub_part_id,
         },
-        executor_meta: ExecutorMetadata {
+        executor_meta: Arc::new(ExecutorEndpoint {
             id: format!("exec-{producer_task_id}"),
             host: "".to_string(),
             port: 0,
-            grpc_port: 0,
-            specification: ExecutorSpecification::default().with_vcores(0),
-            os_info: ExecutorOperatingSystemSpecification::default(),
-        },
+        }),
         partition_stats: PartitionStats::new(Some(rows), None, None),
         file_id: Some(producer_task_id as u64),
         is_sort_shuffle: false,
