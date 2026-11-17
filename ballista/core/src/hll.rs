@@ -23,8 +23,9 @@
 //! task's sketch for a column into a stage-level distinct count with a
 //! [`HyperLogLogUnion`].
 //!
-//! Values are hashed with DataFusion's `HLL_RANDOM_STATE`, the hash state
-//! `approx_distinct` uses, and the hashes are added to the sketch.
+//! Values are hashed with DataFusion's `HLL_RANDOM_STATE` and the sketch hashes
+//! each of those hashes again, so the hash state doesn't decide the result and
+//! the sketch is not compatible with DataFusion's `approx_distinct`.
 //!
 //! # Precision
 //!

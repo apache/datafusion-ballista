@@ -1038,7 +1038,7 @@ pub struct FetchPipelinedPartition {
     pub registration_timeout_ms: u64,
 }
 #[allow(clippy::all)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PartitionLocation {
     /// partition_id of the map stage who produces the shuffle.
     #[prost(uint32, tag = "1")]
