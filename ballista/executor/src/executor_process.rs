@@ -564,6 +564,7 @@ async fn start_executor_process_inner(
     let scheduler_port = opt.scheduler_port;
     let scheduler_url = format!("http://{scheduler_host}:{scheduler_port}");
 
+    // Keep the TempDir guard alive until the executor exits; otherwise startup removes the directory.
     let (work_dir, _default_work_dir_owner) = match opt.work_dir.clone() {
         Some(work_dir) => (work_dir, None),
         None => {
