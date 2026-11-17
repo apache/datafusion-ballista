@@ -1003,7 +1003,7 @@ mod test {
     use datafusion::physical_plan::filter::FilterExec;
 
     use datafusion::physical_plan::joins::HashJoinExec;
-    use datafusion::physical_plan::projection::{ProjectionExec, ProjectionExpr};
+    use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
     use datafusion::physical_plan::union::UnionExec;
@@ -1023,34 +1023,13 @@ mod test {
         assert!(can_stay_inline(&scan_with_file_groups(4)));
     }
 
-    /// A branch over a one-partition leaf the scheduler doesn't know stays
-    /// inline: the task that owns the partition runs the leaf whole, and every
-    /// other task gets an empty leaf.
+    /// A branch over an unknown leaf of several partitions gets a stage of its
+    /// own even when the leaf sits below another node, since restricting the
+    /// node restricts the leaf too.
     #[test]
-    fn one_partition_unknown_leaf_union_branch_stays_inline() {
-        assert!(can_stay_inline(&PayloadExec::leaf(&["p0"])));
-    }
-
-    /// A task can own only some partitions of a branch over a leaf of several
-    /// partitions, and nothing can cut an unknown leaf down to those without
-    /// a resolver, so the branch gets a stage of its own, as does one with
-    /// such a leaf deeper down.
-    #[test]
-    fn multi_partition_unknown_leaf_union_branch_needs_its_own_stage() {
-        let leaf = PayloadExec::leaf(&["p0", "p1"]);
-        assert!(!can_stay_inline(&leaf));
-
-        let projected: Arc<dyn ExecutionPlan> = Arc::new(
-            ProjectionExec::try_new(
-                vec![ProjectionExpr {
-                    expr: Arc::new(Column::new("a", 0)),
-                    alias: "a".to_string(),
-                }],
-                leaf,
-            )
-            .unwrap(),
-        );
-        assert!(!can_stay_inline(&projected));
+    fn multi_partition_unknown_leaf_below_a_node_needs_its_own_stage() {
+        let branch = project_leading_columns(PayloadExec::leaf(&["p0", "p1"]), 1);
+        assert!(!can_stay_inline(&branch));
     }
 
     /// A branch over a shuffle, such as the final aggregate of a union of
@@ -1058,23 +1037,12 @@ mod test {
     /// though the planner sees it before it is resolved.
     #[test]
     fn branch_over_an_unresolved_shuffle_stays_inline() {
-        let schema = scan_with_file_groups(1).schema();
         let reader: Arc<dyn ExecutionPlan> = Arc::new(UnresolvedShuffleExec::new(
             1,
-            schema,
+            scan_with_file_groups(1).schema(),
             Partitioning::UnknownPartitioning(4),
         ));
-        let projected: Arc<dyn ExecutionPlan> = Arc::new(
-            ProjectionExec::try_new(
-                vec![ProjectionExpr {
-                    expr: Arc::new(Column::new("a", 0)),
-                    alias: "a".to_string(),
-                }],
-                reader,
-            )
-            .unwrap(),
-        );
-        assert!(can_stay_inline(&projected));
+        assert!(can_stay_inline(&project_leading_columns(reader, 1)));
     }
 
     /// Plans `plan` into query stages with the default options.
@@ -1089,9 +1057,9 @@ mod test {
     }
 
     /// A union branch over an unknown leaf of several partitions gets a stage
-    /// of its own, as on main, rather than leave a task of the union's stage
-    /// owning part of it. The union's stage reads it through a shuffle, which
-    /// a task can cut to any share.
+    /// of its own rather than leave a task of the union's stage owning part of
+    /// it. The union's stage reads it through a shuffle, which a task can cut
+    /// to any share.
     #[test]
     fn union_over_a_multi_partition_unknown_leaf_gives_it_a_stage_of_its_own()
     -> Result<(), BallistaError> {

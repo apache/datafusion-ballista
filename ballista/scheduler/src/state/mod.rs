@@ -1144,9 +1144,9 @@ mod tests {
         }
     }
 
-    /// Submits a job of `plan`, a stage of four partitions over `PayloadExec`,
-    /// to a scheduler with two executors of two vcores each, so binding splits
-    /// its stage into two tasks.
+    /// Submits a job of `plan`, one stage of four partitions, to a scheduler
+    /// with two executors of two vcores each, so binding splits the stage into
+    /// two tasks. Its physical codec carries `PayloadExec`.
     async fn submit_split_payload_stage(
         config: SchedulerConfig,
         launcher: Arc<CapturingLauncher>,

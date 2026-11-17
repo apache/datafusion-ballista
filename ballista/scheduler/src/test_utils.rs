@@ -1495,6 +1495,22 @@ pub fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
     DataSourceExec::from_data_source(builder.build())
 }
 
+/// A `SortExec` on column `a` of `input` that merges it into one partition, as
+/// the adaptive planner leaves on each branch of a `UNION ALL ... ORDER BY`.
+pub fn sorted_into_one_partition(
+    input: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+    use datafusion::physical_plan::sorts::sort::SortExec;
+
+    let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(
+        Column::new("a", 0),
+    ))])
+    .unwrap();
+    Arc::new(SortExec::new(ordering, input))
+}
+
 /// An operator that passes its input through unchanged: its properties are the
 /// input's, its only child is the input, and it executes by executing the
 /// input. It declares nothing about what it needs from the input, like an

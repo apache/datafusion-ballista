@@ -612,6 +612,7 @@ fn narrow_range(range: &RangePartitioning, kept: &[usize]) -> Option<RangePartit
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::sorted_into_one_partition;
     use ballista_core::JobId;
     use ballista_core::execution_plans::{
         CoalescePlan, PartitionGroup, RangeBound, ShuffleReaderExec,
@@ -1277,22 +1278,17 @@ mod tests {
         assert_eq!(group_files(branches[0]), ["file0.parquet"]);
     }
 
-    /// A `UnionExec` branch that keeps another partition count after
-    /// restriction would make the task run partitions it doesn't own, so it is
-    /// refused.
+    /// Binding runs a stage with a branch that keeps its partitions as one
+    /// task. Should a task get only part of such a stage anyway, restriction
+    /// refuses it rather than let the branch return its rows in every task.
     #[test]
-    fn a_union_branch_with_the_wrong_partition_count_is_refused() {
-        use datafusion::physical_plan::sorts::sort::SortExec;
-        // A sort that merges its branch into one partition, as the adaptive
-        // planner leaves under `UNION ALL ... ORDER BY`. It reads its input
-        // whole, so it keeps that partition when the task runs none of it.
-        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(
-            Column::new("a", 0),
-        ))])
-        .unwrap();
-        let sorted = Arc::new(SortExec::new(ordering, scan_with_file_groups(2)));
+    fn a_union_branch_that_keeps_its_partitions_is_refused() {
         // Partition 0 is the sort's, 1-2 the scan's.
-        let union = UnionExec::try_new(vec![sorted, scan_with_file_groups(2)]).unwrap();
+        let union = UnionExec::try_new(vec![
+            sorted_into_one_partition(scan_with_file_groups(2)),
+            scan_with_file_groups(2),
+        ])
+        .unwrap();
 
         let error = restrict_plan_to_partitions(union, &[1], None)
             .unwrap_err()
@@ -1306,21 +1302,10 @@ mod tests {
         );
     }
 
-    /// A sort that merges `input` into one partition, as the adaptive planner
-    /// leaves on each branch of a `UNION ALL ... ORDER BY`.
-    fn merged(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        use datafusion::physical_plan::sorts::sort::SortExec;
-        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(
-            Column::new("a", 0),
-        ))])
-        .unwrap();
-        Arc::new(SortExec::new(ordering, input))
-    }
-
-    /// Which stage plans a task may run only part of: for each case, whether
-    /// it has a union that must run as one task.
+    /// A stage can be split between tasks unless one of its unions has a
+    /// branch that restriction can't cut to a task's share of it.
     #[test]
-    fn unsplittable_unions_are_those_with_a_branch_that_keeps_partitions() {
+    fn unions_that_cannot_be_split_between_tasks() {
         use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
         let union = |branches: Vec<Arc<dyn ExecutionPlan>>| -> Arc<dyn ExecutionPlan> {
             UnionExec::try_new(branches).unwrap()
@@ -1334,74 +1319,48 @@ mod tests {
             )
             .unwrap(),
         );
-        // Restricted by the resolver only; left alone it keeps two partitions.
-        let own =
-            || PayloadExec::over(&["p0", "p1"], vec![scan_with_file_groups(2)], &[]);
-        let resolver = payload_resolver();
+        let sorted = || sorted_into_one_partition(scan_with_file_groups(2));
+        let scan = || scan_with_file_groups(2);
 
         let cases: Vec<(&str, Arc<dyn ExecutionPlan>, bool)> = vec![
-            ("no union", scan_with_file_groups(2), false),
-            (
-                "scans",
-                union(vec![scan_with_file_groups(2), scan_with_file_groups(2)]),
-                false,
-            ),
+            ("no union", scan(), false),
+            ("scans", union(vec![scan(), scan()]), false),
             (
                 "a one-partition unknown leaf",
-                union(vec![PayloadExec::leaf(&["p0"]), scan_with_file_groups(2)]),
+                union(vec![PayloadExec::leaf(&["p0"]), scan()]),
                 false,
             ),
             (
                 "an unknown leaf of two partitions",
+                union(vec![PayloadExec::leaf(&["p0", "p1"]), scan()]),
+                true,
+            ),
+            ("a sort", union(vec![sorted(), scan()]), true),
+            ("a broadcast", union(vec![broadcast, scan()]), true),
+            (
+                "an unknown node that keeps its partitions",
                 union(vec![
-                    PayloadExec::leaf(&["p0", "p1"]),
-                    scan_with_file_groups(2),
+                    PayloadExec::over(&["p0", "p1"], vec![scan()], &[]),
+                    scan(),
                 ]),
                 true,
             ),
             (
-                "a merging branch",
+                "a sort in a nested union",
                 union(vec![
-                    merged(scan_with_file_groups(2)),
-                    scan_with_file_groups(2),
-                ]),
-                true,
-            ),
-            (
-                "a broadcast",
-                union(vec![broadcast, scan_with_file_groups(2)]),
-                true,
-            ),
-            (
-                "a node of your own",
-                union(vec![own(), scan_with_file_groups(2)]),
-                true,
-            ),
-            (
-                "a merging branch of a nested union",
-                union(vec![
-                    union(vec![
-                        merged(scan_with_file_groups(2)),
-                        scan_with_file_groups(1),
-                    ]),
-                    scan_with_file_groups(2),
+                    union(vec![sorted(), scan_with_file_groups(1)]),
+                    scan(),
                 ]),
                 true,
             ),
             (
                 "a union below a sort",
-                merged(union(vec![
-                    merged(scan_with_file_groups(2)),
-                    scan_with_file_groups(2),
-                ])),
+                sorted_into_one_partition(union(vec![sorted(), scan()])),
                 false,
             ),
             (
-                "a union below a collapse",
-                Arc::new(CoalescePartitionsExec::new(union(vec![
-                    merged(scan_with_file_groups(2)),
-                    scan_with_file_groups(2),
-                ]))),
+                "a union below a coalesce",
+                Arc::new(CoalescePartitionsExec::new(union(vec![sorted(), scan()]))),
                 false,
             ),
         ];
@@ -1414,32 +1373,39 @@ mod tests {
             .map(|(name, _, unsplittable)| (*name, *unsplittable))
             .collect();
         assert_eq!(actual, expected);
-
-        // The resolver that restricts the tasks can split both nodes of your own.
-        let with_own = union(vec![own(), scan_with_file_groups(2)]);
-        assert!(!has_unsplittable_union(&with_own, Some(resolver.as_ref())));
-        let with_leaf = union(vec![
-            PayloadExec::leaf(&["p0", "p1"]),
-            scan_with_file_groups(2),
-        ]);
-        assert!(!has_unsplittable_union(&with_leaf, Some(resolver.as_ref())));
     }
 
-    /// `plan` is a leaf with `like`'s schema and no partitions, as the
-    /// executor will decode it.
+    /// The resolver the tasks are restricted with can split the unions over
+    /// nodes of your own that nothing else can.
+    #[test]
+    fn the_resolver_lets_a_union_over_nodes_of_your_own_be_split() {
+        let resolver = payload_resolver();
+        let scan = || scan_with_file_groups(2);
+        let over_leaf =
+            UnionExec::try_new(vec![PayloadExec::leaf(&["p0", "p1"]), scan()]).unwrap();
+        let over_node = UnionExec::try_new(vec![
+            PayloadExec::over(&["p0", "p1"], vec![scan()], &[]),
+            scan(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            [&over_leaf, &over_node]
+                .map(|plan| has_unsplittable_union(plan, Some(resolver.as_ref()))),
+            [false, false]
+        );
+    }
+
+    /// `plan` is an empty in-memory source with `like`'s schema and no
+    /// partitions, which the executor decodes as it is.
     fn assert_no_partitions(
         plan: &Arc<dyn ExecutionPlan>,
         like: &Arc<dyn ExecutionPlan>,
     ) {
-        let memory = plan
-            .downcast_ref::<DataSourceExec>()
-            .and_then(|exec| exec.data_source().downcast_ref::<MemorySourceConfig>());
-        assert!(
-            memory.is_some(),
-            "an empty in-memory source, not {}",
-            plan.name()
+        assert_eq!(
+            displayable(plan.as_ref()).one_line().to_string().trim_end(),
+            "DataSourceExec: partitions=0, partition_sizes=[]"
         );
-        assert_eq!(partition_count(plan), 0);
         assert_eq!(plan.schema(), like.schema());
     }
 
@@ -1481,7 +1447,7 @@ mod tests {
     /// each of its partitions. The `AdaptivePlanner` replaces a stage that
     /// turns out empty with an `EmptyExec` of that stage's partition count.
     #[test]
-    fn self_generating_leaves_keep_one_partition_for_each_the_task_runs() {
+    fn self_generating_leaves_keep_one_partition_for_each_partition_the_task_runs() {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
         let empty: Arc<dyn ExecutionPlan> =
             Arc::new(EmptyExec::new(schema.clone()).with_partitions(4));

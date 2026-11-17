@@ -897,19 +897,16 @@ mod test {
     use crate::state::execution_graph::{ExecutionGraph, StaticExecutionGraph};
     use crate::state::task_manager::JobInfoCache;
     use crate::test_utils::payload::{PayloadExec, payload_resolver};
-    use crate::test_utils::scan_with_file_groups;
     use crate::test_utils::{
         mock_completed_task, revive_graph_and_complete_next_stage,
         test_aggregation_plan_with_config,
     };
+    use crate::test_utils::{scan_with_file_groups, sorted_into_one_partition};
     use ballista_core::config::BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::execution_plans::plan_algebra::PartitionSliceableResolver;
     use ballista_core::extension::SessionConfigExt;
-    use datafusion::physical_expr::expressions::Column;
-    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
     use datafusion::physical_plan::ExecutionPlan;
-    use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::physical_plan::union::UnionExec;
     use datafusion::prelude::SessionConfig;
 
@@ -1162,15 +1159,12 @@ mod test {
     /// each partition the executor has free.
     #[test]
     fn a_stage_with_an_unsplittable_union_is_bound_as_one_task() {
-        let sorted: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
-            LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(Column::new(
-                "a", 0,
-            )))])
-            .unwrap(),
-            scan_with_file_groups(2),
-        ));
         // Partition 0 is the sort's, 1-2 the scan's.
-        let union = UnionExec::try_new(vec![sorted, scan_with_file_groups(2)]).unwrap();
+        let union = UnionExec::try_new(vec![
+            sorted_into_one_partition(scan_with_file_groups(2)),
+            scan_with_file_groups(2),
+        ])
+        .unwrap();
 
         assert_eq!(
             bind_all(&mut running_stage(union.clone()), 8, None),

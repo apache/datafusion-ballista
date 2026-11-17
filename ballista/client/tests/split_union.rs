@@ -36,10 +36,13 @@ mod split_union {
     use rstest::rstest;
     use std::path::Path;
 
-    /// The adaptive planner replaces a stage that gives no rows with an
-    /// `EmptyExec` of that stage's partition count, so in most of these a
-    /// union branch is an `EmptyExec` of several partitions.
+    /// Unions whose branches each give a task a different share: none, part
+    /// or all of them.
     const QUERIES: &[&str] = &[
+        // Branches that give no rows. The adaptive planner replaces the stage
+        // of such a branch with an `EmptyExec` of that stage's partition
+        // count, which each task cuts down to its share.
+        //
         // An aggregate that matches nothing, beside one that matches all.
         "SELECT id % 2 AS k, count(*) AS c FROM test WHERE id > 100 GROUP BY id % 2 \
          UNION ALL SELECT id % 2, count(*) FROM test GROUP BY id % 2",
@@ -77,15 +80,17 @@ mod split_union {
         "SELECT 100 AS id UNION ALL SELECT id FROM test",
         "SELECT column1 AS id FROM (VALUES (10), (11)) UNION ALL SELECT id FROM test",
         // Branches that merge their input into one partition, which the
-        // adaptive planner leaves in the union's stage: a split stage runs as
-        // one task, so each branch runs once.
+        // adaptive planner leaves in the union's stage. Every task would run
+        // such a branch, so the stage runs as one task.
         "SELECT id FROM test UNION ALL SELECT id FROM test ORDER BY id",
         "SELECT o_id FROM orders UNION ALL SELECT c_id FROM customers ORDER BY o_id",
         "(SELECT id FROM test ORDER BY id LIMIT 3) UNION ALL SELECT id FROM test",
         "(SELECT o_id FROM orders ORDER BY o_id LIMIT 3) \
          UNION ALL SELECT o_id FROM orders",
         "SELECT count(*) AS c FROM orders UNION ALL SELECT count(*) FROM customers",
-        // A filter over a one-row source, under a round-robin repartition.
+        // A filter over a one-row source, below a round-robin repartition
+        // that keeps its four partitions in every task: the stage runs as one
+        // task too.
         "SELECT column1 AS id FROM (VALUES (10), (11)) WHERE column1 > 10 \
          UNION ALL SELECT id FROM test",
     ];
