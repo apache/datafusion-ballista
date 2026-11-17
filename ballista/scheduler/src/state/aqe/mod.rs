@@ -55,6 +55,7 @@ use datafusion::prelude::SessionConfig;
 use datafusion::scalar::ScalarValue;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
+use std::mem;
 use std::sync::Arc;
 use std::vec;
 
@@ -297,11 +298,19 @@ impl AdaptiveExecutionGraph {
     /// Processing stage status update after task status changing
     fn processing_stages_update(
         &mut self,
-        updated_stages: UpdatedStages,
+        mut updated_stages: UpdatedStages,
     ) -> ballista_core::error::Result<Vec<QueryStageSchedulerEvent>> {
         let job_id = self.job_id().to_owned();
         let mut has_resolved = false;
         let mut job_err_msg = "".to_owned();
+
+        // A fetch failure asks to rerun the finished stage whose output was
+        // lost, which AQE cannot do yet; fail the job instead of hanging it.
+        for stage_id in mem::take(&mut updated_stages.resubmit_successful_stages) {
+            updated_stages
+                .failed_stages
+                .insert(stage_id, cannot_rerun_finished_stage(stage_id));
+        }
 
         for stage_id in updated_stages.resolved_stages {
             self.resolve_stage(stage_id)?;
@@ -325,10 +334,6 @@ impl AdaptiveExecutionGraph {
             for (stage_id, failure_reasons) in updated_stages.rollback_running_stages {
                 let tasks = self.rollback_running_stage(stage_id, failure_reasons)?;
                 running_tasks_to_cancel.extend(tasks);
-            }
-
-            for stage_id in updated_stages.resubmit_successful_stages {
-                self.rerun_successful_stage(stage_id);
             }
 
             if !running_tasks_to_cancel.is_empty() {
@@ -774,6 +779,14 @@ impl AdaptiveExecutionGraph {
                     }
                 });
         }
+        // The lost executor held output of a finished stage that later stages
+        // still need, and AQE cannot rerun a finished stage yet. The caller
+        // fails the job on this error rather than leaving it to hang.
+        if let Some(stage_id) = resubmit_successful_stages.iter().min() {
+            return Err(BallistaError::General(cannot_rerun_finished_stage(
+                *stage_id,
+            )));
+        }
 
         for stage_id in rollback_resolved_stages.iter() {
             self.rollback_resolved_stage(*stage_id)?;
@@ -788,15 +801,10 @@ impl AdaptiveExecutionGraph {
             all_running_tasks.extend(tasks);
         }
 
-        for stage_id in resubmit_successful_stages.iter() {
-            self.rerun_successful_stage(*stage_id);
-        }
-
         let mut reset_stage = HashSet::new();
         reset_stage.extend(reset_running_stage);
         reset_stage.extend(rollback_resolved_stages);
         reset_stage.extend(rollback_running_stages);
-        reset_stage.extend(resubmit_successful_stages);
         Ok((reset_stage, all_running_tasks))
     }
 
@@ -804,6 +812,19 @@ impl AdaptiveExecutionGraph {
     fn clear_stage_failure(&mut self, stage_id: usize) {
         self.failed_stage_attempts.remove(&stage_id);
     }
+}
+
+/// Why a job fails when it needs the lost output of finished stage
+/// `stage_id`: AQE cannot rerun a finished stage (#1986, #2539). Its planner
+/// no longer tracks the stage, so the rerun's tasks could not report, and
+/// the job would hang.
+fn cannot_rerun_finished_stage(stage_id: usize) -> String {
+    format!(
+        "the output of finished stage {stage_id} was lost, and adaptive query \
+         execution cannot rerun a finished stage yet; retry the query, or set \
+         ballista.planner.adaptive.enabled to false to use the static planner, \
+         which recovers lost output"
+    )
 }
 
 impl ExecutionGraph for AdaptiveExecutionGraph {
@@ -1555,7 +1576,9 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         }
     }
 
-    /// Convert successful stage to be running
+    /// Convert successful stage to be running. The adaptive graph does not
+    /// call this: its planner no longer tracks a finished stage, so it fails
+    /// the job instead (see [cannot_rerun_finished_stage]).
     fn rerun_successful_stage(&mut self, stage_id: usize) -> bool {
         if let Some(ExecutionStage::Successful(stage)) = self.stages.remove(&stage_id) {
             self.stages
