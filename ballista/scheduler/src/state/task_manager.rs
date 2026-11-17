@@ -173,7 +173,7 @@ pub struct JobInfoCache {
     pub status: Option<job_status::Status>,
     /// The resolver the job's tasks are restricted with, so binding can tell
     /// which stages a task may run only part of.
-    pub partition_sliceable_resolver: Option<Arc<dyn PartitionSliceableResolver>>,
+    pub(crate) partition_sliceable_resolver: Option<Arc<dyn PartitionSliceableResolver>>,
 }
 
 impl JobInfoCache {
@@ -189,7 +189,7 @@ impl JobInfoCache {
     }
 
     /// Sets the resolver the job's tasks are restricted with.
-    pub fn with_partition_sliceable_resolver(
+    pub(crate) fn with_partition_sliceable_resolver(
         mut self,
         resolver: Option<Arc<dyn PartitionSliceableResolver>>,
     ) -> Self {

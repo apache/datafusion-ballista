@@ -616,9 +616,10 @@ fn bind_one(
     budget: &mut AvailableVcores,
     resolver: Option<&dyn PartitionSliceableResolver>,
 ) -> Option<BoundTask> {
+    if running_stage.pending.is_empty() {
+        return None;
+    }
     let is_collapse = stage_has_input_collapse(&running_stage.plan);
-    let is_unsplittable =
-        !is_collapse && has_unsplittable_union(&running_stage.plan, resolver);
     // Cap other slices at the configured `max_partitions_per_task`. Collapse
     // and unsplittable union stages must still pack their full pending queue
     // into a single task for correctness: a split collapse would produce
@@ -632,10 +633,16 @@ fn bind_one(
         .map(|bc| bc.max_partitions_per_task())
         .filter(|&n| n > 0)
         .unwrap_or(usize::MAX);
+    let split_max = (budget.vcores as usize).min(cap);
+    // The union check rewrites the plan, so it runs only when it can change
+    // the outcome: when the pending partitions don't fit in one slice anyway.
+    let is_unsplittable = !is_collapse
+        && running_stage.pending.remaining() > split_max
+        && has_unsplittable_union(&running_stage.plan, resolver);
     let max_partitions = if is_collapse || is_unsplittable {
         usize::MAX
     } else {
-        (budget.vcores as usize).min(cap)
+        split_max
     };
     let input_partition_ids = running_stage.pending.next_slice(max_partitions);
     if input_partition_ids.is_empty() {

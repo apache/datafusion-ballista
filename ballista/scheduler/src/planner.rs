@@ -55,7 +55,7 @@ use log::debug;
 use crate::physical_optimizer::join_selection::{
     collect_left_broadcast_safe, should_swap_join_order,
 };
-use crate::state::task_builder::restrict_plan_to_partitions;
+use crate::state::task_builder::branch_splits;
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<dyn ShuffleWriter>>);
 
@@ -733,47 +733,20 @@ impl DefaultDistributedPlanner {
 ///
 /// A branch already sitting behind a stage boundary needs nothing more, and
 /// neither does one that per-task restriction can cut to whatever share of it
-/// a task runs: none of it, which the union's index arithmetic relies on, or
-/// some of it. These questions are put to the real rewriter rather than to a
-/// list of operators, so they stay correct as the rewriter's handling of
-/// collapses, broadcast readers and leaf types evolves.
+/// a task runs ([`branch_splits`]). That question is put to the real rewriter
+/// rather than to a list of operators, so it stays correct as the rewriter's
+/// handling of collapses, broadcast readers and leaf types evolves.
+///
+/// The rewriter is asked without the scheduler's resolver, so a branch over a
+/// leaf of several partitions that only a resolver can restrict, such as a
+/// scan over a source of your own, gets a stage of its own. An
+/// `UnresolvedShuffleExec` passes through [`UnresolvedShuffles`], since it
+/// becomes a shuffle reader before any task runs.
 fn can_stay_inline(plan: &Arc<dyn ExecutionPlan>) -> bool {
     if plan.is::<UnresolvedShuffleExec>() {
         return true;
     }
-    !holds_a_broadcast(plan) && restricts_to_nothing(plan) && restricts_to_part(plan)
-}
-
-/// Whether per-task restriction can reduce `plan` to zero partitions. An empty
-/// slice means "this task polls nothing here", so a branch that still reports a
-/// partition afterwards, or that the rewriter refuses, cannot be restricted
-/// away.
-///
-/// No resolver is passed. A leaf Ballista does not know passes, because the
-/// rewriter replaces a leaf the task runs none of with an empty leaf. An
-/// interior node Ballista does not know that keeps its own partition count
-/// fails, and its branch gets a stage of its own.
-fn restricts_to_nothing(plan: &Arc<dyn ExecutionPlan>) -> bool {
-    restrict_plan_to_partitions(plan.clone(), &[], None)
-        .is_ok_and(|p| p.properties().output_partitioning().partition_count() == 0)
-}
-
-/// Whether per-task restriction can cut `plan` to its first partition alone,
-/// standing in for any task that owns some but not all of the branch. The
-/// rewriter refuses a leaf it cannot restrict for every slice but the whole,
-/// so `[0]` catches such a leaf of more than one partition as any partial
-/// slice would.
-///
-/// A leaf Ballista does not know passes only if it has one partition, which
-/// the task that owns it runs whole. A branch over a leaf of more partitions,
-/// such as a scan over a source of your own, gets a stage of its own, so that
-/// only the leaf's own stage needs a task to run all of it. An
-/// `UnresolvedShuffleExec` passes, since it becomes a shuffle reader before
-/// any task runs, and the rewriter restricts that to any slice.
-fn restricts_to_part(plan: &Arc<dyn ExecutionPlan>) -> bool {
-    plan.properties().output_partitioning().partition_count() == 0
-        || restrict_plan_to_partitions(plan.clone(), &[0], Some(&UnresolvedShuffles))
-            .is_ok()
+    !holds_a_broadcast(plan) && branch_splits(plan, Some(&UnresolvedShuffles))
 }
 
 /// Restricts an `UnresolvedShuffleExec` to one partition for each index, as
