@@ -619,6 +619,8 @@ fn bind_one(
     if running_stage.pending.is_empty() {
         return None;
     }
+    // TODO: cache this on `RunningStage` as `unsplittable_union_branch` is:
+    // it depends only on the plan, yet walks it again on every bind.
     let is_collapse = stage_has_input_collapse(&running_stage.plan);
     // Cap other slices at the configured `max_partitions_per_task`. Collapse
     // and unsplittable union stages must still pack their full pending queue
@@ -635,10 +637,15 @@ fn bind_one(
         .unwrap_or(usize::MAX);
     let split_max = (budget.vcores as usize).min(cap);
     // The union check rewrites the plan, so it runs only when it can change
-    // the outcome: when the pending partitions don't fit in one slice anyway.
+    // the outcome (the pending partitions don't fit in one slice anyway), and
+    // the stage keeps its answer for later binds.
     let unsplittable_branch =
         if !is_collapse && running_stage.pending.remaining() > split_max {
-            unsplittable_union_branch(&running_stage.plan, resolver)
+            let plan = &running_stage.plan;
+            running_stage
+                .unsplittable_union_branch
+                .get_or_insert_with(|| unsplittable_union_branch(plan, resolver))
+                .clone()
         } else {
             None
         };
