@@ -426,11 +426,12 @@ struct SortShuffleWriteMetrics {
     input_rows: metrics::Count,
     /// Number of output rows
     output_rows: metrics::Count,
-    /// Number of times the writer flushed buffered partitions to disk, whether
-    /// because the runtime `MemoryPool` rejected a reservation grow or because
-    /// the per-task buffer budget was reached. One event typically writes one
-    /// batch per non-empty output partition, so this is strictly less than or
-    /// equal to the number of batches written into spill files.
+    /// Number of spill events. The input loop counts one each time it flushes
+    /// its buffered partitions to disk, because the runtime `MemoryPool`
+    /// rejected a reservation grow or the per-task buffer budget was reached.
+    /// The end of input counts one more if the pool refused any partition's
+    /// encoded output. Every event writes at least one batch, so this is at
+    /// most the number of batches written into spill files.
     spill_count: metrics::Count,
     /// Bytes spilled to disk
     spill_bytes: metrics::Count,

@@ -286,9 +286,8 @@ single consolidated Arrow IPC file per task, alongside an index file that lets
 readers seek directly to a given output partition.
 
 This produces two files per task instead of one per input and output
-partition pair, coalesces small batches
-to a target size before writing, and bounds shuffle memory use via
-spilling.
+partition pair, coalesces small batches to a target size before writing, and
+bounds shuffle memory use via spilling.
 
 Worst-case sort-shuffle memory per executor is approximately
 `vcores × memory_limit_per_task_bytes`, since one writer task can run per
