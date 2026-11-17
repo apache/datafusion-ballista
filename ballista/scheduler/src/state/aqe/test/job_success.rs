@@ -20,11 +20,13 @@
 use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::aqe::test::{mock_batch, mock_context};
 use crate::state::execution_graph::ExecutionGraph;
+use crate::state::execution_stage::ExecutionStage;
 use crate::test_utils::{
     mock_completed_task, mock_executor, revive_graph_and_complete_next_stage,
 };
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::{OperatorMetricsSet, job_status};
+use ballista_core::utils::collect_plan_metrics;
 use std::collections::{HashMap, HashSet};
 
 /// Plans `sql` as an adaptive job and completes its stages one by one until
@@ -143,5 +145,64 @@ async fn tasks_reporting_different_metrics_counts_complete_the_job() -> Result<(
         graph.status().status.as_ref(),
         Some(job_status::Status::Successful(_))
     ));
+    Ok(())
+}
+
+/// The first task of a stage to report may be one whose restricted plan has a
+/// different shape from the stage plan. Its metrics are skipped, and they must
+/// not set the shape for the stage: every later task that matches the stage
+/// plan still merges, so a finished stage has one metrics set per operator of
+/// its plan.
+#[tokio::test]
+async fn mismatched_first_task_does_not_crowd_out_the_stage_metrics() -> Result<()> {
+    let mut graph = plan_job("select min(a), c from t group by c").await?;
+    let executor = mock_executor("executor-id1".to_string());
+    let mut tasks_per_stage: HashMap<usize, usize> = HashMap::new();
+
+    while !graph.is_successful() {
+        graph.revive();
+        let mut progressed = false;
+        while let Some(task) = graph.pop_next_task(&executor.id)? {
+            let stage_id = task.key.stage_id;
+            let plan_metrics =
+                collect_plan_metrics(graph.stages()[&stage_id].plan()).len();
+            let nth = tasks_per_stage.entry(stage_id).or_default();
+            let mut status = mock_completed_task(task, &executor.id);
+            // The stage's first task reports one metrics set too many. The
+            // rest report one per operator, like a task that ran the stage
+            // plan as is.
+            let reported = if *nth == 0 {
+                plan_metrics + 1
+            } else {
+                plan_metrics
+            };
+            status.metrics = vec![OperatorMetricsSet::default(); reported];
+            *nth += 1;
+            graph.update_task_status(&executor, vec![status], 1, 1)?;
+            progressed = true;
+        }
+        assert!(progressed, "no task to run, but the job has not succeeded");
+    }
+
+    assert!(
+        tasks_per_stage.values().any(|&n| n > 1),
+        "expected a stage with more than one task: {tasks_per_stage:?}"
+    );
+    for (stage_id, stage) in graph.stages() {
+        let ExecutionStage::Successful(stage) = stage else {
+            panic!("stage {stage_id} is {}", stage.variant_name());
+        };
+        let plan_metrics = collect_plan_metrics(stage.plan.as_ref()).len();
+        if tasks_per_stage[stage_id] > 1 {
+            assert_eq!(
+                stage.stage_metrics.len(),
+                plan_metrics,
+                "stage {stage_id} lost the metrics of the tasks that matched its plan"
+            );
+        } else {
+            // Its only task was the mismatched one, so it has no metrics.
+            assert!(stage.stage_metrics.is_empty(), "stage {stage_id}");
+        }
+    }
     Ok(())
 }
