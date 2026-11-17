@@ -25,7 +25,6 @@ use ballista_core::JobId;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::ShuffleWriter;
-use ballista_core::execution_plans::plan_algebra::PartitionSliceableResolver;
 use ballista_core::execution_plans::sort_shuffle::{ShuffleRouting, SortShuffleConfig};
 use ballista_core::{
     execution_plans::{
@@ -739,36 +738,13 @@ impl DefaultDistributedPlanner {
 ///
 /// The rewriter is asked without the scheduler's resolver, so a branch over a
 /// leaf of several partitions that only a resolver can restrict, such as a
-/// scan over a source of your own, gets a stage of its own. An
-/// `UnresolvedShuffleExec` passes through [`UnresolvedShuffles`], since it
-/// becomes a shuffle reader before any task runs.
+/// scan over a source of your own, gets a stage of its own. So does a node
+/// over a shuffle, which the planner sees before it is resolved.
 fn can_stay_inline(plan: &Arc<dyn ExecutionPlan>) -> bool {
     if plan.is::<UnresolvedShuffleExec>() {
         return true;
     }
-    !holds_a_broadcast(plan) && branch_splits(plan, Some(&UnresolvedShuffles))
-}
-
-/// Restricts an `UnresolvedShuffleExec` to one partition for each index, as
-/// the rewriter will the shuffle reader it becomes. The stage planner checks
-/// with it whether a branch can be restricted before its inputs are resolved.
-#[derive(Debug)]
-struct UnresolvedShuffles;
-
-impl PartitionSliceableResolver for UnresolvedShuffles {
-    fn restrict_to_partitions(
-        &self,
-        plan: &Arc<dyn ExecutionPlan>,
-        _children: Vec<Arc<dyn ExecutionPlan>>,
-        partitions: &[usize],
-    ) -> Option<datafusion::error::Result<Arc<dyn ExecutionPlan>>> {
-        let reader = plan.downcast_ref::<UnresolvedShuffleExec>()?;
-        Some(Ok(Arc::new(UnresolvedShuffleExec::new(
-            reader.stage_id,
-            reader.schema.clone(),
-            Partitioning::UnknownPartitioning(partitions.len()),
-        ))))
-    }
+    !holds_a_broadcast(plan) && branch_splits(plan, None)
 }
 
 /// Whether `plan` contains a broadcast input or a `CollectLeft` join.
@@ -1032,17 +1008,17 @@ mod test {
         assert!(!can_stay_inline(&branch));
     }
 
-    /// A branch over a shuffle, such as the final aggregate of a union of
-    /// aggregates, stays inline: the shuffle's reader restricts to any share,
-    /// though the planner sees it before it is resolved.
+    /// A node over a shuffle, such as the final aggregate of a union of
+    /// aggregates, gets a stage of its own: the planner sees the shuffle before
+    /// it is resolved, when nothing can restrict it to part of its partitions.
     #[test]
-    fn branch_over_an_unresolved_shuffle_stays_inline() {
+    fn node_over_an_unresolved_shuffle_needs_its_own_stage() {
         let reader: Arc<dyn ExecutionPlan> = Arc::new(UnresolvedShuffleExec::new(
             1,
             scan_with_file_groups(1).schema(),
             Partitioning::UnknownPartitioning(4),
         ));
-        assert!(can_stay_inline(&project_leading_columns(reader, 1)));
+        assert!(!can_stay_inline(&project_leading_columns(reader, 1)));
     }
 
     /// Plans `plan` into query stages with the default options.
