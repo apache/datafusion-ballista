@@ -16,7 +16,7 @@
 # under the License.
 
 [workspace]
-exclude = ["dev/msrvcheck", "python"]
+exclude = ["dev/msrvcheck", "integrations/iceberg", "python"]
 members = [
     "ballista-cli",
     "ballista/api-types",
@@ -92,7 +92,7 @@ dashmap = { version = "6.2" }
 env_logger = { version = "0.11" }
 futures = { version = "0.3" }
 log = { version = "0.4" }
-parking_lot = { version = "0.12" }
+parking_lot = { version = "0.13" }
 rand = { version = "0.10" }
 serde = { version = "1.0" }
 serde_json = { version = "1" }
