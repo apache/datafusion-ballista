@@ -96,9 +96,10 @@ mod standalone {
 
     use std::sync::{Arc, atomic::AtomicBool};
 
-    use crate::common::{register_alltypes, state_with_config};
+    use crate::common::{ALLTYPES_GROUP_BY_SQL, register_alltypes, state_with_config};
     use crate::{assert_job_name_setting, job_name_state};
     use ballista::extension::{SessionConfigExt, SessionContextExt};
+    use ballista_core::execution_plans::plan_algebra::PartitionSliceableResolver;
     use ballista_core::serde::BallistaPhysicalExtensionCodec;
     use datafusion::{
         catalog::Session,
@@ -181,6 +182,26 @@ mod standalone {
                 .invoked
                 .load(std::sync::atomic::Ordering::Relaxed)
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_set_partition_sliceable_resolver() -> datafusion::error::Result<()> {
+        let resolver = Arc::new(MockPartitionSliceableResolver::default());
+        let session_config = SessionConfig::new_with_ballista()
+            .with_ballista_partition_sliceable_resolver(resolver.clone());
+
+        let state = state_with_config(session_config);
+        let ctx = SessionContext::standalone_with_state(state).await?;
+
+        register_alltypes(&ctx, "test").await;
+
+        // Execute a query to verify that the standalone scheduler uses the
+        // resolver registered in the session configuration.
+        ctx.sql(ALLTYPES_GROUP_BY_SQL).await?.collect().await?;
+
+        assert!(resolver.invoked.load(std::sync::atomic::Ordering::Relaxed));
+
         Ok(())
     }
 
@@ -327,6 +348,24 @@ mod standalone {
             self.invoked
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             self.codec.try_encode(node, buf, proto_converter)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct MockPartitionSliceableResolver {
+        invoked: AtomicBool,
+    }
+
+    impl PartitionSliceableResolver for MockPartitionSliceableResolver {
+        fn restrict_to_partitions(
+            &self,
+            _plan: &Arc<dyn ExecutionPlan>,
+            _children: Vec<Arc<dyn ExecutionPlan>>,
+            _partitions: &[usize],
+        ) -> Option<datafusion::error::Result<Arc<dyn ExecutionPlan>>> {
+            self.invoked
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            None
         }
     }
 
