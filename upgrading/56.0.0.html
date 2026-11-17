@@ -641,15 +641,41 @@ and code that reads the message matches on <code class="docutils literal notrans
 writer’s internal row buffer, is no longer exported. It had no use outside the
 writer. Code that used it directly should use <code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExec</span></code> instead.</p>
 </section>
-<section id="taskmanager-executor-lost-also-returns-jobs-that-lost-cached-data">
-<h4><code class="docutils literal notranslate"><span class="pre">TaskManager::executor_lost</span></code> also returns jobs that lost cached data<a class="headerlink" href="#taskmanager-executor-lost-also-returns-jobs-that-lost-cached-data" title="Link to this heading">#</a></h4>
+<section id="taskmanager-executor-lost-returns-an-executorlostoutcome">
+<h4><code class="docutils literal notranslate"><span class="pre">TaskManager::executor_lost</span></code> returns an <code class="docutils literal notranslate"><span class="pre">ExecutorLostOutcome</span></code><a class="headerlink" href="#taskmanager-executor-lost-returns-an-executorlostoutcome" title="Link to this heading">#</a></h4>
 <p><code class="docutils literal notranslate"><span class="pre">ballista_scheduler::state::task_manager::TaskManager::executor_lost</span></code> now returns
-<code class="docutils literal notranslate"><span class="pre">(Vec&lt;RunningTaskInfo&gt;,</span> <span class="pre">Vec&lt;(JobId,</span> <span class="pre">u64)&gt;)</span></code> instead of <code class="docutils literal notranslate"><span class="pre">Vec&lt;RunningTaskInfo&gt;</span></code>.
-The second element lists the jobs that lost <code class="docutils literal notranslate"><span class="pre">DataFrame::cache()</span></code> data with the
-executor, with when each was queued. Their graphs are not reset, because they
-cannot re-run another job’s output, so a caller must fail them (the scheduler
-posts <code class="docutils literal notranslate"><span class="pre">JobRunningFailed</span></code>). A caller that only needs the tasks to cancel can take
-the first element.</p>
+an <code class="docutils literal notranslate"><span class="pre">ExecutorLostOutcome</span></code> instead of <code class="docutils literal notranslate"><span class="pre">Vec&lt;RunningTaskInfo&gt;</span></code>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">tasks_to_cancel</span></code>: the running tasks to cancel, which is what it returned
+before.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">failed_jobs</span></code>: jobs that cannot survive the loss and must fail, with the
+reason and when each was queued: a pipelined job, or one that lost
+<code class="docutils literal notranslate"><span class="pre">DataFrame::cache()</span></code> data and whose graph cannot resume after it is rebuilt.
+The scheduler posts <code class="docutils literal notranslate"><span class="pre">JobRunningFailed</span></code> for each.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">lost_inputs</span></code>: jobs whose stages now wait for <code class="docutils literal notranslate"><span class="pre">DataFrame::cache()</span></code> data lost
+with the executor to be rebuilt, with the external stage ids of the lost
+reads. The scheduler posts <code class="docutils literal notranslate"><span class="pre">ExternalInputLost</span></code> for each.</p></li>
+</ul>
+</section>
+<section id="querystageschedulerevent-is-non-exhaustive">
+<h4><code class="docutils literal notranslate"><span class="pre">QueryStageSchedulerEvent</span></code> is <code class="docutils literal notranslate"><span class="pre">#[non_exhaustive]</span></code><a class="headerlink" href="#querystageschedulerevent-is-non-exhaustive" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">ballista_scheduler::scheduler_server::event::QueryStageSchedulerEvent</span></code> gains
+<code class="docutils literal notranslate"><span class="pre">ExternalInputLost</span></code> and <code class="docutils literal notranslate"><span class="pre">ExternalInputReady</span></code>, for recovering
+<code class="docutils literal notranslate"><span class="pre">DataFrame::cache()</span></code> data a running job loses, and is now <code class="docutils literal notranslate"><span class="pre">#[non_exhaustive]</span></code>,
+so later events can be added without breaking code outside the crate. A <code class="docutils literal notranslate"><span class="pre">match</span></code>
+on it outside the crate needs a wildcard arm.</p>
+</section>
+<section id="jobstate-gains-new-context">
+<h4><code class="docutils literal notranslate"><span class="pre">JobState</span></code> gains <code class="docutils literal notranslate"><span class="pre">new_context</span></code><a class="headerlink" href="#jobstate-gains-new-context" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">ballista_scheduler::cluster::JobState</span></code> has a new method, <code class="docutils literal notranslate"><span class="pre">new_context</span></code>, which
+makes a context for work the scheduler starts on behalf of a running job, such
+as rebuilding <code class="docutils literal notranslate"><span class="pre">DataFrame::cache()</span></code> data it lost, from the job’s configuration.
+It has a default that calls <code class="docutils literal notranslate"><span class="pre">create_or_update_session</span></code>, so existing
+implementations keep compiling; one that records sessions should override it so
+a rebuild does not create or update a session. Such a context comes from the
+session builder, so anything registered directly on a hand-built context passed
+to <code class="docutils literal notranslate"><span class="pre">SchedulerServer::submit_job</span></code> is not in it; register it through
+<code class="docutils literal notranslate"><span class="pre">override_session_builder</span></code> instead.</p>
 </section>
 <section id="partitionsliceable-covers-any-node-and-embedders-can-register-their-own">
 <h4><code class="docutils literal notranslate"><span class="pre">PartitionSliceable</span></code> covers any node, and embedders can register their own<a class="headerlink" href="#partitionsliceable-covers-any-node-and-embedders-can-register-their-own" title="Link to this heading">#</a></h4>
@@ -995,7 +1021,9 @@ unchanged.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sortshufflewriterexec-accepts-a-range-partitioning-and-a-partition-id-routing"><code class="docutils literal notranslate"><span class="pre">SortShuffleWriterExec</span></code> accepts a range partitioning and a partition-id routing</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-shuffle-bufferedbatches-is-no-longer-public"><code class="docutils literal notranslate"><span class="pre">sort_shuffle::BufferedBatches</span></code> is no longer public</a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#taskmanager-executor-lost-also-returns-jobs-that-lost-cached-data"><code class="docutils literal notranslate"><span class="pre">TaskManager::executor_lost</span></code> also returns jobs that lost cached data</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#taskmanager-executor-lost-returns-an-executorlostoutcome"><code class="docutils literal notranslate"><span class="pre">TaskManager::executor_lost</span></code> returns an <code class="docutils literal notranslate"><span class="pre">ExecutorLostOutcome</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#querystageschedulerevent-is-non-exhaustive"><code class="docutils literal notranslate"><span class="pre">QueryStageSchedulerEvent</span></code> is <code class="docutils literal notranslate"><span class="pre">#[non_exhaustive]</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#jobstate-gains-new-context"><code class="docutils literal notranslate"><span class="pre">JobState</span></code> gains <code class="docutils literal notranslate"><span class="pre">new_context</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#partitionsliceable-covers-any-node-and-embedders-can-register-their-own"><code class="docutils literal notranslate"><span class="pre">PartitionSliceable</span></code> covers any node, and embedders can register their own</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#partition-locations-hold-an-executorendpoint">Partition locations hold an <code class="docutils literal notranslate"><span class="pre">ExecutorEndpoint</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#the-disable-stage-plan-cache-feature-of-ballista-scheduler-is-removed">The <code class="docutils literal notranslate"><span class="pre">disable-stage-plan-cache</span></code> feature of <code class="docutils literal notranslate"><span class="pre">ballista-scheduler</span></code> is removed</a></li>
