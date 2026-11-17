@@ -27,7 +27,7 @@ use crate::state::execution_graph::{
     ExecutionGraphBox, TaskDescription, create_task_info,
 };
 use crate::state::session_manager::share_file_statistics_cache;
-use crate::state::task_builder::has_unsplittable_union;
+use crate::state::task_builder::unsplittable_union_branch;
 use crate::state::task_manager::JobInfoCache;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::Result;
@@ -47,7 +47,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::Stream;
-use log::debug;
+use log::{debug, info};
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -603,7 +603,7 @@ pub(crate) fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bo
 ///   requires packing the entire pending queue into one bind (a split
 ///   collapse would produce partial results downstream can't merge).
 ///
-/// - **Unsplittable union stage** (see [`has_unsplittable_union`]): a
+/// - **Unsplittable union stage** (see [`unsplittable_union_branch`]): a
 ///   `UnionExec` branch keeps partitions however it is restricted, so every
 ///   task given part of the stage would also run that branch, and the
 ///   rewriter refuses such a task. The stage is packed into one task too,
@@ -636,9 +636,24 @@ fn bind_one(
     let split_max = (budget.vcores as usize).min(cap);
     // The union check rewrites the plan, so it runs only when it can change
     // the outcome: when the pending partitions don't fit in one slice anyway.
-    let is_unsplittable = !is_collapse
-        && running_stage.pending.remaining() > split_max
-        && has_unsplittable_union(&running_stage.plan, resolver);
+    let unsplittable_branch =
+        if !is_collapse && running_stage.pending.remaining() > split_max {
+            unsplittable_union_branch(&running_stage.plan, resolver)
+        } else {
+            None
+        };
+    let is_unsplittable = unsplittable_branch.is_some();
+    if let Some(branch) = &unsplittable_branch {
+        info!(
+            "Job {job_id} stage {} runs as one task: a `UnionExec` branch, `{}` at \
+             its top, can't be restricted to part of its partitions, so every task \
+             would run it. If the branch holds a node of your own, \
+             `SchedulerConfig::partition_sliceable_resolver` can restrict it and let \
+             the stage be split.",
+            running_stage.stage_id,
+            branch.name(),
+        );
+    }
     let max_partitions = if is_collapse || is_unsplittable {
         usize::MAX
     } else {
