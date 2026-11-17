@@ -739,7 +739,9 @@ impl DefaultDistributedPlanner {
 /// The rewriter is asked without the scheduler's resolver, so a branch over a
 /// leaf of several partitions that only a resolver can restrict, such as a
 /// scan over a source of your own, gets a stage of its own. So does a node
-/// over a shuffle, which the planner sees before it is resolved.
+/// over a shuffle of several partitions, which the planner sees before it is
+/// resolved. A branch over a one-partition leaf stays inline: only the task
+/// that owns its partition runs it, whole.
 fn can_stay_inline(plan: &Arc<dyn ExecutionPlan>) -> bool {
     if plan.is::<UnresolvedShuffleExec>() {
         return true;
@@ -1011,14 +1013,22 @@ mod test {
     /// A node over a shuffle, such as the final aggregate of a union of
     /// aggregates, gets a stage of its own: the planner sees the shuffle before
     /// it is resolved, when nothing can restrict it to part of its partitions.
+    /// Over a one-partition shuffle it stays inline, since the task that owns
+    /// the partition reads the shuffle whole.
     #[test]
-    fn node_over_an_unresolved_shuffle_needs_its_own_stage() {
-        let reader: Arc<dyn ExecutionPlan> = Arc::new(UnresolvedShuffleExec::new(
-            1,
-            scan_with_file_groups(1).schema(),
-            Partitioning::UnknownPartitioning(4),
-        ));
-        assert!(!can_stay_inline(&project_leading_columns(reader, 1)));
+    fn node_over_an_unresolved_shuffle_stays_inline_only_over_one_partition() {
+        let over_shuffle = |partitions| {
+            let reader: Arc<dyn ExecutionPlan> = Arc::new(UnresolvedShuffleExec::new(
+                1,
+                scan_with_file_groups(1).schema(),
+                Partitioning::UnknownPartitioning(partitions),
+            ));
+            project_leading_columns(reader, 1)
+        };
+        assert_eq!(
+            [4, 1].map(|partitions| can_stay_inline(&over_shuffle(partitions))),
+            [false, true]
+        );
     }
 
     /// Plans `plan` into query stages with the default options.

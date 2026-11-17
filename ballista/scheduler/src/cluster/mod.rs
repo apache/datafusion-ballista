@@ -604,8 +604,8 @@ pub(crate) fn stage_has_input_collapse(plan_root: &Arc<dyn ExecutionPlan>) -> bo
 ///   collapse would produce partial results downstream can't merge).
 ///
 /// - **Unsplittable union stage** (see [`unsplittable_union_branch`]): a
-///   `UnionExec` branch keeps partitions however it is restricted, so every
-///   task given part of the stage would also run that branch, and the
+///   `UnionExec` branch can't be cut to a task's share of it, so a task given
+///   part of the stage would run partitions of it that it doesn't own, and the
 ///   rewriter refuses such a task. The stage is packed into one task too,
 ///   which runs each branch once. Its root keeps all of its partitions, so the
 ///   task consumes one vcore for each, up to what the executor has free.
