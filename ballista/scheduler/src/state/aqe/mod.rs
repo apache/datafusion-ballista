@@ -951,7 +951,6 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
         let mut successful_stages = HashSet::new();
         let mut failed_stages = HashMap::new();
-        let reset_running_stages: HashMap<usize, HashSet<usize>> = HashMap::new();
 
         //
         //
@@ -1166,8 +1165,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                     // all task updates have been handled
                     //
 
-                    let is_final_successful = running_stage.is_successful()
-                        && !reset_running_stages.contains_key(&stage_id);
+                    let is_final_successful = running_stage.is_successful();
 
                     if is_final_successful {
                         successful_stages.insert(stage_id);
@@ -1236,32 +1234,6 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         for (stage_id, attempts) in failed_stage_attempts.iter() {
             self.failed_stage_attempts
                 .insert(*stage_id, HashSet::from_iter(attempts.iter().copied()));
-        }
-
-        for (stage_id, missing_task_ids) in &reset_running_stages {
-            if let Some(stage) = self.stages.get_mut(stage_id) {
-                if let ExecutionStage::Running(running_stage) = stage {
-                    for task_id in missing_task_ids {
-                        if *task_id >= running_stage.task_infos.len() {
-                            return Err(BallistaError::Internal(format!(
-                                "Invalid task_id {} in map stage {} (task_infos has {} entries)",
-                                *task_id,
-                                stage_id,
-                                running_stage.task_infos.len()
-                            )));
-                        }
-                        running_stage.reset_task_info(*task_id);
-                    }
-                } else {
-                    warn!(
-                        "Stage {job_id}/{stage_id} is not in Running state when try to reset the running task. "
-                    );
-                }
-            } else {
-                return Err(BallistaError::Internal(format!(
-                    "Invalid stage ID {stage_id} for job {job_id}"
-                )));
-            }
         }
 
         self.processing_stages_update(UpdatedStages {
