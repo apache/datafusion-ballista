@@ -1079,7 +1079,7 @@ async fn execute_query_pull(
                     pipelined_output_locations,
                     PipelinedFetch {
                         flight_proxy,
-                        ..fetch.clone()
+                        ..fetch
                     },
                     failure,
                     scheduler,
@@ -1214,7 +1214,7 @@ async fn execute_query_push(
                     pipelined_output_locations,
                     PipelinedFetch {
                         flight_proxy,
-                        ..fetch.clone()
+                        ..fetch
                     },
                     failure,
                     scheduler,
@@ -1266,6 +1266,7 @@ pub async fn poll_job_until_successful(
             .into_inner();
 
         let status = status.and_then(|s| s.status);
+        let running = matches!(status, Some(job_status::Status::Running(_)));
         match status {
             Some(
                 job_status::Status::Running(RunningJob {
@@ -1277,6 +1278,11 @@ pub async fn poll_job_until_successful(
                     ..
                 }),
             ) if !pipelined_output_locations.is_empty() => {
+                // Nobody reads the final stage of a running pipelined job, so
+                // cancel it rather than leave it holding its vcores.
+                if running {
+                    cancel_job(scheduler, job_id.as_str()).await;
+                }
                 return Err(DataFusionError::NotImplemented(format!(
                     "Job {job_id} is pipelined, which poll_job_until_successful does not support; use DistributedQueryExec"
                 )));
@@ -1284,7 +1290,13 @@ pub async fn poll_job_until_successful(
             Some(job_status::Status::Failed(err)) => {
                 return Err(job_failed(&job_id, err.error));
             }
-            Some(job_status::Status::Successful(successful)) => return Ok(successful),
+            Some(job_status::Status::Successful(successful)) => {
+                let duration = Duration::from_millis(
+                    successful.ended_at.saturating_sub(successful.started_at),
+                );
+                info!("Job {job_id} finished executing in {duration:?}");
+                return Ok(successful);
+            }
             status => {
                 log_job_wait(&job_id, &status, &prev_status);
                 tokio::time::sleep(poll_interval).await;
@@ -2173,5 +2185,6 @@ mod test {
         .unwrap_err();
 
         assert!(err.to_string().contains("pipelined"), "{err}");
+        assert_eq!(scheduler.cancelled(), [JOB_ID]);
     }
 }
