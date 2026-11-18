@@ -107,6 +107,24 @@ async fn losing_the_output_of_a_finished_stage_fails_the_rollback() {
     assert!(err.to_string().contains(CANNOT_RERUN), "{err}");
 }
 
+// Nothing in the adaptive graph resolves a stage again once it is rolled back,
+// so losing a stage's input fails the job even when the input is not a
+// finished stage of this graph, as when it was dropped from it.
+#[tokio::test]
+async fn losing_the_input_of_a_stage_fails_the_rollback() {
+    let mut graph = aggregation_with_map_output_on_a().await;
+    graph.stages.remove(&0);
+
+    let err = graph.reset_stages_on_lost_executor("a").unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("stage 1 lost input on executor a, and adaptive query execution cannot roll back a stage"),
+        "{err}"
+    );
+    assert!(matches!(graph.stages[&1], ExecutionStage::Running(_)));
+}
+
 // The same loss, found by a reduce task failing to fetch the map output: the
 // job fails instead of hanging.
 #[tokio::test]

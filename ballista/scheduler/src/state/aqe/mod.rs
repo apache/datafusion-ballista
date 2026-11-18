@@ -779,25 +779,25 @@ impl AdaptiveExecutionGraph {
                 *stage_id,
             )));
         }
-
-        for stage_id in rollback_resolved_stages.iter() {
-            self.rollback_resolved_stage(*stage_id)?;
+        // Any other stage whose input was on the lost executor would be rolled
+        // back to unresolved, and nothing in the adaptive graph resolves a
+        // stage again: stages only come resolved from the planner. Fail rather
+        // than leave it to hang.
+        if let Some(stage_id) = rollback_resolved_stages
+            .union(&rollback_running_stages)
+            .min()
+        {
+            return Err(BallistaError::General(format!(
+                "stage {stage_id} lost input on executor {executor_id}, and \
+                 adaptive query execution cannot roll back a stage yet; retry \
+                 the query, or set ballista.planner.adaptive.enabled to false \
+                 to use the static planner, which recovers lost output"
+            )));
         }
 
-        let mut all_running_tasks = vec![];
-        for stage_id in rollback_running_stages.iter() {
-            let tasks = self.rollback_running_stage(
-                *stage_id,
-                HashSet::from([executor_id.to_owned()]),
-            )?;
-            all_running_tasks.extend(tasks);
-        }
-
-        let mut reset_stage = HashSet::new();
-        reset_stage.extend(reset_running_stage);
-        reset_stage.extend(rollback_resolved_stages);
-        reset_stage.extend(rollback_running_stages);
-        Ok((reset_stage, all_running_tasks))
+        // Only tasks of running stages were reset; they are rescheduled, and
+        // none are left running to cancel.
+        Ok((reset_running_stage, vec![]))
     }
 
     /// Clear the stage failure count for this stage if the stage is finally success
