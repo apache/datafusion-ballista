@@ -39,8 +39,7 @@ use ballista_core::execution_plans::{
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    FailedJob, FailedTask, JobStatus, ResultLost, RunningJob, SuccessfulJob, TaskStatus,
-    job_status, task_status,
+    FailedJob, JobStatus, RunningJob, SuccessfulJob, TaskStatus, job_status, task_status,
 };
 use ballista_core::serde::scheduler::{
     ExecutorEndpoint, ExecutorMetadata, PartitionLocation,
@@ -950,8 +949,6 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
         let mut successful_stages = HashSet::new();
         let mut failed_stages = HashMap::new();
-        let rollback_running_stages: HashMap<usize, HashSet<String>> = HashMap::new();
-        let resubmit_successful_stages: HashMap<usize, HashSet<usize>> = HashMap::new();
         let reset_running_stages: HashMap<usize, HashSet<usize>> = HashMap::new();
 
         //
@@ -1239,42 +1236,6 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                 .insert(*stage_id, HashSet::from_iter(attempts.iter().copied()));
         }
 
-        // Values coming out of `remove_input_partitions` are task_ids
-        // (append slots) under the multi-partition-task model (see the mirror
-        // site in `execution_graph.rs` for the TODO on partition-id semantics).
-        for (stage_id, missing_task_ids) in &resubmit_successful_stages {
-            if let Some(stage) = self.stages.get_mut(stage_id) {
-                if let ExecutionStage::Successful(success_stage) = stage {
-                    for task_id in missing_task_ids {
-                        if *task_id >= success_stage.task_infos.len() {
-                            return Err(BallistaError::Internal(format!(
-                                "Invalid task_id {} in map stage {} (task_infos has {} entries)",
-                                *task_id,
-                                stage_id,
-                                success_stage.task_infos.len()
-                            )));
-                        }
-                        let task_info = &mut success_stage.task_infos[*task_id];
-                        // Update the task info to failed
-                        task_info.task_status = task_status::Status::Failed(FailedTask {
-                            error: "FetchPartitionError in parent stage".to_owned(),
-                            retryable: true,
-                            count_to_failures: false,
-                            failed_reason: Some(FailedReason::ResultLost(ResultLost {})),
-                        });
-                    }
-                } else {
-                    warn!(
-                        "Stage {job_id}/{stage_id} is not in Successful state when try to resubmit this stage. "
-                    );
-                }
-            } else {
-                return Err(BallistaError::Internal(format!(
-                    "Invalid stage ID {stage_id} for job {job_id}"
-                )));
-            }
-        }
-
         for (stage_id, missing_task_ids) in &reset_running_stages {
             if let Some(stage) = self.stages.get_mut(stage_id) {
                 if let ExecutionStage::Running(running_stage) = stage {
@@ -1305,11 +1266,10 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
             resolved_stages: Default::default(),
             successful_stages,
             failed_stages,
-            rollback_running_stages,
-            resubmit_successful_stages: resubmit_successful_stages
-                .keys()
-                .cloned()
-                .collect(),
+            // A fetch failure fails its stage instead of rolling it back and
+            // rerunning its input; see above.
+            rollback_running_stages: Default::default(),
+            resubmit_successful_stages: Default::default(),
         })
     }
 
