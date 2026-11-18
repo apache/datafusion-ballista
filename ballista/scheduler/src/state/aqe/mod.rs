@@ -91,7 +91,9 @@ mod test;
 ///
 /// with many limitations, such as:
 ///
-/// - it does not cover executor failure
+/// - executor failure only partly: tasks of a running stage that ran on a
+///   lost executor are rerun, but a finished stage whose output was lost is
+///   not, and the job fails instead
 /// - dynamically coalescing shuffle partitions, not supported yet
 /// - does not switch from hash join to sort merge join
 /// - does not switch from streaming aggregation to hash aggregation
