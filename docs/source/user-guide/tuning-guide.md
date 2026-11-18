@@ -469,6 +469,19 @@ cached.collect().await?;       // reads it
   `--disable-dataframe-cache` flag; cached DataFrames are then computed as part
   of each query.
 
+A cache works in both execution modes. Its build always runs staged, and
+queries over it run in the session's mode, so a
+[pipelined](pipelined-execution.md) session reads a cache with streaming
+queries.
+
+A full example, in staged and pipelined modes, from
+[`examples/examples/standalone-dataframe-cache.rs`](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/standalone-dataframe-cache.rs):
+
+```{literalinclude} ../../../examples/examples/standalone-dataframe-cache.rs
+:language: rust
+:start-after: under the License.
+```
+
 See the [DataFrame cache design](../contributors-guide/dataframe-cache.md) for
 how it works.
 
