@@ -17,6 +17,7 @@
 
 //! Job-failure lifecycle tests for the adaptive execution graph.
 
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::aqe::AdaptiveExecutionGraph;
 use crate::state::aqe::test::{mock_batch, mock_context};
 use crate::state::execution_graph::ExecutionGraph;
@@ -115,14 +116,29 @@ async fn a_fetch_failure_on_the_output_of_a_finished_stage_fails_the_job() -> Re
     let task = graph.pop_next_task(&b.id)?.unwrap();
     let status = mock_failed_task(task, fetch_partition_failure("a", 0, 0));
 
-    graph.update_task_status(&b, vec![status], 4, 4)?;
+    let events = graph.update_task_status(&b, vec![status], 4, 4)?;
 
-    match &graph.status().status {
-        Some(job_status::Status::Failed(failed)) => {
-            assert!(failed.error.contains(CANNOT_RERUN), "{}", failed.error)
-        }
-        other => panic!("expected the job to fail, got {other:?}"),
-    }
+    // The event aborts the job and cancels its tasks. The failed stage is the
+    // reading stage 1, not the finished stage 0 whose output was lost.
+    let fail_message = events
+        .iter()
+        .find_map(|event| match event {
+            QueryStageSchedulerEvent::JobRunningFailed { fail_message, .. } => {
+                Some(fail_message)
+            }
+            _ => None,
+        })
+        .expect("a JobRunningFailed event");
+    assert!(fail_message.contains("stage 1 failed"), "{fail_message}");
+    assert!(
+        fail_message.contains("finished stage 0 was lost"),
+        "{fail_message}"
+    );
+    assert!(fail_message.contains(CANNOT_RERUN), "{fail_message}");
+    assert!(matches!(
+        graph.status().status,
+        Some(job_status::Status::Failed(_))
+    ));
     Ok(())
 }
 

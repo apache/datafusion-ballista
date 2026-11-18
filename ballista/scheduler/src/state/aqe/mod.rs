@@ -55,7 +55,6 @@ use datafusion::prelude::SessionConfig;
 use datafusion::scalar::ScalarValue;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
-use std::mem;
 use std::sync::Arc;
 use std::vec;
 
@@ -298,19 +297,11 @@ impl AdaptiveExecutionGraph {
     /// Processing stage status update after task status changing
     fn processing_stages_update(
         &mut self,
-        mut updated_stages: UpdatedStages,
+        updated_stages: UpdatedStages,
     ) -> ballista_core::error::Result<Vec<QueryStageSchedulerEvent>> {
         let job_id = self.job_id().to_owned();
         let mut has_resolved = false;
         let mut job_err_msg = "".to_owned();
-
-        // A fetch failure asks to rerun the finished stage whose output was
-        // lost, which AQE cannot do yet; fail the job instead of hanging it.
-        for stage_id in mem::take(&mut updated_stages.resubmit_successful_stages) {
-            updated_stages
-                .failed_stages
-                .insert(stage_id, cannot_rerun_finished_stage(stage_id));
-        }
 
         for stage_id in updated_stages.resolved_stages {
             self.resolve_stage(stage_id)?;
@@ -959,9 +950,8 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
         let mut successful_stages = HashSet::new();
         let mut failed_stages = HashMap::new();
-        let mut rollback_running_stages = HashMap::new();
-        let mut resubmit_successful_stages: HashMap<usize, HashSet<usize>> =
-            HashMap::new();
+        let rollback_running_stages: HashMap<usize, HashSet<String>> = HashMap::new();
+        let resubmit_successful_stages: HashMap<usize, HashSet<usize>> = HashMap::new();
         let reset_running_stages: HashMap<usize, HashSet<usize>> = HashMap::new();
 
         //
@@ -1050,32 +1040,16 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                             error!("{error_msg}");
                                             failed_stages.insert(stage_id, error_msg);
                                         } else {
-                                            // There are different removal strategies here.
-                                            // We can choose just remove the map_partition_id in the FetchPartitionError, when resubmit the input stage, there are less tasks
-                                            // need to rerun, but this might miss many more bad input partitions, lead to more stage level retries in following.
-                                            // Here we choose remove all the bad input partitions which match the same executor id in this single input stage.
-                                            // There are other more aggressive approaches, like considering the executor is lost and check all the running stages in this graph.
-                                            // Or count the fetch failure number on executor and mark the executor lost globally.
-                                            let removed_map_partitions = running_stage
-                                                .remove_input_partitions(
-                                                    map_stage_id,
-                                                    map_partition_id,
-                                                    &executor_id,
-                                                )?;
-
-                                            let failure_reasons = rollback_running_stages
-                                                .entry(stage_id)
-                                                .or_insert_with(HashSet::new);
-                                            failure_reasons.insert(executor_id);
-
-                                            let missing_inputs =
-                                                resubmit_successful_stages
-                                                    .entry(map_stage_id)
-                                                    .or_default();
-                                            missing_inputs.extend(removed_map_partitions);
-                                            warn!(
-                                                "Need to resubmit the current running Stage {stage_id} and its map Stage {map_stage_id} due to FetchPartitionError from task {task_identity}"
-                                            )
+                                            // Recovering would rerun the finished map
+                                            // stage, which AQE cannot do yet: fail this
+                                            // reading stage, and with it the job,
+                                            // instead of hanging it.
+                                            let error_msg =
+                                                cannot_rerun_finished_stage(map_stage_id);
+                                            error!(
+                                                "Stage {stage_id} failed to fetch partition {map_partition_id} of stage {map_stage_id} from executor {executor_id}: {error_msg}"
+                                            );
+                                            failed_stages.insert(stage_id, error_msg);
                                         }
                                     } else {
                                         let mut error_msg = format!(
