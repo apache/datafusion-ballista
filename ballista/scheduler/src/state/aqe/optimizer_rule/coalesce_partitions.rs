@@ -292,6 +292,7 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
             .iter()
             .any(|arc| as_exchange(arc).properties().partitioning.partition_count() != m)
         {
+            debug!("[coalesce-rule] leaves differ in partition count; bail entire group");
             return Ok(plan);
         }
 
