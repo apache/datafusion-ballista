@@ -61,7 +61,12 @@ mod null_aware {
         fs::write(t2.join("p3.csv"), "b,tag\n4,x\n").unwrap();
     }
 
-    const QUERY: &str = "select a from t1 where a not in (select b from t2) order by a";
+    const QUERIES: &[&str] = &[
+        "select a from t1 where a not in (select b from t2) order by a",
+        // An aggregate above the join, so `EnsureRequirements` reruns over its stage.
+        "select a % 3, count(*) from t1 where a not in (select b from t2) \
+         group by a % 3 order by 1",
+    ];
 
     async fn run_case(case: &str, t2_has_null: bool) {
         let tmp = TempDir::new().unwrap();
@@ -70,7 +75,6 @@ mod null_aware {
 
         let df_ctx = datafusion_context();
         register_csv_tables(&df_ctx, dir, &["t1", "t2"]).await;
-        let expected = collect_text(&df_ctx, QUERY).await;
 
         let mut mismatches = vec![];
         // "default" exercises the NOT IN logical rewrite under Ballista's
@@ -79,8 +83,16 @@ mod null_aware {
         // all. "prefer_hash_join" and "aqe" exercise the rewrite under the
         // hash-join planning paths. "rewrite_disabled" turns the rewrite off
         // with hash joins preferred, covering the fallback path where the
-        // null-aware join survives and is lowered to a single task.
-        for variant in ["default", "prefer_hash_join", "aqe", "rewrite_disabled"] {
+        // null-aware join survives and is lowered to a single task;
+        // "rewrite_disabled_static" does the same under the static planner.
+        // Both run one partition per task, as on a cluster.
+        for variant in [
+            "default",
+            "prefer_hash_join",
+            "aqe",
+            "rewrite_disabled",
+            "rewrite_disabled_static",
+        ] {
             let ctx = SessionContext::standalone().await.unwrap();
             if variant == "aqe" {
                 set_option(&ctx, "ballista.planner.adaptive.enabled", "true").await;
@@ -88,14 +100,21 @@ mod null_aware {
             if variant != "default" {
                 set_option(&ctx, "datafusion.optimizer.prefer_hash_join", "true").await;
             }
-            if variant == "rewrite_disabled" {
+            if variant.starts_with("rewrite_disabled") {
                 set_option(&ctx, "ballista.optimizer.not_in_subquery_rewrite", "false")
                     .await;
+                set_option(&ctx, "ballista.scheduler.max_partitions_per_task", "1").await;
+            }
+            if variant == "rewrite_disabled_static" {
+                set_option(&ctx, "ballista.planner.adaptive.enabled", "false").await;
             }
             register_csv_tables(&ctx, dir, &["t1", "t2"]).await;
 
-            let label = format!("{case}/{variant}");
-            check_matches(&ctx, &label, QUERY, &expected, &mut mismatches).await;
+            for (i, sql) in QUERIES.iter().enumerate() {
+                let expected = collect_text(&df_ctx, sql).await;
+                let label = format!("{case}/{variant}/{i}");
+                check_matches(&ctx, &label, sql, &expected, &mut mismatches).await;
+            }
         }
 
         assert!(mismatches.is_empty(), "{}", mismatches.join("\n\n"));
