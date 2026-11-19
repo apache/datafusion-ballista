@@ -19,12 +19,14 @@
 //! untouched so scan recognition, join selection and stage boundaries do not
 //! depend on whether runtime filtering is enabled.
 
-use super::execution_plan::{DynamicJoinSelectionExec, ExchangeExec};
+use super::execution_plan::{
+    AdaptiveDatafusionExec, DynamicJoinSelectionExec, ExchangeExec,
+};
 use super::optimizer_rule::SelectJoinRule;
 use ballista_core::execution_plans::runtime_filter::supports_key;
 use ballista_core::execution_plans::{RuntimeFilterApplyExec, RuntimeFilterBuildExec};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{JoinType, Result};
+use datafusion::common::{JoinType, Result, internal_err};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_expr::{PhysicalExpr, expressions::Column};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -182,14 +184,21 @@ impl RuntimeFilterPlanner {
         &mut self,
         boundary: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let stage = if let Some(exchange) = boundary.downcast_ref::<ExchangeExec>() {
-            exchange.stage_id().unwrap()
+        let stage_id = if let Some(exchange) = boundary.downcast_ref::<ExchangeExec>() {
+            exchange.stage_id()
+        } else if let Some(adaptive) = boundary.downcast_ref::<AdaptiveDatafusionExec>() {
+            adaptive.stage_id()
         } else {
-            boundary
-                .downcast_ref::<super::execution_plan::AdaptiveDatafusionExec>()
-                .unwrap()
-                .stage_id()
-                .unwrap()
+            return internal_err!(
+                "Unexpected runtime filter stage boundary: {}",
+                boundary.name()
+            );
+        };
+        let Some(stage) = stage_id else {
+            return internal_err!(
+                "Missing stage ID for runtime filter boundary {}",
+                boundary.name()
+            );
         };
         self.planned.insert(stage);
         let mut input = boundary.children()[0]
@@ -404,67 +413,6 @@ mod tests {
                 .to_string()
                 .contains("RuntimeFilterBuildExec"),
             "the exchange has unknown output statistics, but its input is already known to exceed the probe"
-        );
-    }
-
-    #[tokio::test]
-    async fn runtime_filter_reuses_completed_build_for_partitioned_fallback() {
-        use crate::state::aqe::planner::AdaptivePlanner;
-        use crate::state::aqe::test::{ballista_ctx, mock_partitions_with_size};
-        use datafusion::datasource::MemTable;
-
-        let ctx = ballista_ctx();
-        for setting in [
-            "ballista.planner.runtime_filter.enabled = true",
-            "ballista.optimizer.broadcast_join_threshold_bytes = 500",
-        ] {
-            ctx.sql(&format!("SET {setting}"))
-                .await
-                .unwrap()
-                .collect()
-                .await
-                .unwrap();
-        }
-        for (name, rows) in [("build", 64), ("probe", 4096)] {
-            let batch = RecordBatch::try_from_iter([
-                (
-                    "id",
-                    Arc::new(Int64Array::from_iter_values(0..rows)) as ArrayRef,
-                ),
-                (
-                    "val",
-                    Arc::new(Int64Array::from_iter_values((0..rows).map(|n| n % 2)))
-                        as ArrayRef,
-                ),
-            ])
-            .unwrap();
-            let table = MemTable::try_new(batch.schema(), vec![vec![batch]; 4]).unwrap();
-            ctx.register_table(name, Arc::new(table)).unwrap();
-        }
-        let mut planner = AdaptivePlanner::from_logical_sql(
-            &ctx,
-            "SELECT p.id FROM build b JOIN probe p ON b.id = p.id WHERE b.val > 0 AND p.val > 0",
-            None,
-        )
-        .await
-        .unwrap();
-        let first = planner.actionable_stages().unwrap().0.unwrap();
-        assert_eq!(first.len(), 1);
-        let build = displayable(first[0].plan.as_ref())
-            .indent(false)
-            .to_string();
-        assert!(
-            build.contains("RuntimeFilterBuildExec: id=0, key=id@0"),
-            "{build}"
-        );
-        planner
-            .finalise_stage_internal(0, mock_partitions_with_size(128, 1024))
-            .unwrap();
-        let next = planner.actionable_stages().unwrap().0.unwrap();
-        let probe = displayable(next[0].plan.as_ref()).indent(false).to_string();
-        assert!(
-            probe.contains("RuntimeFilterApplyExec: id=0, key=id@0"),
-            "{probe}"
         );
     }
 

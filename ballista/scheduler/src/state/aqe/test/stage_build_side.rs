@@ -36,7 +36,10 @@ use crate::state::aqe::test::{
     narrow_schema, register_stats_table,
 };
 use ballista_core::assert_plan;
+use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch};
+use datafusion::datasource::MemTable;
 use datafusion::execution::context::SessionContext;
+use std::sync::Arc;
 
 /// A build side whose size is only a guess, sitting over the shipped 128 MB
 /// broadcast budget but well inside the 32x window past which no measurement
@@ -165,43 +168,82 @@ async fn reuses_the_staged_exchange_when_the_build_side_measures_too_large() {
     ");
 }
 
-/// Enabling filters must not interfere with AQE's measured join decisions.
-#[tokio::test]
-async fn runtime_filters_preserve_adaptive_planning() {
-    use datafusion::physical_plan::displayable;
-
-    let mut plans = Vec::new();
-    for enabled in [false, true] {
-        let ctx = q8_shaped_ctx();
-        ctx.sql("SET datafusion.optimizer.prefer_hash_join = true")
+async fn runtime_filter_planner() -> AdaptivePlanner {
+    let ctx = ballista_ctx();
+    // Lower the broadcast budget so a small MemTable can trigger a staged build.
+    for setting in [
+        "ballista.planner.runtime_filter.enabled = true",
+        "ballista.optimizer.broadcast_join_threshold_bytes = 500",
+    ] {
+        ctx.sql(&format!("SET {setting}"))
             .await
             .unwrap()
             .collect()
             .await
             .unwrap();
-        ctx.sql(&format!(
-            "SET ballista.planner.runtime_filter.enabled = {enabled}"
-        ))
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-        let mut planner = planner_for(&ctx, Q8_SHAPED_JOIN).await;
-        let initial = displayable(planner.current_plan())
-            .indent(false)
-            .to_string();
-        let stages = planner.actionable_stages().unwrap().0.unwrap();
-        assert_eq!(stages.len(), 1);
-        planner
-            .finalise_stage_internal(0, mock_partitions_with_statistics())
-            .unwrap();
-        plans.push((
-            initial,
-            displayable(planner.current_plan())
-                .indent(false)
-                .to_string(),
-        ));
     }
-    assert_eq!(plans[0], plans[1]);
+    for (name, rows) in [("build", 64), ("probe", 4096)] {
+        let batch = RecordBatch::try_from_iter([
+            (
+                "id",
+                Arc::new(Int64Array::from_iter_values(0..rows)) as ArrayRef,
+            ),
+            (
+                "val",
+                Arc::new(Int64Array::from_iter_values((0..rows).map(|n| n % 2)))
+                    as ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]; 4]).unwrap();
+        ctx.register_table(name, Arc::new(table)).unwrap();
+    }
+    planner_for(
+        &ctx,
+        "SELECT p.id FROM build b JOIN probe p ON b.id = p.id WHERE b.val > 0 AND p.val > 0",
+    )
+    .await
+}
+
+#[tokio::test]
+async fn runtime_filter_applies_after_staged_build_broadcasts() {
+    let mut planner = runtime_filter_planner().await;
+    let first = planner.actionable_stages().unwrap().0.unwrap();
+    assert_eq!(first.len(), 1);
+    assert_plan!(first[0].plan.as_ref(), @ "
+    SortShuffleWriterExec: partitioning=Hash([id@0], 4)
+      RuntimeFilterBuildExec: id=0, key=id@0
+        FilterExec: val@1 > 0, projection=[id@0]
+          DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+    ");
+    planner
+        .finalise_stage_internal(0, mock_partitions_with_size(32, 256))
+        .unwrap();
+    let stages = planner.actionable_stages().unwrap().0.unwrap();
+    assert_eq!(stages.len(), 1);
+    assert_plan!(stages[0].plan.as_ref(), @ "
+    ShuffleWriterExec: partitioning: UnknownPartitioning(4)
+      HashJoinExec: mode=CollectLeft, join_type=Inner, on=[(id@0, id@0)], projection=[id@1]
+        ShuffleReaderExec: upstream_stage: 0, broadcast: true, upstream_partition_count: 4
+        FilterExec: val@1 > 0, projection=[id@0]
+          RuntimeFilterApplyExec: id=0, key=id@0, ready=false
+            DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+    ");
+}
+
+#[tokio::test]
+async fn runtime_filter_reuses_completed_build_for_partitioned_fallback() {
+    let mut planner = runtime_filter_planner().await;
+    assert_eq!(planner.actionable_stages().unwrap().0.unwrap().len(), 1);
+    planner
+        .finalise_stage_internal(0, mock_partitions_with_size(128, 1024))
+        .unwrap();
+    let stages = planner.actionable_stages().unwrap().0.unwrap();
+    assert_eq!(stages.len(), 1);
+    assert_plan!(stages[0].plan.as_ref(), @ "
+    SortShuffleWriterExec: partitioning=Hash([id@0], 4)
+      FilterExec: val@1 > 0, projection=[id@0]
+        RuntimeFilterApplyExec: id=0, key=id@0, ready=false
+          DataSourceExec: partitions=4, partition_sizes=[1, 1, 1, 1]
+    ");
 }

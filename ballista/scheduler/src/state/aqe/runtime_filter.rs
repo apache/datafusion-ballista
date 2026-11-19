@@ -33,6 +33,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Default)]
 pub(super) struct RuntimeFilterRegistry {
     producers: HashMap<u64, usize>,
+    // Retried consumer stages keep the filter (or bypass) chosen the first time.
     prepared: HashSet<usize>,
 }
 

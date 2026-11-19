@@ -166,17 +166,18 @@ join inputs.
 
 ## Distributed Runtime Filters
 
-Enable runtime filters for AQE inner/semi hash joins:
+With AQE enabled (the default), turn on runtime filters for inner and semi hash
+joins:
 
 ```sql
-SET ballista.planner.adaptive.enabled = true;
-SET datafusion.optimizer.prefer_hash_join = true;
-SET datafusion.optimizer.enable_dynamic_filter_pushdown = false;
 SET ballista.planner.runtime_filter.enabled = true;
 ```
 
 Filters use the first join key when it is a supported column, including NULL-safe
 equality. Probe stages never wait: complete reports are used, otherwise bypassed.
+Broadcast joins (such as TPC-H Q19) and partitioned fallback joins can use
+filters from a completed build. Each successful build task retains about 8–9 KB
+per filter in scheduler `TaskInfo` for the life of the job.
 Filters do not cross LIMIT or aggregates. `EXPLAIN ANALYZE` shows `rows_pruned`.
 
 ## Shuffle Settings
