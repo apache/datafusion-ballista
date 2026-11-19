@@ -24,9 +24,11 @@ mod null_aware {
     use std::path::Path;
 
     use crate::common::{
-        check_matches, collect_text, datafusion_context, register_csv_tables, set_option,
+        ballista_state, check_matches, collect_text, datafusion_context,
+        register_csv_tables, set_option,
     };
     use ballista::prelude::SessionContextExt;
+    use ballista_core::config::BALLISTA_EXECUTION_MODE;
     use datafusion::prelude::*;
     use tempfile::TempDir;
 
@@ -94,17 +96,29 @@ mod null_aware {
         // hash-join planning paths. "rewrite_disabled" turns the rewrite off
         // with hash joins preferred, covering the fallback path where the
         // null-aware join survives and is lowered to a single task, under the
-        // default adaptive planner; "rewrite_disabled_static" does the same
-        // under the static planner. Both run one partition per task, as on a
-        // cluster.
+        // default adaptive planner; "rewrite_disabled_static" and
+        // "rewrite_disabled_pipelined" do the same under the static planner,
+        // which pipelined mode always uses. All three run one partition per
+        // task, as on a cluster.
         for variant in [
             "default",
             "prefer_hash_join",
             "aqe",
             "rewrite_disabled",
             "rewrite_disabled_static",
+            "rewrite_disabled_pipelined",
         ] {
-            let ctx = SessionContext::standalone().await.unwrap();
+            // A standalone cluster started pipelined runs push-staged. Its
+            // placement doesn't pick up a later `SET` of the task cap.
+            let ctx = if variant == "rewrite_disabled_pipelined" {
+                let state = ballista_state(&[
+                    (BALLISTA_EXECUTION_MODE, "pipelined"),
+                    ("ballista.scheduler.max_partitions_per_task", "1"),
+                ]);
+                SessionContext::standalone_with_state(state).await.unwrap()
+            } else {
+                SessionContext::standalone().await.unwrap()
+            };
             if variant == "aqe" {
                 set_option(&ctx, "ballista.planner.adaptive.enabled", "true").await;
             }
