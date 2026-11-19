@@ -834,7 +834,9 @@ subplans, are never shared. Enabled by default; set
 <p>The implementation covers the happy path only. The following are known to be
 missing or incomplete:</p>
 <ul class="simple">
-<li><p>Executor failure handling on the AQE path (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1986">#1986</a>)</p></li>
+<li><p>Executor failure handling on the AQE path (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1986">#1986</a>):
+a job that loses the output of a stage that has already finished fails
+instead of rerunning the stage</p></li>
 <li><p>Switching from hash join to sort-merge join based on runtime statistics (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1988">#1988</a>)</p></li>
 <li><p>Switching from streaming aggregation to hash aggregation based on runtime statistics (<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/1989">#1989</a>)</p></li>
 </ul>
