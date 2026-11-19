@@ -61,11 +61,17 @@ mod null_aware {
         fs::write(t2.join("p3.csv"), "b,tag\n4,x\n").unwrap();
     }
 
-    const QUERIES: &[&str] = &[
-        "select a from t1 where a not in (select b from t2) order by a",
+    const QUERIES: &[(&str, &str)] = &[
+        (
+            "order_by",
+            "select a from t1 where a not in (select b from t2) order by a",
+        ),
         // An aggregate above the join, so `EnsureRequirements` reruns over its stage.
-        "select a % 3, count(*) from t1 where a not in (select b from t2) \
-         group by a % 3 order by 1",
+        (
+            "group_by",
+            "select a % 3, count(*) from t1 where a not in (select b from t2) \
+             group by a % 3 order by 1",
+        ),
     ];
 
     async fn run_case(case: &str, t2_has_null: bool) {
@@ -75,6 +81,10 @@ mod null_aware {
 
         let df_ctx = datafusion_context();
         register_csv_tables(&df_ctx, dir, &["t1", "t2"]).await;
+        let mut expected = vec![];
+        for (_, sql) in QUERIES {
+            expected.push(collect_text(&df_ctx, sql).await);
+        }
 
         let mut mismatches = vec![];
         // "default" exercises the NOT IN logical rewrite under Ballista's
@@ -83,9 +93,10 @@ mod null_aware {
         // all. "prefer_hash_join" and "aqe" exercise the rewrite under the
         // hash-join planning paths. "rewrite_disabled" turns the rewrite off
         // with hash joins preferred, covering the fallback path where the
-        // null-aware join survives and is lowered to a single task;
-        // "rewrite_disabled_static" does the same under the static planner.
-        // Both run one partition per task, as on a cluster.
+        // null-aware join survives and is lowered to a single task, under the
+        // default adaptive planner; "rewrite_disabled_static" does the same
+        // under the static planner. Both run one partition per task, as on a
+        // cluster.
         for variant in [
             "default",
             "prefer_hash_join",
@@ -110,10 +121,9 @@ mod null_aware {
             }
             register_csv_tables(&ctx, dir, &["t1", "t2"]).await;
 
-            for (i, sql) in QUERIES.iter().enumerate() {
-                let expected = collect_text(&df_ctx, sql).await;
-                let label = format!("{case}/{variant}/{i}");
-                check_matches(&ctx, &label, sql, &expected, &mut mismatches).await;
+            for ((name, sql), expected) in QUERIES.iter().zip(&expected) {
+                let label = format!("{case}/{variant}/{name}");
+                check_matches(&ctx, &label, sql, expected, &mut mismatches).await;
             }
         }
 
