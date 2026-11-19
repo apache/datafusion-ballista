@@ -1492,7 +1492,8 @@ impl ExecutionGraph for StaticExecutionGraph {
         }
     }
 
-    /// Convert unresolved stage to be resolved
+    /// The stages reading a lost external input are rolled back, and wait
+    /// unresolved until `resolve_external_input` provides it again.
     fn recovers_external_inputs(&self) -> bool {
         true
     }
@@ -1538,6 +1539,7 @@ impl ExecutionGraph for StaticExecutionGraph {
         })
     }
 
+    /// Convert unresolved stage to be resolved
     fn resolve_stage(&mut self, stage_id: usize) -> Result<bool> {
         if let Some(ExecutionStage::UnResolved(stage)) = self.stages.get(&stage_id) {
             let resolved_stage = stage.to_resolved(self.session_config.options())?;

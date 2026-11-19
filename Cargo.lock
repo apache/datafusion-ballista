@@ -240,7 +240,7 @@ dependencies = [
  "flate2",
  "indexmap 2.14.0",
  "liblzma",
- "rand 0.10.3",
+ "rand 0.10.4",
  "serde",
  "serde_json",
  "snap",
@@ -1056,7 +1056,7 @@ dependencies = [
  "futures",
  "mimalloc",
  "ordered-float 5.5.1",
- "rand 0.10.3",
+ "rand 0.10.4",
  "serde",
  "serde_json",
  "structopt",
@@ -1078,7 +1078,7 @@ dependencies = [
  "env_logger",
  "futures",
  "log",
- "nix 0.31.3",
+ "nix 0.32.0",
  "reqwest",
  "rstest",
  "serde_json",
@@ -1143,7 +1143,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "pastey",
  "prost",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rustc_version",
  "serde",
  "tempfile",
@@ -1297,7 +1297,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "prometheus",
  "prost",
- "rand 0.10.3",
+ "rand 0.10.4",
  "regex",
  "rstest",
  "serde",
@@ -1519,7 +1519,7 @@ dependencies = [
  "log",
  "num",
  "pin-project-lite",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rustls",
  "rustls-native-certs",
  "rustls-pki-types",
@@ -3654,9 +3654,9 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "gloo-timers"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "482ce8a491a501da4cd806bd190275363d674f2845005c6ddbd5d3e1dd54495d"
+checksum = "a4460540da666acdb5722b2a62ac47d18f627fcfc0c728d04dc7226b3f6d40a7"
 dependencies = [
  "futures-channel",
  "futures-core",
@@ -3678,9 +3678,9 @@ dependencies = [
 
 [[package]]
 name = "graphviz-rust"
-version = "0.9.9"
+version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d50c23bbf5cea2a6d93e3602d3cd6688dc97dbb882a3d18a5f74ba0970d43ad"
+checksum = "157ff5a1bcd9d9b877e9088b7192fc3da99826e2d004fbd51b3b66b000100a39"
 dependencies = [
  "dot-generator",
  "dot-structures",
@@ -4767,9 +4767,21 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.31.3"
+version = "0.31.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+checksum = "2bc81ce8148d3b4f3274da811f11cdd824ae661ee4ef732cdb229825cf5be7f7"
+dependencies = [
+ "bitflags 2.13.1",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
+name = "nix"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77730ed34f01f4990cb2ea67fec715ecebc6fab9a6396cf83c5529b13f581bdc"
 dependencies = [
  "bitflags 2.13.1",
  "cfg-if",
@@ -4970,11 +4982,11 @@ dependencies = [
  "hyper",
  "itertools 0.15.0",
  "md-5",
- "nix 0.31.3",
+ "nix 0.31.4",
  "parking_lot 0.12.5",
  "percent-encoding",
  "quick-xml",
- "rand 0.10.3",
+ "rand 0.10.4",
  "reqwest",
  "rustls-pki-types",
  "serde",
@@ -5713,7 +5725,7 @@ dependencies = [
  "bytes",
  "getrandom 0.4.3",
  "lru-slab",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_pcg",
  "ring",
  "rustc-hash",
@@ -5798,9 +5810,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.3"
+version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+checksum = "8f6fa277c67e6ea590466f04c3fe82cb509f0864fe470643e5570de9514a9b11"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -6345,7 +6357,7 @@ dependencies = [
  "libc",
  "log",
  "memchr",
- "nix 0.31.3",
+ "nix 0.31.4",
  "radix_trie",
  "unicode-segmentation",
  "unicode-width 0.2.2",
@@ -7044,7 +7056,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -7664,7 +7676,7 @@ version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8464ec13c3691491391d9fce00f6416c9a48e46972f72d7865688be2080192c9"
 dependencies = [
- "rand 0.10.3",
+ "rand 0.9.5",
 ]
 
 [[package]]
