@@ -430,7 +430,9 @@ currently implemented:
 The implementation covers the happy path only. The following are known to be
 missing or incomplete:
 
-- Executor failure handling on the AQE path ([#1986](https://github.com/apache/datafusion-ballista/issues/1986))
+- Executor failure handling on the AQE path ([#1986](https://github.com/apache/datafusion-ballista/issues/1986)):
+  a job that loses the output of a stage that has already finished fails
+  instead of rerunning the stage
 - Switching from hash join to sort-merge join based on runtime statistics ([#1988](https://github.com/apache/datafusion-ballista/issues/1988))
 - Switching from streaming aggregation to hash aggregation based on runtime statistics ([#1989](https://github.com/apache/datafusion-ballista/issues/1989))
 

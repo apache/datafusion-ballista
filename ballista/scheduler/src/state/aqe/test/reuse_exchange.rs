@@ -25,7 +25,6 @@ use crate::state::aqe::test::{
     mock_batch, mock_context, mock_partitions_with_statistics,
 };
 use crate::state::execution_graph::ExecutionGraph;
-use crate::state::execution_stage::ExecutionStage;
 use crate::test_utils::{
     mock_executor, revive_graph_and_complete_next_stage,
     revive_graph_and_complete_next_stage_with_executor,
@@ -141,11 +140,10 @@ async fn a_job_reading_an_aggregate_twice_runs_one_stage_fewer(
 }
 
 // AQE does not yet rerun a finished stage whose output was lost (#1986,
-// #2539), with or without reuse. What reuse adds is a stage with more than
-// one reader, and losing its output must roll back the one stage and every
-// stage reading it.
+// #2539), with or without reuse, and fails the job instead. What reuse adds
+// is a stage with more than one reader; losing its output fails the same way.
 #[tokio::test]
-async fn losing_a_shared_stage_output_rolls_back_the_stage_once() {
+async fn losing_a_shared_stage_output_fails_the_rollback() {
     let mut graph = graph(&context(true), UNION).await;
     revive_graph_and_complete_next_stage_with_executor(
         &mut graph,
@@ -154,12 +152,14 @@ async fn losing_a_shared_stage_output_rolls_back_the_stage_once() {
     .unwrap();
     graph.revive();
 
-    let (reset, _) = graph.reset_stages_on_lost_executor("a").unwrap();
+    let err = graph.reset_stages_on_lost_executor("a").unwrap_err();
 
-    assert_eq!(graph.stages.len(), 2);
-    assert!(reset.contains(&0) && reset.contains(&1));
-    assert!(matches!(graph.stages[&0], ExecutionStage::Running(_)));
-    assert!(matches!(graph.stages[&1], ExecutionStage::UnResolved(_)));
+    assert!(
+        err.to_string().contains(
+            "finished stage 0 was lost, and adaptive query execution cannot rerun"
+        ),
+        "{err}"
+    );
 }
 
 fn exchange(plan_id: usize) -> ExchangeExec {
