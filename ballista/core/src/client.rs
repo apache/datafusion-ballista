@@ -24,6 +24,7 @@ use crate::serde::scheduler::{
     Action, ByteRange, PartitionId, PipelinedPartitionLocation, ShuffleFileKind,
     ShuffleLayout,
 };
+use crate::shuffle_ipc::ShuffleBytesTranslator;
 use crate::utils::{create_grpc_client_endpoint, with_retry};
 use arrow_flight;
 use arrow_flight::Ticket;
@@ -43,7 +44,7 @@ use datafusion::error::Result;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
 use log::debug;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::error::Error as _;
 use std::sync::Arc;
 use std::{
@@ -591,6 +592,11 @@ fn new_decoder() -> StreamDecoder {
 pub struct BlockDataStream<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> {
     decoder: StreamDecoder,
     state_buffer: Buffer,
+    /// Turns blocks whose batches store offsets as lengths back into
+    /// standard IPC bytes before they reach `decoder`.
+    translator: ShuffleBytesTranslator,
+    /// Translated blocks waiting for `state_buffer` to drain.
+    translated: VecDeque<prost::bytes::Bytes>,
     ipc_stream: S,
     transmitted: usize,
     /// The schema of the data being streamed.
@@ -608,6 +614,9 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
         mut ipc_stream: S,
     ) -> std::result::Result<Self, DataFusionError> {
         let mut state_buffer = Buffer::default();
+        let mut translator = ShuffleBytesTranslator::new();
+        let mut translated = Vec::new();
+        let mut transmitted = 0;
 
         loop {
             if state_buffer.len() > MAXIMUM_SCHEMA_BUFFER_SIZE {
@@ -620,14 +629,20 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
 
             match ipc_stream.next().await {
                 Some(Ok(blob)) => {
-                    state_buffer = Self::append_block(state_buffer, blob);
+                    transmitted += blob.len();
+                    translator.push(blob, &mut translated)?;
+                    for block in translated.drain(..) {
+                        state_buffer = Self::append_block(state_buffer, block);
+                    }
 
                     match try_schema_from_ipc_buffer(state_buffer.as_slice()) {
                         Ok(schema) => {
                             return Ok(Self {
                                 decoder: new_decoder(),
-                                transmitted: state_buffer.len(),
+                                transmitted,
                                 state_buffer,
+                                translator,
+                                translated: VecDeque::new(),
                                 ipc_stream,
                                 schema: Arc::new(schema),
                             });
@@ -676,13 +691,31 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
         self.decoder.decode(&mut self.state_buffer)
     }
 
-    fn extend_bytes(&mut self, blob: prost::bytes::Bytes) {
+    fn extend_bytes(
+        &mut self,
+        blob: prost::bytes::Bytes,
+    ) -> std::result::Result<(), ArrowError> {
         //
         //TODO: do we want to limit maximum buffer size here as well?
         //
         self.transmitted += blob.len();
-        let pending = std::mem::take(&mut self.state_buffer);
-        self.state_buffer = Self::append_block(pending, blob);
+        let mut translated = Vec::new();
+        self.translator.push(blob, &mut translated)?;
+        self.translated.extend(translated);
+        Ok(())
+    }
+
+    /// Moves the next translated block into `state_buffer`, returning `false`
+    /// when none is waiting.
+    fn next_translated(&mut self) -> bool {
+        match self.translated.pop_front() {
+            Some(block) => {
+                let pending = std::mem::take(&mut self.state_buffer);
+                self.state_buffer = Self::append_block(pending, block);
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -716,9 +749,15 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Stream
                 }
             }
 
+            if self.next_translated() {
+                continue;
+            }
+
             match self.ipc_stream.poll_next_unpin(cx) {
                 std::task::Poll::Ready(Some(Ok(blob))) => {
-                    self.extend_bytes(blob);
+                    if let Err(e) = self.extend_bytes(blob) {
+                        return std::task::Poll::Ready(Some(Err(e.into())));
+                    }
                     continue;
                 }
                 std::task::Poll::Ready(Some(Err(e))) => {
@@ -727,7 +766,18 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Stream
                     )
                     .into())));
                 }
-                std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
+                std::task::Poll::Ready(None) => {
+                    if !self.translator.is_idle() {
+                        // The translator holds back a rewritten batch until
+                        // its whole body has arrived, so the decoder cannot
+                        // see that the stream ended inside it.
+                        return std::task::Poll::Ready(Some(Err(ArrowError::IpcError(
+                            "Shuffle stream ends inside a message".to_owned(),
+                        )
+                        .into())));
+                    }
+                    return std::task::Poll::Ready(None);
+                }
                 std::task::Poll::Pending => return std::task::Poll::Pending,
             }
         }
@@ -879,6 +929,48 @@ mod tests {
                 .await;
 
         assert_eq!(batches, result.unwrap())
+    }
+
+    #[tokio::test]
+    async fn should_fail_when_stream_ends_inside_a_rewritten_batch() {
+        use crate::shuffle_ipc::{
+            ShuffleCompression, ShuffleEncoding, ShuffleStreamWriter,
+        };
+        use datafusion::arrow::array::StringArray;
+        use datafusion::arrow::ipc::CompressionType;
+
+        let batch = RecordBatch::try_from_iter([(
+            "s",
+            Arc::new(StringArray::from_iter_values(
+                (0..1000).map(|i| format!("value-{i}")),
+            )) as _,
+        )])
+        .unwrap();
+        let compression = ShuffleCompression {
+            codec: Some(CompressionType::ZSTD),
+            offsets_as_lengths: true,
+        };
+        let encoding = ShuffleEncoding::try_new(&batch.schema(), compression).unwrap();
+        assert!(encoding.uses_lengths());
+        let mut writer =
+            ShuffleStreamWriter::try_new(Vec::new(), &batch.schema(), &encoding).unwrap();
+        writer.write(&batch).unwrap();
+        let mut bytes = writer.into_inner().unwrap();
+        // Drop the end-of-stream marker and the last bytes of the batch body.
+        bytes.truncate(bytes.len() - 8 - 16);
+
+        let stream = futures::stream::iter(bytes)
+            .chunks(64)
+            .map(|b| Ok(Bytes::from(b)));
+        let result: datafusion::error::Result<Vec<RecordBatch>> =
+            BlockDataStream::try_new(stream)
+                .await
+                .unwrap()
+                .try_collect()
+                .await;
+
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("ends inside a message"), "{error}");
     }
 
     #[tokio::test]

@@ -32,10 +32,9 @@
 
 use crate::JobId;
 use crate::error::{BallistaError, Result};
-use crate::utils::create_write_options;
+use crate::shuffle_ipc::{ShuffleCompression, ShuffleEncoding, ShuffleStreamWriter};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::CompressionType;
-use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use datafusion::arrow::record_batch::RecordBatch;
 use log::debug;
 use std::collections::HashMap;
@@ -70,10 +69,10 @@ impl std::ops::AddAssign for EncodedStats {
 pub(super) fn write_ipc_stream<W: Write>(
     sink: W,
     schema: &SchemaRef,
-    options: &IpcWriteOptions,
+    encoding: &ShuffleEncoding,
     batches: &mut dyn Iterator<Item = datafusion::error::Result<RecordBatch>>,
 ) -> datafusion::error::Result<(W, EncodedStats)> {
-    let mut writer = StreamWriter::try_new_with_options(sink, schema, options.clone())?;
+    let mut writer = ShuffleStreamWriter::try_new(sink, schema, encoding)?;
     let mut stats = EncodedStats::default();
     for batch in batches {
         let batch = batch?;
@@ -98,8 +97,8 @@ pub struct SpillManager {
     spill_dir: PathBuf,
     /// Schema shared by all spill writers
     schema: SchemaRef,
-    /// IPC write options (including the compression codec) for spill files
-    write_options: IpcWriteOptions,
+    /// How spill streams are encoded and compressed
+    encoding: ShuffleEncoding,
     /// Total number of batches written across all spill files. One call to
     /// `spill_all_partitions` typically increments this multiple times (once
     /// per partition that had buffered rows).
@@ -121,6 +120,9 @@ impl SpillManager {
     /// * `input_partition` - Input partition number
     /// * `schema` - Schema shared by all spill writers
     /// * `compression` - Compression codec for spill files
+    ///
+    /// Spill files are plain arrow-ipc streams. Use
+    /// [`SpillManager::with_encoding`] to store offsets as lengths.
     pub fn new(
         work_dir: &str,
         job_id: &JobId,
@@ -129,6 +131,31 @@ impl SpillManager {
         input_partition: usize,
         schema: SchemaRef,
         compression: Option<CompressionType>,
+    ) -> Result<Self> {
+        let encoding =
+            ShuffleEncoding::try_new(&schema, ShuffleCompression::plain(compression))?;
+        Self::with_encoding(
+            work_dir,
+            job_id,
+            stage_id,
+            task_id,
+            input_partition,
+            schema,
+            encoding,
+        )
+    }
+
+    /// Creates a new spill manager whose spill files are encoded with
+    /// `encoding`, which must have been made for `schema`. The arguments are
+    /// otherwise those of [`SpillManager::new`].
+    pub fn with_encoding(
+        work_dir: &str,
+        job_id: &JobId,
+        stage_id: usize,
+        task_id: usize,
+        input_partition: usize,
+        schema: SchemaRef,
+        encoding: ShuffleEncoding,
     ) -> Result<Self> {
         // Spills live beside the task's data file, one directory per input
         // partition, so a task owns exactly one directory under the stage and
@@ -144,7 +171,7 @@ impl SpillManager {
         Ok(Self {
             spill_dir,
             schema,
-            write_options: create_write_options(compression)?,
+            encoding,
             total_spilled_batches: 0,
             total_bytes_spilled: 0,
             partition_counters: HashMap::new(),
@@ -173,7 +200,7 @@ impl SpillManager {
         let (sink, stats) = write_ipc_stream(
             BufWriter::new(file),
             &self.schema,
-            &self.write_options,
+            &self.encoding,
             batches,
         )?;
         sink.into_inner()
@@ -245,7 +272,7 @@ impl std::fmt::Debug for SpillManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SpillManager")
             .field("spill_dir", &self.spill_dir)
-            .field("write_options", &self.write_options)
+            .field("encoding", &self.encoding)
             .field("partition_counters", &self.partition_counters)
             .field("total_spilled_batches", &self.total_spilled_batches)
             .field("total_bytes_spilled", &self.total_bytes_spilled)
