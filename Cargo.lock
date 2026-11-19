@@ -1285,7 +1285,7 @@ dependencies = [
  "datafusion",
  "datafusion-proto",
  "datafusion-substrait",
- "ferroid",
+ "ferroid 3.1.0",
  "futures",
  "graphviz-rust",
  "http 1.5.0",
@@ -3390,10 +3390,21 @@ version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee93edf3c501f0035bbeffeccfed0b79e14c311f12195ec0e661e114a0f60da4"
 dependencies = [
- "futures",
  "portable-atomic",
  "rand 0.10.3",
- "tokio",
+ "web-time",
+]
+
+[[package]]
+name = "ferroid"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c63948fb5874d42ea7562d7051437eb22260fccbb502e27a3688cfdae3b9b54"
+dependencies = [
+ "crossbeam-utils",
+ "portable-atomic",
+ "serde",
+ "tracing",
  "web-time",
 ]
 
@@ -5419,9 +5430,9 @@ dependencies = [
 
 [[package]]
 name = "portable-atomic"
-version = "1.14.0"
+version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d20d5497ef88037a52ff98267d066e7f11fcc5e99bbfbd58a42336193aacec3"
+checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "portable-atomic-util"
@@ -5576,7 +5587,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck 0.5.0",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph",
@@ -5597,7 +5608,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad9c5423459fa2f729b8d9235fab810aa29628b171467744fc86d21460ad70d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.15.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -7140,7 +7151,7 @@ dependencies = [
  "docker_credential",
  "either",
  "etcetera",
- "ferroid",
+ "ferroid 2.0.0",
  "futures",
  "http 1.5.0",
  "itertools 0.14.0",
