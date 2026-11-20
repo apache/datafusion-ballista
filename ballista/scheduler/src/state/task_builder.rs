@@ -68,9 +68,11 @@ use std::sync::Arc;
 /// side) — those leaves keep the full upstream so the collapse sees every
 /// partition.
 ///
-/// Nodes Ballista does not list are restricted by `resolver`. A leaf that
-/// nothing can restrict is an error unless `partitions` is all of its
-/// partitions, in order.
+/// A leaf Ballista does not list becomes an empty leaf when the task runs none
+/// of it. Other nodes Ballista does not list are restricted by `resolver`, and
+/// a leaf that nothing can restrict is an error unless `partitions` is all of
+/// its partitions, in order. Each branch of a `UnionExec` must end up with one
+/// partition for each partition the task runs of it.
 pub fn restrict_plan_to_partitions(
     plan: Arc<dyn ExecutionPlan>,
     partitions: &[usize],
@@ -109,6 +111,59 @@ pub(crate) fn stages_read_whole(plan: &Arc<dyn ExecutionPlan>) -> Vec<usize> {
     found
 }
 
+/// The first `UnionExec` branch in the stage plan `plan` that a task given
+/// only some of the stage's partitions would run wrongly: a branch that fails
+/// [`branch_splits`]. The scheduler runs such a stage as one task instead,
+/// which runs every branch whole.
+///
+/// The adaptive planner can leave such a branch in the union's stage. The
+/// static planner gives it a stage of its own, so its stages never need this.
+pub(crate) fn unsplittable_union_branch(
+    plan: &Arc<dyn ExecutionPlan>,
+    resolver: Option<&dyn PartitionSliceableResolver>,
+) -> Option<Arc<dyn ExecutionPlan>> {
+    fn walk(
+        plan: &Arc<dyn ExecutionPlan>,
+        under_collect: bool,
+        resolver: Option<&dyn PartitionSliceableResolver>,
+    ) -> Option<Arc<dyn ExecutionPlan>> {
+        // Below a collapse every task reads the whole input anyway, so a
+        // union there is never split.
+        if !under_collect && plan.is::<UnionExec>() {
+            return plan
+                .children()
+                .into_iter()
+                .find(|branch| !branch_splits(branch, resolver))
+                .cloned();
+        }
+        plan.children()
+            .into_iter()
+            .zip(child_scopes(plan, under_collect))
+            .find_map(|(child, collect)| walk(child, collect, resolver))
+    }
+    walk(plan, false, resolver)
+}
+
+/// Whether restriction can give a task any share of the `UnionExec` branch
+/// `branch`: none of it, which the union's index arithmetic relies on, and
+/// part of it, tried as its first partition alone.
+///
+/// A branch fails when it keeps partitions restricted to none, as one that
+/// merges its input into one partition, reads a broadcast or sets its own
+/// partition count does. It also fails over a leaf nothing can restrict that
+/// has more than one partition, which the rewriter refuses for every slice
+/// but the whole, so `[0]` catches it as any partial slice would.
+pub(crate) fn branch_splits(
+    branch: &Arc<dyn ExecutionPlan>,
+    resolver: Option<&dyn PartitionSliceableResolver>,
+) -> bool {
+    let restricts_to_nothing = restrict(branch.clone(), &[], false, resolver)
+        .is_ok_and(|p| p.properties().output_partitioning().partition_count() == 0);
+    restricts_to_nothing
+        && (branch.properties().output_partitioning().partition_count() == 0
+            || restrict(branch.clone(), &[0], false, resolver).is_ok())
+}
+
 /// Recursive worker. `under_collect` is the scope inherited from ancestors:
 /// once set, every descendant leaf reads the full upstream. Scope is passed
 /// by value, so sibling subtrees never leak state to each other.
@@ -127,6 +182,12 @@ fn restrict(
         return Ok(rewritten);
     }
 
+    // Any other leaf the task runs none of, such as one in a `UnionExec`
+    // branch another task owns, is never executed.
+    if !under_collect && partitions.is_empty() && plan.children().is_empty() {
+        return no_partitions(&plan);
+    }
+
     // UnionExec: parent partition `p` maps to exactly one child's local
     // partition (`p` minus the sum of preceding children's counts). Split
     // `partitions` into disjoint per-child sub-slices and recurse; a child
@@ -141,7 +202,11 @@ fn restrict(
             .into_iter()
             .cloned()
             .zip(per_child)
-            .map(|(child, sub)| restrict(child, &sub, false, resolver))
+            .map(|(child, sub)| {
+                let restricted = restrict(child, &sub, false, resolver)?;
+                ensure_branch_restricted(&restricted, &sub)?;
+                Ok(restricted)
+            })
             .collect::<Result<Vec<_>>>()?;
         return replace_children_if_necessary(plan, new_children);
     }
@@ -212,10 +277,22 @@ fn checked_restriction(
     Ok(restricted)
 }
 
+/// A leaf with `plan`'s schema and no partitions, for a leaf the task runs
+/// none of.
+///
+/// Not an `EmptyExec`: DataFusion's proto codec decodes one with zero
+/// partitions as one partition, so it would reach the executor with a
+/// partition the task doesn't own, which the executor would run. A
+/// `MemorySourceConfig` keeps its empty partition list.
+fn no_partitions(plan: &Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+    let source = MemorySourceConfig::try_new(&[], plan.schema(), None)?;
+    Ok(DataSourceExec::from_data_source(source))
+}
+
 /// Accept a leaf that nothing could restrict only if the task runs all of it,
 /// in order. Left as it is, it numbers its partitions from zero, so any other
 /// slice would run the wrong ones. A one-partition leaf therefore passes in the
-/// task that owns it, and fails in a `UnionExec` branch that belongs to another.
+/// task that owns it.
 fn ensure_leaf_runs_whole(
     plan: &Arc<dyn ExecutionPlan>,
     partitions: &[usize],
@@ -233,6 +310,31 @@ fn ensure_leaf_runs_whole(
          would number its partitions from zero in every task. A node of your own \
          can be restricted by `SchedulerConfig::partition_sliceable_resolver`, for instance \
          by implementing `PartitionSliceable` and calling it from there."
+    )
+}
+
+/// Check that a restricted `UnionExec` branch has one partition for each of
+/// `partitions`. The executor runs every partition of the task's plan, so a
+/// branch that keeps partitions the task wasn't given would run them in this
+/// task too, returning rows another task returns as well.
+///
+/// Binding runs a stage with such a branch as one task (see
+/// [`unsplittable_union_branch`]), so this only fails if binding and restriction
+/// disagree: it refuses the task rather than let it return rows twice.
+fn ensure_branch_restricted(
+    branch: &Arc<dyn ExecutionPlan>,
+    partitions: &[usize],
+) -> Result<()> {
+    let count = branch.properties().output_partitioning().partition_count();
+    if count == partitions.len() {
+        return Ok(());
+    }
+    plan_err!(
+        "cannot restrict a `UnionExec` branch to partitions {partitions:?}: its \
+         `{}` keeps a partition count of {count}, so the task would also run \
+         partitions another task owns. The scheduler should have run this stage \
+         as one task.",
+        branch.name()
     )
 }
 
@@ -342,11 +444,11 @@ fn child_scopes(plan: &Arc<dyn ExecutionPlan>, under_collect: bool) -> Vec<bool>
 ///
 /// **When a new leaf type surfaces, add a branch below.** Currently
 /// covered: `ShuffleReaderExec`, `DataSourceExec` (files, in-memory),
-/// `PlaceholderRowExec`, `EmptyExec`. `ValuesExec` and other future
-/// self-generating leaves fall through as `None`; if one sits under a
-/// partition-splitting fan-in, the walker refuses the task rather than let the
-/// executor duplicate output (see the PlaceholderRow-under-UnionExec bug for
-/// the failure mode).
+/// `PlaceholderRowExec`, `EmptyExec`. Any other leaf falls through as
+/// `None`. The walker then replaces it with an empty leaf in a task that runs
+/// none of it, such as one that owns another `UnionExec` branch, keeps it in a
+/// task that runs all of it, in order, and otherwise refuses the task rather
+/// than let the executor run the wrong partitions.
 ///
 /// # Scope
 ///
@@ -466,33 +568,24 @@ fn select_output_partitions(
         return Ok(None);
     }
 
-    // Self-generating leaves: PlaceholderRow (1 all-null row per partition)
-    // and EmptyExec (0 rows per partition). Every partition of one of these
-    // is semantically identical, so `with_partitions(indices.len())` is the
-    // algebraically correct restriction.
-    //
-    // Caveat: DataFusion's proto codec for these two doesn't roundtrip the
-    // `partitions` field — encode preserves only schema; decode always
-    // reconstructs with `::new(schema)` (partitions = 1). So a plan we
-    // restrict to `with_partitions(0)` here would arrive at the executor as
-    // a 1-partition leaf, undoing the restriction and reproducing the
-    // duplicated-output bug this whole function is meant to prevent.
-    //
-    // Workaround for the empty-slice case: swap in a 0-partition
-    // `MemorySourceConfig` (which DOES roundtrip its partition list).
-    // For non-empty slices we return the leaf as it is — currently safe because
-    // the only shape emitted is `partitions == 1` and UnionExec routing gives
-    // sub-slices of `[0]` (identity, no restriction needed) or `[]` (handled by
-    // this branch). Returned rather than `None` so the walker's leaf check
-    // accepts it: an `EmptyExec` under the round-robin `RepartitionExec` that
-    // `make_empty_exec_serde_safe` adds sees that repartition's partition
-    // numbers, not its own.
+    // Self-generating leaves: PlaceholderRow (1 row per partition) and
+    // EmptyExec (0 rows per partition). Every partition is the same, so a
+    // slice is the leaf with one partition for each index it has. As for the
+    // sources above, an index past its own count is dropped: under a
+    // round-robin `RepartitionExec` the leaf sees the repartition's numbers,
+    // and only the task that owns partition 0 may run a one-partition leaf.
     if plan.is::<PlaceholderRowExec>() || plan.is::<EmptyExec>() {
-        if indices.is_empty() {
-            let stub = MemorySourceConfig::try_new(&[], plan.schema(), None)?;
-            return Ok(Some(DataSourceExec::from_data_source(stub)));
+        let count = plan.properties().output_partitioning().partition_count();
+        let kept = indices.iter().filter(|&&i| i < count).count();
+        if kept == 0 {
+            return no_partitions(plan).map(Some);
         }
-        return Ok(Some(plan.clone()));
+        let restricted: Arc<dyn ExecutionPlan> = if plan.is::<EmptyExec>() {
+            Arc::new(EmptyExec::new(plan.schema()).with_partitions(kept))
+        } else {
+            Arc::new(PlaceholderRowExec::new(plan.schema()).with_partitions(kept))
+        };
+        return Ok(Some(restricted));
     }
 
     Ok(None)
@@ -520,6 +613,7 @@ fn narrow_range(range: &RangePartitioning, kept: &[usize]) -> Option<RangePartit
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::sorted_into_one_partition;
     use ballista_core::JobId;
     use ballista_core::execution_plans::{
         CoalescePlan, PartitionGroup, RangeBound, ShuffleReaderExec,
@@ -1019,8 +1113,11 @@ mod tests {
     }
 
     #[test]
-    fn a_leaf_nobody_can_restrict_is_refused_unless_the_task_runs_all_of_it() {
+    fn a_leaf_nobody_can_restrict_is_refused_unless_the_task_runs_all_or_none_of_it() {
         let leaf = PayloadExec::leaf(&["p0", "p1"]);
+
+        let none = restrict_plan_to_partitions(leaf.clone(), &[], None).unwrap();
+        assert_no_partitions(&none, &leaf);
 
         let kept = restrict_plan_to_partitions(leaf.clone(), &[0, 1], None).unwrap();
         assert!(
@@ -1032,7 +1129,7 @@ mod tests {
         let single = PayloadExec::leaf(&["p0"]);
         assert!(restrict_plan_to_partitions(single, &[0], None).is_ok());
 
-        for partitions in [&[0][..], &[1], &[1, 0], &[]] {
+        for partitions in [&[0][..], &[1], &[1, 0]] {
             assert!(
                 restrict_plan_to_partitions(leaf.clone(), partitions, None).is_err(),
                 "{partitions:?} is not all of the leaf, in order"
@@ -1111,35 +1208,215 @@ mod tests {
         );
     }
 
-    /// A union branch that belongs to another task must restrict to nothing,
-    /// which needs the resolver for a node Ballista does not know.
+    /// A union branch that belongs to another task restricts to nothing, even
+    /// a node Ballista does not know. Restricting one to some of its
+    /// partitions needs the resolver.
     #[test]
     fn a_union_branch_owned_by_another_task_restricts_to_nothing() {
         let resolver = payload_resolver();
+        let unknown = PayloadExec::leaf(&["p0", "p1"]);
         let union = || -> Arc<dyn ExecutionPlan> {
-            UnionExec::try_new(vec![
-                scan_with_file_groups(2),
-                PayloadExec::leaf(&["p0", "p1"]),
-            ])
-            .unwrap()
+            UnionExec::try_new(vec![scan_with_file_groups(2), unknown.clone()]).unwrap()
         };
 
-        // Partition 2 is the second branch's partition 0.
+        // Partition 0 is the scan's, which leaves the unknown leaf none.
+        let restricted = restrict_plan_to_partitions(union(), &[0], None).unwrap();
+        let branches = restricted.children();
+        assert_eq!(group_files(branches[0]), ["file0.parquet"]);
+        assert_no_partitions(branches[1], &unknown);
+
+        // Partition 2 is the unknown leaf's partition 0, which only the
+        // resolver can cut down.
         let restricted =
             restrict_plan_to_partitions(union(), &[2], Some(resolver.as_ref())).unwrap();
         let branches = restricted.children();
-        assert_eq!(partition_count(branches[0]), 0);
+        assert_eq!(group_files(branches[0]), Vec::<String>::new());
         assert_eq!(payloads_of(branches[1]), ["p0"]);
 
-        // And partition 0 is the first branch's, which leaves the second none.
-        let restricted =
-            restrict_plan_to_partitions(union(), &[0], Some(resolver.as_ref())).unwrap();
-        let branches = restricted.children();
-        assert_eq!(group_files(branches[0]), ["file0.parquet"]);
-        assert_eq!(partition_count(branches[1]), 0);
+        let in_union = restrict_plan_to_partitions(union(), &[2], None).unwrap_err();
+        let alone = restrict_plan_to_partitions(unknown.clone(), &[0], None).unwrap_err();
+        assert_eq!(in_union.to_string(), alone.to_string());
+    }
 
-        assert!(restrict_plan_to_partitions(union(), &[0], None).is_err());
-        assert!(restrict_plan_to_partitions(union(), &[2], None).is_err());
+    /// The task plan is serialized on its way to the executor, and each union
+    /// branch must keep its restricted partition count there, or the task would
+    /// run partitions it doesn't own: none for a branch the task runs none of,
+    /// and its share for a multi-partition `EmptyExec`.
+    #[test]
+    fn restricted_union_branches_keep_their_partition_counts_through_serialization() {
+        use ballista_core::serde::BallistaPhysicalExtensionCodec;
+        use datafusion::prelude::SessionContext;
+        use datafusion_proto::bytes::{
+            physical_plan_from_bytes_with_extension_codec,
+            physical_plan_to_bytes_with_extension_codec,
+        };
+
+        let schema = scan_with_file_groups(2).schema();
+        // Partitions 0-1 are the scan's, 2 the unknown leaf's, 3-6 the empty one's.
+        let union = UnionExec::try_new(vec![
+            scan_with_file_groups(2),
+            PayloadExec::leaf(&["p0"]),
+            Arc::new(EmptyExec::new(schema).with_partitions(4)),
+        ])
+        .unwrap();
+        let restricted = restrict_plan_to_partitions(union, &[0, 4, 6], None).unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let bytes =
+            physical_plan_to_bytes_with_extension_codec(restricted, &codec).unwrap();
+        let decoded = physical_plan_from_bytes_with_extension_codec(
+            &bytes,
+            &SessionContext::new().task_ctx(),
+            &codec,
+        )
+        .unwrap();
+
+        let branches = decoded.children();
+        assert_eq!(
+            branches.iter().map(|b| describe(b)).collect::<Vec<_>>(),
+            ["DataSourceExec(1)", "DataSourceExec(0)", "EmptyExec(2)"]
+        );
+        assert_eq!(group_files(branches[0]), ["file0.parquet"]);
+    }
+
+    /// Binding runs a stage with a branch that keeps its partitions as one
+    /// task. Should a task get only part of such a stage anyway, restriction
+    /// refuses it rather than let the branch return its rows in every task.
+    #[test]
+    fn a_union_branch_that_keeps_its_partitions_is_refused() {
+        // Partition 0 is the sort's, 1-2 the scan's.
+        let union = UnionExec::try_new(vec![
+            sorted_into_one_partition(scan_with_file_groups(2)),
+            scan_with_file_groups(2),
+        ])
+        .unwrap();
+
+        let error = restrict_plan_to_partitions(union, &[1], None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "Error during planning: cannot restrict a `UnionExec` branch to \
+             partitions []: its `SortExec` keeps a partition count of 1, so the \
+             task would also run partitions another task owns. The scheduler \
+             should have run this stage as one task."
+        );
+    }
+
+    /// A stage can be split between tasks unless one of its unions has a
+    /// branch that restriction can't cut to a task's share of it.
+    /// Each case names the top node of the first such branch.
+    #[test]
+    fn unions_that_cannot_be_split_between_tasks() {
+        use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+        let union = |branches: Vec<Arc<dyn ExecutionPlan>>| -> Arc<dyn ExecutionPlan> {
+            UnionExec::try_new(branches).unwrap()
+        };
+        let broadcast: Arc<dyn ExecutionPlan> = Arc::new(
+            ShuffleReaderExec::try_new_broadcast(
+                1,
+                (0..2).map(create_partition).collect(),
+                scan_with_file_groups(1).schema(),
+                2,
+            )
+            .unwrap(),
+        );
+        let sorted = || sorted_into_one_partition(scan_with_file_groups(2));
+        let scan = || scan_with_file_groups(2);
+
+        let cases: Vec<(&str, Arc<dyn ExecutionPlan>, Option<&str>)> = vec![
+            ("no union", scan(), None),
+            ("scans", union(vec![scan(), scan()]), None),
+            (
+                "a one-partition unknown leaf",
+                union(vec![PayloadExec::leaf(&["p0"]), scan()]),
+                None,
+            ),
+            (
+                "an unknown leaf of two partitions",
+                union(vec![PayloadExec::leaf(&["p0", "p1"]), scan()]),
+                Some("PayloadExec"),
+            ),
+            ("a sort", union(vec![sorted(), scan()]), Some("SortExec")),
+            (
+                "a broadcast",
+                union(vec![broadcast, scan()]),
+                Some("ShuffleReaderExec"),
+            ),
+            (
+                "an unknown node that keeps its partitions",
+                union(vec![
+                    PayloadExec::over(&["p0", "p1"], vec![scan()], &[]),
+                    scan(),
+                ]),
+                Some("PayloadExec"),
+            ),
+            (
+                "a sort in a nested union",
+                union(vec![
+                    union(vec![sorted(), scan_with_file_groups(1)]),
+                    scan(),
+                ]),
+                Some("UnionExec"),
+            ),
+            (
+                "a union below a sort",
+                sorted_into_one_partition(union(vec![sorted(), scan()])),
+                None,
+            ),
+            (
+                "a union below a coalesce",
+                Arc::new(CoalescePartitionsExec::new(union(vec![sorted(), scan()]))),
+                None,
+            ),
+        ];
+        let actual: Vec<(&str, Option<String>)> = cases
+            .iter()
+            .map(|(name, plan, _)| {
+                let branch = unsplittable_union_branch(plan, None);
+                (*name, branch.map(|branch| branch.name().to_string()))
+            })
+            .collect();
+        let expected: Vec<(&str, Option<String>)> = cases
+            .iter()
+            .map(|(name, _, branch)| (*name, branch.map(str::to_string)))
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    /// The resolver the tasks are restricted with can split the unions over
+    /// nodes of your own that nothing else can.
+    #[test]
+    fn the_resolver_lets_a_union_over_nodes_of_your_own_be_split() {
+        let resolver = payload_resolver();
+        let scan = || scan_with_file_groups(2);
+        let over_leaf =
+            UnionExec::try_new(vec![PayloadExec::leaf(&["p0", "p1"]), scan()]).unwrap();
+        let over_node = UnionExec::try_new(vec![
+            PayloadExec::over(&["p0", "p1"], vec![scan()], &[]),
+            scan(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            [&over_leaf, &over_node].map(|plan| {
+                unsplittable_union_branch(plan, Some(resolver.as_ref())).is_none()
+            }),
+            [true, true]
+        );
+    }
+
+    /// `plan` is an empty in-memory source with `like`'s schema and no
+    /// partitions, which the executor decodes as it is.
+    fn assert_no_partitions(
+        plan: &Arc<dyn ExecutionPlan>,
+        like: &Arc<dyn ExecutionPlan>,
+    ) {
+        assert_eq!(
+            displayable(plan.as_ref()).one_line().to_string().trim_end(),
+            "DataSourceExec: partitions=0, partition_sizes=[]"
+        );
+        assert_eq!(plan.schema(), like.schema());
     }
 
     #[test]
@@ -1155,20 +1432,109 @@ mod tests {
         assert!(error.contains("returned 4 partitions"), "{error}");
     }
 
-    /// An `EmptyExec` sees the partition numbers of the repartition above it,
-    /// not its own, so these two leaves are exempt from the leaf check.
-    #[test]
-    fn self_generating_leaves_are_exempt_from_the_leaf_check() {
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
-        let empty: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema.clone()));
-        assert!(restrict_plan_to_partitions(empty, &[1], None).is_ok());
+    /// A node's name and partition count, such as `EmptyExec(2)`.
+    fn describe(plan: &Arc<dyn ExecutionPlan>) -> String {
+        format!("{}({})", plan.name(), partition_count(plan))
+    }
 
+    /// `leaf` restricted to each of `slices`, described.
+    fn restricted_shapes(
+        leaf: &Arc<dyn ExecutionPlan>,
+        slices: &[&[usize]],
+    ) -> Vec<String> {
+        slices
+            .iter()
+            .map(|slice| {
+                let restricted =
+                    restrict_plan_to_partitions(leaf.clone(), slice, None).unwrap();
+                assert_eq!(restricted.schema(), leaf.schema());
+                describe(&restricted)
+            })
+            .collect()
+    }
+
+    /// Every partition of these leaves is the same, so a task gets one for
+    /// each of its partitions. The `AdaptivePlanner` replaces a stage that
+    /// turns out empty with an `EmptyExec` of that stage's partition count.
+    #[test]
+    fn self_generating_leaves_keep_one_partition_for_each_partition_the_task_runs() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let empty: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(schema.clone()).with_partitions(4));
+        let placeholder: Arc<dyn ExecutionPlan> =
+            Arc::new(PlaceholderRowExec::new(schema).with_partitions(4));
+        let slices: &[&[usize]] = &[&[0, 1, 2, 3], &[1, 3], &[2], &[]];
+
+        assert_eq!(
+            restricted_shapes(&empty, slices),
+            [
+                "EmptyExec(4)",
+                "EmptyExec(2)",
+                "EmptyExec(1)",
+                "DataSourceExec(0)"
+            ]
+        );
+        assert_eq!(
+            restricted_shapes(&placeholder, slices),
+            [
+                "PlaceholderRowExec(4)",
+                "PlaceholderRowExec(2)",
+                "PlaceholderRowExec(1)",
+                "DataSourceExec(0)",
+            ]
+        );
+    }
+
+    /// Under a round-robin `RepartitionExec`, which the `AdaptivePlanner`
+    /// keeps inside a stage, a leaf sees the repartition's partition numbers.
+    /// Only the task that owns partition 0 runs a one-partition leaf, so a
+    /// `PlaceholderRowExec` there gives its row once, not once per task.
+    #[test]
+    fn self_generating_leaves_drop_partitions_past_their_own() {
+        use datafusion::physical_plan::repartition::RepartitionExec;
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
         let placeholder: Arc<dyn ExecutionPlan> =
             Arc::new(PlaceholderRowExec::new(schema));
-        assert!(restrict_plan_to_partitions(placeholder.clone(), &[0], None).is_ok());
+        let leaf_in_task = |partitions: &[usize]| {
+            let repartition = RepartitionExec::try_new(
+                placeholder.clone(),
+                Partitioning::RoundRobinBatch(4),
+            )
+            .unwrap();
+            restrict_plan_to_partitions(Arc::new(repartition), partitions, None)
+                .unwrap()
+                .children()[0]
+                .clone()
+        };
 
-        // A task that polls none of it gets a source with no partitions.
-        let nothing = restrict_plan_to_partitions(placeholder, &[], None).unwrap();
-        assert_eq!(partition_count(&nothing), 0);
+        assert_eq!(describe(&leaf_in_task(&[0, 1])), "PlaceholderRowExec(1)");
+        assert_no_partitions(&leaf_in_task(&[2, 3]), &placeholder);
+    }
+
+    /// A union branch the `AdaptivePlanner` replaced with a multi-partition
+    /// `EmptyExec`, because its stage gave no rows, is cut down like any other,
+    /// so the union routes the task's partitions to the right branch.
+    #[test]
+    fn a_union_branch_replaced_by_an_empty_exec_is_restricted() {
+        let empty: Arc<dyn ExecutionPlan> = Arc::new(
+            EmptyExec::new(scan_with_file_groups(4).schema()).with_partitions(4),
+        );
+        let union = || -> Arc<dyn ExecutionPlan> {
+            UnionExec::try_new(vec![empty.clone(), scan_with_file_groups(4)]).unwrap()
+        };
+
+        // Partition 0 is the empty branch's.
+        let restricted = restrict_plan_to_partitions(union(), &[0], None).unwrap();
+        let branches = restricted.children();
+        assert_eq!(describe(branches[0]), "EmptyExec(1)");
+        assert_eq!(group_files(branches[1]), Vec::<String>::new());
+
+        // Partitions 3 and 6 are the last of the empty branch's and the third
+        // of the scan's.
+        let restricted = restrict_plan_to_partitions(union(), &[3, 6], None).unwrap();
+        let branches = restricted.children();
+        assert_eq!(describe(branches[0]), "EmptyExec(1)");
+        assert_eq!(group_files(branches[1]), ["file2.parquet"]);
+        assert_eq!(describe(&restricted), "UnionExec(2)");
     }
 }
