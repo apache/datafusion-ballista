@@ -39,6 +39,11 @@ path = "examples/standalone-broadcast-join.rs"
 required-features = ["ballista/standalone"]
 
 [[example]]
+name = "standalone_dataframe_cache"
+path = "examples/standalone-dataframe-cache.rs"
+required-features = ["ballista/standalone"]
+
+[[example]]
 name = "mtls-cluster"
 path = "examples/mtls-cluster.rs"
 required-features = ["tls"]
