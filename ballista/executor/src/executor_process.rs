@@ -616,6 +616,111 @@ pub async fn start_executor_process_with_memory_metrics(
     start_executor_process_inner(opt, Some(memory_metrics)).await
 }
 
+/// Number of vcores the executor advertises: the configured value, or all
+/// available cores when it is `0`.
+fn resolve_vcores(opt: &ExecutorProcessConfig) -> usize {
+    if opt.vcores == 0 {
+        // use all available cores if no concurrency level is specified
+        std::thread::available_parallelism().unwrap().get()
+    } else {
+        opt.vcores
+    }
+}
+
+/// Spawns the periodic shuffle data cleaner, which stops when the shutdown
+/// notification is received.
+fn spawn_shuffle_cleaner(
+    shutdown_notification: &ShutdownNotifier,
+    work_dir: &str,
+    clean_up_interval_seconds: u64,
+    job_data_ttl_seconds: u64,
+) {
+    let mut interval_time =
+        time::interval(Duration::from_secs(clean_up_interval_seconds));
+    let cleaner_work_dir = work_dir.to_owned();
+
+    let mut shuffle_cleaner_shutdown = shutdown_notification.subscribe_for_shutdown();
+    let shuffle_cleaner_complete = shutdown_notification.shutdown_complete_tx.clone();
+
+    tokio::spawn(async move {
+        // As long as the shutdown notification has not been received
+        while !shuffle_cleaner_shutdown.is_shutdown() {
+            tokio::select! {
+                _ = interval_time.tick() => {
+                        if let Err(e) = clean_shuffle_data_loop(&cleaner_work_dir, job_data_ttl_seconds).await
+                    {
+                        error!("Ballista executor fail to clean_shuffle_data {e:?}")
+                    }
+                    },
+                _ = shuffle_cleaner_shutdown.recv() => {
+                    drop(shuffle_cleaner_complete);
+                    return;
+                }
+            };
+        }
+    });
+}
+
+/// Resolves the executor memory pool budget into the per-task pool policy,
+/// recording the budget in `memory_metrics` when they are enabled.
+fn resolve_memory_pool_policy(
+    opt: &ExecutorProcessConfig,
+    vcores: usize,
+    memory_metrics: Option<&ExecutorMemoryMetrics>,
+) -> ballista_core::error::Result<MemoryPoolPolicy> {
+    let fraction = opt.memory_pool_fraction;
+    let pool_policy: MemoryPoolPolicy =
+        match detect_pool(memory_budget_from_cli(opt.memory_pool_size, fraction)) {
+            ResolvedPool::Bounded { bytes, source } => {
+                if let Some(metrics) = memory_metrics {
+                    metrics.set_pool_size(Some(bytes));
+                }
+                let per_vcore = bytes / vcores as u64;
+                let source_desc = match source {
+                    PoolSource::Configured => {
+                        "configured via --memory-pool-size".to_string()
+                    }
+                    PoolSource::AutoCgroup => {
+                        format!("auto: {:.0}% of cgroup memory limit", fraction * 100.0)
+                    }
+                    PoolSource::AutoHost => {
+                        format!("auto: {:.0}% of host memory", fraction * 100.0)
+                    }
+                };
+                info!(
+                    "Executor memory pool: {} ({source_desc}), \
+                     split across {vcores} vcores ({}/vcore)",
+                    bytesize::ByteSize::b(bytes),
+                    bytesize::ByteSize::b(per_vcore),
+                );
+                memory_pool_policy(bytes, vcores)?
+            }
+            ResolvedPool::Unbounded(reason) => {
+                if let Some(metrics) = memory_metrics {
+                    metrics.set_pool_size(None);
+                }
+                match reason {
+                    UnboundedReason::Explicit => {
+                        info!("Executor memory pool: unbounded (--memory-pool-size 0)")
+                    }
+                    UnboundedReason::Undetected => warn!(
+                        "Executor memory pool: unbounded (could not detect host or \
+                         cgroup memory limit; set --memory-pool-size to enable spilling)"
+                    ),
+                }
+                identity_pool_policy()
+            }
+        };
+
+    let pool_policy = if let Some(metrics) = memory_metrics.cloned() {
+        observe_memory_pools(pool_policy, metrics)
+    } else {
+        pool_policy
+    };
+
+    Ok(pool_policy)
+}
+
 async fn start_executor_process_inner(
     opt: Arc<ExecutorProcessConfig>,
     memory_metrics: Option<ExecutorMemoryMetrics>,
@@ -642,12 +747,7 @@ async fn start_executor_process_inner(
         ));
     };
 
-    let vcores = if opt.vcores == 0 {
-        // use all available cores if no concurrency level is specified
-        std::thread::available_parallelism().unwrap().get()
-    } else {
-        opt.vcores
-    };
+    let vcores = resolve_vcores(&opt);
     let task_scheduling_policy = opt.task_scheduling_policy;
     let executor_id = opt.executor_id.clone();
     info!(
@@ -688,55 +788,7 @@ async fn start_executor_process_inner(
         None => base_runtime_producer,
     };
 
-    let fraction = opt.memory_pool_fraction;
-    let pool_policy: MemoryPoolPolicy =
-        match detect_pool(memory_budget_from_cli(opt.memory_pool_size, fraction)) {
-            ResolvedPool::Bounded { bytes, source } => {
-                if let Some(metrics) = &memory_metrics {
-                    metrics.set_pool_size(Some(bytes));
-                }
-                let per_vcore = bytes / vcores as u64;
-                let source_desc = match source {
-                    PoolSource::Configured => {
-                        "configured via --memory-pool-size".to_string()
-                    }
-                    PoolSource::AutoCgroup => {
-                        format!("auto: {:.0}% of cgroup memory limit", fraction * 100.0)
-                    }
-                    PoolSource::AutoHost => {
-                        format!("auto: {:.0}% of host memory", fraction * 100.0)
-                    }
-                };
-                info!(
-                    "Executor memory pool: {} ({source_desc}), \
-                     split across {vcores} vcores ({}/vcore)",
-                    bytesize::ByteSize::b(bytes),
-                    bytesize::ByteSize::b(per_vcore),
-                );
-                memory_pool_policy(bytes, vcores)?
-            }
-            ResolvedPool::Unbounded(reason) => {
-                if let Some(metrics) = &memory_metrics {
-                    metrics.set_pool_size(None);
-                }
-                match reason {
-                    UnboundedReason::Explicit => {
-                        info!("Executor memory pool: unbounded (--memory-pool-size 0)")
-                    }
-                    UnboundedReason::Undetected => warn!(
-                        "Executor memory pool: unbounded (could not detect host or \
-                         cgroup memory limit; set --memory-pool-size to enable spilling)"
-                    ),
-                }
-                identity_pool_policy()
-            }
-        };
-
-    let pool_policy = if let Some(metrics) = memory_metrics.clone() {
-        observe_memory_pools(pool_policy, metrics)
-    } else {
-        pool_policy
-    };
+    let pool_policy = resolve_memory_pool_policy(&opt, vcores, memory_metrics.as_ref())?;
 
     // Combined producer preserving the current per-task behavior: build a fresh
     // base env, then apply the pool policy. Used by `Executor::produce_runtime`
@@ -906,30 +958,12 @@ async fn start_executor_process_inner(
     let clean_job_data_on_shutdown = opt.job_data_clean_up_interval_seconds > 0;
 
     if clean_job_data_on_shutdown {
-        let mut interval_time =
-            time::interval(Duration::from_secs(opt.job_data_clean_up_interval_seconds));
-        let cleaner_work_dir = work_dir.clone();
-
-        let mut shuffle_cleaner_shutdown = shutdown_notification.subscribe_for_shutdown();
-        let shuffle_cleaner_complete = shutdown_notification.shutdown_complete_tx.clone();
-
-        tokio::spawn(async move {
-            // As long as the shutdown notification has not been received
-            while !shuffle_cleaner_shutdown.is_shutdown() {
-                tokio::select! {
-                    _ = interval_time.tick() => {
-                            if let Err(e) = clean_shuffle_data_loop(&cleaner_work_dir, job_data_ttl_seconds).await
-                        {
-                            error!("Ballista executor fail to clean_shuffle_data {e:?}")
-                        }
-                        },
-                    _ = shuffle_cleaner_shutdown.recv() => {
-                        drop(shuffle_cleaner_complete);
-                        return;
-                    }
-                };
-            }
-        });
+        spawn_shuffle_cleaner(
+            &shutdown_notification,
+            &work_dir,
+            opt.job_data_clean_up_interval_seconds,
+            job_data_ttl_seconds,
+        );
     }
 
     let mut service_handlers: FuturesUnordered<JoinHandle<Result<(), BallistaError>>> =
@@ -1019,22 +1053,8 @@ async fn start_executor_process_inner(
 
     let tasks_drained = TasksDrainedFuture(executor.clone());
 
-    // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
-    // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs
-    // until the `shutdown` signal is received or a stop request is coming.
-    let (notify_scheduler, stop_reason) = tokio::select! {
-        service_val = check_services(&mut service_handlers) => {
-            let msg = format!("executor services stopped with reason {service_val:?}");
-            info!("{msg:?}");
-            (true, msg)
-        },
-        signal = shutdown_signal() => {
-            (true, format!("executor received {signal}."))
-        },
-        _ = stop_recv.recv() => {
-            (false, "".to_string())
-        },
-    };
+    let (notify_scheduler, stop_reason) =
+        run_until_shutdown(&mut service_handlers, &mut stop_recv).await;
 
     // Set status to fenced
     info!("setting executor to TERMINATING status");
@@ -1149,6 +1169,30 @@ async fn flight_server_task(
             BallistaError::TonicError(e)
         })
     })
+}
+
+/// Waits until a service fails or finishes, a shutdown signal arrives, or a stop
+/// request is received. Returns whether to notify the scheduler and the reason.
+async fn run_until_shutdown(
+    service_handlers: &mut FuturesUnordered<JoinHandle<Result<(), BallistaError>>>,
+    stop_recv: &mut mpsc::Receiver<bool>,
+) -> (bool, String) {
+    // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
+    // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs
+    // until the `shutdown` signal is received or a stop request is coming.
+    tokio::select! {
+        service_val = check_services(service_handlers) => {
+            let msg = format!("executor services stopped with reason {service_val:?}");
+            info!("{msg:?}");
+            (true, msg)
+        },
+        signal = shutdown_signal() => {
+            (true, format!("executor received {signal}."))
+        },
+        _ = stop_recv.recv() => {
+            (false, "".to_string())
+        },
+    }
 }
 
 // Check the status of long running services
@@ -1443,22 +1487,45 @@ pub fn structure_executor_metadata(
 #[cfg(test)]
 mod tests {
     use crate::executor_process::is_subdirectory;
+    use crate::executor_server::TERMINATING;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     use super::ExecutorProcessConfig;
     use super::clean_shuffle_data_loop;
     use super::remove_job_data;
     use super::structure_executor_metadata;
+    use crate::metrics::ExecutorMemoryMetrics;
+    use crate::shutdown::ShutdownNotifier;
     use ballista_core::BALLISTA_PROTOCOL_VERSION;
     use ballista_core::JobId;
+    use ballista_core::config::TaskSchedulingPolicy;
+    use ballista_core::error::BallistaError;
     use ballista_core::ids::new_instance_id;
     use ballista_core::serde::protobuf::executor_resource::Resource;
+    use ballista_core::serde::protobuf::scheduler_grpc_server::{
+        SchedulerGrpc, SchedulerGrpcServer,
+    };
+    use ballista_core::serde::protobuf::{
+        CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
+        CreateUpdateSessionParams, CreateUpdateSessionResult, ExecuteQueryParams,
+        ExecuteQueryResult, ExecutorStoppedParams, ExecutorStoppedResult,
+        GetJobMetricsParams, GetJobMetricsResult, GetJobStatusParams, GetJobStatusResult,
+        HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
+        RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
+        RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
+    };
+    use futures::stream::FuturesUnordered;
     use std::fs;
     use std::fs::File;
     use std::io::Write;
     use std::time::Duration;
     use tempfile::TempDir;
+    use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::codegen::BoxStream;
+    use tonic::{Request, Response, Status};
 
     #[test]
     fn executor_metadata_reflects_process_configuration() {
@@ -1495,15 +1562,9 @@ mod tests {
 
     #[tokio::test]
     async fn scheduler_connect_timeout_is_honoured() {
-        // Reserve a port and release it, so nothing listens there.
-        let scheduler_port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
         let config = Arc::new(ExecutorProcessConfig {
             scheduler_host: "127.0.0.1".to_string(),
-            scheduler_port,
+            scheduler_port: unused_local_port(),
             scheduler_connect_timeout_seconds: 1,
             ..ExecutorProcessConfig::default()
         });
@@ -1568,6 +1629,387 @@ mod tests {
         );
         drop(queued);
         drop(listener);
+    }
+
+    #[test]
+    fn resolve_vcores_zero_uses_available_parallelism() {
+        let config = ExecutorProcessConfig {
+            vcores: 0,
+            ..ExecutorProcessConfig::default()
+        };
+
+        assert_eq!(
+            super::resolve_vcores(&config),
+            std::thread::available_parallelism().unwrap().get()
+        );
+    }
+
+    #[test]
+    fn resolve_vcores_explicit_is_kept() {
+        let config = ExecutorProcessConfig {
+            vcores: 3,
+            ..ExecutorProcessConfig::default()
+        };
+
+        assert_eq!(super::resolve_vcores(&config), 3);
+    }
+
+    #[tokio::test]
+    async fn shuffle_cleaner_removes_expired_job_dirs_and_stops_on_shutdown() {
+        let work_dir = TempDir::new().unwrap();
+        let job_dir = work_dir.path().join("job_id");
+        fs::create_dir(&job_dir).unwrap();
+        File::create(job_dir.join("tmp.csv"))
+            .expect("creating temp file")
+            .write_all(b"data")
+            .expect("writing data");
+
+        let mut notifier = ShutdownNotifier::new();
+        super::spawn_shuffle_cleaner(&notifier, work_dir.path().to_str().unwrap(), 1, 1);
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while job_dir.exists() {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("expired job dir was never cleaned");
+
+        // The cleaner holds a completion sender until it sees the shutdown
+        // signal, so the receiver only completes once the cleaner has stopped.
+        let _ = notifier.notify_shutdown.send(());
+        drop(notifier.shutdown_complete_tx);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            notifier.shutdown_complete_rx.recv(),
+        )
+        .await
+        .expect("shuffle cleaner did not stop on shutdown");
+    }
+
+    #[tokio::test]
+    async fn stop_request_ends_the_wait_without_notifying_the_scheduler() {
+        let mut handlers = FuturesUnordered::new();
+        handlers.push(tokio::spawn(async {
+            std::future::pending::<Result<(), BallistaError>>().await
+        }));
+        let (stop_send, mut stop_recv) = tokio::sync::mpsc::channel::<bool>(10);
+        stop_send.send(true).await.unwrap();
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::run_until_shutdown(&mut handlers, &mut stop_recv),
+        )
+        .await
+        .expect("a stop request did not end the wait");
+
+        assert_eq!(outcome, (false, String::new()));
+    }
+
+    #[tokio::test]
+    async fn failed_service_ends_the_wait_and_notifies_the_scheduler() {
+        let mut handlers = FuturesUnordered::new();
+        handlers.push(tokio::spawn(async {
+            Err::<(), BallistaError>(BallistaError::General("boom".to_string()))
+        }));
+        let (_stop_send, mut stop_recv) = tokio::sync::mpsc::channel::<bool>(10);
+
+        let (notify_scheduler, reason) = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::run_until_shutdown(&mut handlers, &mut stop_recv),
+        )
+        .await
+        .expect("a failed service did not end the wait");
+
+        assert!(notify_scheduler);
+        assert!(
+            reason.starts_with("executor services stopped with reason Err("),
+            "unexpected reason: {reason}"
+        );
+        assert!(reason.contains("boom"), "unexpected reason: {reason}");
+    }
+
+    /// Reserves a local port and releases it, so nothing listens there.
+    fn unused_local_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    type GrpcResult<T> = std::result::Result<Response<T>, Status>;
+
+    fn not_called<T>() -> GrpcResult<T> {
+        Err(Status::unimplemented("not called by a pull-based executor"))
+    }
+
+    /// A scheduler that answers what a pull-based executor asks of it, and
+    /// never has any work to hand out.
+    struct IdleScheduler;
+
+    #[tonic::async_trait]
+    impl SchedulerGrpc for IdleScheduler {
+        type ExecuteQueryPushStream = BoxStream<GetJobStatusResult>;
+
+        async fn poll_work(
+            &self,
+            _: Request<PollWorkParams>,
+        ) -> GrpcResult<PollWorkResult> {
+            Ok(Response::new(PollWorkResult {
+                tasks: vec![],
+                jobs_to_clean: vec![],
+            }))
+        }
+
+        async fn heart_beat_from_executor(
+            &self,
+            _: Request<HeartBeatParams>,
+        ) -> GrpcResult<HeartBeatResult> {
+            Ok(Response::new(HeartBeatResult::default()))
+        }
+
+        async fn executor_stopped(
+            &self,
+            _: Request<ExecutorStoppedParams>,
+        ) -> GrpcResult<ExecutorStoppedResult> {
+            Ok(Response::new(ExecutorStoppedResult::default()))
+        }
+
+        async fn register_executor(
+            &self,
+            _: Request<RegisterExecutorParams>,
+        ) -> GrpcResult<RegisterExecutorResult> {
+            not_called()
+        }
+
+        async fn update_task_status(
+            &self,
+            _: Request<UpdateTaskStatusParams>,
+        ) -> GrpcResult<UpdateTaskStatusResult> {
+            not_called()
+        }
+
+        async fn create_update_session(
+            &self,
+            _: Request<CreateUpdateSessionParams>,
+        ) -> GrpcResult<CreateUpdateSessionResult> {
+            not_called()
+        }
+
+        async fn remove_session(
+            &self,
+            _: Request<RemoveSessionParams>,
+        ) -> GrpcResult<RemoveSessionResult> {
+            not_called()
+        }
+
+        async fn execute_query_push(
+            &self,
+            _: Request<ExecuteQueryParams>,
+        ) -> GrpcResult<Self::ExecuteQueryPushStream> {
+            not_called()
+        }
+
+        async fn execute_query(
+            &self,
+            _: Request<ExecuteQueryParams>,
+        ) -> GrpcResult<ExecuteQueryResult> {
+            not_called()
+        }
+
+        async fn get_job_status(
+            &self,
+            _: Request<GetJobStatusParams>,
+        ) -> GrpcResult<GetJobStatusResult> {
+            not_called()
+        }
+
+        async fn get_job_metrics(
+            &self,
+            _: Request<GetJobMetricsParams>,
+        ) -> GrpcResult<GetJobMetricsResult> {
+            not_called()
+        }
+
+        async fn cancel_job(
+            &self,
+            _: Request<CancelJobParams>,
+        ) -> GrpcResult<CancelJobResult> {
+            not_called()
+        }
+
+        async fn clean_job_data(
+            &self,
+            _: Request<CleanJobDataParams>,
+        ) -> GrpcResult<CleanJobDataResult> {
+            not_called()
+        }
+    }
+
+    /// Runs a pull-based executor against an idle scheduler, with the given
+    /// clean-up interval and `work_dir` as its work directory, until it shuts
+    /// itself down. The shutdown comes from a custom Flight service whose
+    /// handle fails right away, which ends the wait for the services and goes
+    /// through the normal graceful shutdown path, which runs to the end with
+    /// the scheduler.
+    ///
+    /// The shutdown sets the process-wide `TERMINATING` flag, which the
+    /// heartbeat reads; the helper puts it back to `false` on the way out, also
+    /// when it panics, so it leaves no state behind.
+    async fn run_executor_until_flight_service_fails(
+        job_data_clean_up_interval_seconds: u64,
+        work_dir: &Path,
+    ) {
+        /// Clears `TERMINATING` when dropped.
+        struct ResetTerminating;
+
+        impl Drop for ResetTerminating {
+            fn drop(&mut self) {
+                TERMINATING.store(false, Ordering::Release);
+            }
+        }
+        let _reset_terminating = ResetTerminating;
+
+        let scheduler = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let scheduler_port = scheduler.local_addr().unwrap().port();
+        tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(SchedulerGrpcServer::new(IdleScheduler))
+                .serve_with_incoming(TcpListenerStream::new(scheduler)),
+        );
+
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port,
+            scheduler_connect_timeout_seconds: 5,
+            bind_host: "127.0.0.1".to_string(),
+            task_scheduling_policy: TaskSchedulingPolicy::PullStaged,
+            work_dir: Some(work_dir.to_str().unwrap().to_string()),
+            job_data_clean_up_interval_seconds,
+            override_arrow_flight_service: Some(Arc::new(|_, _, _, _| {
+                tokio::spawn(async {
+                    Err(BallistaError::General(
+                        "the Flight service failed on purpose".to_string(),
+                    ))
+                })
+            })),
+            ..ExecutorProcessConfig::default()
+        });
+
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            super::start_executor_process(config),
+        )
+        .await
+        .expect("the executor did not shut down")
+        .expect("the executor failed instead of shutting down gracefully");
+    }
+
+    /// A job directory with a file in it, as the shuffle writer leaves one.
+    fn create_job_dir(work_dir: &Path) -> PathBuf {
+        let job_dir = work_dir.join("job_id");
+        fs::create_dir(&job_dir).unwrap();
+        File::create(job_dir.join("data.arrow"))
+            .unwrap()
+            .write_all(b"data")
+            .unwrap();
+        job_dir
+    }
+
+    #[tokio::test]
+    async fn clean_up_interval_zero_disables_the_cleaner_and_the_shutdown_clean_up() {
+        let work_dir = TempDir::new().unwrap();
+        let job_dir = create_job_dir(work_dir.path());
+
+        run_executor_until_flight_service_fails(0, work_dir.path()).await;
+
+        assert!(
+            job_dir.exists(),
+            "job data was cleaned although the clean-up interval is 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn positive_clean_up_interval_cleans_job_data_on_shutdown() {
+        let work_dir = TempDir::new().unwrap();
+        let job_dir = create_job_dir(work_dir.path());
+
+        run_executor_until_flight_service_fails(1, work_dir.path()).await;
+
+        assert!(
+            !job_dir.exists(),
+            "job data was not cleaned on shutdown with a clean-up interval of 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_connect_zero_timeout_makes_a_single_attempt() {
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port: unused_local_port(),
+            scheduler_connect_timeout_seconds: 0,
+            ..ExecutorProcessConfig::default()
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::start_executor_process(config),
+        )
+        .await
+        .expect("executor kept retrying with scheduler_connect_timeout_seconds = 0");
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Could not connect to scheduler"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_memory_pool_size_is_reported_to_metrics() {
+        let metrics = ExecutorMemoryMetrics::default();
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port: unused_local_port(),
+            scheduler_connect_timeout_seconds: 0,
+            memory_pool_size: Some(64 * 1024 * 1024),
+            ..ExecutorProcessConfig::default()
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::start_executor_process_with_memory_metrics(config, metrics.clone()),
+        )
+        .await
+        .expect("executor did not fail fast without a scheduler");
+        assert!(result.is_err());
+
+        let usage = metrics.snapshot().expect("pool size was never recorded");
+        assert_eq!(usage.pool_size, Some(64 * 1024 * 1024));
+    }
+
+    #[tokio::test]
+    async fn unbounded_memory_pool_is_reported_to_metrics() {
+        let metrics = ExecutorMemoryMetrics::default();
+        let config = Arc::new(ExecutorProcessConfig {
+            scheduler_host: "127.0.0.1".to_string(),
+            scheduler_port: unused_local_port(),
+            scheduler_connect_timeout_seconds: 0,
+            memory_pool_size: Some(0),
+            ..ExecutorProcessConfig::default()
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::start_executor_process_with_memory_metrics(config, metrics.clone()),
+        )
+        .await
+        .expect("executor did not fail fast without a scheduler");
+        assert!(result.is_err());
+
+        let usage = metrics.snapshot().expect("pool size was never recorded");
+        assert_eq!(usage.pool_size, None);
     }
 
     #[test]
