@@ -66,6 +66,7 @@ datafusion-proto-common = { git = "https://github.com/apache/datafusion", tag = 
 datafusion-substrait = { git = "https://github.com/apache/datafusion", tag = "56.0.0-rc1" }
 
 ctor = { version = "1.0" }
+datasketches = { version = "0.6", default-features = false, features = ["hll"] }
 insta = "1.47"
 itertools = "0.15"
 mimalloc = { version = "0.1" }

@@ -1127,6 +1127,7 @@ dependencies = [
  "datafusion",
  "datafusion-proto",
  "datafusion-proto-common",
+ "datasketches",
  "futures",
  "log",
  "lru 0.19.0",
@@ -3075,6 +3076,12 @@ dependencies = [
  "tokio",
  "url",
 ]
+
+[[package]]
+name = "datasketches"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17518a0e88b8a18c546a855d9db6455caaea7865774364bff759edf6a4731aca"
 
 [[package]]
 name = "defmt"

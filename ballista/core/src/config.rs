@@ -612,8 +612,8 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
              column with HyperLogLog while writing shuffle output, so the adaptive \
              planner can estimate join cardinalities downstream of the shuffle. \
              Costs hashing every key value on the write path and one sketch per \
-             key column in each task's status update (4 KiB with the default \
-             precision).".to_string(),
+             key column in each task's status update (at most about 2 KiB with \
+             the default precision).".to_string(),
             DataType::Boolean,
             Some(true.to_string()),
         ),
@@ -622,9 +622,9 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             "Precision of the HyperLogLog sketches that \
              `ballista.shuffle.collect_distinct_counts` collects, from 4 to 16 \
              (values outside that range are clamped). A sketch has \
-             2^precision one-byte registers and a standard error of about \
-             1.04 / 2^(precision / 2): 10 is 1 KiB and 3.3%, 12 is 4 KiB and \
-             1.6%, 14 is 16 KiB and 0.8%. The scheduler keeps one sketch per \
+             2^precision registers, sent at 4 bits each, and a standard error of \
+             about 1.04 / 2^(precision / 2): 10 is 512 B and 3.3%, 12 is 2 KiB \
+             and 1.6%, 14 is 8 KiB and 0.8%. The scheduler keeps one sketch per \
              key column for every task of a stage, so lower it for stages with \
              many thousands of tasks.".to_string(),
             DataType::UInt16,
