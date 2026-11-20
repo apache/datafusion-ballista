@@ -27,7 +27,8 @@ use crate::executor_process::remove_job_data;
 use crate::{TaskCompletionExtras, TaskExecutionTimes, as_task_status};
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
-use ballista_core::extension::SessionConfigHelperExt;
+use ballista_core::execution_plans::PartitionVcoreReleaser;
+use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
     PollWorkParams, PollWorkResult, TaskDefinition, TaskStatus,
@@ -41,6 +42,7 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::FutureExt;
 use log::{debug, error, info, trace, warn};
+use parking_lot::Mutex;
 use std::any::Any;
 use std::convert::TryInto;
 use std::error::Error;
@@ -377,7 +379,21 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         redact_key_value_pairs(&task.props)
     );
     let session_config = executor.produce_config();
-    let session_config = session_config.update_from_key_value_pair(&task.props);
+    let mut session_config = session_config.update_from_key_value_pair(&task.props);
+
+    // Finished partitions give their permits back while the task still runs.
+    let held_vcores = permit.num_permits();
+    let permit = Arc::new(Mutex::new(Some(permit)));
+    if held_vcores > 1 && session_config.ballista_config().release_partition_vcores() {
+        let permit = permit.clone();
+        let releaser = PartitionVcoreReleaser::new(held_vcores, move |vcores| {
+            // `None` once the task has ended and dropped its permits.
+            if let Some(permit) = permit.lock().as_mut() {
+                drop(permit.split(vcores));
+            }
+        });
+        session_config = session_config.with_extension(Arc::new(releaser));
+    }
 
     let task_scalar_functions = executor.function_registry.scalar_functions.clone();
     let task_aggregate_functions = executor.function_registry.aggregate_functions.clone();
@@ -502,8 +518,8 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             },
         ));
 
-        // Release the permit after the work is done
-        drop(permit);
+        // Release the permits still held after the work is done
+        permit.lock().take();
     });
 
     Ok(())
@@ -540,6 +556,8 @@ mod tests {
     use crate::metrics::LoggingMetricsCollector;
     use crate::test_util::fresh_runtime_producer;
     use ballista_core::JobId;
+    use ballista_core::config::BALLISTA_SCHEDULER_RELEASE_PARTITION_VCORES;
+    use ballista_core::execution_plans::PartitionVcoreReleaser;
     use ballista_core::registry::BallistaFunctionRegistry;
     use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
@@ -552,9 +570,10 @@ mod tests {
         ExecuteQueryResult, ExecutorRegistration, ExecutorStoppedParams,
         ExecutorStoppedResult, GetJobMetricsParams, GetJobMetricsResult,
         GetJobStatusParams, GetJobStatusResult, HeartBeatParams, HeartBeatResult,
-        PollWorkParams, PollWorkResult, RegisterExecutorParams, RegisterExecutorResult,
-        RemoveSessionParams, RemoveSessionResult, ShuffleWritePartition, TaskDefinition,
-        UpdateTaskStatusParams, UpdateTaskStatusResult,
+        KeyValuePair, PollWorkParams, PollWorkResult, RegisterExecutorParams,
+        RegisterExecutorResult, RemoveSessionParams, RemoveSessionResult,
+        ShuffleWritePartition, TaskDefinition, UpdateTaskStatusParams,
+        UpdateTaskStatusResult,
     };
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::utils::default_config_producer;
@@ -588,6 +607,10 @@ mod tests {
     struct BlockingEngine {
         started: Arc<Notify>,
         release: Arc<Notify>,
+        /// Partitions each task has, and how many of them it finishes before
+        /// it announces that it started.
+        partitions: usize,
+        finished_partitions: usize,
     }
 
     impl ExecutionEngine for BlockingEngine {
@@ -616,8 +639,16 @@ mod tests {
         async fn execute_query_stage(
             &self,
             _task_id: usize,
-            _context: Arc<TaskContext>,
+            context: Arc<TaskContext>,
         ) -> Result<Vec<ShuffleWritePartition>> {
+            if let Some(releaser) = context
+                .session_config()
+                .get_extension::<PartitionVcoreReleaser>()
+            {
+                for _ in 0..self.finished_partitions {
+                    releaser.partition_completed(self.partitions);
+                }
+            }
             self.started.notify_one();
             self.release.notified().await;
             Ok(vec![])
@@ -760,7 +791,23 @@ mod tests {
         vcores_consumed: usize,
         expected_free: usize,
     ) {
-        let engine = BlockingEngine::default();
+        let free = free_vcores_while_task_runs(
+            task_definition(vcores_consumed as u32),
+            BlockingEngine::default(),
+        )
+        .await;
+        assert_eq!(
+            free, expected_free,
+            "vcores free while a task charged {vcores_consumed} runs on {VCORES} vcores"
+        );
+    }
+
+    /// Runs `task` as [`assert_free_vcores_while_task_runs`] does, on `engine`,
+    /// and returns the vcores that were free while it ran.
+    async fn free_vcores_while_task_runs(
+        task: TaskDefinition,
+        engine: BlockingEngine,
+    ) -> usize {
         let executor = Arc::new(Executor::new(
             ExecutorRegistration {
                 id: "executor".to_string(),
@@ -782,7 +829,7 @@ mod tests {
 
         let scheduler =
             SchedulerGrpcClient::new(SchedulerGrpcServer::new(MockScheduler {
-                task: Mutex::new(Some(task_definition(vcores_consumed as u32))),
+                task: Mutex::new(Some(task)),
             }));
         let free_vcores = Arc::new(Semaphore::new(VCORES));
         let handle = tokio::spawn(poll_loop(
@@ -808,10 +855,36 @@ mod tests {
                 .unwrap();
 
         handle.abort();
-        assert_eq!(
-            free_while_running, expected_free,
-            "vcores free while a task charged {vcores_consumed} runs on {VCORES} vcores"
-        );
+        free_while_running
+    }
+
+    /// An engine whose 4-partition tasks finish 3 partitions and then block.
+    fn engine_with_a_straggler() -> BlockingEngine {
+        BlockingEngine {
+            partitions: 4,
+            finished_partitions: 3,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn finished_partitions_give_their_permits_back() {
+        // One partition is still running, so the task keeps one of its 4 vcores.
+        let free =
+            free_vcores_while_task_runs(task_definition(4), engine_with_a_straggler())
+                .await;
+        assert_eq!(free, VCORES - 1);
+    }
+
+    #[tokio::test]
+    async fn finished_partitions_keep_their_permits_when_release_is_off() {
+        let mut task = task_definition(4);
+        task.props.push(KeyValuePair {
+            key: BALLISTA_SCHEDULER_RELEASE_PARTITION_VCORES.to_string(),
+            value: Some("false".to_string()),
+        });
+        let free = free_vcores_while_task_runs(task, engine_with_a_straggler()).await;
+        assert_eq!(free, VCORES - 4);
     }
 
     #[tokio::test]

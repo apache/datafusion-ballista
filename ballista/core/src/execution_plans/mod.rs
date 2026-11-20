@@ -44,6 +44,7 @@ pub mod sort_shuffle;
 pub(crate) mod test_util;
 mod unordered_range_repartition;
 mod unresolved_shuffle;
+mod vcore_release;
 pub mod window_state;
 
 use std::path::{Path, PathBuf};
@@ -87,6 +88,7 @@ pub use shuffle_writer_trait::ShuffleWriter;
 pub use sort_shuffle::SortShuffleWriterExec;
 pub use unordered_range_repartition::UnorderedRangeRepartitionExec;
 pub use unresolved_shuffle::UnresolvedShuffleExec;
+pub use vcore_release::PartitionVcoreReleaser;
 pub use window_state::{
     ObservedWindowState, TaskWindowState, WindowStateCollector,
     prefix_merge_window_state, window_state_from_proto, window_state_to_proto,

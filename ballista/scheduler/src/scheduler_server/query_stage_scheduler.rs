@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ballista_core::serde::protobuf::TaskStatus;
-use ballista_core::serde::protobuf::{FailedJob, JobStatus, job_status};
+use ballista_core::serde::protobuf::{FailedJob, JobStatus, job_status, task_status};
 use ballista_core::serde::scheduler::PartitionLocation;
 use ballista_core::utils::panic_payload_message;
 use ballista_core::{JobId, JobStatusSubscriber};
@@ -719,7 +719,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
     async fn on_task_updating(
         &self,
         executor_id: String,
-        tasks_status: Vec<TaskStatus>,
+        mut tasks_status: Vec<TaskStatus>,
         event_sender: EventSender<QueryStageSchedulerEvent>,
     ) -> Result<()> {
         trace!("processing task status updates from {executor_id}: {tasks_status:?}");
@@ -730,7 +730,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             // time (see `bind_one` in `cluster/mod.rs`). Refunding
             // one vcore per task would leak leftovers under the
             // multi-partition-task model, draining executor budgets
-            // to 1 vcore over the course of a query.
+            // to 1 vcore over the course of a query. A running task
+            // refunds the vcores its finished partitions released.
             let vcores_freed = self
                 .state
                 .task_manager
@@ -740,6 +741,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                 .unbind_tasks(vec![(executor_id.clone(), vcores_freed)])
                 .await?;
         }
+        // A running report only releases vcores; the task itself has not changed.
+        tasks_status.retain(|status| {
+            !matches!(status.status, Some(task_status::Status::Running(_)))
+        });
         match self
             .state
             .update_task_statuses(&executor_id, tasks_status)

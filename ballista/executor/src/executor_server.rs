@@ -35,17 +35,21 @@ use tonic::transport::server::TcpIncoming;
 use tonic::{Request, Response, Status};
 
 use ballista_core::error::BallistaError;
-use ballista_core::execution_plans::PipelinedShuffleWriterExec;
-use ballista_core::extension::EndpointOverrideFn;
+use ballista_core::execution_plans::{
+    PartitionVcoreReleaser, PipelinedShuffleWriterExec,
+};
+use ballista_core::extension::{EndpointOverrideFn, SessionConfigExt};
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
     CancelTasksParams, CancelTasksResult, ExecutorMetric, ExecutorStatus,
     HeartBeatParams, LaunchMultiTaskParams, LaunchMultiTaskResult, LaunchTaskParams,
     LaunchTaskResult, RegisterExecutorParams, RemoveJobDataParams, RemoveJobDataResult,
-    StopExecutorParams, StopExecutorResult, TaskStatus, UpdateTaskStatusParams,
+    RunningTask, StopExecutorParams, StopExecutorResult, TaskStatus,
+    UpdateTaskStatusParams,
     executor_grpc_server::{ExecutorGrpc, ExecutorGrpcServer},
     executor_metric, executor_status,
     scheduler_grpc_client::SchedulerGrpcClient,
+    task_status,
 };
 use ballista_core::serde::scheduler::TaskDefinition;
 use ballista_core::serde::scheduler::TaskKey;
@@ -450,6 +454,46 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             )
         };
 
+        // A pipelined task holds no vcores of its own to release.
+        let mut session_config = task.session_config;
+        if !pipelined
+            && task.vcores_consumed > 1
+            && session_config.ballista_config().release_partition_vcores()
+        {
+            let tx_task_status = self.executor_env.tx_task_status.clone();
+            let scheduler_endpoint = curator_task.scheduler_endpoint.clone();
+            let executor_id = self.executor.metadata.id.clone();
+            let running = TaskStatus {
+                task_id: task_id as u32,
+                job_id: job_id.clone().into(),
+                stage_id: stage_id as u32,
+                stage_attempt_num: stage_attempt_num as u32,
+                launch_time: task.launch_time,
+                start_exec_time,
+                end_exec_time: 0,
+                status: None,
+                metrics: vec![],
+            };
+            let releaser = PartitionVcoreReleaser::new(
+                task.vcores_consumed as usize,
+                move |vcores| {
+                    let mut task_status = running.clone();
+                    task_status.status =
+                        Some(task_status::Status::Running(RunningTask {
+                            executor_id: executor_id.clone(),
+                            vcores_released: vcores as u32,
+                        }));
+                    // A report that does not fit in the channel is dropped: the
+                    // terminal status returns every vcore the task still holds.
+                    let _ = tx_task_status.try_send(CuratorTaskStatus {
+                        scheduler_endpoint: scheduler_endpoint.clone(),
+                        task_status,
+                    });
+                },
+            );
+            session_config = session_config.with_extension(Arc::new(releaser));
+        }
+
         match (exec, runtime) {
             (Ok(exec), Ok(runtime)) => {
                 let task_context = {
@@ -458,7 +502,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     Arc::new(TaskContext::new(
                         Some(task_identity.clone()),
                         task.session_id,
-                        task.session_config,
+                        session_config,
                         function_registry.scalar_functions.clone(),
                         function_registry.higher_order_functions.clone(),
                         function_registry.aggregate_functions.clone(),

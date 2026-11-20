@@ -636,8 +636,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
-    /// Consume reservations for terminal task reports exactly once, including
-    /// reports received after the entire job graph has been evicted.
+    /// Consume reservations for task reports, including reports received
+    /// after the entire job graph has been evicted. A terminal report takes
+    /// what is left of the task's reservation, exactly once. A running report
+    /// takes the vcores its finished partitions released, and leaves the task
+    /// at least one until its terminal report.
     pub(crate) fn take_vcores_for_statuses(
         &self,
         executor_id: &str,
@@ -645,17 +648,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ) -> u32 {
         statuses
             .iter()
-            .filter(|status| {
-                matches!(
-                    status.status,
-                    Some(
-                        task_status::Status::Successful(_)
-                            | task_status::Status::Failed(_)
-                    )
-                )
-            })
             .filter_map(|status| {
-                self.outstanding_task_reservations.remove(&(
+                let reservation = (
                     executor_id.to_owned(),
                     TaskKey {
                         job_id: status.job_id.clone().into(),
@@ -663,9 +657,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         task_id: status.task_id as usize,
                     },
                     status.stage_attempt_num as usize,
-                ))
+                );
+                match status.status.as_ref()? {
+                    task_status::Status::Running(running) => {
+                        let mut held =
+                            self.outstanding_task_reservations.get_mut(&reservation)?;
+                        let released =
+                            running.vcores_released.min(held.saturating_sub(1));
+                        *held -= released;
+                        Some(released)
+                    }
+                    task_status::Status::Successful(_)
+                    | task_status::Status::Failed(_) => self
+                        .outstanding_task_reservations
+                        .remove(&reservation)
+                        .map(|(_, vcores)| vcores),
+                }
             })
-            .map(|(_, vcores)| vcores)
             .sum()
     }
 
