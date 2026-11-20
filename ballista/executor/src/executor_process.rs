@@ -1560,15 +1560,9 @@ mod tests {
 
     #[tokio::test]
     async fn scheduler_connect_timeout_is_honoured() {
-        // Reserve a port and release it, so nothing listens there.
-        let scheduler_port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
         let config = Arc::new(ExecutorProcessConfig {
             scheduler_host: "127.0.0.1".to_string(),
-            scheduler_port,
+            scheduler_port: unused_local_port(),
             scheduler_connect_timeout_seconds: 1,
             ..ExecutorProcessConfig::default()
         });
