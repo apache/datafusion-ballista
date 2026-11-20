@@ -183,4 +183,4 @@ let config = SchedulerConfig::default().with_partition_sliceable_resolver(Arc::n
 - The restricted node is serialized with the scheduler's `physical codec`, so what it carries per partition has to survive encoding and decoding.
 - The resolver does not need `PartitionSliceable`. It can build the restricted node itself, which is the way to restrict a node you cannot implement the trait on, such as a `DataSourceExec` over a `DataSource` of your own: match it with `downcast_ref`, then build a `DataSourceExec` over the restricted source.
 - The resolver is asked after Ballista's own list. A node that is read whole, such as one below a `CoalescePartitionsExec` or on a join's build side, needs none of this.
-- The standalone scheduler (`SessionContext::standalone`) builds its own `SchedulerConfig`, so it cannot be given a resolver.
+- The standalone scheduler reads the resolver from the session configuration. Register it with `with_ballista_partition_sliceable_resolver`, then use that configuration when building the session state passed to `SessionContext::standalone_with_state`.

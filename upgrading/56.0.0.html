@@ -702,7 +702,14 @@ nodes that cannot implement <code class="docutils literal notranslate"><span cla
 literal that doesn’t end in <code class="docutils literal notranslate"><span class="pre">..Default::default()</span></code> needs to set it.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">task_builder::restrict_plan_to_partitions</span></code> takes a third argument,
 <code class="docutils literal notranslate"><span class="pre">Option&lt;&amp;dyn</span> <span class="pre">PartitionSliceableResolver&gt;</span></code>. Pass <code class="docutils literal notranslate"><span class="pre">None</span></code> for none.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SessionConfigExt</span></code> gains two required methods:
+<code class="docutils literal notranslate"><span class="pre">with_ballista_partition_sliceable_resolver</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ballista_partition_sliceable_resolver</span></code>. Downstream implementations of this
+trait must implement both methods. Existing callers need no changes.</p></li>
 </ul>
+<p>For standalone execution, register the resolver in the session configuration
+with <code class="docutils literal notranslate"><span class="pre">with_ballista_partition_sliceable_resolver</span></code>, then pass the session state
+to <code class="docutils literal notranslate"><span class="pre">SessionContext::standalone_with_state</span></code>.</p>
 </section>
 <section id="partition-locations-hold-an-executorendpoint">
 <h4>Partition locations hold an <code class="docutils literal notranslate"><span class="pre">ExecutorEndpoint</span></code><a class="headerlink" href="#partition-locations-hold-an-executorendpoint" title="Link to this heading">#</a></h4>
