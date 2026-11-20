@@ -27,6 +27,7 @@ use datafusion::catalog::view::ViewTable;
 use datafusion::catalog::{
     CatalogProvider, CatalogProviderList, SchemaProvider, Session, TableProvider,
 };
+use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
 use datafusion::common::{
     Constraints, DataFusionError, Result, internal_datafusion_err, not_impl_err,
@@ -37,6 +38,7 @@ use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::{
     Expr, LogicalPlan, TableProviderFilterPushDown, TableScan,
 };
+use datafusion::optimizer::AnalyzerRule;
 use datafusion::physical_plan::ExecutionPlan;
 use futures::future::join_all;
 use iceberg::TableIdent;
@@ -55,9 +57,9 @@ use iceberg_datafusion::{IcebergCatalogTableProvider, to_datafusion_error};
 /// versions, as it would in DataFusion.
 ///
 /// A lookup never fails because a table can't be loaded: the [`PinnedTable`]
-/// holds the error instead, and a query fails with it only when it reads the
-/// table, so the table, or a view over it, can still be described, dropped or
-/// replaced.
+/// holds the error instead, and [`RequireLoadedTables`] fails a query with it
+/// only when it reads the table, so the table, or a view over it, can still be
+/// described, dropped or replaced.
 #[derive(Debug)]
 pub(crate) struct PinningCatalogList(pub(crate) Arc<dyn CatalogProviderList>);
 
@@ -131,16 +133,15 @@ impl SchemaProvider for PinningSchema {
             let table = load(provider).await;
             return Ok(Some(Arc::new(PinnedTable::pin(provider, table))));
         }
-        let repinned = match table.get_logical_plan() {
-            Some(plan) => match repin(&plan).await? {
-                Some(plan) => ViewTable::new(plan, None),
-                None => return Ok(Some(table)),
-            },
-            None => return Ok(Some(table)),
+        let Some(plan) = table.get_logical_plan() else {
+            return Ok(Some(table));
+        };
+        let Some(plan) = repin(&plan).await? else {
+            return Ok(Some(table));
         };
         Ok(Some(Arc::new(RepinnedView {
             original: table,
-            repinned,
+            repinned: ViewTable::new(plan, None),
         })))
     }
 
@@ -186,11 +187,47 @@ async fn load(provider: &IcebergCatalogTableProvider) -> Loaded {
         .map_err(|error| Arc::new(to_datafusion_error(error)))
 }
 
+/// The pinned table a scan reads, if any.
+fn pinned(scan: &TableScan) -> Option<&PinnedTable> {
+    let source = scan.source.downcast_ref::<DefaultTableSource>()?;
+    source.table_provider.downcast_ref::<PinnedTable>()
+}
+
 /// The catalog-backed table a scan's pinned table was pinned from, if any.
 fn origin(scan: &TableScan) -> Option<&IcebergCatalogTableProvider> {
-    let source = scan.source.downcast_ref::<DefaultTableSource>()?;
-    let pinned = source.table_provider.downcast_ref::<PinnedTable>()?;
-    pinned.origin.as_ref()
+    pinned(scan)?.origin.as_ref()
+}
+
+/// Fails a query that reads a table its catalog couldn't load with the error
+/// loading it returned, while the query is planned, as reading a missing table
+/// does in DataFusion. Otherwise the query would fail only when the client
+/// encodes it, with that error buried in the encoding error.
+///
+/// DDL and `DESCRIBE` aren't analyzed, so they still work while a table is gone.
+///
+/// TODO: remove once tables are pinned when a query runs (#2881), which needs
+/// the integration on a ballista-core with that hook, so on DataFusion 56. A
+/// table that can't be loaded then fails the query where it's loaded, and no
+/// [`PinnedTable`] holds an error for this rule to find.
+#[derive(Debug)]
+pub(crate) struct RequireLoadedTables;
+
+impl AnalyzerRule for RequireLoadedTables {
+    fn analyze(&self, plan: LogicalPlan, _config: &ConfigOptions) -> Result<LogicalPlan> {
+        plan.apply_with_subqueries(|node| {
+            if let LogicalPlan::TableScan(scan) = node
+                && let Some(pinned) = pinned(scan)
+            {
+                pinned.table()?;
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        Ok(plan)
+    }
+
+    fn name(&self) -> &str {
+        "require_loaded_iceberg_tables"
+    }
 }
 
 /// Returns a view's `plan` with each catalog-backed Iceberg table it reads
@@ -305,8 +342,8 @@ impl TableProvider for RepinnedView {
 ///
 /// A table that couldn't be loaded still knows the catalog-backed table it was
 /// pinned from, so a view over it reads it once its catalog can load it again.
-/// Pushing filters into it, scanning it or encoding it returns the error, as
-/// reading a missing table does in DataFusion.
+/// [`RequireLoadedTables`] fails a query that reads it with the error, and
+/// scanning or encoding it returns the error too.
 ///
 /// Not an [`IcebergStaticTableProvider`]: that derives its schema from the
 /// table, which may have evolved since planning, and is built asynchronously,
@@ -375,8 +412,6 @@ impl TableProvider for PinnedTable {
         &self,
         filters: &[&Expr],
     ) -> Result<Vec<TableProviderFilterPushDown>> {
-        // Fails a filtered query while it's planned, before it's sent.
-        self.table()?;
         Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
     }
 

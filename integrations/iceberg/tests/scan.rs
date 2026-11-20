@@ -35,6 +35,7 @@ mod standalone {
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion::{assert_batches_eq, assert_batches_sorted_eq};
     use iceberg::{Catalog, TableIdent};
+    use iceberg_datafusion::to_datafusion_error;
 
     use crate::common::{assert_standalone_scans, catalog_table, insert, memory_catalog};
 
@@ -96,7 +97,7 @@ mod standalone {
         // While `t` is gone, `w` is created over `v`, and reading it fails.
         rename_table(&catalog, "t", "gone").await;
         ctx.sql("CREATE VIEW w AS SELECT * FROM v").await?;
-        assert_table_gone(&ctx, "SELECT * FROM w").await;
+        assert_table_gone(&ctx, &catalog, "SELECT * FROM w").await;
         // Once `t` is back, `w` reads its latest version.
         rename_table(&catalog, "gone", "t").await;
         insert(&catalog, "(2, 'b')").await;
@@ -111,21 +112,21 @@ mod standalone {
     }
 
     #[tokio::test]
-    async fn should_fail_to_read_a_view_whose_table_is_gone() -> Result<()> {
+    async fn should_fail_to_read_a_table_that_is_gone() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let (catalog, ctx) = view_context(dir.path()).await?;
         ctx.sql("CREATE VIEW v AS SELECT * FROM t").await?;
         rename_table(&catalog, "t", "gone").await;
 
-        // Without a filter, the client fails to encode the view's scan.
-        assert_table_gone(&ctx, "SELECT * FROM v").await;
-        // With one, pushing the filter into the view's scan fails first.
-        assert_eq!(
-            query_error(&ctx, "SELECT * FROM v WHERE id = 1").await,
-            "Optimizer rule 'push_down_filter' failed\ncaused by\n\
-             IcebergError(TableNotFound)\ncaused by\nExecution error: TableNotFound => \
-             No such table: TableIdent { namespace: NamespaceIdent([\"ns\"]), name: \"t\" }"
-        );
+        for sql in [
+            "SELECT * FROM t",
+            "SELECT * FROM t WHERE id = 1",
+            "SELECT * FROM v",
+            "SELECT * FROM v WHERE id = 1",
+            "SELECT 1 AS x WHERE EXISTS (SELECT * FROM t)",
+        ] {
+            assert_table_gone(&ctx, &catalog, sql).await;
+        }
 
         Ok(())
     }
@@ -186,28 +187,36 @@ mod standalone {
         Ok((catalog, ctx))
     }
 
-    /// The error running `sql` returns.
-    async fn query_error(ctx: &SessionContext, sql: &str) -> String {
+    /// Checks that running `sql` fails while it's planned, with the error
+    /// loading `ns.t` from `catalog` returns.
+    async fn assert_table_gone(
+        ctx: &SessionContext,
+        catalog: &Arc<dyn Catalog>,
+        sql: &str,
+    ) {
         let error = ctx.sql(sql).await.unwrap().collect().await.unwrap_err();
-        error.to_string()
-    }
-
-    /// Checks that running `sql` fails because `t` can't be loaded. The client
-    /// fails to encode the plan, and Ballista wraps that error in text of its
-    /// own, so only the cause is checked.
-    async fn assert_table_gone(ctx: &SessionContext, sql: &str) {
-        let error = query_error(ctx, sql).await;
-        assert!(error.contains("No such table"), "{error}");
+        let load_error = catalog.load_table(&ident("t")).await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "require_loaded_iceberg_tables\ncaused by\n{}",
+                to_datafusion_error(load_error)
+            ),
+            "{sql}"
+        );
     }
 
     /// Renames `ns.{from}` to `ns.{to}`, so a table registered from `ns.t` can
     /// be made to fail to load, and then to load again.
     async fn rename_table(catalog: &Arc<dyn Catalog>, from: &str, to: &str) {
-        let ident = |name| TableIdent::from_strs(["ns", name]).unwrap();
         catalog
             .rename_table(&ident(from), &ident(to))
             .await
             .unwrap();
+    }
+
+    fn ident(name: &str) -> TableIdent {
+        TableIdent::from_strs(["ns", name]).unwrap()
     }
 
     /// Standalone Ballista over `ns.t` holding `(1, 'a'), (2, 'b')`, splitting

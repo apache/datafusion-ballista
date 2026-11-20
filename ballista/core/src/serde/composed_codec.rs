@@ -119,7 +119,7 @@ impl ComposedLogicalExtensionCodec {
 /// that recognised the node (one other than `NotImplemented`) unchanged, and
 /// join the errors only when every codec declined. Joining them into one string
 /// loses the owning codec's error chain, so `DataFusionError::find_root` can't
-/// reach it and callers can only match its text. For example, reading an
+/// reach it and callers can only match its text. For example, encoding an
 /// Iceberg table that can't be loaded reports `no composed codec could encode
 /// it: codec 0: … not implemented …; codec 1: <the load error>`.
 fn collect(mut errors: Vec<DataFusionError>) -> DataFusionError {
