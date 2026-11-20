@@ -45,6 +45,7 @@ use crate::execution_plans::shuffle_writer::{
     collect_window_state_operators, handoff_stream, run_coordinator, take_handoff,
 };
 use crate::execution_plans::shuffle_writer_trait::ShuffleWriter;
+use crate::execution_plans::vcore_release;
 use crate::execution_plans::{ObservedWindowState, PartitionedBoundedWindowAggExec};
 use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::{ShuffleWritePartition, TaskColumnStats};
@@ -313,6 +314,7 @@ impl RangeShuffleWriterExec {
                     .count(plan.execute(global_partition, context.clone())?, None);
                 let index_schema = index_schema.clone();
                 let ordering = self.ordering.clone();
+                let context = context.clone();
                 handles.spawn(async move {
                     // The keys are collected from the batches on their way to
                     // the writer, so a key and the block it describes come from
@@ -347,6 +349,7 @@ impl RangeShuffleWriterExec {
                         layout.record_batches.len(),
                         layout.dictionaries.len(),
                     );
+                    vcore_release::partition_completed(&context, num_partitions);
                     Ok::<_, DataFusionError>((global_partition, stats))
                 });
             }

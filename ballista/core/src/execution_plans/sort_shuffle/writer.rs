@@ -37,6 +37,7 @@ use super::super::shuffle_writer::{
     ColumnStatsCollector, handoff_stream, sketched_columns, take_handoff,
 };
 use super::super::shuffle_writer_trait::ShuffleWriter;
+use super::super::vcore_release;
 use super::buffer::BufferedBatches;
 use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
@@ -1235,7 +1236,13 @@ async fn run_coordinator(
     for input_partition in 0..num_input_partitions {
         let w = writer.clone();
         let c = ctx.clone();
-        writes.spawn(async move { w.execute_shuffle_write(input_partition, c).await });
+        writes.spawn(async move {
+            let output = w.execute_shuffle_write(input_partition, c.clone()).await;
+            if output.is_ok() {
+                vcore_release::partition_completed(&c, num_input_partitions);
+            }
+            output
+        });
     }
 
     let mut grouped: Vec<Vec<ShuffleWritePartition>> =

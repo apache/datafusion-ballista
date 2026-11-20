@@ -89,6 +89,52 @@ async fn terminal_statuses_refund_weighted_reservations_only_once() {
     assert!(manager.outstanding_task_reservations.is_empty());
 }
 
+/// A report that `task`, still running, released `vcores_released` vcores.
+fn running(task: &TaskDescription, vcores_released: u32) -> TaskStatus {
+    let mut status = completed(task);
+    status.status = Some(task_status::Status::Running(RunningTask {
+        executor_id: "executor-1".to_string(),
+        vcores_released,
+    }));
+    status
+}
+
+#[tokio::test]
+async fn running_statuses_refund_released_vcores_and_terminal_the_rest() {
+    let manager = manager();
+    let task = task(0, 0, 4);
+    manager.record_task_reservations(&[("executor-1".to_string(), task.clone())]);
+
+    assert_eq!(
+        manager.take_vcores_for_statuses("executor-1", &[running(&task, 1)]),
+        1
+    );
+    // A report for another executor's task releases nothing.
+    assert_eq!(
+        manager.take_vcores_for_statuses("executor-2", &[running(&task, 1)]),
+        0
+    );
+    // The task keeps a vcore until it ends, whatever it reports.
+    assert_eq!(
+        manager.take_vcores_for_statuses("executor-1", &[running(&task, 5)]),
+        2
+    );
+    assert_eq!(
+        manager.take_vcores_for_statuses("executor-1", &[running(&task, 1)]),
+        0
+    );
+    assert_eq!(
+        manager.take_vcores_for_statuses("executor-1", &[completed(&task)]),
+        1
+    );
+    // A report that arrives after the terminal one finds nothing to release.
+    assert_eq!(
+        manager.take_vcores_for_statuses("executor-1", &[running(&task, 1)]),
+        0
+    );
+    assert!(manager.outstanding_task_reservations.is_empty());
+}
+
 #[tokio::test]
 async fn nonterminal_unknown_and_wrong_executor_statuses_do_not_refund() {
     let manager = manager();
@@ -98,6 +144,7 @@ async fn nonterminal_unknown_and_wrong_executor_statuses_do_not_refund() {
     let mut running = terminal.clone();
     running.status = Some(task_status::Status::Running(RunningTask {
         executor_id: "executor-1".to_string(),
+        vcores_released: 0,
     }));
     let mut missing_status = terminal.clone();
     missing_status.status = None;

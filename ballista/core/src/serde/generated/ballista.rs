@@ -1428,6 +1428,10 @@ pub struct ExecutorResourcePair {
 pub struct RunningTask {
     #[prost(string, tag = "1")]
     pub executor_id: ::prost::alloc::string::String,
+    /// Vcores the task's finished partitions no longer need, released since its
+    /// previous status. The task keeps the rest until its terminal status.
+    #[prost(uint32, tag = "2")]
+    pub vcores_released: u32,
 }
 #[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

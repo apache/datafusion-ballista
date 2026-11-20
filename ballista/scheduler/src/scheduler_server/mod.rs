@@ -689,7 +689,9 @@ mod test {
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
 
-    use ballista_core::serde::protobuf::{JobStatus, job_status};
+    use ballista_core::serde::protobuf::{
+        JobStatus, MultiTaskDefinition, RunningTask, job_status, task_status,
+    };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorOperatingSystemSpecification,
         ExecutorSpecification,
@@ -699,11 +701,11 @@ mod test {
 
     use crate::test_utils::{
         ExplodingTableProvider, MetricEventKind, RejectingTaskLauncher, SchedulerTest,
-        TaskRunner, TestMetricsCollector, aggregation_logical_plan, assert_event,
-        assert_job_failed, assert_job_successful, assert_no_event, assert_subscriber_saw,
-        execution_failure, failing_task_runner, mock_completed_task,
-        static_session_config, test_cluster_context, test_scheduler_server,
-        test_scheduler_server_uninit,
+        TaskRunner, TaskRunnerFn, TestMetricsCollector, aggregation_logical_plan,
+        assert_event, assert_job_failed, assert_job_successful, assert_no_event,
+        assert_subscriber_saw, execution_failure, failing_task_runner,
+        mock_completed_task, static_session_config, successful_task_status,
+        test_cluster_context, test_scheduler_server, test_scheduler_server_uninit,
     };
 
     #[tokio::test]
@@ -1012,6 +1014,51 @@ mod test {
             assert_no_event(case, job_id, metrics, MetricEventKind::Submitted);
         }
         assert_event(case, job_id, metrics, MetricEventKind::Failed);
+    }
+
+    /// A task that reports released vcores while it runs still completes on
+    /// its terminal report, and gives back every vcore exactly once.
+    #[tokio::test]
+    async fn running_reports_release_vcores_and_leave_the_task_running() -> Result<()> {
+        let runner =
+            TaskRunnerFn::new(|executor_id: String, task: MultiTaskDefinition| {
+                task.task_ids
+                    .iter()
+                    .flat_map(|task_id| {
+                        let done = successful_task_status(
+                            &task.job_id,
+                            task.stage_id,
+                            task.stage_attempt_num,
+                            task_id.task_id,
+                            &executor_id,
+                            1,
+                            timestamp_millis(),
+                        );
+                        let mut running = done.clone();
+                        running.status =
+                            Some(task_status::Status::Running(RunningTask {
+                                executor_id: executor_id.clone(),
+                                vcores_released: 1,
+                            }));
+                        [running.clone(), running, done]
+                    })
+                    .collect()
+            });
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            Arc::new(TestMetricsCollector::default()),
+            1,
+            4,
+            Some(Arc::new(runner)),
+        )
+        .await?;
+
+        let (status, _) = test.run("", &aggregation_logical_plan(4)).await?;
+
+        assert_job_successful("running reports", &status);
+        assert!(test.await_free_vcores(|free| free == 4).await?);
+        Ok(())
     }
 
     // This test will fail when AQE scheduling is used, as AQE will fold the

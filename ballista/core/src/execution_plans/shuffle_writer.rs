@@ -76,6 +76,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
 use super::shuffle_writer_trait::ShuffleWriter;
+use super::vcore_release;
 
 /// Rule for translating a passthrough writer's local output-partition index
 /// (`0..plan.output_partitioning().partition_count()`) to a global partition
@@ -821,6 +822,7 @@ impl ShuffleWriterExec {
 
                 let mut stream = column_stats
                     .count(plan.execute(local_input_partition, context.clone())?, None);
+                let context = context.clone();
                 handles.spawn(async move {
                     let stats = utils::write_stream_to_disk(
                         &mut stream,
@@ -834,6 +836,7 @@ impl ShuffleWriterExec {
                     let rows = stats.num_rows.unwrap_or(0) as usize;
                     write_metrics.input_rows.add(rows);
                     write_metrics.output_rows.add(rows);
+                    vcore_release::partition_completed(&context, num_partitions);
                     Ok::<_, DataFusionError>((
                         local_input_partition,
                         global_partition,

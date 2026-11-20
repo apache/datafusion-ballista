@@ -1772,7 +1772,8 @@ impl ExecutionGraph for StaticExecutionGraph {
                     end_exec_time: 0,
                     finish_time: 0,
                     task_status: task_status::Status::Running(RunningTask {
-                        executor_id: executor_id.to_owned()
+                        executor_id: executor_id.to_owned(),
+                        vcores_released: 0,
                     }),
                     global_input_partition_ids: input_partition_ids.clone(),
                     vcores_consumed: input_partition_ids.len() as u32,
@@ -1849,7 +1850,10 @@ pub fn create_task_info(executor_id: String, task_id: usize) -> TaskInfo {
         start_exec_time: 0,
         end_exec_time: 0,
         finish_time: 0,
-        task_status: task_status::Status::Running(RunningTask { executor_id }),
+        task_status: task_status::Status::Running(RunningTask {
+            executor_id,
+            vcores_released: 0,
+        }),
         global_input_partition_ids: vec![],
         vcores_consumed: 0,
     }

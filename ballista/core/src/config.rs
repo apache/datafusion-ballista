@@ -238,6 +238,11 @@ pub const BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION: &str =
 pub const BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK: &str =
     "ballista.scheduler.max_partitions_per_task";
 
+/// Configuration key controlling whether a task hands back the vcores of its
+/// finished partitions while its other partitions are still running.
+pub const BALLISTA_SCHEDULER_RELEASE_PARTITION_VCORES: &str =
+    "ballista.scheduler.release_partition_vcores";
+
 /// Configuration key controlling whether the scheduler plans a session's jobs
 /// with the file statistics cache it shares across sessions. Enabled by
 /// default; set to `false` to keep the session's jobs off the shared cache.
@@ -641,6 +646,19 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                 .to_string(),
             DataType::UInt64,
             Some(0.to_string()),
+        ),
+        ConfigEntry::new(
+            BALLISTA_SCHEDULER_RELEASE_PARTITION_VCORES.to_string(),
+            "Hands back the vcores of a task's finished partitions while its \
+             other partitions are still running, instead of holding every \
+             vcore until the whole task ends, so that other tasks can start on \
+             them. The task's memory pool keeps the size it was given for all \
+             of its partitions, so while a task with released vcores runs, the \
+             executor's task pools can add up to more than its memory. Does \
+             not apply to pipelined jobs, whose vcores are reserved per job."
+                .to_string(),
+            DataType::Boolean,
+            Some(true.to_string()),
         ),
         ConfigEntry::new(
             BALLISTA_SCHEDULER_SHARE_FILE_STATISTICS_CACHE.to_string(),
@@ -1217,6 +1235,12 @@ impl BallistaConfig {
     /// Returns the scheduler's per-task partition-slice cap. `0` means unbounded.
     pub fn max_partitions_per_task(&self) -> usize {
         self.get_usize_setting(BALLISTA_SCHEDULER_MAX_PARTITIONS_PER_TASK)
+    }
+
+    /// Returns whether a task hands back the vcores of its finished partitions
+    /// while it is still running.
+    pub fn release_partition_vcores(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SCHEDULER_RELEASE_PARTITION_VCORES)
     }
 
     /// Returns whether the scheduler plans this session's jobs with the file
