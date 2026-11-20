@@ -725,6 +725,12 @@ impl RunningStage {
         }
     }
 
+    /// Replace the plan before dispatch and refresh the expected task metrics shape.
+    pub(crate) fn replace_plan(&mut self, plan: Arc<dyn ExecutionPlan>) {
+        self.plan_metrics_len = collect_plan_metrics(plan.as_ref()).len();
+        self.plan = plan;
+    }
+
     /// Converts this running stage to a successful stage after all tasks complete.
     pub fn to_successful(&self) -> SuccessfulStage {
         let task_infos = self.task_infos.clone();
