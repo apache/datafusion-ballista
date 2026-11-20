@@ -186,10 +186,26 @@ impl DefaultDistributedPlanner {
             )?;
             stages.append(&mut probe_stages);
 
+            let null_aware = hash_join.null_aware;
             let new_join = execution_plan.replace_children(
                 vec![broadcast_left, probe],
                 ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
             )?;
+            // A null-aware join must keep the coalesce over its probe side, but
+            // `EnsureRequirements` removes it if it reruns over this stage at a
+            // boundary above. Close the stage at the join so it cannot.
+            if null_aware {
+                let writer = create_shuffle_writer_with_config(
+                    job_id,
+                    self.next_stage_id(),
+                    new_join,
+                    None,
+                    config,
+                )?;
+                let reader = create_unresolved_shuffle(writer.as_ref());
+                stages.push(writer);
+                return Ok((reader, stages));
+            }
             return Ok((new_join, stages));
         }
 
@@ -2213,22 +2229,25 @@ order by
         Ok(())
     }
 
-    #[tokio::test]
-    async fn nested_loop_join_probe_gets_one_partition_stage() -> Result<(), BallistaError>
-    {
+    /// A one-partition table `small` and a two-partition table `big`, both with
+    /// a single nullable Int32 column `k`.
+    fn small_big_ctx() -> Result<datafusion::prelude::SessionContext, BallistaError> {
         use datafusion::arrow::array::Int32Array;
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
         use datafusion::arrow::record_batch::RecordBatch;
         use datafusion::datasource::MemTable;
         use datafusion::prelude::{SessionConfig, SessionContext};
 
-        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, true)]));
         let batch = |keys: Vec<i32>| {
             RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(keys))])
                 .map_err(|e| BallistaError::General(e.to_string()))
         };
+        // The scheduler enforces round-robin repartitioning off.
         let ctx = SessionContext::new_with_config(
-            SessionConfig::new().with_target_partitions(2),
+            SessionConfig::new()
+                .with_target_partitions(2)
+                .with_round_robin_repartition(false),
         );
         ctx.register_batch("small", batch(vec![1, 2])?)?;
         // Two partitions, so the probe side has something to coalesce.
@@ -2240,6 +2259,13 @@ order by
             ],
         )?;
         ctx.register_table("big", Arc::new(big))?;
+        Ok(ctx)
+    }
+
+    #[tokio::test]
+    async fn nested_loop_join_probe_gets_one_partition_stage() -> Result<(), BallistaError>
+    {
+        let ctx = small_big_ctx()?;
         let options = ctx.state().config().options().clone();
 
         let stages = stages_for_sql(
@@ -2260,6 +2286,32 @@ order by
           NestedLoopJoinExec: join_type=Left, filter=k@0 < k@1
             DataSourceExec: partitions=1, partition_sizes=[1]
             UnresolvedShuffleExec: stage=1, partitioning: UnknownPartitioning(1)
+        ");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn null_aware_join_keeps_its_probe_coalesce() -> Result<(), BallistaError> {
+        let ctx = small_big_ctx()?;
+        let options = ctx.state().config().options().clone();
+
+        // The aggregate cuts a stage above the join, which reruns
+        // `EnsureRequirements` over it.
+        let stages = stages_for_sql(
+            &ctx,
+            &options,
+            "select count(*) from small where k not in (select k from big)",
+        )
+        .await?;
+
+        assert_eq!(stages.len(), 5);
+        assert_plan!(stages[2].as_ref(), @r"
+        ShuffleWriterExec: partitioning: UnknownPartitioning(1)
+          HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(k@0, k@0)], projection=[], null_aware
+            UnresolvedShuffleExec: stage=1, broadcast=true, upstream_partitions: 1
+            CoalescePartitionsExec
+              UnresolvedShuffleExec: stage=2, partitioning: UnknownPartitioning(2)
         ");
 
         Ok(())
