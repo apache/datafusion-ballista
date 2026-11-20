@@ -1107,40 +1107,40 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Launch the given tasks on the specified executor.
     ///
-    /// Returns the jobs that cannot run: those the executor rejected, and
-    /// those whose task definitions could not be prepared here. Tasks of the
-    /// latter were never sent anywhere and will never report a status, so the
-    /// caller has to fail the job and refund the tasks' slots, exactly as for a
-    /// rejection. `Err` is only for the launch RPC itself failing, which says
-    /// the executor is sick, not the plan.
+    /// Returns the jobs that cannot run: those whose task definitions could not
+    /// be prepared here, each with the preparation error, and those the
+    /// executor rejected. Tasks of the former were never sent anywhere and will
+    /// never report a status, so the caller has to fail the job and refund the
+    /// tasks' slots, exactly as for a rejection. `Err` is only for the launch
+    /// RPC itself failing, which says the executor is sick, not the plan.
     pub(crate) async fn launch_multi_task(
         &self,
         executor: &ExecutorMetadata,
         tasks: Vec<Vec<TaskDescription>>,
         executor_manager: &ExecutorManager,
-    ) -> Result<HashSet<JobId>> {
+    ) -> Result<(HashMap<JobId, String>, HashSet<JobId>)> {
         let mut multi_tasks = vec![];
-        let mut failed_jobs = HashSet::new();
+        let mut unprepared_jobs = HashMap::new();
         for stage_tasks in tasks {
             let job_id = stage_tasks.first().map(|task| task.key.job_id.clone());
             match self.prepare_multi_task_definition(stage_tasks) {
                 Ok(stage_tasks) => multi_tasks.extend(stage_tasks),
                 Err(e) => {
                     error!("Fail to prepare task definition: {e:?}");
-                    failed_jobs.extend(job_id);
+                    unprepared_jobs.extend(job_id.map(|job_id| (job_id, e.to_string())));
                 }
             }
         }
 
-        if !multi_tasks.is_empty() {
-            failed_jobs.extend(
-                self.launcher
-                    .launch_tasks(executor, multi_tasks, executor_manager)
-                    .await?,
-            );
-        }
+        let rejected_jobs = if multi_tasks.is_empty() {
+            HashSet::new()
+        } else {
+            self.launcher
+                .launch_tasks(executor, multi_tasks, executor_manager)
+                .await?
+        };
 
-        Ok(failed_jobs)
+        Ok((unprepared_jobs, rejected_jobs))
     }
 
     #[allow(dead_code)]
