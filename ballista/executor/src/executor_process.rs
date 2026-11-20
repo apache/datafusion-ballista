@@ -1487,8 +1487,10 @@ pub fn structure_executor_metadata(
 #[cfg(test)]
 mod tests {
     use crate::executor_process::is_subdirectory;
+    use crate::executor_server::TERMINATING;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     use super::ExecutorProcessConfig;
     use super::clean_shuffle_data_loop;
@@ -1851,12 +1853,23 @@ mod tests {
     /// stops a service right after startup; it then goes through the normal
     /// graceful shutdown path, which runs to the end with the scheduler.
     ///
-    /// This sets the process-wide `TERMINATING` flag, which no other unit test
-    /// reads.
+    /// The shutdown sets the process-wide `TERMINATING` flag, which the
+    /// heartbeat reads; the helper puts it back to `false` on the way out, also
+    /// when it panics, so it leaves no state behind.
     async fn run_executor_until_flight_port_is_taken(
         job_data_clean_up_interval_seconds: u64,
         work_dir: &Path,
     ) {
+        /// Clears `TERMINATING` when dropped.
+        struct ResetTerminating;
+
+        impl Drop for ResetTerminating {
+            fn drop(&mut self) {
+                TERMINATING.store(false, Ordering::Release);
+            }
+        }
+        let _reset_terminating = ResetTerminating;
+
         let scheduler = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let scheduler_port = scheduler.local_addr().unwrap().port();
         tokio::spawn(
