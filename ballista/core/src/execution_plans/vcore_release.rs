@@ -121,7 +121,8 @@ mod tests {
     fn keeps_a_vcore_until_the_task_ends() {
         assert_eq!(releases(1, 1), Vec::<usize>::new());
         assert_eq!(releases(4, 1), Vec::<usize>::new());
-        assert_eq!(releases(1, 8), Vec::<usize>::new());
+        // Even once its only partition is done.
+        assert_eq!(releases(1, 8), vec![7]);
     }
 
     #[test]
