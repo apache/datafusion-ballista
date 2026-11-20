@@ -1402,6 +1402,7 @@ impl datafusion::config::ConfigExtension for BallistaConfig {
 /// How a job's stages exchange data, set per session with
 /// [`BALLISTA_EXECUTION_MODE`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExecutionMode {
     /// Stages run one after another. Each stage writes its output to shuffle
     /// files, and the next stage starts once every input stage has finished.

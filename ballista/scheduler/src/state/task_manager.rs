@@ -45,7 +45,7 @@ use ballista_core::serde::protobuf::{
     JobStatus, MultiTaskDefinition, TaskDefinition, TaskId, TaskStatus, job_status,
     task_status,
 };
-use ballista_core::serde::scheduler::{ExecutorMetadata, TaskKey};
+use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation, TaskKey};
 use ballista_core::{JobId, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::execution::config::SessionConfig;
@@ -192,6 +192,9 @@ pub struct ExecutorLostOutcome {
     pub tasks_to_cancel: Vec<RunningTaskInfo>,
     /// Jobs that must fail, with the reason and when they were queued.
     pub failed_jobs: Vec<(JobId, String, u64)>,
+    /// Jobs whose stages wait for `DataFrame::cache()` data lost with the
+    /// executor to be rebuilt, with the external stage ids of the lost reads.
+    pub lost_inputs: Vec<(JobId, Vec<usize>)>,
 }
 
 /// Tracks stage state changes during task status updates.
@@ -977,14 +980,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Handles executor loss by resetting affected tasks and stages.
     ///
-    /// Returns the running tasks that need to be cancelled, and the jobs that
-    /// cannot survive the loss and must fail, with the reason. A pipelined
-    /// job is one: its tasks stream to each other, so there is nothing to
-    /// roll back to. So is a job that lost `DataFrame::cache()` data with the
-    /// executor: its graph cannot re-run another job's output. A job whose
-    /// rollback itself fails is failed too: its graph is half-reset and can
-    /// no longer make progress, and the remaining jobs still need their
-    /// tasks back.
+    /// Returns the running tasks that need to be cancelled, the jobs that
+    /// cannot survive the loss and must fail, with the reason, and the jobs
+    /// whose stages now wait for `DataFrame::cache()` data to be rebuilt. A
+    /// pipelined job must fail: its tasks stream to each other, so there is
+    /// nothing to roll back to. So must a job that lost cache data and whose
+    /// graph cannot resume after it is rebuilt. A job whose rollback itself
+    /// fails is failed too: its graph is half-reset and can no longer make
+    /// progress, and the remaining jobs still need their tasks back.
     pub async fn executor_lost(&self, executor_id: &str) -> Result<ExecutorLostOutcome> {
         // Its capacity has been removed, so there is nothing left to refund.
         // Do this even for evicted jobs and before a graph reset can fail.
@@ -1000,41 +1003,68 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let lost_pipelined = graph
                 .as_pipelined_mut()
                 .map(|pipelined| pipelined.lost_executor(executor_id));
-            let reason = if graph.reads_external_data_on(executor_id) {
-                Some(format!(
+            let reason = if !graph.recovers_external_inputs()
+                && graph.reads_external_data_on(executor_id)
+            {
+                format!(
                     "Job {job_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
-                ))
-            } else if let Some(reason) = lost_pipelined {
+                )
+            } else if let Some(Some(reason)) = lost_pipelined {
                 reason
             } else {
+                // The reset drops the executor's cache locations like any
+                // other, and rolls back the stages reading them. A pipelined
+                // job the loss leaves intact drops them only until it is
+                // placed, and rolls nothing back.
+                let waiting_before = graph.waiting_external_inputs();
                 match graph.reset_stages_on_lost_executor(executor_id) {
                     Ok(reset) => {
                         if !reset.0.is_empty() {
                             outcome.tasks_to_cancel.extend(reset.1);
+                        }
+                        let inputs: Vec<usize> = graph
+                            .waiting_external_inputs()
+                            .into_iter()
+                            .filter(|input| !waiting_before.contains(input))
+                            .collect();
+                        if !inputs.is_empty() {
+                            outcome.lost_inputs.push((job_id.clone(), inputs));
                         }
                         continue;
                     }
                     // A failed rollback leaves the graph half-reset and it can
                     // never make progress again, so fail the job rather than
                     // hang it — and keep recovering the remaining jobs.
-                    Err(e) => Some(format!(
+                    Err(e) => format!(
                         "Job {job_id} failed to roll back after the loss of \
                          executor {executor_id}: {e}"
-                    )),
+                    ),
                 }
             };
-            if let Some(reason) = reason {
-                let queued_at = match &graph.status().status {
-                    Some(job_status::Status::Running(running)) => running.queued_at,
-                    _ => 0,
-                };
-                outcome
-                    .failed_jobs
-                    .push((job_id.clone(), reason, queued_at));
-            }
+            let queued_at = match &graph.status().status {
+                Some(job_status::Status::Running(running)) => running.queued_at,
+                _ => 0,
+            };
+            outcome
+                .failed_jobs
+                .push((job_id.clone(), reason, queued_at));
         }
 
         Ok(outcome)
+    }
+
+    /// Provides `job_id`'s lost external input `input` again, at `locations`,
+    /// and returns the events to post. Nothing to do if the job has ended.
+    pub(crate) async fn resolve_external_input(
+        &self,
+        job_id: &JobId,
+        input: usize,
+        locations: Vec<Vec<PartitionLocation>>,
+    ) -> Result<Vec<QueryStageSchedulerEvent>> {
+        match self.get_active_execution_graph(job_id) {
+            Some(graph) => graph.write().await.resolve_external_input(input, locations),
+            None => Ok(vec![]),
+        }
     }
 
     /// Retrieves the number of available tasks for the given job.
@@ -1529,6 +1559,14 @@ mod tests {
             self.inner
                 .create_or_update_session(session_id, config)
                 .await
+        }
+
+        async fn new_context(
+            &self,
+            session_id: &str,
+            config: &SessionConfig,
+        ) -> Result<Arc<SessionContext>> {
+            self.inner.new_context(session_id, config).await
         }
 
         async fn remove_session(&self, session_id: &str) -> Result<()> {

@@ -430,7 +430,9 @@ currently implemented:
 The implementation covers the happy path only. The following are known to be
 missing or incomplete:
 
-- Executor failure handling on the AQE path ([#1986](https://github.com/apache/datafusion-ballista/issues/1986))
+- Executor failure handling on the AQE path ([#1986](https://github.com/apache/datafusion-ballista/issues/1986)):
+  a job that loses the output of a stage that has already finished fails
+  instead of rerunning the stage
 - Switching from hash join to sort-merge join based on runtime statistics ([#1988](https://github.com/apache/datafusion-ballista/issues/1988))
 - Switching from streaming aggregation to hash aggregation based on runtime statistics ([#1989](https://github.com/apache/datafusion-ballista/issues/1989))
 
@@ -454,9 +456,12 @@ cached.collect().await?;       // reads it
 ```
 
 - Cached data is shuffle output on the executors. If a query loses part of it
-  (an executor holding it is lost, or a fetch from it fails), the query fails
-  with "lost DataFrame::cache() data; retry the query", and the retry rebuilds
-  the cache.
+  (an executor holding it is lost, or a fetch from it fails), it rebuilds the
+  cache and carries on. A query planned by the adaptive planner, a pipelined
+  query once its tasks have started, or one that also reads the lost cache, or
+  a cache it was built from, another way (a self-join of a cached frame, say),
+  fails instead with "lost DataFrame::cache() data; retry the query", and the
+  retry rebuilds the cache.
 - Cached data is not evicted yet: it is kept until it is found lost, so cache
   only what you reuse.
 - `EXPLAIN` of a cached DataFrame never builds it.

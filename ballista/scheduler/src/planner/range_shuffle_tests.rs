@@ -28,15 +28,18 @@ use ballista_core::execution_plans::{
     ShuffleReaderExec, ShuffleWriter, compute_global_output_partition_ids,
 };
 use ballista_core::extension::SessionConfigExt;
-use ballista_core::serde::protobuf::ShuffleWritePartition;
+use ballista_core::serde::protobuf::{
+    OperatorMetricsSet, ShuffleWritePartition, SuccessfulTask, TaskStatus, task_status,
+};
 use ballista_core::serde::scheduler::{ExecutorEndpoint, PartitionLocation};
+use ballista_core::utils::collect_plan_metrics;
 use ballista_executor::execution_engine::{DefaultExecutionEngine, ExecutionEngine};
 use datafusion::arrow::array::{AsArray, Int64Array, RecordBatch};
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::{DataType, Field, Int64Type, Schema, SchemaRef};
 use datafusion::common::ScalarValue;
 use datafusion::config::ConfigOptions;
-use datafusion::datasource::memory::MemorySourceConfig;
+use datafusion::datasource::memory::{MemTable, MemorySourceConfig};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{
     LexOrdering, PhysicalSortExpr, RangePartitioning, SplitPoint,
@@ -54,7 +57,9 @@ use crate::state::execution_graph::{
     ExecutionGraph, ExecutionStage, StaticExecutionGraph, partition_to_location,
 };
 use crate::state::task_builder::restrict_plan_to_partitions;
-use crate::test_utils::{mock_executor, revive_graph_and_complete_next_stage};
+use crate::test_utils::{
+    graph_from_physical, mock_executor, revive_graph_and_complete_next_stage,
+};
 
 const JOB: &str = "job";
 /// The sort key `k` is split into three ranges by these.
@@ -89,7 +94,12 @@ type Rows = Vec<(Option<i64>, i64)>;
 
 /// One input partition per entry.
 fn source(partitions: &[Rows]) -> Arc<dyn ExecutionPlan> {
-    let batches: Vec<Vec<RecordBatch>> = partitions
+    MemorySourceConfig::try_new_exec(&batches(partitions), schema(), None).unwrap()
+}
+
+/// A batch of `(k, id)` rows per partition.
+fn batches(partitions: &[Rows]) -> Vec<Vec<RecordBatch>> {
+    partitions
         .iter()
         .map(|rows| {
             let keys = Int64Array::from_iter(rows.iter().map(|(k, _)| *k));
@@ -99,8 +109,7 @@ fn source(partitions: &[Rows]) -> Arc<dyn ExecutionPlan> {
                     .unwrap(),
             ]
         })
-        .collect();
-    MemorySourceConfig::try_new_exec(&batches, schema(), None).unwrap()
+        .collect()
 }
 
 /// A distributed `ORDER BY k`: range-partition, then sort each partition.
@@ -207,14 +216,15 @@ impl Tasks {
 }
 
 /// Runs one task of `stage` as the scheduler and an executor would, short of the
-/// network.
+/// network. Returns where it wrote its output and the operator metrics it
+/// reports.
 async fn run_task(
     stage: &Arc<dyn ExecutionPlan>,
     stage_id: usize,
     task_id: usize,
     slice: &[usize],
     work_dir: &Path,
-) -> Result<Vec<ShuffleWritePartition>> {
+) -> Result<(Vec<ShuffleWritePartition>, Vec<OperatorMetricsSet>)> {
     let ctx = SessionContext::new();
     let restricted = restrict_plan_to_partitions(Arc::clone(stage), slice, None)?;
     let output_ids = compute_global_output_partition_ids(stage, slice);
@@ -228,7 +238,14 @@ async fn run_task(
         work_dir.to_str().unwrap(),
         &SessionConfig::new_with_ballista(),
     )?;
-    Ok(task.execute_query_stage(task_id, ctx.task_ctx()).await?)
+    let written = task.execute_query_stage(task_id, ctx.task_ctx()).await?;
+    // Converted the way the executor converts them for the task status.
+    let metrics = task
+        .collect_plan_metrics()
+        .into_iter()
+        .map(|m| m.try_into())
+        .collect::<Result<_>>()?;
+    Ok((written, metrics))
 }
 
 /// Runs every task of a stage, dealing its input partitions out as `tasks` says,
@@ -248,7 +265,7 @@ async fn run_stage(
     )));
     let mut locations: HashMap<usize, Vec<PartitionLocation>> = HashMap::new();
     for (task_id, slice) in tasks.slices(input_partitions).iter().enumerate() {
-        let written = run_task(stage, stage_id, task_id, slice, work_dir).await?;
+        let (written, _) = run_task(stage, stage_id, task_id, slice, work_dir).await?;
         for location in
             partition_to_location(&JOB.into(), task_id, stage_id, &executor, written)
         {
@@ -460,5 +477,111 @@ async fn consumer_of_a_range_shuffle_resolves_to_one_partition_per_range() -> Re
         .expect("the consumer's placeholder was resolved to a reader");
     assert_eq!(reader.partition.len(), 3);
     assert_eq!(reader.properties().output_partitioning(), &partitioning);
+    Ok(())
+}
+
+// --- operator metrics, as executors report them ------------------------------
+
+/// Runs `graph` to completion, running every task the way an executor does and
+/// reporting its real operator metrics back. Checks that the metrics of every
+/// task merge into its stage and that each finished stage has one metrics set
+/// per operator of its plan. Returns `(stage id, tasks, metrics sets)` for each
+/// stage.
+async fn run_graph_reporting_metrics(
+    mut graph: StaticExecutionGraph,
+) -> Result<Vec<(usize, usize, usize)>> {
+    let work_dir = TempDir::new()?;
+    let executor = mock_executor("executor-0".to_string());
+    let mut tasks: HashMap<usize, usize> = HashMap::new();
+    while !graph.is_successful() {
+        let task = graph
+            .pop_next_task(&executor.id)?
+            .expect("a job that has not succeeded has a task to run");
+        let (stage_id, task_id) = (task.key.stage_id, task.key.task_id);
+        let (partitions, metrics) = run_task(
+            &task.plan,
+            stage_id,
+            task_id,
+            &task.global_input_partition_ids,
+            work_dir.path(),
+        )
+        .await?;
+
+        // The graph skips metrics it can't merge, so merge them into a copy of
+        // the stage first to fail on a skipped task, with the reason.
+        let ExecutionStage::Running(stage) = &graph.stages()[&stage_id] else {
+            panic!("stage {stage_id} is not running");
+        };
+        stage
+            .clone()
+            .update_task_metrics(task_id, metrics.clone())?;
+
+        let status = TaskStatus {
+            task_id: task_id as u32,
+            job_id: task.key.job_id.clone().into(),
+            stage_id: stage_id as u32,
+            stage_attempt_num: task.stage_attempt_num as u32,
+            metrics,
+            status: Some(task_status::Status::Successful(SuccessfulTask {
+                executor_id: executor.id.clone(),
+                partitions,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        graph.update_task_status(&executor, vec![status], 1, 1)?;
+        *tasks.entry(stage_id).or_default() += 1;
+    }
+
+    let mut stages: Vec<_> = graph
+        .stages()
+        .iter()
+        .map(|(stage_id, stage)| {
+            let ExecutionStage::Successful(stage) = stage else {
+                panic!("stage {stage_id} is {}", stage.variant_name());
+            };
+            let plan_metrics = collect_plan_metrics(stage.plan.as_ref()).len();
+            assert_eq!(stage.stage_metrics.len(), plan_metrics, "stage {stage_id}");
+            (*stage_id, tasks[stage_id], plan_metrics)
+        })
+        .collect();
+    stages.sort();
+    Ok(stages)
+}
+
+/// Every task of a global sort reports metrics that match its stage plan.
+#[tokio::test]
+async fn global_sort_tasks_report_metrics_that_match_the_stage_plan() -> Result<()> {
+    let plan = global_sort_plan(source(&input_rows(4, 50)), range_partitioning());
+    let graph = graph_from_physical(plan, SessionConfig::new_with_ballista());
+
+    let stages = run_graph_reporting_metrics(graph).await?;
+
+    // (stage id, tasks, metrics sets)
+    assert_eq!(stages, vec![(1, 4, 2), (2, 3, 3)]);
+    Ok(())
+}
+
+/// Every task of a join, aggregate and sort reports metrics that match its
+/// stage plan.
+#[tokio::test]
+async fn join_aggregate_tasks_report_metrics_that_match_the_stage_plan() -> Result<()> {
+    let ctx =
+        SessionContext::new_with_config(SessionConfig::new().with_target_partitions(4));
+    for table in ["a", "b"] {
+        let rows = MemTable::try_new(schema(), batches(&input_rows(4, 50)))?;
+        ctx.register_table(table, Arc::new(rows))?;
+    }
+    let plan = ctx
+        .sql("SELECT a.k, count(*), sum(b.id) FROM a JOIN b ON a.k = b.k GROUP BY a.k ORDER BY a.k")
+        .await?
+        .create_physical_plan()
+        .await?;
+    let graph = graph_from_physical(plan, SessionConfig::new_with_ballista());
+
+    let stages = run_graph_reporting_metrics(graph).await?;
+
+    // (stage id, tasks, metrics sets)
+    assert_eq!(stages, vec![(1, 4, 2), (2, 4, 5), (3, 4, 5), (4, 1, 3)]);
     Ok(())
 }
