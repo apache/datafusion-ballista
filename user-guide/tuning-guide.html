@@ -872,8 +872,11 @@ query once its tasks have started, or one that also reads the lost cache, or
 a cache it was built from, another way (a self-join of a cached frame, say),
 fails instead with “lost DataFrame::cache() data; retry the query”, and the
 retry rebuilds the cache.</p></li>
-<li><p>Cached data is not evicted yet: it is kept until it is found lost, so cache
-only what you reuse.</p></li>
+<li><p>Cached data is not evicted yet: it is kept until it is found lost, or its
+session is removed through the scheduler’s <code class="docutils literal notranslate"><span class="pre">RemoveSession</span></code> gRPC call, which
+the Rust and Python clients do not expose yet. So cache only what you reuse.
+Each <code class="docutils literal notranslate"><span class="pre">cache()</span></code> call caches its DataFrame anew; an earlier call’s cache is not
+freed.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">EXPLAIN</span></code> of a cached DataFrame never builds it.</p></li>
 <li><p>An operator can turn caching off for the whole cluster with the scheduler’s
 <code class="docutils literal notranslate"><span class="pre">--disable-dataframe-cache</span></code> flag; cached DataFrames are then computed as part

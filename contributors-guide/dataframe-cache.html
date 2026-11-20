@@ -625,14 +625,23 @@ pin.</p>
 <p><strong>Validate-on-read</strong> enforces “never read from a dead executor”: whenever a
 cache is resolved into a read (when a query is submitted, and again before a held query runs), a location on an
 executor that is not live turns the hit into a miss, and the dead entry is
-dropped. A dropped entry’s build data is deleted after the usual delay for a
-finished job’s data (<code class="docutils literal notranslate"><span class="pre">finished_job_data_clean_up_interval_seconds</span></code>), which lets
-a query still reading it finish. Invalidation is <strong>whole-entry</strong> — a cache is rebuilt in full, never
+dropped. A dropped entry’s build data is deleted once no running query reads it, after
+the usual delay for a finished job’s data
+(<code class="docutils literal notranslate"><span class="pre">finished_job_data_clean_up_interval_seconds</span></code>). Invalidation is <strong>whole-entry</strong> — a cache is rebuilt in full, never
 served with missing partitions (see
 <a class="reference internal" href="#per-partition-recovery"><span class="xref myst">Per-partition recovery</span></a>).</p>
-<p><code class="docutils literal notranslate"><span class="pre">invalidate_executor</span></code> (on executor loss) and <code class="docutils literal notranslate"><span class="pre">remove_session</span></code> (on session
-teardown) exist in the registry but are not called yet; until then a dead entry
-is dropped when it is next read, or when a query loses its data.</p>
+<p><strong>Removing a session</strong> (the scheduler’s <code class="docutils literal notranslate"><span class="pre">RemoveSession</span></code> gRPC call, or a Flight
+SQL session expiring)
+drops its caches. A built cache is gone at once for new queries, and its data is
+deleted once no running query reads it, after the same delay. A build still in
+flight is cancelled, and the queries waiting on it fail with “its session was
+closed”. A query still reading one of its caches keeps reading it, but if it
+then loses that data it fails with “lost DataFrame::cache() data after its
+session was closed”, rather than rebuild a cache for a removed session that
+nothing would remove. Using the session again builds its caches anew.</p>
+<p><code class="docutils literal notranslate"><span class="pre">invalidate_executor</span></code> (on executor loss) exists in the registry but is not
+called yet; until then a dead entry is dropped when it is next read, or when a
+query loses its data.</p>
 </section>
 <section id="planning-configuration">
 <h2>Planning &amp; configuration<a class="headerlink" href="#planning-configuration" title="Link to this heading">#</a></h2>
@@ -688,9 +697,10 @@ shuffle output could be another.</p></li>
 <section id="future-work">
 <h2>Future work<a class="headerlink" href="#future-work" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><strong>Eviction:</strong> entries leave today only when found dead, so a long-running
-scheduler accumulates cache data. Planned: a TTL / size-cap sweeper and
-idle-session expiry, using the removal-returns-entries contract.</p></li>
+<li><p><strong>Eviction:</strong> entries leave today only when found dead or with their
+session, and no client library removes its session yet, so a long-running
+scheduler accumulates cache data. Planned: idle-session expiry and a TTL /
+size-cap sweeper, using the removal-returns-entries contract.</p></li>
 <li><p><strong>Locality:</strong> place read tasks on the executor holding each partition
 (<code class="docutils literal notranslate"><span class="pre">TaskDistributionPolicy::Custom</span></code>), Flight fetch as fallback (see <a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2319">#2319</a>).</p></li>
 </ul>
