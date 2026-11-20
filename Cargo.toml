@@ -41,19 +41,19 @@ license = "Apache-2.0"
 repository = "https://github.com/apache/datafusion-ballista"
 # we should try to follow datafusion version 
 rust-version = "1.95.0"
-version = "55.0.0"
+version = "56.0.0"
 
 [workspace.dependencies]
 arrow = { version = "60.0.0", features = ["ipc_compression"] }
 arrow-flight = { version = "60.0.0", features = ["flight-sql"] }
-ballista = { path = "ballista/client", version = "55.0.0" }
-ballista-api-types = { path = "ballista/api-types", version = "55.0.0" }
-ballista-core = { path = "ballista/core", version = "55.0.0" }
-ballista-executor = { path = "ballista/executor", version = "55.0.0" }
-ballista-flight-sql = { path = "ballista/flight-sql", version = "55.0.0" }
-ballista-history = { path = "ballista/history", version = "55.0.0" }
-ballista-result-service = { path = "ballista/result-service", version = "55.0.0" }
-ballista-scheduler = { path = "ballista/scheduler", version = "55.0.0" }
+ballista = { path = "ballista/client", version = "56.0.0" }
+ballista-api-types = { path = "ballista/api-types", version = "56.0.0" }
+ballista-core = { path = "ballista/core", version = "56.0.0" }
+ballista-executor = { path = "ballista/executor", version = "56.0.0" }
+ballista-flight-sql = { path = "ballista/flight-sql", version = "56.0.0" }
+ballista-history = { path = "ballista/history", version = "56.0.0" }
+ballista-result-service = { path = "ballista/result-service", version = "56.0.0" }
+ballista-scheduler = { path = "ballista/scheduler", version = "56.0.0" }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 
 # Pinned to the DataFusion 56.0.0-rc1 tag while preparing for the
