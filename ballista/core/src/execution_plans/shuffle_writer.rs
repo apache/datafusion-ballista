@@ -49,6 +49,8 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
+use datafusion::functions_aggregate::min_max::{MaxAccumulator, MinAccumulator};
+use datafusion::logical_expr::Accumulator;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_plan::memory::MemoryStream;
@@ -249,17 +251,84 @@ pub(crate) struct WriterState {
 }
 
 /// Per-column statistics over everything a writer wrote: a logical null count
-/// for every column, plus a HyperLogLog distinct-count sketch for the columns
-/// chosen by [`sketched_columns`]. Clones share the totals, so the executor can
-/// read them from its copy of the writer once the task has finished.
+/// for every column, a minimum and maximum for the hash key columns
+/// [`has_min_max`] accepts, plus a HyperLogLog distinct-count sketch for the
+/// columns chosen by [`sketched_columns`]. Clones share the totals, so the executor can read them
+/// from its copy of the writer once the task has finished.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ColumnStatsCollector(Arc<Mutex<ColumnStatsTotals>>);
 
 #[derive(Debug, Default)]
 struct ColumnStatsTotals {
     null_counts: Vec<u64>,
+    /// The columns that get a minimum and maximum.
+    min_max_columns: Vec<usize>,
+    /// One per written column, set by the first stream counted.
+    min_max: Vec<MinMax>,
     /// `(column index, sketch)` for each sketched column.
     sketches: Vec<(usize, HyperLogLog)>,
+}
+
+/// A column's running minimum and maximum, `None` if it has none.
+type MinMax = Option<(MinAccumulator, MaxAccumulator)>;
+
+/// Whether a column of `data_type` gets a minimum and maximum. Strings, binary
+/// and floating point columns don't.
+pub(crate) fn has_min_max(data_type: &DataType) -> bool {
+    data_type.is_integer()
+        || matches!(
+            data_type,
+            DataType::Boolean
+                | DataType::Date32
+                | DataType::Date64
+                | DataType::Timestamp(_, _)
+                | DataType::Decimal32(_, _)
+                | DataType::Decimal64(_, _)
+                | DataType::Decimal128(_, _)
+                | DataType::Decimal256(_, _)
+        )
+}
+
+fn new_min_max(data_type: &DataType) -> MinMax {
+    if !has_min_max(data_type) {
+        return None;
+    }
+    Some((
+        MinAccumulator::try_new(data_type).ok()?,
+        MaxAccumulator::try_new(data_type).ok()?,
+    ))
+}
+
+/// A [`MinMax`] per column of `types`, empty except for `columns`.
+fn new_min_maxes(types: &[DataType], columns: &[usize]) -> Vec<MinMax> {
+    types
+        .iter()
+        .enumerate()
+        .map(|(i, data_type)| {
+            if columns.contains(&i) {
+                new_min_max(data_type)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Folds `other` into `total`, dropping the column's range if they don't
+/// combine.
+fn merge_min_max(total: &mut MinMax, other: &mut MinMax) {
+    let (Some((total_min, total_max)), Some((min, max))) =
+        (total.as_mut(), other.as_mut())
+    else {
+        return;
+    };
+    let merged = (|| -> Result<()> {
+        total_min.update_batch(&[min.evaluate()?.to_array()?])?;
+        total_max.update_batch(&[max.evaluate()?.to_array()?])
+    })();
+    if merged.is_err() {
+        *total = None;
+    }
 }
 
 /// The columns a writer sketches: the plain column references among the hash
@@ -283,12 +352,21 @@ pub(crate) fn sketched_columns(partitioning: &Partitioning, enabled: bool) -> Ve
 }
 
 impl ColumnStatsCollector {
-    /// Clears the totals and sizes them for `num_columns` columns, sketching
-    /// the ones in `sketched` at `precision`.
-    pub(crate) fn reset(&self, num_columns: usize, sketched: &[usize], precision: u8) {
+    /// Clears the totals and sizes them for `num_columns` columns, keeping a
+    /// minimum and maximum of the ones in `min_max_columns` and sketching the
+    /// ones in `sketched` at `precision`.
+    pub(crate) fn reset(
+        &self,
+        num_columns: usize,
+        min_max_columns: &[usize],
+        sketched: &[usize],
+        precision: u8,
+    ) {
         if let Ok(mut totals) = self.0.lock() {
             *totals = ColumnStatsTotals {
                 null_counts: vec![0; num_columns],
+                min_max_columns: min_max_columns.to_vec(),
+                min_max: Vec::new(),
                 sketches: sketched
                     .iter()
                     .map(|&column| (column, HyperLogLog::new(precision)))
@@ -311,10 +389,23 @@ impl ColumnStatsCollector {
     ) -> SendableRecordBatchStream {
         let num_columns =
             stream.schema().fields().len() - usize::from(ignored_column.is_some());
+        let written_types: Vec<DataType> = stream
+            .schema()
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != ignored_column)
+            .map(|(_, field)| field.data_type().clone())
+            .collect();
+        let mut min_max_columns = Vec::new();
         let sketches = self
             .0
             .lock()
-            .map(|totals| {
+            .map(|mut totals| {
+                min_max_columns.clone_from(&totals.min_max_columns);
+                if totals.min_max.is_empty() {
+                    totals.min_max = new_min_maxes(&written_types, &min_max_columns);
+                }
                 totals
                     .sketches
                     .iter()
@@ -325,6 +416,7 @@ impl ColumnStatsCollector {
         Box::pin(ColumnStatsStream {
             input: stream,
             null_counts: vec![0; num_columns],
+            min_max: new_min_maxes(&written_types, &min_max_columns),
             ignored_column,
             sketches,
             hashes: Vec::new(),
@@ -341,9 +433,10 @@ impl ColumnStatsCollector {
     }
 
     /// The totals in the form the executor reports to the scheduler: one
-    /// entry per column, with an HLL sketch on each sketched column.
+    /// entry per column, with a minimum and maximum on each column that has
+    /// them and an HLL sketch on each sketched column.
     pub(crate) fn task_column_stats(&self) -> Vec<TaskColumnStats> {
-        let Ok(totals) = self.0.lock() else {
+        let Ok(mut totals) = self.0.lock() else {
             return vec![];
         };
         let mut stats: Vec<TaskColumnStats> = totals
@@ -354,8 +447,26 @@ impl ColumnStatsCollector {
                 column: column as u32,
                 null_count,
                 sketches: vec![],
+                min_value: None,
+                max_value: None,
             })
             .collect();
+        for (entry, min_max) in stats.iter_mut().zip(totals.min_max.iter_mut()) {
+            let Some((min, max)) = min_max else {
+                continue;
+            };
+            let (Ok(min), Ok(max)) = (min.evaluate(), max.evaluate()) else {
+                continue;
+            };
+            let encoded = (
+                datafusion_proto_common::ScalarValue::try_from(&min),
+                datafusion_proto_common::ScalarValue::try_from(&max),
+            );
+            if let (Ok(min), Ok(max)) = encoded {
+                entry.min_value = Some(min);
+                entry.max_value = Some(max);
+            }
+        }
         for (column, sketch) in &totals.sketches {
             if let Some(entry) = stats.get_mut(*column) {
                 entry.sketches.push(ColumnSketch {
@@ -374,6 +485,8 @@ struct ColumnStatsStream {
     null_counts: Vec<u64>,
     /// A column of `input` that isn't counted, see [`ColumnStatsCollector::count`].
     ignored_column: Option<usize>,
+    /// One per counted column.
+    min_max: Vec<MinMax>,
     sketches: Vec<(usize, HyperLogLog)>,
     /// Scratch space for hashing a column.
     hashes: Vec<u64>,
@@ -387,14 +500,25 @@ impl Stream for ColumnStatsStream {
         let this = self.get_mut();
         let poll = this.input.poll_next_unpin(cx);
         if let Poll::Ready(Some(Ok(batch))) = &poll {
-            let counted = batch
+            let counted: Vec<&ArrayRef> = batch
                 .columns()
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| Some(*i) != this.ignored_column)
-                .map(|(_, column)| column);
-            for (slot, column) in this.null_counts.iter_mut().zip(counted) {
+                .map(|(_, column)| column)
+                .collect();
+            for (slot, column) in this.null_counts.iter_mut().zip(&counted) {
                 *slot += column.logical_null_count() as u64;
+            }
+            for (slot, column) in this.min_max.iter_mut().zip(&counted) {
+                if let Some((min, max)) = slot {
+                    let updated = min
+                        .update_batch(&[Arc::clone(*column)])
+                        .and_then(|_| max.update_batch(&[Arc::clone(*column)]));
+                    if let Err(e) = updated {
+                        return Poll::Ready(Some(Err(e)));
+                    }
+                }
             }
             for (column, sketch) in this.sketches.iter_mut() {
                 if let Err(e) = sketch.update(batch.column(*column), &mut this.hashes) {
@@ -417,6 +541,9 @@ impl Drop for ColumnStatsStream {
         if let Ok(mut total) = self.total.0.lock() {
             for (slot, n) in total.null_counts.iter_mut().zip(&self.null_counts) {
                 *slot += n;
+            }
+            for (slot, min_max) in total.min_max.iter_mut().zip(self.min_max.iter_mut()) {
+                merge_min_max(slot, min_max);
             }
             for ((_, slot), (_, sketch)) in total.sketches.iter_mut().zip(&self.sketches)
             {
@@ -779,6 +906,7 @@ impl ShuffleWriterExec {
             let channel_capacity = config.shuffle_writer_channel_capacity();
             column_stats.reset(
                 plan.schema().fields().len(),
+                &sketched_columns(plan.properties().output_partitioning(), true),
                 &sketched_columns(
                     plan.properties().output_partitioning(),
                     config.shuffle_collect_distinct_counts(),
@@ -1295,6 +1423,7 @@ mod tests {
         AsArray, StringArray, StringViewArray, StructArray, UInt32Array, UInt64Array,
     };
     use datafusion::arrow::ipc::reader::StreamReader;
+    use datafusion::common::ScalarValue;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::display::DefaultDisplay;
@@ -1687,6 +1816,35 @@ mod tests {
         assert!((95..=105).contains(&distinct), "estimated {distinct}");
         assert!(stats[1].sketches.is_empty());
         Ok(())
+    }
+
+    fn range_of(stats: &TaskColumnStats) -> (ScalarValue, ScalarValue) {
+        (
+            ScalarValue::try_from(stats.min_value.as_ref().unwrap()).unwrap(),
+            ScalarValue::try_from(stats.max_value.as_ref().unwrap()).unwrap(),
+        )
+    }
+
+    // Only the hash key gets a range.
+    #[tokio::test]
+    async fn column_stats_report_the_min_and_max_of_the_hash_key() -> Result<()> {
+        let stats = child_hash_key_column_stats(SessionContext::new().task_ctx()).await?;
+        assert_eq!(
+            range_of(&stats[0]),
+            (ScalarValue::UInt32(Some(0)), ScalarValue::UInt32(Some(99)))
+        );
+        assert!(stats[1].min_value.is_none() && stats[1].max_value.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn min_max_skips_strings_binary_and_floats() {
+        for data_type in [DataType::Int32, DataType::UInt64, DataType::Date32] {
+            assert!(has_min_max(&data_type), "{data_type}");
+        }
+        for data_type in [DataType::Utf8, DataType::Binary, DataType::Float64] {
+            assert!(!has_min_max(&data_type), "{data_type}");
+        }
     }
 
     // The sketch is made at the precision the session asks for.

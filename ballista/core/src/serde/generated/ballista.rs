@@ -1474,6 +1474,10 @@ pub struct TaskColumnStats {
     pub null_count: u64,
     #[prost(message, repeated, tag = "3")]
     pub sketches: ::prost::alloc::vec::Vec<ColumnSketch>,
+    #[prost(message, optional, tag = "4")]
+    pub min_value: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
+    #[prost(message, optional, tag = "5")]
+    pub max_value: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
 }
 #[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

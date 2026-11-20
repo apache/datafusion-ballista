@@ -1221,6 +1221,7 @@ async fn run_coordinator(
         .map_or(0, |schema| schema.fields().len());
     writer.column_stats.reset(
         written_columns,
+        &sketched_columns(&writer.routing.output_partitioning(), true),
         &sketched_columns(
             &writer.routing.output_partitioning(),
             config.shuffle_collect_distinct_counts(),
@@ -2335,6 +2336,20 @@ mod tests {
         let distinct = HyperLogLog::from_bytes(&sketch.data).unwrap().count();
         // 1500 distinct values at a standard error of 3.3%.
         assert!((1200..=1800).contains(&distinct), "estimated {distinct}");
+        Ok(())
+    }
+
+    // Only the hash key gets a range, covering every input partition the
+    // task drained.
+    #[tokio::test]
+    async fn column_stats_report_the_min_and_max_across_inputs() -> Result<()> {
+        use datafusion::common::ScalarValue;
+        let stats = collect_column_stats(SessionConfig::new_with_ballista()).await?;
+        let min = ScalarValue::try_from(stats[0].min_value.as_ref().unwrap())?;
+        let max = ScalarValue::try_from(stats[0].max_value.as_ref().unwrap())?;
+        assert_eq!(min, ScalarValue::UInt32(Some(0)));
+        assert_eq!(max, ScalarValue::UInt32(Some(1499)));
+        assert!(stats[1].min_value.is_none() && stats[1].max_value.is_none());
         Ok(())
     }
 

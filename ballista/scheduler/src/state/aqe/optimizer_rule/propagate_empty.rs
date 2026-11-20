@@ -15,13 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::state::aqe::execution_plan::ExchangeExec;
+use crate::state::aqe::execution_plan::{DynamicJoinSelectionExec, ExchangeExec};
 use ballista_core::config::BallistaConfig;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::JoinType;
 use datafusion::common::ScalarValue;
 use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::{ColumnStatistics, NullEquality, Statistics};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{Column, Literal};
@@ -40,6 +41,7 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::statistics::StatisticsContext;
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 macro_rules! is_empty_exec {
@@ -141,6 +143,8 @@ impl PropagateEmptyExecRule {
             && is_empty_exec!(sort_preserving_merge.input())
         {
             empty_exec!(sort_preserving_merge)
+        } else if keys_never_match(&plan) {
+            empty_exec!(plan)
         } else if let Some(join) = as_join(&plan) {
             let left_empty = is_guaranteed_empty(join.left);
             let right_empty = is_guaranteed_empty(join.right);
@@ -285,6 +289,98 @@ pub fn as_join(plan: &Arc<dyn ExecutionPlan>) -> Option<JoinInfo<'_>> {
     None
 }
 
+/// Whether an inner or semi join can't match any row: for some key pair, the
+/// exact ranges measured on the finished shuffles feeding the join don't
+/// overlap.
+fn keys_never_match(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    let (join_type, left, right, on, null_equality) =
+        if let Some(join) = plan.downcast_ref::<HashJoinExec>() {
+            (
+                *join.join_type(),
+                join.left(),
+                join.right(),
+                join.on(),
+                join.null_equality(),
+            )
+        } else if let Some(join) = plan.downcast_ref::<SortMergeJoinExec>() {
+            (
+                join.join_type(),
+                join.left(),
+                join.right(),
+                join.on(),
+                join.null_equality(),
+            )
+        } else if let Some(join) = plan.downcast_ref::<DynamicJoinSelectionExec>() {
+            (
+                join.join_type,
+                &join.left,
+                &join.right,
+                join.on.as_slice(),
+                join.null_equality,
+            )
+        } else {
+            return false;
+        };
+    if !matches!(
+        join_type,
+        JoinType::Inner | JoinType::LeftSemi | JoinType::RightSemi
+    ) || null_equality != NullEquality::NullEqualsNothing
+    {
+        return false;
+    }
+    let (Some(left_stats), Some(right_stats)) =
+        (shuffle_statistics(left), shuffle_statistics(right))
+    else {
+        return false;
+    };
+    on.iter().any(|(left_key, right_key)| {
+        let (Some(left_key), Some(right_key)) = (
+            left_key.downcast_ref::<Column>(),
+            right_key.downcast_ref::<Column>(),
+        ) else {
+            return false;
+        };
+        match (
+            left_stats.column_statistics.get(left_key.index()),
+            right_stats.column_statistics.get(right_key.index()),
+        ) {
+            (Some(left), Some(right)) => ranges_disjoint(left, right),
+            _ => false,
+        }
+    })
+}
+
+/// The statistics of `plan` if it is a shuffle that has finished, whose column
+/// ranges were measured over every row it wrote.
+fn shuffle_statistics(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<Statistics>> {
+    let exchange = plan.downcast_ref::<ExchangeExec>()?;
+    if !exchange.shuffle_created() {
+        return None;
+    }
+    StatisticsContext::new()
+        .compute(exchange, &StatisticsArgs::new())
+        .ok()
+}
+
+fn ranges_disjoint(left: &ColumnStatistics, right: &ColumnStatistics) -> bool {
+    let (
+        Precision::Exact(left_min),
+        Precision::Exact(left_max),
+        Precision::Exact(right_min),
+        Precision::Exact(right_max),
+    ) = (
+        &left.min_value,
+        &left.max_value,
+        &right.min_value,
+        &right.max_value,
+    )
+    else {
+        return false;
+    };
+    left_max.partial_cmp(right_min) == Some(Ordering::Less)
+        || right_max.partial_cmp(left_min) == Some(Ordering::Less)
+}
+
 /// Getting sure that incoming plan (either from left or right) is empty
 ///
 /// Note that when we have [Precision::Absent] it means we know nothing about the value
@@ -379,8 +475,10 @@ pub fn build_null_padded_projection(
 mod tests {
     use super::*;
 
+    use crate::state::aqe::test::mock_partitions_with_size;
     use crate::state::aqe::test::stats_table::sized_statistics;
     use crate::state::aqe::test::{statistics_exec, unknown_statistics_exec};
+    use datafusion::physical_plan::Partitioning;
     use datafusion::{
         arrow::datatypes::{DataType, Field, Schema},
         common::{JoinType, NullEquality, ScalarValue},
@@ -1221,5 +1319,209 @@ mod tests {
             plan.properties().output_partitioning().partition_count(),
             "EmptyExec partition count must match the original join's partition count"
         );
+    }
+
+    /// A finished shuffle of column `a` whose measured range is `min..=max`.
+    fn finished_shuffle(
+        min: Precision<ScalarValue>,
+        max: Precision<ScalarValue>,
+    ) -> Arc<dyn ExecutionPlan> {
+        let exchange = ExchangeExec::new(
+            non_empty_stats_exec(),
+            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            0,
+        );
+        exchange.resolve_shuffle_partitions(mock_partitions_with_size(100, 800));
+        exchange.resolve_column_statistics(vec![ColumnStatistics {
+            min_value: min,
+            max_value: max,
+            ..ColumnStatistics::new_unknown()
+        }]);
+        Arc::new(exchange)
+    }
+
+    fn shuffle_of(min: i32, max: i32) -> Arc<dyn ExecutionPlan> {
+        finished_shuffle(
+            Precision::Exact(ScalarValue::Int32(Some(min))),
+            Precision::Exact(ScalarValue::Int32(Some(max))),
+        )
+    }
+
+    #[test]
+    fn join_on_disjoint_key_ranges_is_empty() {
+        for join_type in [JoinType::Inner, JoinType::LeftSemi, JoinType::RightSemi] {
+            assert_empty(&transform(hash_join(
+                shuffle_of(0, 10),
+                shuffle_of(11, 20),
+                join_type,
+            )));
+            assert_empty(&transform(hash_join(
+                shuffle_of(11, 20),
+                shuffle_of(0, 10),
+                join_type,
+            )));
+            assert_empty(&transform(sort_merge_join(
+                shuffle_of(0, 10),
+                shuffle_of(11, 20),
+                join_type,
+            )));
+        }
+    }
+
+    #[test]
+    fn undecided_join_on_disjoint_key_ranges_is_empty() {
+        let join = hash_join(shuffle_of(0, 10), shuffle_of(11, 20), JoinType::Inner);
+        let join = join.downcast_ref::<HashJoinExec>().unwrap();
+        let undecided: Arc<dyn ExecutionPlan> =
+            DynamicJoinSelectionExec::from_hash_join(join, 0).unwrap();
+        assert_empty(&transform(undecided));
+    }
+
+    #[test]
+    fn join_on_touching_or_overlapping_key_ranges_is_kept() {
+        // A range ending where the other starts shares that value.
+        for ((left_min, left_max), (right_min, right_max)) in [
+            ((0, 10), (10, 20)),
+            ((10, 20), (0, 10)),
+            ((0, 10), (5, 15)),
+            ((0, 10), (0, 10)),
+            ((5, 5), (5, 5)),
+            ((0, 20), (5, 10)),
+        ] {
+            assert_untouched(&transform(hash_join(
+                shuffle_of(left_min, left_max),
+                shuffle_of(right_min, right_max),
+                JoinType::Inner,
+            )));
+        }
+    }
+
+    #[test]
+    fn join_that_keeps_unmatched_rows_is_kept() {
+        for join_type in [
+            JoinType::Left,
+            JoinType::Right,
+            JoinType::Full,
+            JoinType::LeftAnti,
+            JoinType::RightAnti,
+        ] {
+            assert_untouched(&transform(hash_join(
+                shuffle_of(0, 10),
+                shuffle_of(11, 20),
+                join_type,
+            )));
+        }
+    }
+
+    #[test]
+    fn join_where_null_keys_match_is_kept() {
+        let join = HashJoinExec::try_new(
+            shuffle_of(0, 10),
+            shuffle_of(11, 20),
+            join_on(),
+            None,
+            &JoinType::Inner,
+            None,
+            PartitionMode::Partitioned,
+            NullEquality::NullEqualsNull,
+            false,
+        )
+        .unwrap();
+        assert_untouched(&transform(Arc::new(join)));
+    }
+
+    #[test]
+    fn join_on_inexact_or_unknown_key_ranges_is_kept() {
+        let inexact = finished_shuffle(
+            Precision::Inexact(ScalarValue::Int32(Some(0))),
+            Precision::Inexact(ScalarValue::Int32(Some(10))),
+        );
+        assert_untouched(&transform(hash_join(
+            inexact,
+            shuffle_of(11, 20),
+            JoinType::Inner,
+        )));
+        let unknown = finished_shuffle(Precision::Absent, Precision::Absent);
+        assert_untouched(&transform(hash_join(
+            unknown,
+            shuffle_of(11, 20),
+            JoinType::Inner,
+        )));
+    }
+
+    #[test]
+    fn join_on_key_ranges_of_different_types_is_kept() {
+        let int64 = finished_shuffle(
+            Precision::Exact(ScalarValue::Int64(Some(0))),
+            Precision::Exact(ScalarValue::Int64(Some(10))),
+        );
+        assert_untouched(&transform(hash_join(
+            int64,
+            shuffle_of(11, 20),
+            JoinType::Inner,
+        )));
+    }
+
+    #[test]
+    fn join_on_ranges_not_measured_by_a_finished_shuffle_is_kept() {
+        // A shuffle that hasn't finished.
+        let unfinished = ExchangeExec::new(
+            non_empty_stats_exec(),
+            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            0,
+        );
+        unfinished.resolve_column_statistics(vec![ColumnStatistics {
+            min_value: Precision::Exact(ScalarValue::Int32(Some(0))),
+            max_value: Precision::Exact(ScalarValue::Int32(Some(10))),
+            ..ColumnStatistics::new_unknown()
+        }]);
+        assert_untouched(&transform(hash_join(
+            Arc::new(unfinished),
+            shuffle_of(11, 20),
+            JoinType::Inner,
+        )));
+
+        // Exact ranges from anything other than a shuffle, such as a scan.
+        let scan = statistics_exec(
+            Statistics {
+                num_rows: Precision::Exact(100),
+                total_byte_size: Precision::Exact(800),
+                column_statistics: vec![ColumnStatistics {
+                    min_value: Precision::Exact(ScalarValue::Int32(Some(0))),
+                    max_value: Precision::Exact(ScalarValue::Int32(Some(10))),
+                    ..ColumnStatistics::new_unknown()
+                }],
+            },
+            &schema(),
+        );
+        assert_untouched(&transform(hash_join(
+            scan,
+            shuffle_of(11, 20),
+            JoinType::Inner,
+        )));
+    }
+
+    #[test]
+    fn join_on_an_expression_key_is_kept() {
+        let on: Vec<(
+            Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+            Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+        )> = vec![(
+            Arc::new(Literal::new(ScalarValue::Int32(Some(0)))),
+            Arc::new(Column::new("a", 0)),
+        )];
+        let join = HashJoinExec::try_new(
+            shuffle_of(0, 10),
+            shuffle_of(11, 20),
+            on,
+            None,
+            &JoinType::Inner,
+            None,
+            PartitionMode::Partitioned,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap();
+        assert_untouched(&transform(Arc::new(join)));
     }
 }

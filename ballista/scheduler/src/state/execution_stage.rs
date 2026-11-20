@@ -15,9 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::common::ColumnStatistics;
 use datafusion::common::stats::Precision;
+use datafusion::common::{ColumnStatistics, ScalarValue};
 use datafusion::config::ConfigOptions;
+use datafusion::functions_aggregate::min_max::{MaxAccumulator, MinAccumulator};
+use datafusion::logical_expr::Accumulator;
 use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::TryInto;
@@ -672,6 +674,56 @@ impl MergedSketch {
     }
 }
 
+/// One column's minimum and maximum, merged over a stage's successful tasks.
+enum MergedRange {
+    /// No successful task has been added yet.
+    Empty,
+    Merged(MinAccumulator, MaxAccumulator),
+    /// Some task didn't report the column's range, or reported one that
+    /// doesn't combine with the others, so the stage has none for it.
+    Unavailable,
+}
+
+impl MergedRange {
+    /// Folds in one more successful task's `(min, max)` of the column, `None`
+    /// if the task didn't report one.
+    fn add(&mut self, range: Option<(ScalarValue, ScalarValue)>) {
+        let merged = match (std::mem::replace(self, Self::Unavailable), range) {
+            (Self::Empty, Some((min, max))) => MinAccumulator::try_new(&min.data_type())
+                .and_then(|min_acc| {
+                    Ok((min_acc, MaxAccumulator::try_new(&max.data_type())?))
+                })
+                .and_then(|accs| Self::fold(accs, &min, &max)),
+            (Self::Merged(min_acc, max_acc), Some((min, max))) => {
+                Self::fold((min_acc, max_acc), &min, &max)
+            }
+            _ => return,
+        };
+        if let Ok((min_acc, max_acc)) = merged {
+            *self = Self::Merged(min_acc, max_acc);
+        }
+    }
+
+    fn fold(
+        (mut min_acc, mut max_acc): (MinAccumulator, MaxAccumulator),
+        min: &ScalarValue,
+        max: &ScalarValue,
+    ) -> datafusion::common::Result<(MinAccumulator, MaxAccumulator)> {
+        min_acc.update_batch(&[min.to_array()?])?;
+        max_acc.update_batch(&[max.to_array()?])?;
+        Ok((min_acc, max_acc))
+    }
+
+    /// The merged range, `None` if it isn't available or no task saw a value.
+    fn into_range(self) -> Option<(ScalarValue, ScalarValue)> {
+        let Self::Merged(mut min_acc, mut max_acc) = self else {
+            return None;
+        };
+        let (min, max) = (min_acc.evaluate().ok()?, max_acc.evaluate().ok()?);
+        (!min.is_null() && !max.is_null()).then_some((min, max))
+    }
+}
+
 impl RunningStage {
     /// Creates a new running stage with task tracking initialized.
     pub fn new(
@@ -731,6 +783,8 @@ impl RunningStage {
     /// when every successful task reported that column. `distinct_count` is an
     /// `Inexact` estimate from the tasks' merged HLL sketches, and only set
     /// when every successful task sketched that column at the same precision.
+    /// `min_value` and `max_value` are `Exact`, and only set when every
+    /// successful task reported that column's range.
     pub fn output_column_stats(&self) -> Vec<ColumnStatistics> {
         let num_columns = self.plan.schema().fields().len();
         let mut output_column_stats = vec![
@@ -742,6 +796,8 @@ impl RunningStage {
         ];
         let mut sketches: Vec<MergedSketch> =
             (0..num_columns).map(|_| MergedSketch::Empty).collect();
+        let mut ranges: Vec<MergedRange> =
+            (0..num_columns).map(|_| MergedRange::Empty).collect();
         for info in self.task_infos.iter() {
             let task_status::Status::Successful(task_status) = &info.task_status else {
                 continue;
@@ -749,6 +805,8 @@ impl RunningStage {
             let mut reported = vec![false; num_columns];
             // This task's sketch of each column, if it made one.
             let mut task_sketches: Vec<Option<HyperLogLog>> = vec![None; num_columns];
+            let mut task_ranges: Vec<Option<(ScalarValue, ScalarValue)>> =
+                vec![None; num_columns];
             for col_stats in &task_status.task_column_stats {
                 let column = col_stats.column as usize;
                 let Some(slot) = output_column_stats.get_mut(column) else {
@@ -763,6 +821,16 @@ impl RunningStage {
                     .iter()
                     .filter(|sketch| sketch.r#type == SketchType::Hll as i32)
                     .find_map(|sketch| HyperLogLog::from_bytes(&sketch.data));
+                task_ranges[column] = col_stats
+                    .min_value
+                    .as_ref()
+                    .zip(col_stats.max_value.as_ref())
+                    .and_then(|(min, max)| {
+                        Some((
+                            ScalarValue::try_from(min).ok()?,
+                            ScalarValue::try_from(max).ok()?,
+                        ))
+                    });
             }
             for (slot, reported) in output_column_stats.iter_mut().zip(reported) {
                 if !reported {
@@ -771,6 +839,15 @@ impl RunningStage {
             }
             for (merged, sketch) in sketches.iter_mut().zip(task_sketches) {
                 merged.add(sketch);
+            }
+            for (merged, range) in ranges.iter_mut().zip(task_ranges) {
+                merged.add(range);
+            }
+        }
+        for (slot, range) in output_column_stats.iter_mut().zip(ranges) {
+            if let Some((min, max)) = range.into_range() {
+                slot.min_value = Precision::Exact(min);
+                slot.max_value = Precision::Exact(max);
             }
         }
         for (slot, sketch) in output_column_stats.iter_mut().zip(sketches) {
@@ -1729,7 +1806,76 @@ mod tests {
             column,
             null_count,
             sketches: vec![],
+            min_value: None,
+            max_value: None,
         }
+    }
+
+    /// A column stat reporting the range `min..=max`, or a typed NULL range
+    /// for a column that saw no values.
+    fn ranged_col(column: u32, range: Option<(i64, i64)>) -> TaskColumnStats {
+        let (min, max) = match range {
+            Some((min, max)) => {
+                (ScalarValue::Int64(Some(min)), ScalarValue::Int64(Some(max)))
+            }
+            None => (ScalarValue::Int64(None), ScalarValue::Int64(None)),
+        };
+        TaskColumnStats {
+            min_value: Some((&min).try_into().unwrap()),
+            max_value: Some((&max).try_into().unwrap()),
+            ..col(column, 0)
+        }
+    }
+
+    #[test]
+    fn test_to_successful_folds_min_max_across_tasks() {
+        let stage = stage_with_col_stats(vec![
+            vec![ranged_col(0, Some((5, 10))), col(1, 0)],
+            vec![ranged_col(0, Some((-3, 7))), col(1, 0)],
+            vec![ranged_col(0, None), col(1, 0)],
+        ]);
+        let successful = stage.to_successful();
+        let stats = &successful.output_column_stats;
+        assert_eq!(
+            stats[0].min_value,
+            Precision::Exact(ScalarValue::Int64(Some(-3)))
+        );
+        assert_eq!(
+            stats[0].max_value,
+            Precision::Exact(ScalarValue::Int64(Some(10)))
+        );
+        assert_eq!(stats[1].min_value, Precision::Absent);
+        assert_eq!(stats[1].max_value, Precision::Absent);
+    }
+
+    #[test]
+    fn test_to_successful_leaves_min_max_absent_if_a_task_did_not_report() {
+        let stage = stage_with_col_stats(vec![
+            vec![ranged_col(0, Some((5, 10))), col(1, 0)],
+            vec![col(0, 0), col(1, 0)],
+        ]);
+        let successful = stage.to_successful();
+        assert_eq!(
+            successful.output_column_stats[0].min_value,
+            Precision::Absent
+        );
+        assert_eq!(
+            successful.output_column_stats[0].max_value,
+            Precision::Absent
+        );
+    }
+
+    #[test]
+    fn test_to_successful_leaves_min_max_absent_if_no_task_saw_a_value() {
+        let stage = stage_with_col_stats(vec![
+            vec![ranged_col(0, None), col(1, 0)],
+            vec![ranged_col(0, None), col(1, 0)],
+        ]);
+        let successful = stage.to_successful();
+        assert_eq!(
+            successful.output_column_stats[0].min_value,
+            Precision::Absent
+        );
     }
 
     #[test]
@@ -1801,12 +1947,11 @@ mod tests {
         )
         .unwrap();
         TaskColumnStats {
-            column,
-            null_count: 0,
             sketches: vec![ColumnSketch {
                 r#type: SketchType::Hll as i32,
                 data: hll.as_bytes().to_vec(),
             }],
+            ..col(column, 0)
         }
     }
 

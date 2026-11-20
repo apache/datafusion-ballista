@@ -280,6 +280,7 @@ impl RangeShuffleWriterExec {
             column_stats.reset(
                 plan.schema().fields().len(),
                 &[],
+                &[],
                 crate::hll::DEFAULT_PRECISION,
             );
 
