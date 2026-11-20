@@ -87,9 +87,10 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
     ) -> Result<Arc<dyn TableProvider>> {
         let ProviderWire { table, snapshot_id } = wire::decode(buf)?;
         Ok(Arc::new(PinnedTable {
-            table: table.load()?,
+            table: Ok(table.load()?),
             snapshot_id,
             schema,
+            origin: None,
         }))
     }
 
@@ -108,7 +109,7 @@ impl LogicalExtensionCodec for IcebergLogicalCodec {
             }
         } else if let Some(pinned) = node.downcast_ref::<PinnedTable>() {
             ProviderWire {
-                table: TableWire::new(&pinned.table)?,
+                table: TableWire::new(pinned.table()?)?,
                 snapshot_id: pinned.snapshot_id,
             }
         } else if node.is::<IcebergCatalogTableProvider>() {

@@ -56,8 +56,8 @@
 //! - Reads only.
 //! - Each scan runs as a single task.
 //! - No metadata tables such as `t$snapshots`.
-//! - A view, or a `DataFrame` or prepared statement reused across runs, reads
-//!   the version from when it was planned.
+//! - A `DataFrame` or prepared statement reused across runs reads the version
+//!   from when it was planned.
 //! - No encrypted tables.
 //! - Storage credentials travel in plain text.
 //! - A `UNION` or `UNION ALL` can fail, or with an `ORDER BY` return rows more
@@ -80,7 +80,7 @@ use datafusion::execution::{SessionState, SessionStateBuilder};
 // Linked for the storage it registers; nothing here calls it.
 use iceberg_storage_opendal as _;
 
-use crate::catalog::PinningCatalogList;
+use crate::catalog::{PinningCatalogList, RequireLoadedTables};
 
 #[cfg(feature = "executor")]
 pub use crate::executor::ExecutorProcessConfigExt;
@@ -91,8 +91,9 @@ pub use crate::scheduler::SchedulerConfigExt;
 
 /// Readies a client's session for Iceberg: adds the Iceberg codecs after the
 /// session's codecs, and pins each catalog-backed table a query names to the
-/// version its catalog serves when the query is planned. A session that is
-/// already ready is returned unchanged.
+/// version its catalog serves when the query is planned. A query that reads a
+/// table its catalog can't load fails while it's planned, with the error
+/// loading it returned. A session that is already ready is returned unchanged.
 pub fn register_iceberg(mut state: SessionState) -> SessionState {
     if state.catalog_list().is::<PinningCatalogList>() {
         return state;
@@ -112,5 +113,6 @@ pub fn register_iceberg(mut state: SessionState) -> SessionState {
     SessionStateBuilder::new_from_existing(state)
         .with_session_id(session_id)
         .with_catalog_list(Arc::new(catalogs))
+        .with_analyzer_rule(Arc::new(RequireLoadedTables))
         .build()
 }
