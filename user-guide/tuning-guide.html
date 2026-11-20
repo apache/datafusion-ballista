@@ -879,6 +879,150 @@ only what you reuse.</p></li>
 <code class="docutils literal notranslate"><span class="pre">--disable-dataframe-cache</span></code> flag; cached DataFrames are then computed as part
 of each query.</p></li>
 </ul>
+<p>A cache works in both execution modes. Its build always runs staged, and
+queries over it run in the session’s mode, so a
+<a class="reference internal" href="pipelined-execution.html"><span class="std std-doc">pipelined</span></a> session reads a cache with streaming
+queries.</p>
+<p>A full example, in staged and pipelined modes, from
+<a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/examples/examples/standalone-dataframe-cache.rs"><code class="docutils literal notranslate"><span class="pre">examples/examples/standalone-dataframe-cache.rs</span></code></a>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="sd">//! `DataFrame::cache()` keeps a DataFrame's result on the executors, so queries</span>
+<span class="sd">//! over it read the stored result instead of computing it again.</span>
+<span class="sd">//!</span>
+<span class="sd">//! This example:</span>
+<span class="sd">//! 1. turns caching on (it is off by default),</span>
+<span class="sd">//! 2. caches a prepared DataFrame (nothing runs yet),</span>
+<span class="sd">//! 3. builds the cache with the first query and reads it with the next ones,</span>
+<span class="sd">//!    in staged mode,</span>
+<span class="sd">//! 4. switches the session to pipelined mode, which reads the same cache,</span>
+<span class="sd">//! 5. runs three pipelined queries in parallel, printing rows as they arrive.</span>
+<span class="sd">//!</span>
+<span class="sd">//! Good to know: a cache belongs to its session and is not evicted yet, so</span>
+<span class="sd">//! cache only what you reuse. Cached data lost with an executor is rebuilt, and</span>
+<span class="sd">//! `EXPLAIN` never builds a cache. See the tuning guide for details.</span>
+
+<span class="k">use</span><span class="w"> </span><span class="n">ballista</span><span class="p">::</span><span class="n">datafusion</span><span class="p">::{</span>
+<span class="w">    </span><span class="n">arrow</span><span class="p">::{</span><span class="n">record_batch</span><span class="p">::</span><span class="n">RecordBatch</span><span class="p">,</span><span class="w"> </span><span class="n">util</span><span class="p">::</span><span class="n">pretty</span><span class="p">::</span><span class="n">pretty_format_batches</span><span class="p">},</span>
+<span class="w">    </span><span class="n">common</span><span class="p">::</span><span class="nb">Result</span><span class="p">,</span>
+<span class="w">    </span><span class="n">execution</span><span class="p">::{</span><span class="n">SessionStateBuilder</span><span class="p">,</span><span class="w"> </span><span class="n">options</span><span class="p">::</span><span class="n">CsvReadOptions</span><span class="p">},</span>
+<span class="w">    </span><span class="n">functions_aggregate</span><span class="p">::</span><span class="n">expr_fn</span><span class="p">::{</span><span class="n">count</span><span class="p">,</span><span class="w"> </span><span class="n">sum</span><span class="p">},</span>
+<span class="w">    </span><span class="n">prelude</span><span class="p">::{</span><span class="n">DataFrame</span><span class="p">,</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">,</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">,</span><span class="w"> </span><span class="n">col</span><span class="p">,</span><span class="w"> </span><span class="n">lit</span><span class="p">},</span>
+<span class="p">};</span>
+<span class="k">use</span><span class="w"> </span><span class="n">ballista</span><span class="p">::</span><span class="n">prelude</span><span class="p">::{</span><span class="n">SessionConfigExt</span><span class="p">,</span><span class="w"> </span><span class="n">SessionContextExt</span><span class="p">};</span>
+<span class="k">use</span><span class="w"> </span><span class="n">ballista_examples</span><span class="p">::</span><span class="n">test_util</span><span class="p">;</span>
+<span class="k">use</span><span class="w"> </span><span class="n">futures</span><span class="p">::</span><span class="n">StreamExt</span><span class="p">;</span>
+
+<span class="cp">#[tokio::main]</span>
+<span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// 1. A standalone cluster, with caching turned on. Queries start staged.</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">standalone</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+
+<span class="w">    </span><span class="c1">// 2. The DataFrame the queries start from. Nothing runs here: `cache()`</span>
+<span class="w">    </span><span class="c1">//    only marks it to be kept. In an application this is the expensive</span>
+<span class="w">    </span><span class="c1">//    part, such as scans, joins and aggregations.</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">format!</span><span class="p">(</span><span class="s">"{}/aggregate_test_100.csv"</span><span class="p">,</span><span class="w"> </span><span class="n">test_util</span><span class="p">::</span><span class="n">examples_test_data</span><span class="p">());</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">sales</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span>
+<span class="w">        </span><span class="p">.</span><span class="n">read_csv</span><span class="p">(</span><span class="n">path</span><span class="p">,</span><span class="w"> </span><span class="n">CsvReadOptions</span><span class="p">::</span><span class="n">new</span><span class="p">())</span>
+<span class="w">        </span><span class="p">.</span><span class="k">await</span><span class="o">?</span>
+<span class="w">        </span><span class="p">.</span><span class="n">select</span><span class="p">(</span><span class="fm">vec!</span><span class="p">[</span>
+<span class="w">            </span><span class="n">col</span><span class="p">(</span><span class="s">"c1"</span><span class="p">).</span><span class="n">alias</span><span class="p">(</span><span class="s">"category"</span><span class="p">),</span>
+<span class="w">            </span><span class="n">col</span><span class="p">(</span><span class="s">"c2"</span><span class="p">).</span><span class="n">alias</span><span class="p">(</span><span class="s">"store"</span><span class="p">),</span>
+<span class="w">            </span><span class="n">col</span><span class="p">(</span><span class="s">"c4"</span><span class="p">).</span><span class="n">alias</span><span class="p">(</span><span class="s">"amount"</span><span class="p">),</span>
+<span class="w">        </span><span class="p">])</span><span class="o">?</span>
+<span class="w">        </span><span class="p">.</span><span class="n">filter</span><span class="p">(</span><span class="n">col</span><span class="p">(</span><span class="s">"amount"</span><span class="p">).</span><span class="n">gt</span><span class="p">(</span><span class="n">lit</span><span class="p">(</span><span class="mi">0</span><span class="p">)))</span><span class="o">?</span>
+<span class="w">        </span><span class="p">.</span><span class="n">cache</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+
+<span class="w">    </span><span class="c1">// 3. Staged: the first query builds the cache, as a staged job, and then</span>
+<span class="w">    </span><span class="c1">//    reads it. Later queries, and DataFrames derived from `sales`, read it.</span>
+<span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">"== staged: the first query builds the cache =="</span><span class="p">);</span>
+<span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">"{} sales"</span><span class="p">,</span><span class="w"> </span><span class="n">sales</span><span class="p">.</span><span class="n">clone</span><span class="p">().</span><span class="n">count</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">);</span>
+
+<span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">"== staged: later queries read the cache =="</span><span class="p">);</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">staged</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">by_category</span><span class="p">(</span><span class="n">sales</span><span class="p">.</span><span class="n">clone</span><span class="p">())</span><span class="o">?</span><span class="p">.</span><span class="n">collect</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">"{}"</span><span class="p">,</span><span class="w"> </span><span class="n">pretty_format_batches</span><span class="p">(</span><span class="o">&amp;</span><span class="n">staged</span><span class="p">)</span><span class="o">?</span><span class="p">);</span>
+
+<span class="w">    </span><span class="c1">// 4. Pipelined: one SET. A DataFrame keeps the settings of the session it</span>
+<span class="w">    </span><span class="c1">//    came from, so rebuild it from the session's state to pick up the new</span>
+<span class="w">    </span><span class="c1">//    mode. The plan, and the cache it reads, are the same.</span>
+<span class="w">    </span><span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"SET ballista.execution.mode = 'pipelined'"</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">sales</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DataFrame</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">ctx</span><span class="p">.</span><span class="n">state</span><span class="p">(),</span><span class="w"> </span><span class="n">sales</span><span class="p">.</span><span class="n">into_unoptimized_plan</span><span class="p">());</span>
+
+<span class="w">    </span><span class="c1">// 5. Three queries in parallel, each streaming its rows from the cache as</span>
+<span class="w">    </span><span class="c1">//    they are produced. Read every stream you start, and keep the queries</span>
+<span class="w">    </span><span class="c1">//    running at once within the cluster: each holds the vcores of its</span>
+<span class="w">    </span><span class="c1">//    widest stage until it ends, here 8 vcores / 2 partitions = 4 at once.</span>
+<span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">"== pipelined: three queries in parallel =="</span><span class="p">);</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">pipelined</span><span class="p">,</span><span class="w"> </span><span class="n">_</span><span class="p">,</span><span class="w"> </span><span class="n">_</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">tokio</span><span class="p">::</span><span class="n">try_join</span><span class="o">!</span><span class="p">(</span>
+<span class="w">        </span><span class="n">stream</span><span class="p">(</span><span class="s">"by category"</span><span class="p">,</span><span class="w"> </span><span class="n">by_category</span><span class="p">(</span><span class="n">sales</span><span class="p">.</span><span class="n">clone</span><span class="p">())</span><span class="o">?</span><span class="p">),</span>
+<span class="w">        </span><span class="n">stream</span><span class="p">(</span>
+<span class="w">            </span><span class="s">"sales per store"</span><span class="p">,</span>
+<span class="w">            </span><span class="n">sales</span>
+<span class="w">                </span><span class="p">.</span><span class="n">clone</span><span class="p">()</span>
+<span class="w">                </span><span class="p">.</span><span class="n">aggregate</span><span class="p">(</span><span class="fm">vec!</span><span class="p">[</span><span class="n">col</span><span class="p">(</span><span class="s">"store"</span><span class="p">)],</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="n">count</span><span class="p">(</span><span class="n">lit</span><span class="p">(</span><span class="mi">1</span><span class="p">)).</span><span class="n">alias</span><span class="p">(</span><span class="s">"sales"</span><span class="p">)])</span><span class="o">?</span>
+<span class="w">        </span><span class="p">),</span>
+<span class="w">        </span><span class="n">stream</span><span class="p">(</span>
+<span class="w">            </span><span class="s">"top 5 amounts"</span><span class="p">,</span>
+<span class="w">            </span><span class="n">sales</span>
+<span class="w">                </span><span class="p">.</span><span class="n">clone</span><span class="p">()</span>
+<span class="w">                </span><span class="p">.</span><span class="n">sort</span><span class="p">(</span><span class="fm">vec!</span><span class="p">[</span><span class="n">col</span><span class="p">(</span><span class="s">"amount"</span><span class="p">).</span><span class="n">sort</span><span class="p">(</span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="kc">false</span><span class="p">)])</span><span class="o">?</span>
+<span class="w">                </span><span class="p">.</span><span class="n">limit</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="mi">5</span><span class="p">))</span><span class="o">?</span>
+<span class="w">        </span><span class="p">),</span>
+<span class="w">    </span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+
+<span class="w">    </span><span class="c1">// The cache gives the same result in either mode.</span>
+<span class="w">    </span><span class="fm">assert_eq!</span><span class="p">(</span>
+<span class="w">        </span><span class="n">pretty_format_batches</span><span class="p">(</span><span class="o">&amp;</span><span class="n">staged</span><span class="p">)</span><span class="o">?</span><span class="p">.</span><span class="n">to_string</span><span class="p">(),</span>
+<span class="w">        </span><span class="n">pretty_format_batches</span><span class="p">(</span><span class="o">&amp;</span><span class="n">pipelined</span><span class="p">)</span><span class="o">?</span><span class="p">.</span><span class="n">to_string</span><span class="p">(),</span>
+<span class="w">    </span><span class="p">);</span>
+<span class="w">    </span><span class="nb">Ok</span><span class="p">(())</span>
+<span class="p">}</span>
+
+<span class="sd">/// Total amount per category, a query over the cached `sales`.</span>
+<span class="k">fn</span><span class="w"> </span><span class="nf">by_category</span><span class="p">(</span><span class="n">sales</span><span class="p">:</span><span class="w"> </span><span class="nc">DataFrame</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">DataFrame</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">sales</span>
+<span class="w">        </span><span class="p">.</span><span class="n">aggregate</span><span class="p">(</span>
+<span class="w">            </span><span class="fm">vec!</span><span class="p">[</span><span class="n">col</span><span class="p">(</span><span class="s">"category"</span><span class="p">)],</span>
+<span class="w">            </span><span class="fm">vec!</span><span class="p">[</span><span class="n">sum</span><span class="p">(</span><span class="n">col</span><span class="p">(</span><span class="s">"amount"</span><span class="p">)).</span><span class="n">alias</span><span class="p">(</span><span class="s">"total"</span><span class="p">)],</span>
+<span class="w">        </span><span class="p">)</span><span class="o">?</span>
+<span class="w">        </span><span class="p">.</span><span class="n">sort_by</span><span class="p">(</span><span class="fm">vec!</span><span class="p">[</span><span class="n">col</span><span class="p">(</span><span class="s">"category"</span><span class="p">)])</span>
+<span class="p">}</span>
+
+<span class="sd">/// Starts a standalone cluster that can run staged and pipelined queries, and</span>
+<span class="sd">/// returns a session on it with caching turned on.</span>
+<span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">standalone</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">SessionContext</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="n">with_target_partitions</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+<span class="w">        </span><span class="p">.</span><span class="n">with_ballista_standalone_parallelism</span><span class="p">(</span><span class="mi">8</span><span class="p">);</span>
+<span class="w">    </span><span class="c1">// Pipelined queries need the scheduler to push tasks to executors.</span>
+<span class="w">    </span><span class="n">config</span>
+<span class="w">        </span><span class="p">.</span><span class="n">options_mut</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="n">set</span><span class="p">(</span><span class="s">"ballista.standalone.task_scheduling_policy"</span><span class="p">,</span><span class="w"> </span><span class="s">"push-staged"</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="c1">// `DataFrame::cache()` does nothing unless caching is turned on.</span>
+<span class="w">    </span><span class="n">config</span><span class="p">.</span><span class="n">options_mut</span><span class="p">().</span><span class="n">set</span><span class="p">(</span><span class="s">"ballista.cache.noop"</span><span class="p">,</span><span class="w"> </span><span class="s">"false"</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionStateBuilder</span><span class="p">::</span><span class="n">new</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="n">with_config</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+<span class="w">        </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="n">build</span><span class="p">();</span>
+<span class="w">    </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">standalone_with_state</span><span class="p">(</span><span class="n">state</span><span class="p">).</span><span class="k">await</span>
+<span class="p">}</span>
+
+<span class="sd">/// Runs `df`, printing each batch of rows as it arrives, and returns them.</span>
+<span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">stream</span><span class="p">(</span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="kt">str</span><span class="p">,</span><span class="w"> </span><span class="n">df</span><span class="p">:</span><span class="w"> </span><span class="nc">DataFrame</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="nb">Vec</span><span class="o">&lt;</span><span class="n">RecordBatch</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">stream</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">df</span><span class="p">.</span><span class="n">execute_stream</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">batches</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[];</span>
+<span class="w">    </span><span class="k">while</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">batch</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">stream</span><span class="p">.</span><span class="n">next</span><span class="p">().</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">batch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">batch</span><span class="o">?</span><span class="p">;</span>
+<span class="w">        </span><span class="fm">println!</span><span class="p">(</span>
+<span class="w">            </span><span class="s">"{name}:</span><span class="se">\n</span><span class="s">{}"</span><span class="p">,</span>
+<span class="w">            </span><span class="n">pretty_format_batches</span><span class="p">(</span><span class="n">std</span><span class="p">::</span><span class="n">slice</span><span class="p">::</span><span class="n">from_ref</span><span class="p">(</span><span class="o">&amp;</span><span class="n">batch</span><span class="p">))</span><span class="o">?</span>
+<span class="w">        </span><span class="p">);</span>
+<span class="w">        </span><span class="n">batches</span><span class="p">.</span><span class="n">push</span><span class="p">(</span><span class="n">batch</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="nb">Ok</span><span class="p">(</span><span class="n">batches</span><span class="p">)</span>
+<span class="p">}</span>
+</pre></div>
+</div>
 <p>See the <a class="reference internal" href="../contributors-guide/dataframe-cache.html"><span class="std std-doc">DataFrame cache design</span></a> for
 how it works.</p>
 </section>

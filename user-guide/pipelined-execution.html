@@ -526,6 +526,15 @@ executors more memory, use fewer partitions, or run such queries in staged
 mode.</p></li>
 </ul>
 </section>
+<section id="queries-over-a-cached-dataframe">
+<h2>Queries over a cached DataFrame<a class="headerlink" href="#queries-over-a-cached-dataframe" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">DataFrame::cache()</span></code> works in a pipelined session. A cache is always built by
+an ordinary staged job, run by the first query that reads it; later queries
+read the cached result pipelined, streaming their rows as they run, so
+expensive preparation is done once and the interactive queries over it stay
+short. See <a class="reference internal" href="tuning-guide.html#caching-dataframes"><span class="std std-ref">Caching DataFrames</span></a> for how to
+turn caching on, and a full example.</p>
+</section>
 <section id="settings">
 <h2>Settings<a class="headerlink" href="#settings" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -632,6 +641,7 @@ steady stream of smaller jobs can keep it waiting.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-to-use-it">When to use it</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#enabling-it">Enabling it</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-a-pipelined-job-runs">How a pipelined job runs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#queries-over-a-cached-dataframe">Queries over a cached DataFrame</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#settings">Settings</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrow-flight-sql">Arrow Flight SQL</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
