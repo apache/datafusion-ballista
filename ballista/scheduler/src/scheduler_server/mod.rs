@@ -36,7 +36,7 @@ use ferroid::base32::Base32Ext;
 use ferroid::futures::SnowflakeGeneratorAsyncExt;
 use ferroid::generator::AtomicSnowflakeGenerator;
 use ferroid::id::SnowflakeMastodonId;
-use ferroid::time::CachedClock;
+use ferroid::time::DirectClock;
 use tokio::sync::broadcast;
 
 use crate::cache::{contains_cache, strip_caches};
@@ -98,7 +98,7 @@ pub trait JobIdGenerator: Sync + Send {
 /// A monotonically increasing sortable snowflake job id generator
 /// which does not capture machine id as part result.
 pub(crate) struct DefaultJobGenerator {
-    generator: AtomicSnowflakeGenerator<SnowflakeMastodonId, CachedClock>,
+    generator: AtomicSnowflakeGenerator<SnowflakeMastodonId, DirectClock>,
 }
 
 impl Default for DefaultJobGenerator {
@@ -107,7 +107,7 @@ impl Default for DefaultJobGenerator {
         // setups
         let generator = AtomicSnowflakeGenerator::new(
             0, // machine id is hard-coded to 0
-            CachedClock::default(),
+            DirectClock::default(),
         );
 
         Self { generator }
