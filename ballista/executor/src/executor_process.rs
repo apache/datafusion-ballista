@@ -1849,14 +1849,15 @@ mod tests {
 
     /// Runs a pull-based executor against an idle scheduler, with the given
     /// clean-up interval and `work_dir` as its work directory, until it shuts
-    /// itself down. The shutdown comes from its Flight port being taken, which
-    /// stops a service right after startup; it then goes through the normal
-    /// graceful shutdown path, which runs to the end with the scheduler.
+    /// itself down. The shutdown comes from a custom Flight service whose
+    /// handle fails right away, which ends the wait for the services and goes
+    /// through the normal graceful shutdown path, which runs to the end with
+    /// the scheduler.
     ///
     /// The shutdown sets the process-wide `TERMINATING` flag, which the
     /// heartbeat reads; the helper puts it back to `false` on the way out, also
     /// when it panics, so it leaves no state behind.
-    async fn run_executor_until_flight_port_is_taken(
+    async fn run_executor_until_flight_service_fails(
         job_data_clean_up_interval_seconds: u64,
         work_dir: &Path,
     ) {
@@ -1877,17 +1878,22 @@ mod tests {
                 .add_service(SchedulerGrpcServer::new(IdleScheduler))
                 .serve_with_incoming(TcpListenerStream::new(scheduler)),
         );
-        let flight_port_holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
 
         let config = Arc::new(ExecutorProcessConfig {
             scheduler_host: "127.0.0.1".to_string(),
             scheduler_port,
             scheduler_connect_timeout_seconds: 5,
             bind_host: "127.0.0.1".to_string(),
-            port: flight_port_holder.local_addr().unwrap().port(),
             task_scheduling_policy: TaskSchedulingPolicy::PullStaged,
             work_dir: Some(work_dir.to_str().unwrap().to_string()),
             job_data_clean_up_interval_seconds,
+            override_arrow_flight_service: Some(Arc::new(|_, _, _, _| {
+                tokio::spawn(async {
+                    Err(BallistaError::General(
+                        "the Flight service failed on purpose".to_string(),
+                    ))
+                })
+            })),
             ..ExecutorProcessConfig::default()
         });
 
@@ -1898,7 +1904,6 @@ mod tests {
         .await
         .expect("the executor did not shut down")
         .expect("the executor failed instead of shutting down gracefully");
-        drop(flight_port_holder);
     }
 
     /// A job directory with a file in it, as the shuffle writer leaves one.
@@ -1917,7 +1922,7 @@ mod tests {
         let work_dir = TempDir::new().unwrap();
         let job_dir = create_job_dir(work_dir.path());
 
-        run_executor_until_flight_port_is_taken(0, work_dir.path()).await;
+        run_executor_until_flight_service_fails(0, work_dir.path()).await;
 
         assert!(
             job_dir.exists(),
@@ -1930,7 +1935,7 @@ mod tests {
         let work_dir = TempDir::new().unwrap();
         let job_dir = create_job_dir(work_dir.path());
 
-        run_executor_until_flight_port_is_taken(1, work_dir.path()).await;
+        run_executor_until_flight_service_fails(1, work_dir.path()).await;
 
         assert!(
             !job_dir.exists(),
