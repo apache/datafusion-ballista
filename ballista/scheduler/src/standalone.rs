@@ -102,12 +102,18 @@ pub async fn new_standalone_scheduler_with_builder(
 
     let metrics_collector = default_metrics_collector()?;
 
+    let mut scheduler_config = SchedulerConfig::default().with_scheduler_policy(policy);
+
+    if let Some(resolver) = config.ballista_partition_sliceable_resolver() {
+        scheduler_config = scheduler_config.with_partition_sliceable_resolver(resolver);
+    }
+
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
             endpoint,
             cluster,
             codec,
-            Arc::new(SchedulerConfig::default().with_scheduler_policy(policy)),
+            Arc::new(scheduler_config),
             metrics_collector,
         );
 
