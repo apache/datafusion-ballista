@@ -206,6 +206,7 @@ pub struct ResolvedStage {
 /// 3. manage the stage-level combined metrics
 ///    Running stages will only be maintained in memory and will not saved to the backend storage
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct RunningStage {
     /// Stage ID
     pub stage_id: usize,

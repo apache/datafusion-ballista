@@ -166,6 +166,7 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 /// Contains the execution graph and cached data to improve performance
 /// when scheduling tasks for the job.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct JobInfoCache {
     /// The execution graph for this job, protected by a read-write lock.
     pub execution_graph: Arc<RwLock<ExecutionGraphBox>>,
