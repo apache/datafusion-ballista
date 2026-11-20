@@ -604,10 +604,16 @@ it was while its children are restricted, because the scheduler cannot tell one
 that holds data per partition from one that does not, such as a <code class="docutils literal notranslate"><span class="pre">FilterExec</span></code>. An
 interior node of your own that holds data per partition still returns wrong
 results in a split stage unless a resolver restricts it.</p>
-<p>The error names the node and what to implement. Under push-staged scheduling
-the job’s status says only that a task could not be prepared; the reason is in
-the scheduler’s log. To make nodes of your own restrictable, see
+<p>The error, which the job’s status carries under both push-staged and
+pull-staged scheduling, names the node and what to implement. To make nodes of
+your own restrictable, see
 <a class="reference internal" href="../user-guide/extending-components.html#custom-physical-plan-nodes"><span class="std std-ref">Custom Physical Plan Nodes</span></a>.</p>
+<p>Under push-staged scheduling, a job whose task could not be prepared and a job
+whose task an executor rejected both used to fail with
+<code class="docutils literal notranslate"><span class="pre">task</span> <span class="pre">could</span> <span class="pre">not</span> <span class="pre">be</span> <span class="pre">prepared</span> <span class="pre">or</span> <span class="pre">was</span> <span class="pre">rejected</span> <span class="pre">by</span> <span class="pre">executor</span></code>. A job now fails with
+the preparation error when there is one, and otherwise with
+<code class="docutils literal notranslate"><span class="pre">task</span> <span class="pre">was</span> <span class="pre">rejected</span> <span class="pre">by</span> <span class="pre">executor</span> <span class="pre">&lt;id&gt;</span></code>. Update anything that matches on the old
+text, which shipped in 55.0.0.</p>
 </section>
 <section id="nested-loop-joins-that-emit-build-rows-run-as-a-single-task">
 <h4>Nested-loop joins that emit build rows run as a single task<a class="headerlink" href="#nested-loop-joins-that-emit-build-rows-run-as-a-single-task" title="Link to this heading">#</a></h4>
