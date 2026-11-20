@@ -32,6 +32,14 @@ cargo run --example standalone_sql
 
 Source: [`examples/examples/standalone-sql.rs`](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/standalone-sql.rs)
 
+`DataFrame::cache()` in staged and pipelined modes:
+
+```bash
+cargo run --example standalone_dataframe_cache
+```
+
+Source: [`examples/examples/standalone-dataframe-cache.rs`](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/standalone-dataframe-cache.rs)
+
 ```bash
 cargo run --example standalone-substrait --features="ballista-scheduler/substrait"
 ```

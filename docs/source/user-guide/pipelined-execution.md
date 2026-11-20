@@ -137,6 +137,15 @@ does not work.
   executors more memory, use fewer partitions, or run such queries in staged
   mode.
 
+## Queries over a cached DataFrame
+
+`DataFrame::cache()` works in a pipelined session. A cache is always built by
+an ordinary staged job, run by the first query that reads it; later queries
+read the cached result pipelined, streaming their rows as they run, so
+expensive preparation is done once and the interactive queries over it stay
+short. See [Caching DataFrames](tuning-guide.md#caching-dataframes) for how to
+turn caching on, and a full example.
+
 ## Settings
 
 | Setting                                           | Default  | Meaning                                                                                                                                               |
