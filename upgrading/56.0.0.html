@@ -588,12 +588,13 @@ left as it was, so a task that ran partitions 4 and 5 of it ran its partitions 0
 and 1, and the stage returned some partitions twice and others not at all, with
 no error.</p>
 <p>The scheduler now fails the job instead. Such a leaf is accepted only in a task
-that runs all of its partitions, in order, so a retry of part of a stage can
-fail a job too. Plans made of Ballista’s own leaves (shuffle readers, file and
-in-memory scans, <code class="docutils literal notranslate"><span class="pre">PlaceholderRowExec</span></code>, <code class="docutils literal notranslate"><span class="pre">EmptyExec</span></code>) are unaffected, as are
-leaves read whole below a <code class="docutils literal notranslate"><span class="pre">CoalescePartitionsExec</span></code> or on a join’s build side. A
-<code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code> over any other source used to log a warning and run, and is
-now refused when its stage is split unless a resolver restricts it.</p>
+that runs all of its partitions, in order, or none of them, as in a <code class="docutils literal notranslate"><span class="pre">UnionExec</span></code>
+branch another task owns, where it becomes an empty leaf. A retry of part of a
+stage can fail a job too. Plans made of Ballista’s own leaves (shuffle readers,
+file and in-memory scans, <code class="docutils literal notranslate"><span class="pre">PlaceholderRowExec</span></code>, <code class="docutils literal notranslate"><span class="pre">EmptyExec</span></code>) are unaffected, as
+are leaves read whole below a <code class="docutils literal notranslate"><span class="pre">CoalescePartitionsExec</span></code> or on a join’s build
+side. A <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code> over any other source used to log a warning and run,
+and is now refused when its stage is split unless a resolver restricts it.</p>
 <p>Whether a stage is split depends on how many task slots are free when it is
 scheduled, and on whether part of it is retried, so a query that holds such a
 leaf can pass on an idle or small cluster and fail on a busy one. To test a plan
@@ -603,7 +604,10 @@ to a small value, which splits every stage with more partitions than that.</p>
 it was while its children are restricted, because the scheduler cannot tell one
 that holds data per partition from one that does not, such as a <code class="docutils literal notranslate"><span class="pre">FilterExec</span></code>. An
 interior node of your own that holds data per partition still returns wrong
-results in a split stage unless a resolver restricts it.</p>
+results in a split stage unless a resolver restricts it. Below a <code class="docutils literal notranslate"><span class="pre">UnionExec</span></code>,
+a branch where such a node keeps its own partition count gets a stage of its
+own, or under the adaptive planner the union’s stage runs as one task, since a
+task given part of the branch would also run partitions that another task owns.</p>
 <p>The error, which the job’s status carries under both push-staged and
 pull-staged scheduling, names the node and what to implement. To make nodes of
 your own restrictable, see
@@ -623,6 +627,25 @@ return wrong results when their probe side was split between tasks, because
 each task emitted its own copy of the build rows. These joins now run as a
 single task, so queries that use them may be slower. Other nested-loop joins
 are unchanged.</p>
+</section>
+<section id="a-split-union-all-with-a-branch-that-merges-its-input-runs-as-one-task">
+<h4>A split <code class="docutils literal notranslate"><span class="pre">UNION</span> <span class="pre">ALL</span></code> with a branch that merges its input runs as one task<a class="headerlink" href="#a-split-union-all-with-a-branch-that-merges-its-input-runs-as-one-task" title="Link to this heading">#</a></h4>
+<p>When a stage is split between tasks, each task restricts the <code class="docutils literal notranslate"><span class="pre">UnionExec</span></code>
+branches other tasks own to no partitions. The adaptive planner can leave a
+branch that merges its input into one partition in the union’s stage: in a
+<code class="docutils literal notranslate"><span class="pre">UNION</span> <span class="pre">ALL</span> <span class="pre">...</span> <span class="pre">ORDER</span> <span class="pre">BY</span></code>, a branch with a <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code> or an <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span> <span class="pre">...</span> <span class="pre">LIMIT</span></code>, or
+a <code class="docutils literal notranslate"><span class="pre">UNION</span> <span class="pre">ALL</span></code> of aggregates without <code class="docutils literal notranslate"><span class="pre">GROUP</span> <span class="pre">BY</span></code>. Such a branch reads its input
+whole and keeps its one partition, so every task of the stage ran it, and the
+query returned wrong rows, over any source including Parquet.</p>
+<p>The scheduler now runs such a stage as one task, as it does a stage that
+collapses its input, so each branch runs once. The same goes for a branch that
+reads a broadcast, holds a node that sets its own partition count, or reads a
+leaf of several partitions that nothing can restrict. The task
+ignores <code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code> and takes one vcore for
+each of the stage’s partitions, up to what its executor has free, so the stage
+runs with less parallelism than before. The scheduler logs each such stage at
+<code class="docutils literal notranslate"><span class="pre">info</span></code> level, naming the branch. The static planner gives such a branch a stage
+of its own and is unaffected.</p>
 </section>
 </section>
 <section id="api-changes">
@@ -670,6 +693,15 @@ reads. The scheduler posts <code class="docutils literal notranslate"><span clas
 <code class="docutils literal notranslate"><span class="pre">DataFrame::cache()</span></code> data a running job loses, and is now <code class="docutils literal notranslate"><span class="pre">#[non_exhaustive]</span></code>,
 so later events can be added without breaking code outside the crate. A <code class="docutils literal notranslate"><span class="pre">match</span></code>
 on it outside the crate needs a wildcard arm.</p>
+</section>
+<section id="jobinfocache-and-runningstage-are-non-exhaustive">
+<h4><code class="docutils literal notranslate"><span class="pre">JobInfoCache</span></code> and <code class="docutils literal notranslate"><span class="pre">RunningStage</span></code> are <code class="docutils literal notranslate"><span class="pre">#[non_exhaustive]</span></code><a class="headerlink" href="#jobinfocache-and-runningstage-are-non-exhaustive" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">ballista_scheduler::state::task_manager::JobInfoCache</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ballista_scheduler::state::execution_stage::RunningStage</span></code> gain crate-private
+fields and are now <code class="docutils literal notranslate"><span class="pre">#[non_exhaustive]</span></code>, so later fields can be added without
+breaking code outside the crate. Code outside the crate can no longer build
+either with a struct literal; use <code class="docutils literal notranslate"><span class="pre">JobInfoCache::new</span></code> or <code class="docutils literal notranslate"><span class="pre">RunningStage::new</span></code>
+instead. Their public fields can still be read and set.</p>
 </section>
 <section id="jobstate-gains-new-context">
 <h4><code class="docutils literal notranslate"><span class="pre">JobState</span></code> gains <code class="docutils literal notranslate"><span class="pre">new_context</span></code><a class="headerlink" href="#jobstate-gains-new-context" title="Link to this heading">#</a></h4>
@@ -1029,6 +1061,7 @@ unchanged.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#pull-staged-executors-no-longer-run-more-partitions-than-they-have-vcores">Pull-staged executors no longer run more partitions than they have vcores</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#stages-split-between-tasks-fail-on-a-leaf-the-scheduler-cannot-restrict">Stages split between tasks fail on a leaf the scheduler cannot restrict</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#nested-loop-joins-that-emit-build-rows-run-as-a-single-task">Nested-loop joins that emit build rows run as a single task</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#a-split-union-all-with-a-branch-that-merges-its-input-runs-as-one-task">A split <code class="docutils literal notranslate"><span class="pre">UNION</span> <span class="pre">ALL</span></code> with a branch that merges its input runs as one task</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a><ul class="nav section-nav flex-column">
@@ -1036,6 +1069,7 @@ unchanged.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-shuffle-bufferedbatches-is-no-longer-public"><code class="docutils literal notranslate"><span class="pre">sort_shuffle::BufferedBatches</span></code> is no longer public</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#taskmanager-executor-lost-returns-an-executorlostoutcome"><code class="docutils literal notranslate"><span class="pre">TaskManager::executor_lost</span></code> returns an <code class="docutils literal notranslate"><span class="pre">ExecutorLostOutcome</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#querystageschedulerevent-is-non-exhaustive"><code class="docutils literal notranslate"><span class="pre">QueryStageSchedulerEvent</span></code> is <code class="docutils literal notranslate"><span class="pre">#[non_exhaustive]</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#jobinfocache-and-runningstage-are-non-exhaustive"><code class="docutils literal notranslate"><span class="pre">JobInfoCache</span></code> and <code class="docutils literal notranslate"><span class="pre">RunningStage</span></code> are <code class="docutils literal notranslate"><span class="pre">#[non_exhaustive]</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#jobstate-gains-new-context"><code class="docutils literal notranslate"><span class="pre">JobState</span></code> gains <code class="docutils literal notranslate"><span class="pre">new_context</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#partitionsliceable-covers-any-node-and-embedders-can-register-their-own"><code class="docutils literal notranslate"><span class="pre">PartitionSliceable</span></code> covers any node, and embedders can register their own</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#partition-locations-hold-an-executorendpoint">Partition locations hold an <code class="docutils literal notranslate"><span class="pre">ExecutorEndpoint</span></code></a></li>

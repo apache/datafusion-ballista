@@ -528,18 +528,6 @@ scheduler yet.</p></li>
 <li><p><strong>One task per scan.</strong> Iceberg scans do not split into partitions yet, so one
 executor reads the whole table. Operators after the first shuffle still run
 in parallel. A scan reporting more than one partition fails to encode.</p></li>
-<li><p><strong>A <code class="docutils literal notranslate"><span class="pre">UNION</span></code> or <code class="docutils literal notranslate"><span class="pre">UNION</span> <span class="pre">ALL</span></code> can fail or return wrong rows when the adaptive
-planner splits its stage between tasks.</strong> That happens with
-<code class="docutils literal notranslate"><span class="pre">ballista.scheduler.max_partitions_per_task</span></code> set, or when the executor has
-fewer free task slots than the union has partitions. A union of Iceberg scans
-fails with an error that suggests <code class="docutils literal notranslate"><span class="pre">SchedulerConfig::partition_sliceable_resolver</span></code>,
-which standalone mode can’t set;
-<a class="reference external" href="https://github.com/apache/datafusion-ballista/pull/2852">#2852</a> fixes it. A union
-whose branches each merge their input into one partition, as with an
-<code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> over the union, a <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code> in a branch or aggregates without
-<code class="docutils literal notranslate"><span class="pre">GROUP</span> <span class="pre">BY</span></code>, returns some rows more than once, whatever the table format
-(<a class="reference external" href="https://github.com/apache/datafusion-ballista/issues/2854">#2854</a>). Setting
-<code class="docutils literal notranslate"><span class="pre">ballista.planner.adaptive.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code> avoids both.</p></li>
 <li><p><strong>No encrypted tables.</strong> A table with <code class="docutils literal notranslate"><span class="pre">encryption.key-id</span></code> set fails to load
 on the scheduler and executors, which have no key management client.</p></li>
 <li><p><strong>Storage credentials travel in plain text.</strong> Each table’s serialized
