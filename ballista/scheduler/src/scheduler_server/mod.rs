@@ -349,6 +349,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             + self.running_job_number()
     }
 
+    /// Removes `session_id` and its `DataFrame::cache()` data. Without the
+    /// event loop the scheduler is stopping and the caches cannot be dropped:
+    /// the session is removed anyway, and the error returned.
+    pub(crate) async fn remove_session_and_caches(&self, session_id: &str) -> Result<()> {
+        match self.query_stage_event_loop.get_sender() {
+            Ok(sender) => self.state.remove_session(session_id, &sender).await,
+            Err(e) => {
+                self.state
+                    .session_manager
+                    .remove_session(session_id)
+                    .await?;
+                Err(e)
+            }
+        }
+    }
+
     /// Admits a job submission, or refuses it if the scheduler is shutting
     /// down. [`submit_plan`](Self::submit_plan) puts the [`Admission`] in the
     /// [`JobQueued`](QueryStageSchedulerEvent::JobQueued) event for the job, and

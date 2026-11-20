@@ -64,9 +64,9 @@ pub(crate) fn contains_cache(plan: &LogicalPlan) -> bool {
         .unwrap_or(false)
 }
 
-/// In the failure of a job that lost cache data mid-query. Rebuild-and-resume
-/// is future work (see the design doc); the caches the job read are dropped,
-/// so a retry rebuilds them.
+/// In the failure of a job that lost cache data mid-query and could not rebuild
+/// it (see the design doc); the caches the job read are dropped, so a retry
+/// rebuilds them.
 pub(crate) const CACHE_DATA_LOST: &str = "lost DataFrame::cache() data";
 
 /// Replaces every `BallistaCacheNode` with its subplan, for when an operator
