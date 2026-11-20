@@ -55,7 +55,8 @@ pub use distributed_explain_analyze::{
     DistributedExplainAnalyzeExec, format_metrics_as_record_batch,
 };
 pub use distributed_query::{
-    DistributedQueryExec, execute_physical_plan, execute_query_params,
+    DistributedQueryExec, SchedulerClient, execute_physical_plan, execute_query_params,
+    poll_job_until_successful,
 };
 pub use ordered_range_repartition::OrderedRangeRepartitionExec;
 pub use partition_id_repartition::PartitionIdRepartitionExec;
