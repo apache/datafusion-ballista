@@ -42,7 +42,7 @@
 //!
 //! Sketches of different precisions merge, at the lowest of them.
 //!
-//! The default, [`DEFAULT_PRECISION`](crate::hll::DEFAULT_PRECISION), is 12
+//! The default, [`DEFAULT_PRECISION`], is 12
 //! rather than DataFusion's 14. The estimate feeds join cardinalities, where
 //! a relative error in the distinct count carries straight through to the
 //! estimated row count, so an error of a couple of percent is small next to
