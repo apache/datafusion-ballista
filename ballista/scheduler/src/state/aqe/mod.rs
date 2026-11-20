@@ -1382,6 +1382,18 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         }
     }
 
+    fn reset_unlaunched_task(
+        &mut self,
+        task: &crate::state::execution_graph::TaskDescription,
+        executor_id: &str,
+    ) -> bool {
+        crate::state::execution_graph::reset_unlaunched_task_in_stages(
+            &mut self.stages,
+            task,
+            executor_id,
+        )
+    }
+
     /// Convert unresolved stage to be resolved
     fn resolve_stage(&mut self, stage_id: usize) -> ballista_core::error::Result<bool> {
         if let Some(ExecutionStage::UnResolved(stage)) = self.stages.get(&stage_id) {

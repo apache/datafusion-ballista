@@ -558,6 +558,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         error!(
                             "Failed to launch new task, could not get executor metadata: {e}"
                         );
+                        // Bound tasks were already marked Running at bind
+                        // time. Return them to pending before refunding
+                        // vcores, otherwise they hang forever (#2691).
+                        let reset = state
+                            .task_manager
+                            .reset_unlaunched_tasks(&executor_id, &reservations)
+                            .await;
+                        if reset > 0 {
+                            debug!(
+                                "Reset {reset} unlaunched task(s) on executor {executor_id} after metadata miss"
+                            );
+                        }
                         // Refund like the rejected-launch branch: the executor
                         // stays registered, so its reserved vcores must go
                         // back into the budget (see #2686).
@@ -975,6 +987,18 @@ mod tests {
     /// reserved vcores must be refunded so they are not stuck until re-register.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn launch_tasks_refunds_vcores_when_executor_metadata_missing() -> Result<()> {
+        // AQE is on by default, so this covers `AdaptiveExecutionGraph`.
+        launch_tasks_metadata_miss_resets_and_refunds(true).await
+    }
+
+    /// Same as above with AQE disabled, covering `StaticExecutionGraph`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_refunds_vcores_when_executor_metadata_missing_static_graph()
+    -> Result<()> {
+        launch_tasks_metadata_miss_resets_and_refunds(false).await
+    }
+
+    async fn launch_tasks_metadata_miss_resets_and_refunds(adaptive: bool) -> Result<()> {
         use crate::cluster::BallistaCluster;
         use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
         use crate::state::session_manager::share_file_statistics_cache;
@@ -1005,7 +1029,11 @@ mod tests {
 
         let ctx = state
             .session_manager
-            .create_or_update_session("session", &SessionConfig::new_with_ballista())
+            .create_or_update_session(
+                "session",
+                &SessionConfig::new_with_ballista()
+                    .with_ballista_adaptive_query_planner(adaptive),
+            )
             .await?;
         state
             .task_manager
@@ -1028,6 +1056,11 @@ mod tests {
             .await?;
         let bound_vcores: u32 = bound.iter().map(|(_, t)| t.vcores_consumed).sum();
         assert!(bound_vcores > 0);
+        let bound_partitions: usize = bound
+            .iter()
+            .map(|(_, t)| t.global_input_partition_ids.len())
+            .sum();
+        assert!(bound_partitions > 0);
 
         // Simulate a transient metadata miss while the executor remains in the
         // available-vcores budget (the situation #2686 describes).
@@ -1043,6 +1076,29 @@ mod tests {
         let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
         let sender = EventSender::new(tx_event);
         state.task_manager.record_task_reservations(&bound);
+
+        let available_before =
+            state.task_manager.get_available_task_count(&job_id).await?;
+
+        // A reset for another executor or a stale stage attempt must not
+        // touch the slot: task ids restart after a rollback.
+        {
+            let graph = state
+                .task_manager
+                .get_active_execution_graph(&job_id)
+                .expect("job graph should be active");
+            let mut graph = graph.write().await;
+            let (_, task) = &bound[0];
+            assert!(!graph.reset_unlaunched_task(task, "executor-2"));
+            let mut stale = task.clone();
+            stale.stage_attempt_num += 1;
+            assert!(!graph.reset_unlaunched_task(&stale, "executor-1"));
+        }
+        assert_eq!(
+            state.task_manager.get_available_task_count(&job_id).await?,
+            available_before
+        );
+
         let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
 
         assert!(failed_jobs.is_empty());
@@ -1051,6 +1107,16 @@ mod tests {
         assert_eq!(
             unassigned_slots,
             vec![("executor-1".to_string(), bound_vcores)]
+        );
+
+        // #2691: tasks must be pending again so revive can reschedule them.
+        // Exactly the bound partitions come back; nothing else changes.
+        let available_after =
+            state.task_manager.get_available_task_count(&job_id).await?;
+        assert_eq!(
+            available_after,
+            available_before + bound_partitions,
+            "unlaunched tasks should return to pending after a metadata miss"
         );
 
         Ok(())
