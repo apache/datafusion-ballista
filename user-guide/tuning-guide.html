@@ -641,23 +641,29 @@ memory pressure — see <a class="reference internal" href="#configuring-executo
 <li><p>the per-task buffered-bytes budget
 (<code class="docutils literal notranslate"><span class="pre">ballista.shuffle.sort_based.memory_limit_per_task_bytes</span></code>) is reached. This
 budget is counted independently of the memory pool, so it bounds the writer’s
-memory even when the pool is unbounded (the default). Setting it to <code class="docutils literal notranslate"><span class="pre">0</span></code>
-disables this trigger, leaving memory-pool pressure as the sole spill signal.</p></li>
+memory even when the pool is unbounded (<code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span> <span class="pre">0</span></code>). Setting it
+to <code class="docutils literal notranslate"><span class="pre">0</span></code> disables this trigger, leaving memory-pool pressure as the sole spill
+signal.</p></li>
 </ul>
 <p><strong>Warning:</strong> setting <code class="docutils literal notranslate"><span class="pre">memory_limit_per_task_bytes</span></code> to <code class="docutils literal notranslate"><span class="pre">0</span></code> while the executor
-uses the default unbounded memory pool disables both spill triggers. The writer
-then buffers the entire task’s shuffle output in memory and never spills, which
-can exhaust the executor and cause an out-of-memory failure on large inputs.
-Only use <code class="docutils literal notranslate"><span class="pre">0</span></code> together with a bounded memory pool (see
+runs an unbounded memory pool (<code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span> <span class="pre">0</span></code>) disables both spill
+triggers. The writer then buffers the entire task’s shuffle output in memory
+and never spills, which can exhaust the executor and cause an out-of-memory
+failure on large inputs. Only use <code class="docutils literal notranslate"><span class="pre">0</span></code> together with a bounded memory pool (the
+default; see
 <a class="reference internal" href="#configuring-executor-memory-pool"><span class="xref myst">Configuring Executor Memory Pool</span></a>), so
 pool pressure still forces spilling.</p>
-<p>After the input stream finishes, the remaining in-memory data and any spilled
-batches are written into a single consolidated Arrow IPC file per input
-partition, alongside an index file that lets readers seek directly to a given
-output partition.</p>
-<p>This produces <code class="docutils literal notranslate"><span class="pre">2</span> <span class="pre">×</span> <span class="pre">N</span></code> files instead of <code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">×</span> <span class="pre">M</span></code>, coalesces small batches
-to a target size before writing, and bounds shuffle memory use via
-spilling.</p>
+<p>At the end of input, the writer encodes each output partition’s buffered rows
+and reserves the encoded bytes from the memory pool. A partition whose bytes
+the pool refuses is appended to its spill file instead. The per-task budget
+does not apply to this step, so only memory-pool pressure can make it spill.
+With an unbounded pool (<code class="docutils literal notranslate"><span class="pre">--memory-pool-size</span> <span class="pre">0</span></code>) it never does.</p>
+<p>The task’s in-memory data and any spilled batches are then written into a
+single consolidated Arrow IPC file per task, alongside an index file that lets
+readers seek directly to a given output partition.</p>
+<p>This produces two files per task instead of one per input and output
+partition pair, coalesces small batches to a target size before writing, and
+bounds shuffle memory use via spilling.</p>
 <p>Worst-case sort-shuffle memory per executor is approximately
 <code class="docutils literal notranslate"><span class="pre">vcores</span> <span class="pre">×</span> <span class="pre">memory_limit_per_task_bytes</span></code>, since one writer task can run per
 core. Lower the per-task budget on memory-constrained executors to spill
