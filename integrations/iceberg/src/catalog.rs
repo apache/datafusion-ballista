@@ -28,7 +28,9 @@ use datafusion::catalog::{
     CatalogProvider, CatalogProviderList, SchemaProvider, Session, TableProvider,
 };
 use datafusion::common::tree_node::{Transformed, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, Result, not_impl_err};
+use datafusion::common::{
+    Constraints, DataFusionError, Result, internal_datafusion_err, not_impl_err,
+};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::datasource::{DefaultTableSource, TableType, provider_as_source};
 use datafusion::logical_expr::dml::InsertOp;
@@ -225,7 +227,15 @@ async fn repin(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
             let Some(origin) = origin(&scan) else {
                 return Ok(Transformed::no(LogicalPlan::TableScan(scan)));
             };
-            let table = tables[&key(origin)].clone();
+            // Both traversals visit the same scans, so this is always loaded.
+            // If they ever drift apart, reading the scan fails rather than
+            // silently reading the version the view was created with.
+            let table = tables.get(&key(origin)).cloned().unwrap_or_else(|| {
+                Err(Arc::new(internal_datafusion_err!(
+                    "Iceberg table {} wasn't loaded to re-pin a view",
+                    origin.table_ident()
+                )))
+            });
             scan.source = provider_as_source(Arc::new(PinnedTable::pin(origin, table)));
             Ok(Transformed::yes(LogicalPlan::TableScan(scan)))
         })?
@@ -237,8 +247,8 @@ async fn repin(plan: &LogicalPlan) -> Result<Option<LogicalPlan>> {
 ///
 /// A view is any table DataFusion inlines: one whose provider has a logical
 /// plan, such as a [`ViewTable`] from `CREATE VIEW` or a `DataFrame`'s
-/// `into_view`. It keeps the original view's type, schema and definition, and
-/// replaces only its plan.
+/// `into_view`. It keeps the original view's type, schema, definition,
+/// constraints and column defaults, and replaces only its plan.
 #[derive(Debug)]
 struct RepinnedView {
     original: Arc<dyn TableProvider>,
@@ -258,6 +268,14 @@ impl TableProvider for RepinnedView {
 
     fn get_table_definition(&self) -> Option<&str> {
         self.original.get_table_definition()
+    }
+
+    fn constraints(&self) -> Option<&Constraints> {
+        self.original.constraints()
+    }
+
+    fn get_column_default(&self, column: &str) -> Option<&Expr> {
+        self.original.get_column_default(column)
     }
 
     fn get_logical_plan(&self) -> Option<Cow<'_, LogicalPlan>> {
