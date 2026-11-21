@@ -96,7 +96,9 @@ mod standalone {
 
     use std::sync::{Arc, atomic::AtomicBool};
 
-    use crate::common::{ALLTYPES_GROUP_BY_SQL, register_alltypes, state_with_config};
+    use crate::common::{
+        ALLTYPES_GROUP_BY, ALLTYPES_GROUP_BY_SQL, register_alltypes, state_with_config,
+    };
     use crate::{assert_job_name_setting, job_name_state};
     use ballista::extension::{SessionConfigExt, SessionContextExt};
     use ballista_core::execution_plans::plan_algebra::PartitionSliceableResolver;
@@ -198,7 +200,10 @@ mod standalone {
 
         // Execute a query to verify that the standalone scheduler uses the
         // resolver registered in the session configuration.
-        ctx.sql(ALLTYPES_GROUP_BY_SQL).await?.collect().await?;
+        let result = ctx.sql(ALLTYPES_GROUP_BY_SQL).await?.collect().await?;
+
+        // A resolver returning None should leave the results unchanged.
+        datafusion::assert_batches_eq!(ALLTYPES_GROUP_BY, &result);
 
         assert!(resolver.invoked.load(std::sync::atomic::Ordering::Relaxed));
 
