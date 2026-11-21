@@ -32,11 +32,11 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use ferroid::base32::Base32SnowExt;
-use ferroid::futures::SnowflakeGeneratorAsyncTokioExt;
+use ferroid::base32::Base32Ext;
+use ferroid::futures::SnowflakeGeneratorAsyncExt;
 use ferroid::generator::AtomicSnowflakeGenerator;
 use ferroid::id::SnowflakeMastodonId;
-use ferroid::time::MonotonicClock;
+use ferroid::time::DirectClock;
 use tokio::sync::broadcast;
 
 use crate::cache::{contains_cache, strip_caches};
@@ -98,7 +98,7 @@ pub trait JobIdGenerator: Sync + Send {
 /// A monotonically increasing sortable snowflake job id generator
 /// which does not capture machine id as part result.
 pub(crate) struct DefaultJobGenerator {
-    generator: AtomicSnowflakeGenerator<SnowflakeMastodonId, MonotonicClock>,
+    generator: AtomicSnowflakeGenerator<SnowflakeMastodonId, DirectClock>,
 }
 
 impl Default for DefaultJobGenerator {
@@ -107,7 +107,7 @@ impl Default for DefaultJobGenerator {
         // setups
         let generator = AtomicSnowflakeGenerator::new(
             0, // machine id is hard-coded to 0
-            MonotonicClock::<1>::default(),
+            DirectClock::default(),
         );
 
         Self { generator }
@@ -117,8 +117,8 @@ impl Default for DefaultJobGenerator {
 #[async_trait::async_trait]
 impl JobIdGenerator for DefaultJobGenerator {
     async fn next_id(&self) -> String {
-        let id = self.generator.next_id_async().await;
-        id.encode().to_string()
+        let id = self.generator.next_id_async(tokio::time::sleep).await;
+        id.encode().as_string()
     }
 }
 
