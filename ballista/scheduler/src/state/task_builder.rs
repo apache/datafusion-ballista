@@ -489,6 +489,9 @@ fn select_output_partitions(
             .unzip();
         let partitioning = match reader.properties().output_partitioning() {
             Partitioning::Hash(exprs, _) => Partitioning::Hash(exprs.clone(), kept.len()),
+            Partitioning::Grouped(grouped) => {
+                ballista_core::storage_partitioning::select_groups(grouped, indices)?
+            }
             Partitioning::RoundRobinBatch(_) => Partitioning::RoundRobinBatch(kept.len()),
             Partitioning::UnknownPartitioning(_) => {
                 Partitioning::UnknownPartitioning(kept.len())
@@ -546,8 +549,15 @@ fn select_output_partitions(
                 .iter()
                 .filter_map(|&i| config.file_groups.get(i).cloned())
                 .collect();
+            let partitioning = match &config.output_partitioning {
+                Some(Partitioning::Grouped(grouped)) => Some(
+                    ballista_core::storage_partitioning::select_groups(grouped, indices)?,
+                ),
+                other => other.clone(),
+            };
             let restricted = FileScanConfigBuilder::from(config.clone())
                 .with_file_groups(file_groups)
+                .with_output_partitioning(partitioning)
                 .build();
             return Ok(Some(DataSourceExec::from_data_source(restricted)));
         }
@@ -662,6 +672,145 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    /// Execute manually aligned tasks after the same codec used for executor
+    /// transport. Global bucket 3 becomes local partition 0 without losing any
+    /// of either input's files. Retry is covered by the graph/process scenarios.
+    #[tokio::test]
+    async fn storage_task_codec_preserves_groups_and_all_input_splits() {
+        use ballista_core::config::BALLISTA_STORAGE_PARTITION_JOIN;
+        use ballista_core::extension::SessionConfigExt;
+        use ballista_core::serde::BallistaPhysicalExtensionCodec;
+        use ballista_core::storage_partitioning::{
+            BucketFile, BucketedParquetManifest, BucketedParquetTable, bucket_group_id,
+        };
+        use datafusion::arrow::array::{Int64Array, RecordBatch};
+        use datafusion::catalog::TableProvider;
+        use datafusion::common::{JoinType, NullEquality};
+        use datafusion::parquet::arrow::ArrowWriter;
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+        use datafusion::physical_plan::{ExecutionPlanProperties, collect};
+        use datafusion::prelude::{SessionConfig, SessionContext};
+        use datafusion_proto::physical_plan::AsExecutionPlan;
+        use datafusion_proto::protobuf::PhysicalPlanNode;
+        use prost::Message;
+        use std::fs::File;
+
+        let dir = tempfile::tempdir().unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("value", DataType::Int64, false),
+        ]));
+        let ctx = SessionContext::new_with_config(
+            SessionConfig::new_with_ballista()
+                .set_bool(BALLISTA_STORAGE_PARTITION_JOIN, true),
+        );
+        let mut scans = Vec::new();
+        for (side, values) in [
+            ("left", vec![vec![1, 2], vec![3]]),
+            ("right", vec![vec![10], vec![20]]),
+        ] {
+            let mut files = Vec::new();
+            for (index, values) in values.into_iter().chain([vec![-1]]).enumerate() {
+                // Iceberg's independent golden value hash(34)=2017239379,
+                // hence bucket[4](34)=3. The last file contains NULL keys.
+                let key = (index != 2).then_some(34);
+                let batch = RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(Int64Array::from(vec![key; values.len()])),
+                        Arc::new(Int64Array::from(values)),
+                    ],
+                )
+                .unwrap();
+                let path = dir.path().join(format!("{side}-{index}.parquet"));
+                let mut writer = ArrowWriter::try_new(
+                    File::create(&path).unwrap(),
+                    schema.clone(),
+                    None,
+                )
+                .unwrap();
+                writer.write(&batch).unwrap();
+                writer.close().unwrap();
+                files.push(BucketFile {
+                    path: path.to_str().unwrap().to_owned(),
+                    size: path.metadata().unwrap().len(),
+                    bucket: key.map(|_| 3),
+                    num_rows: Some(batch.num_rows()),
+                });
+            }
+            let provider = BucketedParquetTable::try_new(
+                schema.clone(),
+                BucketedParquetManifest {
+                    object_store_url: "file://".into(),
+                    key: "id".into(),
+                    buckets: 4,
+                    files,
+                },
+            )
+            .unwrap();
+            scans.push(provider.scan(&ctx.state(), None, &[], None).await.unwrap());
+        }
+        let join: Arc<dyn ExecutionPlan> = Arc::new(
+            HashJoinExec::try_new(
+                scans[0].clone(),
+                scans[1].clone(),
+                vec![(
+                    Arc::new(Column::new("id", 0)),
+                    Arc::new(Column::new("id", 0)),
+                )],
+                None,
+                &JoinType::Inner,
+                None,
+                PartitionMode::Partitioned,
+                NullEquality::NullEqualsNothing,
+                false,
+            )
+            .unwrap(),
+        );
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let expected = vec![(1, 10), (1, 20), (2, 10), (2, 20), (3, 10), (3, 20)];
+        let mut rows = Vec::new();
+        for global in [3, 4, 1, 0, 2] {
+            let task =
+                restrict_plan_to_partitions(join.clone(), &[global], None).unwrap();
+            let bytes = PhysicalPlanNode::try_from_physical_plan(task, &codec)
+                .unwrap()
+                .encode_to_vec();
+            let task_ctx = SessionContext::new().task_ctx();
+            let decoded = PhysicalPlanNode::decode(bytes.as_slice())
+                .unwrap()
+                .try_into_physical_plan(&task_ctx, &codec)
+                .unwrap();
+            for input in decoded.children() {
+                let Partitioning::Grouped(grouped) = input.output_partitioning() else {
+                    panic!("task input lost its storage-group identity");
+                };
+                assert_eq!(
+                    grouped.group_ids(),
+                    &[bucket_group_id((global != 4).then_some(global as u32))]
+                );
+            }
+            for batch in collect(decoded, task_ctx).await.unwrap() {
+                let left = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                let right = batch
+                    .column(3)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                rows.extend(
+                    (0..batch.num_rows()).map(|i| (left.value(i), right.value(i))),
+                );
+            }
+        }
+        rows.sort_unstable();
+        assert_eq!(rows, expected);
     }
 
     #[test]
