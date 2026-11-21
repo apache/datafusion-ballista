@@ -528,27 +528,6 @@ fn create_default_work_dir() -> ballista_core::error::Result<(String, TempDir)> 
     Ok((path, temp_dir))
 }
 
-#[cfg(all(test, unix))]
-mod default_work_dir_regression_tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
-
-    #[tokio::test]
-    async fn default_work_dir_survives_await_with_private_permissions() {
-        let (path, owner) = create_default_work_dir().unwrap();
-
-        tokio::task::yield_now().await;
-
-        assert!(Path::new(&path).is_dir());
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700);
-
-        drop(owner);
-        assert!(!Path::new(&path).exists());
-    }
-}
-
 async fn start_executor_process_inner(
     opt: Arc<ExecutorProcessConfig>,
     memory_metrics: Option<ExecutorMemoryMetrics>,
@@ -1374,6 +1353,23 @@ mod tests {
     use std::io::Write;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn default_work_dir_survives_await_with_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (path, owner) = super::create_default_work_dir().unwrap();
+
+        tokio::task::yield_now().await;
+
+        assert!(Path::new(&path).is_dir());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+
+        drop(owner);
+        assert!(!Path::new(&path).exists());
+    }
 
     #[test]
     fn executor_metadata_reflects_process_configuration() {
