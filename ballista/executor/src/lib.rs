@@ -398,6 +398,7 @@ pub mod terminate;
 
 mod cpu_bound_executor;
 mod standalone;
+mod task_span;
 #[cfg(test)]
 mod test_util;
 
@@ -408,6 +409,7 @@ use std::net::SocketAddr;
 pub use standalone::new_standalone_executor;
 pub use standalone::new_standalone_executor_from_builder;
 pub use standalone::new_standalone_executor_from_state;
+pub use task_span::trace_spawned_tasks;
 
 use crate::shutdown::Shutdown;
 use ballista_core::serde::protobuf::{

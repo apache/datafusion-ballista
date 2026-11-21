@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::runtime::SpawnedTask;
+use datafusion::common::runtime::{JoinSet, SpawnedTask};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
@@ -36,7 +36,6 @@ use datafusion::physical_plan::{
     statistics::ChildStats,
 };
 use log::debug;
-use tokio::task::JoinSet;
 
 use crate::JobId;
 use crate::error::BallistaError;

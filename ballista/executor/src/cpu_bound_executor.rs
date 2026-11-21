@@ -24,6 +24,7 @@ use log::{debug, warn};
 use parking_lot::Mutex;
 use std::{pin::Pin, sync::Arc};
 use tokio::sync::oneshot::Receiver;
+use tracing::Instrument;
 
 use futures::Future;
 
@@ -131,7 +132,7 @@ impl DedicatedExecutor {
     }
 
     /// Runs the specified Future (and any tasks it spawns) on the
-    /// `DedicatedExecutor`.
+    /// `DedicatedExecutor`, in the `tracing` span of the caller.
     ///
     /// Currently all tasks are added to the tokio executor
     /// immediately and compete for the threadpool's resources.
@@ -141,6 +142,8 @@ impl DedicatedExecutor {
         T::Output: Send + 'static,
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
+
+        let task = task.in_current_span();
 
         // create a execution plan to spawn
         let job = Box::pin(async move {

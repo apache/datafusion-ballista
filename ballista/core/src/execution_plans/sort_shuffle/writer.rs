@@ -31,7 +31,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
-use tokio::task::JoinSet;
 
 use super::super::shuffle_writer::{
     ColumnStatsCollector, WriterState, handoff_stream, sketched_columns,
@@ -55,7 +54,7 @@ use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::create_hashes;
-use datafusion::common::runtime::SpawnedTask;
+use datafusion::common::runtime::{JoinSet, SpawnedTask};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;

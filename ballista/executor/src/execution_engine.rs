@@ -688,5 +688,92 @@ fn metadata_batches_to_summaries(
     Ok(out)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::drive_shuffle_writer_stage;
+    use crate::task_span::polled_task_span;
+    use crate::test_util::captured_logs;
+    use ballista_core::execution_plans::ShuffleWriterExec;
+    use ballista_core::serde::protobuf::TaskDefinition;
+    use datafusion::arrow::datatypes::{Schema, SchemaRef};
+    use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::error::Result;
+    use datafusion::execution::SendableRecordBatchStream;
+    use datafusion::execution::context::TaskContext;
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+    use datafusion::physical_plan::streaming::{PartitionStream, StreamingTableExec};
+    use std::sync::Arc;
+    use std::task::Poll;
+    use tempfile::TempDir;
+    use tracing::Instrument;
+
+    /// A partition without rows that logs a line when its stream is polled.
+    #[derive(Debug)]
+    struct LoggingPartition(SchemaRef);
+
+    impl PartitionStream for LoggingPartition {
+        fn schema(&self) -> &SchemaRef {
+            &self.0
+        }
+
+        fn execute(&self, _ctx: Arc<TaskContext>) -> SendableRecordBatchStream {
+            let rows =
+                futures::stream::poll_fn(|_| -> Poll<Option<Result<RecordBatch>>> {
+                    log::info!("polling a partition");
+                    Poll::Ready(None)
+                });
+            Box::pin(RecordBatchStreamAdapter::new(self.0.clone(), rows))
+        }
+    }
+
+    #[tokio::test]
+    async fn shuffle_write_log_lines_carry_the_task_ids() {
+        let logs = captured_logs();
+        let work_dir = TempDir::new().unwrap();
+        let schema = Arc::new(Schema::empty());
+        let input = StreamingTableExec::try_new(
+            schema.clone(),
+            vec![Arc::new(LoggingPartition(schema))],
+            None,
+            vec![],
+            false,
+            None,
+        )
+        .unwrap();
+        let writer = ShuffleWriterExec::try_new(
+            "shuffle-job".to_string().into(),
+            2,
+            Arc::new(input),
+            work_dir.path().to_str().unwrap().to_string(),
+        )
+        .unwrap();
+
+        // The writer polls its input three spawns below this future: the
+        // partition drain, the writer's coordinator and its per-partition task.
+        drive_shuffle_writer_stage(
+            Arc::new(writer),
+            Arc::new(TaskContext::default()),
+            false,
+        )
+        .instrument(polled_task_span(&TaskDefinition {
+            job_id: "shuffle-job".to_string(),
+            stage_id: 2,
+            stage_attempt_num: 1,
+            task_id: 3,
+            task_attempt_num: 4,
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+        let span = "ballista_task{job_id=shuffle-job stage_id=2 stage_attempt=1 task_id=3 task_attempt=4}";
+        assert!(
+            logs.has_line_in_span(span, "polling a partition"),
+            "no line tagged `{span}` in:\n{}",
+            logs.contents()
+        );
+    }
+}
+
 // TODO: port these tests to scheduler/src/state/task_builder.rs (they used
 // to cover the executor-side restrict function that has moved scheduler-side).

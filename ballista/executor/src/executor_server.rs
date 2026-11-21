@@ -69,6 +69,7 @@ use crate::executor_process::{ExecutorProcessConfig, remove_job_data};
 use crate::health::ExecutorHealth;
 use crate::metrics::{ExecutorMemoryMetrics, ExecutorMetricCollectionPolicy};
 use crate::shutdown::ShutdownNotifier;
+use crate::task_span::pushed_task_span;
 use crate::{TaskCompletionExtras, TaskExecutionTimes, as_task_status};
 
 /// Number of consecutive heartbeat failures after which the executor
@@ -763,11 +764,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                         curator_task.task.task_id,
                         curator_task.task.task_attempt_num,
                     );
-                    debug!("Received task {:?}", task_identity);
-
+                    let span = pushed_task_span(&curator_task.task);
                     let server = executor_server.clone();
-                    dedicated_executor.spawn(async move {
-                        server.run_task(task_identity.clone(), curator_task).await;
+                    span.in_scope(|| {
+                        debug!("Received task {:?}", task_identity);
+                        dedicated_executor.spawn(async move {
+                            server.run_task(task_identity.clone(), curator_task).await;
+                        });
                     });
                 } else {
                     info!("Channel is closed and will exit the task receive loop");
@@ -1013,7 +1016,15 @@ fn executor_memory_metrics(metrics: &ExecutorMemoryMetrics) -> Vec<ExecutorMetri
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::test_util::{
+        BlockingEngine, TIMEOUT, captured_logs, executor_with_engine,
+    };
+    use ballista_core::registry::BallistaFunctionRegistry;
+    use datafusion::arrow::datatypes::Schema;
     use datafusion::execution::memory_pool::{FairSpillPool, MemoryConsumer, MemoryPool};
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::prelude::SessionConfig;
+    use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
     fn values(metrics: Vec<ExecutorMetric>) -> Vec<executor_metric::Metric> {
         metrics.into_iter().filter_map(|m| m.metric).collect()
@@ -1077,5 +1088,80 @@ mod test {
             values(executor_memory_metrics(&metrics)),
             vec![executor_metric::Metric::MemoryPoolReserved(0)]
         );
+    }
+
+    #[tokio::test]
+    async fn pushed_task_log_lines_carry_the_task_ids() {
+        // Nothing listens here. The test reads the task's status itself.
+        const SCHEDULER: &str = "127.0.0.1:1";
+
+        let logs = captured_logs();
+        let engine = BlockingEngine::default();
+        let (tx_task, rx_task) = mpsc::channel(1);
+        let (tx_task_status, mut rx_task_status) = mpsc::channel(1);
+        let (tx_stop, _rx_stop) = mpsc::channel(1);
+        let server = Arc::new(ExecutorServer::<LogicalPlanNode, PhysicalPlanNode>::new(
+            SchedulerGrpcClient::new(
+                Channel::from_shared(format!("http://{SCHEDULER}"))
+                    .unwrap()
+                    .connect_lazy(),
+            ),
+            executor_with_engine(&engine, 1),
+            ExecutorEnv {
+                tx_task: tx_task.clone(),
+                tx_task_status,
+                tx_stop,
+            },
+            BallistaCodec::default(),
+            usize::MAX,
+            usize::MAX,
+            None,
+            ExecutorMetricCollectionPolicy::default(),
+            ExecutorHealth::new(),
+        ));
+        let shutdown = ShutdownNotifier::new();
+        // With its channel closed, the pool doesn't report statuses.
+        TaskRunnerPool::new(server).start(rx_task, mpsc::channel(1).1, &shutdown);
+
+        let task = TaskDefinition {
+            task_id: 3,
+            task_attempt_num: 4,
+            job_id: "pushed-job".to_string().into(),
+            stage_id: 2,
+            stage_attempt_num: 1,
+            global_output_partition_ids: vec![],
+            vcores_consumed: 1,
+            plan: Arc::new(EmptyExec::new(Arc::new(Schema::empty()))),
+            launch_time: 0,
+            session_id: "session".to_string(),
+            session_config: SessionConfig::new(),
+            function_registry: Arc::new(BallistaFunctionRegistry::default()),
+        };
+        tx_task
+            .send(CuratorTaskDefinition {
+                scheduler_endpoint: SCHEDULER.to_string(),
+                task,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(TIMEOUT, engine.started.notified())
+            .await
+            .expect("the task never started");
+        engine.release.notify_one();
+        // The task logs that it finished before it sends its status.
+        tokio::time::timeout(TIMEOUT, rx_task_status.recv())
+            .await
+            .expect("the task never finished");
+
+        let span = "ballista_task{job_id=pushed-job stage_id=2 stage_attempt=1 task_id=3 task_attempt=4}";
+        // Both lines are logged on the dedicated runtime the task runs on.
+        for message in ["Execute task", "Finished task"] {
+            assert!(
+                logs.has_line_in_span(span, message),
+                "no `{message}` line tagged `{span}` in:\n{}",
+                logs.contents()
+            );
+        }
     }
 }

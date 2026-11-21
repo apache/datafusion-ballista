@@ -112,6 +112,7 @@ async fn main() -> ballista_core::error::Result<()> {
     } else {
         tracing.init();
     }
+    ballista_executor::trace_spawned_tasks().map_err(|e| e.to_string())?;
 
     raise_open_file_limit();
 

@@ -80,6 +80,7 @@ tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { version = "0.7", features = ["io-util"] }
 tonic = { workspace = true }
+tracing = { workspace = true }
 tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 uuid = { workspace = true }
@@ -87,3 +88,7 @@ uuid = { workspace = true }
 # use libc on unix like platforms to set worker priority in DedicatedExecutor
 [target."cfg(unix)".dependencies.libc]
 version = "0.2"
+
+[dev-dependencies]
+# The tests format logs, including without the `build-binary` feature.
+tracing-subscriber = { workspace = true }

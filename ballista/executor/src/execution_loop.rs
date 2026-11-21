@@ -24,6 +24,7 @@
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::executor_process::remove_job_data;
+use crate::task_span::polled_task_span;
 use crate::{TaskCompletionExtras, TaskExecutionTimes, as_task_status};
 use ballista_core::JobId;
 use ballista_core::error::BallistaError;
@@ -49,6 +50,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tonic::codegen::{Body, Bytes, StdError};
+use tracing::Instrument;
 
 /// Idle sleep between polls when polling is the only way to learn of new work.
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -233,6 +235,7 @@ where
                         .unwrap()
                         .as_millis() as u64;
 
+                    let span = polled_task_span(&task);
                     match run_received_task(
                         executor.clone(),
                         permit,
@@ -241,10 +244,11 @@ where
                         &codec,
                         &dedicated_executor,
                     )
+                    .instrument(span.clone())
                     .await
                     {
                         Ok(_) => {}
-                        Err(e) => {
+                        Err(e) => span.in_scope(|| {
                             //
                             // notifying scheduler about task failure
                             // as scheduler expects notification.
@@ -283,7 +287,7 @@ where
                             )) {
                                 warn!("failed to send task status: {error:?}");
                             };
-                        }
+                        }),
                     }
                 }
             }
@@ -534,13 +538,10 @@ async fn sample_tasks_status(
 #[cfg(test)]
 mod tests {
     use super::poll_loop;
-    use crate::execution_engine::{ExecutionEngine, QueryStageExecutor};
-    use crate::executor::Executor;
     use crate::health::ExecutorHealth;
-    use crate::metrics::LoggingMetricsCollector;
-    use crate::test_util::fresh_runtime_producer;
-    use ballista_core::JobId;
-    use ballista_core::registry::BallistaFunctionRegistry;
+    use crate::test_util::{
+        BlockingEngine, TIMEOUT, captured_logs, executor_with_engine,
+    };
     use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
     use ballista_core::serde::protobuf::scheduler_grpc_server::{
@@ -549,84 +550,25 @@ mod tests {
     use ballista_core::serde::protobuf::{
         CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
         CreateUpdateSessionParams, CreateUpdateSessionResult, ExecuteQueryParams,
-        ExecuteQueryResult, ExecutorRegistration, ExecutorStoppedParams,
-        ExecutorStoppedResult, GetJobMetricsParams, GetJobMetricsResult,
-        GetJobStatusParams, GetJobStatusResult, HeartBeatParams, HeartBeatResult,
-        PollWorkParams, PollWorkResult, RegisterExecutorParams, RegisterExecutorResult,
-        RemoveSessionParams, RemoveSessionResult, ShuffleWritePartition, TaskDefinition,
-        UpdateTaskStatusParams, UpdateTaskStatusResult,
+        ExecuteQueryResult, ExecutorStoppedParams, ExecutorStoppedResult,
+        GetJobMetricsParams, GetJobMetricsResult, GetJobStatusParams, GetJobStatusResult,
+        HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
+        RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
+        RemoveSessionResult, TaskDefinition, UpdateTaskStatusParams,
+        UpdateTaskStatusResult,
     };
-    use ballista_core::serde::scheduler::ExecutorSpecification;
-    use ballista_core::utils::default_config_producer;
     use datafusion::arrow::datatypes::Schema;
-    use datafusion::error::Result;
-    use datafusion::execution::context::TaskContext;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::physical_plan::metrics::MetricsSet;
-    use datafusion::prelude::SessionConfig;
     use datafusion_proto::bytes::physical_plan_to_bytes;
     use parking_lot::Mutex;
-    use std::fmt::{self, Display};
     use std::sync::Arc;
-    use std::time::Duration;
-    use tokio::sync::{Notify, Semaphore};
+    use tokio::sync::Semaphore;
     use tonic::codegen::BoxStream;
     use tonic::{Request, Response, Status};
 
     /// Vcores of the executor under test.
     const VCORES: usize = 8;
-
-    /// How long to wait for something the test expects to happen. Only
-    /// reached when it doesn't.
-    const TIMEOUT: Duration = Duration::from_secs(10);
-
-    /// Execution engine whose tasks announce that they started and then run
-    /// until released, so a test can look at the executor mid-task. It is its
-    /// own query stage: the tasks it creates share its two signals.
-    #[derive(Clone, Debug, Default)]
-    struct BlockingEngine {
-        started: Arc<Notify>,
-        release: Arc<Notify>,
-    }
-
-    impl ExecutionEngine for BlockingEngine {
-        fn create_query_stage_exec(
-            &self,
-            _job_id: JobId,
-            _stage_id: usize,
-            _task_id: usize,
-            _global_output_partition_ids: Vec<usize>,
-            _plan: Arc<dyn ExecutionPlan>,
-            _work_dir: &str,
-            _config: &SessionConfig,
-        ) -> Result<Arc<dyn QueryStageExecutor>> {
-            Ok(Arc::new(self.clone()))
-        }
-    }
-
-    impl Display for BlockingEngine {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "BlockingEngine")
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl QueryStageExecutor for BlockingEngine {
-        async fn execute_query_stage(
-            &self,
-            _task_id: usize,
-            _context: Arc<TaskContext>,
-        ) -> Result<Vec<ShuffleWritePartition>> {
-            self.started.notify_one();
-            self.release.notified().await;
-            Ok(vec![])
-        }
-
-        fn collect_plan_metrics(&self) -> Vec<MetricsSet> {
-            vec![]
-        }
-    }
 
     type GrpcResult<T> = std::result::Result<Response<T>, Status>;
 
@@ -761,24 +703,7 @@ mod tests {
         expected_free: usize,
     ) {
         let engine = BlockingEngine::default();
-        let executor = Arc::new(Executor::new(
-            ExecutorRegistration {
-                id: "executor".to_string(),
-                specification: Some(
-                    ExecutorSpecification::default()
-                        .with_vcores(VCORES as u32)
-                        .into(),
-                ),
-                ..Default::default()
-            },
-            "",
-            fresh_runtime_producer(),
-            Arc::new(default_config_producer),
-            Arc::new(BallistaFunctionRegistry::default()),
-            Arc::new(LoggingMetricsCollector::default()),
-            VCORES,
-            Arc::new(engine.clone()),
-        ));
+        let executor = executor_with_engine(&engine, VCORES);
 
         let scheduler =
             SchedulerGrpcClient::new(SchedulerGrpcServer::new(MockScheduler {
@@ -836,5 +761,54 @@ mod tests {
         // Waiting for permits that don't exist would stall the loop for good,
         // and with it the executor's heartbeat.
         assert_free_vcores_while_task_runs(10 * VCORES, 0).await;
+    }
+
+    #[tokio::test]
+    async fn task_log_lines_carry_the_task_ids() {
+        let logs = captured_logs();
+        let engine = BlockingEngine::default();
+        let scheduler =
+            SchedulerGrpcClient::new(SchedulerGrpcServer::new(MockScheduler {
+                task: Mutex::new(Some(TaskDefinition {
+                    job_id: "pulled-job".to_string(),
+                    stage_id: 2,
+                    stage_attempt_num: 1,
+                    task_id: 3,
+                    task_attempt_num: 4,
+                    ..task_definition(1)
+                })),
+            }));
+        let free_vcores = Arc::new(Semaphore::new(VCORES));
+        let handle = tokio::spawn(poll_loop(
+            scheduler,
+            executor_with_engine(&engine, VCORES),
+            BallistaCodec::default(),
+            None,
+            Some(free_vcores.clone()),
+            ExecutorHealth::new(),
+        ));
+
+        tokio::time::timeout(TIMEOUT, engine.started.notified())
+            .await
+            .expect("the task never started");
+        engine.release.notify_one();
+        // The task logs that it finished before it gives its vcores back.
+        let _all_back =
+            tokio::time::timeout(TIMEOUT, free_vcores.acquire_many(VCORES as u32))
+                .await
+                .expect("the task never finished")
+                .unwrap();
+        handle.abort();
+
+        let span = "ballista_task{job_id=pulled-job stage_id=2 stage_attempt=1 task_id=3 task_attempt=4}";
+        // The first line is logged by the poll loop, the second on the
+        // dedicated runtime the task runs on.
+        for message in ["Received task", "Finished task"] {
+            assert!(
+                logs.has_line_in_span(span, message),
+                "no `{message}` line tagged `{span}` in:\n{}",
+                logs.contents()
+            );
+        }
     }
 }

@@ -15,3 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
+disallowed-types = [
+    { path = "tokio::task::JoinSet", reason = "use datafusion::common::runtime::JoinSet, so spawned work keeps the task's tracing span" },
+]
