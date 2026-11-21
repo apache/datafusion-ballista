@@ -147,7 +147,9 @@ pub trait SessionConfigExt {
     /// Returns `None` if not set.
     fn ballista_partition_sliceable_resolver(
         &self,
-    ) -> Option<Arc<dyn PartitionSliceableResolver>>;
+    ) -> Option<Arc<dyn PartitionSliceableResolver>> {
+        None
+    }
 
     /// Overrides ballista's [QueryPlanner]
     fn with_ballista_query_planner(

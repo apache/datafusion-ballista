@@ -309,7 +309,8 @@ fn ensure_leaf_runs_whole(
          the scheduler does not know how to restrict a `{name}`, and left alone it \
          would number its partitions from zero in every task. A node of your own \
          can be restricted by `SchedulerConfig::partition_sliceable_resolver`, for instance \
-         by implementing `PartitionSliceable` and calling it from there."
+         by implementing `PartitionSliceable` and calling it from there. For standalone \
+         execution, register the resolver with `SessionConfigExt::with_ballista_partition_sliceable_resolver`."
     )
 }
 
@@ -1147,7 +1148,9 @@ mod tests {
              alone it would number its partitions from zero in every task. A node \
              of your own can be restricted by \
              `SchedulerConfig::partition_sliceable_resolver`, for instance by \
-             implementing `PartitionSliceable` and calling it from there."
+             implementing `PartitionSliceable` and calling it from there. \
+             For standalone execution, register the resolver with \
+             `SessionConfigExt::with_ballista_partition_sliceable_resolver`."
         );
     }
 
