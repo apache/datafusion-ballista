@@ -139,14 +139,14 @@ fn walk_child_partition_mapping(
                 // input ids from before the repartition are meaningless here.
                 return GlobalPartitionMap::KSpace;
             }
-            Partitioning::UnknownPartitioning(_) => {
+            Partitioning::Grouped(_) | Partitioning::UnknownPartitioning(_) => {
                 // RepartitionExec still exchanges rows and freshly numbers
                 // its K outputs, so global_output_partition_ids[local] would be a
                 // meaningless mapping. DataFusion's BatchPartitioner also
                 // rejects this scheme (`not_impl_err!`), so reaching this
                 // arm means an upstream invariant has broken — fail loudly.
                 panic!(
-                    "unexpected RepartitionExec::UnknownPartitioning \
+                    "unexpected source/unknown RepartitionExec \
                      in shuffle-writer child plan"
                 );
             }

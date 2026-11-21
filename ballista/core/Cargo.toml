@@ -60,6 +60,7 @@ pastey = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true }
