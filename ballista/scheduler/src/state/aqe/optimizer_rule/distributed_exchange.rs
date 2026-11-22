@@ -503,6 +503,28 @@ mod tests {
         Arc::new(exchange)
     }
 
+    /// An exchange over `input` whose stage, `stage_id`, has run.
+    fn exchange_that_ran(
+        input: Arc<dyn ExecutionPlan>,
+        plan_id: usize,
+        stage_id: usize,
+    ) -> Arc<dyn ExecutionPlan> {
+        let exchange = ExchangeExec::new(input, None, plan_id);
+        exchange.set_stage_id(stage_id);
+        exchange.resolve_shuffle_partitions(vec![vec![]]);
+        Arc::new(exchange)
+    }
+
+    /// A union of two sorted branches whose stages have run, as
+    /// `DistributedExchangeRule` leaves it once their stages finish.
+    fn union_of_branches_that_ran() -> Arc<dyn ExecutionPlan> {
+        UnionExec::try_new(vec![
+            exchange_that_ran(sorted_into_one_partition(scan_exec()), 10, 1),
+            exchange_that_ran(sorted_into_one_partition(scan_exec()), 11, 2),
+        ])
+        .unwrap()
+    }
+
     fn sort_preserving_merge(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         let sort_expr = PhysicalSortExpr::new_default(Arc::new(Column::new("a", 0)));
         let ordering = LexOrdering::new(vec![sort_expr]).unwrap();
@@ -1037,14 +1059,11 @@ mod tests {
     /// a share of, a stage's reader among them, stay in the union's stage.
     #[test]
     fn union_stages_a_branch_that_cannot_be_split() {
-        let ran = ExchangeExec::new(leaf_exec(), None, 11);
-        ran.set_stage_id(1);
-        ran.resolve_shuffle_partitions(vec![vec![]]);
         let union: Arc<dyn ExecutionPlan> = UnionExec::try_new(vec![
             scan_exec(),
             sorted_into_one_partition(scan_exec()),
             sorted_into_one_partition(Arc::new(ExchangeExec::new(scan_exec(), None, 10))),
-            Arc::new(ran),
+            exchange_that_ran(leaf_exec(), 11, 1),
         ])
         .unwrap();
 
@@ -1066,31 +1085,71 @@ mod tests {
         ");
     }
 
-    /// A coalesce over a union whose branches all got a stage of their own
-    /// reads their readers in its own task, with no stage between that would
-    /// only copy them.
+    /// A coalesce over a union whose branches each have a stage of their own
+    /// reads their readers in its own stage, with no stage between that would
+    /// only copy their rows.
     #[test]
     fn coalesce_reads_a_union_of_staged_branches_directly() {
-        let union: Arc<dyn ExecutionPlan> = UnionExec::try_new(vec![
-            sorted_into_one_partition(scan_exec()),
-            sorted_into_one_partition(scan_exec()),
-        ])
-        .unwrap();
-        let coalesce = Arc::new(CoalescePartitionsExec::new(union));
+        let coalesce =
+            Arc::new(CoalescePartitionsExec::new(union_of_branches_that_ran()));
 
-        let rule = DistributedExchangeRule::default();
-        let result = rule.optimize(coalesce, &config()).unwrap();
+        let result = DistributedExchangeRule::default()
+            .optimize(coalesce, &config())
+            .unwrap();
 
         assert_plan!(result.as_ref(), @ r"
-        AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
+        AdaptiveDatafusionExec: is_final=false, plan_id=0, stage_id=pending, stage_resolved=false
           CoalescePartitionsExec
             UnionExec
-              ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
+              ExchangeExec: partitioning=None, plan_id=10, stage_id=1, stage_resolved=true
                 SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
                   DataSourceExec: partitions=1, partition_sizes=[1]
-              ExchangeExec: partitioning=None, plan_id=1, stage_id=pending, stage_resolved=false
+              ExchangeExec: partitioning=None, plan_id=11, stage_id=2, stage_resolved=true
                 SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
                   DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
+    }
+
+    /// A null-aware join's probe side, a union whose branches each have a
+    /// stage of their own, is coalesced in the join's stage, with no stage
+    /// between that would only copy their rows.
+    #[test]
+    fn null_aware_probe_reads_a_union_of_staged_branches_directly() {
+        use datafusion::common::{JoinType, NullEquality};
+
+        let join = Arc::new(
+            HashJoinExec::try_new(
+                leaf_exec(),
+                union_of_branches_that_ran(),
+                vec![(
+                    Arc::new(Column::new("a", 0)) as _,
+                    Arc::new(Column::new("a", 0)) as _,
+                )],
+                None,
+                &JoinType::LeftAnti,
+                None,
+                PartitionMode::CollectLeft,
+                NullEquality::NullEqualsNothing,
+                true,
+            )
+            .unwrap(),
+        );
+
+        let rule = DistributedExchangeRule::default();
+        let result = rule.optimize(join, &config()).unwrap();
+
+        assert_plan!(result.as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=0, stage_id=pending, stage_resolved=false
+          HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(a@0, a@0)], null_aware
+            StatisticsExec: col_count=1, row_count=Absent
+            CoalescePartitionsExec
+              UnionExec
+                ExchangeExec: partitioning=None, plan_id=10, stage_id=1, stage_resolved=true
+                  SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+                    DataSourceExec: partitions=1, partition_sizes=[1]
+                ExchangeExec: partitioning=None, plan_id=11, stage_id=2, stage_resolved=true
+                  SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+                    DataSourceExec: partitions=1, partition_sizes=[1]
         ");
     }
 
