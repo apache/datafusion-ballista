@@ -25,11 +25,13 @@ use crate::state::aqe::test::{
     mock_batch, mock_context, mock_partitions_with_statistics,
 };
 use crate::state::execution_graph::ExecutionGraph;
+use crate::test_utils::payload::{PayloadCodec, PayloadExec};
 use crate::test_utils::{
     mock_executor, revive_graph_and_complete_next_stage,
     revive_graph_and_complete_next_stage_with_executor,
 };
 use ballista_core::extension::SessionConfigExt;
+use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::config::ConfigOptions;
@@ -70,9 +72,18 @@ async fn planner(ctx: &SessionContext, sql: &str) -> AdaptivePlanner {
 
 async fn graph(ctx: &SessionContext, sql: &str) -> AdaptiveExecutionGraph {
     let plan = ctx.sql(sql).await.unwrap().logical_plan().clone();
-    AdaptiveExecutionGraph::try_new("scheduler", &"job".into(), "", ctx, &plan, 0, None)
-        .await
-        .unwrap()
+    AdaptiveExecutionGraph::try_new(
+        "scheduler",
+        &"job".into(),
+        "",
+        ctx,
+        &plan,
+        0,
+        None,
+        Arc::new(BallistaPhysicalExtensionCodec::default()),
+    )
+    .await
+    .unwrap()
 }
 
 /// Runs every stage of `graph` and returns how many stages ran.
@@ -164,12 +175,30 @@ async fn losing_a_shared_stage_output_fails_the_rollback() {
 
 fn exchange(plan_id: usize) -> ExchangeExec {
     let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
-    let key: Arc<dyn PhysicalExpr> = Arc::new(Column::new("k", 0));
-    ExchangeExec::new(
-        Arc::new(EmptyExec::new(schema)),
-        Some(Partitioning::Hash(vec![key], 2)),
-        plan_id,
-    )
+    exchange_over(Arc::new(EmptyExec::new(schema)), plan_id)
+}
+
+/// An exchange hash partitioning `input` on its first column.
+fn exchange_over(input: Arc<dyn ExecutionPlan>, plan_id: usize) -> ExchangeExec {
+    let name = input.schema().field(0).name().clone();
+    let key: Arc<dyn PhysicalExpr> = Arc::new(Column::new(&name, 0));
+    ExchangeExec::new(input, Some(Partitioning::Hash(vec![key], 2)), plan_id)
+}
+
+/// A planner over a union of `exchanges`, whose only rules are `rules`.
+fn planner_over(
+    exchanges: Vec<ExchangeExec>,
+    rules: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>>,
+) -> AdaptivePlanner {
+    let children = exchanges
+        .into_iter()
+        .map(|exchange| Arc::new(exchange) as Arc<dyn ExecutionPlan>)
+        .collect();
+    let union = UnionExec::try_new(children).unwrap();
+    let plan = Arc::new(AdaptiveDatafusionExec::new(2, union));
+    let state =
+        SessionStateBuilder::new().with_config(SessionConfig::new_with_ballista());
+    AdaptivePlanner::try_new_with_optimizers(state, plan, "job".into(), rules).unwrap()
 }
 
 /// Counts, on each pass of the optimizer chain, the resolved exchanges it
@@ -213,16 +242,10 @@ impl PhysicalOptimizerRule for CountResolvedExchanges {
 /// first launches on its own and the second becomes runnable later, as a
 /// rule releasing a held-back stage does. Its only rule is `counter`.
 fn planner_with_a_late_repeat(counter: Arc<CountResolvedExchanges>) -> AdaptivePlanner {
-    let union = UnionExec::try_new(vec![
-        Arc::new(exchange(0)),
-        Arc::new(exchange(1).with_inactive_stage(true)),
-    ])
-    .unwrap();
-    let plan = Arc::new(AdaptiveDatafusionExec::new(2, union));
-    let state =
-        SessionStateBuilder::new().with_config(SessionConfig::new_with_ballista());
-    AdaptivePlanner::try_new_with_optimizers(state, plan, "job".into(), vec![counter])
-        .unwrap()
+    planner_over(
+        vec![exchange(0), exchange(1).with_inactive_stage(true)],
+        vec![counter],
+    )
 }
 
 /// Releases every held-back exchange of `planner`'s plan.
@@ -302,4 +325,31 @@ fn a_repeat_of_a_dropped_stage_runs_its_own() {
     let stages = planner.identify_runnable_stages().unwrap().unwrap();
 
     assert_eq!(stage_ids(&stages), vec![Some(1)]);
+}
+
+/// A planner over two identical exchanges of an embedder's operator, a
+/// [`PayloadExec`] that only [`PayloadCodec`] can encode, as a client that
+/// registers its codec with the scheduler and not with its session plans.
+fn planner_over_an_embedders_operator() -> AdaptivePlanner {
+    let exchange = |plan_id| exchange_over(PayloadExec::leaf(&["p0", "p1"]), plan_id);
+    planner_over(vec![exchange(0), exchange(1)], vec![])
+}
+
+/// Stages are matched on the codec the scheduler ships them with, so an
+/// embedder's stages are shared although its session has Ballista's default
+/// codec, which cannot encode them.
+#[rstest]
+#[case::session_codec(false, 2)]
+#[case::scheduler_codec(true, 1)]
+fn an_embedders_stages_are_matched_with_the_scheduler_codec(
+    #[case] scheduler_codec: bool,
+    #[case] expected_stages: usize,
+) {
+    let mut planner = planner_over_an_embedders_operator();
+    if scheduler_codec {
+        planner = planner.with_physical_codec(Arc::new(PayloadCodec::default()));
+    }
+
+    let stages = planner.identify_runnable_stages().unwrap().unwrap();
+    assert_eq!(stages.len(), expected_stages);
 }

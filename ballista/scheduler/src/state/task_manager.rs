@@ -392,6 +392,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                             logical_plan,
                             queued_at,
                             self.adaptive_rules.as_deref(),
+                            self.codec.physical_extension_codec_arc(),
                         )
                         .await?,
                     ) as ExecutionGraphBox
@@ -433,6 +434,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         physical_plan.clone(),
                         queued_at,
                         self.adaptive_rules.as_deref(),
+                        self.codec.physical_extension_codec_arc(),
                     )?) as ExecutionGraphBox
                 } else {
                     debug!("Using static query planner for physical-plan job submission");
@@ -1662,6 +1664,7 @@ mod tests {
             &plan,
             0,
             None,
+            Arc::new(ballista_core::serde::BallistaPhysicalExtensionCodec::default()),
         )
         .await?;
         graph.revive();

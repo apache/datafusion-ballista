@@ -70,6 +70,7 @@ use datafusion_proto::bytes::physical_plan_to_bytes_with_extension_codec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalProtoConverterExtension;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
+use log::debug;
 use prost::Message;
 
 use crate::state::aqe::execution_plan::ExchangeExec;
@@ -119,7 +120,14 @@ pub(crate) fn reuse_key(
     // Encodings run to the size of the stage plan, file lists included, and
     // a key is kept for every stage of the job, so only a 256-bit digest of
     // it is kept.
-    let bytes = physical_plan_to_bytes_with_extension_codec(node, &codec).ok()?;
+    let bytes = physical_plan_to_bytes_with_extension_codec(node, &codec)
+        .inspect_err(|e| {
+            debug!(
+                "exchange reuse: stage of exchange {} is not shared, its plan cannot be encoded: {e}",
+                exchange.plan_id()
+            )
+        })
+        .ok()?;
     Some(*blake3::hash(&bytes).as_bytes())
 }
 
