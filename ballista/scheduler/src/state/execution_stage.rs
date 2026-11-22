@@ -206,7 +206,6 @@ pub struct ResolvedStage {
 /// 3. manage the stage-level combined metrics
 ///    Running stages will only be maintained in memory and will not saved to the backend storage
 #[derive(Clone)]
-#[non_exhaustive]
 pub struct RunningStage {
     /// Stage ID
     pub stage_id: usize,
@@ -267,12 +266,6 @@ pub struct RunningStage {
     /// Prefix-merged in global partition order to seed a downstream
     /// `PrefixMergeExec`; dropped when the stage transitions to Successful.
     pub window_state_reports: Vec<TaskWindowState>,
-    /// The `UnionExec` branch that can't be restricted to part of its
-    /// partitions, if the plan has one, which makes binding run the stage as
-    /// one task. `None` until the first bind that needs it computes it: it
-    /// depends only on `plan` and the job's resolver, which are fixed for a
-    /// running stage.
-    pub(crate) unsplittable_union_branch: Option<Option<Arc<dyn ExecutionPlan>>>,
 }
 
 /// If a stage finishes successfully, its task statuses and metrics will be finalized
@@ -721,7 +714,6 @@ impl RunningStage {
             session_config,
             runtime_stats_reports: Vec::new(),
             window_state_reports: Vec::new(),
-            unsplittable_union_branch: None,
         }
     }
 
@@ -1395,7 +1387,6 @@ impl SuccessfulStage {
             // Merged-cut logging fires per-attempt on final success.
             runtime_stats_reports: Vec::new(),
             window_state_reports: Vec::new(),
-            unsplittable_union_branch: None,
         }
     }
 

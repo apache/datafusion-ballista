@@ -746,7 +746,7 @@ fn can_stay_inline(plan: &Arc<dyn ExecutionPlan>) -> bool {
     if plan.is::<UnresolvedShuffleExec>() {
         return true;
     }
-    !holds_a_broadcast(plan) && branch_splits(plan, None)
+    !holds_a_broadcast(plan) && branch_splits(plan)
 }
 
 /// Whether `plan` contains a broadcast input or a `CollectLeft` join.

@@ -16,7 +16,9 @@
 // under the License.
 
 use crate::physical_optimizer::join_selection::collect_left_broadcast_safe;
+use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+use crate::state::task_builder::branch_splits;
 use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::{
     OrderedRangeRepartitionExec, PartitionIdRepartitionExec, RangeFilterExec,
@@ -33,6 +35,7 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
+use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions, execution_plan,
 };
@@ -83,7 +86,7 @@ impl DistributedExchangeRule {
         {
             let left = Arc::clone(left);
             let right = Arc::clone(right);
-            let right = if right.downcast_ref::<ExchangeExec>().is_none()
+            let right = if !is_stage_boundary(&right)
                 && !matches!(nearest_exchange_status(&right), ExchangeStatus::Unresolved)
                 && !is_inlinable_scan_pipeline(&right, broadcast_threshold_bytes(config))?
             {
@@ -105,7 +108,7 @@ impl DistributedExchangeRule {
 
         if let Some(coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = coalesce.input();
-            if input.downcast_ref::<ExchangeExec>().is_none()
+            if !is_stage_boundary(input)
                 && !matches!(nearest_exchange_status(input), ExchangeStatus::Unresolved)
                 && !is_inlinable_scan_pipeline(input, broadcast_threshold_bytes(config))?
             {
@@ -183,10 +186,53 @@ impl DistributedExchangeRule {
                             execution_plan.name()
                         );
                     }
+                    if execution_plan.is::<UnionExec>() {
+                        return self.stage_unsplittable_branches(execution_plan);
+                    }
                 }
             }
         }
         Ok(Transformed::no(execution_plan))
+    }
+
+    /// Give each branch of `union` that a task can't run its share of a stage
+    /// of its own, as the static planner does (`can_stay_inline`).
+    ///
+    /// A task running some of the union's partitions restricts every other
+    /// branch to none. A branch that keeps a partition anyway, such as one
+    /// that merges its input through a `SortExec` or a global aggregate, would
+    /// run whole in every task, and restriction refuses such a task. Behind
+    /// an exchange the branch is a shuffle reader, which restricts cleanly, and
+    /// the merge runs once.
+    ///
+    /// A branch is judged as the stage's tasks would run it, its exchanges
+    /// replaced by readers, so one over an exchange that hasn't run is left
+    /// for a later pass: the union's stage can't start before then.
+    fn stage_unsplittable_branches(
+        &self,
+        union: Arc<dyn ExecutionPlan>,
+    ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        let mut branches: Vec<_> = union.children().into_iter().cloned().collect();
+        let mut staged = false;
+        for branch in &mut branches {
+            if matches!(nearest_exchange_status(branch), ExchangeStatus::Unresolved)
+                || branch_splits(&BallistaAdapter::with_readers(Arc::clone(branch))?)
+            {
+                continue;
+            }
+            let id = self
+                .plan_id_generator
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *branch = Arc::new(ExchangeExec::new(Arc::clone(branch), None, id));
+            staged = true;
+        }
+        if !staged {
+            return Ok(Transformed::no(union));
+        }
+        Ok(Transformed::yes(union.replace_children(
+            branches,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?))
     }
 }
 
@@ -359,7 +405,9 @@ impl PhysicalOptimizerRule for DistributedExchangeRule {
 /// True when `node` is (or transparently sits on) a stage boundary.
 /// `RangeFilterExec` counts because we chose not to fold range-filtering
 /// into `ShuffleReader`/`ExchangeExec` — the operator is part of the
-/// boundary shape by design.
+/// boundary shape by design. So does a `UnionExec` of boundaries, such as one
+/// whose branches each got a stage of their own: a stage of it alone would
+/// only copy its readers' rows into another shuffle.
 fn is_stage_boundary(node: &Arc<dyn ExecutionPlan>) -> bool {
     if node.is::<ExchangeExec>() {
         return true;
@@ -369,7 +417,7 @@ fn is_stage_boundary(node: &Arc<dyn ExecutionPlan>) -> bool {
     {
         return child.is::<ExchangeExec>();
     }
-    false
+    node.is::<UnionExec>() && node.children().into_iter().all(is_stage_boundary)
 }
 
 /// Scans the subtree for the nearest `ExchangeExec` in each path and returns the
@@ -408,6 +456,7 @@ mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
     use crate::state::aqe::test::unknown_statistics_exec;
+    use crate::test_utils::sorted_into_one_partition;
     use ballista_core::assert_plan;
     use ballista_core::execution_plans::{
         RuntimeStatsExec, UnorderedRangeRepartitionExec,
@@ -979,6 +1028,70 @@ mod tests {
             adaptive.input().downcast_ref::<RepartitionExec>().is_some(),
             "Hash repartition should be kept when input has an unresolved exchange"
         );
+    }
+
+    // --- UnionExec ---
+
+    /// A union branch that merges its input into one partition gets a stage
+    /// of its own, once any exchange under it has run. Branches a task can run
+    /// a share of, a stage's reader among them, stay in the union's stage.
+    #[test]
+    fn union_stages_a_branch_that_cannot_be_split() {
+        let ran = ExchangeExec::new(leaf_exec(), None, 11);
+        ran.set_stage_id(1);
+        ran.resolve_shuffle_partitions(vec![vec![]]);
+        let union: Arc<dyn ExecutionPlan> = UnionExec::try_new(vec![
+            scan_exec(),
+            sorted_into_one_partition(scan_exec()),
+            sorted_into_one_partition(Arc::new(ExchangeExec::new(scan_exec(), None, 10))),
+            Arc::new(ran),
+        ])
+        .unwrap();
+
+        let rule = DistributedExchangeRule::new(Arc::new(AtomicUsize::new(100)));
+        let result = rule.optimize(union, &config()).unwrap();
+
+        assert_plan!(result.as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=101, stage_id=pending, stage_resolved=false
+          UnionExec
+            DataSourceExec: partitions=1, partition_sizes=[1]
+            ExchangeExec: partitioning=None, plan_id=100, stage_id=pending, stage_resolved=false
+              SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+                DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+              ExchangeExec: partitioning=None, plan_id=10, stage_id=pending, stage_resolved=false
+                DataSourceExec: partitions=1, partition_sizes=[1]
+            ExchangeExec: partitioning=None, plan_id=11, stage_id=1, stage_resolved=true
+              StatisticsExec: col_count=1, row_count=Absent
+        ");
+    }
+
+    /// A coalesce over a union whose branches all got a stage of their own
+    /// reads their readers in its own task, with no stage between that would
+    /// only copy them.
+    #[test]
+    fn coalesce_reads_a_union_of_staged_branches_directly() {
+        let union: Arc<dyn ExecutionPlan> = UnionExec::try_new(vec![
+            sorted_into_one_partition(scan_exec()),
+            sorted_into_one_partition(scan_exec()),
+        ])
+        .unwrap();
+        let coalesce = Arc::new(CoalescePartitionsExec::new(union));
+
+        let rule = DistributedExchangeRule::default();
+        let result = rule.optimize(coalesce, &config()).unwrap();
+
+        assert_plan!(result.as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=2, stage_id=pending, stage_resolved=false
+          CoalescePartitionsExec
+            UnionExec
+              ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
+                SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+                  DataSourceExec: partitions=1, partition_sizes=[1]
+              ExchangeExec: partitioning=None, plan_id=1, stage_id=pending, stage_resolved=false
+                SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+                  DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
     }
 
     // --- optimize() root wrapping ---

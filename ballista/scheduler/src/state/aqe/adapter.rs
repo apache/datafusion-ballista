@@ -248,6 +248,15 @@ impl BallistaAdapter {
         Ok(Transformed::no(plan))
     }
 
+    /// `plan` as its stage's tasks would see it: each `ExchangeExec`, which
+    /// must already be resolved, replaced by the reader the stage would get.
+    pub(crate) fn with_readers(
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let mut adapter = BallistaAdapter::default();
+        Ok(plan.transform_down(|e| adapter.transform_children(e))?.data)
+    }
+
     /// Converts Adaptive plan to plan which ballista expects
     /// This is to be used to convert [ExchangeExec] to
     /// ShuffleWriterExec/SortShuffleWriterExec and [ShuffleReaderExec]
