@@ -18,6 +18,7 @@
 //! Reader that yields `RecordBatch`es from a byte range of a sort-shuffle
 //! data file, transparently spanning multiple concatenated Arrow IPC streams.
 
+use crate::shuffle_ipc::ShuffleIpcReader;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::reader::StreamReader;
@@ -44,7 +45,7 @@ enum State {
     /// Next sub-stream begins at this absolute byte offset.
     Pending(u64),
     /// Currently draining a sub-stream.
-    Reading(StreamReader<File>),
+    Reading(Box<StreamReader<ShuffleIpcReader<File>>>),
     /// Range exhausted or an error has terminated the stream.
     Done,
 }
@@ -87,7 +88,9 @@ impl MultiStreamPartitionStream {
                     }
                     Some(Err(e)) => return Err(e),
                     None => {
-                        let pos = reader.get_mut().stream_position()?;
+                        // The adapter never reads past the end-of-stream
+                        // marker, so the file sits at the next stream.
+                        let pos = reader.get_mut().get_mut().stream_position()?;
                         if pos < self.end_offset {
                             self.state = State::Pending(pos);
                         }
@@ -101,11 +104,12 @@ impl MultiStreamPartitionStream {
                     file.seek(SeekFrom::Start(next))?;
                     // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
                     let reader = unsafe {
-                        StreamReader::try_new(file, None)?.with_skip_validation(cfg!(
-                            feature = "arrow-ipc-optimizations"
-                        ))
+                        StreamReader::try_new(ShuffleIpcReader::new(file), None)?
+                            .with_skip_validation(cfg!(
+                                feature = "arrow-ipc-optimizations"
+                            ))
                     };
-                    self.state = State::Reading(reader);
+                    self.state = State::Reading(Box::new(reader));
                 }
             }
         }

@@ -38,9 +38,11 @@
 use ballista_core::config::{
     BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS,
     BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION,
+    BALLISTA_SHUFFLE_COMPRESSION_CODEC, BALLISTA_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS,
 };
 use ballista_core::execution_plans::sort_shuffle::{
-    SortShuffleConfig, SortShuffleWriterExec,
+    SortShuffleConfig, SortShuffleWriterExec, get_index_path,
+    stream_sort_shuffle_partition,
 };
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::utils;
@@ -54,6 +56,7 @@ use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use futures::StreamExt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -123,6 +126,14 @@ struct Args {
     /// one-byte registers.
     #[arg(long, default_value_t = ballista_core::hll::DEFAULT_PRECISION)]
     distinct_count_precision: u8,
+
+    /// Shuffle compression codec: `none`, `lz4` or `zstd`.
+    #[arg(long, default_value = "zstd")]
+    codec: String,
+
+    /// With zstd, store offsets as lengths in byte planes before compressing.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    offsets_as_lengths: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -238,6 +249,11 @@ async fn execute_shuffle_write(
         .set_usize(
             BALLISTA_SHUFFLE_COLLECT_DISTINCT_COUNTS_PRECISION,
             args.distinct_count_precision as usize,
+        )
+        .set_str(BALLISTA_SHUFFLE_COMPRESSION_CODEC, &args.codec)
+        .set_bool(
+            BALLISTA_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS,
+            args.offsets_as_lengths,
         );
     let ctx = SessionContext::new_with_config_rt(config, runtime_env);
 
@@ -307,6 +323,7 @@ fn run_iteration(
             .await
             .expect("shuffle write failed");
             let elapsed = start.elapsed().as_secs_f64();
+            report_read_back(&work_dir, args.partitions).await;
             let _ = fs::remove_dir_all(&work_dir);
             (elapsed, Some(metrics))
         } else {
@@ -335,6 +352,45 @@ fn run_iteration(
             (start.elapsed().as_secs_f64(), None)
         }
     })
+}
+
+/// Every sort-shuffle data file under `dir`.
+fn data_files(dir: &Path, found: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            data_files(&path, found);
+        } else if path.file_name().is_some_and(|name| name == "data.arrow") {
+            found.push(path);
+        }
+    }
+}
+
+/// Prints the bytes a task wrote and how long reading every partition back
+/// takes.
+async fn report_read_back(work_dir: &Path, partitions: usize) {
+    let mut files = Vec::new();
+    data_files(work_dir, &mut files);
+    let bytes: u64 = files
+        .iter()
+        .map(|path| fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+        .sum();
+    let start = Instant::now();
+    let mut rows = 0;
+    for path in &files {
+        let index = get_index_path(path);
+        for partition in 0..partitions {
+            let mut stream = stream_sort_shuffle_partition(path, &index, partition)
+                .expect("open shuffle partition");
+            while let Some(batch) = stream.next().await {
+                rows += batch.expect("read shuffle batch").num_rows();
+            }
+        }
+    }
+    println!(
+        "  shuffle bytes: {bytes}, read back {rows} rows in {:.3}s",
+        start.elapsed().as_secs_f64()
+    );
 }
 
 fn print_shuffle_metrics(metrics: &MetricsSet, total_wall_time_secs: f64) {
@@ -434,6 +490,10 @@ fn main() {
     println!("Total rows:     {total_rows}");
     println!("Partitions:     {}", args.partitions);
     println!("Batch size:     {}", args.batch_size);
+    println!(
+        "Codec:          {} (offsets as lengths: {})",
+        args.codec, args.offsets_as_lengths
+    );
     if let Some(m) = args.memory_limit {
         println!("Memory limit:   {m} bytes");
     }

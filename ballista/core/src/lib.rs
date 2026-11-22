@@ -102,6 +102,8 @@ pub mod registry;
 pub mod serde;
 /// Serves partition fetches over Arrow Flight.
 pub mod serving;
+/// Arrow IPC streams for shuffle data, with offsets stored as lengths.
+pub mod shuffle_ipc;
 /// Graceful shutdown coordination for long-running server components.
 pub mod shutdown;
 /// Quantile sketching of a fixed-width `ORDER BY` key, NULLs included.

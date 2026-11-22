@@ -868,7 +868,7 @@ impl ShuffleWriterExec {
         async move {
             let now = Instant::now();
             let config = context.session_config().ballista_config();
-            let compression_type = config.shuffle_compression_codec()?;
+            let compression = config.shuffle_compression()?;
             let channel_capacity = config.shuffle_writer_channel_capacity();
             column_stats.reset(
                 plan.schema().fields().len(),
@@ -915,12 +915,12 @@ impl ShuffleWriterExec {
                 let mut stream = column_stats
                     .count(plan.execute(local_input_partition, context.clone())?, None);
                 handles.spawn(async move {
-                    let stats = utils::write_stream_to_disk(
+                    let stats = utils::write_shuffle_stream_to_disk(
                         &mut stream,
                         path.as_path(),
                         &write_metrics.write_time,
                         channel_capacity,
-                        compression_type,
+                        compression,
                     )
                     .await
                     .map_err(BallistaError::into_datafusion)?;
